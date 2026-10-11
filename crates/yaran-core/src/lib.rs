@@ -37,6 +37,7 @@ pub mod gh;
 pub mod git;
 pub mod gitignore_seed;
 pub mod home_path;
+pub mod human_board;
 pub mod ids;
 pub mod io_retry;
 pub mod lockfile;

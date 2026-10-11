@@ -910,6 +910,37 @@ removing or overriding `[providers.jcode]` disables the provider.
 
 ---
 
+## T21 — Agent forges, floods or hides human-board cards, or injects escapes through them
+
+**Attack scenario.** Any process running as the operator, an agent included, can
+run `yaran board post` or edit `human_board.json` directly. A misbehaving agent
+could post under another agent's name, bury the cards that matter under hundreds
+of noise cards, resolve a card nobody looked at, or put terminal escape sequences
+in a title to repaint the operator's screen.
+
+**Mitigation in code.** The board is one file in the yaran config directory,
+created owner-only; every writer holds an exclusive `flock` on
+`human_board.lock` for its whole read-modify-write and lands the document with
+an atomic rename, so concurrent posts never lose a card and readers never see a
+half-written board. Every card string (title, detail, ticket, poster, note) is
+passed through the terminal sanitizer and bounded in length before it is
+stored, and the terminal UI renders it as plain text. Open cards are capped
+(`MAX_OPEN_CARDS`) and a post past the cap is refused with an error rather than
+dropping older cards; resolved history is pruned, open cards never are. A board
+the parser cannot read is shown as unreadable in the pane and is never
+overwritten, and a document from a newer schema is read but not rewritten.
+
+**Residual risk.** The poster field is a label taken from the launch
+environment (`YARAN_AMQ_HANDLE`/`AM_ME`) or `--from`, not an authenticated
+identity, and resolving a card is not authenticated either: both are
+same-UID actions under the single-user trust model accepted in T2. The board
+carries no executable content; nothing on it is ever run.
+
+**Detection.** `yaran board list --all --json` shows every card with its
+poster, timestamps, and who resolved it; the file itself is plain JSON.
+
+---
+
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must
@@ -917,8 +948,8 @@ update both `SECURITY.md` (the table) and this file (the
 paragraph). PRs that touch the surface listed above without
 updating these documents are blocked at review.
 
-The IDs `T1`–`T20` are stable references; new threats append at
-the end (`T21`, `T22`, …) rather than reshuffling. Retired
+The IDs `T1`–`T21` are stable references; new threats append at
+the end (`T22`, `T23`, …) rather than reshuffling. Retired
 threats are kept in the table with a `~~strikethrough~~` and a
 note pointing to the PR that retired them. Threats that move to
 **accepted-risk in single-user-VM mode** keep their original ID,

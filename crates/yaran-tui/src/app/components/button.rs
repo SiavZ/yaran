@@ -67,6 +67,8 @@ pub(crate) enum ButtonPressedTarget {
     /// delete above: it removes a worktree nobody holds).
     ConfirmDeleteWorktreeCancel,
     ConfirmDeleteWorktreeConfirm,
+    HumanBoardCardClose,
+    HumanBoardCardAction,
     ConfirmDeleteTerminalCancel,
     ConfirmDeleteTerminalConfirm,
     ConfirmCloseTabCancel,
