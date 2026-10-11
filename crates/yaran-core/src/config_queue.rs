@@ -159,12 +159,10 @@ impl ConfigWriteQueue {
         // dropping a snapshot at the cap is acceptable: the fixed deadline still
         // lands a write. The reservation is a single atomic update (not a separate
         // load-then-add) so concurrent callers cannot overshoot the cap.
-        if self
-            .lazy_inflight
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                (n < LAZY_INFLIGHT_CAP).then_some(n + 1)
-            })
-            .is_err()
+        if crate::atomic_update::update_relaxed(&self.lazy_inflight, |n| {
+            (n < LAZY_INFLIGHT_CAP).then_some(n + 1)
+        })
+        .is_err()
         {
             return;
         }
@@ -336,9 +334,7 @@ impl Drop for ConfigWriteQueue {
 /// panic-reset (`store(0)`) could otherwise race a send-failure rollback and wrap
 /// the counter to `usize::MAX`, latching the cap gate shut forever.
 fn decr_inflight(counter: &AtomicUsize) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-        Some(n.saturating_sub(1))
-    });
+    let _ = crate::atomic_update::update_relaxed(counter, |n| Some(n.saturating_sub(1)));
 }
 
 fn writer_loop(
