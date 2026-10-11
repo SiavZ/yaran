@@ -5254,7 +5254,13 @@ impl App {
     /// agents, which is strictly worse than a cold start.
     pub(crate) fn adopt_reload_handoff_from_args(&mut self) {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let Some(path) = yaran_core::reload_policy::handoff_path_from_args(&args) else {
+        self.adopt_reload_handoff(&args);
+    }
+
+    /// [`Self::adopt_reload_handoff_from_args`] for an argument list handed in,
+    /// so a test can drive it without a real process start.
+    pub(crate) fn adopt_reload_handoff(&mut self, args: &[String]) {
+        let Some(path) = yaran_core::reload_policy::handoff_path_from_args(args) else {
             return;
         };
         let handoff = match yaran_core::reload_handoff::Handoff::consume(&path) {
@@ -5279,6 +5285,23 @@ impl App {
                  picked back up.",
                 expected - adopted
             ));
+        } else {
+            // A reload that worked looks like nothing happened: the same
+            // agents are on the same screen. Say so, and name the build this
+            // process now runs, which is the one fact the screen cannot show.
+            let version = yaran_core::version::long();
+            self.set_info(if adopted == 0 {
+                format!("Reloaded onto yaran {version}; nothing was running to carry over.")
+            } else {
+                format!(
+                    "Reloaded onto yaran {version}; all {} carried over.",
+                    yaran_core::text::count_of_with(
+                        adopted,
+                        "running agent or terminal",
+                        "running agents and terminals"
+                    )
+                )
+            });
         }
         logger::info(&format!(
             "reload: adopted {adopted} of {expected} handed-over ptys"
@@ -10211,6 +10234,46 @@ mod pinned_warning_tests {
             status.message().contains("could not be loaded"),
             "a theme that will not load is still true tomorrow: {}",
             status.message()
+        );
+    }
+}
+
+#[cfg(test)]
+mod reload_confirmation_tests {
+    use super::test_support::{default_bindings, test_app};
+    use yaran_core::reload_handoff::{HANDOFF_FLAG, Handoff};
+
+    /// A reload that picked every agent back up looks like nothing happened,
+    /// so the status line must say it happened and name the build.
+    #[test]
+    fn a_successful_reload_is_confirmed_on_the_status_line() {
+        let mut app = test_app(default_bindings());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("handoff.json");
+        Handoff {
+            written_by: std::process::id(),
+            ptys: Vec::new(),
+            selected_session: None,
+        }
+        .write(&path)
+        .unwrap();
+        app.adopt_reload_handoff(&[HANDOFF_FLAG.to_string(), path.display().to_string()]);
+        let message = app.status.message();
+        assert!(message.starts_with("Reloaded onto yaran "), "{message}");
+        assert!(message.contains(&yaran_core::version::long()), "{message}");
+        assert!(message.contains("nothing was running"), "{message}");
+    }
+
+    /// Without the reload flag this is an ordinary start, and an ordinary
+    /// start says nothing about reloading.
+    #[test]
+    fn an_ordinary_start_adopts_nothing_and_says_nothing() {
+        let mut app = test_app(default_bindings());
+        app.adopt_reload_handoff(&[]);
+        assert!(
+            !app.status.message().contains("Reloaded"),
+            "{}",
+            app.status.message()
         );
     }
 }
