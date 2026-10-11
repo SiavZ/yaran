@@ -591,6 +591,8 @@ pub struct App {
     /// The in-flight changes-panel git mutation (stage/unstage/discard/commit),
     /// run off the run loop; see `changes_job`.
     pub(crate) pending_changes_job: Option<changes_job::PendingChangesJob>,
+    /// The human board pane's state; inert while `ui.human_board` is off.
+    pub(crate) human_board: human_board::HumanBoardState,
     /// Monotonic request counter, stamped into every [`crate::diff::DiffRequestKey`]
     /// so two requests that agree on file and settings are still told apart.
     pub(crate) diff_request_seq: u64,
@@ -1195,17 +1197,34 @@ pub(crate) enum RightSection {
     Unstaged,
     Staged,
     CommitInput,
+    /// The human board ("Tasks for Human"), shown under the Changes list in
+    /// place of Staged and CommitInput while `ui.human_board` is on.
+    Board,
+}
+
+/// What the right column shows under the Changes list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RightLower {
+    /// Nothing: no staged files and no board, so Changes fills the column.
+    Nothing,
+    /// The Staged Changes list and the Commit Message box.
+    StagedAndCommit,
+    /// The human board.
+    Board,
 }
 
 impl RightSection {
     /// Returns the next section, or `None` to exit the pane.
-    /// Order: Unstaged → Staged → CommitInput.
-    pub(crate) fn next(self, has_staged: bool) -> Option<Self> {
+    /// Order: Unstaged → Staged → CommitInput, or Unstaged → Board.
+    pub(crate) fn next(self, lower: RightLower) -> Option<Self> {
         match self {
-            Self::Unstaged if has_staged => Some(Self::Staged),
-            Self::Unstaged => None,
+            Self::Unstaged => match lower {
+                RightLower::StagedAndCommit => Some(Self::Staged),
+                RightLower::Board => Some(Self::Board),
+                RightLower::Nothing => None,
+            },
             Self::Staged => Some(Self::CommitInput),
-            Self::CommitInput => None,
+            Self::CommitInput | Self::Board => None,
         }
     }
 
@@ -1213,7 +1232,7 @@ impl RightSection {
     pub(crate) fn previous(self) -> Option<Self> {
         match self {
             Self::CommitInput => Some(Self::Staged),
-            Self::Staged => Some(Self::Unstaged),
+            Self::Staged | Self::Board => Some(Self::Unstaged),
             Self::Unstaged => None,
         }
     }
@@ -1223,11 +1242,11 @@ impl RightSection {
         Self::Unstaged
     }
 
-    pub(crate) fn last(has_staged: bool) -> Self {
-        if has_staged {
-            Self::CommitInput
-        } else {
-            Self::Unstaged
+    pub(crate) fn last(lower: RightLower) -> Self {
+        match lower {
+            RightLower::StagedAndCommit => Self::CommitInput,
+            RightLower::Board => Self::Board,
+            RightLower::Nothing => Self::Unstaged,
         }
     }
 }
@@ -2370,6 +2389,19 @@ pub(crate) enum PromptState {
         /// guessing a number.
         unpushed_commits: Option<yaran_core::git::UnpushedCommits>,
     },
+    /// One card of the human board, opened from the board pane: its whole
+    /// text, who posted it and when, and a button that marks it done (or
+    /// reopens it when it is done). The card is captured when the dialog opens,
+    /// so a card the agent rewrites meanwhile cannot change what the button
+    /// acts on, and the button acts on its number, never on a row.
+    HumanBoardCard {
+        card: Box<yaran_core::human_board::Card>,
+        focus: ConfirmFocus, // Cancel is Close (the default); Confirm is the action
+        /// First visible row of the body. A card's detail can run long, so the
+        /// body scrolls rather than pushing the buttons off screen. Clamped at
+        /// render against [`App::last_error_dialog_lines`].
+        scroll: u16,
+    },
     ConfirmDeleteTerminal {
         terminal_id: String,
         terminal_label: String,
@@ -3150,6 +3182,11 @@ pub(crate) struct MouseLayoutState {
     pub(crate) staged_list: Option<Rect>,
     pub(crate) commit_area: Option<Rect>,
     pub(crate) commit_text_area: Option<Rect>,
+    /// The human board's row area (inside its border), when it is drawn.
+    pub(crate) board_list: Option<Rect>,
+    /// Screen row (relative to `board_list.y`) -> selectable card slot, or
+    /// `None` for a heading row. Rebuilt each render.
+    pub(crate) board_row_to_slot: Vec<Option<usize>>,
 }
 
 impl MouseLayoutState {
@@ -3171,6 +3208,8 @@ impl MouseLayoutState {
         self.staged_list = None;
         self.commit_area = None;
         self.commit_text_area = None;
+        self.board_list = None;
+        self.board_row_to_slot.clear();
     }
 }
 
@@ -3356,6 +3395,10 @@ pub(crate) enum OverlayMouseLayout {
         /// is only while the worktree box is ticked.
         branch_checkbox: Option<OverlayCheckbox>,
     },
+    HumanBoardCard {
+        close_button: Rect,
+        action_button: Rect,
+    },
     ConfirmDeleteTerminal {
         cancel_button: Rect,
         delete_button: Rect,
@@ -3492,6 +3535,7 @@ pub(crate) enum MouseClickTarget {
     CenterPane,
     UnstagedPane,
     StagedPane,
+    BoardPane,
     CommandPalette,
     StartupCommandInput,
     MacroTextInput,
@@ -3932,6 +3976,7 @@ pub(crate) use background_server::{BackgroundServerStart, CompanionRouting};
 pub(crate) mod components;
 mod first_load;
 mod hangup;
+mod human_board;
 mod input;
 pub(crate) mod modal;
 mod orphan_worktrees;
@@ -4323,6 +4368,7 @@ impl App {
             syntax_cache: Arc::new(SyntaxCache::new()),
             pending_diff: None,
             pending_changes_job: None,
+            human_board: human_board::HumanBoardState::default(),
             diff_request_seq: 0,
             snapshot_buf: TerminalSnapshot::empty(),
             last_snapshot_id: None,
@@ -5667,6 +5713,10 @@ impl App {
                 self.toggle_tab_reaches_agent();
                 Ok(())
             }
+            "toggle-human-board" => {
+                self.toggle_human_board();
+                Ok(())
+            }
             "help" => {
                 self.help_scroll = Some(0);
                 Ok(())
@@ -6764,20 +6814,38 @@ impl App {
         match self.right_section {
             RightSection::Staged => self.engine.staged_files.get(self.files_index),
             RightSection::Unstaged => self.engine.unstaged_files.get(self.files_index),
-            RightSection::CommitInput => None,
+            RightSection::CommitInput | RightSection::Board => None,
         }
     }
 
+    /// What the right column shows under the Changes list: the human board
+    /// while it is on (whatever is staged), otherwise the staged list and the
+    /// commit box when something is staged.
+    pub(crate) fn right_lower(&self) -> RightLower {
+        if self.human_board_enabled() {
+            RightLower::Board
+        } else if self.engine.staged_files.is_empty() {
+            RightLower::Nothing
+        } else {
+            RightLower::StagedAndCommit
+        }
+    }
+
+    /// Rows the files cursor moves over. The board keeps its own selection
+    /// (a card number), so it has none here.
     pub(crate) fn current_files_len(&self) -> usize {
         match self.right_section {
             RightSection::Staged => self.engine.staged_files.len(),
             RightSection::Unstaged => self.engine.unstaged_files.len(),
-            RightSection::CommitInput => 0,
+            RightSection::CommitInput | RightSection::Board => 0,
         }
     }
 
     pub(crate) fn clamp_files_cursor(&mut self) {
-        if self.right_section == RightSection::CommitInput {
+        if matches!(
+            self.right_section,
+            RightSection::CommitInput | RightSection::Board
+        ) {
             return;
         }
         let len = self.current_files_len();

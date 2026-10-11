@@ -1765,6 +1765,14 @@ pub struct UiConfig {
     /// where a header is one line among many two-line rows. No effect on the
     /// flat list, which has no project headers. TUI-only.
     pub sidebar_header_rule: bool,
+    /// Show the human board ("Tasks for Human") in the right column, in place
+    /// of the Staged Changes list and the Commit Message box. Agents post cards
+    /// to it with `yaran board post` when something needs a person (a decision,
+    /// a check, a yes before they carry on) or should not be missed; the board
+    /// is the same whatever agent is selected. Default false: the right column
+    /// keeps its staged list and commit box. The `toggle-human-board` palette
+    /// command flips it. TUI-only.
+    pub human_board: bool,
     /// The agent-list sort mode, persisted so a chosen order (and the manual
     /// drag order it enables) survives restarts and is shared across clients:
     /// "active" (working/attention float up, the default), "updated", "created",
@@ -2305,6 +2313,7 @@ impl Default for UiConfig {
             sidebar_style: "grouped".to_string(),
             sidebar_density: "compact".to_string(),
             sidebar_header_rule: false,
+            human_board: false,
             theme: crate::theme::DEFAULT_THEME_NAME.to_string(),
         }
     }
@@ -3190,6 +3199,7 @@ impl Default for Config {
                 sidebar_style: "grouped".to_string(),
                 sidebar_density: "compact".to_string(),
                 sidebar_header_rule: false,
+                human_board: false,
                 theme: crate::theme::DEFAULT_THEME_NAME.to_string(),
             },
             capabilities: CapabilitiesConfig::default(),

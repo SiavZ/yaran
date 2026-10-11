@@ -370,6 +370,7 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         syntax_cache: std::sync::Arc::new(crate::diff::SyntaxCache::new()),
         pending_diff: None,
         pending_changes_job: None,
+        human_board: super::human_board::HumanBoardState::default(),
         diff_request_seq: 0,
         snapshot_buf: crate::pty::TerminalSnapshot::empty(),
         last_snapshot_id: None,

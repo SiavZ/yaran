@@ -162,6 +162,9 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
 
         // ── Confirm ─────────────────────────────────────────────────────
         PromptState::ConfirmDeleteAgent { .. }
+        // A human-board card: its text (scrolling when long) and a Close /
+        // Mark done (or Reopen) pair; horizontal keys move focus.
+        | PromptState::HumanBoardCard { .. }
         | PromptState::ConfirmDeleteTerminal { .. }
         | PromptState::ConfirmCloseTab { .. }
         | PromptState::ConfirmDetachAgent { .. }
@@ -278,6 +281,7 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::ResourceMonitor { .. }
         | PromptState::ConfigReloadFailed { .. }
         | PromptState::ConfirmDeleteAgent { .. }
+        | PromptState::HumanBoardCard { .. }
         | PromptState::ConfirmDeleteTerminal { .. }
         | PromptState::ConfirmCloseTab { .. }
         | PromptState::ConfirmDetachAgent { .. }
@@ -385,6 +389,7 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
         | OverlayMouseLayout::ConfirmKillRunning { .. }
         | OverlayMouseLayout::ConfirmDeleteAgent { .. }
         | OverlayMouseLayout::ConfirmDeleteWorktree { .. }
+        | OverlayMouseLayout::HumanBoardCard { .. }
         | OverlayMouseLayout::ConfirmDeleteTerminal { .. }
         | OverlayMouseLayout::ConfirmCloseTab { .. }
         | OverlayMouseLayout::ConfirmDetachAgent { .. }
@@ -1009,6 +1014,26 @@ mod tests {
                     },
                     focus: DeleteAgentFocus::Cancel,
                     delete_worktree: false,
+                },
+            ),
+            (
+                "HumanBoardCard",
+                PromptState::HumanBoardCard {
+                    card: Box::new(yaran_core::human_board::Card {
+                        id: 12,
+                        kind: yaran_core::human_board::CardKind::Validate,
+                        ticket: Some("4812".to_string()),
+                        title: "Check the signup page on a phone".to_string(),
+                        detail: Some("PR 417 merged; it is on staging.".to_string()),
+                        from: Some("orchestrator".to_string()),
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                        resolved_at: None,
+                        resolved_by: None,
+                        resolution: None,
+                    }),
+                    focus: ConfirmFocus::Cancel,
+                    scroll: 0,
                 },
             ),
             (

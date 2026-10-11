@@ -195,6 +195,9 @@ pub enum Action {
     /// Flip `ui.tab_reaches_agent`: whether the typeable center pane sends Tab
     /// and Shift-Tab to the agent instead of cycling panes with them.
     ToggleTabReachesAgent,
+    /// Flip `ui.human_board`: whether the right column shows the human board
+    /// ("Tasks for Human") in place of the staged list and the commit box.
+    ToggleHumanBoard,
     /// Open the read-only Agent Info modal for the focused agent (name, provider,
     /// branch lineage, worktree, status).
     OpenAgentInfo,
@@ -361,6 +364,7 @@ impl Action {
             Action::SetTailscaleMode => "set_tailscale_mode",
             Action::ToggleAlwaysShowTabs => "toggle_always_show_tabs",
             Action::ToggleTabReachesAgent => "toggle_tab_reaches_agent",
+            Action::ToggleHumanBoard => "toggle_human_board",
             Action::OpenAgentInfo => "open_agent_info",
             Action::ShowWelcomeScreen => "show_welcome_screen",
             Action::ShowReleaseNotes => "show_release_notes",
@@ -618,6 +622,9 @@ impl Action {
             Action::ToggleTabReachesAgent => {
                 "Toggle whether Tab and Shift-Tab reach the agent instead of moving between panes."
             }
+            Action::ToggleHumanBoard => {
+                "Show or hide the human board (Tasks for Human) in place of the staged list and commit box."
+            }
             Action::OpenAgentInfo => {
                 "Show the selected agent's details: provider, branch lineage, worktree, and status."
             }
@@ -783,6 +790,7 @@ impl Action {
             | Action::SetTailscaleMode
             | Action::ToggleAlwaysShowTabs
             | Action::ToggleTabReachesAgent
+            | Action::ToggleHumanBoard
             | Action::OpenAgentInfo
             | Action::ShowWelcomeScreen
             | Action::ShowReleaseNotes

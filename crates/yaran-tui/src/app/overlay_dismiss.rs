@@ -115,6 +115,7 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         // already defaults its focus to Cancel, so an outside click resolves
         // them the same way the safe default button does.
         PromptState::ConfirmDeleteAgent { .. }
+        | PromptState::HumanBoardCard { .. }
         | PromptState::ConfirmDeleteTerminal { .. }
         | PromptState::ConfirmCloseTab { .. }
         | PromptState::ConfirmDetachAgent { .. }
@@ -312,6 +313,9 @@ impl App {
             }
             // Same as its Esc: a confirmation steps back to the list.
             PromptState::OrphanWorktrees(_) => self.cancel_orphan_worktrees_prompt(),
+            PromptState::HumanBoardCard { .. } => {
+                self.resolve_human_board_card(false);
+            }
             PromptState::ConfirmDeleteTerminal { .. } => {
                 self.resolve_confirm_delete_terminal(false);
             }

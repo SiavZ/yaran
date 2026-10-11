@@ -105,6 +105,7 @@ impl App {
         self.drain_orphan_worktrees();
         self.drain_pending_diff();
         self.drain_changes_job();
+        self.drain_human_board();
         self.drain_worker_events();
         // After the drain, so a launch that resolved this tick frees its
         // `[auto_resume]` slot for the next queued startup relaunch.

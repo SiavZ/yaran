@@ -887,6 +887,13 @@ fn config_schema() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::Bool(c.ui.sidebar_header_rule),
         },
         ConfigEntry::Field {
+            key: "human_board",
+            comment: Some(CommentSource::Static(
+                "# Show the human board, titled \"Tasks for Human\", in the right column in\n# place of the Staged Changes list and the Commit Message box. Agents put\n# cards on it with `yaran board post --kind task|validate|confirm|info` when\n# something needs a person (a decision, a check on a real device, a yes\n# before they carry on) or should not be missed. The open cards are grouped\n# by kind and stay until somebody marks them done, here or with\n# `yaran board resolve`. The board is the same whatever agent is selected.\n# Default false: the right column keeps its staged list and commit box.\n# The \"toggle-human-board\" palette command flips this setting.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.ui.human_board),
+        },
+        ConfigEntry::Field {
             key: "theme",
             comment: Some(CommentSource::Static(
                 "# Visual theme for the yaran interface.\n# Built-in options include \"yaran_dark\" (the default), plus any theme\n# bundled with the opaline engine, for example: \"catppuccin_mocha\",\n# \"catppuccin_frappe\", \"nord\", \"dracula\", \"gruvbox_dark\",\n# \"tokyo_night\", \"solarized_dark\", \"one_dark\", \"rose_pine\", and others.\n# To use a custom theme, drop a TOML file into <config_dir>/themes/<name>.toml\n# (with the same token format as opaline themes) and reference it here\n# by file stem. Unknown names fall back to yaran_dark with a warning.\n# Use the `change-theme` command in the palette (Ctrl-p) for an interactive picker.",

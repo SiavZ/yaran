@@ -77,6 +77,8 @@ pub enum HintContext {
     Center,
     Files,
     CommitInput,
+    /// The human board section of the Files pane.
+    Board,
 }
 
 pub struct HelpEntry {
@@ -146,6 +148,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             (HintContext::LeftSession, "Move"),
             (HintContext::LeftTerminal, "Move"),
             (HintContext::Files, "Move"),
+            (HintContext::Board, "Move"),
         ],
     },
     BindingDef {
@@ -783,9 +786,12 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         scopes: &[BindingScope::Files],
         help: Some(HelpEntry {
             section: "Files pane",
-            description: "Open selected file diff",
+            description: "Open selected file diff (on the human board: open the card)",
         }),
-        hint_contexts: &[(HintContext::Files, "Diff")],
+        hint_contexts: &[
+            (HintContext::Files, "Diff"),
+            (HintContext::Board, "Open card"),
+        ],
     },
     BindingDef {
         action: Action::StageUnstage,
@@ -793,9 +799,12 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         scopes: &[BindingScope::Files],
         help: Some(HelpEntry {
             section: "Files pane",
-            description: "Stage or unstage selected file",
+            description: "Stage or unstage selected file (on the human board: mark done or reopen)",
         }),
-        hint_contexts: &[(HintContext::Files, "Stage/Unstage")],
+        hint_contexts: &[
+            (HintContext::Files, "Stage/Unstage"),
+            (HintContext::Board, "Done/Reopen"),
+        ],
     },
     BindingDef {
         action: Action::CommitChanges,
@@ -835,7 +844,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             section: "Files pane",
             description: "Push to remote",
         }),
-        hint_contexts: &[(HintContext::Files, "Push")],
+        hint_contexts: &[(HintContext::Files, "Push"), (HintContext::Board, "Push")],
     },
     BindingDef {
         action: Action::PullFromRemote,
@@ -845,7 +854,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             section: "Files pane",
             description: "Pull from remote",
         }),
-        hint_contexts: &[(HintContext::Files, "Pull")],
+        hint_contexts: &[(HintContext::Files, "Pull"), (HintContext::Board, "Pull")],
     },
     BindingDef {
         action: Action::SearchFiles,
@@ -891,7 +900,11 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             section: "Global",
             description: "Focus next pane",
         }),
-        hint_contexts: &[(HintContext::Center, "Next"), (HintContext::Files, "Next")],
+        hint_contexts: &[
+            (HintContext::Center, "Next"),
+            (HintContext::Files, "Next"),
+            (HintContext::Board, "Next"),
+        ],
     },
     BindingDef {
         action: Action::FocusPrev,
@@ -917,6 +930,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             (HintContext::LeftTerminal, "Palette"),
             (HintContext::Center, "Palette"),
             (HintContext::Files, "Palette"),
+            (HintContext::Board, "Palette"),
         ],
     },
     BindingDef {
@@ -972,6 +986,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             (HintContext::LeftTerminal, "Help"),
             (HintContext::Center, "Help"),
             (HintContext::Files, "Help"),
+            (HintContext::Board, "Help"),
         ],
     },
     BindingDef {
@@ -1406,6 +1421,13 @@ pub const BINDING_DEFS: &[BindingDef] = &[
     },
     BindingDef {
         action: Action::ToggleTabReachesAgent,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::ToggleHumanBoard,
         default_keys: &[],
         scopes: &[],
         help: None,
@@ -3395,6 +3417,7 @@ mod tests {
             "toggle-diff-line-numbers",
             "toggle-git-pane",
             "toggle-github-integration",
+            "toggle-human-board",
             "toggle-pr-banner-position",
             "toggle-project",
             "toggle-project-auto-reopen-agents",

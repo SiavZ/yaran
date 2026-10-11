@@ -497,6 +497,7 @@ fn apply_patches(doc: &mut DocumentMut, config: &Config) {
         "sidebar_header_rule",
         config.ui.sidebar_header_rule,
     );
+    patch_table_bool(doc, "ui", "human_board", config.ui.human_board);
     patch_table_str(doc, "ui", "theme", &config.ui.theme);
 
     // --- [capabilities] ---
