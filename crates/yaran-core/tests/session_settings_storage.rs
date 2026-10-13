@@ -150,6 +150,8 @@ fn session_settings_full_payload_round_trip_through_sqlite() {
         yolo_permissions: true,
         watch_rule_arm: [(0usize, false), (2, true)].into_iter().collect(),
         auto_clear_on_task_done: true,
+        auto_compact_on_compact: true,
+        compact_instructions_path: Some("/srv/notes/compact.txt".to_string()),
         verify_envelope_override: Some(true),
         system_prompt: Some("You are a senior reviewer. Be thorough but kind.".to_string()),
     };

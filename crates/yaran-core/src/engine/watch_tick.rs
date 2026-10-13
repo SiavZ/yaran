@@ -1073,6 +1073,274 @@ mod tests {
         );
     }
 
+    /// A PTY that prints `text` and then idles, for tests that only need a
+    /// screen to scan.
+    fn printing_pty(text: &str) -> PtyClient {
+        let script = format!("printf '%s\\n' '{text}'; exec sleep 30");
+        PtyClient::spawn(
+            "sh",
+            &["-c".to_string(), script],
+            &std::env::temp_dir(),
+            24,
+            80,
+            100,
+        )
+        .expect("spawn printing pty")
+    }
+
+    fn worker_settings(
+        auto_clear: bool,
+        auto_compact: bool,
+        compact_path: Option<String>,
+    ) -> crate::session_settings::SessionSettings {
+        crate::session_settings::SessionSettings {
+            mode: crate::session_settings::ContextMode::Worker,
+            auto_clear_on_task_done: auto_clear,
+            auto_compact_on_compact: auto_compact,
+            compact_instructions_path: compact_path,
+            ..Default::default()
+        }
+    }
+
+    fn row_state(engine: &Engine, label: &str) -> Option<crate::watch::RuleStateKind> {
+        engine
+            .watch_rule_rows()
+            .into_iter()
+            .find(|row| row.snapshot.label == label)
+            .map(|row| row.snapshot.state)
+    }
+
+    /// The instructions file is read on a worker thread, so the rule cannot
+    /// exist until that read lands; and ticks that run while it is in flight
+    /// must not start a second read of the same file.
+    #[test]
+    fn the_compact_rule_attaches_only_after_its_instructions_file_is_read() {
+        let tmp = crate::test_scratch::ScratchDir::new();
+        let file = tmp.path().join("compact.txt");
+        std::fs::write(&file, "Keep the card.\nDrop old reviews.\n").unwrap();
+        let raw_path = file.to_string_lossy().into_owned();
+        let (mut engine, _guard) = engine_with_tab(printing_pty("idle"), Vec::new());
+        engine.amq.session_settings.insert(
+            "s1".to_string(),
+            worker_settings(false, true, Some(raw_path.clone())),
+        );
+
+        engine.tick_watch_rules();
+        engine.tick_watch_rules();
+        assert!(
+            engine.watch_rule_rows().is_empty(),
+            "no rule before the file has been read"
+        );
+        let loaded = engine
+            .worker_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the file is read in the background");
+        assert!(
+            engine
+                .worker_rx
+                .recv_timeout(Duration::from_millis(200))
+                .is_err(),
+            "a read in flight is not started again"
+        );
+        assert!(matches!(
+            &loaded,
+            crate::worker::WorkerEvent::CompactInstructionsLoaded { raw_path: p, .. } if *p == raw_path
+        ));
+        engine.process_worker_event(loaded);
+
+        engine.tick_watch_rules();
+        let attached = &engine.watch.attached[TabIdRef::new("s1-slot")];
+        let idx = attached.auto_compact_idx.expect("the rule attaches once read");
+        assert_eq!(
+            attached.rules[idx].action.text(),
+            "/compact Keep the card. Drop old reviews."
+        );
+        assert_eq!(attached.auto_clear_idx, None, "auto-compact alone");
+    }
+
+    /// The auto-compact guard reads the same mailbox directories as the
+    /// auto-clear guard, so it too runs only for a fresh `[compact]`, and it
+    /// holds that sentinel while the agent is busy.
+    #[test]
+    fn the_auto_compact_guard_runs_only_for_a_fresh_sentinel() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let tmp = crate::test_scratch::ScratchDir::new();
+        let go = tmp.path().join("go");
+        let script = format!(
+            "printf 'working on it\\n'; while [ ! -e '{}' ]; do sleep 0.02; done; \
+             printf '[compact]\\nesc to interrupt\\n'; exec sleep 30",
+            go.display()
+        );
+        let client = PtyClient::spawn(
+            "sh",
+            &["-c".to_string(), script],
+            &std::env::temp_dir(),
+            24,
+            80,
+            100,
+        )
+        .expect("spawn scripted pty");
+        let (mut engine, _guard) = engine_with_tab(client, Vec::new());
+        let raw_path = tmp.path().join("compact.txt").to_string_lossy().into_owned();
+        engine.amq.session_settings.insert(
+            "s1".to_string(),
+            worker_settings(false, true, Some(raw_path.clone())),
+        );
+        engine.process_compact_instructions_loaded(
+            raw_path,
+            CompactCommandLoad {
+                command: "/compact".to_string(),
+                warning: None,
+            },
+        );
+        let tab = TabIdRef::new("s1-slot");
+        let screen = |engine: &Engine| engine.providers[tab].scan_recent_lines(WATCH_SCAN_ROWS);
+        assert!(wait_for(|| screen(&engine).contains("working on it")));
+
+        for _ in 0..20 {
+            engine.tick_watch_rules();
+        }
+        let label = crate::watch::builtin::AUTO_COMPACT_LABEL;
+        assert_eq!(
+            row_state(&engine, label),
+            Some(crate::watch::RuleStateKind::Idle)
+        );
+        assert_eq!(
+            engine.watch.auto_compact_guard_checks.load(Relaxed),
+            0,
+            "a screen with no sentinel must never consult the guard"
+        );
+
+        std::fs::write(&go, b"").unwrap();
+        assert!(wait_for(|| screen(&engine).contains("esc to interrupt")));
+        std::thread::sleep(WATCH_RESCAN_INTERVAL);
+        for _ in 0..20 {
+            engine.tick_watch_rules();
+        }
+        assert_eq!(
+            engine.watch.auto_compact_guard_checks.load(Relaxed),
+            1,
+            "the guard runs once for the fresh sentinel, which it then absorbs"
+        );
+        assert_eq!(
+            engine.watch.auto_clear_guard_checks.load(Relaxed),
+            0,
+            "[compact] never asks the auto-clear guard"
+        );
+        assert_eq!(
+            row_state(&engine, label),
+            Some(crate::watch::RuleStateKind::Idle),
+            "a held sentinel must not schedule a compaction"
+        );
+    }
+
+    /// A reply can carry both sentinels, or echo one after the reset. Once a
+    /// built-in has typed its reset, the tab's rules pause, and a second
+    /// built-in reset in the same tick is dropped rather than typed on top.
+    #[test]
+    fn a_built_in_reset_pauses_the_tab_and_drops_a_second_one_in_the_same_tick() {
+        let tmp = crate::test_scratch::ScratchDir::new();
+        let log = log_path(&tmp);
+        let (mut engine, _guard) = engine_with_tab(recording_pty("ready", &log), Vec::new());
+        let tab = TabId::new("s1-slot");
+        wait_until_raw(&log);
+        let send = |text: &str| WatchEffect::SendText {
+            text: text.to_string(),
+            append_enter: true,
+        };
+        let built_ins = ["/clear".to_string(), "/compact keep".to_string()];
+        let now = Instant::now();
+        let mut statuses = Vec::new();
+        engine.apply_watch_effects(
+            &tab,
+            vec![send("/clear"), send("/compact keep")],
+            &built_ins,
+            now,
+            &mut statuses,
+        );
+        let typed = b"\x1b[200~/clear\x1b[201~".to_vec();
+        assert!(wait_for(|| read_log(&log) == typed), "{:?}", read_log(&log));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(read_log(&log), typed, "the second reset is not typed");
+        assert_eq!(
+            engine.watch.suppress_until.get(&tab),
+            Some(&(now + WATCH_SUPPRESS_AFTER_INJECT)),
+            "the tab pauses after a reset"
+        );
+    }
+
+    #[test]
+    fn a_user_rule_effect_does_not_pause_the_tab() {
+        let tmp = crate::test_scratch::ScratchDir::new();
+        let log = log_path(&tmp);
+        let (mut engine, _guard) = engine_with_tab(recording_pty("ready", &log), Vec::new());
+        let tab = TabId::new("s1-slot");
+        wait_until_raw(&log);
+        let mut statuses = Vec::new();
+        engine.apply_watch_effects(
+            &tab,
+            vec![WatchEffect::SendText {
+                text: "please continue".to_string(),
+                append_enter: true,
+            }],
+            &["/clear".to_string()],
+            Instant::now(),
+            &mut statuses,
+        );
+        assert!(!engine.watch.suppress_until.contains_key(&tab));
+    }
+
+    /// Turning auto-compact on rebuilds the tab's engine. A built-in that was
+    /// already running there keeps what it had already seen, so an old
+    /// `[task-done]` still on screen does not schedule a clear just because
+    /// another setting changed.
+    #[test]
+    fn a_rebuild_does_not_refire_a_running_built_in_on_a_visible_sentinel() {
+        let tmp = crate::test_scratch::ScratchDir::new();
+        let (mut engine, _guard) = engine_with_tab(printing_pty("[task-done]"), Vec::new());
+        let tab = TabIdRef::new("s1-slot");
+        assert!(wait_for(|| engine.providers[tab]
+            .scan_recent_lines(WATCH_SCAN_ROWS)
+            .contains("[task-done]")));
+        engine
+            .amq
+            .session_settings
+            .insert("s1".to_string(), worker_settings(true, false, None));
+        // Absorb the sentinel the way an AMQ inject's pause does.
+        engine.suppress_watch_rules(tab, Instant::now() + Duration::from_millis(100));
+        engine.tick_watch_rules();
+        std::thread::sleep(Duration::from_millis(150));
+        engine.tick_watch_rules();
+        let clear = crate::watch::builtin::AUTO_CLEAR_LABEL;
+        assert_eq!(
+            row_state(&engine, clear),
+            Some(crate::watch::RuleStateKind::Idle)
+        );
+
+        let raw_path = tmp.path().join("compact.txt").to_string_lossy().into_owned();
+        engine.amq.session_settings.insert(
+            "s1".to_string(),
+            worker_settings(true, true, Some(raw_path.clone())),
+        );
+        engine.process_compact_instructions_loaded(
+            raw_path,
+            CompactCommandLoad {
+                command: "/compact".to_string(),
+                warning: None,
+            },
+        );
+        engine.tick_watch_rules();
+        assert!(
+            engine.watch.attached[tab].auto_compact_idx.is_some(),
+            "the engine was rebuilt with the compact rule"
+        );
+        assert_eq!(
+            row_state(&engine, clear),
+            Some(crate::watch::RuleStateKind::Idle),
+            "the rebuilt auto-clear rule must not schedule a clear"
+        );
+    }
+
     /// A screen that changes on every tick (a working agent's spinner) is
     /// rescanned at most once per WATCH_RESCAN_INTERVAL, and a match that
     /// appears is still seen once the interval has passed.
