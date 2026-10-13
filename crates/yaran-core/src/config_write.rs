@@ -910,6 +910,7 @@ fn patch_amq(doc: &mut DocumentMut, amq: &crate::config::AmqConfig) {
     inject["startup_grace_ms"] = int(i.startup_grace_ms);
     inject["post_delivery_cooldown_ms"] = int(i.post_delivery_cooldown_ms);
     inject["auto_clear_collaboration_quiet_secs"] = int(i.auto_clear_collaboration_quiet_secs);
+    inject["compact_instructions_path"] = toml_edit::value(i.compact_instructions_path.as_str());
     let orch = parent
         .entry("orchestrator")
         .or_insert_with(|| Item::Table(Table::new()))

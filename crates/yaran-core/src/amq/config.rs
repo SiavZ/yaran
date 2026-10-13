@@ -67,7 +67,17 @@ pub struct AmqInjectConfig {
     /// [`crate::amq::activity`]). Default 1800. `0` disables only the
     /// recent-activity window; pending mail still blocks auto-clear.
     pub auto_clear_collaboration_quiet_secs: u64,
+    /// File whose text follows `/compact` when a Worker opted into
+    /// auto-compact emits the `[compact]` sentinel. A leading `~/` is the
+    /// home directory. The text is typed on one line (whitespace collapsed);
+    /// a missing or empty file types a bare `/compact` and logs a warning.
+    /// A session's own path, when set, wins over this one. Default
+    /// `~/.claude/compact-instructions.txt`.
+    pub compact_instructions_path: String,
 }
+
+/// Default for [`AmqInjectConfig::compact_instructions_path`].
+pub const DEFAULT_COMPACT_INSTRUCTIONS_PATH: &str = "~/.claude/compact-instructions.txt";
 
 impl Default for AmqInjectConfig {
     fn default() -> Self {
@@ -89,6 +99,7 @@ impl Default for AmqInjectConfig {
             startup_grace_ms: 10_000,
             post_delivery_cooldown_ms: 10_000,
             auto_clear_collaboration_quiet_secs: 1_800,
+            compact_instructions_path: DEFAULT_COMPACT_INSTRUCTIONS_PATH.to_string(),
         }
     }
 }
@@ -147,6 +158,10 @@ mod tests {
         assert_eq!(c.inject.startup_grace_ms, 10_000);
         assert_eq!(c.inject.post_delivery_cooldown_ms, 10_000);
         assert_eq!(c.inject.auto_clear_collaboration_quiet_secs, 1_800);
+        assert_eq!(
+            c.inject.compact_instructions_path,
+            "~/.claude/compact-instructions.txt"
+        );
         assert!(c.orchestrator.enabled);
         assert_eq!(c.orchestrator.poll_interval_secs, 900);
         assert!(c.orchestrator.checkpoint_prompt.is_empty());

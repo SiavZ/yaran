@@ -1,5 +1,6 @@
 //! Per-session settings: context mode, YOLO, AMQ verify override, watch-rule
-//! arm overrides, auto-clear opt-in and a per-session system prompt.
+//! arm overrides, the auto-clear and auto-compact opt-ins (with the compact
+//! instructions file) and a per-session system prompt.
 //!
 //! Persisted as one JSON blob in `agent_sessions.session_settings` so adding
 //! a knob never needs a schema change: only this struct grows. Every field
@@ -9,8 +10,9 @@
 //!
 //! Ownership split: this module owns the STORAGE and the meaning of `mode`
 //! for AMQ delivery and the Orchestrator watchdog. The watch engine owns what
-//! `watch_rule_arm` and `auto_clear_on_task_done` mean at runtime, and reads
-//! them through `Engine::session_settings`.
+//! `watch_rule_arm`, `auto_clear_on_task_done`, `auto_compact_on_compact` and
+//! `compact_instructions_path` mean at runtime, and reads them through
+//! `Engine::session_settings`.
 
 use std::collections::HashMap;
 
@@ -38,6 +40,16 @@ pub struct SessionSettings {
     /// `mode == ContextMode::Worker`. Default `false` even for workers: the
     /// operator opts in twice (Worker mode AND this box).
     pub auto_clear_on_task_done: bool,
+
+    /// Built-in auto-compact-on-`[compact]` rule, only meaningful when
+    /// `mode == ContextMode::Worker`. Default `false` even for workers: the
+    /// operator opts in twice (Worker mode AND this box), as for auto-clear.
+    pub auto_compact_on_compact: bool,
+
+    /// Per-session file whose text follows `/compact` when the auto-compact
+    /// rule fires. `None` (or blank) inherits
+    /// `[amq.inject].compact_instructions_path`.
+    pub compact_instructions_path: Option<String>,
 
     /// Per-session override for `[amq.inject].verify_envelope`. `None`
     /// inherits the global default. Applied at PTY spawn time.
@@ -78,7 +90,8 @@ pub enum ContextMode {
     /// built-in Orchestrator policy and periodic checkpoint nudges.
     Orchestrator,
     /// Stateless processor. AMQ wakes get a postscript asking for the
-    /// `[task-done]` sentinel; auto-clear may apply when opted in.
+    /// `[task-done]` sentinel; auto-clear may apply when opted in, and
+    /// auto-compact on a `[compact]` sentinel when that is opted in.
     Worker,
 }
 
@@ -137,6 +150,17 @@ impl SessionSettings {
     /// Whether every knob is at its default, so storage can keep NULL.
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// The compact instructions file for this session: its own path when one
+    /// is set and not blank, else `global_default` (the
+    /// `[amq.inject].compact_instructions_path` setting). Returned unexpanded;
+    /// the loader resolves `~` and `$VAR`.
+    pub fn effective_compact_instructions_path<'a>(&'a self, global_default: &'a str) -> &'a str {
+        match self.compact_instructions_path.as_deref().map(str::trim) {
+            Some(path) if !path.is_empty() => path,
+            _ => global_default,
+        }
     }
 
     /// The system prompt the agent should run with: the Orchestrator policy
@@ -233,6 +257,8 @@ mod tests {
         assert_eq!(s.mode, ContextMode::Attended);
         assert!(!s.yolo_permissions);
         assert!(!s.auto_clear_on_task_done);
+        assert!(!s.auto_compact_on_compact);
+        assert_eq!(s.compact_instructions_path, None);
         assert!(s.is_default());
         assert_eq!(s.effective_system_prompt(), None);
         assert!(
@@ -294,10 +320,43 @@ mod tests {
             yolo_permissions: true,
             watch_rule_arm: HashMap::from([(2, false)]),
             auto_clear_on_task_done: true,
+            auto_compact_on_compact: true,
+            compact_instructions_path: Some("~/notes/compact.txt".into()),
             verify_envelope_override: Some(true),
             system_prompt: Some("line one\nline two".into()),
         };
         assert_eq!(SessionSettings::parse_or_default(Some(&s.to_json())), s);
+    }
+
+    /// A blob saved before auto-compact existed reads with it off, so an
+    /// upgrade never starts compacting a session nobody opted in.
+    #[test]
+    fn an_older_blob_reads_with_auto_compact_off() {
+        let s = SessionSettings::parse_or_default(Some(
+            r#"{"mode":"worker","auto_clear_on_task_done":true}"#,
+        ));
+        assert!(s.auto_clear_on_task_done);
+        assert!(!s.auto_compact_on_compact);
+        assert_eq!(s.compact_instructions_path, None);
+    }
+
+    #[test]
+    fn compact_instructions_path_falls_back_to_the_global_default() {
+        let global = "~/.claude/compact-instructions.txt";
+        assert_eq!(
+            SessionSettings::default().effective_compact_instructions_path(global),
+            global
+        );
+        let blank = SessionSettings {
+            compact_instructions_path: Some("   ".into()),
+            ..SessionSettings::default()
+        };
+        assert_eq!(blank.effective_compact_instructions_path(global), global);
+        let own = SessionSettings {
+            compact_instructions_path: Some(" /etc/compact.txt ".into()),
+            ..SessionSettings::default()
+        };
+        assert_eq!(own.effective_compact_instructions_path(global), "/etc/compact.txt");
     }
 
     #[test]

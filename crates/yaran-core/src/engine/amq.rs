@@ -201,8 +201,8 @@ impl Engine {
             self.amq.orchestrator_last_nudged.remove(session_id);
         }
         // The watch engine re-reads `watch_session_settings` every tick and
-        // rebuilds a tab's rules when mode/auto-clear/overrides change, so no
-        // push is needed here.
+        // rebuilds a tab's rules when mode/auto-clear/auto-compact/overrides
+        // change, so no push is needed here.
 
         let system_prompt_changed = previous.system_prompt != settings.system_prompt;
         let needs_respawn = previous.yolo_permissions != settings.yolo_permissions
@@ -212,6 +212,8 @@ impl Engine {
             previous.mode != settings.mode,
             title_changed,
             previous.auto_clear_on_task_done != settings.auto_clear_on_task_done,
+            previous.auto_compact_on_compact != settings.auto_compact_on_compact
+                || previous.compact_instructions_path != settings.compact_instructions_path,
             system_prompt_changed,
             needs_respawn,
         );
@@ -303,11 +305,29 @@ impl Engine {
     /// `Engine::watch_auto_clear_suppressed` and rebaselines instead of firing
     /// while it is true (fork `should_suppress_auto_clear`).
     pub fn amq_blocks_auto_clear(&self, session_id: &str) -> bool {
+        self.amq_blocks_worker_reset(session_id, |s| s.auto_clear_on_task_done)
+    }
+
+    /// Whether AMQ work for this session makes Worker auto-compact unsafe.
+    /// The same holds as auto-clear, for the same reason: a compaction typed
+    /// while the agent is mid-task or mid-conversation lands on top of it.
+    pub fn amq_blocks_auto_compact(&self, session_id: &str) -> bool {
+        self.amq_blocks_worker_reset(session_id, |s| s.auto_compact_on_compact)
+    }
+
+    /// The hold both Worker context resets share. `opted_in` names the reset's
+    /// own opt-in; a session that is not a Worker, or has not opted in, is
+    /// always held.
+    fn amq_blocks_worker_reset(
+        &self,
+        session_id: &str,
+        opted_in: impl Fn(&SessionSettings) -> bool,
+    ) -> bool {
         let Some(session) = self.session_by_id(session_id) else {
             return true;
         };
         let settings = self.session_settings_or_default(session_id);
-        if settings.mode != ContextMode::Worker || !settings.auto_clear_on_task_done {
+        if settings.mode != ContextMode::Worker || !opted_in(&settings) {
             return true;
         }
         let cfg = &self.config.amq.inject;
@@ -1251,6 +1271,7 @@ pub fn build_session_settings_save_summary(
     mode_changed: bool,
     title_changed: bool,
     auto_clear_changed: bool,
+    auto_compact_changed: bool,
     system_prompt_changed: bool,
     needs_respawn: bool,
 ) -> String {
@@ -1263,6 +1284,9 @@ pub fn build_session_settings_save_summary(
     }
     if auto_clear_changed {
         parts.push("auto-clear");
+    }
+    if auto_compact_changed {
+        parts.push("auto-compact");
     }
     if system_prompt_changed {
         parts.push("system prompt");
@@ -1278,12 +1302,18 @@ pub fn build_session_settings_save_summary(
 }
 
 /// Trim the system prompt's trailing whitespace and treat an all-blank one
-/// as unset, so the store never carries `""` (fork save path).
+/// as unset, so the store never carries `""` (fork save path). The compact
+/// instructions path is trimmed the same way, and a blank one inherits the
+/// global path.
 fn normalize_settings(mut settings: SessionSettings) -> SessionSettings {
     settings.system_prompt = settings
         .system_prompt
         .map(|p| p.trim_end().to_string())
         .filter(|p| !p.trim().is_empty());
+    settings.compact_instructions_path = settings
+        .compact_instructions_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
     settings
 }
 
@@ -1536,19 +1566,23 @@ mod tests {
     #[test]
     fn build_session_settings_save_summary_lists_changed_knobs() {
         assert_eq!(
-            build_session_settings_save_summary(false, false, false, false, false),
+            build_session_settings_save_summary(false, false, false, false, false, false),
             "Session settings saved (no changes)."
         );
         assert_eq!(
-            build_session_settings_save_summary(false, true, false, false, false),
+            build_session_settings_save_summary(false, true, false, false, false, false),
             "Session settings saved: title."
         );
         assert_eq!(
-            build_session_settings_save_summary(true, false, true, false, false),
+            build_session_settings_save_summary(true, false, true, false, false, false),
             "Session settings saved: context mode, auto-clear."
         );
         assert_eq!(
-            build_session_settings_save_summary(false, false, false, true, true),
+            build_session_settings_save_summary(false, false, true, true, false, false),
+            "Session settings saved: auto-clear, auto-compact."
+        );
+        assert_eq!(
+            build_session_settings_save_summary(false, false, false, false, true, true),
             "Session settings saved: system prompt, spawn-time settings."
         );
     }
@@ -1573,6 +1607,66 @@ mod tests {
         s.mode = ContextMode::Worker;
         engine.persist_session_settings_only("s1", s).unwrap();
         assert!(engine.watch_session_settings("s1").auto_clear);
+    }
+
+    #[test]
+    fn auto_compact_needs_worker_mode_and_its_own_opt_in() {
+        let (mut engine, _tmp) = test_engine();
+        let session = sample_session("s1", "p1", "feat");
+        engine.session_store.create_session(&session).unwrap();
+        engine.sessions.push(session);
+        let mut s = SessionSettings {
+            auto_compact_on_compact: true,
+            ..SessionSettings::default()
+        };
+        engine
+            .persist_session_settings_only("s1", s.clone())
+            .unwrap();
+        assert!(
+            !engine.watch_session_settings("s1").auto_compact,
+            "attended mode never auto-compacts"
+        );
+        s.mode = ContextMode::Worker;
+        engine.persist_session_settings_only("s1", s).unwrap();
+        let w = engine.watch_session_settings("s1");
+        assert!(w.auto_compact);
+        assert!(!w.auto_clear, "auto-compact does not turn on auto-clear");
+        assert_eq!(
+            w.compact_instructions_path,
+            engine.config.amq.inject.compact_instructions_path
+        );
+    }
+
+    #[test]
+    fn a_session_compact_path_wins_over_the_global_one() {
+        let (mut engine, _tmp) = test_engine();
+        let session = sample_session("s1", "p1", "feat");
+        engine.session_store.create_session(&session).unwrap();
+        engine.sessions.push(session);
+        engine
+            .persist_session_settings_only(
+                "s1",
+                SessionSettings {
+                    mode: ContextMode::Worker,
+                    auto_compact_on_compact: true,
+                    compact_instructions_path: Some("/srv/compact.txt".into()),
+                    ..SessionSettings::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            engine.watch_session_settings("s1").compact_instructions_path,
+            "/srv/compact.txt"
+        );
+    }
+
+    #[test]
+    fn a_blank_session_compact_path_is_saved_as_unset() {
+        let settings = normalize_settings(SessionSettings {
+            compact_instructions_path: Some("   ".into()),
+            ..SessionSettings::default()
+        });
+        assert_eq!(settings.compact_instructions_path, None);
     }
 
     // ─── inject drainer ─────────────────────────────────────────────
@@ -2019,5 +2113,47 @@ mod tests {
             .unwrap();
         assert!(wait_for(|| screen(&engine).contains("esc to interrupt")));
         assert!(engine.amq_blocks_auto_clear("s1"), "busy footer");
+    }
+
+    #[test]
+    fn auto_compact_is_blocked_by_queued_wakes_and_busy_footers() {
+        let (mut engine, _tmp, queue) = engine_with_agent();
+        assert!(engine.amq_blocks_auto_compact("s1"), "not a worker");
+        engine
+            .persist_session_settings_only(
+                "s1",
+                SessionSettings {
+                    mode: ContextMode::Worker,
+                    auto_clear_on_task_done: true,
+                    ..SessionSettings::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            engine.amq_blocks_auto_compact("s1"),
+            "auto-clear's opt-in does not opt into auto-compact"
+        );
+        engine
+            .persist_session_settings_only(
+                "s1",
+                SessionSettings {
+                    mode: ContextMode::Worker,
+                    auto_compact_on_compact: true,
+                    ..SessionSettings::default()
+                },
+            )
+            .unwrap();
+        write_msg(&queue, "alice", "001.msg", "x");
+        assert!(engine.amq_blocks_auto_compact("s1"), "pending inject file");
+        fs::remove_file(queue.join("alice/001.msg")).unwrap();
+        write_msg(&queue, "alice", "002.msg", "x");
+        engine.drain_amq_inject_queue();
+        assert!(engine.amq_blocks_auto_compact("s1"), "claimed wake");
+        engine.amq.pending.clear();
+        engine.providers[crate::ids::TabIdRef::new("s1-slot")]
+            .write_bytes(b"esc to interrupt\r")
+            .unwrap();
+        assert!(wait_for(|| screen(&engine).contains("esc to interrupt")));
+        assert!(engine.amq_blocks_auto_compact("s1"), "busy footer");
     }
 }
