@@ -591,3 +591,358 @@ fn a_narrow_column_keeps_the_waiting_count_and_drops_the_updates() {
     assert!(title.contains("Tasks for Human (3)"), "{title}");
     assert!(!title.contains("wai"), "no half-cut word: {title}");
 }
+
+// ── Replying from the card dialog ──────────────────────────────────────────
+
+/// A terminal that echoes what it is sent in caret notation (`^M` for the
+/// Enter), standing in for the agent the reply is typed into.
+fn echo_terminal() -> crate::pty::PtyClient {
+    let client = crate::pty::PtyClient::spawn(
+        "sh",
+        &["-c".to_string(), "stty raw -echo; exec cat -v".to_string()],
+        std::path::Path::new("."),
+        10,
+        200,
+        100,
+    )
+    .expect("spawn pty");
+    // Let the shell reach raw mode before anything is written.
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    client
+}
+
+fn terminal_text(app: &App, tab_id: &str) -> String {
+    let provider = app
+        .engine
+        .providers
+        .get(yaran_core::ids::TabIdRef::new(tab_id))
+        .expect("terminal");
+    provider
+        .snapshot()
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect()
+}
+
+/// The board app with one open card posted by the test session's own handle,
+/// and that session's tab running an echo terminal.
+fn reply_app() -> (App, String) {
+    let mut board = Board::default();
+    let mut card = new_card(CardKind::Confirm, Some("mvp-7"), "Merge the auth fix?");
+    card.from = Some("session-1".to_string());
+    board.post(card, at(0)).unwrap();
+    let mut app = board_app(Some(board));
+    let tab = app.focused_tab_id("session-1");
+    app.engine
+        .providers
+        .insert(yaran_core::ids::TabId::new(tab.clone()), echo_terminal());
+    app.focus = FocusPane::Files;
+    app.right_section = RightSection::Board;
+    app.human_board.selected = Some(1);
+    (app, tab)
+}
+
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.handle_key(key(KeyCode::Char(c))).unwrap();
+    }
+}
+
+#[test]
+fn the_window_keeps_the_caret_in_view() {
+    assert_eq!(single_line_window_start("short", 5, 20), 0);
+    let text = "abcdefghijklmnopqrstuvwxyz";
+    let start = single_line_window_start(text, text.len(), 10);
+    assert_eq!(
+        &text[start..],
+        "rstuvwxyz",
+        "nine letters and the caret cell"
+    );
+    assert_eq!(
+        single_line_window_start(text, 3, 10),
+        0,
+        "caret near the start"
+    );
+    // Wide glyphs count their two cells.
+    let wide = "日本語のテキスト";
+    let start = single_line_window_start(wide, wide.len(), 7);
+    assert_eq!(&wide[start..], "キスト");
+}
+
+#[test]
+fn focus_rings_include_the_reply_field_only_when_there_is_one() {
+    use super::HumanBoardCardFocus as F;
+    assert_eq!(F::Reply.step(true, true), F::Close);
+    assert_eq!(F::Close.step(true, true), F::Action);
+    assert_eq!(F::Action.step(true, true), F::Reply);
+    assert_eq!(F::Reply.step(false, true), F::Action);
+    assert_eq!(F::Close.step(true, false), F::Action);
+    assert_eq!(F::Action.step(true, false), F::Close);
+}
+
+#[test]
+fn a_reply_goes_to_the_poster_when_it_runs_and_else_to_the_selected_agent() {
+    let (mut app, tab) = reply_app();
+    let card = app.human_board.selected_card().unwrap().clone();
+    let target = app.reply_target_for(&card).expect("the poster is running");
+    assert!(target.is_poster);
+    assert_eq!(target.tab_id, tab);
+
+    // A poster this yaran does not know: the selected agent takes it.
+    let mut stranger = card.clone();
+    stranger.from = Some("someone-else".to_string());
+    let target = app
+        .reply_target_for(&stranger)
+        .expect("selected agent runs");
+    assert!(!target.is_poster);
+
+    // Nobody running: no reply field at all.
+    app.engine.providers.clear();
+    assert!(app.reply_target_for(&card).is_none());
+}
+
+#[test]
+fn enter_types_the_reply_then_submits_it_and_marks_the_card_done() {
+    let (mut app, tab) = reply_app();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    assert!(
+        matches!(
+            app.prompt,
+            PromptState::HumanBoardCard {
+                reply: Some(_),
+                focus: super::HumanBoardCardFocus::Reply,
+                ..
+            }
+        ),
+        "the dialog opens on the reply field: {:?}",
+        app.prompt
+    );
+    type_text(&mut app, "yes, merge it");
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    assert!(
+        matches!(app.prompt, PromptState::None),
+        "the dialog closes on send"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let typed = terminal_text(&app, &tab);
+    assert!(
+        typed.contains("Reply to board card #1 [mvp-7] (Merge the auth fix?): yes, merge it"),
+        "the reply is typed with its card: {typed:?}"
+    );
+    assert!(
+        !typed.contains("^M"),
+        "the Enter waits for its delay: {typed:?}"
+    );
+    assert!(
+        BoardStore::new(&app.engine.paths.root)
+            .load()
+            .unwrap()
+            .card(1)
+            .unwrap()
+            .is_open(),
+        "nothing is marked done before the reply is submitted"
+    );
+
+    app.submit_due_replies(
+        std::time::Instant::now()
+            + std::time::Duration::from_millis(yaran_core::macros::COMPOSE_SUBMIT_DELAY_MS),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(
+        terminal_text(&app, &tab).contains("^M"),
+        "then the Enter alone"
+    );
+
+    app.finish_board_job();
+    let card = BoardStore::new(&app.engine.paths.root)
+        .load()
+        .unwrap()
+        .card(1)
+        .unwrap()
+        .clone();
+    assert!(!card.is_open());
+    assert_eq!(card.resolved_by.as_deref(), Some(RESOLVED_BY));
+    assert_eq!(card.resolution.as_deref(), Some("yes, merge it"));
+    let latest = app.status.most_recent_tui();
+    assert!(
+        latest
+            .as_ref()
+            .is_some_and(|(_, m)| m.contains("Sent your reply to")
+                && m.contains("marked card #1 [mvp-7] done")),
+        "{latest:?}"
+    );
+}
+
+#[test]
+fn an_empty_reply_sends_nothing_and_keeps_the_dialog() {
+    let (mut app, tab) = reply_app();
+    app.open_selected_board_card();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    assert!(matches!(app.prompt, PromptState::HumanBoardCard { .. }));
+    assert!(app.human_board.pending_submits.is_empty());
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(!terminal_text(&app, &tab).contains("Reply to"));
+}
+
+#[test]
+fn a_reply_to_an_agent_that_stopped_keeps_the_text_and_says_why() {
+    let (mut app, _tab) = reply_app();
+    app.open_selected_board_card();
+    type_text(&mut app, "still there?");
+    app.engine.providers.clear();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    let PromptState::HumanBoardCard {
+        reply: Some(reply), ..
+    } = &app.prompt
+    else {
+        panic!("the dialog stays open: {:?}", app.prompt);
+    };
+    assert_eq!(reply.input.text, "still there?");
+    let latest = app.status.most_recent_tui();
+    assert!(
+        latest
+            .as_ref()
+            .is_some_and(|(_, m)| m.contains("no longer running")),
+        "{latest:?}"
+    );
+}
+
+#[test]
+fn mark_done_without_a_reply_still_works_from_the_button() {
+    let (mut app, _tab) = reply_app();
+    app.open_selected_board_card();
+    app.handle_key(key(KeyCode::Tab)).unwrap();
+    app.handle_key(key(KeyCode::Tab)).unwrap();
+    assert!(matches!(
+        app.prompt,
+        PromptState::HumanBoardCard {
+            focus: super::HumanBoardCardFocus::Action,
+            ..
+        }
+    ));
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.finish_board_job();
+    let card = BoardStore::new(&app.engine.paths.root)
+        .load()
+        .unwrap()
+        .card(1)
+        .unwrap()
+        .clone();
+    assert!(!card.is_open());
+    assert_eq!(card.resolution, None);
+}
+
+#[test]
+fn letters_in_the_reply_field_type_rather_than_scroll_or_move_focus() {
+    let (mut app, _tab) = reply_app();
+    app.open_selected_board_card();
+    type_text(&mut app, "jk hl");
+    let PromptState::HumanBoardCard {
+        reply: Some(reply),
+        focus,
+        scroll,
+        ..
+    } = &app.prompt
+    else {
+        panic!("{:?}", app.prompt);
+    };
+    assert_eq!(reply.input.text, "jk hl");
+    assert_eq!(*focus, super::HumanBoardCardFocus::Reply);
+    assert_eq!(*scroll, 0);
+}
+
+#[test]
+fn an_outside_click_never_drops_a_typed_reply() {
+    let (mut app, _tab) = reply_app();
+    app.open_selected_board_card();
+    assert_eq!(
+        crate::app::overlay_dismiss::outside_click_policy(&app.prompt),
+        crate::app::overlay_dismiss::OutsideClickPolicy::Cancel
+    );
+    type_text(&mut app, "draft");
+    assert_eq!(
+        crate::app::overlay_dismiss::outside_click_policy(&app.prompt),
+        crate::app::overlay_dismiss::OutsideClickPolicy::Blink
+    );
+}
+
+#[test]
+fn the_dialog_names_where_the_reply_goes_and_what_the_button_does() {
+    let (mut app, _tab) = reply_app();
+    app.open_selected_board_card();
+    let text = screen(&mut app);
+    assert!(text.contains("Reply to"), "{text}");
+    assert!(
+        text.contains("(posted this card), then mark done:"),
+        "{text}"
+    );
+    assert!(text.contains("Mark done"), "{text}");
+    assert!(!text.contains("Send & mark done"), "{text}");
+    type_text(&mut app, "ok");
+    let text = screen(&mut app);
+    assert!(text.contains("Send & mark done"), "{text}");
+    assert!(
+        text.contains("send & mark done"),
+        "the key line says it too: {text}"
+    );
+}
+
+#[test]
+fn a_done_card_has_no_reply_field() {
+    let (mut app, _tab) = reply_app();
+    BoardStore::new(&app.engine.paths.root)
+        .update(|board| board.resolve(1, Some("human"), None, at(1)))
+        .unwrap();
+    app.load_human_board_now();
+    app.human_board.selected = Some(1);
+    app.open_selected_board_card();
+    assert!(matches!(
+        app.prompt,
+        PromptState::HumanBoardCard {
+            reply: None,
+            focus: super::HumanBoardCardFocus::Close,
+            ..
+        }
+    ));
+    let text = screen(&mut app);
+    assert!(text.contains("Reopen"), "{text}");
+    assert!(!text.contains("Reply to"), "{text}");
+}
+
+#[test]
+fn the_selected_card_row_uses_the_agent_lists_soft_tint() {
+    let mut app = board_app(Some(sample_board()));
+    app.focus = FocusPane::Files;
+    app.right_section = RightSection::Board;
+    app.human_board.selected = Some(2);
+    let mut terminal = Terminal::new(TestBackend::new(220, 44)).expect("terminal");
+    terminal.draw(|frame| app.render(frame)).expect("render");
+    let buffer = terminal.backend().buffer().clone();
+    let list = app.mouse_layout.board_list.expect("board drawn");
+    let row = app
+        .mouse_layout
+        .board_row_to_slot
+        .iter()
+        .position(|slot| *slot == Some(1))
+        .expect("slot 1 drawn") as u16;
+    let cell = &buffer[(list.x + 3, list.y + row)];
+    assert_eq!(cell.bg, app.theme.selection_bar_tint());
+    assert_ne!(
+        cell.bg, app.theme.selection_bg,
+        "not the loud selection bar"
+    );
+}
+
+#[test]
+fn the_config_documents_the_reply_template() {
+    let rendered = crate::config::render_default_config();
+    assert!(
+        rendered.contains(
+            "human_board_reply_template = \"Reply to board card {card} ({title}): {reply}\""
+        ),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Placeholders: {reply}"), "{rendered}");
+}

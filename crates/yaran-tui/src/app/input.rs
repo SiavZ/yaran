@@ -232,6 +232,8 @@ enum PromptMouseTarget {
     ConfirmDeleteConfirm,
     HumanBoardCardClose,
     HumanBoardCardAction,
+    /// The card dialog's reply field.
+    HumanBoardCardReply,
     ConfirmDeleteTerminalCancel,
     ConfirmDeleteTerminalConfirm,
     ConfirmCloseTabCancel,
@@ -463,6 +465,7 @@ impl ButtonPressedTarget {
             | PromptMouseTarget::RuntimeKillItem(_)
             | PromptMouseTarget::Checkbox(_)
             | PromptMouseTarget::RenameInput
+            | PromptMouseTarget::HumanBoardCardReply
             | PromptMouseTarget::NameNewAgentInput
             | PromptMouseTarget::NameNewAgentRow(_)
             | PromptMouseTarget::PullRequestInput
@@ -1989,6 +1992,12 @@ impl App {
             // The macro list, and the nested delete-confirm, own no text.
             PromptState::EditMacros { .. } => {}
 
+            // The card dialog's reply field takes a paste while it has focus.
+            PromptState::HumanBoardCard {
+                focus: super::human_board::HumanBoardCardFocus::Reply,
+                reply: Some(reply),
+                ..
+            } => reply.input.insert_str(text),
             // Report, confirm, and picker modals hold no text field; the
             // paste is dropped, as their key handlers drop plain characters.
             PromptState::AgentInfo(_)
@@ -4946,24 +4955,51 @@ impl App {
     }
 
     fn handle_human_board_card_prompt_key(&mut self, key: KeyEvent) -> Option<bool> {
-        if !matches!(self.prompt, PromptState::HumanBoardCard { .. }) {
+        use super::human_board::HumanBoardCardFocus as Focus;
+        let PromptState::HumanBoardCard { focus, reply, .. } = &self.prompt else {
             return None;
-        }
-        if self.scroll_error_dialog_for(&key) {
-            return Some(false);
-        }
-        let PromptState::HumanBoardCard { focus, .. } = &mut self.prompt else {
-            return Some(false);
         };
-        let act = focus.is_confirm();
-        let action = self.bindings.lookup(&key, BindingScope::Dialog);
-        match modal_key_step(action, key, false) {
-            ModalKeyStep::Close => self.resolve_human_board_card(false),
-            ModalKeyStep::MoveFocus(_) => *focus = focus.toggled(),
-            ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus => {
-                self.resolve_human_board_card(act);
+        let focus = *focus;
+        let field_focused = focus == Focus::Reply && reply.is_some();
+        // The body scrolls from anywhere, but while the reply field has focus
+        // only the paging keys do: a line key there is a letter or a caret move.
+        if field_focused {
+            if matches!(
+                self.bindings.lookup(&key, BindingScope::Help),
+                Some(Action::ScrollPageDown | Action::ScrollPageUp)
+            ) && self.scroll_error_dialog_for(&key)
+            {
+                return Some(false);
             }
-            ModalKeyStep::FallThroughToField => {}
+        } else if self.scroll_error_dialog_for(&key) {
+            return Some(false);
+        }
+        let action = if binding_lookup_is_suppressed(key, field_focused) {
+            None
+        } else {
+            self.bindings.lookup(&key, BindingScope::Dialog)
+        };
+        match modal_key_step(action, key, field_focused) {
+            ModalKeyStep::Close => self.resolve_human_board_card(false),
+            ModalKeyStep::MoveFocus(forward) => {
+                if let PromptState::HumanBoardCard { focus, reply, .. } = &mut self.prompt {
+                    *focus = focus.step(forward, reply.is_some());
+                }
+            }
+            ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus => match focus {
+                Focus::Reply if field_focused => self.send_board_reply(),
+                Focus::Reply | Focus::Close => self.resolve_human_board_card(false),
+                Focus::Action => self.resolve_human_board_card(true),
+            },
+            ModalKeyStep::FallThroughToField => {
+                if field_focused
+                    && let PromptState::HumanBoardCard {
+                        reply: Some(reply), ..
+                    } = &mut self.prompt
+                {
+                    reply.input.handle_key(key);
+                }
+            }
         }
         Some(false)
     }
@@ -6822,6 +6858,7 @@ impl App {
             OverlayMouseLayout::HumanBoardCard {
                 close_button,
                 action_button,
+                reply_field,
             } => click_target(
                 &[
                     (close_button, PromptMouseTarget::HumanBoardCardClose),
@@ -6829,7 +6866,12 @@ impl App {
                 ],
                 column,
                 row,
-            ),
+            )
+            .or_else(|| {
+                reply_field
+                    .filter(|field| contains_point(*field, column, row))
+                    .map(|_| PromptMouseTarget::HumanBoardCardReply)
+            }),
             OverlayMouseLayout::ConfirmDeleteTerminal {
                 cancel_button,
                 delete_button,
@@ -8625,6 +8667,32 @@ impl App {
         }
     }
 
+    fn set_board_reply_cursor_from_mouse(&mut self, column: u16) {
+        let Some(field) = (match self.overlay_layout.active {
+            OverlayMouseLayout::HumanBoardCard { reply_field, .. } => reply_field,
+            _ => None,
+        }) else {
+            return;
+        };
+        if let PromptState::HumanBoardCard {
+            focus,
+            reply: Some(reply),
+            ..
+        } = &mut self.prompt
+        {
+            let input = &mut reply.input;
+            // The field shows a window of its text that keeps the caret in
+            // view, so the click lands relative to where that window starts.
+            // Two border cells and the one-cell leading pad are not text.
+            let width = usize::from(field.width.saturating_sub(3));
+            let start =
+                super::human_board::single_line_window_start(&input.text, input.cursor, width);
+            input.cursor =
+                start + cursor_from_single_line_position(&input.text[start..], field, 1, column);
+            *focus = super::human_board::HumanBoardCardFocus::Reply;
+        }
+    }
+
     fn set_pull_request_cursor_from_mouse(&mut self, column: u16) {
         let input_area = match self.overlay_layout.active {
             OverlayMouseLayout::PullRequestInput { input, .. } => input,
@@ -9463,6 +9531,9 @@ impl App {
             }
             PromptMouseTarget::RenameInput => {
                 self.set_rename_cursor_from_mouse(mouse.column);
+            }
+            PromptMouseTarget::HumanBoardCardReply => {
+                self.set_board_reply_cursor_from_mouse(mouse.column);
             }
             PromptMouseTarget::NameNewAgentInput => {
                 self.set_name_new_agent_cursor_from_mouse(mouse.column);

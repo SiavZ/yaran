@@ -5687,7 +5687,10 @@ impl App {
         // One column of right margin, as the file lists keep.
         let width = usize::from(area.width).saturating_sub(1);
         let now = chrono::Utc::now();
-        let selection = self.theme.selection_style();
+        // The agent list's selection: a faint tint of the theme's accent behind
+        // the row, with the row's own text colours kept on top. The full
+        // selection bar is loud for a list read as often as this one.
+        let selection = Style::default().bg(self.theme.selection_bar_tint());
 
         for (offset, row) in rows[start..end].iter().enumerate() {
             let y = area.y + offset as u16;
@@ -5761,10 +5764,12 @@ impl App {
     /// One card of the human board, whole: what it asks, who posted it and
     /// when, its detail, and a Close / Mark done (or Reopen) pair.
     fn render_human_board_card_prompt(&mut self, frame: &mut Frame) {
+        use super::human_board::{HumanBoardCardFocus as Focus, single_line_window_start};
         let PromptState::HumanBoardCard {
             card,
             focus,
             scroll,
+            reply,
         } = &self.prompt
         else {
             return;
@@ -5772,6 +5777,9 @@ impl App {
         let card = card.clone();
         let focus = *focus;
         let scroll = *scroll;
+        let reply = reply
+            .as_ref()
+            .map(|reply| (reply.input.clone(), reply.target.clone()));
         self.render_dim_overlay(frame);
         let dialog_width = 76.min(frame.area().width.max(1));
         let inner_width = dialog_width.saturating_sub(2);
@@ -5840,21 +5848,93 @@ impl App {
         }
         body.push(Line::from(""));
 
-        let action_label = if card.is_open() {
-            "Mark done"
-        } else {
-            "Reopen"
+        let has_text = reply
+            .as_ref()
+            .is_some_and(|(input, _)| !input.text.trim().is_empty());
+        let action_label = match (card.is_open(), has_text) {
+            (true, true) => "Send & mark done",
+            (true, false) => "Mark done",
+            (false, _) => "Reopen",
         };
         let title = match &card.ticket {
             Some(ticket) => format!("Card {} \u{b7} {ticket}", card.id),
             None => format!("Card {}", card.id),
         };
-        let dialog = self.render_error_dialog_body(frame, &title, dialog_width, body, 3, scroll);
+        // Under the card: the reply label and its field, or the reason there is
+        // no field on an open card, then the buttons and the key line.
+        let no_target = card.is_open() && reply.is_none();
+        let reply_rows: u16 = if reply.is_some() {
+            4
+        } else if no_target {
+            2
+        } else {
+            0
+        };
+        let dialog = self.render_error_dialog_body(
+            frame,
+            &title,
+            dialog_width,
+            body,
+            reply_rows + 3 + 1,
+            scroll,
+        );
         self.last_error_dialog_height = dialog.body.height;
         self.last_error_dialog_lines = dialog.total_rows;
-        let buttons_area = dialog.rest;
+        let [reply_area, buttons_area, keys_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(reply_rows),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
+            .areas(dialog.rest);
 
-        let btn_width = shared_button_width(&["Close", action_label]);
+        let mut reply_field = None;
+        if let Some((input, target)) = &reply {
+            let [label_area, field_area] = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Length(3)])
+                .areas(reply_area);
+            let who = if target.is_poster {
+                "posted this card"
+            } else {
+                "selected agent"
+            };
+            Paragraph::new(Line::from(vec![
+                Span::styled(" Reply to ", label),
+                name_chip(&target.label, &self.theme),
+                Span::styled(format!(" ({who}), then mark done:"), label),
+            ]))
+            .render(label_area, frame.buffer_mut());
+            let field_focused = focus == Focus::Reply;
+            let field_block = Block::default()
+                .borders(Borders::ALL)
+                .border_set(border::ROUNDED)
+                .border_style(self.theme.overlay_field_border_style(field_focused));
+            // Two border cells and the one-cell pad are not text; the caret is
+            // kept in view by drawing a window of the reply that ends at it.
+            let width = usize::from(field_area.width.saturating_sub(3));
+            let start = single_line_window_start(&input.text, input.cursor, width);
+            Paragraph::new(render_single_line_cursor_input(
+                " ",
+                &input.text[start..],
+                input.cursor - start,
+                self.theme.input_cursor_fg,
+                self.theme.input_cursor_bg,
+                field_focused,
+            ))
+            .block(field_block)
+            .render(field_area, frame.buffer_mut());
+            reply_field = Some(field_area);
+        } else if no_target {
+            Paragraph::new(Line::from(Span::styled(
+                " No agent is running to send a reply to; Mark done closes the card.",
+                label,
+            )))
+            .render(reply_area, frame.buffer_mut());
+        }
+
+        let btn_width = shared_button_width(&["Close", "Send & mark done"]);
         let gap = 2u16;
         let total = btn_width * 2 + gap;
         let left_offset = buttons_area.width.saturating_sub(total) / 2;
@@ -5875,7 +5955,7 @@ impl App {
             .state(button_state_for(
                 ButtonPressedTarget::HumanBoardCardClose,
                 self.pressed_button,
-                !focus.is_confirm(),
+                focus == Focus::Close,
                 true,
             ))
             .render(frame, close_area, &self.theme);
@@ -5884,14 +5964,39 @@ impl App {
             .state(button_state_for(
                 ButtonPressedTarget::HumanBoardCardAction,
                 self.pressed_button,
-                focus.is_confirm(),
+                focus == Focus::Action,
                 true,
             ))
             .render(frame, action_area, &self.theme);
 
+        let field_focused = reply.is_some() && focus == Focus::Reply;
+        let confirm_key = self.bindings.label_for(Action::Confirm);
+        let close_key = self.bindings.label_for(Action::CloseOverlay);
+        let focus_key = if field_focused {
+            self.bindings
+                .label_for_text_field_dialog(Action::ToggleSelection)
+        } else {
+            Some(self.bindings.label_for(Action::ToggleSelection))
+        };
+        let confirm_says = if field_focused {
+            "send & mark done"
+        } else {
+            "press"
+        };
+        let hints = modal_hint_line(
+            &self.theme,
+            &[
+                Hint::key(confirm_key, confirm_says),
+                Hint::maybe_key(focus_key, "focus"),
+                Hint::key(close_key, "close"),
+            ],
+        );
+        Paragraph::new(hints).render(keys_area, frame.buffer_mut());
+
         self.overlay_layout.active = OverlayMouseLayout::HumanBoardCard {
             close_button: close_area,
             action_button: action_area,
+            reply_field,
         };
     }
 

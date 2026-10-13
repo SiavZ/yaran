@@ -637,6 +637,39 @@ impl Drop for BoardWatcher {
     }
 }
 
+/// The default `[ui] human_board_reply_template`.
+pub const DEFAULT_REPLY_TEMPLATE: &str = "Reply to board card {card} ({title}): {reply}";
+
+/// Longest card title quoted into a reply prompt, in characters.
+pub const REPLY_TITLE_CHARS: usize = 80;
+
+/// The prompt a reply typed on `card` becomes, from `template`.
+///
+/// Placeholders: `{reply}` the typed text, `{card}` the card's label (`#21`, or
+/// `#21 [ticket]`), `{ticket}` the bare ticket (empty when there is none), and
+/// `{title}` the title cut to [`REPLY_TITLE_CHARS`]. A template that forgot
+/// `{reply}` still carries the reply, after it, so what was typed is never
+/// lost; an empty template sends the reply alone. Line breaks are folded to
+/// spaces, so the prompt is one line however the template was written.
+pub fn render_reply(template: &str, card: &Card, reply: &str) -> String {
+    let reply = reply.trim();
+    let template = template.trim();
+    if template.is_empty() {
+        return reply.to_string();
+    }
+    let title = clean(&card.title, REPLY_TITLE_CHARS, false).unwrap_or_default();
+    let rendered = template
+        .replace("{card}", &card.label())
+        .replace("{ticket}", card.ticket.as_deref().unwrap_or(""))
+        .replace("{title}", &title);
+    let rendered = if rendered.contains("{reply}") {
+        rendered.replace("{reply}", reply)
+    } else {
+        format!("{rendered} {reply}")
+    };
+    rendered.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// A short age for a board row: `now`, `5m`, `3h`, `2d`.
 pub fn compact_age(from: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let seconds = (now - from).num_seconds().max(0);

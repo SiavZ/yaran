@@ -12,15 +12,27 @@
 //! The selection is held as a card NUMBER, not a row: cards arrive while the
 //! person is looking, and a row index would quietly slide onto another card
 //! between reading one and pressing the key that resolves it.
+//!
+//! An open card's dialog carries a reply field. Sending a reply types it into
+//! an agent the way the web compose bar does (the text, then a lone Enter
+//! [`yaran_core::macros::COMPOSE_SUBMIT_DELAY_MS`] later), through the same
+//! ownership gate every keystroke goes through, and only once the Enter has
+//! been written is the card marked done, with the reply kept as its note. The
+//! reply goes to the agent that posted the card when it is running here, and
+//! to the selected agent otherwise; the dialog names which before anything is
+//! sent.
 
 use std::collections::HashSet;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use yaran_core::human_board::{Board, BoardStore, BoardWatcher, Card, CardKind};
+use yaran_core::ids::TabIdRef;
 use yaran_core::statusline::StatusTone;
 
-use super::{App, ConfirmFocus, FocusPane, InputTarget, PromptState, RightSection};
+use super::components::wrap_lines::{char_display_width, display_width};
+use super::text_input::TextInput;
+use super::{App, FocusPane, InputTarget, PromptState, RightSection};
 use crate::logger;
 
 /// How often the watcher looks at the board file.
@@ -92,8 +104,100 @@ pub(crate) fn board_rows(board: &Board) -> (Vec<BoardRow>, Vec<u64>) {
 /// What a mark-done or reopen worker was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BoardJob {
-    Resolve { id: u64, label: String },
-    Reopen { id: u64, label: String },
+    Resolve {
+        id: u64,
+        label: String,
+        /// Kept on the card as its resolution: the reply that was sent.
+        note: Option<String>,
+        /// The agent the reply went to, for the confirmation.
+        sent_to: Option<String>,
+    },
+    Reopen {
+        id: u64,
+        label: String,
+    },
+}
+
+/// Which control of the card dialog has focus.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum HumanBoardCardFocus {
+    /// The reply field: where focus starts whenever the dialog has one.
+    #[default]
+    Reply,
+    /// Close, the safe button, and the start when there is no reply field.
+    Close,
+    /// Mark done, Send & mark done, or Reopen.
+    Action,
+}
+
+impl HumanBoardCardFocus {
+    /// The next stop of the ring. The reply field is a stop only when the
+    /// dialog has one.
+    pub(crate) fn step(self, forward: bool, has_reply: bool) -> Self {
+        let ring: &[Self] = if has_reply {
+            &[Self::Reply, Self::Close, Self::Action]
+        } else {
+            &[Self::Close, Self::Action]
+        };
+        let at = ring.iter().position(|stop| *stop == self).unwrap_or(0);
+        let len = ring.len();
+        ring[if forward {
+            (at + 1) % len
+        } else {
+            (at + len - 1) % len
+        }]
+    }
+}
+
+/// The agent a reply goes to, chosen when the dialog opens and named in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReplyTarget {
+    pub(crate) session_id: String,
+    /// The tab the reply is typed into: the agent's focused tab.
+    pub(crate) tab_id: String,
+    /// The agent's name as the sidebar shows it.
+    pub(crate) label: String,
+    /// The agent posted the card, as opposed to merely being selected.
+    pub(crate) is_poster: bool,
+}
+
+/// The reply half of an open card's dialog.
+#[derive(Clone, Debug)]
+pub(crate) struct CardReply {
+    pub(crate) input: TextInput,
+    pub(crate) target: ReplyTarget,
+}
+
+/// A reply already typed into an agent, waiting for its submitting Enter.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingReplySubmit {
+    pub(crate) due: Instant,
+    pub(crate) target: ReplyTarget,
+    pub(crate) card_id: u64,
+    pub(crate) card_label: String,
+    pub(crate) reply: String,
+}
+
+/// Where a single-line field's visible text starts so the caret stays in view:
+/// the byte offset of the first character drawn in `width` cells (the caret
+/// cell included). Starts at 0 while everything up to the caret fits.
+pub(crate) fn single_line_window_start(text: &str, cursor: usize, width: usize) -> usize {
+    let mut cursor = cursor.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    // One cell for the caret itself.
+    let room = width.saturating_sub(1);
+    let mut start = 0;
+    let mut used = display_width(&text[..cursor]);
+    for c in text[..cursor].chars() {
+        if used <= room {
+            break;
+        }
+        used -= char_display_width(c);
+        start += c.len_utf8();
+    }
+    start
 }
 
 /// What came back: whether the card changed (`false` when it already was in
@@ -118,6 +222,9 @@ pub(crate) struct HumanBoardState {
     /// board at startup are not news.
     known_open: Option<HashSet<u64>>,
     job: Option<mpsc::Receiver<BoardJobAnswer>>,
+    /// Replies typed into an agent whose submitting Enter is still due, oldest
+    /// first.
+    pub(crate) pending_submits: Vec<PendingReplySubmit>,
 }
 
 impl HumanBoardState {
@@ -259,7 +366,9 @@ pub(crate) fn run_board_job(store: &BoardStore, job: &BoardJob) -> Result<bool, 
     let now = chrono::Utc::now();
     store
         .update(|board| match job {
-            BoardJob::Resolve { id, .. } => board.resolve(*id, Some(RESOLVED_BY), None, now),
+            BoardJob::Resolve { id, note, .. } => {
+                board.resolve(*id, Some(RESOLVED_BY), note.as_deref(), now)
+            }
             BoardJob::Reopen { id, .. } => board.reopen(*id, now),
         })
         .map_err(|err| format!("{err:#}"))
@@ -281,6 +390,7 @@ impl App {
         self.sync_human_board_watcher();
         self.normalize_right_section_for_board();
         self.drain_human_board_job();
+        self.submit_due_replies(Instant::now());
         let Some(snapshot) = self
             .human_board
             .watcher
@@ -312,8 +422,13 @@ impl App {
                 }
             }
         } else if !enabled && self.human_board.watcher.is_some() {
-            // Dropping the watcher stops its thread.
-            self.human_board = super::human_board::HumanBoardState::default();
+            // Dropping the watcher stops its thread. A reply already typed into an
+            // agent still gets its Enter: switching the pane off is not a cancel.
+            let pending_submits = std::mem::take(&mut self.human_board.pending_submits);
+            self.human_board = super::human_board::HumanBoardState {
+                pending_submits,
+                ..Default::default()
+            };
             self.mark_frame_dirty();
         }
     }
@@ -363,17 +478,74 @@ impl App {
         }
     }
 
-    /// Open the selected card in its own dialog.
+    /// Open the selected card in its own dialog. An open card gets a reply
+    /// field when some agent can take the reply.
     pub(crate) fn open_selected_board_card(&mut self) {
         let Some(card) = self.human_board.selected_card().cloned() else {
             self.set_info("There is no card to open: the board is empty.");
             return;
         };
+        let reply = card
+            .is_open()
+            .then(|| self.reply_target_for(&card))
+            .flatten()
+            .map(|target| {
+                Box::new(CardReply {
+                    input: TextInput::new(),
+                    target,
+                })
+            });
+        let focus = if reply.is_some() {
+            HumanBoardCardFocus::Reply
+        } else {
+            HumanBoardCardFocus::Close
+        };
         self.prompt = PromptState::HumanBoardCard {
             card: Box::new(card),
-            focus: ConfirmFocus::Cancel,
+            focus,
             scroll: 0,
+            reply,
         };
+    }
+
+    /// The agent a reply to `card` goes to: the agent that posted it when it is
+    /// running here, otherwise the selected agent when that one is running.
+    /// `None` when neither is.
+    pub(crate) fn reply_target_for(&self, card: &Card) -> Option<ReplyTarget> {
+        let running_tab = |session: &crate::model::AgentSession| {
+            let tab = self.focused_tab_id(&session.id);
+            self.engine
+                .providers
+                .contains_key(TabIdRef::new(&tab))
+                .then_some(tab)
+        };
+        let poster =
+            card.from
+                .as_deref()
+                .map(yaran_core::model::normalize_agent_handle)
+                .and_then(|handle| {
+                    self.engine.sessions.iter().find(|session| {
+                        session.deleted_at.is_none() && session.agent_handle == handle
+                    })
+                });
+        if let Some(session) = poster
+            && let Some(tab_id) = running_tab(session)
+        {
+            return Some(ReplyTarget {
+                session_id: session.id.clone(),
+                tab_id,
+                label: self.session_label(session),
+                is_poster: true,
+            });
+        }
+        let session = self.selected_session()?;
+        let tab_id = running_tab(session)?;
+        Some(ReplyTarget {
+            session_id: session.id.clone(),
+            tab_id,
+            label: self.session_label(session),
+            is_poster: false,
+        })
     }
 
     /// Mark the selected card done, or reopen it when it already is.
@@ -386,6 +558,8 @@ impl App {
             BoardJob::Resolve {
                 id: card.id,
                 label: card.label(),
+                note: None,
+                sent_to: None,
             }
         } else {
             BoardJob::Reopen {
@@ -397,7 +571,18 @@ impl App {
     }
 
     /// Resolve the card dialog: close it, and act when its action was chosen.
+    /// With a reply typed, the action is sending it (which marks the card done
+    /// once it has been submitted); without one, it is mark done or reopen.
     pub(crate) fn resolve_human_board_card(&mut self, act: bool) {
+        if act
+            && let PromptState::HumanBoardCard {
+                reply: Some(reply), ..
+            } = &self.prompt
+            && !reply.input.text.trim().is_empty()
+        {
+            self.send_board_reply();
+            return;
+        }
         let prompt = std::mem::replace(&mut self.prompt, PromptState::None);
         let PromptState::HumanBoardCard { card, .. } = prompt else {
             self.prompt = prompt;
@@ -410,6 +595,8 @@ impl App {
             BoardJob::Resolve {
                 id: card.id,
                 label: card.label(),
+                note: None,
+                sent_to: None,
             }
         } else {
             BoardJob::Reopen {
@@ -420,6 +607,141 @@ impl App {
         self.dispatch_board_job(job);
     }
 
+    /// Send the reply typed in the open card dialog: type it into the target
+    /// agent now and schedule the submitting Enter. Anything that stops the
+    /// send leaves the dialog open with the reply still in it, and says why.
+    pub(crate) fn send_board_reply(&mut self) {
+        let PromptState::HumanBoardCard {
+            card,
+            reply: Some(reply),
+            ..
+        } = &self.prompt
+        else {
+            return;
+        };
+        let text = reply.input.text.trim().to_string();
+        if text.is_empty() {
+            let focus_key = self
+                .bindings
+                .label_for_text_field_dialog(super::Action::ToggleSelection);
+            self.set_ui_hint(match focus_key {
+                Some(key) => format!(
+                    "Type a reply first, or press {key} to reach Mark done and close the card \
+                     without one."
+                ),
+                None => "Type a reply first; Mark done closes the card without one.".to_string(),
+            });
+            return;
+        }
+        let target = reply.target.clone();
+        let card = (**card).clone();
+        if !self
+            .engine
+            .providers
+            .contains_key(TabIdRef::new(&target.tab_id))
+        {
+            self.set_warning(format!(
+                "Did not send your reply: {} is no longer running. The reply is still in the \
+                 box; close the card and reopen it to send it to the agent that is selected.",
+                target.label
+            ));
+            return;
+        }
+        if let Some(reason) = self.agent_tab_write_refusal(&target.tab_id) {
+            self.set_warning(format!(
+                "Did not send your reply to {}: {reason} The reply is still in the box.",
+                target.label
+            ));
+            return;
+        }
+        let prompt = yaran_core::human_board::render_reply(
+            &self.engine.config.ui.human_board_reply_template,
+            &card,
+            &text,
+        );
+        let writes = yaran_core::macros::compose_send_writes(&prompt);
+        let (body, has_submit) = match writes.as_slice() {
+            [body, _submit] => (body.clone(), true),
+            [submit] => (submit.clone(), false),
+            _ => return,
+        };
+        if !self.write_into_agent_tab(&target.tab_id, &body) {
+            self.set_warning(format!(
+                "Did not send your reply to {}: its terminal refused the keystrokes. The reply \
+                 is still in the box.",
+                target.label
+            ));
+            return;
+        }
+        self.prompt = PromptState::None;
+        let delay = if has_submit {
+            Duration::from_millis(yaran_core::macros::COMPOSE_SUBMIT_DELAY_MS)
+        } else {
+            Duration::ZERO
+        };
+        self.status.set(
+            Instant::now(),
+            Some(BOARD_JOB_STATUS_KEY.to_string()),
+            StatusTone::Busy,
+            format!(
+                "Sending your reply on card {} to {}\u{2026}",
+                card.label(),
+                target.label
+            ),
+        );
+        self.human_board.pending_submits.push(PendingReplySubmit {
+            due: Instant::now() + delay,
+            target,
+            card_id: card.id,
+            card_label: card.label(),
+            reply: text,
+        });
+    }
+
+    /// Write the submitting Enter of every reply that is due, and mark its card
+    /// done once the Enter is in. One card write runs at a time, so a reply
+    /// waits for an earlier one's to land rather than being refused.
+    pub(crate) fn submit_due_replies(&mut self, now: Instant) {
+        while self.human_board.job.is_none()
+            && self
+                .human_board
+                .pending_submits
+                .first()
+                .is_some_and(|pending| pending.due <= now)
+        {
+            let pending = self.human_board.pending_submits.remove(0);
+            self.mark_frame_dirty();
+            if !self
+                .engine
+                .providers
+                .contains_key(TabIdRef::new(&pending.target.tab_id))
+            {
+                self.status.clear(BOARD_JOB_STATUS_KEY, None);
+                self.set_warning(format!(
+                    "Your reply on card {} was typed into {}, but its terminal closed before it \
+                     could be submitted. The card stays open.",
+                    pending.card_label, pending.target.label
+                ));
+                continue;
+            }
+            if !self.write_into_agent_tab(&pending.target.tab_id, b"\r") {
+                self.status.clear(BOARD_JOB_STATUS_KEY, None);
+                self.set_warning(format!(
+                    "Your reply on card {} is typed into {} but was not submitted: another device \
+                     took over its terminal. Press Enter there to send it; the card stays open.",
+                    pending.card_label, pending.target.label
+                ));
+                continue;
+            }
+            self.dispatch_board_job(BoardJob::Resolve {
+                id: pending.card_id,
+                label: pending.card_label,
+                note: Some(pending.reply),
+                sent_to: Some(pending.target.label),
+            });
+        }
+    }
+
     /// Start a mark-done or reopen on a worker. One at a time: a second
     /// request while one runs is refused out loud.
     pub(crate) fn dispatch_board_job(&mut self, job: BoardJob) -> bool {
@@ -428,6 +750,11 @@ impl App {
             return false;
         }
         let busy = match &job {
+            BoardJob::Resolve {
+                label,
+                sent_to: Some(agent),
+                ..
+            } => format!("Sent your reply to {agent}; marking card {label} done\u{2026}"),
             BoardJob::Resolve { label, .. } => format!("Marking card {label} done\u{2026}"),
             BoardJob::Reopen { label, .. } => format!("Reopening card {label}\u{2026}"),
         };
@@ -489,6 +816,31 @@ impl App {
         self.status.clear(BOARD_JOB_STATUS_KEY, None);
         self.mark_frame_dirty();
         match (&answer.job, answer.result) {
+            (
+                BoardJob::Resolve {
+                    label,
+                    sent_to: Some(agent),
+                    ..
+                },
+                Ok(changed),
+            ) => self.set_info(if changed {
+                format!(
+                    "Sent your reply to {agent} and marked card {label} done; the reply is kept \
+                     as the card's note."
+                )
+            } else {
+                format!("Sent your reply to {agent}; card {label} was already done.")
+            }),
+            (
+                BoardJob::Resolve {
+                    label,
+                    sent_to: Some(agent),
+                    ..
+                },
+                Err(err),
+            ) => self.set_error(format!(
+                "Sent your reply to {agent}, but could not mark card {label} done: {err}"
+            )),
             (BoardJob::Resolve { label, .. }, Ok(true)) => self.set_info(format!(
                 "Marked card {label} done. It moves under Done on the board, and the agent \
                  that posted it sees it resolved by {RESOLVED_BY} in `yaran board list --all`."

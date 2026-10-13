@@ -1773,6 +1773,11 @@ pub struct UiConfig {
     /// keeps its staged list and commit box. The `toggle-human-board` palette
     /// command flips it. TUI-only.
     pub human_board: bool,
+    /// The prompt a reply typed in a human-board card becomes when it is sent to
+    /// an agent. Placeholders: `{reply}`, `{card}` (`#21 [ticket]`), `{ticket}`,
+    /// `{title}`. Empty sends the reply alone; a template without `{reply}` gets
+    /// the reply appended. TUI-only.
+    pub human_board_reply_template: String,
     /// The agent-list sort mode, persisted so a chosen order (and the manual
     /// drag order it enables) survives restarts and is shared across clients:
     /// "active" (working/attention float up, the default), "updated", "created",
@@ -2314,6 +2319,7 @@ impl Default for UiConfig {
             sidebar_density: "compact".to_string(),
             sidebar_header_rule: false,
             human_board: false,
+            human_board_reply_template: crate::human_board::DEFAULT_REPLY_TEMPLATE.to_string(),
             theme: crate::theme::DEFAULT_THEME_NAME.to_string(),
         }
     }
@@ -3200,6 +3206,7 @@ impl Default for Config {
                 sidebar_density: "compact".to_string(),
                 sidebar_header_rule: false,
                 human_board: false,
+                human_board_reply_template: crate::human_board::DEFAULT_REPLY_TEMPLATE.to_string(),
                 theme: crate::theme::DEFAULT_THEME_NAME.to_string(),
             },
             capabilities: CapabilitiesConfig::default(),

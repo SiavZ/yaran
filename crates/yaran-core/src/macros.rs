@@ -46,6 +46,29 @@ pub fn macro_matches_surface(macro_surface: MacroSurface, target_surface: Sessio
     macro_surface.matches(target_surface)
 }
 
+/// How long a send waits between the typed body and the submitting Enter.
+/// Must clear a receiving CLI's paste debounce (measured at 50ms for Claude
+/// Code), or the Enter is merged into the paste as a newline and never
+/// submits. The Rust twin of `COMPOSE_SUBMIT_DELAY_MS` in
+/// `crates/yaran-web/web/src/lib/composebar.ts`; keep the two equal.
+pub const COMPOSE_SUBMIT_DELAY_MS: u64 = 150;
+
+/// The ordered PTY writes that submit `text` as a prompt: the message as a
+/// macro-style keystroke stream ([`macro_payload_bytes`]), then a bare Enter
+/// that travels alone, [`COMPOSE_SUBMIT_DELAY_MS`] later. An empty message is
+/// the single bare Enter. The Rust twin of the web compose bar's
+/// `composeSendWrites`, so a prompt sent from either surface reaches the agent
+/// as the same bytes.
+pub fn compose_send_writes(text: &str) -> Vec<Vec<u8>> {
+    let body = macro_payload_bytes(text);
+    let submit = vec![b'\r'];
+    if body.is_empty() {
+        vec![submit]
+    } else {
+        vec![body, submit]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +129,32 @@ mod tests {
             MacroSurface::Terminal,
             SessionSurface::Agent
         ));
+    }
+
+    #[test]
+    fn compose_send_writes_a_body_then_a_lone_enter() {
+        assert_eq!(
+            compose_send_writes("ship it"),
+            vec![b"ship it".to_vec(), b"\r".to_vec()]
+        );
+        assert_eq!(
+            compose_send_writes("a\nb"),
+            vec![b"a\x1b\rb".to_vec(), b"\r".to_vec()],
+            "a line break inside the message never submits"
+        );
+        assert_eq!(compose_send_writes(""), vec![b"\r".to_vec()]);
+    }
+
+    /// The web pins the same number in `composebar.test.ts`; a change here
+    /// that is not mirrored there would make the two surfaces submit
+    /// differently into the same CLI.
+    #[test]
+    fn the_submit_delay_matches_the_web_compose_bar() {
+        assert_eq!(COMPOSE_SUBMIT_DELAY_MS, 150);
+        let web = include_str!("../../yaran-web/web/src/lib/composebar.ts");
+        assert!(
+            web.contains("COMPOSE_SUBMIT_DELAY_MS = 150"),
+            "composebar.ts changed its submit delay"
+        );
     }
 }
