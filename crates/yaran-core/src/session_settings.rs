@@ -356,7 +356,10 @@ mod tests {
             compact_instructions_path: Some(" /etc/compact.txt ".into()),
             ..SessionSettings::default()
         };
-        assert_eq!(own.effective_compact_instructions_path(global), "/etc/compact.txt");
+        assert_eq!(
+            own.effective_compact_instructions_path(global),
+            "/etc/compact.txt"
+        );
     }
 
     #[test]

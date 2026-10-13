@@ -183,7 +183,11 @@ impl Engine {
         // there is no line to type, and the file is never read here.
         let compact_command = settings
             .auto_compact
-            .then(|| self.watch.compact_commands.get(&settings.compact_instructions_path))
+            .then(|| {
+                self.watch
+                    .compact_commands
+                    .get(&settings.compact_instructions_path)
+            })
             .flatten()
             .and_then(|cache| cache.command.as_deref());
         let auto_compact_idx = compact_command.map(|command| {
@@ -496,13 +500,17 @@ impl Engine {
                             WatchRuleKind::BuiltInAutoCompact,
                         );
                     }
-                    let built_in_texts: Vec<String> = [attached.auto_clear_idx, attached.auto_compact_idx]
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|idx| attached.rules.get(idx))
-                        .map(|rule| rule.action.text().to_string())
-                        .collect();
-                    (attached.engine.observe_keyed(snapshot, key, now), built_in_texts)
+                    let built_in_texts: Vec<String> =
+                        [attached.auto_clear_idx, attached.auto_compact_idx]
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|idx| attached.rules.get(idx))
+                            .map(|rule| rule.action.text().to_string())
+                            .collect();
+                    (
+                        attached.engine.observe_keyed(snapshot, key, now),
+                        built_in_texts,
+                    )
                 }
                 None => continue,
             };
@@ -1150,12 +1158,36 @@ mod tests {
 
         engine.tick_watch_rules();
         let attached = &engine.watch.attached[TabIdRef::new("s1-slot")];
-        let idx = attached.auto_compact_idx.expect("the rule attaches once read");
+        let idx = attached
+            .auto_compact_idx
+            .expect("the rule attaches once read");
         assert_eq!(
             attached.rules[idx].action.text(),
             "/compact Keep the card. Drop old reviews."
         );
         assert_eq!(attached.auto_clear_idx, None, "auto-compact alone");
+    }
+
+    /// A fallback to a bare `/compact` is logged when its cause changes, not
+    /// on every 30-second refresh of the same broken file.
+    #[test]
+    fn an_unchanged_instructions_warning_is_logged_once() {
+        let (mut engine, _tmp) = test_engine();
+        let bare = |warning: &str| CompactCommandLoad {
+            command: "/compact".to_string(),
+            warning: Some(warning.to_string()),
+        };
+        let ((), lines) = crate::logger::capture_for_test(|| {
+            engine.process_compact_instructions_loaded("/x".into(), bare("missing"));
+            engine.process_compact_instructions_loaded("/x".into(), bare("missing"));
+            engine.process_compact_instructions_loaded("/x".into(), bare("empty"));
+        });
+        let warnings: Vec<_> = lines.iter().filter(|l| l.contains("[watch]")).collect();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(
+            engine.watch.compact_commands["/x"].command.as_deref(),
+            Some("/compact")
+        );
     }
 
     /// The auto-compact guard reads the same mailbox directories as the
@@ -1181,7 +1213,11 @@ mod tests {
         )
         .expect("spawn scripted pty");
         let (mut engine, _guard) = engine_with_tab(client, Vec::new());
-        let raw_path = tmp.path().join("compact.txt").to_string_lossy().into_owned();
+        let raw_path = tmp
+            .path()
+            .join("compact.txt")
+            .to_string_lossy()
+            .into_owned();
         engine.amq.session_settings.insert(
             "s1".to_string(),
             worker_settings(false, true, Some(raw_path.clone())),
@@ -1317,7 +1353,11 @@ mod tests {
             Some(crate::watch::RuleStateKind::Idle)
         );
 
-        let raw_path = tmp.path().join("compact.txt").to_string_lossy().into_owned();
+        let raw_path = tmp
+            .path()
+            .join("compact.txt")
+            .to_string_lossy()
+            .into_owned();
         engine.amq.session_settings.insert(
             "s1".to_string(),
             worker_settings(true, true, Some(raw_path.clone())),

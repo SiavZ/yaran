@@ -292,16 +292,19 @@ fn auto_clear_rule_provider_clear_command_dispatch() {
 fn built_in_rules(compact_text: &str) -> Vec<WatchRule> {
     use yaran_core::watch::builtin::{auto_clear_rule_for, auto_compact_rule_for};
 
-    [auto_clear_rule_for("/clear"), auto_compact_rule_for(compact_text)]
-        .into_iter()
-        .map(|mut rule| {
-            rule.backoff.initial_ms = 20;
-            rule.backoff.multiplier = 1.0;
-            rule.backoff.jitter_ms = 0;
-            rule.cooldown_ms = 50;
-            rule
-        })
-        .collect()
+    [
+        auto_clear_rule_for("/clear"),
+        auto_compact_rule_for(compact_text),
+    ]
+    .into_iter()
+    .map(|mut rule| {
+        rule.backoff.initial_ms = 20;
+        rule.backoff.multiplier = 1.0;
+        rule.backoff.jitter_ms = 0;
+        rule.cooldown_ms = 50;
+        rule
+    })
+    .collect()
 }
 
 /// Echo `line` through a real `cat` PTY and return the client once the
@@ -361,7 +364,10 @@ fn auto_compact_rule_types_the_instructions_file_through_pty() {
     assert!(errors.is_empty(), "load errors: {errors:?}");
 
     let sent = texts_sent(&mut engine, &client);
-    assert_eq!(sent, vec!["/compact Keep the open PRs. Drop old reviews.".to_string()]);
+    assert_eq!(
+        sent,
+        vec!["/compact Keep the open PRs. Drop old reviews.".to_string()]
+    );
 
     client
         .write_bytes(sent[0].as_bytes())
@@ -392,15 +398,20 @@ fn auto_compact_rule_types_a_bare_compact_when_the_file_is_missing() {
     rule.backoff.initial_ms = 20;
     rule.backoff.jitter_ms = 0;
     let (mut engine, _) = WatchEngine::new("auto-compact-bare".to_string(), &[rule]);
-    assert_eq!(texts_sent(&mut engine, &client), vec!["/compact".to_string()]);
+    assert_eq!(
+        texts_sent(&mut engine, &client),
+        vec!["/compact".to_string()]
+    );
 }
 
 /// `[compact]` on screen never clears a session that has both rules.
 #[test]
 fn the_compact_sentinel_never_fires_auto_clear_through_pty() {
     let client = pty_showing("context is full [compact]");
-    let (mut engine, errors) =
-        WatchEngine::new("no-cross-compact".to_string(), &built_in_rules("/compact keep"));
+    let (mut engine, errors) = WatchEngine::new(
+        "no-cross-compact".to_string(),
+        &built_in_rules("/compact keep"),
+    );
     assert!(errors.is_empty(), "load errors: {errors:?}");
     assert_eq!(
         texts_sent(&mut engine, &client),
@@ -412,8 +423,10 @@ fn the_compact_sentinel_never_fires_auto_clear_through_pty() {
 #[test]
 fn the_task_done_sentinel_never_fires_auto_compact_through_pty() {
     let client = pty_showing("finished the task [task-done]");
-    let (mut engine, errors) =
-        WatchEngine::new("no-cross-task-done".to_string(), &built_in_rules("/compact keep"));
+    let (mut engine, errors) = WatchEngine::new(
+        "no-cross-task-done".to_string(),
+        &built_in_rules("/compact keep"),
+    );
     assert!(errors.is_empty(), "load errors: {errors:?}");
     assert_eq!(texts_sent(&mut engine, &client), vec!["/clear".to_string()]);
 }

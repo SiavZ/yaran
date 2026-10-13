@@ -1655,7 +1655,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            engine.watch_session_settings("s1").compact_instructions_path,
+            engine
+                .watch_session_settings("s1")
+                .compact_instructions_path,
             "/srv/compact.txt"
         );
     }

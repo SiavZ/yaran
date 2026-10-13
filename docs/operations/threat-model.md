@@ -630,12 +630,13 @@ can't be routed.
 **Vector.** An attacker (or a buggy version of yaran itself) writes a
 malformed JSON value into `agent_sessions.session_settings`, or
 crafts one that explicitly enables `yolo_permissions: true` /
-`mode: worker` / `auto_clear_on_task_done: true` for a session the
+`mode: worker` / `auto_clear_on_task_done: true` /
+`auto_compact_on_compact: true` for a session the
 operator never opted in. On the next yaran launch — or the next time
 that session re-spawns — those settings would normally drive a
 provider bypass (`CLAUDE_AMQ_YOLO=1` or OpenCode's `--auto`), AMQ
 postscript injection (asking the agent to emit `[task-done]`), and
-the built-in auto-clear watch rule.
+the built-in auto-clear and auto-compact watch rules.
 
 The attacker model is the same as T1 / T14: same-UID code with
 write access to `~/.yaran/sessions.sqlite3`. The novelty is that the
@@ -658,7 +659,10 @@ boundary:
   `yolo_permissions = false` (no CLI flag, no env var),
   `watch_rule_arm = {}` (no overrides),
   `auto_clear_on_task_done = false` (asymmetric: even Worker mode
-  requires the operator to tick the box explicitly), and
+  requires the operator to tick the box explicitly),
+  `auto_compact_on_compact = false` (the same asymmetry, as its own
+  box), `compact_instructions_path = None` (inherit the global path),
+  and
   `verify_envelope_override = None` (inherit the global config
   default).
 - Every consumer reads through this filter. PTY launches compose the
@@ -684,6 +688,18 @@ inspect any session's settings at a glance) and the existing
 T1/T14 chain. A future hardening would be SQLCipher with an
 operator-derived key, currently tracked under T5
 (encryption-at-rest playbook).
+
+The auto-compact rule adds one input the blob can steer:
+`compact_instructions_path` names a file whose text yaran types into
+the agent's prompt, which sends it to the provider. A planted path
+could name any file the user can read. That gives a same-UID attacker
+nothing they lack (they can read the file themselves), but a mistyped
+path by the operator would send the wrong file's text to the model.
+The read is bounded: it only happens for a Worker session that ticked
+auto-compact, it refuses files over 8 KiB and non-UTF-8 content
+(falling back to a bare `/compact` with a `[watch]` WARN in yaran's
+log naming the path), and it drops control characters so file content
+cannot act as keystrokes in the terminal.
 
 **Detection.** Malformed-blob rejections log at WARN under
 `yaran::session_settings` with the raw input. Settings-driven

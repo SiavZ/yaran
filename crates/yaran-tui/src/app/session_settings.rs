@@ -218,9 +218,18 @@ impl App {
             )
             .with_multiline(SYSTEM_PROMPT_LINES),
             draft_compact_path: TextInput::with_text(
-                settings.compact_instructions_path.clone().unwrap_or_default(),
+                settings
+                    .compact_instructions_path
+                    .clone()
+                    .unwrap_or_default(),
             ),
-            global_compact_path: self.engine.config.amq.inject.compact_instructions_path.clone(),
+            global_compact_path: self
+                .engine
+                .config
+                .amq
+                .inject
+                .compact_instructions_path
+                .clone(),
             draft: settings,
             draft_title: TextInput::with_text(title)
                 .with_char_map(yaran_core::git::agent_name_char_map),
@@ -983,12 +992,16 @@ mod tests {
             app.handle_session_settings_key(key(KeyCode::Char(c)))
                 .unwrap();
         }
-        app.handle_session_settings_key(key(KeyCode::Enter)).unwrap();
+        app.handle_session_settings_key(key(KeyCode::Enter))
+            .unwrap();
 
         assert!(matches!(app.prompt, PromptState::None), "Enter saved");
         let saved = app.engine.session_settings("session-1").unwrap();
         assert!(saved.auto_compact_on_compact);
-        assert_eq!(saved.compact_instructions_path.as_deref(), Some("/srv/c.txt"));
+        assert_eq!(
+            saved.compact_instructions_path.as_deref(),
+            Some("/srv/c.txt")
+        );
         let msg = app.status.message().to_string();
         assert!(msg.contains("auto-compact"), "{msg}");
     }
@@ -1020,8 +1033,17 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        let global = app.engine.config.amq.inject.compact_instructions_path.clone();
-        assert!(screen.contains(&format!("(global: {global})")), "placeholder");
+        let global = app
+            .engine
+            .config
+            .amq
+            .inject
+            .compact_instructions_path
+            .clone();
+        assert!(
+            screen.contains(&format!("(global: {global})")),
+            "placeholder"
+        );
 
         let rect = row_rect(&app, SettingsFocus::CompactInstructionsPath);
         click(&mut app, rect.x + 1, rect.y);

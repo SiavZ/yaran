@@ -63,9 +63,9 @@ pub struct AmqInjectConfig {
     /// Minimum quiet period after one wake is submitted before the next may
     /// be injected into the same session. Default 10000.
     pub post_delivery_cooldown_ms: u64,
-    /// Suppress Worker auto-clear while AMQ collaboration is recent (see
-    /// [`crate::amq::activity`]). Default 1800. `0` disables only the
-    /// recent-activity window; pending mail still blocks auto-clear.
+    /// Suppress Worker auto-clear and auto-compact while AMQ collaboration is
+    /// recent (see [`crate::amq::activity`]). Default 1800. `0` disables only
+    /// the recent-activity window; pending mail still blocks both.
     pub auto_clear_collaboration_quiet_secs: u64,
     /// File whose text follows `/compact` when a Worker opted into
     /// auto-compact emits the `[compact]` sentinel. A leading `~/` is the

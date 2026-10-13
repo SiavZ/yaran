@@ -159,14 +159,20 @@ pub fn load_compact_command(raw_path: &str) -> CompactCommandLoad {
     };
     let file = match std::fs::File::open(&path) {
         Ok(file) => file,
-        Err(err) => return bare(format!("compact instructions file {path} cannot be opened: {err}")),
+        Err(err) => {
+            return bare(format!(
+                "compact instructions file {path} cannot be opened: {err}"
+            ));
+        }
     };
     let mut bytes = Vec::new();
     if let Err(err) = file
         .take(MAX_COMPACT_INSTRUCTIONS_BYTES + 1)
         .read_to_end(&mut bytes)
     {
-        return bare(format!("compact instructions file {path} cannot be read: {err}"));
+        return bare(format!(
+            "compact instructions file {path} cannot be read: {err}"
+        ));
     }
     if bytes.len() as u64 > MAX_COMPACT_INSTRUCTIONS_BYTES {
         return bare(format!(
@@ -174,7 +180,9 @@ pub fn load_compact_command(raw_path: &str) -> CompactCommandLoad {
         ));
     }
     let Ok(text) = String::from_utf8(bytes) else {
-        return bare(format!("compact instructions file {path} is not UTF-8 text"));
+        return bare(format!(
+            "compact instructions file {path} is not UTF-8 text"
+        ));
     };
     let command = compact_command_text(Some(&text));
     if command == COMPACT_COMMAND {
@@ -342,7 +350,9 @@ mod tests {
         let load = load_compact_command(&path);
         assert_eq!(load.command, "/compact");
         assert!(
-            load.warning.as_deref().is_some_and(|w| w.contains("cannot be opened")),
+            load.warning
+                .as_deref()
+                .is_some_and(|w| w.contains("cannot be opened")),
             "{load:?}"
         );
     }
@@ -354,7 +364,9 @@ mod tests {
         let load = load_compact_command(&path);
         assert_eq!(load.command, "/compact");
         assert!(
-            load.warning.as_deref().is_some_and(|w| w.contains("is empty")),
+            load.warning
+                .as_deref()
+                .is_some_and(|w| w.contains("is empty")),
             "{load:?}"
         );
     }
@@ -367,7 +379,9 @@ mod tests {
         let load = load_compact_command(&path);
         assert_eq!(load.command, "/compact");
         assert!(
-            load.warning.as_deref().is_some_and(|w| w.contains("larger than")),
+            load.warning
+                .as_deref()
+                .is_some_and(|w| w.contains("larger than")),
             "{load:?}"
         );
     }
@@ -377,7 +391,9 @@ mod tests {
         let load = load_compact_command("notes/compact.txt");
         assert_eq!(load.command, "/compact");
         assert!(
-            load.warning.as_deref().is_some_and(|w| w.contains("absolute path")),
+            load.warning
+                .as_deref()
+                .is_some_and(|w| w.contains("absolute path")),
             "{load:?}"
         );
     }

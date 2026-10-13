@@ -1571,10 +1571,10 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Field {
             key: "auto_clear_collaboration_quiet_secs",
             comment: Some(CommentSource::Static(
-                "# A Worker's auto-clear waits while it collaborates: unread or unsent AMQ\n\
-                 # mail and queued wakes always block it, and so does AMQ activity newer\n\
-                 # than this many seconds. 0 disables only the recent-activity window.\n\
-                 # Default 1800.",
+                "# A Worker's auto-clear and auto-compact wait while it collaborates: unread\n\
+                 # or unsent AMQ mail and queued wakes always block them, and so does AMQ\n\
+                 # activity newer than this many seconds. 0 disables only the\n\
+                 # recent-activity window. Default 1800.",
             )),
             value_fn: |c| FieldValue::U64(c.amq.inject.auto_clear_collaboration_quiet_secs),
         },

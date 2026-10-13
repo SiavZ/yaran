@@ -635,7 +635,9 @@ mod tests {
                 .setting_rows()
                 .contains(&SettingsFocus::AutoCompactOnCompact)
         );
-        app.activate_new_agent_row(NameNewAgentFocus::Setting(SettingsFocus::AutoCompactOnCompact));
+        app.activate_new_agent_row(NameNewAgentFocus::Setting(
+            SettingsFocus::AutoCompactOnCompact,
+        ));
         assert!(extras(&app).draft.auto_compact_on_compact);
     }
 
