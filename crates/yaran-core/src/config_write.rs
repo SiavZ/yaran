@@ -498,6 +498,12 @@ fn apply_patches(doc: &mut DocumentMut, config: &Config) {
         config.ui.sidebar_header_rule,
     );
     patch_table_bool(doc, "ui", "human_board", config.ui.human_board);
+    patch_table_str(
+        doc,
+        "ui",
+        "human_board_reply_template",
+        &config.ui.human_board_reply_template,
+    );
     patch_table_str(doc, "ui", "theme", &config.ui.theme);
 
     // --- [capabilities] ---

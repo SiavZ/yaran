@@ -57,6 +57,28 @@ Move into the board with the pane keys, then:
 The card view has a **Mark done** (or **Reopen**) button too. A click selects a card and a
 double click opens it.
 
+## Replying from a card
+
+An open card's view has a reply box. Type your answer and press Enter: yaran types it into
+the agent that posted the card (or into the selected agent, when the poster is not running
+in this yaran), submits it, and marks the card done with your reply kept as its note. The
+box names the agent before you send anything, and the button reads **Send & mark done**
+while there is text in it.
+
+The reply is typed exactly as you would type it yourself, with the card it answers in front
+of it:
+
+```text
+Reply to board card #21 [mvp-go-1013] (MVP GO re-check COMPLETE): looks good, roll it
+```
+
+Change that wording with `human_board_reply_template` in `[ui]`. It understands `{reply}`,
+`{card}`, `{ticket}` and `{title}`; an empty template sends your reply alone.
+
+> [!NOTE]
+> A reply is a keystroke like any other: when another device is driving the agent's
+> terminal, the send is refused, nothing is marked done, and your reply stays in the box.
+
 ## Posting cards from an agent
 
 Agents use the `yaran board` command, which works from inside any agent yaran launched:

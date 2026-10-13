@@ -404,3 +404,49 @@ fn latest_skips_to_the_newest_snapshot() {
     assert_eq!(latest.board.unwrap().cards.len(), 3);
     assert!(watcher.latest().is_none(), "nothing new since");
 }
+
+fn sample_card() -> Card {
+    let mut board = Board::default();
+    board
+        .post(
+            card(CardKind::Validate, Some("mvp-7"), "Check the signup page"),
+            at(0),
+        )
+        .unwrap();
+    board.cards.remove(0)
+}
+
+#[test]
+fn a_reply_prompt_names_the_card_it_answers() {
+    let card = sample_card();
+    assert_eq!(
+        render_reply(DEFAULT_REPLY_TEMPLATE, &card, "  looks good, ship it "),
+        "Reply to board card #1 [mvp-7] (Check the signup page): looks good, ship it"
+    );
+    assert_eq!(render_reply("{ticket}: {reply}", &card, "ok"), "mvp-7: ok");
+}
+
+#[test]
+fn a_reply_is_never_lost_to_the_template() {
+    let card = sample_card();
+    assert_eq!(render_reply("", &card, "just this"), "just this");
+    assert_eq!(
+        render_reply("About {card}", &card, "forgot the slot"),
+        "About #1 [mvp-7] forgot the slot"
+    );
+    assert_eq!(
+        render_reply("Line one\n{reply}\nend", &card, "x"),
+        "Line one x end",
+        "a prompt is one line"
+    );
+}
+
+#[test]
+fn a_long_title_is_cut_in_the_prompt() {
+    let mut card = sample_card();
+    card.title = "t".repeat(REPLY_TITLE_CHARS + 40);
+    let prompt = render_reply("{title}|{reply}", &card, "r");
+    let (title, reply) = prompt.split_once('|').unwrap();
+    assert_eq!(title.chars().count(), REPLY_TITLE_CHARS);
+    assert_eq!(reply, "r");
+}

@@ -894,6 +894,13 @@ fn config_schema() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::Bool(c.ui.human_board),
         },
         ConfigEntry::Field {
+            key: "human_board_reply_template",
+            comment: Some(CommentSource::Static(
+                "# What a reply typed in a board card becomes when it is sent to an agent.\n# The card dialog has a reply box: Enter types the reply into the agent that\n# posted the card (or the selected agent when the poster is not running),\n# submits it, and marks the card done with the reply kept as its note.\n# Placeholders: {reply} the text you typed, {card} the card label\n# (\"#21 [ticket]\"), {ticket} the bare ticket, {title} the card title (cut to\n# 80 characters). Empty sends the reply alone; a template without {reply}\n# gets the reply appended, so what you typed is never dropped.",
+            )),
+            value_fn: |c| FieldValue::Str(c.ui.human_board_reply_template.clone()),
+        },
+        ConfigEntry::Field {
             key: "theme",
             comment: Some(CommentSource::Static(
                 "# Visual theme for the yaran interface.\n# Built-in options include \"yaran_dark\" (the default), plus any theme\n# bundled with the opaline engine, for example: \"catppuccin_mocha\",\n# \"catppuccin_frappe\", \"nord\", \"dracula\", \"gruvbox_dark\",\n# \"tokyo_night\", \"solarized_dark\", \"one_dark\", \"rose_pine\", and others.\n# To use a custom theme, drop a TOML file into <config_dir>/themes/<name>.toml\n# (with the same token format as opaline themes) and reference it here\n# by file stem. Unknown names fall back to yaran_dark with a warning.\n# Use the `change-theme` command in the palette (Ctrl-p) for an interactive picker.",

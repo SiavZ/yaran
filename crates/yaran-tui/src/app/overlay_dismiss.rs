@@ -114,6 +114,12 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         // Confirmations. Dismissal IS cancel here, and every one of these
         // already defaults its focus to Cancel, so an outside click resolves
         // them the same way the safe default button does.
+        // A card dialog with a reply typed into it holds free text the user
+        // has not sent: an outside click must not throw it away.
+        PromptState::HumanBoardCard {
+            reply: Some(reply), ..
+        } if !reply.input.text.trim().is_empty() => Blink,
+
         PromptState::ConfirmDeleteAgent { .. }
         | PromptState::HumanBoardCard { .. }
         | PromptState::ConfirmDeleteTerminal { .. }

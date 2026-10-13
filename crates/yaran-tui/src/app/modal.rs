@@ -160,11 +160,18 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // expanding it rather than choosing it and closing.
         PromptState::ResourceMonitor { .. } => ModalSpec::new(Picker, false, false),
 
+        // A human-board card that can take a reply: a single-line field, so
+        // Enter sends it, plus Close and Mark done / Send & mark done. Single
+        // line, so the dual-mode rule asks no confirm button of it; the action
+        // button is a commit in its own right.
+        PromptState::HumanBoardCard { reply: Some(_), .. } => ModalSpec::new(Form, false, true),
+
         // ── Confirm ─────────────────────────────────────────────────────
         PromptState::ConfirmDeleteAgent { .. }
-        // A human-board card: its text (scrolling when long) and a Close /
-        // Mark done (or Reopen) pair; horizontal keys move focus.
-        | PromptState::HumanBoardCard { .. }
+        // A human-board card with no reply field (done already, or no agent
+        // running): its text (scrolling when long) and a Close / Mark done
+        // (or Reopen) pair; horizontal keys move focus.
+        | PromptState::HumanBoardCard { reply: None, .. }
         | PromptState::ConfirmDeleteTerminal { .. }
         | PromptState::ConfirmCloseTab { .. }
         | PromptState::ConfirmDetachAgent { .. }
@@ -281,7 +288,7 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::ResourceMonitor { .. }
         | PromptState::ConfigReloadFailed { .. }
         | PromptState::ConfirmDeleteAgent { .. }
-        | PromptState::HumanBoardCard { .. }
+        | PromptState::HumanBoardCard { reply: None, .. }
         | PromptState::ConfirmDeleteTerminal { .. }
         | PromptState::ConfirmCloseTab { .. }
         | PromptState::ConfirmDetachAgent { .. }
@@ -317,6 +324,9 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::AttachPullRequestInput { input, .. }
         | PromptState::NameStandaloneAgent { input, .. }
         | PromptState::NameNewAgent { input, .. } => vec![input],
+        PromptState::HumanBoardCard {
+            reply: Some(reply), ..
+        } => vec![&reply.input],
 
         PromptState::StartupCommandLogs(prompt) => vec![&prompt.filter],
         PromptState::SessionSettings(prompt) => {
@@ -1032,8 +1042,38 @@ mod tests {
                         resolved_by: None,
                         resolution: None,
                     }),
-                    focus: ConfirmFocus::Cancel,
+                    focus: crate::app::human_board::HumanBoardCardFocus::Close,
                     scroll: 0,
+                    reply: None,
+                },
+            ),
+            (
+                "HumanBoardCard with a reply field",
+                PromptState::HumanBoardCard {
+                    card: Box::new(yaran_core::human_board::Card {
+                        id: 13,
+                        kind: yaran_core::human_board::CardKind::Confirm,
+                        ticket: None,
+                        title: "Merge the auth fix?".to_string(),
+                        detail: None,
+                        from: Some("orchestrator".to_string()),
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                        resolved_at: None,
+                        resolved_by: None,
+                        resolution: None,
+                    }),
+                    focus: crate::app::human_board::HumanBoardCardFocus::Reply,
+                    scroll: 0,
+                    reply: Some(Box::new(crate::app::human_board::CardReply {
+                        input: TextInput::with_text("yes, merge it".to_string()),
+                        target: crate::app::human_board::ReplyTarget {
+                            session_id: "s1".to_string(),
+                            tab_id: "s1-slot".to_string(),
+                            label: "orchestrator".to_string(),
+                            is_poster: true,
+                        },
+                    })),
                 },
             ),
             (

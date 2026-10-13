@@ -2396,11 +2396,14 @@ pub(crate) enum PromptState {
     /// acts on, and the button acts on its number, never on a row.
     HumanBoardCard {
         card: Box<yaran_core::human_board::Card>,
-        focus: ConfirmFocus, // Cancel is Close (the default); Confirm is the action
+        focus: human_board::HumanBoardCardFocus,
         /// First visible row of the body. A card's detail can run long, so the
         /// body scrolls rather than pushing the buttons off screen. Clamped at
         /// render against [`App::last_error_dialog_lines`].
         scroll: u16,
+        /// The reply field and the agent it goes to. `None` for a card that is
+        /// already done, or when no agent is running to take a reply.
+        reply: Option<Box<human_board::CardReply>>,
     },
     ConfirmDeleteTerminal {
         terminal_id: String,
@@ -3398,6 +3401,9 @@ pub(crate) enum OverlayMouseLayout {
     HumanBoardCard {
         close_button: Rect,
         action_button: Rect,
+        /// The reply field's box, when the dialog has one, so a click can land
+        /// the caret.
+        reply_field: Option<Rect>,
     },
     ConfirmDeleteTerminal {
         cancel_button: Rect,

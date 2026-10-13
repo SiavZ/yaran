@@ -280,7 +280,7 @@ yaran board resolve --ticket 4812
 yaran board list --all --json
 ```
 
-Turn on `[ui] human_board` (or run `toggle-human-board` from the palette) and the right column shows **Tasks for Human** where the staged list and the commit box were: open cards grouped as Tasks for you, Validation, Confirmation needed and What happened, then the last few you marked done. It is the same board whatever agent is selected, a new card is announced on the status line, Enter opens a card in full, and the stage key marks it done (or reopens it). The cards live in `human_board.json` in yaran's config directory; agents see what you resolved with `yaran board list --all`.
+Turn on `[ui] human_board` (or run `toggle-human-board` from the palette) and the right column shows **Tasks for Human** where the staged list and the commit box were: open cards grouped as Tasks for you, Validation, Confirmation needed and What happened, then the last few you marked done. It is the same board whatever agent is selected, a new card is announced on the status line, Enter opens a card in full, and the stage key marks it done (or reopens it). An open card also takes a reply: type it in the card's reply box and Enter sends it to the agent that posted the card as a prompt, then marks the card done with the reply kept as its note. The cards live in `human_board.json` in yaran's config directory; agents see what you resolved with `yaran board list --all`.
 
 ### Per-Session Settings
 

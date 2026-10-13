@@ -950,7 +950,13 @@ overwritten, and a document from a newer schema is read but not rewritten.
 environment (`YARAN_AMQ_HANDLE`/`AM_ME`) or `--from`, not an authenticated
 identity, and resolving a card is not authenticated either: both are
 same-UID actions under the single-user trust model accepted in T2. The board
-carries no executable content; nothing on it is ever run.
+carries no executable content; nothing on it is ever run. A reply sent from a
+card's dialog is typed into an agent's terminal through the same ownership gate
+as any keystroke, and the default reply template quotes the card's title
+(sanitized, cut to 80 characters): agent-written text therefore reaches an
+agent's prompt only when the person sends a reply, by default only the agent
+that posted the card, and the dialog names that agent first. An empty
+`human_board_reply_template` sends the person's words alone.
 
 **Detection.** `yaran board list --all --json` shows every card with its
 poster, timestamps, and who resolved it; the file itself is plain JSON.
