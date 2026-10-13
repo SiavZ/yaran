@@ -915,6 +915,8 @@ mod tests {
                     session_label: "demo".to_string(),
                     draft: Default::default(),
                     draft_title: TextInput::with_text("demo".to_string()),
+                    draft_compact_path: TextInput::new(),
+                    global_compact_path: "~/.claude/compact-instructions.txt".to_string(),
                     draft_system_prompt: TextInput::new().with_multiline(4),
                     focus: crate::app::SettingsFocus::ModeAttended,
                     rules: Vec::new(),

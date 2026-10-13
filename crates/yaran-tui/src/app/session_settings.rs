@@ -42,6 +42,13 @@ pub(crate) struct SessionSettingsPrompt {
     pub(crate) session_label: String,
     pub(crate) draft: SessionSettings,
     pub(crate) draft_title: TextInput,
+    /// Single-line editor for this session's compact instructions file.
+    /// Blank inherits `[amq.inject].compact_instructions_path`. Mirrored into
+    /// `draft.compact_instructions_path` only on Save, like the title.
+    pub(crate) draft_compact_path: TextInput,
+    /// The global compact instructions path, shown as the blank field's
+    /// placeholder so the user can see what blank means.
+    pub(crate) global_compact_path: String,
     /// Multiline editor for the custom system prompt. Mirrored into
     /// `draft.system_prompt` only on Save, so Cancel discards edits.
     pub(crate) draft_system_prompt: TextInput,
@@ -74,6 +81,8 @@ pub(crate) enum SettingsFocus {
     SystemPrompt,
     WatchRule(usize),
     AutoClearOnDone,
+    AutoCompactOnCompact,
+    CompactInstructionsPath,
     VerifyDefault,
     VerifyStrict,
     VerifySkip,
@@ -95,7 +104,9 @@ impl SettingsFocus {
             Self::SystemPrompt => Self::AutoClearOnDone,
             Self::WatchRule(idx) if idx + 1 < rules_len => Self::WatchRule(idx + 1),
             Self::WatchRule(_) => Self::AutoClearOnDone,
-            Self::AutoClearOnDone => Self::VerifyDefault,
+            Self::AutoClearOnDone => Self::AutoCompactOnCompact,
+            Self::AutoCompactOnCompact => Self::CompactInstructionsPath,
+            Self::CompactInstructionsPath => Self::VerifyDefault,
             Self::VerifyDefault => Self::VerifyStrict,
             Self::VerifyStrict => Self::VerifySkip,
             Self::VerifySkip => Self::SaveButton,
@@ -117,7 +128,9 @@ impl SettingsFocus {
             Self::WatchRule(idx) => Self::WatchRule(idx - 1),
             Self::AutoClearOnDone if rules_len > 0 => Self::WatchRule(rules_len - 1),
             Self::AutoClearOnDone => Self::SystemPrompt,
-            Self::VerifyDefault => Self::AutoClearOnDone,
+            Self::AutoCompactOnCompact => Self::AutoClearOnDone,
+            Self::CompactInstructionsPath => Self::AutoCompactOnCompact,
+            Self::VerifyDefault => Self::CompactInstructionsPath,
             Self::VerifyStrict => Self::VerifyDefault,
             Self::VerifySkip => Self::VerifyStrict,
             Self::SaveButton => Self::VerifySkip,
@@ -152,6 +165,7 @@ pub(crate) fn apply_settings_toggle(
     match focus {
         SettingsFocus::Title
         | SettingsFocus::SystemPrompt
+        | SettingsFocus::CompactInstructionsPath
         | SettingsFocus::SaveButton
         | SettingsFocus::CancelButton => {}
         SettingsFocus::ModeAttended => draft.mode = ContextMode::Attended,
@@ -166,6 +180,9 @@ pub(crate) fn apply_settings_toggle(
         }
         SettingsFocus::AutoClearOnDone => {
             draft.auto_clear_on_task_done = !draft.auto_clear_on_task_done;
+        }
+        SettingsFocus::AutoCompactOnCompact => {
+            draft.auto_compact_on_compact = !draft.auto_compact_on_compact;
         }
         SettingsFocus::VerifyDefault => draft.verify_envelope_override = None,
         SettingsFocus::VerifyStrict => draft.verify_envelope_override = Some(true),
@@ -200,6 +217,10 @@ impl App {
                 settings.system_prompt.clone().unwrap_or_default(),
             )
             .with_multiline(SYSTEM_PROMPT_LINES),
+            draft_compact_path: TextInput::with_text(
+                settings.compact_instructions_path.clone().unwrap_or_default(),
+            ),
+            global_compact_path: self.engine.config.amq.inject.compact_instructions_path.clone(),
             draft: settings,
             draft_title: TextInput::with_text(title)
                 .with_char_map(yaran_core::git::agent_name_char_map),
@@ -249,6 +270,9 @@ impl App {
         // wrapper never receives an empty --append-system-prompt.
         let text = prompt.draft_system_prompt.text.trim_end();
         settings.system_prompt = (!text.trim().is_empty()).then(|| text.to_string());
+        let compact_path = prompt.draft_compact_path.text.trim();
+        settings.compact_instructions_path =
+            (!compact_path.is_empty()).then(|| compact_path.to_string());
         let title = prompt.draft_title.text.trim().to_string();
         let command = Command::SetSessionSettings {
             session_id: prompt.session_id.clone(),
@@ -313,7 +337,7 @@ impl App {
             SettingsFocus::SaveButton => self.save_session_settings()?,
             SettingsFocus::CancelButton => self.cancel_session_settings(),
             SettingsFocus::SystemPrompt => self.engage_session_settings_system_prompt(),
-            SettingsFocus::Title => {}
+            SettingsFocus::Title | SettingsFocus::CompactInstructionsPath => {}
             other => self.toggle_session_settings_row(other),
         }
         Ok(())
@@ -341,10 +365,14 @@ impl App {
         else {
             return Ok(false);
         };
-        let title_focused = focus == SettingsFocus::Title;
+        // The title and the compact path are the modal's single-line fields.
+        let line_field_focused = matches!(
+            focus,
+            SettingsFocus::Title | SettingsFocus::CompactInstructionsPath
+        );
         // A focused single-line field owns plain characters and the
         // horizontal arrows, so they never reach the bindings.
-        let action = if title_focused && text_field_owns_key(key) {
+        let action = if line_field_focused && text_field_owns_key(key) {
             None
         } else {
             self.bindings
@@ -368,13 +396,17 @@ impl App {
             }
             Some(Action::MoveDown) => self.set_session_settings_focus(focus.next(rules_len)),
             Some(Action::MoveUp) => self.set_session_settings_focus(focus.prev(rules_len)),
-            // Enter submits from the single-line title (nothing competes for
+            // Enter submits from a single-line field (nothing competes for
             // it there) and acts on the focused control elsewhere.
-            Some(Action::Confirm) if title_focused => self.save_session_settings()?,
+            Some(Action::Confirm) if line_field_focused => self.save_session_settings()?,
             Some(Action::Confirm) => self.activate_session_settings_row(focus)?,
-            _ if title_focused => {
+            _ if line_field_focused => {
                 if let Some(p) = self.session_settings_prompt_mut() {
-                    p.draft_title.handle_key(key);
+                    if focus == SettingsFocus::Title {
+                        p.draft_title.handle_key(key);
+                    } else {
+                        p.draft_compact_path.handle_key(key);
+                    }
                 }
             }
             _ if key.code == KeyCode::Char(' ') => self.activate_session_settings_row(focus)?,
@@ -398,6 +430,9 @@ impl App {
                 p.draft_system_prompt.insert_str(text);
             } else if p.focus == SettingsFocus::Title {
                 p.draft_title.insert_str(&text.replace(['\r', '\n'], " "));
+            } else if p.focus == SettingsFocus::CompactInstructionsPath {
+                p.draft_compact_path
+                    .insert_str(&text.replace(['\r', '\n'], ""));
             }
         }
     }
@@ -439,6 +474,17 @@ impl App {
             }
             return Ok(());
         }
+        if focus == SettingsFocus::CompactInstructionsPath {
+            // The row's published rect is the field itself, so the click
+            // column maps straight onto the text.
+            if let Some(p) = self.session_settings_prompt_mut()
+                && let Some((rect, _)) = p.hit_rows.iter().find(|(_, f)| *f == focus)
+            {
+                let col = usize::from(mouse.column.saturating_sub(rect.x));
+                p.draft_compact_path.set_cursor_from_display_pos(0, col);
+            }
+            return Ok(());
+        }
         self.activate_session_settings_row(focus)
     }
 
@@ -465,7 +511,7 @@ impl App {
         let engaged = self.session_settings_prompt_engaged();
         let rule_rows = prompt.rules.len().max(1) as u16;
         // Header rows + fixed rows + editor + rules + buttons + hints.
-        let height = 26 + rule_rows + SYSTEM_PROMPT_LINES as u16;
+        let height = 28 + rule_rows + SYSTEM_PROMPT_LINES as u16;
         let area = centered_rect_exact(86, height, frame.area());
         let title = format!("Session Settings: {}", prompt.session_label);
         let modal = self.open_modal_frame(frame, &title, area);
@@ -549,7 +595,7 @@ impl App {
                 SettingsFocus::ModeWorker,
                 ContextMode::Worker,
                 "worker",
-                "task-done auto-clear, held while collaborating",
+                "auto-clear and auto-compact, held while collaborating",
             ),
         ] {
             let r = line(
@@ -674,6 +720,46 @@ impl App {
             ),
         );
         rows.push((r, SettingsFocus::AutoClearOnDone));
+        let r = line(
+            frame,
+            &mut y,
+            choice(
+                check(prompt.draft.auto_compact_on_compact),
+                "Auto-compact on [compact]",
+                "Worker only; types /compact + the file below",
+                f == SettingsFocus::AutoCompactOnCompact,
+            ),
+        );
+        rows.push((r, SettingsFocus::AutoCompactOnCompact));
+        let path_focused = f == SettingsFocus::CompactInstructionsPath;
+        let prefix = "      file: ";
+        let path_rect = Rect::new(
+            inner.x + 1 + prefix.len() as u16,
+            y,
+            inner.width.saturating_sub(2 + prefix.len() as u16),
+            1,
+        );
+        if y < bottom {
+            Paragraph::new(Line::from(Span::styled(prefix, dim))).render(
+                Rect::new(inner.x + 1, y, prefix.len() as u16, 1),
+                frame.buffer_mut(),
+            );
+            let path_text = if prompt.draft_compact_path.text.is_empty() {
+                Span::styled(format!("(global: {})", prompt.global_compact_path), dim)
+            } else {
+                Span::styled(
+                    prompt.draft_compact_path.text.clone(),
+                    if path_focused { focused_style } else { text },
+                )
+            };
+            Paragraph::new(Line::from(path_text)).render(path_rect, frame.buffer_mut());
+            if path_focused {
+                let (_, col) = prompt.draft_compact_path.cursor_display_position();
+                frame.set_cursor_position((path_rect.x + col as u16, y));
+            }
+            rows.push((path_rect, SettingsFocus::CompactInstructionsPath));
+            y += 1;
+        }
         y += 1;
 
         // AMQ verify override.
@@ -866,6 +952,81 @@ mod tests {
             assert_eq!(f.next(2).prev(2), f);
             f = f.next(2);
         }
+    }
+
+    #[test]
+    fn the_auto_compact_rows_sit_between_auto_clear_and_verify() {
+        use SettingsFocus as F;
+        assert_eq!(F::AutoClearOnDone.next(0), F::AutoCompactOnCompact);
+        assert_eq!(F::AutoCompactOnCompact.next(0), F::CompactInstructionsPath);
+        assert_eq!(F::CompactInstructionsPath.next(0), F::VerifyDefault);
+        assert_eq!(F::VerifyDefault.prev(0), F::CompactInstructionsPath);
+        assert_eq!(F::CompactInstructionsPath.prev(0), F::AutoCompactOnCompact);
+        assert_eq!(F::AutoCompactOnCompact.prev(0), F::AutoClearOnDone);
+    }
+
+    /// Space flips the auto-compact box, the path field takes typed keys,
+    /// and Enter from the field saves both.
+    #[test]
+    fn auto_compact_and_its_path_are_edited_by_keyboard_and_saved() {
+        let mut app = app();
+        app.open_session_settings().unwrap();
+        prompt_mut(&mut app).draft.mode = ContextMode::Worker;
+        prompt_mut(&mut app).focus = SettingsFocus::AutoCompactOnCompact;
+        app.handle_session_settings_key(key(KeyCode::Char(' ')))
+            .unwrap();
+        assert!(prompt(&app).draft.auto_compact_on_compact);
+
+        app.handle_session_settings_key(key(KeyCode::Down)).unwrap();
+        assert_eq!(prompt(&app).focus, SettingsFocus::CompactInstructionsPath);
+        for c in "/srv/c.txt".chars() {
+            app.handle_session_settings_key(key(KeyCode::Char(c)))
+                .unwrap();
+        }
+        app.handle_session_settings_key(key(KeyCode::Enter)).unwrap();
+
+        assert!(matches!(app.prompt, PromptState::None), "Enter saved");
+        let saved = app.engine.session_settings("session-1").unwrap();
+        assert!(saved.auto_compact_on_compact);
+        assert_eq!(saved.compact_instructions_path.as_deref(), Some("/srv/c.txt"));
+        let msg = app.status.message().to_string();
+        assert!(msg.contains("auto-compact"), "{msg}");
+    }
+
+    #[test]
+    fn a_blank_compact_path_saves_as_unset() {
+        let mut app = app();
+        app.open_session_settings().unwrap();
+        prompt_mut(&mut app).draft.auto_compact_on_compact = true;
+        prompt_mut(&mut app)
+            .draft_compact_path
+            .set_text("   ".into());
+        app.save_session_settings().unwrap();
+        let saved = app.engine.session_settings("session-1").unwrap();
+        assert_eq!(saved.compact_instructions_path, None);
+    }
+
+    /// A blank path field shows the global path it inherits, and clicking the
+    /// field focuses it rather than toggling anything.
+    #[test]
+    fn the_compact_path_field_shows_the_global_path_and_takes_a_click() {
+        let mut app = open_rendered();
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("draw");
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        let global = app.engine.config.amq.inject.compact_instructions_path.clone();
+        assert!(screen.contains(&format!("(global: {global})")), "placeholder");
+
+        let rect = row_rect(&app, SettingsFocus::CompactInstructionsPath);
+        click(&mut app, rect.x + 1, rect.y);
+        assert_eq!(prompt(&app).focus, SettingsFocus::CompactInstructionsPath);
+        assert!(!prompt(&app).draft.auto_compact_on_compact);
     }
 
     #[test]

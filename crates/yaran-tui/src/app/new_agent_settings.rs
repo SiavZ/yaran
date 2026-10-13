@@ -62,6 +62,7 @@ impl NewAgentExtras {
         rows.extend(self.rules.iter().map(|r| SettingsFocus::WatchRule(r.idx)));
         rows.extend([
             SettingsFocus::AutoClearOnDone,
+            SettingsFocus::AutoCompactOnCompact,
             SettingsFocus::VerifyDefault,
             SettingsFocus::VerifyStrict,
             SettingsFocus::VerifySkip,
@@ -196,7 +197,7 @@ pub(crate) fn extras_lines(extras: &NewAgentExtras) -> Vec<ExtrasLine> {
             SettingsFocus::ModeWorker,
             ContextMode::Worker,
             "worker",
-            "task-done auto-clear",
+            "auto-clear and auto-compact",
         ),
     ] {
         lines.push(row(
@@ -226,6 +227,12 @@ pub(crate) fn extras_lines(extras: &NewAgentExtras) -> Vec<ExtrasLine> {
         check(d.auto_clear_on_task_done),
         "Auto-clear after task done",
         "Worker only",
+    ));
+    lines.push(row(
+        NameNewAgentFocus::Setting(SettingsFocus::AutoCompactOnCompact),
+        check(d.auto_compact_on_compact),
+        "Auto-compact on [compact]",
+        "Worker only; file from [amq.inject]",
     ));
     lines.push(ExtrasLine::Heading("AMQ envelope verification"));
     for (focus, value, name, desc) in [
@@ -617,6 +624,19 @@ mod tests {
         assert_eq!(saved.mode, ContextMode::Worker);
         assert!(saved.auto_clear_on_task_done);
         assert!(app.armed_new_agent_settings.is_none(), "spent once");
+    }
+
+    #[test]
+    fn the_advanced_section_offers_auto_compact() {
+        let mut app = test_app(default_bindings());
+        open(&mut app);
+        assert!(
+            extras(&app)
+                .setting_rows()
+                .contains(&SettingsFocus::AutoCompactOnCompact)
+        );
+        app.activate_new_agent_row(NameNewAgentFocus::Setting(SettingsFocus::AutoCompactOnCompact));
+        assert!(extras(&app).draft.auto_compact_on_compact);
     }
 
     /// A draft held for one create never attaches itself to another.
