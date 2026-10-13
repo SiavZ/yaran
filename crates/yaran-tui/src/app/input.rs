@@ -4686,7 +4686,11 @@ impl App {
             let visible_len = list.visible_indices(entries, pick_project_matches).len();
             match action {
                 Some(Action::CloseOverlay) => {
-                    if !list.exit_search_clearing_filter() {
+                    // Bound first rather than moved into the arm's guard: a
+                    // side-effecting guard that is false falls through to the
+                    // arms below, which would hand this key to the filter.
+                    let search_exited = list.exit_search_clearing_filter();
+                    if !search_exited {
                         self.prompt = PromptState::None;
                     }
                 }
@@ -11144,7 +11148,10 @@ impl App {
                 self.update_dragged_panes(mouse.column, mouse.row);
             }
             MouseEventKind::Up(MouseButton::Left) if self.mouse_drag.is_some() => {
-                if self.mouse_drag.take() != Some(ResizeDragState::CenterScrollbar) {
+                // Taken here, not in the guard: a false guard would fall
+                // through to the selection-drag arm below.
+                let finished = self.mouse_drag.take();
+                if finished != Some(ResizeDragState::CenterScrollbar) {
                     self.persist_pane_widths();
                 }
             }
