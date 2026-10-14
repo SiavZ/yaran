@@ -343,8 +343,13 @@ pub(crate) fn announcement(fresh: &[Card]) -> Option<String> {
         .as_deref()
         .map(|from| format!(" from {from}"))
         .unwrap_or_default();
+    let urgency = if newest.priority.is_urgent() {
+        format!("{} priority, ", newest.priority.label())
+    } else {
+        String::new()
+    };
     let what = format!(
-        "{} {} ({}{from})",
+        "{} {} ({urgency}{}{from})",
         newest.label(),
         newest.title,
         newest.kind.heading()

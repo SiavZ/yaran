@@ -5552,7 +5552,15 @@ impl App {
         let mut full = vec![name.clone()];
         if waiting > 0 {
             full.push(Span::raw(" "));
-            full.push(Span::styled(format!("{waiting} waiting"), attention));
+            let urgent = board.urgent_count();
+            full.push(Span::styled(
+                if urgent > 0 {
+                    format!("{waiting} waiting ({urgent} urgent)")
+                } else {
+                    format!("{waiting} waiting")
+                },
+                attention,
+            ));
         }
         let without_news = full.clone();
         if news > 0 {
@@ -5727,7 +5735,20 @@ impl App {
                         Style::default()
                     };
                     let open = card.is_open();
-                    let marker = if open { "  " } else { " \u{2713}" };
+                    // An open card wears its priority (nothing for the ordinary
+                    // queue); a done card wears its tick instead.
+                    let marker = if open {
+                        card.priority.marker()
+                    } else {
+                        " \u{2713}"
+                    };
+                    let marker_tone = match card.priority {
+                        _ if !open => self.theme.hint_dim_desc_fg,
+                        yaran_core::human_board::Priority::Critical => self.theme.status_error_fg,
+                        yaran_core::human_board::Priority::High => self.theme.warning_fg,
+                        yaran_core::human_board::Priority::Normal
+                        | yaran_core::human_board::Priority::Low => self.theme.hint_dim_desc_fg,
+                    };
                     let reference = match &card.ticket {
                         Some(ticket) => ticket.clone(),
                         None => format!("#{}", card.id),
@@ -5746,7 +5767,7 @@ impl App {
                         (self.theme.hint_dim_desc_fg, self.theme.hint_dim_desc_fg)
                     };
                     Line::from(vec![
-                        Span::styled(marker.to_string(), base.fg(self.theme.hint_dim_desc_fg)),
+                        Span::styled(marker.to_string(), base.fg(marker_tone)),
                         Span::styled(" ", base),
                         Span::styled(reference, base.fg(reference_tone)),
                         Span::styled(" ", base),
@@ -5797,6 +5818,17 @@ impl App {
             Line::from(vec![
                 Span::styled(" Kind:     ", label),
                 Span::styled(card.kind.heading().to_string(), text),
+            ]),
+            Line::from(vec![
+                Span::styled(" Priority: ", label),
+                Span::styled(
+                    card.priority.label().to_string(),
+                    if card.priority.is_urgent() {
+                        Style::default().fg(self.theme.warning_fg)
+                    } else {
+                        text
+                    },
+                ),
             ]),
         ];
         if let Some(ticket) = &card.ticket {

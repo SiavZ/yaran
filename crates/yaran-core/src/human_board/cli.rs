@@ -10,7 +10,7 @@ use std::io::Read;
 use anyhow::{Result, bail};
 use chrono::Utc;
 
-use super::{BoardStore, Card, CardKind, NewCard, PostOutcome, compact_age};
+use super::{BoardStore, Card, CardKind, NewCard, PostOutcome, Priority, compact_age};
 use crate::config::YaranPaths;
 
 pub const BOARD_HELP: &str = "\
@@ -21,11 +21,15 @@ The terminal UI shows the open cards (the \"Tasks for Human\" pane) until
 they are marked done there or resolved here.
 
 Subcommands:
-  yaran board post --kind <kind> [--ticket <id>] [--detail <text>|-] [--from <who>] <title...>
+  yaran board post --kind <kind> [--priority <level>] [--ticket <id>] [--detail <text>|-]
+                   [--from <who>] <title...>
                        Put a card on the board and print its number. An open
                        card is unique per ticket and kind: posting again with
-                       the same --ticket and --kind updates it in place.
+                       the same --ticket and --kind updates it in place (its
+                       priority too, when --priority is given).
                        --detail - reads the detail from standard input.
+  yaran board priority <number> <level>
+                       Change a card's priority.
   yaran board resolve <number>... [--note <text>]
   yaran board resolve --ticket <id> [--kind <kind>] [--note <text>]
                        Take cards off the board. They stay in its history.
@@ -33,6 +37,12 @@ Subcommands:
                        Put a resolved card back on the board.
   yaran board list [--all] [--json]
                        Show the open cards; --all adds the resolved history.
+
+Priorities (most urgent first; urgent cards lead their group on the board):
+  critical   drop everything (a release is blocked, users are affected)
+  high       needed soon, ahead of the ordinary queue
+  normal     the ordinary queue (the default)
+  low        whenever convenient
 
 Kinds:
   task       something only a person can do or decide
@@ -76,6 +86,22 @@ pub fn run_with(
             Ok(())
         }
         "resolve" | "done" => run_resolve(rest, store, out),
+        "priority" => {
+            let [id, level] = rest else {
+                bail!(
+                    "`yaran board priority` needs a card number and a level (critical, high, normal, low)"
+                );
+            };
+            let id = parse_ids(std::slice::from_ref(id))?[0];
+            let priority = parse_priority(level)?;
+            let changed = store.update(|board| board.set_priority(id, priority, Utc::now()))?;
+            if changed {
+                writeln!(out, "#{id} is now {priority}")?;
+            } else {
+                writeln!(out, "#{id} was already {priority}")?;
+            }
+            Ok(())
+        }
         "reopen" => {
             let ids = parse_ids(rest)?;
             if ids.is_empty() {
@@ -113,6 +139,13 @@ fn default_from() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+/// A priority from the CLI, or an error naming the valid levels.
+fn parse_priority(value: &str) -> Result<Priority> {
+    Priority::parse(value).ok_or_else(|| {
+        anyhow::anyhow!("unknown priority {value:?}; use one of critical, high, normal, low")
+    })
+}
+
 /// The value after a flag, or an error naming the flag.
 fn value_of<'a>(flag: &str, iter: &mut impl Iterator<Item = &'a String>) -> Result<&'a String> {
     match iter.next() {
@@ -143,6 +176,7 @@ fn parse_post(args: &[String], stdin: &mut dyn Read) -> Result<Option<NewCard>> 
                 })?);
             }
             "--ticket" | "-t" => card.ticket = Some(value_of(arg, &mut iter)?.clone()),
+            "--priority" | "-p" => card.priority = Some(parse_priority(value_of(arg, &mut iter)?)?),
             "--detail" | "-d" => {
                 let value = value_of(arg, &mut iter)?;
                 card.detail = Some(if value == "-" {
@@ -294,11 +328,14 @@ fn run_list(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write) -
     }
     let now = Utc::now();
     for card in cards {
-        let state = match (card.is_open(), card.resolved_by.as_deref()) {
+        let mut state = match (card.is_open(), card.resolved_by.as_deref()) {
             (true, _) => card.kind.as_str().to_string(),
             (false, Some(by)) => format!("{} (resolved by {by})", card.kind.as_str()),
             (false, None) => format!("{} (resolved)", card.kind.as_str()),
         };
+        if card.priority != Priority::Normal {
+            state = format!("{state}, {}", card.priority);
+        }
         let from = card
             .from
             .as_deref()
@@ -533,6 +570,46 @@ mod tests {
         let cards: Vec<Card> = serde_json::from_str(&json).unwrap();
         assert_eq!(cards.len(), 2);
         assert_eq!(cards[0].id, 2, "open cards come first");
+    }
+
+    #[test]
+    fn priority_is_posted_changed_and_listed() {
+        let (_dir, store) = store();
+        assert_eq!(
+            run(&store, &["post", "-k", "task", "-p", "high", "soon please"]).unwrap(),
+            "posted #1 (task)\n"
+        );
+        run(&store, &["post", "-k", "task", "later"]).unwrap();
+        assert_eq!(
+            store.load().unwrap().card(1).unwrap().priority,
+            Priority::High
+        );
+        assert_eq!(
+            store.load().unwrap().card(2).unwrap().priority,
+            Priority::Normal
+        );
+        assert_eq!(
+            run(&store, &["priority", "2", "critical"]).unwrap(),
+            "#2 is now critical\n"
+        );
+        assert_eq!(
+            run(&store, &["priority", "2", "p0"]).unwrap(),
+            "#2 was already critical\n"
+        );
+        let listed = run(&store, &["list"]).unwrap();
+        let first = listed.lines().next().unwrap();
+        assert!(
+            first.contains("#2") && first.contains("task, critical"),
+            "{listed}"
+        );
+        assert!(
+            listed.lines().nth(1).unwrap().contains("task, high"),
+            "{listed}"
+        );
+        let err = run(&store, &["post", "-k", "task", "-p", "asap", "x"]).unwrap_err();
+        assert!(format!("{err}").contains("unknown priority"), "{err}");
+        let err = run(&store, &["priority", "2"]).unwrap_err();
+        assert!(format!("{err}").contains("needs a card number"), "{err}");
     }
 
     #[test]

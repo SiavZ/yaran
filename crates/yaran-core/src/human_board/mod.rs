@@ -136,6 +136,91 @@ impl CardKind {
     }
 }
 
+/// How urgent a card is, graded the way an issue tracker grades one. Within a
+/// kind the board lists urgent cards first; the age only orders equals.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    /// Drop everything: a release is blocked or something is broken for users.
+    Critical,
+    /// Needed soon; ahead of the ordinary queue.
+    High,
+    /// The ordinary queue.
+    #[default]
+    Normal,
+    /// Whenever convenient.
+    Low,
+}
+
+impl Priority {
+    /// Every priority, most urgent first.
+    pub const ALL: [Priority; 4] = [
+        Priority::Critical,
+        Priority::High,
+        Priority::Normal,
+        Priority::Low,
+    ];
+
+    /// The name the CLI and the JSON use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Priority::Critical => "critical",
+            Priority::High => "high",
+            Priority::Normal => "normal",
+            Priority::Low => "low",
+        }
+    }
+
+    /// The word a person reads.
+    pub fn label(self) -> &'static str {
+        match self {
+            Priority::Critical => "Critical",
+            Priority::High => "High",
+            Priority::Normal => "Normal",
+            Priority::Low => "Low",
+        }
+    }
+
+    /// A two-cell marker for a list row: nothing for the ordinary queue.
+    pub fn marker(self) -> &'static str {
+        match self {
+            Priority::Critical => "!!",
+            Priority::High => " !",
+            Priority::Normal => "  ",
+            Priority::Low => " \u{2193}",
+        }
+    }
+
+    /// Critical and High: what the board counts as urgent.
+    pub fn is_urgent(self) -> bool {
+        matches!(self, Priority::Critical | Priority::High)
+    }
+
+    fn is_normal(&self) -> bool {
+        *self == Priority::Normal
+    }
+
+    /// Parse a priority from the CLI: the canonical names, the issue-tracker
+    /// words, and `p0`..`p4`, case-insensitively.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "critical" | "blocker" | "urgent" | "highest" | "p0" | "p1" => Some(Priority::Critical),
+            "high" | "important" | "p2" => Some(Priority::High),
+            "normal" | "medium" | "default" | "p3" => Some(Priority::Normal),
+            "low" | "lowest" | "minor" | "trivial" | "p4" | "p5" => Some(Priority::Low),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl std::fmt::Display for CardKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -148,6 +233,10 @@ pub struct Card {
     /// The card's number, unique for the life of the board and never reused.
     pub id: u64,
     pub kind: CardKind,
+    /// How urgent it is. Absent from the file for the ordinary queue, so a
+    /// board written before priorities existed reads back unchanged.
+    #[serde(default, skip_serializing_if = "Priority::is_normal")]
+    pub priority: Priority,
     /// The ticket the card is about, when it is about one. An open card is
     /// unique per (ticket, kind): posting again updates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,6 +290,9 @@ pub struct Board {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NewCard {
     pub kind: Option<CardKind>,
+    /// `None` keeps an updated card's priority and gives a new card the
+    /// ordinary one.
+    pub priority: Option<Priority>,
     pub ticket: Option<String>,
     pub title: String,
     pub detail: Option<String>,
@@ -283,6 +375,9 @@ impl Board {
             if from.is_some() {
                 existing.from = from;
             }
+            if let Some(priority) = card.priority {
+                existing.priority = priority;
+            }
             existing.updated_at = now;
             return Ok(PostOutcome::Updated(existing.id));
         }
@@ -299,6 +394,7 @@ impl Board {
         self.cards.push(Card {
             id,
             kind,
+            priority: card.priority.unwrap_or_default(),
             ticket,
             title,
             detail,
@@ -372,6 +468,25 @@ impl Board {
         ids
     }
 
+    /// Change a card's priority. `Ok(false)` when it already had it; an
+    /// unknown number is an error.
+    pub fn set_priority(
+        &mut self,
+        id: u64,
+        priority: Priority,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let Some(card) = self.cards.iter_mut().find(|c| c.id == id) else {
+            bail!("there is no card #{id} on the board");
+        };
+        if card.priority == priority {
+            return Ok(false);
+        }
+        card.priority = priority;
+        card.updated_at = now;
+        Ok(true)
+    }
+
     /// Put a resolved card back on the board. Reopening an open card changes
     /// nothing (`Ok(false)`); an unknown number is an error.
     pub fn reopen(&mut self, id: u64, now: DateTime<Utc>) -> Result<bool> {
@@ -407,17 +522,26 @@ impl Board {
         self.cards.retain(|c| !drop.contains(&c.id));
     }
 
-    /// The open cards in board order: by kind (the column order), newest
-    /// first within a kind.
+    /// The open cards in board order: by kind (the column order), the most
+    /// urgent first within a kind, and newest first among equals.
     pub fn open_cards(&self) -> Vec<&Card> {
         let mut open: Vec<&Card> = self.cards.iter().filter(|c| c.is_open()).collect();
         open.sort_by(|a, b| {
             a.kind
                 .cmp(&b.kind)
+                .then(a.priority.cmp(&b.priority))
                 .then(b.updated_at.cmp(&a.updated_at))
                 .then(b.id.cmp(&a.id))
         });
         open
+    }
+
+    /// How many open cards are urgent (critical or high).
+    pub fn urgent_count(&self) -> usize {
+        self.cards
+            .iter()
+            .filter(|c| c.is_open() && c.priority.is_urgent())
+            .count()
     }
 
     /// The most recently resolved cards, newest first, at most `limit`.

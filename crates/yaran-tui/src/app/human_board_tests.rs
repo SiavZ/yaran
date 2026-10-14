@@ -6,7 +6,7 @@ use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use yaran_core::human_board::{Board, BoardStore, CardKind, NewCard};
+use yaran_core::human_board::{Board, BoardStore, CardKind, NewCard, Priority};
 
 use super::*;
 use crate::app::test_support::{default_bindings, test_app};
@@ -19,6 +19,7 @@ fn at(minute: i64) -> chrono::DateTime<Utc> {
 fn new_card(kind: CardKind, ticket: Option<&str>, title: &str) -> NewCard {
     NewCard {
         kind: Some(kind),
+        priority: None,
         ticket: ticket.map(str::to_string),
         title: title.to_string(),
         detail: None,
@@ -945,4 +946,166 @@ fn the_config_documents_the_reply_template() {
         "{rendered}"
     );
     assert!(rendered.contains("Placeholders: {reply}"), "{rendered}");
+}
+
+// ── Priority ───────────────────────────────────────────────────────────────
+
+fn prioritized_board() -> Board {
+    let mut board = Board::default();
+    let mut post = |priority, title| {
+        let mut c = new_card(CardKind::Task, None, title);
+        c.priority = priority;
+        board.post(c, at(0)).unwrap();
+    };
+    post(None, "ordinary");
+    post(Some(Priority::Low), "someday");
+    post(Some(Priority::High), "soon");
+    post(Some(Priority::Critical), "now");
+    board
+}
+
+#[test]
+fn urgent_cards_lead_their_group_and_wear_a_marker() {
+    let mut app = board_app(Some(prioritized_board()));
+    let text = screen(&mut app);
+    let rows: Vec<&str> = text
+        .lines()
+        .filter(|l| {
+            l.contains("ordinary")
+                || l.contains("someday")
+                || l.contains("soon")
+                || l.contains("now")
+        })
+        .collect();
+    let order: Vec<&str> = rows
+        .iter()
+        .map(|r| {
+            ["now", "soon", "ordinary", "someday"]
+                .into_iter()
+                .find(|t| r.contains(t))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(order, ["now", "soon", "ordinary", "someday"], "{text}");
+    assert!(rows[0].contains("!! #4 now"), "{}", rows[0]);
+    assert!(rows[1].contains(" ! #3 soon"), "{}", rows[1]);
+    assert!(rows[3].contains("\u{2193} #2 someday"), "{}", rows[3]);
+    assert!(
+        text.contains("Tasks for Human 4 waiting (2 urgent)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_card_view_names_the_priority() {
+    let mut app = board_app(Some(prioritized_board()));
+    app.human_board.selected = Some(3);
+    app.open_selected_board_card();
+    let text = screen(&mut app);
+    assert!(text.contains("Priority: High"), "{text}");
+}
+
+#[test]
+fn a_new_urgent_card_is_announced_as_such() {
+    let mut board = Board::default();
+    let mut c = new_card(CardKind::Confirm, Some("4"), "Roll now?");
+    c.priority = Some(Priority::Critical);
+    board.post(c, at(0)).unwrap();
+    let message = announcement(&board.cards).unwrap();
+    assert!(
+        message.contains("(Critical priority, Confirmation needed"),
+        "{message}"
+    );
+}
+
+// ── Scrolling the card view ────────────────────────────────────────────────
+
+/// A card whose detail does not fit a short terminal, opened with the reply
+/// field focused.
+fn long_card_app() -> App {
+    let mut board = Board::default();
+    let mut c = new_card(CardKind::Task, None, "A long one");
+    c.detail = Some(
+        (1..=60)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    c.from = Some("session-1".to_string());
+    board.post(c, at(0)).unwrap();
+    let mut app = board_app(Some(board));
+    // The poster runs, so the dialog opens with its reply field focused.
+    let tab = app.focused_tab_id("session-1");
+    app.engine
+        .providers
+        .insert(yaran_core::ids::TabId::new(tab), echo_terminal());
+    app.human_board.selected = Some(1);
+    app.open_selected_board_card();
+    assert!(
+        matches!(
+            app.prompt,
+            PromptState::HumanBoardCard { reply: Some(_), .. }
+        ),
+        "the fixture needs a reply field"
+    );
+    app
+}
+
+fn card_scroll(app: &App) -> u16 {
+    match &app.prompt {
+        PromptState::HumanBoardCard { scroll, .. } => *scroll,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn draw_short(app: &mut App) {
+    let mut terminal = Terminal::new(TestBackend::new(160, 24)).expect("terminal");
+    terminal.draw(|frame| app.render(frame)).expect("render");
+}
+
+#[test]
+fn the_wheel_scrolls_the_card_text_wherever_the_pointer_is() {
+    let mut app = long_card_app();
+    draw_short(&mut app);
+    assert!(
+        app.last_error_dialog_lines > app.last_error_dialog_height,
+        "the body overflows"
+    );
+    let wheel = |kind| MouseEvent {
+        kind,
+        column: 5,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    assert_eq!(card_scroll(&app), 3);
+    app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+    app.handle_mouse(wheel(MouseEventKind::ScrollUp));
+    assert_eq!(card_scroll(&app), 3);
+    assert!(
+        matches!(app.prompt, PromptState::HumanBoardCard { .. }),
+        "the dialog stays open"
+    );
+}
+
+#[test]
+fn arrow_keys_scroll_the_text_while_the_reply_field_is_focused_and_letters_type() {
+    let mut app = long_card_app();
+    draw_short(&mut app);
+    app.handle_key(key(KeyCode::Down)).unwrap();
+    app.handle_key(key(KeyCode::Down)).unwrap();
+    assert_eq!(card_scroll(&app), 2);
+    app.handle_key(key(KeyCode::Up)).unwrap();
+    assert_eq!(card_scroll(&app), 1);
+    type_text(&mut app, "jk");
+    let PromptState::HumanBoardCard {
+        reply: Some(reply),
+        scroll,
+        ..
+    } = &app.prompt
+    else {
+        panic!("{:?}", app.prompt);
+    };
+    assert_eq!(reply.input.text, "jk", "letters are typing, not scrolling");
+    assert_eq!(*scroll, 1);
 }

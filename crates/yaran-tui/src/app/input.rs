@@ -4965,14 +4965,17 @@ impl App {
         };
         let focus = *focus;
         let field_focused = focus == Focus::Reply && reply.is_some();
-        // The body scrolls from anywhere, but while the reply field has focus
-        // only the paging keys do: a line key there is a letter or a caret move.
+        // The body scrolls from anywhere. While the reply field has focus a
+        // letter is typing, so only keys the field has no use for scroll: the
+        // paging keys, and the line keys when they are not letters (a
+        // single-line field does nothing with Up and Down).
         if field_focused {
-            if matches!(
-                self.bindings.lookup(&key, BindingScope::Help),
-                Some(Action::ScrollPageDown | Action::ScrollPageUp)
-            ) && self.scroll_error_dialog_for(&key)
-            {
+            let scrolls = match self.bindings.lookup(&key, BindingScope::Help) {
+                Some(Action::ScrollPageDown | Action::ScrollPageUp) => true,
+                Some(Action::MoveDown | Action::MoveUp) => !matches!(key.code, KeyCode::Char(_)),
+                _ => false,
+            };
+            if scrolls && self.scroll_error_dialog_for(&key) {
                 return Some(false);
             }
         } else if self.scroll_error_dialog_for(&key) {
@@ -9072,6 +9075,25 @@ impl App {
         }
     }
 
+    /// The wheel over an open card scrolls its text, wherever the pointer is
+    /// on the dialog: a long card is read, not steered.
+    fn handle_human_board_card_mouse(&mut self, mouse: &MouseEvent) -> Option<bool> {
+        if !matches!(self.prompt, PromptState::HumanBoardCard { .. }) {
+            return None;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollDown => {
+                self.scroll_error_dialog(MOUSE_WHEEL_LINES as i32);
+                Some(false)
+            }
+            MouseEventKind::ScrollUp => {
+                self.scroll_error_dialog(-(MOUSE_WHEEL_LINES as i32));
+                Some(false)
+            }
+            _ => None,
+        }
+    }
+
     fn handle_first_load_prompt_mouse(&mut self, mouse: &MouseEvent) -> Option<bool> {
         if !matches!(self.prompt, PromptState::FirstLoad(_)) {
             return None;
@@ -9277,6 +9299,9 @@ impl App {
     }
 
     pub(crate) fn handle_prompt_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if let Some(result) = self.handle_human_board_card_mouse(&mouse) {
+            return result;
+        }
         if let Some(result) = self.handle_first_load_prompt_mouse(&mouse) {
             return result;
         }

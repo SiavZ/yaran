@@ -11,6 +11,7 @@ fn at(minute: i64) -> DateTime<Utc> {
 fn card(kind: CardKind, ticket: Option<&str>, title: &str) -> NewCard {
     NewCard {
         kind: Some(kind),
+        priority: None,
         ticket: ticket.map(str::to_string),
         title: title.to_string(),
         detail: None,
@@ -104,6 +105,7 @@ fn card_text_is_sanitized_flattened_and_bounded() {
         .post(
             NewCard {
                 kind: Some(CardKind::Task),
+                priority: None,
                 ticket: Some("  #42  ".to_string()),
                 title: format!("\x1b]0;pwned\x07 two\n lines {long}"),
                 detail: Some("keep\nthe lines\x1b[2J".to_string()),
@@ -449,4 +451,101 @@ fn a_long_title_is_cut_in_the_prompt() {
     let (title, reply) = prompt.split_once('|').unwrap();
     assert_eq!(title.chars().count(), REPLY_TITLE_CHARS);
     assert_eq!(reply, "r");
+}
+
+#[test]
+fn priorities_parse_their_names_and_tracker_words() {
+    for p in Priority::ALL {
+        assert_eq!(Priority::parse(p.as_str()), Some(p));
+    }
+    assert_eq!(Priority::parse("Blocker"), Some(Priority::Critical));
+    assert_eq!(Priority::parse("p0"), Some(Priority::Critical));
+    assert_eq!(Priority::parse("URGENT"), Some(Priority::Critical));
+    assert_eq!(Priority::parse("medium"), Some(Priority::Normal));
+    assert_eq!(Priority::parse("minor"), Some(Priority::Low));
+    assert_eq!(Priority::parse("whenever"), None);
+    assert!(Priority::Critical < Priority::High && Priority::High < Priority::Normal);
+    assert!(Priority::Critical.is_urgent() && Priority::High.is_urgent());
+    assert!(!Priority::Normal.is_urgent() && !Priority::Low.is_urgent());
+    assert_eq!(Priority::default(), Priority::Normal);
+}
+
+#[test]
+fn urgent_cards_come_first_within_their_kind() {
+    let mut board = Board::default();
+    let mut post = |priority, title, minute| {
+        let mut c = card(CardKind::Task, None, title);
+        c.priority = priority;
+        board.post(c, at(minute)).unwrap();
+    };
+    post(None, "plain old", 0);
+    post(Some(Priority::Low), "low new", 1);
+    post(Some(Priority::High), "high old", 2);
+    post(None, "plain new", 3);
+    post(Some(Priority::Critical), "critical", 4);
+    post(Some(Priority::High), "high new", 5);
+    let titles: Vec<&str> = board
+        .open_cards()
+        .iter()
+        .map(|c| c.title.as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "critical",
+            "high new",
+            "high old",
+            "plain new",
+            "plain old",
+            "low new"
+        ]
+    );
+    assert_eq!(board.urgent_count(), 3);
+}
+
+#[test]
+fn a_repost_keeps_the_priority_unless_it_names_one() {
+    let mut board = Board::default();
+    let mut first = card(CardKind::Confirm, Some("9"), "merge?");
+    first.priority = Some(Priority::High);
+    board.post(first, at(0)).unwrap();
+    board
+        .post(card(CardKind::Confirm, Some("9"), "merge now?"), at(1))
+        .unwrap();
+    assert_eq!(board.card(1).unwrap().priority, Priority::High, "kept");
+    let mut lowered = card(CardKind::Confirm, Some("9"), "merge whenever");
+    lowered.priority = Some(Priority::Low);
+    board.post(lowered, at(2)).unwrap();
+    assert_eq!(board.card(1).unwrap().priority, Priority::Low);
+    assert!(board.set_priority(1, Priority::Critical, at(3)).unwrap());
+    assert!(!board.set_priority(1, Priority::Critical, at(4)).unwrap());
+    assert_eq!(board.card(1).unwrap().updated_at, at(3));
+    assert!(board.set_priority(7, Priority::Low, at(5)).is_err());
+}
+
+#[test]
+fn a_board_without_priorities_reads_as_normal_and_normal_is_not_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BoardStore::new(dir.path());
+    fs::write(
+        store.path(),
+        r#"{"version":1,"next_id":2,"cards":[{"id":1,"kind":"task","title":"old","created_at":"2026-10-11T12:00:00Z","updated_at":"2026-10-11T12:00:00Z"}]}"#,
+    )
+    .unwrap();
+    let board = store.load().unwrap();
+    assert_eq!(board.card(1).unwrap().priority, Priority::Normal);
+    store
+        .update(|board| {
+            let mut c = card(CardKind::Task, None, "urgent one");
+            c.priority = Some(Priority::Critical);
+            board.post(c, at(0))
+        })
+        .unwrap();
+    let text = fs::read_to_string(store.path()).unwrap();
+    assert_eq!(
+        text.matches("\"priority\"").count(),
+        1,
+        "only the critical card carries the field"
+    );
+    assert!(text.contains("\"priority\": \"critical\""));
 }

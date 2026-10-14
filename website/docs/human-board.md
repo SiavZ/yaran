@@ -55,7 +55,21 @@ Move into the board with the pane keys, then:
 - the stage key marks the selected card done, or reopens it when it is already done.
 
 The card view has a **Mark done** (or **Reopen**) button too. A click selects a card and a
-double click opens it.
+double click opens it. A long card scrolls: the mouse wheel anywhere on it, the paging keys,
+and the arrow keys (also while you are typing a reply, since a one-line reply box has no use
+for Up and Down).
+
+## Priority
+
+A card can carry a priority, graded like an issue tracker's: `critical`, `high`, `normal`
+(the default) or `low`. Within its group an urgent card is listed first and wears a marker
+(`!!` critical, `!` high, `↓` low); the pane's title counts them as `(2 urgent)`, and the
+announcement of a new urgent card says so. Agents set it when posting
+(`yaran board post --priority high …`) and anyone can change it afterwards:
+
+```bash
+yaran board priority 21 critical
+```
 
 ## Replying from a card
 

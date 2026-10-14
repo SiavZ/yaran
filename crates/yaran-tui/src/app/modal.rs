@@ -1032,6 +1032,7 @@ mod tests {
                     card: Box::new(yaran_core::human_board::Card {
                         id: 12,
                         kind: yaran_core::human_board::CardKind::Validate,
+                        priority: yaran_core::human_board::Priority::High,
                         ticket: Some("4812".to_string()),
                         title: "Check the signup page on a phone".to_string(),
                         detail: Some("PR 417 merged; it is on staging.".to_string()),
@@ -1053,6 +1054,7 @@ mod tests {
                     card: Box::new(yaran_core::human_board::Card {
                         id: 13,
                         kind: yaran_core::human_board::CardKind::Confirm,
+                        priority: yaran_core::human_board::Priority::Normal,
                         ticket: None,
                         title: "Merge the auth fix?".to_string(),
                         detail: None,
