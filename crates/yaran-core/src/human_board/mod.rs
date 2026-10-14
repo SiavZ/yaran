@@ -1,4 +1,4 @@
-//! The human board: cards agents post for the person running yaran.
+//! The human board: cards agents post for the people running yaran.
 //!
 //! An orchestrating agent works through tickets on its own, and the moments it
 //! needs a person (a decision only the owner can make, a change to check on a
@@ -8,39 +8,47 @@
 //! UI shows the open cards grouped by kind, in the same place whatever agent is
 //! selected, until somebody marks them done.
 //!
+//! A board can have several people on it (`[board] people`), each with a
+//! queue of their own: a card is assigned to one of them (`--for`), or to
+//! nobody, which puts it in everybody's queue.
+//!
 //! # Storage
 //!
-//! One JSON document, [`BOARD_FILE`], in the yaran home next to the config. It
-//! is written by short-lived `yaran board` processes running inside agents and
-//! by the terminal UI, so every change is a read-modify-write under an
-//! exclusive `flock(2)` on [`BOARD_LOCK`] and lands with an atomic rename:
-//! a reader never sees half a document and two writers never lose each other's
-//! card. Readers take no lock, because the rename already gives them a whole
-//! document. The file is owner-only, like everything else yaran keeps.
+//! Two stores, chosen by `[board] dir` (see [`store`]): one JSON document in
+//! the yaran home, private to the machine, or a folder holding one Markdown
+//! note per card ([`markdown`]), which a team can share by keeping it in a
+//! synced notes vault or a git repository ([`sync`]). Every change is a
+//! read-modify-write under an exclusive lock and lands with atomic renames, so
+//! a reader never sees half a card and two writers never lose each other's.
 //!
 //! An unreadable document is an error, never an empty board: overwriting it
-//! would throw away cards nobody has read yet.
+//! would throw away cards nobody has read yet. An unreadable note in a folder
+//! is reported and left alone, and the rest of the board still loads.
 //!
 //! # Trust
 //!
-//! Card text comes from agents, which print whatever their tools printed, so
-//! every string is passed through [`crate::sanitize::for_terminal`] before it
-//! is stored and is bounded in length. Nothing on the board is ever executed.
+//! Card text comes from agents, which print whatever their tools printed, and
+//! on a shared board from other machines and other people, so every string is
+//! passed through [`crate::sanitize::for_terminal`] before it is stored or
+//! shown and is bounded in length. Nothing on the board is ever executed.
 
 pub mod cli;
+pub mod id;
+pub mod markdown;
+pub mod settings;
+pub mod store;
+pub mod sync;
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
-use std::thread;
-use std::time::{Duration, SystemTime};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+pub use id::CardId;
+pub use settings::BoardSettings;
+pub use store::{BoardSnapshot, BoardStore, BoardWatcher};
 
 /// The board document, in the yaran home.
 pub const BOARD_FILE: &str = "human_board.json";
@@ -230,15 +238,20 @@ impl std::fmt::Display for CardKind {
 /// One card on the board.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Card {
-    /// The card's number, unique for the life of the board and never reused.
-    pub id: u64,
+    /// The card's id, unique on the board. A board that is not shared never
+    /// hands a number out twice.
+    pub id: CardId,
     pub kind: CardKind,
     /// How urgent it is. Absent from the file for the ordinary queue, so a
     /// board written before priorities existed reads back unchanged.
     #[serde(default, skip_serializing_if = "Priority::is_normal")]
     pub priority: Priority,
+    /// Whose queue the card is in: one of `[board] people`, or nobody, which
+    /// puts it in everybody's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
     /// The ticket the card is about, when it is about one. An open card is
-    /// unique per (ticket, kind): posting again updates it.
+    /// unique per (ticket, kind, assignee): posting again updates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket: Option<String>,
     pub title: String,
@@ -264,6 +277,22 @@ impl Card {
         self.resolved_at.is_none()
     }
 
+    /// Whether the card is in `person`'s queue: assigned to them, or to
+    /// nobody, which is everybody's.
+    pub fn is_for(&self, person: &str) -> bool {
+        self.assignee
+            .as_deref()
+            .is_none_or(|assignee| same_person(assignee, person))
+    }
+
+    /// Whether the card is in the queue `view` shows.
+    pub fn is_in(&self, view: &Audience<'_>) -> bool {
+        match view {
+            Audience::Everyone => true,
+            Audience::Person(person) => self.is_for(person),
+        }
+    }
+
     /// `#12`, or `#12 [4812]` when the card names a ticket. The board's and the
     /// CLI's one way of naming a card in a sentence.
     pub fn label(&self) -> String {
@@ -279,17 +308,50 @@ impl Card {
 pub struct Board {
     #[serde(default)]
     pub version: u32,
-    /// The number the next new card gets.
+    /// The number the next new unprefixed card gets. Only a board document
+    /// keeps it; a folder board numbers from the highest id it holds.
     #[serde(default)]
     pub next_id: u64,
     #[serde(default)]
     pub cards: Vec<Card>,
+    /// What this machine puts in front of the numbers it hands out (see
+    /// [`id`]). Set by the store; never written.
+    #[serde(skip)]
+    pub prefix: String,
+    /// Notes in a folder board that could not be read, one sentence each.
+    /// They are left exactly as they are.
+    #[serde(skip)]
+    pub problems: Vec<String>,
+    /// Ids that unreadable notes' file names claim, so a new card never takes
+    /// the name of a note nobody could read.
+    #[serde(skip)]
+    pub(crate) reserved: BTreeSet<CardId>,
+    /// Which note each card of a folder board was read from.
+    #[serde(skip)]
+    pub(crate) files: BTreeMap<CardId, PathBuf>,
+}
+
+/// Whose queue a view of the board shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audience<'a> {
+    /// Every card on the board.
+    Everyone,
+    /// One person's cards and the unassigned ones.
+    Person(&'a str),
+}
+
+/// Whether two spellings name the same person: names are matched
+/// case-insensitively, ignoring surrounding space.
+pub fn same_person(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
 }
 
 /// A card to post, before it has a number.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NewCard {
     pub kind: Option<CardKind>,
+    /// Whose queue it goes in; `None` is nobody's in particular.
+    pub assignee: Option<String>,
     /// `None` keeps an updated card's priority and gives a new card the
     /// ordinary one.
     pub priority: Option<Priority>,
@@ -300,18 +362,19 @@ pub struct NewCard {
 }
 
 /// What a post did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PostOutcome {
     /// A new card went on the board.
-    Added(u64),
-    /// An open card for the same ticket and kind was rewritten in place.
-    Updated(u64),
+    Added(CardId),
+    /// An open card for the same ticket, kind and assignee was rewritten in
+    /// place.
+    Updated(CardId),
 }
 
 impl PostOutcome {
-    pub fn id(self) -> u64 {
+    pub fn id(&self) -> CardId {
         match self {
-            PostOutcome::Added(id) | PostOutcome::Updated(id) => id,
+            PostOutcome::Added(id) | PostOutcome::Updated(id) => id.clone(),
         }
     }
 }
@@ -346,7 +409,8 @@ pub fn normalize_ticket(value: &str) -> Option<String> {
 }
 
 impl Board {
-    /// Post a card, or update the open card with the same ticket and kind.
+    /// Post a card, or update the open card with the same ticket, kind and
+    /// assignee. A new card is numbered behind the board's [`Board::prefix`].
     pub fn post(&mut self, card: NewCard, now: DateTime<Utc>) -> Result<PostOutcome> {
         let Some(kind) = card.kind else {
             bail!("a card needs a kind: one of task, validate, confirm, info");
@@ -363,12 +427,18 @@ impl Board {
             .from
             .as_deref()
             .and_then(|from| clean(from, MAX_FROM_CHARS, false));
+        let assignee = card
+            .assignee
+            .as_deref()
+            .and_then(|assignee| clean(assignee, MAX_FROM_CHARS, false));
 
         if let Some(ticket) = ticket.as_deref()
-            && let Some(existing) = self
-                .cards
-                .iter_mut()
-                .find(|c| c.is_open() && c.kind == kind && c.ticket.as_deref() == Some(ticket))
+            && let Some(existing) = self.cards.iter_mut().find(|c| {
+                c.is_open()
+                    && c.kind == kind
+                    && c.ticket.as_deref() == Some(ticket)
+                    && same_assignee(c.assignee.as_deref(), assignee.as_deref())
+            })
         {
             existing.title = title;
             existing.detail = detail;
@@ -379,7 +449,7 @@ impl Board {
                 existing.priority = priority;
             }
             existing.updated_at = now;
-            return Ok(PostOutcome::Updated(existing.id));
+            return Ok(PostOutcome::Updated(existing.id.clone()));
         }
 
         let open = self.cards.iter().filter(|c| c.is_open()).count();
@@ -389,12 +459,15 @@ impl Board {
                  (`yaran board resolve`) before posting more"
             );
         }
-        let id = self.next_id.max(self.highest_id() + 1).max(1);
-        self.next_id = id + 1;
+        let id = self.next_card_id();
+        if id.prefix().is_empty() {
+            self.next_id = id.number() + 1;
+        }
         self.cards.push(Card {
-            id,
+            id: id.clone(),
             kind,
             priority: card.priority.unwrap_or_default(),
+            assignee,
             ticket,
             title,
             detail,
@@ -408,26 +481,87 @@ impl Board {
         Ok(PostOutcome::Added(id))
     }
 
-    fn highest_id(&self) -> u64 {
-        self.cards.iter().map(|c| c.id).max().unwrap_or(0)
+    /// The id the next new card gets: one past the highest number behind this
+    /// board's prefix, counting the names unreadable notes hold, and never
+    /// below the document's own counter on a board that is not shared.
+    pub(crate) fn next_card_id(&self) -> CardId {
+        let highest = self
+            .cards
+            .iter()
+            .map(|c| &c.id)
+            .chain(self.reserved.iter())
+            .filter(|id| id.prefix() == self.prefix)
+            .map(CardId::number)
+            .max()
+            .unwrap_or(0);
+        let floor = if self.prefix.is_empty() {
+            self.next_id
+        } else {
+            0
+        };
+        CardId::new(&self.prefix, (highest + 1).max(floor).max(1))
     }
 
-    pub fn card(&self, id: u64) -> Option<&Card> {
+    pub fn card(&self, id: impl Into<CardId>) -> Option<&Card> {
+        let id = id.into();
         self.cards.iter().find(|c| c.id == id)
     }
 
+    fn card_mut(&mut self, id: impl Into<CardId>) -> Result<&mut Card> {
+        let id = id.into();
+        match self.cards.iter_mut().find(|c| c.id == id) {
+            Some(card) => Ok(card),
+            None => bail!("there is no card #{id} on the board"),
+        }
+    }
+
+    /// The card a person or an agent means by `query`: an exact id first; then,
+    /// for a bare number, this machine's card with that number, and failing
+    /// that the one card of any prefix that has it. Two cards sharing the
+    /// number is an error naming both, never a guess.
+    pub fn find(&self, query: &str) -> Result<CardId> {
+        let Some(wanted) = CardId::parse(query) else {
+            bail!("{query:?} is not a card number");
+        };
+        if self.card(&wanted).is_some() {
+            return Ok(wanted);
+        }
+        if wanted.prefix().is_empty() {
+            let mine = CardId::new(&self.prefix, wanted.number());
+            if self.card(&mine).is_some() {
+                return Ok(mine);
+            }
+            let same_number: Vec<&CardId> = self
+                .cards
+                .iter()
+                .map(|c| &c.id)
+                .filter(|id| id.number() == wanted.number())
+                .collect();
+            match same_number.as_slice() {
+                [] => {}
+                [only] => return Ok((*only).clone()),
+                several => {
+                    let names: Vec<String> = several.iter().map(|id| format!("#{id}")).collect();
+                    bail!(
+                        "#{wanted} could be any of {}; name the card with its prefix",
+                        names.join(", ")
+                    );
+                }
+            }
+        }
+        bail!("there is no card #{wanted} on the board")
+    }
+
     /// Resolve one card. Resolving a card that is already resolved changes
-    /// nothing and says so (`Ok(false)`); an unknown number is an error.
+    /// nothing and says so (`Ok(false)`); an unknown id is an error.
     pub fn resolve(
         &mut self,
-        id: u64,
+        id: impl Into<CardId>,
         by: Option<&str>,
         note: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<bool> {
-        let Some(card) = self.cards.iter_mut().find(|c| c.id == id) else {
-            bail!("there is no card #{id} on the board");
-        };
+        let card = self.card_mut(id)?;
         if !card.is_open() {
             return Ok(false);
         }
@@ -439,7 +573,7 @@ impl Board {
     }
 
     /// Resolve every open card about `ticket` (of `kind`, when given), and
-    /// return their numbers. None matching is not an error: the caller says so.
+    /// return their ids. None matching is not an error: the caller says so.
     pub fn resolve_ticket(
         &mut self,
         ticket: &str,
@@ -447,11 +581,11 @@ impl Board {
         by: Option<&str>,
         note: Option<&str>,
         now: DateTime<Utc>,
-    ) -> Vec<u64> {
+    ) -> Vec<CardId> {
         let Some(ticket) = normalize_ticket(ticket) else {
             return Vec::new();
         };
-        let ids: Vec<u64> = self
+        let ids: Vec<CardId> = self
             .cards
             .iter()
             .filter(|c| {
@@ -459,26 +593,24 @@ impl Board {
                     && c.ticket.as_deref() == Some(ticket.as_str())
                     && kind.is_none_or(|kind| c.kind == kind)
             })
-            .map(|c| c.id)
+            .map(|c| c.id.clone())
             .collect();
         for id in &ids {
             // Every id was just found open, so this cannot fail.
-            let _ = self.resolve(*id, by, note, now);
+            let _ = self.resolve(id, by, note, now);
         }
         ids
     }
 
     /// Change a card's priority. `Ok(false)` when it already had it; an
-    /// unknown number is an error.
+    /// unknown id is an error.
     pub fn set_priority(
         &mut self,
-        id: u64,
+        id: impl Into<CardId>,
         priority: Priority,
         now: DateTime<Utc>,
     ) -> Result<bool> {
-        let Some(card) = self.cards.iter_mut().find(|c| c.id == id) else {
-            bail!("there is no card #{id} on the board");
-        };
+        let card = self.card_mut(id)?;
         if card.priority == priority {
             return Ok(false);
         }
@@ -487,12 +619,29 @@ impl Board {
         Ok(true)
     }
 
+    /// Put a card in `assignee`'s queue, or in nobody's in particular with
+    /// `None`. `Ok(false)` when it already was there; an unknown id is an
+    /// error.
+    pub fn assign(
+        &mut self,
+        id: impl Into<CardId>,
+        assignee: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let assignee = assignee.and_then(|assignee| clean(assignee, MAX_FROM_CHARS, false));
+        let card = self.card_mut(id)?;
+        if same_assignee(card.assignee.as_deref(), assignee.as_deref()) {
+            return Ok(false);
+        }
+        card.assignee = assignee;
+        card.updated_at = now;
+        Ok(true)
+    }
+
     /// Put a resolved card back on the board. Reopening an open card changes
-    /// nothing (`Ok(false)`); an unknown number is an error.
-    pub fn reopen(&mut self, id: u64, now: DateTime<Utc>) -> Result<bool> {
-        let Some(card) = self.cards.iter_mut().find(|c| c.id == id) else {
-            bail!("there is no card #{id} on the board");
-        };
+    /// nothing (`Ok(false)`); an unknown id is an error.
+    pub fn reopen(&mut self, id: impl Into<CardId>, now: DateTime<Utc>) -> Result<bool> {
+        let card = self.card_mut(id)?;
         if card.is_open() {
             return Ok(false);
         }
@@ -506,18 +655,18 @@ impl Board {
     /// Drop the oldest resolved cards past [`RESOLVED_HISTORY`]. Open cards are
     /// never dropped.
     pub fn prune(&mut self) {
-        let mut resolved: Vec<(DateTime<Utc>, u64)> = self
+        let mut resolved: Vec<(DateTime<Utc>, CardId)> = self
             .cards
             .iter()
-            .filter_map(|c| c.resolved_at.map(|at| (at, c.id)))
+            .filter_map(|c| c.resolved_at.map(|at| (at, c.id.clone())))
             .collect();
         if resolved.len() <= RESOLVED_HISTORY {
             return;
         }
         resolved.sort_unstable_by(|a, b| b.cmp(a));
-        let drop: std::collections::HashSet<u64> = resolved[RESOLVED_HISTORY..]
-            .iter()
-            .map(|(_, id)| *id)
+        let drop: BTreeSet<CardId> = resolved
+            .drain(RESOLVED_HISTORY..)
+            .map(|(_, id)| id)
             .collect();
         self.cards.retain(|c| !drop.contains(&c.id));
     }
@@ -525,7 +674,16 @@ impl Board {
     /// The open cards in board order: by kind (the column order), the most
     /// urgent first within a kind, and newest first among equals.
     pub fn open_cards(&self) -> Vec<&Card> {
-        let mut open: Vec<&Card> = self.cards.iter().filter(|c| c.is_open()).collect();
+        self.open_cards_in(&Audience::Everyone)
+    }
+
+    /// [`Board::open_cards`], narrowed to the queue `view` shows.
+    pub fn open_cards_in(&self, view: &Audience<'_>) -> Vec<&Card> {
+        let mut open: Vec<&Card> = self
+            .cards
+            .iter()
+            .filter(|c| c.is_open() && c.is_in(view))
+            .collect();
         open.sort_by(|a, b| {
             a.kind
                 .cmp(&b.kind)
@@ -538,226 +696,80 @@ impl Board {
 
     /// How many open cards are urgent (critical or high).
     pub fn urgent_count(&self) -> usize {
+        self.urgent_count_in(&Audience::Everyone)
+    }
+
+    /// [`Board::urgent_count`] within the queue `view` shows.
+    pub fn urgent_count_in(&self, view: &Audience<'_>) -> usize {
         self.cards
             .iter()
-            .filter(|c| c.is_open() && c.priority.is_urgent())
+            .filter(|c| c.is_open() && c.priority.is_urgent() && c.is_in(view))
             .count()
     }
 
     /// The most recently resolved cards, newest first, at most `limit`.
     pub fn recently_resolved(&self, limit: usize) -> Vec<&Card> {
-        let mut resolved: Vec<&Card> = self.cards.iter().filter(|c| !c.is_open()).collect();
+        self.recently_resolved_in(&Audience::Everyone, limit)
+    }
+
+    /// [`Board::recently_resolved`] within the queue `view` shows.
+    pub fn recently_resolved_in(&self, view: &Audience<'_>, limit: usize) -> Vec<&Card> {
+        let mut resolved: Vec<&Card> = self
+            .cards
+            .iter()
+            .filter(|c| !c.is_open() && c.is_in(view))
+            .collect();
         resolved.sort_by(|a, b| b.resolved_at.cmp(&a.resolved_at).then(b.id.cmp(&a.id)));
         resolved.truncate(limit);
         resolved
     }
 
-    /// How many open cards are waiting on the person (not counting news).
+    /// How many open cards are waiting on a person (not counting news).
     pub fn waiting_count(&self) -> usize {
+        self.waiting_count_in(&Audience::Everyone)
+    }
+
+    /// [`Board::waiting_count`] within the queue `view` shows.
+    pub fn waiting_count_in(&self, view: &Audience<'_>) -> usize {
         self.cards
             .iter()
-            .filter(|c| c.is_open() && c.kind.waits_on_human())
+            .filter(|c| c.is_open() && c.kind.waits_on_human() && c.is_in(view))
+            .count()
+    }
+
+    /// How many open cards are news within the queue `view` shows.
+    pub fn news_count_in(&self, view: &Audience<'_>) -> usize {
+        self.cards
+            .iter()
+            .filter(|c| c.is_open() && !c.kind.waits_on_human() && c.is_in(view))
             .count()
     }
 }
 
-/// Where the board lives, and the one way to read and change it.
-#[derive(Clone, Debug)]
-pub struct BoardStore {
-    path: PathBuf,
-    lock_path: PathBuf,
-}
-
-impl BoardStore {
-    /// The board of the yaran home at `root`.
-    pub fn new(root: &Path) -> Self {
-        Self {
-            path: root.join(BOARD_FILE),
-            lock_path: root.join(BOARD_LOCK),
-        }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Read the board. A missing file is an empty board; an unreadable one is
-    /// an error naming the file.
-    pub fn load(&self) -> Result<Board> {
-        let bytes = match fs::read(&self.path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Board::default()),
-            Err(err) => {
-                return Err(err).with_context(|| format!("could not read {}", self.path.display()));
-            }
-        };
-        if bytes.iter().all(u8::is_ascii_whitespace) {
-            return Ok(Board::default());
-        }
-        serde_json::from_slice(&bytes).with_context(|| {
-            format!(
-                "{} is not a board yaran can read; fix or move it aside (it is never \
-                 overwritten while unreadable, so no card in it is lost)",
-                self.path.display()
-            )
-        })
-    }
-
-    /// Change the board under the writers' lock: read it, let `change` edit it,
-    /// prune the history, and write it back atomically. Nothing is written when
-    /// `change` fails.
-    pub fn update<T>(&self, change: impl FnOnce(&mut Board) -> Result<T>) -> Result<T> {
-        let _lock = self.lock()?;
-        let mut board = self.load()?;
-        if board.version > BOARD_VERSION {
-            bail!(
-                "{} was written by a newer yaran (board version {}); update this yaran \
-                 before changing the board",
-                self.path.display(),
-                board.version
-            );
-        }
-        let value = change(&mut board)?;
-        board.version = BOARD_VERSION;
-        board.prune();
-        self.write(&board)?;
-        Ok(value)
-    }
-
-    fn lock(&self) -> Result<File> {
-        use rustix::fs::{FlockOperation, flock};
-        if let Some(parent) = self.lock_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("could not create {}", parent.display()))?;
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(&self.lock_path)
-            .with_context(|| format!("could not open {}", self.lock_path.display()))?;
-        crate::io_retry::retry_on_interrupt_errno(|| flock(&file, FlockOperation::LockExclusive))
-            .with_context(|| format!("could not lock {}", self.lock_path.display()))?;
-        // The lock is released when the returned file is dropped.
-        Ok(file)
-    }
-
-    fn write(&self, board: &Board) -> Result<()> {
-        let mut body = serde_json::to_vec_pretty(board).context("could not encode the board")?;
-        body.push(b'\n');
-        let tmp = self.path.with_extension(format!(
-            "json.tmp.{}.{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .open(&tmp)
-                .with_context(|| format!("could not create {}", tmp.display()))?;
-            file.write_all(&body)
-                .with_context(|| format!("could not write {}", tmp.display()))?;
-            file.sync_all()
-                .with_context(|| format!("could not sync {}", tmp.display()))?;
-            fs::rename(&tmp, &self.path).with_context(|| {
-                format!(
-                    "could not replace {} with {}",
-                    self.path.display(),
-                    tmp.display()
-                )
-            })
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        result
+/// Whether two optional assignees are the same queue.
+fn same_assignee(a: Option<&str>, b: Option<&str>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => same_person(a, b),
+        _ => false,
     }
 }
 
-/// The board as last read, or why it could not be read. What the watcher
-/// hands a surface.
-#[derive(Clone, Debug)]
-pub struct BoardSnapshot {
-    pub board: Result<Board, String>,
-}
-
-/// What identifies one version of the board file on disk. A writer always
-/// replaces the file by rename, so a new version has a new inode even when
-/// the size and the mtime's resolution would hide the change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileStamp {
-    inode: u64,
-    len: u64,
-    modified: Option<SystemTime>,
-}
-
-fn stamp(path: &Path) -> Option<FileStamp> {
-    let meta = fs::metadata(path).ok()?;
-    Some(FileStamp {
-        inode: meta.ino(),
-        len: meta.len(),
-        modified: meta.modified().ok(),
-    })
-}
-
-/// Watches the board on a background thread and hands over a snapshot
-/// whenever it changes, starting with one straight away.
-///
-/// The thread looks every `every` and costs one `stat` per look while nothing
-/// changes. It stops once this handle is dropped (at its next look), so a
-/// surface that switches the board off simply drops its watcher.
-pub struct BoardWatcher {
-    rx: mpsc::Receiver<BoardSnapshot>,
-    stop: Arc<AtomicBool>,
-}
-
-impl BoardWatcher {
-    pub fn spawn(store: BoardStore, every: Duration) -> io::Result<Self> {
-        let (tx, rx) = mpsc::channel();
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
-        thread::Builder::new()
-            .name("yaran-human-board".to_string())
-            .spawn(move || {
-                // `Some(None)` is "seen, and the file did not exist", so a board
-                // that is deleted is reported once as empty rather than every look.
-                let mut last: Option<Option<FileStamp>> = None;
-                while !thread_stop.load(Ordering::Relaxed) {
-                    let now = stamp(store.path());
-                    if last != Some(now) {
-                        last = Some(now);
-                        let snapshot = BoardSnapshot {
-                            board: store.load().map_err(|err| format!("{err:#}")),
-                        };
-                        if tx.send(snapshot).is_err() {
-                            return;
-                        }
-                    }
-                    thread::sleep(every);
-                }
-            })?;
-        Ok(Self { rx, stop })
-    }
-
-    /// The newest snapshot sent since the last call, if any. Older ones are
-    /// skipped: only the board as it is now matters.
-    pub fn latest(&self) -> Option<BoardSnapshot> {
-        self.rx.try_iter().last()
-    }
-
-    /// Wait up to `timeout` for the next snapshot. For tests and tools.
-    pub fn next_within(&self, timeout: Duration) -> Option<BoardSnapshot> {
-        self.rx.recv_timeout(timeout).ok()
+impl From<&CardId> for CardId {
+    fn from(id: &CardId) -> Self {
+        id.clone()
     }
 }
 
-impl Drop for BoardWatcher {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+impl From<u64> for CardId {
+    fn from(number: u64) -> Self {
+        CardId::plain(number)
+    }
+}
+
+impl PartialEq<u64> for CardId {
+    fn eq(&self, number: &u64) -> bool {
+        self.prefix().is_empty() && self.number() == *number
     }
 }
 

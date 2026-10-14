@@ -1030,7 +1030,8 @@ mod tests {
                 "HumanBoardCard",
                 PromptState::HumanBoardCard {
                     card: Box::new(yaran_core::human_board::Card {
-                        id: 12,
+                        id: yaran_core::human_board::CardId::plain(12),
+                        assignee: None,
                         kind: yaran_core::human_board::CardKind::Validate,
                         priority: yaran_core::human_board::Priority::High,
                         ticket: Some("4812".to_string()),
@@ -1052,7 +1053,8 @@ mod tests {
                 "HumanBoardCard with a reply field",
                 PromptState::HumanBoardCard {
                     card: Box::new(yaran_core::human_board::Card {
-                        id: 13,
+                        id: yaran_core::human_board::CardId::plain(13),
+                        assignee: None,
                         kind: yaran_core::human_board::CardKind::Confirm,
                         priority: yaran_core::human_board::Priority::Normal,
                         ticket: None,

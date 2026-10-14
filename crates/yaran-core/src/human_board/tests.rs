@@ -1,4 +1,6 @@
+use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, TimeZone};
 
@@ -11,6 +13,7 @@ fn at(minute: i64) -> DateTime<Utc> {
 fn card(kind: CardKind, ticket: Option<&str>, title: &str) -> NewCard {
     NewCard {
         kind: Some(kind),
+        assignee: None,
         priority: None,
         ticket: ticket.map(str::to_string),
         title: title.to_string(),
@@ -51,16 +54,16 @@ fn posting_numbers_cards_from_one_and_never_reuses_a_number() {
     let mut board = Board::default();
     assert_eq!(
         board.post(card(CardKind::Task, None, "a"), at(0)).unwrap(),
-        PostOutcome::Added(1)
+        PostOutcome::Added(CardId::plain(1))
     );
     assert_eq!(
         board.post(card(CardKind::Info, None, "b"), at(1)).unwrap(),
-        PostOutcome::Added(2)
+        PostOutcome::Added(CardId::plain(2))
     );
     board.cards.retain(|c| c.id != 2);
     assert_eq!(
         board.post(card(CardKind::Info, None, "c"), at(2)).unwrap(),
-        PostOutcome::Added(3),
+        PostOutcome::Added(CardId::plain(3)),
         "a dropped card's number is not handed out again"
     );
 }
@@ -82,7 +85,7 @@ fn an_open_card_is_unique_per_ticket_and_kind() {
             at(2),
         )
         .unwrap();
-    assert_eq!(outcome, PostOutcome::Updated(1));
+    assert_eq!(outcome, PostOutcome::Updated(CardId::plain(1)));
     assert_eq!(board.cards.len(), 2);
     let first = board.card(1).unwrap();
     assert_eq!(first.title, "check it again");
@@ -94,7 +97,7 @@ fn an_open_card_is_unique_per_ticket_and_kind() {
     let outcome = board
         .post(card(CardKind::Validate, Some("4812"), "regressed"), at(4))
         .unwrap();
-    assert_eq!(outcome, PostOutcome::Added(3));
+    assert_eq!(outcome, PostOutcome::Added(CardId::plain(3)));
 }
 
 #[test]
@@ -105,6 +108,7 @@ fn card_text_is_sanitized_flattened_and_bounded() {
         .post(
             NewCard {
                 kind: Some(CardKind::Task),
+                assignee: None,
                 priority: None,
                 ticket: Some("  #42  ".to_string()),
                 title: format!("\x1b]0;pwned\x07 two\n lines {long}"),
@@ -225,7 +229,7 @@ fn prune_keeps_every_open_card_and_the_newest_history() {
         board
             .post(card(CardKind::Info, None, &format!("r{n}")), at(n))
             .unwrap();
-        let id = board.cards.last().unwrap().id;
+        let id = board.cards.last().unwrap().id.clone();
         board.resolve(id, None, None, at(n)).unwrap();
     }
     board
@@ -361,7 +365,7 @@ fn concurrent_writers_never_lose_a_card() {
     }
     let board = BoardStore::new(&root).load().unwrap();
     assert_eq!(board.cards.len(), 80);
-    let mut ids: Vec<u64> = board.cards.iter().map(|c| c.id).collect();
+    let mut ids: Vec<u64> = board.cards.iter().map(|c| c.id.number()).collect();
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 80, "every card has its own number");

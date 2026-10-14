@@ -19,14 +19,13 @@ Set it in `config.toml`:
 human_board = true
 ```
 
-or run `toggle-human-board` from the palette. The right column then shows **Tasks for
-Human** in place of the Staged Changes list and the Commit Message box. Running the
-command again brings those back; the cards stay on the board either way.
+or run `toggle-human-board` from the palette. The right column then gets a row of tabs:
+**Board** (the cards) and **Changes** (the changed files, the Staged Changes list and the
+Commit Message box, exactly as they are without the board). Switch tabs with the arrow keys
+(or `h` and `l`) while the right column has focus, or click one. Running the command again
+takes the tabs away; the cards stay on the board either way.
 
-> [!NOTE]
-> While the board is up, staged files have no list of their own. The Changes title
-> says how many there are (`· 3 staged`), and the stage and commit flow returns the
-> moment you switch the board off.
+Each tab carries a count: the cards waiting on you, and the files that changed.
 
 ## What you see
 
@@ -116,13 +115,89 @@ Tell your orchestrating agent about the board in its instructions, for example: 
 ticket needs the owner, post it with `yaran board post` instead of only saying so in your
 reply."
 
+## A queue per person
+
+When more than one person handles what the agents ask, give each of them a queue:
+
+```toml
+[board]
+people = ["Sam", "Alex"]
+me = "Sam"
+```
+
+The tabs become **Sam**, **Alex**, **All** and **Changes**, and the column opens on the
+queue of `me`, the person running this yaran. Agents put a card in someone's queue with
+`--for`:
+
+```bash
+yaran board post --kind task --for Alex "Approve the payout terms"
+yaran board assign 14 Sam
+yaran board list --for Alex
+```
+
+- A card posted without `--for` goes to `me`. `--for anyone` puts it in every queue.
+- A name that is not in `people` is refused with the list, so a typo never parks a card
+  in a queue nobody reads.
+- **All** shows every card with whose queue it is in. Only new cards in your own queue are
+  announced on the status line.
+
+## Sharing the board
+
+On its own, the board lives in one file, `human_board.json`, in yaran's config directory,
+readable only by you. Point `[board] dir` at a folder instead and every card becomes a
+Markdown note there (`S-12.md`), with the card's fields as note properties and its detail
+as the body. Notes apps such as Obsidian show and edit them like any other note, and a
+person can change a card's `status` to `done` (or its `priority`, or its `assignee`) right
+there.
+
+```toml
+[board]
+dir = "~/notes/Board"
+people = ["Sam", "Alex"]
+me = "Sam"
+id_prefix = "S"
+sync = "git"
+sync_interval_seconds = 60
+```
+
+To share that folder between machines, keep it somewhere both can reach:
+
+- In a synced notes vault, leave `sync = "off"` and let the vault's own sync carry it.
+- Inside a git repository whose branch has an upstream, set `sync = "git"`. While the
+  terminal UI runs, yaran commits the folder's changes (only the folder's, whatever else in
+  the repository is changed or staged), merges the upstream and pushes, once every
+  `sync_interval_seconds` and a few seconds after anything changes the board. The board's
+  bottom edge shows when it last synced. `yaran board sync` runs one sync by hand.
+
+Every machine numbers the cards it adds behind its own `id_prefix` (`S-12`, `A-3`), so two
+machines never hand out the same id. It defaults to the first letter of `me`; give each
+machine its own. A bare number such as `yaran board resolve 12` means this machine's card
+12 first.
+
+> [!IMPORTANT]
+> With `sync = "git"`, yaran pushes the branch the folder's repository has checked out,
+> including commits other tools made there and have not pushed yet. It never rebases or
+> forces. When two machines changed the same card, the later edit is kept. Anything else it
+> cannot merge, such as a conflict in another file, is undone and reported, and the sync
+> tries again later.
+
+To move an existing private board into a new shared folder, set `dir` and run:
+
+```bash
+yaran board import
+```
+
+It copies every card (keeping its number behind this machine's prefix where it can) and
+leaves the private file alone. Running it twice copies nothing twice.
+
 ## Where the cards live
 
-The board is one file, `human_board.json`, in yaran's config directory, readable only by
-you. Every change is written whole, so the terminal UI never reads half a board, and
-several agents posting at once never lose a card. Resolved cards are kept as history (the
-newest 200), and open cards are never dropped. If the file is damaged, the pane says so and
-yaran leaves the file alone rather than overwriting cards nobody has read.
+Every change is written whole, so the terminal UI never reads half a board, and several
+agents posting at once never lose a card. Resolved cards are kept as history (the newest
+200), and open cards are never dropped. If the private file is damaged, the pane says so
+and yaran leaves the file alone rather than overwriting cards nobody has read. In a shared
+folder a note yaran cannot read is left exactly as it is, the rest of the board still loads,
+and the board's bottom edge counts the unreadable notes (`yaran board list` names them).
 
 > [!NOTE]
 > The board is shown in the terminal UI only. The web UI does not show it yet.

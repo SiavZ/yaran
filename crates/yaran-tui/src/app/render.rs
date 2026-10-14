@@ -5109,44 +5109,118 @@ impl App {
         if self.right_hidden {
             return;
         }
+        self.mouse_layout.right_tabs.clear();
 
-        // The human board takes the staged list's and the commit box's place,
-        // under whatever the top half shows (the Changes list, or the quiet
-        // card for a folder git cannot work with). The collapsed rail stays a
-        // rail of file glyphs.
-        if self.right_lower() == RightLower::Board && !self.right_collapsed {
-            let pct = self.staged_pane_height_pct.clamp(10, 80);
-            let changes_pct = 100u16.saturating_sub(pct).max(20);
-            let [top, bottom] = Layout::default()
+        // With the human board on, the column carries a strip of tabs (each
+        // person's queue, All, Changes) over either the board or the changed
+        // files. The collapsed rail stays a rail of file glyphs.
+        if self.human_board_enabled() && !self.right_collapsed && area.height >= 3 {
+            let [strip, body] = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Percentage(changes_pct),
-                    Constraint::Percentage(pct),
-                ])
+                .constraints([Constraint::Length(1), Constraint::Min(1)])
                 .areas(area);
-            if let Some(reason) = self.quiet_changes_reason() {
-                self.render_quiet_changes(frame, top, &reason);
+            self.render_right_tabs(frame, strip);
+            if self.right_lower() == RightLower::Board {
+                self.render_human_board(frame, body);
             } else {
-                let staged = self.engine.staged_files.len();
-                // Staged files have no list of their own while the board is
-                // up, so the Changes title says they exist rather than hiding
-                // them without a word.
-                let note = (staged > 0).then(|| format!("{staged} staged"));
-                let list_rect = self.render_file_list_noted(
-                    frame,
-                    top,
-                    "Changes",
-                    &self.engine.unstaged_files,
-                    RightSection::Unstaged,
-                    true,
-                    note.as_deref(),
-                );
-                self.mouse_layout.unstaged_list = Some(list_rect);
+                self.render_changes_column(frame, body);
             }
-            self.render_human_board(frame, bottom);
             return;
         }
+        self.render_changes_column(frame, area);
+    }
 
+    /// The right column's tab strip while the board is on: one tab per queue
+    /// with how many of its cards wait on a person, then Changes with how many
+    /// files changed. Publishes each tab's rect for clicks; tabs are separated
+    /// by a divider cell with a space either side, so a click cannot land on
+    /// the neighbour.
+    fn render_right_tabs(&mut self, frame: &mut Frame, area: Rect) {
+        use super::human_board::RightTab;
+        let tabs = self.right_column_tabs();
+        let has_people = self
+            .human_board
+            .settings
+            .as_ref()
+            .is_some_and(|settings| settings.has_people());
+        let current = self.human_board.tab.clone();
+        let pane_focused = self.focus == FocusPane::Files;
+        let changed_files = self.engine.unstaged_files.len() + self.engine.staged_files.len();
+        let attention = Style::default().fg(self.theme.session_attention);
+        let quiet = Style::default().fg(self.theme.hint_dim_desc_fg);
+
+        let buf = frame.buffer_mut();
+        let base = Style::default().bg(self.theme.app_bg);
+        for x in area.x..area.right() {
+            buf[(x, area.y)].set_symbol(" ").set_style(base);
+        }
+        let mut x = area.x + 1;
+        let right = area.right();
+        for (index, tab) in tabs.iter().enumerate() {
+            let active = current.as_ref() == Some(tab);
+            let label = tab.label(has_people);
+            let count = match (tab, self.human_board.readable()) {
+                (RightTab::Queue(_), Some(board)) => {
+                    let view = tab
+                        .audience()
+                        .unwrap_or(yaran_core::human_board::Audience::Everyone);
+                    let waiting = board.waiting_count_in(&view);
+                    let news = board.news_count_in(&view);
+                    if waiting > 0 {
+                        Some((waiting.to_string(), attention))
+                    } else if news > 0 {
+                        Some((news.to_string(), quiet))
+                    } else {
+                        None
+                    }
+                }
+                (RightTab::Queue(_), None) => None,
+                (RightTab::Changes, _) => {
+                    (changed_files > 0).then(|| (changed_files.to_string(), quiet))
+                }
+            };
+            let width = display_width(&label)
+                + count
+                    .as_ref()
+                    .map(|(text, _)| 1 + display_width(text))
+                    .unwrap_or(0);
+            let room = usize::from(right.saturating_sub(x));
+            if width > room {
+                if room > 0 {
+                    buf[(x, area.y)].set_symbol("\u{2026}").set_style(quiet);
+                }
+                break;
+            }
+            let label_style = if active {
+                self.theme
+                    .title_style(pane_focused)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(self.theme.title_normal)
+            };
+            let mut spans = vec![Span::styled(label, label_style)];
+            if let Some((text, style)) = count {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(text, style));
+            }
+            let rect = Rect::new(x, area.y, width as u16, 1);
+            Paragraph::new(Line::from(spans)).render(rect, buf);
+            self.mouse_layout.right_tabs.push((rect, tab.clone()));
+            x = x.saturating_add(width as u16);
+            if index + 1 < tabs.len() && right.saturating_sub(x) >= 3 {
+                buf[(x + 1, area.y)]
+                    .set_symbol("\u{2502}")
+                    .set_style(Style::default().fg(self.theme.border_normal));
+                x = x.saturating_add(3);
+            }
+        }
+    }
+
+    /// The right column as it is without the board: the Changes list, with
+    /// the Staged Changes list and the commit box under it when something is
+    /// staged (or the collapsed rail, or the quiet card for a folder git
+    /// cannot work with).
+    fn render_changes_column(&mut self, frame: &mut Frame, area: Rect) {
         // Show the shared non-repository message before even the collapsed rail;
         // an empty file region cannot explain a standalone folder on its own.
         if let Some(reason) = self.quiet_changes_reason() {
@@ -5533,16 +5607,17 @@ impl App {
     /// up the news count first, then the word "waiting" (leaving the count in
     /// parentheses), so the one number that matters is never cut in half.
     fn human_board_title(&self, focused: bool, max_width: usize) -> Line<'static> {
-        let name = Span::styled("Tasks for Human", self.theme.title_style(focused));
+        let view = self.human_board.view();
+        let name = match view {
+            yaran_core::human_board::Audience::Person(person) => format!("Tasks for {person}"),
+            yaran_core::human_board::Audience::Everyone => "Tasks for Human".to_string(),
+        };
+        let name = Span::styled(name, self.theme.title_style(focused));
         let Some(board) = self.human_board.readable() else {
             return Line::from(name);
         };
-        let waiting = board.waiting_count();
-        let news = board
-            .open_cards()
-            .iter()
-            .filter(|card| !card.kind.waits_on_human())
-            .count();
+        let waiting = board.waiting_count_in(&view);
+        let news = board.news_count_in(&view);
         let attention = Style::default()
             .fg(self.theme.session_attention)
             .add_modifier(Modifier::BOLD);
@@ -5552,7 +5627,7 @@ impl App {
         let mut full = vec![name.clone()];
         if waiting > 0 {
             full.push(Span::raw(" "));
-            let urgent = board.urgent_count();
+            let urgent = board.urgent_count_in(&view);
             full.push(Span::styled(
                 if urgent > 0 {
                     format!("{waiting} waiting ({urgent} urgent)")
@@ -5589,6 +5664,40 @@ impl App {
         ])
     }
 
+    /// The board pane's bottom edge: notes that could not be read, on the
+    /// left, and how the last sync of a shared board went, on the right.
+    /// Clock times rather than ages, so the text needs no redraw to stay true.
+    fn human_board_footer(&self) -> (Option<Line<'static>>, Option<Line<'static>>) {
+        let warning = Style::default().fg(self.theme.warning_fg);
+        let quiet = Style::default().fg(self.theme.hint_dim_desc_fg);
+        let problems = self
+            .human_board
+            .readable()
+            .map(|board| board.problems.len())
+            .unwrap_or(0);
+        let left = (problems > 0).then(|| {
+            Line::from(Span::styled(
+                format!(
+                    " {} unreadable (yaran board list) ",
+                    count_of_with(problems, "note", "notes")
+                ),
+                warning,
+            ))
+        });
+        let right = self.human_board.last_sync.as_ref().map(|outcome| {
+            let at = outcome
+                .at
+                .with_timezone(&chrono::Local)
+                .format("%H:%M")
+                .to_string();
+            match &outcome.result {
+                Ok(_) => Line::from(Span::styled(format!(" synced {at} "), quiet)),
+                Err(_) => Line::from(Span::styled(format!(" sync failed {at} "), warning)),
+            }
+        });
+        (left, right)
+    }
+
     /// The human board: open cards grouped by kind in the board's column
     /// order, then the most recently resolved under "Done". Publishes the row
     /// area and the row-to-card map for clicks.
@@ -5596,7 +5705,14 @@ impl App {
         let pane_focused = self.focus == FocusPane::Files;
         let active = pane_focused && self.right_section == RightSection::Board;
         let title = self.human_board_title(active, usize::from(area.width.saturating_sub(2)));
-        let block = self.themed_block_line(title, active);
+        let mut block = self.themed_block_line(title, active);
+        let (problems, sync) = self.human_board_footer();
+        if let Some(problems) = problems {
+            block = block.title_bottom(problems.left_aligned());
+        }
+        if let Some(sync) = sync {
+            block = block.title_bottom(sync.right_aligned());
+        }
         let inner = block.inner(area);
         block.render(area, frame.buffer_mut());
 
@@ -5669,18 +5785,33 @@ impl App {
         use super::human_board::{BoardRow, DONE_HEADING, board_rows, fit_width};
 
         let dim = Style::default().fg(self.theme.hint_dim_desc_fg);
-        let (rows, _) = board_rows(board);
+        let view = self.human_board.view();
+        let (rows, _) = board_rows(board, &view);
+        // Beside people's queues, the every-card view names whose each card is.
+        let show_assignee = view == yaran_core::human_board::Audience::Everyone
+            && self
+                .human_board
+                .settings
+                .as_ref()
+                .is_some_and(|settings| settings.has_people());
         if rows.is_empty() {
+            let (headline, hint) = match view {
+                yaran_core::human_board::Audience::Person(person) => (
+                    format!("Nothing waits on {person} right now."),
+                    format!("Agents put cards here with yaran board post --for {person}."),
+                ),
+                yaran_core::human_board::Audience::Everyone => (
+                    "Nothing needs you right now.".to_string(),
+                    "Agents put cards here with yaran board post.".to_string(),
+                ),
+            };
             let lines = vec![
                 Line::from(Span::styled(
-                    "Nothing needs you right now.",
+                    headline,
                     Style::default().fg(self.theme.text_fg),
                 )),
                 Line::from(""),
-                Line::from(Span::styled(
-                    "Agents put cards here with yaran board post.",
-                    dim,
-                )),
+                Line::from(Span::styled(hint, dim)),
             ];
             render_board_prose(&lines, area, frame.buffer_mut());
             return;
@@ -5725,7 +5856,7 @@ impl App {
                 }
                 BoardRow::Card { id, slot } => {
                     self.mouse_layout.board_row_to_slot.push(Some(*slot));
-                    let Some(card) = board.card(*id) else {
+                    let Some(card) = board.card(id) else {
                         continue;
                     };
                     let selected = active && Some(*slot) == selected_slot;
@@ -5754,7 +5885,17 @@ impl App {
                         None => format!("#{}", card.id),
                     };
                     let age = compact_age_for(card, now);
-                    let fixed = display_width(marker) + 1 + display_width(&reference) + 1;
+                    let who = card
+                        .assignee
+                        .as_deref()
+                        .filter(|_| show_assignee)
+                        .map(|person| format!("{person} "))
+                        .unwrap_or_default();
+                    let fixed = display_width(marker)
+                        + 1
+                        + display_width(&reference)
+                        + 1
+                        + display_width(&who);
                     let age_width = display_width(&age);
                     let title_budget = width.saturating_sub(fixed + age_width + 1);
                     let title = fit_width(&card.title, title_budget);
@@ -5773,6 +5914,7 @@ impl App {
                         Span::styled(" ", base),
                         Span::styled(title, base.fg(title_tone)),
                         Span::styled(" ".repeat(padding), base),
+                        Span::styled(who, base.fg(self.theme.hint_desc_fg)),
                         Span::styled(age, base.fg(self.theme.hint_dim_desc_fg)),
                         Span::styled(" ", base),
                     ])
@@ -5835,6 +5977,9 @@ impl App {
             // One cell shorter than the plain rows' labels: the chip's own
             // padding takes that cell, so every value starts in one column.
             body.push(labelled_name(" Ticket:  ", ticket, label, &self.theme));
+        }
+        if let Some(assignee) = &card.assignee {
+            body.push(labelled_name(" For:     ", assignee, label, &self.theme));
         }
         if let Some(from) = &card.from {
             body.push(labelled_name(" From:    ", from, label, &self.theme));

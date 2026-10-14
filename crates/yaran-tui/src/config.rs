@@ -1722,6 +1722,78 @@ fn config_schema() -> Vec<ConfigEntry> {
             )),
             value_fn: |c| FieldValue::U32(c.storage.backup_interval_minutes),
         },
+        ConfigEntry::Blank,
+        ConfigEntry::Comment(
+            "# The human board (\"Tasks for Human\", see [ui] human_board): where its\n\
+             # cards live, whose queues it has, and how a board shared between\n\
+             # machines is kept in step. Read at startup and on a config reload.",
+        ),
+        ConfigEntry::Section("board"),
+        ConfigEntry::Field {
+            key: "dir",
+            comment: Some(CommentSource::Static(
+                "# Where the cards live. Empty (the default) keeps them in human_board.json\n\
+                 # in this directory, private to this machine. A folder keeps one Markdown\n\
+                 # note per card there (G-12.md), which a notes app can show and edit; put\n\
+                 # it in a synced notes vault or a git repository and several people share\n\
+                 # one board. ~/ starts at your home directory. Run `yaran board import`\n\
+                 # once to copy the private board's cards into a new folder.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.dir.clone()),
+        },
+        ConfigEntry::Field {
+            key: "people",
+            comment: Some(CommentSource::Static(
+                "# The people the board has a queue for, e.g. [\"Sam\", \"Alex\"]. Each gets\n\
+                 # a tab in the right column, beside an All tab and the Changes tab, and\n\
+                 # agents put a card in someone's queue with `yaran board post --for Sam`.\n\
+                 # A card for nobody in particular is in every queue. Empty (the default):\n\
+                 # one queue for whoever runs yaran.",
+            )),
+            value_fn: |c| FieldValue::StrList(c.board.people.clone()),
+        },
+        ConfigEntry::Field {
+            key: "me",
+            comment: Some(CommentSource::Static(
+                "# Which of the people runs this yaran: their tab opens first, only their new\n\
+                 # cards are announced on the status line, and a card posted here without\n\
+                 # --for goes to their queue. Empty: no queue is this machine's own.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.me.clone()),
+        },
+        ConfigEntry::Field {
+            key: "id_prefix",
+            comment: Some(CommentSource::Static(
+                "# What this machine puts in front of the numbers of the cards it adds to a\n\
+                 # folder board (G makes G-12), so two machines never give out the same id.\n\
+                 # Give every machine sharing a folder its own. Letters and digits, starting\n\
+                 # with a letter, at most 8. Empty: the first letter of `me`.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.id_prefix.clone()),
+        },
+        ConfigEntry::Field {
+            key: "sync",
+            comment: Some(CommentSource::Static(
+                "# How a folder board is kept in step with the other machines:\n\
+                 #   \"off\"  yaran does not sync it (a sync app or a person does). Default.\n\
+                 #   \"git\"  the folder is inside a git repository whose branch has an\n\
+                 #          upstream: while the terminal UI runs, yaran commits the\n\
+                 #          folder's changes (and nothing else in the repository), merges\n\
+                 #          the upstream and pushes. Where two machines changed the same\n\
+                 #          card, the later edit is kept. It never rebases, never forces,\n\
+                 #          and stops to report anything else it cannot merge.\n\
+                 # `yaran board sync` runs one sync by hand.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.sync.clone()),
+        },
+        ConfigEntry::Field {
+            key: "sync_interval_seconds",
+            comment: Some(CommentSource::Static(
+                "# Seconds between syncs with sync = \"git\" (at least 15). A change made on\n\
+                 # this machine syncs a few seconds after it lands either way. Default 60.",
+            )),
+            value_fn: |c| FieldValue::U32(c.board.sync_interval_seconds),
+        },
     ]
 }
 

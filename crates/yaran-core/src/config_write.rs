@@ -749,6 +749,19 @@ fn apply_patches(doc: &mut DocumentMut, config: &Config) {
         "backup_interval_minutes",
         config.storage.backup_interval_minutes,
     );
+
+    // --- [board] (the human board's store, people and sync) ---
+    patch_table_str(doc, "board", "dir", &config.board.dir);
+    patch_table_string_array(doc, "board", "people", &config.board.people);
+    patch_table_str(doc, "board", "me", &config.board.me);
+    patch_table_str(doc, "board", "id_prefix", &config.board.id_prefix);
+    patch_table_str(doc, "board", "sync", &config.board.sync);
+    patch_table_u32(
+        doc,
+        "board",
+        "sync_interval_seconds",
+        config.board.sync_interval_seconds,
+    );
 }
 
 fn patch_limits(doc: &mut DocumentMut, limits: &crate::config::LimitsConfig) {

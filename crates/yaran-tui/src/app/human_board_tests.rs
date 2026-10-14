@@ -6,7 +6,7 @@ use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use yaran_core::human_board::{Board, BoardStore, CardKind, NewCard, Priority};
+use yaran_core::human_board::{Audience, Board, BoardStore, CardId, CardKind, NewCard, Priority};
 
 use super::*;
 use crate::app::test_support::{default_bindings, test_app};
@@ -19,6 +19,7 @@ fn at(minute: i64) -> chrono::DateTime<Utc> {
 fn new_card(kind: CardKind, ticket: Option<&str>, title: &str) -> NewCard {
     NewCard {
         kind: Some(kind),
+        assignee: None,
         priority: None,
         ticket: ticket.map(str::to_string),
         title: title.to_string(),
@@ -119,7 +120,7 @@ fn board_app(board: Option<Board>) -> App {
 #[test]
 fn rows_group_open_cards_by_kind_then_show_recent_done() {
     let board = sample_board();
-    let (rows, slots) = board_rows(&board);
+    let (rows, slots) = board_rows(&board, &Audience::Everyone);
     let headings: Vec<Option<CardKind>> = rows
         .iter()
         .filter_map(|row| match row {
@@ -150,7 +151,7 @@ fn rows_group_open_cards_by_kind_then_show_recent_done() {
 
 #[test]
 fn an_empty_board_has_no_rows() {
-    let (rows, slots) = board_rows(&Board::default());
+    let (rows, slots) = board_rows(&Board::default(), &Audience::Everyone);
     assert!(rows.is_empty());
     assert!(slots.is_empty());
 }
@@ -162,10 +163,10 @@ fn done_shows_only_the_most_recent_few() {
         board
             .post(new_card(CardKind::Info, None, &format!("n{n}")), at(n))
             .unwrap();
-        let id = board.cards.last().unwrap().id;
+        let id = board.cards.last().unwrap().id.clone();
         board.resolve(id, None, None, at(n)).unwrap();
     }
-    let (rows, slots) = board_rows(&board);
+    let (rows, slots) = board_rows(&board, &Audience::Everyone);
     assert_eq!(slots.len(), RECENT_DONE);
     assert_eq!(rows.len(), RECENT_DONE + 1);
 }
@@ -186,7 +187,11 @@ fn the_first_snapshot_announces_nothing_and_later_cards_are_announced() {
     let mut state = HumanBoardState::default();
     let board = sample_board();
     assert!(state.apply_snapshot(Ok(board.clone())).is_empty());
-    assert_eq!(state.selected, Some(3), "the first card is selected");
+    assert_eq!(
+        state.selected,
+        Some(CardId::plain(3)),
+        "the first card is selected"
+    );
 
     let mut next = board.clone();
     next.post(new_card(CardKind::Confirm, Some("7"), "Roll it?"), at(10))
@@ -231,14 +236,18 @@ fn the_selection_follows_its_card_when_a_new_one_lands_above_it() {
     let board = sample_board();
     state.apply_snapshot(Ok(board.clone()));
     state.move_selection(1);
-    assert_eq!(state.selected, Some(2), "on the validate card");
+    assert_eq!(
+        state.selected,
+        Some(CardId::plain(2)),
+        "on the validate card"
+    );
 
     // A new task card sorts above it; the selection stays on card 2.
     let mut next = board;
     next.post(new_card(CardKind::Task, None, "New decision"), at(20))
         .unwrap();
     state.apply_snapshot(Ok(next));
-    assert_eq!(state.selected, Some(2));
+    assert_eq!(state.selected, Some(CardId::plain(2)));
     assert_eq!(state.selected_slot(), Some(2));
 }
 
@@ -251,7 +260,11 @@ fn a_selected_card_that_leaves_hands_the_selection_to_its_neighbour() {
     let mut next = board;
     next.cards.retain(|c| c.id != 2);
     state.apply_snapshot(Ok(next));
-    assert_eq!(state.selected, Some(4), "the card now at its old position");
+    assert_eq!(
+        state.selected,
+        Some(CardId::plain(4)),
+        "the card now at its old position"
+    );
 }
 
 #[test]
@@ -275,7 +288,7 @@ fn an_unreadable_board_keeps_no_selection_and_announces_nothing() {
 // ── The pane in the right column ───────────────────────────────────────────
 
 #[test]
-fn the_board_takes_the_staged_list_and_commit_box_place() {
+fn the_board_fills_the_column_and_changes_is_a_tab_beside_it() {
     let mut app = board_app(Some(sample_board()));
     app.engine.staged_files = vec![staged_file("a.rs"), staged_file("b.rs")];
     assert_eq!(app.right_lower(), RightLower::Board);
@@ -284,12 +297,12 @@ fn the_board_takes_the_staged_list_and_commit_box_place() {
         text.contains("Tasks for Human 3 waiting, 1 update"),
         "{text}"
     );
+    assert!(
+        text.contains("Board 3 \u{2502} Changes 2"),
+        "the tab strip: {text}"
+    );
     assert!(!text.contains("Staged Changes"), "{text}");
     assert!(!text.contains("Commit Message"), "{text}");
-    assert!(
-        text.contains("2 staged"),
-        "staged files are named, not hidden: {text}"
-    );
     for line in [
         "Tasks for you 1",
         "Validation 1",
@@ -303,6 +316,15 @@ fn the_board_takes_the_staged_list_and_commit_box_place() {
         assert!(text.contains(line), "missing {line:?}:\n{text}");
     }
     assert!(text.contains("\u{2713} 1205 Old question"), "{text}");
+
+    // The Changes tab is the column as it is without the board.
+    app.cycle_right_tab(1);
+    assert_eq!(app.right_lower(), RightLower::StagedAndCommit);
+    let text = screen(&mut app);
+    assert!(text.contains("Staged Changes"), "{text}");
+    assert!(text.contains("Commit Message"), "{text}");
+    assert!(!text.contains("Tasks for Human"), "{text}");
+    assert!(text.contains("Board 3"), "the strip stays: {text}");
 }
 
 #[test]
@@ -344,18 +366,23 @@ fn an_unreadable_board_says_why_in_the_pane() {
 }
 
 #[test]
-fn focus_moves_from_changes_to_the_board_and_out_of_the_pane() {
+fn on_a_queue_tab_the_board_is_the_pane_s_only_section() {
     let mut app = board_app(Some(sample_board()));
     app.engine.staged_files = vec![staged_file("a.rs")];
-    app.focus = FocusPane::Files;
-    app.right_section = RightSection::Unstaged;
-    assert_eq!(
-        app.right_section.next(app.right_lower()),
-        Some(RightSection::Board)
-    );
+    assert_eq!(RightSection::first(app.right_lower()), RightSection::Board);
     assert_eq!(RightSection::Board.next(RightLower::Board), None);
-    assert_eq!(RightSection::Board.previous(), Some(RightSection::Unstaged));
+    assert_eq!(RightSection::Board.previous(), None);
     assert_eq!(RightSection::last(RightLower::Board), RightSection::Board);
+
+    // On the Changes tab the old order is back.
+    app.cycle_right_tab(1);
+    let lower = app.right_lower();
+    assert_eq!(RightSection::first(lower), RightSection::Unstaged);
+    assert_eq!(
+        RightSection::Unstaged.next(lower),
+        Some(RightSection::Staged)
+    );
+    assert_eq!(RightSection::last(lower), RightSection::CommitInput);
 }
 
 #[test]
@@ -379,7 +406,7 @@ fn keys_move_open_and_resolve_the_selected_card() {
     app.right_section = RightSection::Board;
 
     app.handle_key(key(KeyCode::Down)).unwrap();
-    assert_eq!(app.human_board.selected, Some(2));
+    assert_eq!(app.human_board.selected, Some(CardId::plain(2)));
 
     // The stage key marks the card done, on a worker, by number.
     app.handle_key(key(KeyCode::Char(' '))).unwrap();
@@ -398,7 +425,7 @@ fn keys_move_open_and_resolve_the_selected_card() {
 
     // Once read back it sits under Done, still selected; the same key reopens.
     app.load_human_board_now();
-    assert_eq!(app.human_board.selected, Some(2));
+    assert_eq!(app.human_board.selected, Some(CardId::plain(2)));
     app.handle_key(key(KeyCode::Char(' '))).unwrap();
     app.finish_board_job();
     assert!(store.load().unwrap().card(2).unwrap().is_open());
@@ -419,7 +446,7 @@ fn the_card_dialog_shows_the_whole_card_and_its_action_resolves_it() {
     let mut app = board_app(Some(board));
     app.focus = FocusPane::Files;
     app.right_section = RightSection::Board;
-    app.human_board.selected = Some(2);
+    app.human_board.selected = Some(CardId::plain(2));
     app.open_selected_board_card();
 
     let text = screen(&mut app);
@@ -448,7 +475,7 @@ fn the_card_dialog_shows_the_whole_card_and_its_action_resolves_it() {
 #[test]
 fn closing_the_card_dialog_changes_nothing() {
     let mut app = board_app(Some(sample_board()));
-    app.human_board.selected = Some(3);
+    app.human_board.selected = Some(CardId::plain(3));
     app.open_selected_board_card();
     app.handle_key(key(KeyCode::Esc)).unwrap();
     assert!(matches!(app.prompt, PromptState::None));
@@ -460,7 +487,7 @@ fn closing_the_card_dialog_changes_nothing() {
 #[test]
 fn a_resolved_card_offers_reopen() {
     let mut app = board_app(Some(sample_board()));
-    app.human_board.selected = Some(5);
+    app.human_board.selected = Some(CardId::plain(5));
     app.open_selected_board_card();
     let text = screen(&mut app);
     assert!(text.contains("Reopen"), "{text}");
@@ -491,7 +518,11 @@ fn clicking_a_card_row_focuses_the_board_and_selects_it() {
     app.handle_mouse(click);
     assert_eq!(app.focus, FocusPane::Files);
     assert_eq!(app.right_section, RightSection::Board);
-    assert_eq!(app.human_board.selected, Some(4), "slot 2 is card 4");
+    assert_eq!(
+        app.human_board.selected,
+        Some(CardId::plain(4)),
+        "slot 2 is card 4"
+    );
 }
 
 #[test]
@@ -640,7 +671,7 @@ fn reply_app() -> (App, String) {
         .insert(yaran_core::ids::TabId::new(tab.clone()), echo_terminal());
     app.focus = FocusPane::Files;
     app.right_section = RightSection::Board;
-    app.human_board.selected = Some(1);
+    app.human_board.selected = Some(CardId::plain(1));
     (app, tab)
 }
 
@@ -897,7 +928,7 @@ fn a_done_card_has_no_reply_field() {
         .update(|board| board.resolve(1, Some("human"), None, at(1)))
         .unwrap();
     app.load_human_board_now();
-    app.human_board.selected = Some(1);
+    app.human_board.selected = Some(CardId::plain(1));
     app.open_selected_board_card();
     assert!(matches!(
         app.prompt,
@@ -917,7 +948,7 @@ fn the_selected_card_row_uses_the_agent_lists_soft_tint() {
     let mut app = board_app(Some(sample_board()));
     app.focus = FocusPane::Files;
     app.right_section = RightSection::Board;
-    app.human_board.selected = Some(2);
+    app.human_board.selected = Some(CardId::plain(2));
     let mut terminal = Terminal::new(TestBackend::new(220, 44)).expect("terminal");
     terminal.draw(|frame| app.render(frame)).expect("render");
     let buffer = terminal.backend().buffer().clone();
@@ -999,7 +1030,7 @@ fn urgent_cards_lead_their_group_and_wear_a_marker() {
 #[test]
 fn the_card_view_names_the_priority() {
     let mut app = board_app(Some(prioritized_board()));
-    app.human_board.selected = Some(3);
+    app.human_board.selected = Some(CardId::plain(3));
     app.open_selected_board_card();
     let text = screen(&mut app);
     assert!(text.contains("Priority: High"), "{text}");
@@ -1039,7 +1070,7 @@ fn long_card_app() -> App {
     app.engine
         .providers
         .insert(yaran_core::ids::TabId::new(tab), echo_terminal());
-    app.human_board.selected = Some(1);
+    app.human_board.selected = Some(CardId::plain(1));
     app.open_selected_board_card();
     assert!(
         matches!(
@@ -1108,4 +1139,212 @@ fn arrow_keys_scroll_the_text_while_the_reply_field_is_focused_and_letters_type(
     };
     assert_eq!(reply.input.text, "jk", "letters are typing, not scrolling");
     assert_eq!(*scroll, 1);
+}
+
+// ── People's queues and the tab strip ──────────────────────────────────────
+
+/// A board for two people, Sam and Alex, run by Alex: one card each, one for
+/// anyone.
+fn team_app() -> App {
+    let mut app = test_app(default_bindings());
+    app.engine.config.ui.human_board = true;
+    app.engine.config.board.people = vec!["Sam".to_string(), "Alex".to_string()];
+    app.engine.config.board.me = "alex".to_string();
+    app.right_hidden = false;
+    let mut board = Board::default();
+    let mut for_sam = new_card(CardKind::Task, None, "Sign the contract");
+    for_sam.assignee = Some("Sam".to_string());
+    board.post(for_sam, at(0)).unwrap();
+    let mut for_alex = new_card(CardKind::Validate, None, "Check the release");
+    for_alex.assignee = Some("Alex".to_string());
+    board.post(for_alex, at(1)).unwrap();
+    board
+        .post(new_card(CardKind::Info, None, "Deployed"), at(2))
+        .unwrap();
+    BoardStore::new(&app.engine.paths.root)
+        .update(|current| {
+            *current = board;
+            Ok(())
+        })
+        .unwrap();
+    app.load_human_board_now();
+    app
+}
+
+#[test]
+fn each_person_has_a_tab_and_the_column_opens_on_mine() {
+    let mut app = team_app();
+    let tabs = app.right_column_tabs();
+    assert_eq!(
+        tabs,
+        [
+            RightTab::Queue(Some("Sam".to_string())),
+            RightTab::Queue(Some("Alex".to_string())),
+            RightTab::Queue(None),
+            RightTab::Changes,
+        ]
+    );
+    assert_eq!(
+        app.human_board.tab,
+        Some(RightTab::Queue(Some("Alex".to_string()))),
+        "me is Alex"
+    );
+    let text = screen(&mut app);
+    assert!(
+        text.contains("Sam 1 \u{2502} Alex 1 \u{2502} All 2"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Tasks for Alex 1 waiting, 1 update"),
+        "{text}"
+    );
+    assert!(text.contains("Check the release"), "{text}");
+    assert!(
+        text.contains("Deployed"),
+        "a card for anyone is in every queue: {text}"
+    );
+    assert!(!text.contains("Sign the contract"), "{text}");
+}
+
+#[test]
+fn the_tab_keys_walk_the_strip_and_wrap() {
+    let mut app = team_app();
+    app.focus = FocusPane::Files;
+    app.right_section = RightSection::Board;
+    app.handle_key(key(KeyCode::Right)).unwrap();
+    assert_eq!(app.human_board.tab, Some(RightTab::Queue(None)));
+    assert_eq!(app.right_section, RightSection::Board);
+    app.handle_key(key(KeyCode::Char('l'))).unwrap();
+    assert_eq!(app.human_board.tab, Some(RightTab::Changes));
+    assert_eq!(app.right_section, RightSection::Unstaged, "off the board");
+    app.handle_key(key(KeyCode::Right)).unwrap();
+    assert_eq!(
+        app.human_board.tab,
+        Some(RightTab::Queue(Some("Sam".to_string()))),
+        "wraps to the first tab"
+    );
+    assert_eq!(app.right_section, RightSection::Board);
+    let text = screen(&mut app);
+    assert!(text.contains("Tasks for Sam"), "{text}");
+    assert!(text.contains("Sign the contract"), "{text}");
+    app.handle_key(key(KeyCode::Left)).unwrap();
+    assert_eq!(app.human_board.tab, Some(RightTab::Changes), "and back");
+}
+
+#[test]
+fn the_all_tab_names_whose_each_card_is() {
+    let mut app = team_app();
+    app.show_right_tab(RightTab::Queue(None));
+    let text = screen(&mut app);
+    assert!(text.contains("Sign the contract"), "{text}");
+    assert!(text.contains("Check the release"), "{text}");
+    let row = text
+        .lines()
+        .find(|line| line.contains("Sign the contract"))
+        .unwrap();
+    assert!(row.contains("Sam"), "{row}");
+}
+
+#[test]
+fn clicking_a_tab_shows_it() {
+    let mut app = team_app();
+    app.focus = FocusPane::Center;
+    screen(&mut app);
+    let (rect, _) = app
+        .mouse_layout
+        .right_tabs
+        .iter()
+        .find(|(_, tab)| *tab == RightTab::Queue(Some("Sam".to_string())))
+        .cloned()
+        .expect("Sam's tab is on screen");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x,
+        row: rect.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(
+        app.human_board.tab,
+        Some(RightTab::Queue(Some("Sam".to_string())))
+    );
+    assert_eq!(app.focus, FocusPane::Files);
+    assert_eq!(app.right_section, RightSection::Board);
+}
+
+#[test]
+fn only_cards_for_me_are_announced() {
+    let mut app = team_app();
+    let store = BoardStore::new(&app.engine.paths.root);
+    store
+        .update(|board| {
+            let mut c = new_card(CardKind::Task, None, "For Sam only");
+            c.assignee = Some("Sam".to_string());
+            board.post(c, at(5))?;
+            board.post(new_card(CardKind::Task, None, "For anyone"), at(6))
+        })
+        .unwrap();
+    let fresh = app.load_human_board_now();
+    assert_eq!(fresh.len(), 2);
+    let mine = cards_for_me(fresh.clone(), Some("alex"));
+    let titles: Vec<&str> = mine.iter().map(|card| card.title.as_str()).collect();
+    assert_eq!(titles, ["For anyone"]);
+    assert_eq!(cards_for_me(fresh, None).len(), 2, "no me: every card");
+}
+
+#[test]
+fn the_card_view_names_whose_card_it_is() {
+    let mut app = team_app();
+    app.show_right_tab(RightTab::Queue(Some("Sam".to_string())));
+    app.open_selected_board_card();
+    let text = screen(&mut app);
+    assert!(text.contains("For:"), "{text}");
+    assert!(text.contains(" Sam "), "{text}");
+}
+
+#[test]
+fn a_shared_board_shows_how_its_last_sync_went() {
+    let mut app = board_app(Some(sample_board()));
+    app.human_board.last_sync = Some(yaran_core::human_board::sync::SyncOutcome {
+        at: Utc::now(),
+        result: Ok(Default::default()),
+    });
+    let text = screen(&mut app);
+    assert!(text.contains("synced "), "{text}");
+    app.human_board.last_sync = Some(yaran_core::human_board::sync::SyncOutcome {
+        at: Utc::now(),
+        result: Err("offline".to_string()),
+    });
+    let text = screen(&mut app);
+    assert!(text.contains("sync failed "), "{text}");
+}
+
+#[test]
+fn a_folder_board_reads_its_notes() {
+    let mut app = test_app(default_bindings());
+    app.engine.config.ui.human_board = true;
+    app.right_hidden = false;
+    let folder = app.engine.paths.root.join("shared-board");
+    app.engine.config.board.dir = folder.to_string_lossy().into_owned();
+    app.engine.config.board.me = "Kim".to_string();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("K-1.md"),
+        "---\nkind: task\ntitle: Written in a notes app\n---\nSome detail.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("K-2.md"),
+        "---\nkind: nonsense\ntitle: x\n---\n",
+    )
+    .unwrap();
+    app.load_human_board_now();
+    let text = screen(&mut app);
+    assert!(text.contains("Written in a notes app"), "{text}");
+    assert!(text.contains("1 note unreadable"), "{text}");
+    // A card resolved here lands in its note.
+    app.human_board.selected = Some(CardId::new("K", 1));
+    app.toggle_selected_board_card();
+    app.finish_board_job();
+    let note = std::fs::read_to_string(folder.join("K-1.md")).unwrap();
+    assert!(note.contains("status: done"), "{note}");
 }

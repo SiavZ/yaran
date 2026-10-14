@@ -76,6 +76,10 @@ pub enum Action {
     PullFromRemote,
     SearchFiles,
     SearchNext,
+    /// Show the right column's next / previous tab while the human board is
+    /// on: a person's queue, every card, or the Changes list.
+    NextRightTab,
+    PrevRightTab,
     // Commit message editor
     ExitCommitInput,
     // Global
@@ -296,6 +300,8 @@ impl Action {
             Action::PullFromRemote => "pull_from_remote",
             Action::SearchFiles => "search_files",
             Action::SearchNext => "search_next",
+            Action::NextRightTab => "next_right_tab",
+            Action::PrevRightTab => "prev_right_tab",
             Action::ExitCommitInput => "exit_commit_input",
             Action::FocusNext => "focus_next",
             Action::FocusPrev => "focus_prev",
@@ -506,6 +512,12 @@ impl Action {
             Action::PullFromRemote => "Pull from remote.",
             Action::SearchFiles => "Start searching changed files in the files pane.",
             Action::SearchNext => "Jump to the next active search match in the files pane.",
+            Action::NextRightTab => {
+                "With the human board on, show the right column's next tab (a person's queue, All, Changes)."
+            }
+            Action::PrevRightTab => {
+                "With the human board on, show the right column's previous tab."
+            }
             Action::ExitCommitInput => "Exit the commit message editor.",
             Action::FocusNext => "Focus the next pane.",
             Action::FocusPrev => "Focus the previous pane.",
@@ -718,7 +730,9 @@ impl Action {
             | Action::PushToRemote
             | Action::PullFromRemote
             | Action::SearchFiles
-            | Action::SearchNext => Some("Files pane"),
+            | Action::SearchNext
+            | Action::NextRightTab
+            | Action::PrevRightTab => Some("Files pane"),
             Action::ExitCommitInput => Some("Commit input"),
             Action::FocusNext
             | Action::FocusPrev

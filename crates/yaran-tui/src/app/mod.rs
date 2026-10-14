@@ -1197,31 +1197,30 @@ pub(crate) enum RightSection {
     Unstaged,
     Staged,
     CommitInput,
-    /// The human board ("Tasks for Human"), shown under the Changes list in
-    /// place of Staged and CommitInput while `ui.human_board` is on.
+    /// The human board ("Tasks for Human"), which fills the right column
+    /// while `ui.human_board` is on and one of its queue tabs is showing.
     Board,
 }
 
-/// What the right column shows under the Changes list.
+/// What the right column shows, below its tab strip when the board is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RightLower {
-    /// Nothing: no staged files and no board, so Changes fills the column.
+    /// The Changes list alone: nothing is staged.
     Nothing,
-    /// The Staged Changes list and the Commit Message box.
+    /// The Changes list, the Staged Changes list and the Commit Message box.
     StagedAndCommit,
-    /// The human board.
+    /// The human board, on a queue tab: it is the column's only section.
     Board,
 }
 
 impl RightSection {
     /// Returns the next section, or `None` to exit the pane.
-    /// Order: Unstaged → Staged → CommitInput, or Unstaged → Board.
+    /// Order: Unstaged → Staged → CommitInput; the board stands alone.
     pub(crate) fn next(self, lower: RightLower) -> Option<Self> {
         match self {
             Self::Unstaged => match lower {
                 RightLower::StagedAndCommit => Some(Self::Staged),
-                RightLower::Board => Some(Self::Board),
-                RightLower::Nothing => None,
+                RightLower::Board | RightLower::Nothing => None,
             },
             Self::Staged => Some(Self::CommitInput),
             Self::CommitInput | Self::Board => None,
@@ -1232,14 +1231,18 @@ impl RightSection {
     pub(crate) fn previous(self) -> Option<Self> {
         match self {
             Self::CommitInput => Some(Self::Staged),
-            Self::Staged | Self::Board => Some(Self::Unstaged),
-            Self::Unstaged => None,
+            Self::Staged => Some(Self::Unstaged),
+            Self::Unstaged | Self::Board => None,
         }
     }
 
-    /// First section when entering the pane (always Changes/Unstaged on top).
-    pub(crate) fn first() -> Self {
-        Self::Unstaged
+    /// First section when entering the pane: the board on a queue tab,
+    /// otherwise the Changes list on top.
+    pub(crate) fn first(lower: RightLower) -> Self {
+        match lower {
+            RightLower::Board => Self::Board,
+            RightLower::StagedAndCommit | RightLower::Nothing => Self::Unstaged,
+        }
     }
 
     pub(crate) fn last(lower: RightLower) -> Self {
@@ -3190,6 +3193,9 @@ pub(crate) struct MouseLayoutState {
     /// Screen row (relative to `board_list.y`) -> selectable card slot, or
     /// `None` for a heading row. Rebuilt each render.
     pub(crate) board_row_to_slot: Vec<Option<usize>>,
+    /// The right column's tabs while the board is on, each with its rect.
+    /// Rebuilt each render.
+    pub(crate) right_tabs: Vec<(Rect, human_board::RightTab)>,
 }
 
 impl MouseLayoutState {
@@ -3213,6 +3219,7 @@ impl MouseLayoutState {
         self.commit_text_area = None;
         self.board_list = None;
         self.board_row_to_slot.clear();
+        self.right_tabs.clear();
     }
 }
 
@@ -6824,11 +6831,12 @@ impl App {
         }
     }
 
-    /// What the right column shows under the Changes list: the human board
-    /// while it is on (whatever is staged), otherwise the staged list and the
-    /// commit box when something is staged.
+    /// What the right column shows: the human board while it is on and a
+    /// queue tab is showing (whatever is staged), otherwise the Changes list,
+    /// with the staged list and the commit box under it when something is
+    /// staged.
     pub(crate) fn right_lower(&self) -> RightLower {
-        if self.human_board_enabled() {
+        if self.human_board_enabled() && self.human_board.showing_queue() {
             RightLower::Board
         } else if self.engine.staged_files.is_empty() {
             RightLower::Nothing

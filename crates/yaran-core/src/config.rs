@@ -3087,6 +3087,10 @@ pub struct Config {
     /// Session database maintenance (`[storage]`).
     #[serde(default)]
     pub storage: StorageConfig,
+    /// The human board's store, people and sync (`[board]`). See
+    /// [`crate::human_board`].
+    #[serde(default)]
+    pub board: BoardConfig,
     /// Shared main-workspace mode (fork shared-workspace Phase 4). `None` means
     /// this config predates workspace modes and keeps worktree isolation, the
     /// guarantee it was installed under. A freshly created config always
@@ -3217,6 +3221,7 @@ impl Default for Config {
             auto_resume: AutoResumeConfig::default(),
             limits: LimitsConfig::default(),
             storage: StorageConfig::default(),
+            board: BoardConfig::default(),
             workspace: Some(WorkspaceConfig::default()),
             amq: AmqConfig::default(),
         }
@@ -3397,6 +3402,49 @@ impl Default for StorageConfig {
         }
     }
 }
+
+/// The `[board]` section: where the human board keeps its cards, whose
+/// queues it has, and how a board shared between machines is kept in step.
+/// Resolved (and degraded where a value is unusable) by
+/// [`crate::human_board::BoardSettings`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BoardConfig {
+    /// Empty keeps the board in one file in the yaran home, private to this
+    /// machine. A folder keeps one Markdown note per card there, so a board
+    /// in a synced notes vault or a git repository can be shared.
+    pub dir: String,
+    /// The people the board has a queue for; each gets a tab in the right
+    /// column. Empty: one queue for whoever runs yaran.
+    pub people: Vec<String>,
+    /// Who runs this yaran: their queue is the first tab, and a card posted
+    /// without `--for` goes to it.
+    pub me: String,
+    /// What this machine puts in front of the numbers it gives new cards in a
+    /// shared folder (`G` makes `G-12`). Empty: the first letter of `me`.
+    pub id_prefix: String,
+    /// `"off"` or `"git"`. A string so an unknown value degrades to off at the
+    /// one reading site instead of refusing the whole file.
+    pub sync: String,
+    /// Seconds between background syncs while the terminal UI runs.
+    pub sync_interval_seconds: u32,
+}
+
+impl Default for BoardConfig {
+    fn default() -> Self {
+        Self {
+            dir: String::new(),
+            people: Vec::new(),
+            me: String::new(),
+            id_prefix: String::new(),
+            sync: "off".to_string(),
+            sync_interval_seconds: DEFAULT_BOARD_SYNC_INTERVAL_SECONDS,
+        }
+    }
+}
+
+/// Default for [`BoardConfig::sync_interval_seconds`].
+pub const DEFAULT_BOARD_SYNC_INTERVAL_SECONDS: u32 = 60;
 
 /// Default for [`StorageConfig::backup_interval_minutes`].
 pub const DEFAULT_BACKUP_INTERVAL_MINUTES: u32 = 30;

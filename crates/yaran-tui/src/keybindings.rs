@@ -879,6 +879,28 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         }),
         hint_contexts: &[(HintContext::Files, "Next match")],
     },
+    // The right column's tabs exist only while the human board is on; with it
+    // off these keys do nothing, so they are free for nothing else here.
+    BindingDef {
+        action: Action::NextRightTab,
+        default_keys: &[key!(l), key!(Right)],
+        scopes: &[BindingScope::Files],
+        help: Some(HelpEntry {
+            section: "Files pane",
+            description: "Next right-column tab while the human board is on (a person, All, Changes)",
+        }),
+        hint_contexts: &[(HintContext::Board, "Tab")],
+    },
+    BindingDef {
+        action: Action::PrevRightTab,
+        default_keys: &[key!(h), key!(Left)],
+        scopes: &[BindingScope::Files],
+        help: Some(HelpEntry {
+            section: "Files pane",
+            description: "Previous right-column tab while the human board is on",
+        }),
+        hint_contexts: &[],
+    },
     // ── Commit message editor ─────────────────────────────────────
     BindingDef {
         action: Action::ExitCommitInput,

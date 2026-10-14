@@ -199,6 +199,8 @@ enum MouseTarget {
     /// A row of the human board: the card slot under the pointer, or `None`
     /// for a heading or the empty space below the cards.
     BoardRow(Option<usize>),
+    /// A tab of the right column's strip, by its index in the strip.
+    RightTab(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1073,7 +1075,7 @@ impl App {
                 self.focus = self.focus.next();
             }
             if self.focus == FocusPane::Files {
-                self.right_section = RightSection::first();
+                self.right_section = RightSection::first(lower);
                 self.clamp_files_cursor();
             } else if self.focus == FocusPane::Left {
                 self.left_section = LeftSection::Projects;
@@ -2586,6 +2588,10 @@ impl App {
                 Action::SearchNext if !self.advance_files_search_match() => {
                     self.set_info("No active file search matches.");
                 }
+                // The tab strip is there only while the board is on; without
+                // it these keys do nothing (`cycle_right_tab` says so).
+                Action::NextRightTab => self.cycle_right_tab(1),
+                Action::PrevRightTab => self.cycle_right_tab(-1),
                 _ => {}
             }
         } else if key.code == KeyCode::Esc && self.has_files_search() {
@@ -2607,6 +2613,8 @@ impl App {
             Action::MoveUp => self.human_board.move_selection(-1),
             Action::OpenDiff => self.open_selected_board_card(),
             Action::StageUnstage => self.toggle_selected_board_card(),
+            Action::NextRightTab => self.cycle_right_tab(1),
+            Action::PrevRightTab => self.cycle_right_tab(-1),
             // The git keys still act on the selected agent's worktree, as they
             // do from anywhere in this pane.
             Action::PushToRemote => {
@@ -7207,6 +7215,14 @@ impl App {
             let file_index = (index < self.engine.staged_files.len()).then_some(index);
             return Some(MouseTarget::StagedFile(file_index));
         }
+        if let Some(index) = self
+            .mouse_layout
+            .right_tabs
+            .iter()
+            .position(|(area, _)| contains_point(*area, column, row))
+        {
+            return Some(MouseTarget::RightTab(index));
+        }
         if let Some(area) = self.mouse_layout.board_list
             && contains_point(area, column, row)
         {
@@ -11085,6 +11101,16 @@ impl App {
             MouseTarget::CommitChrome => {
                 self.set_file_selection(RightSection::CommitInput, None);
             }
+            MouseTarget::RightTab(index) => {
+                if let Some((_, tab)) = self.mouse_layout.right_tabs.get(index).cloned() {
+                    self.focus = FocusPane::Files;
+                    self.fullscreen_overlay = FullscreenOverlay::None;
+                    self.input_target = InputTarget::None;
+                    self.show_right_tab(tab);
+                    self.right_section = RightSection::first(self.right_lower());
+                    self.clamp_files_cursor();
+                }
+            }
             MouseTarget::BoardRow(slot) => {
                 self.focus_human_board();
                 self.fullscreen_overlay = FullscreenOverlay::None;
@@ -12232,6 +12258,7 @@ mod tests {
             commit_text_area: Some(Rect::new(78, 15, 21, 4)),
             board_list: None,
             board_row_to_slot: Vec::new(),
+            right_tabs: Vec::new(),
         };
     }
 

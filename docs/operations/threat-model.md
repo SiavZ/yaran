@@ -963,6 +963,56 @@ poster, timestamps, and who resolved it; the file itself is plain JSON.
 
 ---
 
+## T22 — A shared board folder carries foreign card text in, and its git sync publishes and merges
+
+**Attack scenario.** With `[board] dir` set, the board is a folder of Markdown
+notes that other machines and people also write, typically through a synced
+notes vault or a git repository. A note can therefore come from anyone with
+write access to that vault or remote, not only from this operator's agents: it
+may hold escape sequences, absurd sizes, malformed properties, a symlink to
+some other file, or two notes claiming one card id. With `[board] sync = "git"`
+yaran also runs git in the repository holding the folder on its own schedule:
+it commits, merges the upstream and pushes, so a hostile or simply busy
+repository state could make it publish something unintended, overwrite local
+work, or hang on a credential prompt.
+
+**Mitigation in code.** Every note is read through the same cleaning and length
+bounds a posted card gets (terminal sanitizer, per-field caps), a note larger
+than `MAX_NOTE_BYTES` is not read, symlinks are not followed, and a note that
+does not parse (or duplicates another's id) is listed as unreadable, left
+exactly as it is, and its id is never handed to a new card. A change rewrites
+only the notes of the cards it changed, each through a hidden temporary file
+and an atomic rename, under the same `flock` as the private board. The sync
+commits only the board folder's paths (a pathspec-limited commit, so whatever
+else is staged or modified in the repository stays out of it), holds the
+board lock while committing or merging so no half-written note is committed,
+does nothing while the repository is mid merge, rebase or cherry-pick, merges
+by fast-forward or merge commit and never rebases or forces, lets git refuse a
+merge that would overwrite uncommitted work, settles a conflict only when every
+conflicted path is a note directly in the board folder (keeping the card with
+the later `updated` time, deterministically on every machine) and otherwise
+aborts the merge and reports it. Every git call has a hard time limit, runs with
+`GIT_TERMINAL_PROMPT=0` and ssh in batch mode (unless the user configured an
+ssh command), and its error text is sanitized before it reaches the status
+line or the log. It pushes only to the branch's configured upstream, with a
+fully qualified refspec. The feature is off by default; nothing syncs unless
+`sync = "git"` is set.
+
+**Residual risk.** Anyone who can write the shared folder or push to its
+remote can post, edit, reassign or resolve cards, and a card's poster and
+resolver are labels, not identities: the board inherits exactly the trust of
+the vault or repository it lives in. The push sends the checked-out branch, so
+commits other tools made in that repository and have not pushed yet go with
+it. A settled conflict keeps one whole card version and drops the other's edit.
+A note edited by hand to a newer `updated` time wins conflicts it should not.
+
+**Detection.** The repository's history shows every board commit
+(`Update the shared board: …`) and merge; the board pane's bottom edge shows
+the last sync's time or failure and counts unreadable notes, and
+`yaran board list` names them.
+
+---
+
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must
@@ -970,8 +1020,8 @@ update both `SECURITY.md` (the table) and this file (the
 paragraph). PRs that touch the surface listed above without
 updating these documents are blocked at review.
 
-The IDs `T1`–`T21` are stable references; new threats append at
-the end (`T22`, `T23`, …) rather than reshuffling. Retired
+The IDs `T1`–`T22` are stable references; new threats append at
+the end (`T23`, `T24`, …) rather than reshuffling. Retired
 threats are kept in the table with a `~~strikethrough~~` and a
 note pointing to the PR that retired them. Threats that move to
 **accepted-risk in single-user-VM mode** keep their original ID,

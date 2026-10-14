@@ -1,15 +1,22 @@
 //! The human board pane ("Tasks for Human"): the cards agents post with
-//! `yaran board post`, shown in the right column in place of the staged list
-//! and the commit box while `[ui] human_board` is on.
+//! `yaran board post`, shown in the right column while `[ui] human_board` is
+//! on.
 //!
-//! The board is one file in the yaran home (see `yaran_core::human_board`).
-//! A background watcher reads it whenever it changes and the run loop only
-//! folds the newest snapshot in, so the pane is current within a second of an
-//! agent posting without the run loop ever touching the disk. Marking a card
-//! done (or reopening one) is a write, so it runs on a worker too, and its
-//! result reaches the pane through the same watcher.
+//! With the board on, the right column has a row of tabs: one per person of
+//! `[board] people` (that person's queue), All (every card; "Board" when there
+//! are no people), and Changes, which is the column as it is without the
+//! board (the Changes list, the staged list and the commit box).
 //!
-//! The selection is held as a card NUMBER, not a row: cards arrive while the
+//! The board is a file in the yaran home or a folder of notes (see
+//! `yaran_core::human_board`). A background watcher reads it whenever it
+//! changes and the run loop only folds the newest snapshot in, so the pane is
+//! current within a second of an agent posting without the run loop ever
+//! touching the disk. Marking a card done (or reopening one) is a write, so it
+//! runs on a worker too, and its result reaches the pane through the same
+//! watcher. A folder shared through git is synced by a second background
+//! thread, poked whenever the board changes.
+//!
+//! The selection is held as a card ID, not a row: cards arrive while the
 //! person is looking, and a row index would quietly slide onto another card
 //! between reading one and pressing the key that resolves it.
 //!
@@ -26,7 +33,11 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use yaran_core::human_board::{Board, BoardStore, BoardWatcher, Card, CardKind};
+use yaran_core::config::BoardConfig;
+use yaran_core::human_board::sync::{BoardSyncer, SyncMode, SyncOutcome};
+use yaran_core::human_board::{
+    Audience, Board, BoardSettings, BoardStore, BoardWatcher, Card, CardId, CardKind,
+};
 use yaran_core::ids::TabIdRef;
 use yaran_core::statusline::StatusTone;
 
@@ -48,6 +59,65 @@ pub(crate) const RESOLVED_BY: &str = "human";
 /// The heading of the resolved group.
 pub(crate) const DONE_HEADING: &str = "Done";
 
+/// A tab of the right column while the board is on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RightTab {
+    /// A queue: one person's (`Some`), or every card (`None`).
+    Queue(Option<String>),
+    /// The column as it is without the board: Changes, staged, commit.
+    Changes,
+}
+
+impl RightTab {
+    /// Whose cards this tab shows; `None` for the Changes tab.
+    pub(crate) fn audience(&self) -> Option<Audience<'_>> {
+        match self {
+            RightTab::Queue(Some(person)) => Some(Audience::Person(person)),
+            RightTab::Queue(None) => Some(Audience::Everyone),
+            RightTab::Changes => None,
+        }
+    }
+
+    /// The tab's name in the strip. The every-card queue is "All" beside
+    /// people's queues and simply "Board" when it is the only one.
+    pub(crate) fn label(&self, has_people: bool) -> String {
+        match self {
+            RightTab::Queue(Some(person)) => person.clone(),
+            RightTab::Queue(None) if has_people => "All".to_string(),
+            RightTab::Queue(None) => "Board".to_string(),
+            RightTab::Changes => "Changes".to_string(),
+        }
+    }
+}
+
+/// The right column's tabs, in strip order: each person's queue, every card,
+/// then Changes.
+pub(crate) fn right_tabs(settings: &BoardSettings) -> Vec<RightTab> {
+    let mut tabs: Vec<RightTab> = settings
+        .people
+        .iter()
+        .map(|person| RightTab::Queue(Some(person.clone())))
+        .collect();
+    tabs.push(RightTab::Queue(None));
+    tabs.push(RightTab::Changes);
+    tabs
+}
+
+/// The tab the column opens on: this machine's person's queue when they have
+/// one, otherwise the first queue.
+pub(crate) fn default_right_tab(settings: &BoardSettings) -> RightTab {
+    let mine = settings.me.as_ref().and_then(|me| {
+        settings
+            .people
+            .iter()
+            .find(|person| yaran_core::human_board::same_person(person, me))
+    });
+    match mine.or(settings.people.first()) {
+        Some(person) => RightTab::Queue(Some(person.clone())),
+        None => RightTab::Queue(None),
+    }
+}
+
 /// One row of the board pane, top to bottom.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BoardRow {
@@ -56,16 +126,16 @@ pub(crate) enum BoardRow {
         kind: Option<CardKind>,
         count: usize,
     },
-    /// A card, by number. `slot` is its index among the selectable cards.
-    Card { id: u64, slot: usize },
+    /// A card, by id. `slot` is its index among the selectable cards.
+    Card { id: CardId, slot: usize },
 }
 
-/// The board as rows, and the selectable card numbers in the same order. Open
-/// cards come grouped by kind in the board's column order; the most recently
-/// resolved follow under "Done".
-pub(crate) fn board_rows(board: &Board) -> (Vec<BoardRow>, Vec<u64>) {
-    let open = board.open_cards();
-    let done = board.recently_resolved(RECENT_DONE);
+/// The cards `view` shows as rows, and the selectable card ids in the same
+/// order. Open cards come grouped by kind in the board's column order; the
+/// most recently resolved follow under "Done".
+pub(crate) fn board_rows(board: &Board, view: &Audience<'_>) -> (Vec<BoardRow>, Vec<CardId>) {
+    let open = board.open_cards_in(view);
+    let done = board.recently_resolved_in(view, RECENT_DONE);
     let mut rows = Vec::new();
     let mut slots = Vec::new();
     for kind in CardKind::ALL {
@@ -79,10 +149,10 @@ pub(crate) fn board_rows(board: &Board) -> (Vec<BoardRow>, Vec<u64>) {
         });
         for card in cards {
             rows.push(BoardRow::Card {
-                id: card.id,
+                id: card.id.clone(),
                 slot: slots.len(),
             });
-            slots.push(card.id);
+            slots.push(card.id.clone());
         }
     }
     if !done.is_empty() {
@@ -92,10 +162,10 @@ pub(crate) fn board_rows(board: &Board) -> (Vec<BoardRow>, Vec<u64>) {
         });
         for card in done {
             rows.push(BoardRow::Card {
-                id: card.id,
+                id: card.id.clone(),
                 slot: slots.len(),
             });
-            slots.push(card.id);
+            slots.push(card.id.clone());
         }
     }
     (rows, slots)
@@ -105,7 +175,7 @@ pub(crate) fn board_rows(board: &Board) -> (Vec<BoardRow>, Vec<u64>) {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BoardJob {
     Resolve {
-        id: u64,
+        id: CardId,
         label: String,
         /// Kept on the card as its resolution: the reply that was sent.
         note: Option<String>,
@@ -113,7 +183,7 @@ pub(crate) enum BoardJob {
         sent_to: Option<String>,
     },
     Reopen {
-        id: u64,
+        id: CardId,
         label: String,
     },
 }
@@ -173,7 +243,7 @@ pub(crate) struct CardReply {
 pub(crate) struct PendingReplySubmit {
     pub(crate) due: Instant,
     pub(crate) target: ReplyTarget,
-    pub(crate) card_id: u64,
+    pub(crate) card_id: CardId,
     pub(crate) card_label: String,
     pub(crate) reply: String,
 }
@@ -211,16 +281,27 @@ pub(crate) struct BoardJobAnswer {
 /// The pane's state. Inert (no thread, no file reads) while the board is off.
 #[derive(Default)]
 pub(crate) struct HumanBoardState {
+    /// `[board]`, resolved, and the section it was resolved from, so a config
+    /// reload that changes it starts the watcher and the syncer over.
+    pub(crate) settings: Option<BoardSettings>,
+    resolved_from: Option<BoardConfig>,
     watcher: Option<BoardWatcher>,
+    syncer: Option<BoardSyncer>,
+    /// The newest finished sync, for the pane's footer.
+    pub(crate) last_sync: Option<SyncOutcome>,
+    /// The failure last announced, so a sync failing every round says so once.
+    sync_error_announced: Option<String>,
+    /// The right column's tab. `None` until the settings are resolved.
+    pub(crate) tab: Option<RightTab>,
     /// The board as last read, or why it could not be read. `None` until the
     /// watcher's first snapshot.
     pub(crate) board: Option<Result<Board, String>>,
-    /// The selected card's number.
-    pub(crate) selected: Option<u64>,
-    /// The open card numbers already seen, so only genuinely new cards are
+    /// The selected card's id.
+    pub(crate) selected: Option<CardId>,
+    /// The open card ids already seen, so only genuinely new cards are
     /// announced. `None` until the first snapshot: the cards already on the
     /// board at startup are not news.
-    known_open: Option<HashSet<u64>>,
+    known_open: Option<HashSet<CardId>>,
     job: Option<mpsc::Receiver<BoardJobAnswer>>,
     /// Replies typed into an agent whose submitting Enter is still due, oldest
     /// first.
@@ -233,10 +314,24 @@ impl HumanBoardState {
         self.board.as_ref().and_then(|board| board.as_ref().ok())
     }
 
-    /// The selectable card numbers, in row order.
-    pub(crate) fn slots(&self) -> Vec<u64> {
+    /// Whose cards the pane shows: the queue tab's audience, or every card
+    /// while the Changes tab (or no tab yet) is up.
+    pub(crate) fn view(&self) -> Audience<'_> {
+        self.tab
+            .as_ref()
+            .and_then(RightTab::audience)
+            .unwrap_or(Audience::Everyone)
+    }
+
+    /// Whether the column shows a queue (rather than the Changes tab).
+    pub(crate) fn showing_queue(&self) -> bool {
+        !matches!(self.tab, Some(RightTab::Changes))
+    }
+
+    /// The selectable card ids, in row order.
+    pub(crate) fn slots(&self) -> Vec<CardId> {
         self.readable()
-            .map(|board| board_rows(board).1)
+            .map(|board| board_rows(board, &self.view()).1)
             .unwrap_or_default()
     }
 
@@ -247,28 +342,39 @@ impl HumanBoardState {
 
     /// The selected card's position among `board`'s selectable cards.
     pub(crate) fn selected_slot_in(&self, board: &Board) -> Option<usize> {
-        let id = self.selected?;
-        board_rows(board).1.iter().position(|slot| *slot == id)
+        let id = self.selected.as_ref()?;
+        board_rows(board, &self.view())
+            .1
+            .iter()
+            .position(|slot| slot == id)
     }
 
     /// The selected card.
     pub(crate) fn selected_card(&self) -> Option<&Card> {
-        let id = self.selected?;
-        self.readable()?.card(id)
+        let id = self.selected.as_ref()?;
+        let card = self.readable()?.card(id)?;
+        card.is_in(&self.view()).then_some(card)
     }
 
-    /// Keep the selection on a card that is still on the board. A card that
-    /// left (pruned, or the file was replaced) hands the selection to the card
-    /// now at its old position, or the last one.
+    /// Keep the selection on a card that is still in view. A card that left
+    /// (pruned, resolved away, moved to another queue) hands the selection to
+    /// the card now at its old position, or the last one.
     fn reconcile_selection(&mut self, previous_slot: Option<usize>) {
         let slots = self.slots();
-        if self.selected.is_some_and(|id| slots.contains(&id)) {
+        if self.selected.as_ref().is_some_and(|id| slots.contains(id)) {
             return;
         }
         self.selected = match previous_slot {
-            Some(slot) => slots.get(slot).or(slots.last()).copied(),
-            None => slots.first().copied(),
+            Some(slot) => slots.get(slot).or(slots.last()).cloned(),
+            None => slots.first().cloned(),
         };
+    }
+
+    /// Show `tab`, keeping the selection on the same card when it is in the
+    /// new tab's queue and otherwise starting at its first card.
+    pub(crate) fn set_tab(&mut self, tab: RightTab) {
+        self.tab = Some(tab);
+        self.reconcile_selection(None);
     }
 
     /// Fold a new snapshot in and return the cards that are new on the board.
@@ -276,7 +382,7 @@ impl HumanBoardState {
         let previous_slot = self.selected_slot();
         let mut fresh = Vec::new();
         if let Ok(board) = &board {
-            let open: HashSet<u64> = board.open_cards().iter().map(|c| c.id).collect();
+            let open: HashSet<CardId> = board.open_cards().iter().map(|c| c.id.clone()).collect();
             if let Some(known) = &self.known_open {
                 fresh = board
                     .open_cards()
@@ -301,13 +407,13 @@ impl HumanBoardState {
         }
         let current = self.selected_slot().unwrap_or(0) as isize;
         let next = (current + delta).clamp(0, slots.len() as isize - 1) as usize;
-        self.selected = Some(slots[next]);
+        self.selected = Some(slots[next].clone());
     }
 
     /// Select the card in `slot`, if there is one.
     pub(crate) fn select_slot(&mut self, slot: usize) {
         if let Some(id) = self.slots().get(slot) {
-            self.selected = Some(*id);
+            self.selected = Some(id.clone());
         }
     }
 }
@@ -335,9 +441,18 @@ pub(crate) fn fit_width(text: &str, width: usize) -> String {
     out
 }
 
+/// The new cards worth announcing on this machine: the ones in `me`'s queue
+/// (theirs, or anyone's). Without a `me`, every new card.
+pub(crate) fn cards_for_me(fresh: Vec<Card>, me: Option<&str>) -> Vec<Card> {
+    fresh
+        .into_iter()
+        .filter(|card| me.is_none_or(|me| card.is_for(me)))
+        .collect()
+}
+
 /// The sentence announcing new cards on the status line.
 pub(crate) fn announcement(fresh: &[Card]) -> Option<String> {
-    let newest = fresh.iter().max_by_key(|c| (c.created_at, c.id))?;
+    let newest = fresh.iter().max_by_key(|c| (c.created_at, c.id.clone()))?;
     let from = newest
         .from
         .as_deref()
@@ -372,9 +487,9 @@ pub(crate) fn run_board_job(store: &BoardStore, job: &BoardJob) -> Result<bool, 
     store
         .update(|board| match job {
             BoardJob::Resolve { id, note, .. } => {
-                board.resolve(*id, Some(RESOLVED_BY), note.as_deref(), now)
+                board.resolve(id, Some(RESOLVED_BY), note.as_deref(), now)
             }
-            BoardJob::Reopen { id, .. } => board.reopen(*id, now),
+            BoardJob::Reopen { id, .. } => board.reopen(id, now),
         })
         .map_err(|err| format!("{err:#}"))
 }
@@ -384,17 +499,64 @@ impl App {
         self.engine.config.ui.human_board
     }
 
-    fn human_board_store(&self) -> BoardStore {
-        BoardStore::new(&self.engine.paths.root)
+    /// `[board]`, resolved, re-resolved whenever the section changed (a config
+    /// reload); a change drops the watcher and the syncer so they start over
+    /// on the new store.
+    fn ensure_human_board_settings(&mut self) {
+        let config = &self.engine.config.board;
+        if self.human_board.resolved_from.as_ref() == Some(config) {
+            return;
+        }
+        let settings = BoardSettings::from_config(config, &self.engine.paths.root);
+        let tabs = right_tabs(&settings);
+        let keep = self
+            .human_board
+            .tab
+            .as_ref()
+            .is_some_and(|tab| tabs.contains(tab));
+        if !keep {
+            self.human_board.tab = Some(default_right_tab(&settings));
+        }
+        let store_moved = self
+            .human_board
+            .settings
+            .as_ref()
+            .is_some_and(|old| old.store.path() != settings.store.path());
+        self.human_board.resolved_from = Some(config.clone());
+        self.human_board.settings = Some(settings);
+        self.human_board.watcher = None;
+        self.human_board.syncer = None;
+        self.human_board.last_sync = None;
+        self.human_board.sync_error_announced = None;
+        if store_moved {
+            self.human_board.board = None;
+            self.human_board.known_open = None;
+            self.human_board.selected = None;
+        }
+        self.mark_frame_dirty();
     }
 
-    /// Once per run-loop tick: start or stop the watcher to match the setting,
-    /// fold in the newest snapshot and any finished job, and keep the right
-    /// column's cursor on a section that is on screen.
+    pub(crate) fn human_board_settings(&mut self) -> &BoardSettings {
+        self.ensure_human_board_settings();
+        self.human_board
+            .settings
+            .as_ref()
+            .expect("the board settings were just resolved")
+    }
+
+    fn human_board_store(&mut self) -> BoardStore {
+        self.human_board_settings().store.clone()
+    }
+
+    /// Once per run-loop tick: start or stop the watcher and the syncer to
+    /// match the settings, fold in the newest snapshot, the newest sync and
+    /// any finished job, and keep the right column's cursor on a section that
+    /// is on screen.
     pub(crate) fn drain_human_board(&mut self) {
         self.sync_human_board_watcher();
         self.normalize_right_section_for_board();
         self.drain_human_board_job();
+        self.drain_human_board_sync();
         self.submit_due_replies(Instant::now());
         let Some(snapshot) = self
             .human_board
@@ -404,17 +566,32 @@ impl App {
         else {
             return;
         };
+        let first = self.human_board.board.is_none();
         let fresh = self.human_board.apply_snapshot(snapshot.board);
         self.mark_frame_dirty();
-        if let Some(message) = announcement(&fresh) {
+        // The board changed on disk: whatever changed it, a shared folder
+        // should hear about it soon. The first read is the board as it was.
+        if !first && let Some(syncer) = self.human_board.syncer.as_ref() {
+            syncer.poke();
+        }
+        let me = self
+            .human_board
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.me.clone());
+        if let Some(message) = announcement(&cards_for_me(fresh, me.as_deref())) {
             self.set_info(message);
         }
     }
 
     fn sync_human_board_watcher(&mut self) {
         let enabled = self.human_board_enabled();
+        if enabled {
+            self.ensure_human_board_settings();
+        }
         if enabled && self.human_board.watcher.is_none() {
-            match BoardWatcher::spawn(self.human_board_store(), WATCH_EVERY) {
+            let store = self.human_board_store();
+            match BoardWatcher::spawn(store, WATCH_EVERY) {
                 Ok(watcher) => self.human_board.watcher = Some(watcher),
                 Err(err) => {
                     // Shown in the pane rather than retried every tick: the
@@ -427,24 +604,137 @@ impl App {
                 }
             }
         } else if !enabled && self.human_board.watcher.is_some() {
-            // Dropping the watcher stops its thread. A reply already typed into an
-            // agent still gets its Enter: switching the pane off is not a cancel.
+            // Dropping the watcher and the syncer stops their threads. A reply
+            // already typed into an agent still gets its Enter: switching the
+            // pane off is not a cancel.
             let pending_submits = std::mem::take(&mut self.human_board.pending_submits);
             self.human_board = super::human_board::HumanBoardState {
                 pending_submits,
                 ..Default::default()
             };
             self.mark_frame_dirty();
+            return;
+        }
+        if enabled && self.human_board.syncer.is_none() {
+            self.start_human_board_syncer();
         }
     }
 
-    /// The board takes the staged and commit sections' place, so the cursor
-    /// cannot be left on one of those while it is on, nor on the board while
-    /// it is off.
+    /// Start the background sync when the board is a folder synced through
+    /// git. Once per settings: a failure to start is said once and not retried
+    /// every tick (a config reload tries again).
+    fn start_human_board_syncer(&mut self) {
+        let Some(settings) = self.human_board.settings.as_ref() else {
+            return;
+        };
+        if settings.sync != SyncMode::Git || !settings.store.is_folder() {
+            return;
+        }
+        if self.human_board.last_sync.is_some() && self.human_board.syncer.is_none() {
+            // Already tried with these settings and the thread did not start.
+            return;
+        }
+        match BoardSyncer::spawn(settings.store.clone(), settings.sync_every) {
+            Ok(syncer) => self.human_board.syncer = Some(syncer),
+            Err(err) => {
+                let reason = format!("could not start the board's sync: {err}");
+                logger::warn(&reason);
+                self.human_board.last_sync = Some(SyncOutcome {
+                    at: chrono::Utc::now(),
+                    result: Err(reason.clone()),
+                });
+                self.set_warning(format!(
+                    "The shared board is not syncing: {reason}. Run `yaran board sync` to sync \
+                     it by hand."
+                ));
+            }
+        }
+    }
+
+    /// Fold the newest finished sync in. A failure is announced once per
+    /// distinct reason, and the recovery once; quiet rounds say nothing (new
+    /// cards they bring are announced as cards).
+    fn drain_human_board_sync(&mut self) {
+        let Some(outcome) = self
+            .human_board
+            .syncer
+            .as_ref()
+            .and_then(BoardSyncer::latest)
+        else {
+            return;
+        };
+        self.mark_frame_dirty();
+        match &outcome.result {
+            Err(err) => {
+                logger::warn(&format!("board sync failed: {err}"));
+                if self.human_board.sync_error_announced.as_deref() != Some(err.as_str()) {
+                    self.human_board.sync_error_announced = Some(err.clone());
+                    let every = self
+                        .human_board
+                        .settings
+                        .as_ref()
+                        .map(|settings| settings.sync_every.as_secs())
+                        .unwrap_or_default();
+                    self.set_warning(format!(
+                        "The shared board did not sync: {err}. Your board changes are kept here \
+                         and it tries again every {every}s; `yaran board sync` runs one by hand."
+                    ));
+                }
+            }
+            Ok(report) => {
+                if self.human_board.sync_error_announced.take().is_some() {
+                    self.set_info(format!(
+                        "The shared board syncs again. {}",
+                        report.summary()
+                    ));
+                } else if !report.settled.is_empty() {
+                    self.set_info(report.summary());
+                }
+            }
+        }
+        self.human_board.last_sync = Some(outcome);
+    }
+
+    /// The right column's tabs, in strip order. Empty while the board is off.
+    pub(crate) fn right_column_tabs(&mut self) -> Vec<RightTab> {
+        if !self.human_board_enabled() {
+            return Vec::new();
+        }
+        right_tabs(self.human_board_settings())
+    }
+
+    /// Show `tab` in the right column.
+    pub(crate) fn show_right_tab(&mut self, tab: RightTab) {
+        self.human_board.set_tab(tab);
+        self.normalize_right_section_for_board();
+        self.mark_frame_dirty();
+    }
+
+    /// Show the tab `delta` steps along the strip, wrapping. Does nothing while
+    /// the board is off.
+    pub(crate) fn cycle_right_tab(&mut self, delta: isize) {
+        let tabs = self.right_column_tabs();
+        if tabs.is_empty() {
+            return;
+        }
+        let at = self
+            .human_board
+            .tab
+            .as_ref()
+            .and_then(|tab| tabs.iter().position(|t| t == tab))
+            .unwrap_or(0) as isize;
+        let len = tabs.len() as isize;
+        let next = (at + delta).rem_euclid(len) as usize;
+        self.show_right_tab(tabs[next].clone());
+    }
+
+    /// The board takes the whole column on a queue tab and none of it on the
+    /// Changes tab, so the cursor cannot be left on a section that is not on
+    /// screen.
     pub(crate) fn normalize_right_section_for_board(&mut self) {
-        let board = self.human_board_enabled();
+        let board = self.right_lower() == super::RightLower::Board;
         match self.right_section {
-            RightSection::Staged | RightSection::CommitInput if board => {
+            RightSection::Unstaged | RightSection::Staged | RightSection::CommitInput if board => {
                 self.right_section = RightSection::Board;
                 if self.input_target == InputTarget::CommitMessage {
                     self.input_target = InputTarget::None;
@@ -468,17 +758,18 @@ impl App {
             .save_lazy(self.engine.config.clone());
         self.normalize_right_section_for_board();
         let palette_key = self.bindings.label_for(super::Action::OpenPalette);
+        let next_tab = self.bindings.label_for(super::Action::NextRightTab);
         if next {
             self.set_ui_hint(format!(
-                "The right column now shows Tasks for Human in place of the staged list and \
-                 the commit box. Agents post to it with `yaran board post`. Run \
-                 toggle-human-board from the palette ({palette_key}) to switch back."
+                "The right column now shows Tasks for Human, with a tab per queue and a Changes \
+                 tab for the changed files ({next_tab} switches tabs). Agents post to it with \
+                 `yaran board post`. Run toggle-human-board from the palette ({palette_key}) to \
+                 switch back."
             ));
         } else {
             self.set_ui_hint(format!(
-                "The right column shows the staged list and the commit box again; cards stay \
-                 on the board. Run toggle-human-board from the palette ({palette_key}) to show \
-                 it."
+                "The right column shows the changed files again; cards stay on the board. Run \
+                 toggle-human-board from the palette ({palette_key}) to show it."
             ));
         }
     }
@@ -561,14 +852,14 @@ impl App {
         };
         let job = if card.is_open() {
             BoardJob::Resolve {
-                id: card.id,
+                id: card.id.clone(),
                 label: card.label(),
                 note: None,
                 sent_to: None,
             }
         } else {
             BoardJob::Reopen {
-                id: card.id,
+                id: card.id.clone(),
                 label: card.label(),
             }
         };
@@ -598,14 +889,14 @@ impl App {
         }
         let job = if card.is_open() {
             BoardJob::Resolve {
-                id: card.id,
+                id: card.id.clone(),
                 label: card.label(),
                 note: None,
                 sent_to: None,
             }
         } else {
             BoardJob::Reopen {
-                id: card.id,
+                id: card.id.clone(),
                 label: card.label(),
             }
         };
@@ -697,7 +988,7 @@ impl App {
         self.human_board.pending_submits.push(PendingReplySubmit {
             due: Instant::now() + delay,
             target,
-            card_id: card.id,
+            card_id: card.id.clone(),
             card_label: card.label(),
             reply: text,
         });

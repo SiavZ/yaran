@@ -3,40 +3,60 @@
 //! Dispatched by the binary before the terminal UI's own argument handling,
 //! like `yaran peer`, and for the same reasons: it runs inside agents while a
 //! yaran holds the single-instance lock, and a card title may legitimately
-//! contain `--help`. It touches nothing but the board file.
+//! contain `--help`. It touches nothing but the board (and, for `sync`, the
+//! git repository a shared board folder lives in).
 
 use std::io::Read;
+use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
-use super::{BoardStore, Card, CardKind, NewCard, PostOutcome, Priority, compact_age};
+use super::{
+    Audience, Board, BoardSettings, BoardStore, Card, CardId, CardKind, NewCard, PostOutcome,
+    Priority, compact_age,
+};
 use crate::config::YaranPaths;
 
 pub const BOARD_HELP: &str = "\
-yaran board - cards for the person running yaran
+yaran board - cards for the people running yaran
 
 Agents post a card when something needs a person or should not be missed.
 The terminal UI shows the open cards (the \"Tasks for Human\" pane) until
-they are marked done there or resolved here.
+they are marked done there or resolved here. A board with [board] people has
+a queue per person: a card is for one of them (--for), or for anyone.
 
 Subcommands:
-  yaran board post --kind <kind> [--priority <level>] [--ticket <id>] [--detail <text>|-]
-                   [--from <who>] <title...>
-                       Put a card on the board and print its number. An open
-                       card is unique per ticket and kind: posting again with
-                       the same --ticket and --kind updates it in place (its
-                       priority too, when --priority is given).
-                       --detail - reads the detail from standard input.
-  yaran board priority <number> <level>
+  yaran board post --kind <kind> [--for <person>] [--priority <level>] [--ticket <id>]
+                   [--detail <text>|-] [--from <who>] <title...>
+                       Put a card on the board and print its id. An open card
+                       is unique per ticket, kind and person: posting again
+                       with the same --ticket, --kind and --for updates it in
+                       place (its priority too, when --priority is given).
+                       --for defaults to [board] me; \"anyone\" is nobody in
+                       particular. --detail - reads the detail from standard
+                       input.
+  yaran board assign <id> <person|anyone>
+                       Move a card to another person's queue.
+  yaran board priority <id> <level>
                        Change a card's priority.
-  yaran board resolve <number>... [--note <text>]
+  yaran board resolve <id>... [--note <text>]
   yaran board resolve --ticket <id> [--kind <kind>] [--note <text>]
                        Take cards off the board. They stay in its history.
-  yaran board reopen <number>
+  yaran board reopen <id>
                        Put a resolved card back on the board.
-  yaran board list [--all] [--json]
-                       Show the open cards; --all adds the resolved history.
+  yaran board list [--all] [--for <person>|--mine] [--json]
+                       Show the open cards; --all adds the resolved history,
+                       --for narrows to one person's queue.
+  yaran board sync     Sync a shared board folder through its git repository
+                       now ([board] sync = \"git\" does it in the background
+                       while the terminal UI runs).
+  yaran board import [<file>]
+                       Copy the cards of a private board document (by default
+                       the one in the yaran home) into the shared board folder.
+
+Card ids are numbers (12), or on a shared board a prefix and a number (G-12).
+A bare number names this machine's card first.
 
 Priorities (most urgent first; urgent cards lead their group on the board):
   critical   drop everything (a release is blocked, users are affected)
@@ -55,46 +75,55 @@ for every agent it launches.";
 
 /// Entry point for `yaran board <args>`.
 pub fn run_board(args: &[String], paths: &YaranPaths) -> Result<()> {
-    let store = BoardStore::new(&paths.root);
+    let config = crate::config::load_config(paths);
+    let settings = BoardSettings::from_config(&config.board, &paths.root);
     let mut stdin = std::io::stdin();
-    run_with(args, &store, &mut stdin, &mut std::io::stdout())
+    run_with(args, &settings, &mut stdin, &mut std::io::stdout())
 }
 
 /// The testable body of [`run_board`]: everything comes in through arguments.
 pub fn run_with(
     args: &[String],
-    store: &BoardStore,
+    settings: &BoardSettings,
     stdin: &mut dyn Read,
     out: &mut dyn std::io::Write,
 ) -> Result<()> {
+    let store = &settings.store;
     let sub = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or_default();
     match sub {
         "post" | "add" => {
-            let Some(card) = parse_post(rest, stdin)? else {
+            let Some(card) = parse_post(rest, settings, stdin)? else {
                 writeln!(out, "{BOARD_HELP}")?;
                 return Ok(());
             };
             let kind = card.kind;
+            let assignee = card.assignee.clone();
             let outcome = store.update(|board| board.post(card, Utc::now()))?;
             let verb = match outcome {
                 PostOutcome::Added(_) => "posted",
                 PostOutcome::Updated(_) => "updated",
             };
             let kind = kind.map(CardKind::as_str).unwrap_or_default();
-            writeln!(out, "{verb} #{} ({kind})", outcome.id())?;
+            let whose = assignee
+                .map(|person| format!(", for {person}"))
+                .unwrap_or_default();
+            writeln!(out, "{verb} #{} ({kind}{whose})", outcome.id())?;
             Ok(())
         }
         "resolve" | "done" => run_resolve(rest, store, out),
         "priority" => {
             let [id, level] = rest else {
                 bail!(
-                    "`yaran board priority` needs a card number and a level (critical, high, normal, low)"
+                    "`yaran board priority` needs a card id and a level (critical, high, normal, low)"
                 );
             };
-            let id = parse_ids(std::slice::from_ref(id))?[0];
             let priority = parse_priority(level)?;
-            let changed = store.update(|board| board.set_priority(id, priority, Utc::now()))?;
+            let (id, changed) = store.update(|board| {
+                let id = board.find(id)?;
+                let changed = board.set_priority(&id, priority, Utc::now())?;
+                Ok((id, changed))
+            })?;
             if changed {
                 writeln!(out, "#{id} is now {priority}")?;
             } else {
@@ -102,15 +131,37 @@ pub fn run_with(
             }
             Ok(())
         }
+        "assign" => {
+            let [id, person] = rest else {
+                bail!("`yaran board assign` needs a card id and a person (or \"anyone\")");
+            };
+            let assignee = settings.person(person)?;
+            let (id, changed) = store.update(|board| {
+                let id = board.find(id)?;
+                let changed = board.assign(&id, assignee.as_deref(), Utc::now())?;
+                Ok((id, changed))
+            })?;
+            let queue = assignee
+                .map(|person| format!("{person}'s queue"))
+                .unwrap_or_else(|| "everybody's queue".to_string());
+            if changed {
+                writeln!(out, "#{id} is now in {queue}")?;
+            } else {
+                writeln!(out, "#{id} was already in {queue}")?;
+            }
+            Ok(())
+        }
         "reopen" => {
-            let ids = parse_ids(rest)?;
-            if ids.is_empty() {
-                bail!("`yaran board reopen` needs a card number");
+            if rest.is_empty() {
+                bail!("`yaran board reopen` needs a card id");
             }
             let changed = store.update(|board| {
                 let now = Utc::now();
-                ids.iter()
-                    .map(|id| board.reopen(*id, now).map(|changed| (*id, changed)))
+                rest.iter()
+                    .map(|query| {
+                        let id = board.find(query)?;
+                        board.reopen(&id, now).map(|changed| (id, changed))
+                    })
                     .collect::<Result<Vec<_>>>()
             })?;
             for (id, changed) in changed {
@@ -122,7 +173,22 @@ pub fn run_with(
             }
             Ok(())
         }
-        "list" | "ls" => run_list(rest, store, out),
+        "list" | "ls" => run_list(rest, settings, out),
+        "sync" => {
+            if !store.is_folder() {
+                bail!(
+                    "this board is private to this machine (no [board] dir), so there is \
+                     nothing to sync"
+                );
+            }
+            let report = super::sync::sync_with_git(store)?;
+            writeln!(out, "{}", report.summary())?;
+            for problem in store.load()?.problems {
+                writeln!(out, "note: {problem}")?;
+            }
+            Ok(())
+        }
+        "import" => run_import(rest, settings, out),
         "" | "--help" | "-h" | "help" => {
             writeln!(out, "{BOARD_HELP}")?;
             Ok(())
@@ -155,8 +221,13 @@ fn value_of<'a>(flag: &str, iter: &mut impl Iterator<Item = &'a String>) -> Resu
 }
 
 /// Parse `post`'s arguments. `Ok(None)` is a request for the help text.
-fn parse_post(args: &[String], stdin: &mut dyn Read) -> Result<Option<NewCard>> {
+fn parse_post(
+    args: &[String],
+    settings: &BoardSettings,
+    stdin: &mut dyn Read,
+) -> Result<Option<NewCard>> {
     let mut card = NewCard::default();
+    let mut assignee: Option<Option<String>> = None;
     let mut words: Vec<&str> = Vec::new();
     let mut iter = args.iter();
     let mut only_words = false;
@@ -174,6 +245,9 @@ fn parse_post(args: &[String], stdin: &mut dyn Read) -> Result<Option<NewCard>> 
                         "unknown kind {value:?}; use one of task, validate, confirm, info"
                     )
                 })?);
+            }
+            "--for" | "--assignee" => {
+                assignee = Some(settings.person(value_of(arg, &mut iter)?)?);
             }
             "--ticket" | "-t" => card.ticket = Some(value_of(arg, &mut iter)?.clone()),
             "--priority" | "-p" => card.priority = Some(parse_priority(value_of(arg, &mut iter)?)?),
@@ -207,22 +281,12 @@ fn parse_post(args: &[String], stdin: &mut dyn Read) -> Result<Option<NewCard>> 
     if card.from.is_none() {
         card.from = default_from();
     }
+    card.assignee = assignee.unwrap_or_else(|| settings.me.clone());
     Ok(Some(card))
 }
 
-/// Card numbers, written `12` or `#12`.
-fn parse_ids(args: &[String]) -> Result<Vec<u64>> {
-    args.iter()
-        .map(|arg| {
-            arg.trim_start_matches('#')
-                .parse::<u64>()
-                .map_err(|_| anyhow::anyhow!("{arg:?} is not a card number"))
-        })
-        .collect()
-}
-
 fn run_resolve(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write) -> Result<()> {
-    let mut ids = Vec::new();
+    let mut queries: Vec<&String> = Vec::new();
     let mut ticket: Option<String> = None;
     let mut kind: Option<CardKind> = None;
     let mut note: Option<String> = None;
@@ -246,13 +310,18 @@ fn run_resolve(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write
                 return Ok(());
             }
             flag if flag.starts_with("--") => bail!("unknown flag: {flag}"),
-            _ => ids.extend(parse_ids(std::slice::from_ref(arg))?),
+            _ => {
+                if CardId::parse(arg).is_none() {
+                    bail!("{arg:?} is not a card number");
+                }
+                queries.push(arg);
+            }
         }
     }
     let by = by.or_else(default_from);
-    match (ids.is_empty(), ticket) {
-        (true, None) => bail!("`yaran board resolve` needs card numbers or --ticket <id>"),
-        (false, Some(_)) => bail!("give card numbers or --ticket, not both"),
+    match (queries.is_empty(), ticket) {
+        (true, None) => bail!("`yaran board resolve` needs card ids or --ticket <id>"),
+        (false, Some(_)) => bail!("give card ids or --ticket, not both"),
         (true, Some(ticket)) => {
             if super::normalize_ticket(&ticket).is_none() {
                 bail!("--ticket needs a ticket reference");
@@ -278,11 +347,13 @@ fn run_resolve(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write
             }
             let changed = store.update(|board| {
                 let now = Utc::now();
-                ids.iter()
-                    .map(|id| {
+                queries
+                    .iter()
+                    .map(|query| {
+                        let id = board.find(query)?;
                         board
-                            .resolve(*id, by.as_deref(), note.as_deref(), now)
-                            .map(|changed| (*id, changed))
+                            .resolve(&id, by.as_deref(), note.as_deref(), now)
+                            .map(|changed| (id, changed))
                     })
                     .collect::<Result<Vec<_>>>()
             })?;
@@ -298,13 +369,23 @@ fn run_resolve(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write
     }
 }
 
-fn run_list(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write) -> Result<()> {
+fn run_list(args: &[String], settings: &BoardSettings, out: &mut dyn std::io::Write) -> Result<()> {
     let mut all = false;
     let mut json = false;
-    for arg in args {
+    let mut person: Option<String> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--all" | "-a" => all = true,
             "--json" => json = true,
+            "--for" | "--assignee" => {
+                person = settings.person(value_of(arg, &mut iter)?)?;
+            }
+            "--mine" => {
+                person = Some(settings.me.clone().ok_or_else(|| {
+                    anyhow::anyhow!("--mine needs [board] me: who runs this yaran")
+                })?);
+            }
             "-h" | "--help" => {
                 writeln!(out, "{BOARD_HELP}")?;
                 return Ok(());
@@ -312,18 +393,28 @@ fn run_list(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write) -
             other => bail!("unknown argument to `yaran board list`: {other}"),
         }
     }
-    let board = store.load()?;
-    let mut cards: Vec<&Card> = board.open_cards();
+    let board = settings.store.load()?;
+    let view = match person.as_deref() {
+        Some(person) => Audience::Person(person),
+        None => Audience::Everyone,
+    };
+    let mut cards: Vec<&Card> = board.open_cards_in(&view);
     if all {
-        cards.extend(board.recently_resolved(usize::MAX));
+        cards.extend(board.recently_resolved_in(&view, usize::MAX));
     }
     if json {
         serde_json::to_writer_pretty(&mut *out, &cards)?;
         writeln!(out)?;
         return Ok(());
     }
+    for problem in &board.problems {
+        writeln!(out, "note: {problem}")?;
+    }
     if cards.is_empty() {
-        writeln!(out, "the board is empty")?;
+        match person {
+            Some(person) => writeln!(out, "nothing on the board for {person}")?,
+            None => writeln!(out, "the board is empty")?,
+        }
         return Ok(());
     }
     let now = Utc::now();
@@ -336,6 +427,11 @@ fn run_list(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write) -
         if card.priority != Priority::Normal {
             state = format!("{state}, {}", card.priority);
         }
+        let whose = card
+            .assignee
+            .as_deref()
+            .map(|person| format!("  for {person}"))
+            .unwrap_or_default();
         let from = card
             .from
             .as_deref()
@@ -343,13 +439,89 @@ fn run_list(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write) -
             .unwrap_or_default();
         writeln!(
             out,
-            "{:<14} {:<22} {:>4}  {}{from}",
+            "{:<14} {:<22} {:>4}  {}{whose}{from}",
             card.label(),
             state,
             compact_age(card.updated_at, now),
             card.title
         )?;
     }
+    Ok(())
+}
+
+/// `import [<file>]`: copy a private board document's cards into the shared
+/// folder. Each card keeps its number behind this machine's prefix when that
+/// id is free, and a card already imported (same title and creation time) is
+/// skipped, so running it twice copies nothing twice. Cards for nobody in
+/// particular go to `[board] me`. The document itself is left as it is.
+fn run_import(
+    args: &[String],
+    settings: &BoardSettings,
+    out: &mut dyn std::io::Write,
+) -> Result<()> {
+    let store = &settings.store;
+    if !store.is_folder() {
+        bail!(
+            "`yaran board import` copies cards into a shared board folder; set [board] dir \
+             first (this board is already the private document)"
+        );
+    }
+    let document = match args {
+        [] => store.private_document().load()?,
+        [path] if !path.starts_with('-') => {
+            let path = PathBuf::from(path);
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("could not read {}", path.display()))?;
+            serde_json::from_slice::<Board>(&bytes)
+                .with_context(|| format!("{} is not a board document", path.display()))?
+        }
+        _ => bail!("`yaran board import` takes at most one board document path"),
+    };
+    let me = settings.me.clone();
+    let imported = store.update(|board| {
+        let mut moved = Vec::new();
+        for card in &document.cards {
+            // A note keeps whole seconds, so that is the precision compared.
+            let already = board.cards.iter().any(|existing| {
+                existing.title == card.title
+                    && existing.created_at.timestamp() == card.created_at.timestamp()
+            });
+            if already {
+                continue;
+            }
+            let wanted = CardId::new(store.prefix(), card.id.number());
+            let id = if board.card(&wanted).is_none() && !board.reserved.contains(&wanted) {
+                wanted
+            } else {
+                board.next_card_id()
+            };
+            let mut copy = card.clone();
+            copy.id = id.clone();
+            if copy.assignee.is_none() {
+                copy.assignee = me.clone();
+            }
+            board.cards.push(copy);
+            moved.push((card.id.clone(), id));
+        }
+        Ok(moved)
+    })?;
+    if imported.is_empty() {
+        writeln!(
+            out,
+            "nothing to import: every card is already on the shared board"
+        )?;
+        return Ok(());
+    }
+    for (from, to) in &imported {
+        writeln!(out, "#{from} -> #{to}")?;
+    }
+    writeln!(
+        out,
+        "imported {} card{} into {}",
+        imported.len(),
+        if imported.len() == 1 { "" } else { "s" },
+        store.path().display()
+    )?;
     Ok(())
 }
 
@@ -365,10 +537,24 @@ mod tests {
         run_stdin(store, words, "")
     }
 
+    fn settings(store: &BoardStore) -> BoardSettings {
+        BoardSettings {
+            store: store.clone(),
+            people: Vec::new(),
+            me: None,
+            sync: super::super::sync::SyncMode::Off,
+            sync_every: std::time::Duration::from_secs(60),
+        }
+    }
+
     fn run_stdin(store: &BoardStore, words: &[&str], input: &str) -> Result<String> {
+        run_as(&settings(store), words, input)
+    }
+
+    fn run_as(settings: &BoardSettings, words: &[&str], input: &str) -> Result<String> {
         let mut out = Vec::new();
         let mut stdin = input.as_bytes();
-        run_with(&args(words), store, &mut stdin, &mut out)?;
+        run_with(&args(words), settings, &mut stdin, &mut out)?;
         Ok(String::from_utf8(out).unwrap())
     }
 
@@ -526,7 +712,7 @@ mod tests {
         let err = run(&store, &["resolve", "9"]).unwrap_err();
         assert!(format!("{err}").contains("no card #9"), "{err}");
         let err = run(&store, &["resolve"]).unwrap_err();
-        assert!(format!("{err}").contains("needs card numbers"), "{err}");
+        assert!(format!("{err}").contains("needs card ids"), "{err}");
         let err = run(&store, &["resolve", "1", "--ticket", "x"]).unwrap_err();
         assert!(format!("{err}").contains("not both"), "{err}");
         let err = run(&store, &["resolve", "one"]).unwrap_err();
@@ -609,7 +795,7 @@ mod tests {
         let err = run(&store, &["post", "-k", "task", "-p", "asap", "x"]).unwrap_err();
         assert!(format!("{err}").contains("unknown priority"), "{err}");
         let err = run(&store, &["priority", "2"]).unwrap_err();
-        assert!(format!("{err}").contains("needs a card number"), "{err}");
+        assert!(format!("{err}").contains("needs a card id"), "{err}");
     }
 
     #[test]
@@ -623,5 +809,169 @@ mod tests {
             "{err}"
         );
         assert!(!store.path().exists(), "help writes nothing");
+    }
+
+    fn team(home: &std::path::Path) -> BoardSettings {
+        BoardSettings {
+            store: BoardStore::folder(&home.join("vault/Board"), home, "S"),
+            people: vec!["Sam".to_string(), "Alex".to_string()],
+            me: Some("Sam".to_string()),
+            sync: super::super::sync::SyncMode::Off,
+            sync_every: std::time::Duration::from_secs(60),
+        }
+    }
+
+    #[test]
+    fn a_card_goes_to_me_unless_it_names_someone_else() {
+        let home = tempfile::tempdir().unwrap();
+        let team = team(home.path());
+        assert_eq!(
+            run_as(&team, &["post", "-k", "task", "mine"], "").unwrap(),
+            "posted #S-1 (task, for Sam)\n"
+        );
+        assert_eq!(
+            run_as(
+                &team,
+                &["post", "-k", "task", "--for", "alex", "theirs"],
+                ""
+            )
+            .unwrap(),
+            "posted #S-2 (task, for Alex)\n"
+        );
+        assert_eq!(
+            run_as(
+                &team,
+                &["post", "-k", "info", "--for", "anyone", "news"],
+                ""
+            )
+            .unwrap(),
+            "posted #S-3 (info)\n"
+        );
+        let err = run_as(&team, &["post", "-k", "task", "--for", "Kim", "x"], "").unwrap_err();
+        assert!(format!("{err}").contains("Sam, Alex"), "{err}");
+
+        // The same ticket and kind for two people is two cards.
+        run_as(&team, &["post", "-k", "task", "-t", "9", "a"], "").unwrap();
+        run_as(
+            &team,
+            &["post", "-k", "task", "-t", "9", "--for", "Alex", "b"],
+            "",
+        )
+        .unwrap();
+        assert_eq!(team.store.load().unwrap().cards.len(), 5);
+    }
+
+    #[test]
+    fn list_narrows_to_a_queue_and_assign_moves_a_card() {
+        let home = tempfile::tempdir().unwrap();
+        let team = team(home.path());
+        run_as(&team, &["post", "-k", "task", "for sam"], "").unwrap();
+        run_as(
+            &team,
+            &["post", "-k", "task", "--for", "Alex", "for alex"],
+            "",
+        )
+        .unwrap();
+        run_as(
+            &team,
+            &["post", "-k", "info", "--for", "anyone", "for all"],
+            "",
+        )
+        .unwrap();
+
+        let mine = run_as(&team, &["list", "--mine"], "").unwrap();
+        assert!(
+            mine.contains("for sam") && mine.contains("for all"),
+            "{mine}"
+        );
+        assert!(!mine.contains("for alex"), "{mine}");
+        let alex = run_as(&team, &["list", "--for", "ALEX"], "").unwrap();
+        assert!(
+            alex.contains("for alex") && !alex.contains("for sam"),
+            "{alex}"
+        );
+
+        assert_eq!(
+            run_as(&team, &["assign", "1", "Alex"], "").unwrap(),
+            "#S-1 is now in Alex's queue\n",
+            "a bare number names this machine's card"
+        );
+        assert_eq!(
+            run_as(&team, &["assign", "S-1", "alex"], "").unwrap(),
+            "#S-1 was already in Alex's queue\n"
+        );
+        assert_eq!(
+            run_as(&team, &["assign", "s-1", "anyone"], "").unwrap(),
+            "#S-1 is now in everybody's queue\n"
+        );
+        let json = run_as(&team, &["list", "--json"], "").unwrap();
+        assert!(json.contains("\"id\": \"S-2\""), "{json}");
+        assert!(json.contains("\"assignee\": \"Alex\""), "{json}");
+    }
+
+    #[test]
+    fn a_bare_number_shared_by_two_prefixes_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let team = team(home.path());
+        let other = BoardSettings {
+            store: BoardStore::folder(&home.path().join("vault/Board"), home.path(), "A"),
+            ..team.clone()
+        };
+        run_as(&other, &["post", "-k", "task", "from a"], "").unwrap();
+        // This machine (S) resolves #1: only A-1 has that number, so it is that.
+        assert_eq!(
+            run_as(&team, &["resolve", "1"], "").unwrap(),
+            "resolved #A-1\n"
+        );
+        run_as(&team, &["post", "-k", "task", "from s"], "").unwrap();
+        run_as(&other, &["post", "-k", "task", "from a again"], "").unwrap();
+        // Now S-1 and A-2 exist beside A-1: #1 is this machine's S-1.
+        assert_eq!(
+            run_as(&team, &["reopen", "1"], "").unwrap(),
+            "#S-1 was already open\n"
+        );
+        let third = BoardSettings {
+            store: BoardStore::folder(&home.path().join("vault/Board"), home.path(), "Z"),
+            ..team.clone()
+        };
+        let err = run_as(&third, &["resolve", "1"], "").unwrap_err();
+        assert!(format!("{err}").contains("#A-1, #S-1"), "{err}");
+    }
+
+    #[test]
+    fn import_copies_a_private_board_once() {
+        let home = tempfile::tempdir().unwrap();
+        let private = BoardStore::new(home.path());
+        run(&private, &["post", "-k", "task", "old one"]).unwrap();
+        run(&private, &["post", "-k", "info", "old two"]).unwrap();
+        run(&private, &["resolve", "2"]).unwrap();
+
+        let team = team(home.path());
+        let out = run_as(&team, &["import"], "").unwrap();
+        assert!(
+            out.contains("#1 -> #S-1") && out.contains("#2 -> #S-2"),
+            "{out}"
+        );
+        let board = team.store.load().unwrap();
+        assert_eq!(board.cards.len(), 2);
+        assert!(
+            board
+                .cards
+                .iter()
+                .all(|c| c.assignee.as_deref() == Some("Sam"))
+        );
+        assert!(!board.card(CardId::new("S", 2)).unwrap().is_open());
+
+        let again = run_as(&team, &["import"], "").unwrap();
+        assert!(again.contains("nothing to import"), "{again}");
+        assert!(
+            private.path().exists(),
+            "the private board is left as it was"
+        );
+
+        let err = run(&private, &["import"]).unwrap_err();
+        assert!(format!("{err}").contains("set [board] dir"), "{err}");
+        let err = run(&private, &["sync"]).unwrap_err();
+        assert!(format!("{err}").contains("nothing to sync"), "{err}");
     }
 }
