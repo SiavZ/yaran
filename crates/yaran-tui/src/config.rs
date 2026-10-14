@@ -1571,12 +1571,23 @@ fn config_schema() -> Vec<ConfigEntry> {
         ConfigEntry::Field {
             key: "auto_clear_collaboration_quiet_secs",
             comment: Some(CommentSource::Static(
-                "# A Worker's auto-clear waits while it collaborates: unread or unsent AMQ\n\
-                 # mail and queued wakes always block it, and so does AMQ activity newer\n\
-                 # than this many seconds. 0 disables only the recent-activity window.\n\
-                 # Default 1800.",
+                "# A Worker's auto-clear and auto-compact wait while it collaborates: unread\n\
+                 # or unsent AMQ mail and queued wakes always block them, and so does AMQ\n\
+                 # activity newer than this many seconds. 0 disables only the\n\
+                 # recent-activity window. Default 1800.",
             )),
             value_fn: |c| FieldValue::U64(c.amq.inject.auto_clear_collaboration_quiet_secs),
+        },
+        ConfigEntry::Field {
+            key: "compact_instructions_path",
+            comment: Some(CommentSource::Static(
+                "# File whose text follows /compact when a Worker that opted into\n\
+                 # auto-compact prints the [compact] sentinel. The text is typed on one\n\
+                 # line. A missing or empty file types a bare /compact and logs a warning.\n\
+                 # A leading ~/ is your home directory. A session's own path wins over this\n\
+                 # one. Default \"~/.claude/compact-instructions.txt\".",
+            )),
+            value_fn: |c| FieldValue::Str(c.amq.inject.compact_instructions_path.clone()),
         },
         ConfigEntry::Blank,
         ConfigEntry::Comment(
@@ -3803,6 +3814,7 @@ name = "test"
         i.startup_grace_ms = 4_321;
         i.post_delivery_cooldown_ms = 9_876;
         i.auto_clear_collaboration_quiet_secs = 2_222;
+        i.compact_instructions_path = "/tmp/compact.txt".to_string();
         i.active_session_quiet_secs = 42;
         i.verify_envelope = true;
         config.amq.orchestrator.enabled = false;

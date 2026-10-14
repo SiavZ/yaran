@@ -11,6 +11,7 @@ pub mod agent_env;
 pub mod agent_job;
 pub mod agent_search;
 pub mod agent_tabs;
+pub mod atomic_update;
 pub mod attention;
 pub mod background_serve;
 pub mod bidi;

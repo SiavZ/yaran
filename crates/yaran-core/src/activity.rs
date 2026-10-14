@@ -98,12 +98,9 @@ impl ActivityRing {
     /// Decrement the active-connection count, saturating at zero so a disconnect
     /// without a matching connect (or a double fire) can never wrap.
     pub fn connection_closed(&self) {
-        let _ = self
-            .0
-            .connections
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
-                Some(c.saturating_sub(1))
-            });
+        let _ = crate::atomic_update::update_relaxed(&self.0.connections, |c| {
+            Some(c.saturating_sub(1))
+        });
     }
 
     pub fn generation(&self) -> u64 {

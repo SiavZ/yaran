@@ -728,6 +728,14 @@ pub enum WorkerEvent {
     /// worktrees finished. Its ids are not persisted yet: the engine writes
     /// them with its own store (`resume_recovery::persist_recovered_ids`).
     ResumeRecoveryCompleted(Result<crate::resume_recovery::RecoveryReport, String>),
+    /// A read of a compact instructions file finished on a worker thread.
+    /// `raw_path` is the path exactly as the settings name it, so the cache
+    /// entry it fills is the one the watch engine looks up; the auto-compact
+    /// rule attaches once its file has been read.
+    CompactInstructionsLoaded {
+        raw_path: String,
+        load: crate::watch::builtin::CompactCommandLoad,
+    },
     /// The AMQ inject-queue watcher (or its polling fallback) noticed a
     /// change under the queue root. No payload: the engine re-scans the
     /// directory, claims new `.msg` files, and delivers them from

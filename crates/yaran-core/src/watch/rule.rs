@@ -52,6 +52,10 @@ pub enum WatchRuleKind {
     #[default]
     User,
     BuiltInAutoClear,
+    /// The built-in compact-on-`[compact]` rule. A separate kind from
+    /// auto-clear so each built-in is held and rebaselined on its own and
+    /// one sentinel can never be mistaken for the other.
+    BuiltInAutoCompact,
 }
 
 /// Action variants a rule can dispatch when it fires.

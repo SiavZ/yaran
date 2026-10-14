@@ -2,13 +2,20 @@
 //!
 //! These rules are constructed in code rather than loaded from
 //! `config.toml` so the operator cannot accidentally edit them away.
-//! Today the only built-in is the auto-clear-after-task-done rule
-//! used by Worker-mode sessions (the AMQ orchestrator's session
-//! settings) when auto-clear-on-task-done is enabled. A worker that
-//! emits the `[task-done]` sentinel at end-of-task gets its context
-//! cleared by the engine on the next tick. The session-settings side
-//! that decides WHEN to attach this rule belongs to the AMQ
-//! orchestrator; this module only builds the rule.
+//! There are two, both used by Worker-mode sessions (the AMQ
+//! orchestrator's session settings) and each behind its own opt-in:
+//!
+//! - auto-clear: a worker that emits the `[task-done]` sentinel at
+//!   end-of-task gets its context cleared on the next tick.
+//! - auto-compact: a worker that emits the `[compact]` sentinel gets
+//!   `/compact` typed, followed by the operator's compaction
+//!   instructions, so its context is summarised rather than wiped.
+//!
+//! The two sentinels are disjoint literals, so `[compact]` can never
+//! clear a session and `[task-done]` can never compact one. The
+//! session-settings side that decides WHEN to attach a rule belongs to
+//! the AMQ orchestrator; this module builds the rules, and reads the
+//! compact instructions file for the engine's worker thread.
 //!
 //! Why not config.toml? Two reasons:
 //! 1. The rule is feature infrastructure, not user policy. If the
@@ -73,6 +80,146 @@ pub fn auto_clear_rule_for(clear_command: &str) -> WatchRule {
         },
         cooldown_ms: 60_000,
         kind: WatchRuleKind::BuiltInAutoClear,
+    }
+}
+
+/// High finite guard for a long-running worker session, as for auto-clear.
+pub const AUTO_COMPACT_MAX_ATTEMPTS: u32 = 10_000;
+pub const AUTO_COMPACT_LABEL: &str = "auto-compact on [compact]";
+
+/// Sentinel a Worker-mode agent emits when its context should be compacted
+/// rather than cleared. Lowercased, square-bracketed, no whitespace, like
+/// [`TASK_DONE_SENTINEL`], and deliberately not a substring of it.
+pub const COMPACT_SENTINEL: &str = "[compact]";
+
+/// The slash command the auto-compact rule types. The instructions, when
+/// there are any, follow it on the same line.
+pub const COMPACT_COMMAND: &str = "/compact";
+
+/// Build the text the auto-compact rule types: `/compact` followed by the
+/// operator's instructions, or a bare `/compact` when there are none.
+///
+/// The instructions are collapsed onto one line: every run of whitespace,
+/// newlines included, becomes a single space. The text is typed into the
+/// agent's prompt, where a newline would submit the command early and send
+/// the rest of the instructions as a separate message. Other control
+/// characters are dropped: an escape byte typed into a terminal is a
+/// keystroke, not text.
+pub fn compact_command_text(instructions: Option<&str>) -> String {
+    let collapsed = instructions
+        .map(|text| {
+            let printable: String = text
+                .chars()
+                .filter(|c| !c.is_control() || c.is_whitespace())
+                .collect();
+            printable.split_whitespace().collect::<Vec<_>>().join(" ")
+        })
+        .unwrap_or_default();
+    if collapsed.is_empty() {
+        COMPACT_COMMAND.to_string()
+    } else {
+        format!("{COMPACT_COMMAND} {collapsed}")
+    }
+}
+
+/// Largest compact instructions file the rule will type. A file bigger than
+/// this is far more likely the wrong path than a real instruction, and typing
+/// it would flood the agent's prompt.
+pub const MAX_COMPACT_INSTRUCTIONS_BYTES: u64 = 8 * 1024;
+
+/// What one read of the compact instructions file produced: the line the rule
+/// types, and, when that line is a bare `/compact` because the file could not
+/// be used, the reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompactCommandLoad {
+    pub command: String,
+    pub warning: Option<String>,
+}
+
+/// Read the compact instructions file at `raw_path` and build the line the
+/// auto-compact rule types. `~` and `$VAR` expand as in other configured
+/// paths, and the result must be absolute.
+///
+/// This reads a file, so it runs on a worker thread and never on the UI
+/// thread. Every way the file can be unusable (unresolvable path, missing,
+/// unreadable, too big, not UTF-8, empty) falls back to a bare `/compact`
+/// with a warning naming the cause: a Worker that asked to be compacted is
+/// still compacted, just without the extra instructions.
+pub fn load_compact_command(raw_path: &str) -> CompactCommandLoad {
+    use std::io::Read;
+
+    let bare = |cause: String| CompactCommandLoad {
+        command: compact_command_text(None),
+        warning: Some(format!("{cause}; typing a bare {COMPACT_COMMAND}")),
+    };
+    let Some(path) = crate::config::expand_path(raw_path.trim()) else {
+        return bare(format!(
+            "compact instructions path {raw_path:?} does not resolve to an absolute path"
+        ));
+    };
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(err) => {
+            return bare(format!(
+                "compact instructions file {path} cannot be opened: {err}"
+            ));
+        }
+    };
+    let mut bytes = Vec::new();
+    if let Err(err) = file
+        .take(MAX_COMPACT_INSTRUCTIONS_BYTES + 1)
+        .read_to_end(&mut bytes)
+    {
+        return bare(format!(
+            "compact instructions file {path} cannot be read: {err}"
+        ));
+    }
+    if bytes.len() as u64 > MAX_COMPACT_INSTRUCTIONS_BYTES {
+        return bare(format!(
+            "compact instructions file {path} is larger than {MAX_COMPACT_INSTRUCTIONS_BYTES} bytes"
+        ));
+    }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return bare(format!(
+            "compact instructions file {path} is not UTF-8 text"
+        ));
+    };
+    let command = compact_command_text(Some(&text));
+    if command == COMPACT_COMMAND {
+        return bare(format!("compact instructions file {path} is empty"));
+    }
+    CompactCommandLoad {
+        command,
+        warning: None,
+    }
+}
+
+/// Build the built-in auto-compact rule. `command_text` is the full line to
+/// type (see [`compact_command_text`]). Same backoff, cooldown and budget
+/// shape as auto-clear, for the same reasons: the sentinel is visible only
+/// once the reply is written, and a duplicate sentinel seen while the
+/// compaction is in flight must not fire a second one.
+///
+/// Pattern: literal `[compact]` (regex-escaped).
+pub fn auto_compact_rule_for(command_text: &str) -> WatchRule {
+    WatchRule {
+        pattern: r"\[compact\]".to_string(),
+        label: AUTO_COMPACT_LABEL.to_string(),
+        action: WatchAction::SendText {
+            text: command_text.to_string(),
+            append_enter: true,
+        },
+        backoff: WatchBackoff {
+            initial_ms: 2_000,
+            max_ms: 10_000,
+            multiplier: 2.0,
+            jitter_ms: 500,
+        },
+        budget: WatchBudget {
+            max_attempts: AUTO_COMPACT_MAX_ATTEMPTS,
+        },
+        cooldown_ms: 60_000,
+        kind: WatchRuleKind::BuiltInAutoCompact,
     }
 }
 
@@ -148,5 +295,137 @@ mod tests {
         assert!(re.is_match("[task-done]"));
         assert!(!re.is_match("task-done")); // no brackets, no match
         assert!(!re.is_match("[TASK-DONE]")); // case-sensitive by default
+    }
+
+    #[test]
+    fn compact_command_text_without_instructions_is_bare_compact() {
+        assert_eq!(compact_command_text(None), "/compact");
+        assert_eq!(compact_command_text(Some("")), "/compact");
+        assert_eq!(compact_command_text(Some("  \n\t \n")), "/compact");
+    }
+
+    #[test]
+    fn compact_command_text_appends_instructions_on_one_line() {
+        assert_eq!(
+            compact_command_text(Some("Keep the open PRs.\nDrop the old reviews.\n")),
+            "/compact Keep the open PRs. Drop the old reviews."
+        );
+        assert_eq!(
+            compact_command_text(Some("  keep   the\r\ncard  ")),
+            "/compact keep the card"
+        );
+    }
+
+    #[test]
+    fn compact_command_text_drops_control_characters() {
+        assert_eq!(
+            compact_command_text(Some("keep\u{1b}[201~ the\u{7}card")),
+            "/compact keep[201~ thecard"
+        );
+    }
+
+    fn write_instructions(dir: &std::path::Path, bytes: &[u8]) -> String {
+        let path = dir.join("compact-instructions.txt");
+        std::fs::write(&path, bytes).expect("write instructions");
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_readable_instructions_file_is_typed_after_compact() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_instructions(tmp.path(), b"Keep the open PRs.\nDrop old reviews.\n");
+        assert_eq!(
+            load_compact_command(&path),
+            CompactCommandLoad {
+                command: "/compact Keep the open PRs. Drop old reviews.".to_string(),
+                warning: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_missing_instructions_file_types_a_bare_compact_and_says_why() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("absent.txt").to_string_lossy().into_owned();
+        let load = load_compact_command(&path);
+        assert_eq!(load.command, "/compact");
+        assert!(
+            load.warning
+                .as_deref()
+                .is_some_and(|w| w.contains("cannot be opened")),
+            "{load:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_instructions_file_types_a_bare_compact_and_says_why() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_instructions(tmp.path(), b" \n\t\n");
+        let load = load_compact_command(&path);
+        assert_eq!(load.command, "/compact");
+        assert!(
+            load.warning
+                .as_deref()
+                .is_some_and(|w| w.contains("is empty")),
+            "{load:?}"
+        );
+    }
+
+    #[test]
+    fn an_oversized_instructions_file_types_a_bare_compact_and_says_why() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let big = vec![b'a'; MAX_COMPACT_INSTRUCTIONS_BYTES as usize + 1];
+        let path = write_instructions(tmp.path(), &big);
+        let load = load_compact_command(&path);
+        assert_eq!(load.command, "/compact");
+        assert!(
+            load.warning
+                .as_deref()
+                .is_some_and(|w| w.contains("larger than")),
+            "{load:?}"
+        );
+    }
+
+    #[test]
+    fn a_relative_instructions_path_types_a_bare_compact_and_says_why() {
+        let load = load_compact_command("notes/compact.txt");
+        assert_eq!(load.command, "/compact");
+        assert!(
+            load.warning
+                .as_deref()
+                .is_some_and(|w| w.contains("absolute path")),
+            "{load:?}"
+        );
+    }
+
+    #[test]
+    fn auto_compact_rule_has_safe_defaults() {
+        let r = auto_compact_rule_for("/compact keep the card");
+        assert_eq!(r.pattern, r"\[compact\]");
+        assert_eq!(r.kind, WatchRuleKind::BuiltInAutoCompact);
+        assert_eq!(r.budget.max_attempts, AUTO_COMPACT_MAX_ATTEMPTS);
+        match r.action {
+            WatchAction::SendText { text, append_enter } => {
+                assert_eq!(text, "/compact keep the card");
+                assert!(append_enter);
+            }
+            _ => panic!("expected SendText action"),
+        }
+    }
+
+    #[test]
+    fn the_two_sentinel_patterns_never_match_each_other() {
+        use regex::RegexBuilder;
+        let compact = RegexBuilder::new(&auto_compact_rule_for("/compact").pattern)
+            .build()
+            .expect("compact pattern compiles");
+        let clear = RegexBuilder::new(&auto_clear_rule_for("/clear").pattern)
+            .build()
+            .expect("clear pattern compiles");
+        assert!(compact.is_match(COMPACT_SENTINEL));
+        assert!(!compact.is_match(TASK_DONE_SENTINEL));
+        assert!(clear.is_match(TASK_DONE_SENTINEL));
+        assert!(!clear.is_match(COMPACT_SENTINEL));
+        assert!(!compact.is_match("compact")); // no brackets, no match
     }
 }

@@ -3940,6 +3940,9 @@ impl Engine {
             WorkerEvent::ResumeRecoveryCompleted(result) => {
                 self.process_resume_recovery_completed(result)
             }
+            WorkerEvent::CompactInstructionsLoaded { raw_path, load } => {
+                self.process_compact_instructions_loaded(raw_path, load)
+            }
         }
     }
 }
