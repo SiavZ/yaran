@@ -37,6 +37,9 @@ Subcommands:
                        particular. --blocking says you cannot carry on until a
                        person answers: the board marks the queue until one
                        does. --detail - reads the detail from standard input.
+                       Keep the title to one line: a title over 300 characters
+                       keeps its first sentence, and the whole of it opens the
+                       detail.
   yaran board reply <id> [--done] [--from <who>] <text...>|-
                        Add to a card's conversation: answer a person's question
                        on it, or report on the work it asked for. The reply

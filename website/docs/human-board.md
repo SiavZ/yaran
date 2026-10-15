@@ -131,12 +131,16 @@ yaran board list --all --json
 
 - An open card is unique per ticket and kind: posting again with the same `--ticket` and
   `--kind` updates that card instead of adding a second one.
-- `--detail -` reads the detail from standard input, for anything longer than a line.
+- `--detail -` reads the detail from standard input, for anything longer than a line. A
+  title too long for one row (over 300 characters) is never cut short: the card keeps its
+  first sentence or clause as the title, and the whole title opens the detail.
 - The poster is recorded from the agent's handle, or `--from` when given.
 - `--blocking` says the agent cannot carry on until a person answers; the board marks the
   card and its queue in red until somebody does (see [The dots](#the-dots)).
 - `yaran board reply` adds to a card's conversation, to answer a question a person asked on
-  it or to report on the work it asked for; `--done` marks the card done with it.
+  it or to report on the work it asked for; `--done` marks the card done with it. An agent's
+  posts and replies are signed with its handle, also when it runs without one in its
+  environment (yaran recognises the agent by the folder it works in).
   `yaran board show` prints one card whole, conversation included.
 - `yaran board list --all` shows the resolved cards too, so an agent can see what you
   confirmed and carry on. Cards you clear here are recorded as resolved by `human` (by your
@@ -254,9 +258,10 @@ relay_transport = "auto"
 
 With `relay` on, while the terminal UI runs, what another side writes on a card an agent of
 this machine posted is passed to that agent, as `yaran peer send` passes a message between
-agents (never typed into its terminal). A card another person assigns to `me` that no agent
-here posted goes to `relay_to`, an agent that can take the work on; without `relay_to` such
-cards wait on the board. Each message is passed once, the card's conversation shows that it
+agents (never typed into its terminal). A card another person hands you with **Assign** goes
+to `relay_to`, an agent that can take the work on, and its report comes back on the card;
+without `relay_to` such cards wait on the board. A card the other side's agents merely posted
+for you is a question for you, and always waits for you. Each message is passed once, the card's conversation shows that it
 was, and the status line says so. `relay_transport` picks the route the way
 `yaran peer send --transport` does.
 
