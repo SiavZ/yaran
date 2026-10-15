@@ -19,6 +19,7 @@ fn card(kind: CardKind, ticket: Option<&str>, title: &str) -> NewCard {
         title: title.to_string(),
         detail: None,
         from: Some("orchestrator".to_string()),
+        ..NewCard::default()
     }
 }
 
@@ -114,6 +115,7 @@ fn card_text_is_sanitized_flattened_and_bounded() {
                 title: format!("\x1b]0;pwned\x07 two\n lines {long}"),
                 detail: Some("keep\nthe lines\x1b[2J".to_string()),
                 from: Some("   ".to_string()),
+                ..NewCard::default()
             },
             at(0),
         )
@@ -552,4 +554,171 @@ fn a_board_without_priorities_reads_as_normal_and_normal_is_not_written() {
         "only the critical card carries the field"
     );
     assert!(text.contains("\"priority\": \"critical\""));
+}
+
+fn said(from: &str, side: &str, text: &str) -> NewMessage {
+    NewMessage {
+        from: from.to_string(),
+        side: Some(side.to_string()),
+        text: text.to_string(),
+        done: false,
+    }
+}
+
+#[test]
+fn a_reply_joins_the_conversation_and_done_closes_the_card() {
+    let mut board = Board::default();
+    let id = board
+        .post(card(CardKind::Confirm, Some("7"), "Merge it?"), at(0))
+        .unwrap()
+        .id();
+    let first = board
+        .reply(&id, said("Alex", "Alex", "Why now?"), at(1))
+        .unwrap();
+    assert_eq!(first.from, "Alex");
+    assert!(board.card(&id).unwrap().is_open());
+    assert_eq!(board.card(&id).unwrap().updated_at, at(1));
+
+    let mut answer = said("orchestrator", "Sam", "Because the fix is ready.");
+    answer.done = false;
+    board.reply(&id, answer, at(2)).unwrap();
+    let mut yes = said("Alex", "Alex", "Then yes.");
+    yes.done = true;
+    board.reply(&id, yes, at(3)).unwrap();
+
+    let card = board.card(&id).unwrap();
+    assert!(!card.is_open());
+    assert_eq!(card.resolved_by.as_deref(), Some("Alex"));
+    assert_eq!(card.resolution.as_deref(), Some("Then yes."));
+    let texts: Vec<&str> = card.thread.iter().map(|m| m.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["Why now?", "Because the fix is ready.", "Then yes."]
+    );
+    assert!(card.thread[2].done);
+}
+
+#[test]
+fn a_reply_needs_text_a_writer_and_a_card_with_room() {
+    let mut board = Board::default();
+    let id = board
+        .post(card(CardKind::Task, None, "Decide"), at(0))
+        .unwrap()
+        .id();
+    assert!(
+        board
+            .reply(&id, said("Alex", "Alex", "  \n "), at(1))
+            .is_err()
+    );
+    assert!(board.reply(&id, said(" ", "Alex", "hi"), at(1)).is_err());
+    assert!(
+        board
+            .reply(99u64, said("Alex", "Alex", "hi"), at(1))
+            .is_err()
+    );
+    for n in 0..MAX_THREAD_MESSAGES {
+        board
+            .reply(&id, said("Alex", "Alex", &format!("message {n}")), at(1))
+            .unwrap();
+    }
+    let err = board
+        .reply(&id, said("Alex", "Alex", "one more"), at(2))
+        .unwrap_err();
+    assert!(err.to_string().contains("new card"), "{err}");
+    // Same writer, same instant: every message still has a name of its own.
+    let card = board.card(&id).unwrap();
+    let keys: std::collections::BTreeSet<_> = card.thread.iter().map(Message::key).collect();
+    assert_eq!(keys.len(), MAX_THREAD_MESSAGES);
+}
+
+#[test]
+fn two_copies_of_a_card_keep_both_conversations() {
+    let mut board = Board::default();
+    let id = board
+        .post(card(CardKind::Task, None, "Decide"), at(0))
+        .unwrap()
+        .id();
+    board
+        .reply(&id, said("Alex", "Alex", "First"), at(1))
+        .unwrap();
+    let mut ours = board.card(&id).unwrap().clone();
+    let mut theirs = ours.clone();
+    ours.thread.push(Message {
+        at: at(3),
+        from: "orchestrator".to_string(),
+        side: Some("Sam".to_string()),
+        text: "Ours".to_string(),
+        done: false,
+        relayed_at: None,
+    });
+    theirs.thread.push(Message {
+        at: at(2),
+        from: "Alex".to_string(),
+        side: Some("Alex".to_string()),
+        text: "Theirs".to_string(),
+        done: false,
+        relayed_at: None,
+    });
+    theirs.thread[0].relayed_at = Some(at(2));
+    assert!(ours.absorb_conversation(&theirs));
+    let texts: Vec<&str> = ours.thread.iter().map(|m| m.text.as_str()).collect();
+    assert_eq!(texts, ["First", "Theirs", "Ours"]);
+    assert_eq!(ours.thread[0].relayed_at, Some(at(2)));
+    assert!(
+        !ours.absorb_conversation(&theirs),
+        "a second pass changes nothing"
+    );
+}
+
+#[test]
+fn a_blocking_card_waits_until_a_person_answers() {
+    let people = vec!["Sam".to_string(), "Alex".to_string()];
+    let mut board = Board::default();
+    let mut new = card(CardKind::Confirm, None, "Can I drop the table?");
+    new.blocking = Some(true);
+    let id = board.post(new, at(0)).unwrap().id();
+    assert!(board.card(&id).unwrap().waits_for_answer(&people));
+    board
+        .reply(&id, said("Alex", "Alex", "Which table?"), at(1))
+        .unwrap();
+    assert!(!board.card(&id).unwrap().waits_for_answer(&people));
+    board
+        .reply(
+            &id,
+            said("orchestrator", "Sam", "The old audit table."),
+            at(2),
+        )
+        .unwrap();
+    assert!(board.card(&id).unwrap().waits_for_answer(&people));
+    board.resolve(&id, Some("Alex"), None, at(3)).unwrap();
+    assert!(!board.card(&id).unwrap().waits_for_answer(&people));
+    // A card that never said it blocks never waits.
+    let calm = board
+        .post(card(CardKind::Task, None, "Whenever"), at(4))
+        .unwrap()
+        .id();
+    assert!(!board.card(&calm).unwrap().waits_for_answer(&people));
+}
+
+#[test]
+fn relaying_is_recorded_once_and_does_not_count_as_news() {
+    let mut board = Board::default();
+    let id = board
+        .post(card(CardKind::Task, None, "Decide"), at(0))
+        .unwrap()
+        .id();
+    let message = board.reply(&id, said("Alex", "Alex", "B"), at(1)).unwrap();
+    assert!(board.mark_relayed(&id, message.key(), at(5)).unwrap());
+    assert!(!board.mark_relayed(&id, message.key(), at(6)).unwrap());
+    assert!(board.mark_card_relayed(&id, at(5)).unwrap());
+    assert!(!board.mark_card_relayed(&id, at(6)).unwrap());
+    let card = board.card(&id).unwrap();
+    assert_eq!(card.thread[0].relayed_at, Some(at(5)));
+    assert_eq!(
+        card.updated_at,
+        at(1),
+        "relaying is bookkeeping, not an edit"
+    );
+    assert!(board.set_blocking(&id, true, at(7)).unwrap());
+    assert!(!board.set_blocking(&id, true, at(8)).unwrap());
 }

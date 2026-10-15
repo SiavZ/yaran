@@ -200,6 +200,50 @@ fn two_machines_editing_one_card_keep_the_newer_edit() {
 }
 
 #[test]
+fn two_machines_replying_on_one_card_keep_both_replies() {
+    use crate::human_board::NewMessage;
+    let world = world();
+    let id = post(&world.a, "which plan?", 0);
+    sync_with_git(&world.a.store).unwrap();
+    sync_with_git(&world.b.store).unwrap();
+
+    // Both sides answer before either has synced: a real conflict on one note.
+    let reply = |from: &str, text: &str| NewMessage {
+        from: from.to_string(),
+        side: Some(from.to_string()),
+        text: text.to_string(),
+        done: false,
+    };
+    world
+        .b
+        .store
+        .update(|board| board.reply(&id, reply("Alex", "Plan B, it is cheaper."), at(5)))
+        .unwrap();
+    world
+        .a
+        .store
+        .update(|board| board.reply(&id, reply("orchestrator", "Plan A is ready now."), at(7)))
+        .unwrap();
+
+    sync_with_git(&world.a.store).unwrap();
+    let settled = sync_with_git(&world.b.store).unwrap();
+    assert_eq!(settled.settled, ["A-1.md"], "{settled:?}");
+    sync_with_git(&world.a.store).unwrap();
+
+    for machine in [&world.a, &world.b] {
+        let board = machine.store.load().unwrap();
+        let texts: Vec<String> = board
+            .card(&id)
+            .unwrap()
+            .thread
+            .iter()
+            .map(|m| m.text.clone())
+            .collect();
+        assert_eq!(texts, ["Plan B, it is cheaper.", "Plan A is ready now."]);
+    }
+}
+
+#[test]
 fn a_conflict_outside_the_board_is_undone_and_reported() {
     let world = world();
     for (machine, text) in [(&world.a, "from a\n"), (&world.b, "from b\n")] {

@@ -75,6 +75,11 @@ pub const MAX_NOTE_CHARS: usize = 1_000;
 pub const MAX_OPEN_CARDS: usize = 300;
 /// Resolved cards kept as history; older ones are dropped on the next write.
 pub const RESOLVED_HISTORY: usize = 200;
+/// Longest message kept in a card's conversation, in characters.
+pub const MAX_MESSAGE_CHARS: usize = 4_000;
+/// Messages a card's conversation holds before it refuses more. A thread this
+/// long has outgrown a card; the refusal says to start a new one.
+pub const MAX_THREAD_MESSAGES: usize = 200;
 
 /// What a card asks of the person. The order of [`CardKind::ALL`] is the
 /// board's column order: things only a person can do first, news last.
@@ -270,11 +275,120 @@ pub struct Card {
     /// What the resolver said about it, if anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
+    /// The person whose yaran posted the card (`[board] me` there). On a
+    /// shared board it says which side's agents asked, so a reply from the
+    /// other side can find its way back to them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// The poster cannot carry on until a person answers: the board marks the
+    /// card's queue until somebody does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub blocking: bool,
+    /// When the card itself was passed to an agent on another side (see
+    /// [`Message::relayed_at`]), so it is passed once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relayed_at: Option<DateTime<Utc>>,
+    /// The conversation on the card, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thread: Vec<Message>,
+}
+
+/// One message in a card's conversation: a person's reply, or an agent's
+/// answer to one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Message {
+    pub at: DateTime<Utc>,
+    /// Who wrote it: a person's name, or an agent's handle.
+    pub from: String,
+    /// The person whose yaran it was written on (`[board] me` there). A
+    /// message from another side is the one this side relays and marks unread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
+    pub text: String,
+    /// The writer marked the card done with this message.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub done: bool,
+    /// When yaran passed it to the agent the card belongs to on this side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relayed_at: Option<DateTime<Utc>>,
+}
+
+impl Message {
+    /// What names one message across machines: when, by whom, and what. Two
+    /// boards that each gained messages are merged by this.
+    pub fn key(&self) -> (DateTime<Utc>, &str, &str) {
+        (self.at, self.from.as_str(), self.text.as_str())
+    }
+
+    /// Whether it was written on `person`'s side. A message that does not say
+    /// (written by hand in a notes app) is on the side of whoever wrote it.
+    pub fn is_from_side(&self, person: &str) -> bool {
+        same_person(self.side.as_deref().unwrap_or(&self.from), person)
+    }
+}
+
+/// A message to add to a card's conversation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NewMessage {
+    pub from: String,
+    pub side: Option<String>,
+    pub text: String,
+    /// Mark the card done with it.
+    pub done: bool,
 }
 
 impl Card {
     pub fn is_open(&self) -> bool {
         self.resolved_at.is_none()
+    }
+
+    /// Take in the messages of `other`, another copy of this card: the ones
+    /// this copy lacks are added, and a message either copy passed to an agent
+    /// counts as passed. Everything else about the card stays as this copy has
+    /// it. Returns whether anything changed. Two machines that each added to a
+    /// card between syncs keep both their messages this way.
+    pub fn absorb_conversation(&mut self, other: &Card) -> bool {
+        let mut changed = false;
+        for theirs in &other.thread {
+            match self
+                .thread
+                .iter_mut()
+                .find(|ours| ours.key() == theirs.key())
+            {
+                Some(ours) => {
+                    if ours.relayed_at.is_none() && theirs.relayed_at.is_some() {
+                        ours.relayed_at = theirs.relayed_at;
+                        changed = true;
+                    }
+                }
+                None => {
+                    self.thread.push(theirs.clone());
+                    changed = true;
+                }
+            }
+        }
+        if self.relayed_at.is_none() && other.relayed_at.is_some() {
+            self.relayed_at = other.relayed_at;
+            changed = true;
+        }
+        if changed {
+            self.thread.sort_by(|a, b| a.at.cmp(&b.at));
+            self.thread.truncate(MAX_THREAD_MESSAGES);
+        }
+        changed
+    }
+
+    /// Whether the card holds up its poster: blocking, open, and not answered
+    /// by a person since the poster last asked. `people` names who counts as
+    /// a person; a message from anyone else is an agent's.
+    pub fn waits_for_answer(&self, people: &[String]) -> bool {
+        if !self.blocking || !self.is_open() {
+            return false;
+        }
+        match self.thread.last() {
+            None => true,
+            Some(last) => !people.iter().any(|person| same_person(person, &last.from)),
+        }
     }
 
     /// Whether the card is in `person`'s queue: assigned to them, or to
@@ -359,6 +473,11 @@ pub struct NewCard {
     pub title: String,
     pub detail: Option<String>,
     pub from: Option<String>,
+    /// `Some` sets whether the card holds up its poster; `None` keeps an
+    /// updated card's flag and leaves a new card not blocking.
+    pub blocking: Option<bool>,
+    /// The person whose yaran posts it (`[board] me`).
+    pub origin: Option<String>,
 }
 
 /// What a post did.
@@ -448,6 +567,9 @@ impl Board {
             if let Some(priority) = card.priority {
                 existing.priority = priority;
             }
+            if let Some(blocking) = card.blocking {
+                existing.blocking = blocking;
+            }
             existing.updated_at = now;
             return Ok(PostOutcome::Updated(existing.id.clone()));
         }
@@ -477,6 +599,13 @@ impl Board {
             resolved_at: None,
             resolved_by: None,
             resolution: None,
+            origin: card
+                .origin
+                .as_deref()
+                .and_then(|origin| clean(origin, MAX_FROM_CHARS, false)),
+            blocking: card.blocking.unwrap_or(false),
+            relayed_at: None,
+            thread: Vec::new(),
         });
         Ok(PostOutcome::Added(id))
     }
@@ -649,6 +778,107 @@ impl Board {
         card.resolved_by = None;
         card.resolution = None;
         card.updated_at = now;
+        Ok(true)
+    }
+
+    /// Add a message to a card's conversation, and mark the card done with it
+    /// when `message.done` says so (a card that is already done stays done).
+    /// Returns the stored message. An empty message, an unknown id and a full
+    /// conversation are errors.
+    pub fn reply(
+        &mut self,
+        id: impl Into<CardId>,
+        message: NewMessage,
+        now: DateTime<Utc>,
+    ) -> Result<Message> {
+        let Some(text) = clean(&message.text, MAX_MESSAGE_CHARS, true) else {
+            bail!("a reply needs some text");
+        };
+        let Some(from) = clean(&message.from, MAX_FROM_CHARS, false) else {
+            bail!("a reply needs to say who wrote it");
+        };
+        let side = message
+            .side
+            .as_deref()
+            .and_then(|side| clean(side, MAX_FROM_CHARS, false));
+        let card = self.card_mut(id)?;
+        if card.thread.len() >= MAX_THREAD_MESSAGES {
+            bail!(
+                "card #{} already holds {MAX_THREAD_MESSAGES} messages, its limit; post a new \
+                 card to carry the conversation on",
+                card.id
+            );
+        }
+        // Two messages from one writer in the same instant would share a key;
+        // a later one is stamped a moment later instead, so both survive a
+        // merge.
+        let mut at = now;
+        while card.thread.iter().any(|m| m.at == at && m.from == from) {
+            at += chrono::Duration::milliseconds(1);
+        }
+        let stored = Message {
+            at,
+            from,
+            side,
+            text,
+            done: message.done,
+            relayed_at: None,
+        };
+        card.thread.push(stored.clone());
+        card.thread.sort_by(|a, b| a.at.cmp(&b.at));
+        if message.done && card.is_open() {
+            card.resolved_at = Some(now);
+            card.resolved_by = Some(stored.from.clone());
+            card.resolution = clean(&stored.text, MAX_NOTE_CHARS, true);
+        }
+        card.updated_at = now;
+        Ok(stored)
+    }
+
+    /// Say whether a card holds up its poster. `Ok(false)` when it already
+    /// said so; an unknown id is an error.
+    pub fn set_blocking(
+        &mut self,
+        id: impl Into<CardId>,
+        blocking: bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let card = self.card_mut(id)?;
+        if card.blocking == blocking {
+            return Ok(false);
+        }
+        card.blocking = blocking;
+        card.updated_at = now;
+        Ok(true)
+    }
+
+    /// Record that the message `key` names on card `id` was passed to its
+    /// agent. `Ok(false)` when it already was, or the message is gone. The
+    /// card's update time does not move: relaying is bookkeeping, not news.
+    pub fn mark_relayed(
+        &mut self,
+        id: impl Into<CardId>,
+        key: (DateTime<Utc>, &str, &str),
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let card = self.card_mut(id)?;
+        match card.thread.iter_mut().find(|m| m.key() == key) {
+            Some(message) if message.relayed_at.is_none() => {
+                message.relayed_at = Some(now);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Record that card `id` itself was passed to an agent. `Ok(false)` when
+    /// it already was.
+    pub fn mark_card_relayed(&mut self, id: impl Into<CardId>, now: DateTime<Utc>) -> Result<bool> {
+        let card = self.card_mut(id)?;
+        if card.relayed_at.is_some() {
+            return Ok(false);
+        }
+        card.relayed_at = Some(now);
         Ok(true)
     }
 

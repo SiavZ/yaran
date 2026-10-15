@@ -28,14 +28,25 @@ a queue per person: a card is for one of them (--for), or for anyone.
 
 Subcommands:
   yaran board post --kind <kind> [--for <person>] [--priority <level>] [--ticket <id>]
-                   [--detail <text>|-] [--from <who>] <title...>
+                   [--blocking] [--detail <text>|-] [--from <who>] <title...>
                        Put a card on the board and print its id. An open card
                        is unique per ticket, kind and person: posting again
                        with the same --ticket, --kind and --for updates it in
                        place (its priority too, when --priority is given).
                        --for defaults to [board] me; \"anyone\" is nobody in
-                       particular. --detail - reads the detail from standard
-                       input.
+                       particular. --blocking says you cannot carry on until a
+                       person answers: the board marks the queue until one
+                       does. --detail - reads the detail from standard input.
+  yaran board reply <id> [--done] [--from <who>] <text...>|-
+                       Add to a card's conversation: answer a person's question
+                       on it, or report on the work it asked for. The reply
+                       reaches the person on the other side through the board.
+                       --done marks the card done with it; - reads the text
+                       from standard input.
+  yaran board show <id> [--json]
+                       Print one card whole: its fields, detail and conversation.
+  yaran board blocking <id> <yes|no>
+                       Say whether a card holds you up.
   yaran board assign <id> <person|anyone>
                        Move a card to another person's queue.
   yaran board priority <id> <level>
@@ -112,6 +123,34 @@ pub fn run_with(
             Ok(())
         }
         "resolve" | "done" => run_resolve(rest, store, out),
+        "reply" | "answer" => run_reply(rest, settings, stdin, out),
+        "show" | "view" => run_show(rest, settings, out),
+        "blocking" => {
+            let [id, value] = rest else {
+                bail!("`yaran board blocking` needs a card id and yes or no");
+            };
+            let blocking = match value.trim().to_ascii_lowercase().as_str() {
+                "yes" | "true" | "on" | "1" => true,
+                "no" | "false" | "off" | "0" => false,
+                other => bail!("`yaran board blocking` takes yes or no, not {other:?}"),
+            };
+            let (id, changed) = store.update(|board| {
+                let id = board.find(id)?;
+                let changed = board.set_blocking(&id, blocking, Utc::now())?;
+                Ok((id, changed))
+            })?;
+            let state = if blocking {
+                "holds its poster up until a person answers"
+            } else {
+                "does not hold anybody up"
+            };
+            if changed {
+                writeln!(out, "#{id} now {state}")?;
+            } else {
+                writeln!(out, "#{id} already {state}")?;
+            }
+            Ok(())
+        }
         "priority" => {
             let [id, level] = rest else {
                 bail!(
@@ -262,6 +301,7 @@ fn parse_post(
                 });
             }
             "--from" => card.from = Some(value_of(arg, &mut iter)?.clone()),
+            "--blocking" | "--blocks" => card.blocking = Some(true),
             // Before the title starts, a dash word is a flag yaran should know;
             // once it has started, it is part of the title ("ran --help").
             "-h" | "--help" if words.is_empty() => return Ok(None),
@@ -282,7 +322,163 @@ fn parse_post(
         card.from = default_from();
     }
     card.assignee = assignee.unwrap_or_else(|| settings.me.clone());
+    card.origin = settings.me.clone();
     Ok(Some(card))
+}
+
+/// `yaran board reply <id> [--done] [--from <who>] <text...>|-`.
+fn run_reply(
+    args: &[String],
+    settings: &BoardSettings,
+    stdin: &mut dyn Read,
+    out: &mut dyn std::io::Write,
+) -> Result<()> {
+    let mut query: Option<&String> = None;
+    let mut from: Option<String> = None;
+    let mut done = false;
+    let mut words: Vec<&str> = Vec::new();
+    let mut from_stdin = false;
+    let mut iter = args.iter();
+    let mut only_words = false;
+    while let Some(arg) = iter.next() {
+        if only_words {
+            words.push(arg);
+            continue;
+        }
+        match arg.as_str() {
+            "--" if query.is_some() => only_words = true,
+            "--done" | "--resolve" => done = true,
+            "--from" => from = Some(value_of(arg, &mut iter)?.clone()),
+            "-h" | "--help" if words.is_empty() => {
+                writeln!(out, "{BOARD_HELP}")?;
+                return Ok(());
+            }
+            "-" if query.is_some() && words.is_empty() => from_stdin = true,
+            flag if flag.starts_with('-') && flag.len() > 1 && words.is_empty() => {
+                bail!("unknown flag: {flag}")
+            }
+            _ if query.is_none() => query = Some(arg),
+            word => words.push(word),
+        }
+    }
+    let Some(query) = query else {
+        bail!("`yaran board reply` needs a card id and the reply");
+    };
+    let text = if from_stdin {
+        let mut text = String::new();
+        stdin.read_to_string(&mut text)?;
+        text
+    } else {
+        words.join(" ")
+    };
+    if text.trim().is_empty() {
+        bail!(
+            "`yaran board reply` needs the reply after the card id (or - to read it from standard input)"
+        );
+    }
+    let from = from
+        .or_else(default_from)
+        .or_else(|| settings.me.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "say who is replying with --from (no agent handle or [board] me is set)"
+            )
+        })?;
+    let message = super::NewMessage {
+        from,
+        side: settings.me.clone(),
+        text,
+        done,
+    };
+    let (id, closed) = settings.store.update(|board| {
+        let id = board.find(query)?;
+        let was_open = board.card(&id).is_some_and(Card::is_open);
+        board.reply(&id, message, Utc::now())?;
+        let closed = was_open && board.card(&id).is_some_and(|card| !card.is_open());
+        Ok((id, closed))
+    })?;
+    if closed {
+        writeln!(out, "replied on #{id} and marked it done")?;
+    } else {
+        writeln!(out, "replied on #{id}")?;
+    }
+    Ok(())
+}
+
+/// `yaran board show <id> [--json]`.
+fn run_show(args: &[String], settings: &BoardSettings, out: &mut dyn std::io::Write) -> Result<()> {
+    let mut json = false;
+    let mut query: Option<&String> = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "-h" | "--help" => {
+                writeln!(out, "{BOARD_HELP}")?;
+                return Ok(());
+            }
+            flag if flag.starts_with('-') && flag.len() > 1 => bail!("unknown flag: {flag}"),
+            _ if query.is_none() => query = Some(arg),
+            _ => bail!("`yaran board show` takes one card id"),
+        }
+    }
+    let Some(query) = query else {
+        bail!("`yaran board show` needs a card id");
+    };
+    let board = settings.store.load()?;
+    let id = board.find(query)?;
+    let Some(card) = board.card(&id) else {
+        bail!("there is no card #{id} on the board");
+    };
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(card)?)?;
+        return Ok(());
+    }
+    let now = Utc::now();
+    writeln!(out, "{} {}", card.label(), card.title)?;
+    let status = if card.is_open() { "open" } else { "done" };
+    let mut facts = vec![
+        format!("kind {}", card.kind),
+        format!("priority {}", card.priority),
+        status.to_string(),
+    ];
+    if card.blocking {
+        facts.push("blocking".to_string());
+    }
+    if let Some(assignee) = &card.assignee {
+        facts.push(format!("for {assignee}"));
+    }
+    if let Some(from) = &card.from {
+        facts.push(format!("from {from}"));
+    }
+    if let Some(origin) = settings.origin_of(card) {
+        facts.push(format!("posted on {origin}'s board"));
+    }
+    facts.push(format!("posted {} ago", compact_age(card.created_at, now)));
+    writeln!(out, "{}", facts.join(", "))?;
+    if let Some(detail) = &card.detail {
+        writeln!(out, "\n{detail}")?;
+    }
+    if let Some(resolution) = &card.resolution {
+        writeln!(out, "\nResolved: {resolution}")?;
+    }
+    if !card.thread.is_empty() {
+        writeln!(out, "\nConversation:")?;
+        for message in &card.thread {
+            let done = if message.done {
+                " (marked it done)"
+            } else {
+                ""
+            };
+            writeln!(
+                out,
+                "- {} ({} ago){done}: {}",
+                message.from,
+                compact_age(message.at, now),
+                message.text
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn run_resolve(args: &[String], store: &BoardStore, out: &mut dyn std::io::Write) -> Result<()> {
@@ -544,6 +740,9 @@ mod tests {
             me: None,
             sync: super::super::sync::SyncMode::Off,
             sync_every: std::time::Duration::from_secs(60),
+            relay: false,
+            relay_to: None,
+            relay_transport: "auto".to_string(),
         }
     }
 
@@ -818,6 +1017,9 @@ mod tests {
             me: Some("Sam".to_string()),
             sync: super::super::sync::SyncMode::Off,
             sync_every: std::time::Duration::from_secs(60),
+            relay: false,
+            relay_to: None,
+            relay_transport: "auto".to_string(),
         }
     }
 
@@ -973,5 +1175,149 @@ mod tests {
         assert!(format!("{err}").contains("set [board] dir"), "{err}");
         let err = run(&private, &["sync"]).unwrap_err();
         assert!(format!("{err}").contains("nothing to sync"), "{err}");
+    }
+
+    #[test]
+    fn reply_show_and_blocking_carry_a_conversation() {
+        let home = tempfile::tempdir().unwrap();
+        let sam = team(home.path());
+        let out = run_as(
+            &sam,
+            &[
+                "post",
+                "-k",
+                "confirm",
+                "--for",
+                "Alex",
+                "--blocking",
+                "--from",
+                "orchestrator",
+                "Drop",
+                "the",
+                "table?",
+            ],
+            "",
+        )
+        .unwrap();
+        assert_eq!(out, "posted #S-1 (confirm, for Alex)\n");
+        let card = sam
+            .store
+            .load()
+            .unwrap()
+            .card(CardId::new("S", 1))
+            .unwrap()
+            .clone();
+        assert!(card.blocking);
+        assert_eq!(
+            card.origin.as_deref(),
+            Some("Sam"),
+            "the card says whose board posted it"
+        );
+
+        // Alex's machine shares the folder and answers from there.
+        let mut alex = team(home.path());
+        alex.me = Some("Alex".to_string());
+        assert_eq!(
+            run_as(
+                &alex,
+                &["reply", "S-1", "--from", "Alex", "Which", "table?"],
+                ""
+            )
+            .unwrap(),
+            "replied on #S-1\n"
+        );
+        assert_eq!(
+            run_as(
+                &sam,
+                &["reply", "S-1", "--from", "orchestrator", "-"],
+                "The audit table.\n"
+            )
+            .unwrap(),
+            "replied on #S-1\n"
+        );
+        assert_eq!(
+            run_as(
+                &alex,
+                &[
+                    "reply", "1", "--done", "--from", "Alex", "--", "--yes", "drop", "it"
+                ],
+                ""
+            )
+            .unwrap(),
+            "replied on #S-1 and marked it done\n"
+        );
+        let card = sam
+            .store
+            .load()
+            .unwrap()
+            .card(CardId::new("S", 1))
+            .unwrap()
+            .clone();
+        assert!(!card.is_open());
+        let thread: Vec<(String, Option<String>, String)> = card
+            .thread
+            .iter()
+            .map(|m| (m.from.clone(), m.side.clone(), m.text.clone()))
+            .collect();
+        assert_eq!(
+            thread,
+            [
+                (
+                    "Alex".to_string(),
+                    Some("Alex".to_string()),
+                    "Which table?".to_string()
+                ),
+                (
+                    "orchestrator".to_string(),
+                    Some("Sam".to_string()),
+                    "The audit table.".to_string()
+                ),
+                (
+                    "Alex".to_string(),
+                    Some("Alex".to_string()),
+                    "--yes drop it".to_string()
+                ),
+            ]
+        );
+
+        let shown = run_as(&sam, &["show", "S-1"], "").unwrap();
+        assert!(shown.starts_with("#S-1 Drop the table?\n"), "{shown}");
+        assert!(
+            shown.contains("blocking, for Alex, from orchestrator, posted on Sam's board"),
+            "{shown}"
+        );
+        assert!(shown.contains("Conversation:\n- Alex ("), "{shown}");
+        assert!(shown.contains("(marked it done): --yes drop it"), "{shown}");
+        let json = run_as(&sam, &["show", "S-1", "--json"], "").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["thread"].as_array().unwrap().len(), 3);
+
+        assert_eq!(
+            run_as(&sam, &["blocking", "S-1", "no"], "").unwrap(),
+            "#S-1 now does not hold anybody up\n"
+        );
+        assert_eq!(
+            run_as(&sam, &["blocking", "S-1", "no"], "").unwrap(),
+            "#S-1 already does not hold anybody up\n"
+        );
+    }
+
+    #[test]
+    fn reply_refuses_what_it_cannot_carry() {
+        let home = tempfile::tempdir().unwrap();
+        let sam = team(home.path());
+        run_as(&sam, &["post", "-k", "task", "x"], "").unwrap();
+        let err = run_as(&sam, &["reply"], "").unwrap_err();
+        assert!(err.to_string().contains("card id"), "{err}");
+        let err = run_as(&sam, &["reply", "S-1"], "").unwrap_err();
+        assert!(err.to_string().contains("needs the reply"), "{err}");
+        let err = run_as(&sam, &["reply", "S-9", "hi"], "").unwrap_err();
+        assert!(err.to_string().contains("no card"), "{err}");
+        let err = run_as(&sam, &["reply", "S-1", "--bogus", "hi"], "").unwrap_err();
+        assert!(err.to_string().contains("unknown flag"), "{err}");
+        let err = run_as(&sam, &["blocking", "S-1", "maybe"], "").unwrap_err();
+        assert!(err.to_string().contains("yes or no"), "{err}");
+        let err = run_as(&sam, &["show"], "").unwrap_err();
+        assert!(err.to_string().contains("card id"), "{err}");
     }
 }

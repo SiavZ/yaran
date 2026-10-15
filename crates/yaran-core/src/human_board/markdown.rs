@@ -38,8 +38,8 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone,
 
 use super::id::CardId;
 use super::{
-    Card, CardKind, MAX_DETAIL_CHARS, MAX_FROM_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, Priority,
-    clean, normalize_ticket,
+    Card, CardKind, MAX_DETAIL_CHARS, MAX_FROM_CHARS, MAX_MESSAGE_CHARS, MAX_NOTE_CHARS,
+    MAX_THREAD_MESSAGES, MAX_TITLE_CHARS, Message, Priority, clean, normalize_ticket,
 };
 
 /// Why a note that looks like a card could not be read as one.
@@ -79,13 +79,85 @@ pub fn render(card: &Card) -> String {
     }
     text(&mut out, "resolved_by", card.resolved_by.as_deref());
     text(&mut out, "resolution", card.resolution.as_deref());
+    text(&mut out, "origin", card.origin.as_deref());
+    if card.blocking {
+        word(&mut out, "blocking", "true");
+    }
+    if let Some(relayed_at) = card.relayed_at {
+        word(&mut out, "relayed", &timestamp(relayed_at));
+    }
     out.push_str("---\n");
     if let Some(detail) = card.detail.as_deref() {
         out.push('\n');
         out.push_str(detail);
         out.push('\n');
     }
+    if !card.thread.is_empty() {
+        out.push('\n');
+        out.push_str(CONVERSATION_HEADING);
+        out.push('\n');
+        for message in &card.thread {
+            out.push('\n');
+            render_message(&mut out, message);
+        }
+    }
     out
+}
+
+/// The heading the conversation sits under, after the detail.
+const CONVERSATION_HEADING: &str = "## Conversation";
+/// What opens each message: an Obsidian callout of type `reply`, which other
+/// Markdown readers show as a quote.
+const MESSAGE_CALLOUT: &str = "[!reply]";
+/// What opens the hidden comment carrying a message's exact fields.
+const MESSAGE_META: &str = "<!-- yaran";
+
+/// One message as a callout: a title a person reads (who, when, whether it
+/// closed the card) with the exact fields in a comment notes apps hide, then
+/// the text, one quoted line each.
+fn render_message(out: &mut String, message: &Message) {
+    let when = message.at.format("%Y-%m-%d %H:%M UTC");
+    let done = if message.done {
+        " \u{b7} marked done"
+    } else {
+        ""
+    };
+    let mut meta = format!(
+        "{MESSAGE_META} at={} from={}",
+        precise_timestamp(message.at),
+        quote(&message.from)
+    );
+    if let Some(side) = &message.side {
+        meta.push_str(&format!(" side={}", quote(side)));
+    }
+    if message.done {
+        meta.push_str(" done");
+    }
+    if let Some(relayed_at) = message.relayed_at {
+        meta.push_str(&format!(" relayed={}", precise_timestamp(relayed_at)));
+    }
+    meta.push_str(" -->");
+    out.push_str(&format!(
+        "> {MESSAGE_CALLOUT} {} \u{b7} {when}{done} {meta}\n",
+        message.from
+    ));
+    for line in message.text.lines() {
+        if line.is_empty() {
+            out.push_str(">\n");
+        } else if line.trim_start().starts_with("[!") {
+            // A line that would open a callout of its own is escaped, so it
+            // stays part of this message when the note is read back.
+            out.push_str(&format!("> \\{line}\n"));
+        } else {
+            out.push_str(&format!("> {line}\n"));
+        }
+    }
+}
+
+/// A timestamp with its fractions of a second when it has any: two messages
+/// in one second still keep their order and their names.
+fn precise_timestamp(at: DateTime<Utc>) -> String {
+    at.to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
 const STATUS_OPEN: &str = "open";
@@ -183,7 +255,13 @@ pub fn parse(
             .get(key)
             .and_then(|value| clean(value, max, keep_newlines))
     };
-    let body = body.join("\n");
+    let (detail_lines, thread) = split_conversation(&body, updated_at);
+    let body = detail_lines.join("\n");
+    let blocking = match props.get("blocking") {
+        Some(value) => parse_flag(value)
+            .ok_or_else(|| format!("its blocking {value:?} is neither true nor false"))?,
+        None => false,
+    };
     Ok(Some(Card {
         id,
         kind,
@@ -193,6 +271,10 @@ pub fn parse(
             .get("ticket")
             .and_then(|ticket| normalize_ticket(ticket)),
         title,
+        origin: text_prop("origin", MAX_FROM_CHARS, false),
+        blocking,
+        relayed_at: time("relayed")?,
+        thread,
         detail: clean(body.trim(), MAX_DETAIL_CHARS, true),
         from: text_prop("from", MAX_FROM_CHARS, false),
         created_at,
@@ -209,6 +291,155 @@ pub fn parse(
             text_prop("resolution", MAX_NOTE_CHARS, true)
         },
     }))
+}
+
+/// A yes or no property, in the spellings YAML and people use.
+fn parse_flag(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" | "" => Some(false),
+        _ => None,
+    }
+}
+
+/// Split a note's body into its detail and its conversation: the messages
+/// under the last `## Conversation` heading, when everything after that
+/// heading is messages. Anything else there means the heading belongs to the
+/// detail, which is then the whole body. `fallback` dates a message written
+/// by hand without its exact fields.
+fn split_conversation<'a>(
+    body: &[&'a str],
+    fallback: DateTime<Utc>,
+) -> (Vec<&'a str>, Vec<Message>) {
+    let Some(heading) = body
+        .iter()
+        .rposition(|line| line.trim_end() == CONVERSATION_HEADING)
+    else {
+        return (body.to_vec(), Vec::new());
+    };
+    match parse_messages(&body[heading + 1..], fallback) {
+        Some(thread) => (body[..heading].to_vec(), thread),
+        None => (body.to_vec(), Vec::new()),
+    }
+}
+
+/// The messages in `lines`, or `None` when anything there is not one.
+fn parse_messages(lines: &[&str], fallback: DateTime<Utc>) -> Option<Vec<Message>> {
+    struct Draft {
+        header: String,
+        text: Vec<String>,
+    }
+    let mut drafts: Vec<Draft> = Vec::new();
+    let mut open = false;
+    for line in lines {
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            open = false;
+            continue;
+        }
+        let quoted = line.strip_prefix("> ").or_else(|| line.strip_prefix('>'))?;
+        if let Some(header) = quoted.trim_start().strip_prefix(MESSAGE_CALLOUT) {
+            // `[!reply]-` and `[!reply]+` are the folded and unfolded forms.
+            let header = header.trim_start_matches(['-', '+']).trim();
+            drafts.push(Draft {
+                header: header.to_string(),
+                text: Vec::new(),
+            });
+            open = true;
+            continue;
+        }
+        if !open {
+            return None;
+        }
+        let draft = drafts.last_mut()?;
+        let unescaped = quoted
+            .strip_prefix("\\[!")
+            .map(|rest| format!("[!{rest}"))
+            .unwrap_or_else(|| quoted.to_string());
+        draft.text.push(unescaped);
+    }
+    let mut thread: Vec<Message> = drafts
+        .into_iter()
+        .filter_map(|draft| message_from(&draft.header, &draft.text.join("\n"), fallback))
+        .collect();
+    thread.sort_by(|a, b| a.at.cmp(&b.at));
+    thread.truncate(MAX_THREAD_MESSAGES);
+    Some(thread)
+}
+
+/// One message from its callout title and text. The exact fields come from
+/// the hidden comment yaran writes; a title written by hand names the writer
+/// before any `·`, and the message is dated `fallback`. `None` when no text
+/// or no writer is left after cleaning.
+fn message_from(header: &str, text: &str, fallback: DateTime<Utc>) -> Option<Message> {
+    let (title, meta) = match header.find(MESSAGE_META) {
+        Some(at) => (&header[..at], Some(&header[at + MESSAGE_META.len()..])),
+        None => (header, None),
+    };
+    let fields = meta.map(meta_fields).unwrap_or_default();
+    let field = |key: &str| {
+        fields
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    let from = field("from")
+        .flatten()
+        .or_else(|| title.split('\u{b7}').next().map(str::to_string))
+        .and_then(|from| clean(&from, MAX_FROM_CHARS, false))?;
+    let text = clean(text.trim(), MAX_MESSAGE_CHARS, true)?;
+    let at = field("at")
+        .flatten()
+        .and_then(|at| parse_time(&at))
+        .unwrap_or(fallback);
+    Some(Message {
+        at,
+        from,
+        side: field("side")
+            .flatten()
+            .and_then(|side| clean(&side, MAX_FROM_CHARS, false)),
+        text,
+        done: field("done").is_some(),
+        relayed_at: field("relayed").flatten().and_then(|at| parse_time(&at)),
+    })
+}
+
+/// The `key=value` and bare `flag` words of a message's hidden comment. A
+/// value is a JSON string or a bare word; a flag has no value.
+fn meta_fields(meta: &str) -> Vec<(String, Option<String>)> {
+    let meta = meta.trim().trim_end_matches("-->").trim();
+    let mut fields = Vec::new();
+    let mut rest = meta;
+    while !rest.is_empty() {
+        rest = rest.trim_start();
+        let key_end = rest
+            .find(|c: char| c == '=' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let key = rest[..key_end].to_string();
+        rest = &rest[key_end..];
+        if let Some(after) = rest.strip_prefix('=') {
+            if after.starts_with('"') {
+                let mut stream = serde_json::Deserializer::from_str(after).into_iter::<String>();
+                match stream.next() {
+                    Some(Ok(value)) => {
+                        let used = stream.byte_offset();
+                        fields.push((key, Some(value)));
+                        rest = &after[used..];
+                    }
+                    _ => break,
+                }
+            } else {
+                let end = after.find(char::is_whitespace).unwrap_or(after.len());
+                fields.push((key, Some(after[..end].to_string())));
+                rest = &after[end..];
+            }
+        } else if !key.is_empty() {
+            fields.push((key, None));
+        } else {
+            break;
+        }
+    }
+    fields
 }
 
 /// `Some(true)` for an open card, `Some(false)` for a done one. Accepts the
@@ -432,6 +663,10 @@ mod tests {
             resolved_at: None,
             resolved_by: None,
             resolution: None,
+            origin: None,
+            blocking: false,
+            relayed_at: None,
+            thread: Vec::new(),
         }
     }
 
@@ -544,5 +779,86 @@ mod tests {
         assert!(read.is_open());
         assert_eq!(read.resolved_by, None);
         assert_eq!(read.resolution, None);
+    }
+
+    fn message(minute: u32, from: &str, side: Option<&str>, text: &str) -> Message {
+        Message {
+            at: at(minute),
+            from: from.to_string(),
+            side: side.map(str::to_string),
+            text: text.to_string(),
+            done: false,
+            relayed_at: None,
+        }
+    }
+
+    #[test]
+    fn a_conversation_survives_the_round_trip_after_the_detail() {
+        let mut card = sample();
+        card.origin = Some("Sam".to_string());
+        card.blocking = true;
+        card.relayed_at = Some(at(4));
+        let mut answer = message(5, "Alex", Some("Alex"), "Yes.\n\nShip it: \"today\".");
+        answer.relayed_at = Some(at(6));
+        let mut closing = message(
+            7,
+            "orchestrator",
+            Some("Sam"),
+            "[!note] looks like a callout\nDone.",
+        );
+        closing.done = true;
+        // Fractions of a second survive, so two messages in one second keep
+        // their names.
+        closing.at += chrono::Duration::milliseconds(250);
+        card.thread = vec![answer, closing];
+
+        let note = render(&card);
+        assert!(note.contains("origin: \"Sam\"\n"), "{note}");
+        assert!(note.contains("blocking: true\n"), "{note}");
+        assert!(note.contains("\n## Conversation\n"), "{note}");
+        assert!(
+            note.contains("> [!reply] Alex \u{b7} 2026-10-14 20:05 UTC <!-- yaran"),
+            "{note}"
+        );
+        assert!(
+            note.contains("> \\[!note] looks like a callout\n"),
+            "{note}"
+        );
+        assert!(note.contains("\u{b7} marked done"), "{note}");
+        assert_eq!(parse(&note, "whatever", at(0)).unwrap(), Some(card));
+    }
+
+    #[test]
+    fn a_reply_written_by_hand_in_a_notes_app_is_read() {
+        let note = "---\nkind: task\ntitle: \"Decide\"\nupdated: 2026-10-14T20:09:00Z\n---\n\nThe question.\n\n## Conversation\n\n> [!reply] Alex \u{b7} later\n> Go with B.\n> It is cheaper.\n\n> [!reply]- Sam\n> Agreed.\n";
+        let card = parse(note, "S-3", at(0)).unwrap().unwrap();
+        assert_eq!(card.detail.as_deref(), Some("The question."));
+        assert_eq!(card.thread.len(), 2);
+        assert_eq!(card.thread[0].from, "Alex");
+        assert_eq!(card.thread[0].text, "Go with B.\nIt is cheaper.");
+        assert_eq!(card.thread[0].side, None);
+        assert_eq!(card.thread[0].at, at(9), "dated by the card's update time");
+        assert_eq!(card.thread[1].from, "Sam");
+        assert_eq!(card.thread[1].text, "Agreed.");
+    }
+
+    #[test]
+    fn a_conversation_heading_followed_by_prose_stays_in_the_detail() {
+        let note = "---\nkind: task\ntitle: \"Notes\"\n---\n\nIntro.\n\n## Conversation\n\nWe talked about it on the phone.\n";
+        let card = parse(note, "S-4", at(0)).unwrap().unwrap();
+        assert!(card.thread.is_empty());
+        assert_eq!(
+            card.detail.as_deref(),
+            Some("Intro.\n\n## Conversation\n\nWe talked about it on the phone.")
+        );
+    }
+
+    #[test]
+    fn a_blocking_property_must_be_yes_or_no() {
+        let note = "---\nkind: task\ntitle: \"x\"\nblocking: maybe\n---\n";
+        let err = parse(note, "S-5", at(0)).unwrap_err();
+        assert!(err.contains("blocking"), "{err}");
+        let note = "---\nkind: task\ntitle: \"x\"\nblocking: yes\n---\n";
+        assert!(parse(note, "S-5", at(0)).unwrap().unwrap().blocking);
     }
 }

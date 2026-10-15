@@ -1794,6 +1794,38 @@ fn config_schema() -> Vec<ConfigEntry> {
             )),
             value_fn: |c| FieldValue::U32(c.board.sync_interval_seconds),
         },
+        ConfigEntry::Field {
+            key: "relay",
+            comment: Some(CommentSource::Static(
+                "# Carry a card's conversation between people and agents while the terminal\n\
+                 # UI runs. When another person replies on a card an agent of this machine\n\
+                 # posted, yaran passes the reply to that agent (as `yaran peer send` would,\n\
+                 # never by typing into its terminal) and the agent answers on the card with\n\
+                 # `yaran board reply`. A card another person assigns to `me` goes to\n\
+                 # relay_to. Every message is passed once, and the card shows it was.\n\
+                 # Default false: replies wait on the board for a person to pass on.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.board.relay),
+        },
+        ConfigEntry::Field {
+            key: "relay_to",
+            comment: Some(CommentSource::Static(
+                "# The agent (its handle) that gets the cards another person assigns to `me`\n\
+                 # when no agent of this machine posted them, and the replies on them: an\n\
+                 # orchestrating agent that can take the work on. Empty (the default): such\n\
+                 # cards wait on the board for a person.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.relay_to.clone()),
+        },
+        ConfigEntry::Field {
+            key: "relay_transport",
+            comment: Some(CommentSource::Static(
+                "# How a relayed message reaches its agent, as `yaran peer send --transport`\n\
+                 # takes it: \"auto\" (the default: Claude Peers for a Claude agent, AMQ for\n\
+                 # anything else), \"amq\", or \"claude-peers\".",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.relay_transport.clone()),
+        },
     ]
 }
 

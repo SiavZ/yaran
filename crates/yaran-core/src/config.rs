@@ -3428,6 +3428,17 @@ pub struct BoardConfig {
     pub sync: String,
     /// Seconds between background syncs while the terminal UI runs.
     pub sync_interval_seconds: u32,
+    /// Pass what another person writes on a card to the agent that posted it
+    /// on this machine (and a card another person assigns to `me` to
+    /// `relay_to`), while the terminal UI runs.
+    pub relay: bool,
+    /// The agent handle that gets cards another person assigns to `me` when
+    /// no agent of this machine posted them. Empty: such cards wait on the
+    /// board for a person.
+    pub relay_to: String,
+    /// How a relayed message travels: `"auto"`, `"amq"` or `"claude-peers"`,
+    /// as `yaran peer send --transport` takes them.
+    pub relay_transport: String,
 }
 
 impl Default for BoardConfig {
@@ -3439,6 +3450,9 @@ impl Default for BoardConfig {
             id_prefix: String::new(),
             sync: "off".to_string(),
             sync_interval_seconds: DEFAULT_BOARD_SYNC_INTERVAL_SECONDS,
+            relay: false,
+            relay_to: String::new(),
+            relay_transport: "auto".to_string(),
         }
     }
 }

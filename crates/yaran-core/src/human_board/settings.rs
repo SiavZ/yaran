@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 
 use super::id::normalize_prefix;
 use super::sync::SyncMode;
-use super::{BoardStore, MAX_FROM_CHARS, clean, same_person};
+use super::{BoardStore, Card, MAX_FROM_CHARS, clean, same_person};
 use crate::config::BoardConfig;
 
 /// Shortest sync interval honoured, so a typo cannot hammer a remote.
@@ -34,7 +34,17 @@ pub struct BoardSettings {
     pub me: Option<String>,
     pub sync: SyncMode,
     pub sync_every: Duration,
+    /// Pass replies from other people to this machine's agents (see
+    /// `[board] relay`).
+    pub relay: bool,
+    /// The agent that takes cards another person assigns to `me`.
+    pub relay_to: Option<String>,
+    /// The `yaran peer send --transport` a relayed message goes by.
+    pub relay_transport: String,
 }
+
+/// The transports `yaran peer send` takes.
+const RELAY_TRANSPORTS: &[&str] = &["auto", "amq", "claude-peers"];
 
 impl BoardSettings {
     /// Resolve `config` for the yaran home at `root`.
@@ -87,13 +97,65 @@ impl BoardSettings {
         });
         let sync_every =
             Duration::from_secs(u64::from(config.sync_interval_seconds)).max(MIN_SYNC_INTERVAL);
+        let relay_transport = config.relay_transport.trim().to_ascii_lowercase();
+        let relay_transport = if RELAY_TRANSPORTS.contains(&relay_transport.as_str()) {
+            relay_transport
+        } else {
+            crate::logger::warn(&format!(
+                "[board] relay_transport {:?} is not one of {}; using \"auto\"",
+                config.relay_transport,
+                RELAY_TRANSPORTS.join(", ")
+            ));
+            "auto".to_string()
+        };
+        let relay_to = clean(&config.relay_to, MAX_FROM_CHARS, false);
         Self {
             store,
             people,
             me,
             sync,
             sync_every,
+            relay: config.relay,
+            relay_to,
+            relay_transport,
         }
+    }
+
+    /// Whether `name` is one of the board's people (rather than an agent).
+    pub fn is_person(&self, name: &str) -> bool {
+        self.people.iter().any(|person| same_person(person, name))
+    }
+
+    /// Whether `person` is the one running this yaran.
+    pub fn is_me(&self, person: &str) -> bool {
+        self.me.as_deref().is_some_and(|me| same_person(me, person))
+    }
+
+    /// The person whose yaran posted `card`: what the card says, or for a card
+    /// from before cards said so, the person whose prefix its id carries (this
+    /// machine's own prefix is `me`; another is the person whose default
+    /// prefix it is). `None` when nothing tells.
+    pub fn origin_of(&self, card: &Card) -> Option<String> {
+        if let Some(origin) = &card.origin {
+            return Some(
+                self.people
+                    .iter()
+                    .find(|person| same_person(person, origin))
+                    .cloned()
+                    .unwrap_or_else(|| origin.clone()),
+            );
+        }
+        let prefix = card.id.prefix();
+        if prefix.is_empty() {
+            return self.me.clone();
+        }
+        if prefix == self.store.prefix() {
+            return self.me.clone();
+        }
+        self.people
+            .iter()
+            .find(|person| default_prefix(Some(person)) == prefix)
+            .cloned()
     }
 
     /// Whether the board has queues for named people.

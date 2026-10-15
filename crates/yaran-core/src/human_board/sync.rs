@@ -513,14 +513,30 @@ fn newer_note(name: &str, ours: Option<&[u8]>, theirs: Option<&[u8]>) -> Option<
         (None, None) => None,
         (Some(one), None) | (None, Some(one)) => Some(one.to_vec()),
         (Some(ours), Some(theirs)) => {
-            let ours_at = card(ours).map(|c| c.updated_at);
-            let theirs_at = card(theirs).map(|c| c.updated_at);
+            let ours_card = card(ours);
+            let theirs_card = card(theirs);
+            let ours_at = ours_card.as_ref().map(|c| c.updated_at);
+            let theirs_at = theirs_card.as_ref().map(|c| c.updated_at);
             let keep_ours = match ours_at.cmp(&theirs_at) {
                 std::cmp::Ordering::Greater => true,
                 std::cmp::Ordering::Less => false,
                 std::cmp::Ordering::Equal => ours >= theirs,
             };
-            Some(if keep_ours { ours } else { theirs }.to_vec())
+            let kept_bytes = if keep_ours { ours } else { theirs };
+            // The newer card wins, but a conversation is only ever added to:
+            // the messages the older side gained are carried over, so a reply
+            // written on each machine between two syncs survives on both.
+            if let (Some(ours_card), Some(theirs_card)) = (ours_card, theirs_card) {
+                let (mut kept, other) = if keep_ours {
+                    (ours_card, theirs_card)
+                } else {
+                    (theirs_card, ours_card)
+                };
+                if kept.absorb_conversation(&other) {
+                    return Some(markdown::render(&kept).into_bytes());
+                }
+            }
+            Some(kept_bytes.to_vec())
         }
     }
 }

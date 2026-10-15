@@ -762,6 +762,14 @@ fn apply_patches(doc: &mut DocumentMut, config: &Config) {
         "sync_interval_seconds",
         config.board.sync_interval_seconds,
     );
+    patch_table_bool(doc, "board", "relay", config.board.relay);
+    patch_table_str(doc, "board", "relay_to", &config.board.relay_to);
+    patch_table_str(
+        doc,
+        "board",
+        "relay_transport",
+        &config.board.relay_transport,
+    );
 }
 
 fn patch_limits(doc: &mut DocumentMut, limits: &crate::config::LimitsConfig) {
