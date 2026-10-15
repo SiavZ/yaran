@@ -761,6 +761,7 @@ mod tests {
             relay: false,
             relay_to: None,
             relay_transport: "auto".to_string(),
+            news_close_after: None,
         }
     }
 
@@ -1038,6 +1039,7 @@ mod tests {
             relay: false,
             relay_to: None,
             relay_transport: "auto".to_string(),
+            news_close_after: None,
         }
     }
 

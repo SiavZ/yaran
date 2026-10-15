@@ -219,6 +219,9 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // Three modes, the saved one marked, and picking one applies it. Rows and
         // nothing else, so no buttons and no focus concept.
         | PromptState::SetTailscaleMode(_)
+        // The board's Assign: one row per person, and picking one assigns the
+        // card. Rows and nothing else.
+        | PromptState::AssignBoardCard(_)
         // Rules on live tabs; Enter toggles the highlighted one's arm state
         // and the list stays open. Rows only, no buttons.
         | PromptState::WatchRules(_) => ModalSpec::new(Picker, false, false),
@@ -313,6 +316,7 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::ChangeDefaultProvider(_)
         | PromptState::ChangeProjectDefaultProvider(_)
         | PromptState::SetTailscaleMode(_)
+        | PromptState::AssignBoardCard(_)
         | PromptState::WatchRules(_) => Vec::new(),
 
         PromptState::Command { input, .. }
@@ -371,6 +375,7 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
         | OverlayMouseLayout::ChangeDefaultProvider { .. }
         | OverlayMouseLayout::ChangeProjectDefaultProvider { .. }
         | OverlayMouseLayout::SetTailscaleMode { .. }
+        | OverlayMouseLayout::AssignBoardCard { .. }
         | OverlayMouseLayout::AddProjectFailed { .. }
         | OverlayMouseLayout::AgentInfo { .. }
         | OverlayMouseLayout::FirstLoad { .. }
@@ -869,6 +874,34 @@ mod tests {
                     }],
                     selected: 0,
                     serving: false,
+                }),
+            ),
+            (
+                "AssignBoardCard",
+                PromptState::AssignBoardCard(crate::app::AssignBoardCardPrompt {
+                    card: Box::new(yaran_core::human_board::Card {
+                        id: yaran_core::human_board::CardId::plain(14),
+                        assignee: Some("Sam".to_string()),
+                        kind: yaran_core::human_board::CardKind::Task,
+                        priority: yaran_core::human_board::Priority::Normal,
+                        ticket: None,
+                        title: "Sign the contract".to_string(),
+                        detail: None,
+                        from: Some("orchestrator".to_string()),
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                        resolved_at: None,
+                        resolved_by: None,
+                        resolution: None,
+                        origin: None,
+                        assigned_by: None,
+                        blocking: false,
+                        relayed_at: None,
+                        thread: Vec::new(),
+                    }),
+                    people: vec!["Sam".to_string(), "Alex".to_string()],
+                    selected: 1,
+                    back: Box::new(PromptState::None),
                 }),
             ),
             (

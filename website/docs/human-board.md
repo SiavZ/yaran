@@ -56,7 +56,12 @@ Move into the board with the pane keys, then:
 The card view has a **Mark done** (or **Reopen**) button too. A click selects a card and a
 double click opens it. A long card scrolls: the mouse wheel anywhere on it, the paging keys,
 and the arrow keys (also while you are typing a reply, since a one-line reply box has no use
-for Up and Down).
+for Up and Down). Drag over the card's text to select it: the selection is copied to the
+clipboard when you let go.
+
+News ("What happened") asks nothing of anyone, so it does not pile up: a news card nobody has
+marked done closes by itself after `[board] news_close_hours` (4 by default; 0 keeps it until
+somebody does).
 
 ## Priority
 
@@ -72,8 +77,9 @@ yaran board priority 21 critical
 
 ## Replying from a card
 
-An open card's view has a reply box. The line above it names who your reply goes to before
-you send anything:
+An open card's view has a reply box. It grows downward as your reply wraps, up to five rows,
+and scrolls after that; the rest of the card stays where it is while you type. The line
+above it names who your reply goes to before you send anything:
 
 - **the agent that posted the card**, when it is running in this yaran: yaran types your
   reply into it, exactly as you would type it yourself;
@@ -110,8 +116,9 @@ Change that wording with `human_board_reply_template` in `[ui]`. It understands 
 > the agent's terminal, the send is refused, nothing is marked done, and your reply stays in
 > the box.
 
-On a board with people, **Assign to …** moves the card to the next person's queue, so you can
-hand a card to a colleague (and they can hand it back) without leaving it.
+On a board with people, an open task's **Assign…** opens the list of everyone on the board:
+pick whose queue it goes to, or leave the list to go back to the card. Only tasks can be
+handed over; news, validations and confirmations stay with whoever they were posted for.
 
 ## Posting cards from an agent
 

@@ -275,6 +275,7 @@ mod tests {
             relay: true,
             relay_to: relay_to.map(str::to_string),
             relay_transport: "amq".to_string(),
+            news_close_after: None,
         }
     }
 

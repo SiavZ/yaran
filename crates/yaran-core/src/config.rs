@@ -3439,6 +3439,9 @@ pub struct BoardConfig {
     /// How a relayed message travels: `"auto"`, `"amq"` or `"claude-peers"`,
     /// as `yaran peer send --transport` takes them.
     pub relay_transport: String,
+    /// Hours after which an open news card ("What happened") closes by itself.
+    /// 0 keeps news open until somebody marks it done.
+    pub news_close_hours: u32,
 }
 
 impl Default for BoardConfig {
@@ -3453,9 +3456,13 @@ impl Default for BoardConfig {
             relay: false,
             relay_to: String::new(),
             relay_transport: "auto".to_string(),
+            news_close_hours: DEFAULT_BOARD_NEWS_CLOSE_HOURS,
         }
     }
 }
+
+/// Default for [`BoardConfig::news_close_hours`].
+pub const DEFAULT_BOARD_NEWS_CLOSE_HOURS: u32 = 4;
 
 /// Default for [`BoardConfig::sync_interval_seconds`].
 pub const DEFAULT_BOARD_SYNC_INTERVAL_SECONDS: u32 = 60;

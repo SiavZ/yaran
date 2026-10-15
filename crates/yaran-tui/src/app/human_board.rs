@@ -42,7 +42,6 @@ use yaran_core::human_board::{
 use yaran_core::ids::TabIdRef;
 use yaran_core::statusline::StatusTone;
 
-use super::components::wrap_lines::{char_display_width, display_width};
 use super::text_input::TextInput;
 use super::{App, FocusPane, InputTarget, PromptState, RightSection};
 use crate::logger;
@@ -57,6 +56,10 @@ pub(crate) const RECENT_DONE: usize = 5;
 pub(crate) const BOARD_JOB_STATUS_KEY: &str = "human-board-job";
 /// Who the board records as resolving a card from this pane.
 pub(crate) const RESOLVED_BY: &str = "human";
+/// Who the board records as closing news nobody marked done.
+pub(crate) const NEWS_CLOSED_BY: &str = "board";
+/// How often the pane looks for news old enough to close by itself.
+const NEWS_CHECK_EVERY: Duration = Duration::from_secs(60);
 /// The heading of the resolved group.
 pub(crate) const DONE_HEADING: &str = "Done";
 
@@ -206,6 +209,11 @@ pub(crate) enum BoardJob {
         person: String,
         /// Who assigned it: this machine's person.
         by: Option<String>,
+    },
+    /// Close the news cards posted before `cutoff` (`[board] news_close_hours`).
+    CloseStaleNews {
+        cutoff: DateTime<Utc>,
+        hours: u64,
     },
     /// Record that messages another side wrote were passed to an agent here
     /// by hand (the dialog's forward).
@@ -361,28 +369,6 @@ pub(crate) struct PendingReplySubmit {
     pub(crate) after: AfterSubmit,
 }
 
-/// Where a single-line field's visible text starts so the caret stays in view:
-/// the byte offset of the first character drawn in `width` cells (the caret
-/// cell included). Starts at 0 while everything up to the caret fits.
-pub(crate) fn single_line_window_start(text: &str, cursor: usize, width: usize) -> usize {
-    let mut cursor = cursor.min(text.len());
-    while cursor > 0 && !text.is_char_boundary(cursor) {
-        cursor -= 1;
-    }
-    // One cell for the caret itself.
-    let room = width.saturating_sub(1);
-    let mut start = 0;
-    let mut used = display_width(&text[..cursor]);
-    for c in text[..cursor].chars() {
-        if used <= room {
-            break;
-        }
-        used -= char_display_width(c);
-        start += c.len_utf8();
-    }
-    start
-}
-
 /// What came back: whether the card changed (`false` when it already was in
 /// that state), or the error.
 #[derive(Debug)]
@@ -421,6 +407,10 @@ pub(crate) struct HumanBoardState {
     pub(crate) pending_submits: Vec<PendingReplySubmit>,
     /// What this machine's person has read, and the relays in flight.
     pub(crate) talk: super::human_board_relay::BoardTalk,
+    /// The open card dialog's text as last drawn, and its selection.
+    pub(crate) card_view: super::human_board_dialog::CardView,
+    /// When stale news was last looked for (see `[board] news_close_hours`).
+    news_checked: Option<Instant>,
 }
 
 impl HumanBoardState {
@@ -613,6 +603,9 @@ pub(crate) fn run_board_job(store: &BoardStore, job: &BoardJob) -> Result<bool, 
             BoardJob::Assign { id, person, by, .. } => {
                 board.assign(id, Some(person), by.as_deref(), now)
             }
+            BoardJob::CloseStaleNews { cutoff, .. } => Ok(!board
+                .close_stale_news(*cutoff, NEWS_CLOSED_BY, now)
+                .is_empty()),
             BoardJob::MarkRelayed { id, keys, .. } => {
                 let mut changed = false;
                 for (at, from, text) in keys {
@@ -690,6 +683,7 @@ impl App {
         self.drain_human_board_sync();
         self.submit_due_replies(Instant::now());
         self.drain_board_talk();
+        self.close_stale_news();
         let Some(snapshot) = self
             .human_board
             .watcher
@@ -715,6 +709,43 @@ impl App {
             self.set_info(message);
         }
         self.after_board_snapshot();
+    }
+
+    /// Close the news cards older than `[board] news_close_hours`, about once a
+    /// minute, when no other board change is being saved.
+    fn close_stale_news(&mut self) {
+        let now = Instant::now();
+        if self.human_board.job.is_some()
+            || self
+                .human_board
+                .news_checked
+                .is_some_and(|at| now.duration_since(at) < NEWS_CHECK_EVERY)
+        {
+            return;
+        }
+        self.human_board.news_checked = Some(now);
+        let Some(after) = self
+            .human_board
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.news_close_after)
+        else {
+            return;
+        };
+        let Ok(age) = chrono::Duration::from_std(after) else {
+            return;
+        };
+        let cutoff = chrono::Utc::now() - age;
+        let any = self
+            .human_board
+            .readable()
+            .is_some_and(|board| !board.stale_news(cutoff).is_empty());
+        if any {
+            self.dispatch_board_job(BoardJob::CloseStaleNews {
+                cutoff,
+                hours: after.as_secs() / 3600,
+            });
+        }
     }
 
     fn sync_human_board_watcher(&mut self) {
@@ -937,6 +968,7 @@ impl App {
             HumanBoardCardFocus::Close
         };
         self.mark_board_card_read(&card);
+        self.human_board.card_view = Default::default();
         self.prompt = PromptState::HumanBoardCard {
             card: Box::new(card),
             focus,
@@ -1068,28 +1100,17 @@ impl App {
             .unwrap_or_else(|| RESOLVED_BY.to_string())
     }
 
-    /// The person whose queue Assign moves `card` to: the next of `[board]
-    /// people` after the card's own. `None` without at least two people.
-    pub(crate) fn next_assignee(&self, card: &Card) -> Option<String> {
-        let settings = self.human_board.settings.as_ref()?;
-        let people = &settings.people;
-        if people.len() < 2 {
-            return None;
-        }
-        let same = yaran_core::human_board::same_person;
-        let current = card
-            .assignee
-            .as_deref()
-            .and_then(|assignee| people.iter().position(|person| same(person, assignee)));
-        let next = match current {
-            Some(at) => (at + 1) % people.len(),
-            // Anyone's card: hand it to the first person who is not me.
-            None => people
-                .iter()
-                .position(|person| settings.me.as_deref().is_none_or(|me| !same(person, me)))
-                .unwrap_or(0),
-        };
-        Some(people[next].clone())
+    /// Whether `card` can be handed to someone else's queue: an open task (news,
+    /// validations and confirmations belong to whoever they were posted for),
+    /// on a board with more than one person.
+    pub(crate) fn board_card_assignable(&self, card: &Card) -> bool {
+        card.is_open()
+            && card.kind == CardKind::Task
+            && self
+                .human_board
+                .settings
+                .as_ref()
+                .is_some_and(|settings| settings.people.len() > 1)
     }
 
     /// Mark the selected card done, or reopen it when it already is.
@@ -1151,22 +1172,70 @@ impl App {
         self.dispatch_board_job(job);
     }
 
-    /// The card dialog's Assign: put the card in the next person's queue and
-    /// close the dialog.
+    /// The card dialog's Assign: open the picker of people over the dialog.
+    /// Leaving the picker without a choice brings the dialog back as it was.
     pub(crate) fn assign_board_card_from_dialog(&mut self) {
         let PromptState::HumanBoardCard { card, .. } = &self.prompt else {
             return;
         };
-        let Some(person) = self.next_assignee(card) else {
+        if !self.board_card_assignable(card) {
             self.set_info(
-                "This board has no other person to assign the card to; add people in [board] \
-                 people.",
+                "Only an open task can be handed to someone else's queue; news, validations and \
+                 confirmations stay with whoever they were posted for.",
             );
             return;
+        }
+        let card = card.clone();
+        let people = self
+            .human_board
+            .settings
+            .as_ref()
+            .map(|settings| settings.people.clone())
+            .unwrap_or_default();
+        let same = yaran_core::human_board::same_person;
+        // Start on the first person whose queue the card is not in.
+        let selected = people
+            .iter()
+            .position(|person| {
+                card.assignee
+                    .as_deref()
+                    .is_none_or(|now| !same(person, now))
+            })
+            .unwrap_or(0);
+        let back = std::mem::replace(&mut self.prompt, PromptState::None);
+        self.prompt = PromptState::AssignBoardCard(super::AssignBoardCardPrompt {
+            card,
+            people,
+            selected,
+            back: Box::new(back),
+        });
+        self.mark_frame_dirty();
+    }
+
+    /// The picker's choice: put the card in that person's queue.
+    pub(crate) fn pick_board_card_assignee(&mut self) {
+        let PromptState::AssignBoardCard(picker) = &self.prompt else {
+            return;
         };
+        let Some(person) = picker.people.get(picker.selected).cloned() else {
+            return;
+        };
+        if picker
+            .card
+            .assignee
+            .as_deref()
+            .is_some_and(|now| yaran_core::human_board::same_person(now, &person))
+        {
+            self.set_info(format!(
+                "Card {} is already in {person}'s queue; pick someone else, or leave the picker \
+                 to keep it there.",
+                picker.card.label()
+            ));
+            return;
+        }
         let job = BoardJob::Assign {
-            id: card.id.clone(),
-            label: card.label(),
+            id: picker.card.id.clone(),
+            label: picker.card.label(),
             person,
             by: self
                 .human_board
@@ -1179,6 +1248,17 @@ impl App {
         }
     }
 
+    /// Leave the picker without a choice: the card dialog comes back.
+    pub(crate) fn leave_board_assign_picker(&mut self) {
+        let prompt = std::mem::replace(&mut self.prompt, PromptState::None);
+        if let PromptState::AssignBoardCard(picker) = prompt {
+            self.prompt = *picker.back;
+        } else {
+            self.prompt = prompt;
+        }
+        self.mark_frame_dirty();
+    }
+
     /// The focus stops the open card dialog has.
     pub(crate) fn board_card_stops(&self) -> CardStops {
         let PromptState::HumanBoardCard { card, reply, .. } = &self.prompt else {
@@ -1189,7 +1269,7 @@ impl App {
             recipient: reply
                 .as_ref()
                 .is_some_and(|reply| reply.recipients.len() > 1),
-            assign: self.next_assignee(card).is_some(),
+            assign: self.board_card_assignable(card),
         }
     }
 
@@ -1485,6 +1565,9 @@ impl App {
             BoardJob::MarkRelayed { label, to, .. } => {
                 format!("Passed the replies on card {label} to {to}; recording it\u{2026}")
             }
+            BoardJob::CloseStaleNews { hours, .. } => {
+                format!("Closing news older than {hours}h that nobody marked done\u{2026}")
+            }
         };
         self.status.set(
             Instant::now(),
@@ -1665,6 +1748,14 @@ impl App {
             )),
             (BoardJob::Assign { label, person, .. }, Err(err)) => {
                 self.set_error(format!("Could not assign card {label} to {person}: {err}"))
+            }
+            (BoardJob::CloseStaleNews { hours, .. }, Ok(true)) => self.set_info(format!(
+                "Closed the news cards older than {hours}h that nobody had marked done; they are \
+                 under Done ([board] news_close_hours sets when news closes)."
+            )),
+            (BoardJob::CloseStaleNews { .. }, Ok(false)) => {}
+            (BoardJob::CloseStaleNews { .. }, Err(err)) => {
+                self.set_warning(format!("Could not close old news on the board: {err}"))
             }
             (BoardJob::MarkRelayed { label, to, .. }, Ok(_)) => self.set_info(format!(
                 "Passed the other side's replies on card {label} to {to}; the card shows they \

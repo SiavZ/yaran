@@ -352,6 +352,23 @@ impl TextInput {
         self.cursor = byte_offset_at_visual(&self.text, abs_row, display_col, width);
     }
 
+    /// The text soft-wrapped at `width` display columns, the way a multiline
+    /// field wraps it, and the caret's `(row, col)` among those rows. For a
+    /// single-line field drawn over several rows (Enter still submits it): the
+    /// caller picks which rows to show.
+    pub fn wrapped_rows(&self, width: usize) -> (Vec<String>, usize, usize) {
+        let width = Some(width.max(1));
+        let rows = compute_visual_lines(&self.text, width);
+        let (row, col) = cursor_visual_pos(&self.text, self.cursor, width);
+        (rows, row, col)
+    }
+
+    /// Put the caret at `(row, col)` of the text soft-wrapped at `width`, as a
+    /// click on a field drawn by [`TextInput::wrapped_rows`] lands it.
+    pub fn set_cursor_wrapped(&mut self, width: usize, row: usize, col: usize) {
+        self.cursor = byte_offset_at_visual(&self.text, row, col, Some(width.max(1)));
+    }
+
     /// Scroll by a signed number of lines (positive = down, negative = up).
     /// Clamps to valid range. No-op in single-line mode.
     pub fn scroll_by(&mut self, delta: isize) {

@@ -937,6 +937,39 @@ impl Board {
         Ok(true)
     }
 
+    /// The open news cards posted before `cutoff`: the ones that close by
+    /// themselves (see `[board] news_close_hours`).
+    pub fn stale_news(&self, cutoff: DateTime<Utc>) -> Vec<CardId> {
+        self.cards
+            .iter()
+            .filter(|card| {
+                card.is_open() && card.kind == CardKind::Info && card.created_at < cutoff
+            })
+            .map(|card| card.id.clone())
+            .collect()
+    }
+
+    /// Close the open news cards posted before `cutoff`, as `by`, and return
+    /// which. A card that is no longer open or no longer news is left alone.
+    pub fn close_stale_news(
+        &mut self,
+        cutoff: DateTime<Utc>,
+        by: &str,
+        now: DateTime<Utc>,
+    ) -> Vec<CardId> {
+        let ids = self.stale_news(cutoff);
+        for id in &ids {
+            // Every id was just found open, so this cannot fail.
+            let _ = self.resolve(
+                id,
+                Some(by),
+                Some("Closed by itself: news nobody had marked done."),
+                now,
+            );
+        }
+        ids
+    }
+
     /// Drop the oldest resolved cards past [`RESOLVED_HISTORY`]. Open cards are
     /// never dropped.
     pub fn prune(&mut self) {

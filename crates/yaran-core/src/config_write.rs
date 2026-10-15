@@ -770,6 +770,12 @@ fn apply_patches(doc: &mut DocumentMut, config: &Config) {
         "relay_transport",
         &config.board.relay_transport,
     );
+    patch_table_u32(
+        doc,
+        "board",
+        "news_close_hours",
+        config.board.news_close_hours,
+    );
 }
 
 fn patch_limits(doc: &mut DocumentMut, limits: &crate::config::LimitsConfig) {

@@ -1683,6 +1683,18 @@ pub(crate) struct SetTailscaleModeOption {
     pub(crate) is_current: bool,
 }
 
+/// The human board's Assign: pick whose queue a task card goes to.
+#[derive(Clone, Debug)]
+pub(crate) struct AssignBoardCardPrompt {
+    pub(crate) card: Box<yaran_core::human_board::Card>,
+    /// Everyone with a queue on the board, in `[board] people` order.
+    pub(crate) people: Vec<String>,
+    pub(crate) selected: usize,
+    /// The card dialog the picker was opened from, back on screen when the
+    /// picker is left without a choice.
+    pub(crate) back: Box<PromptState>,
+}
+
 /// The `[server] tailscale` picker: three rows, the saved one marked.
 #[derive(Clone, Debug)]
 pub(crate) struct SetTailscaleModePrompt {
@@ -2295,6 +2307,8 @@ pub(crate) enum PromptState {
     ChangeDefaultProvider(ChangeDefaultProviderPrompt),
     ChangeProjectDefaultProvider(ChangeProjectDefaultProviderPrompt),
     SetTailscaleMode(SetTailscaleModePrompt),
+    /// The human board's Assign picker.
+    AssignBoardCard(AssignBoardCardPrompt),
     WatchRules(WatchRulesPrompt),
     /// The per-session settings modal (AMQ + orchestrator workstream).
     /// Boxed: the draft carries two text inputs and the rule list.
@@ -3313,6 +3327,11 @@ pub(crate) enum OverlayMouseLayout {
         items: usize,
         offset: usize,
     },
+    AssignBoardCard {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
     ChangeProjectDefaultProvider {
         list: Rect,
         items: usize,
@@ -3996,6 +4015,7 @@ pub(crate) mod components;
 mod first_load;
 mod hangup;
 mod human_board;
+mod human_board_dialog;
 mod human_board_relay;
 mod input;
 pub(crate) mod modal;

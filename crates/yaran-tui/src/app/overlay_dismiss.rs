@@ -105,6 +105,7 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::ChangeDefaultProvider(_)
         | PromptState::ChangeProjectDefaultProvider(_)
         | PromptState::SetTailscaleMode(_)
+        | PromptState::AssignBoardCard(_)
         | PromptState::WatchRules(_)
         | PromptState::ChangeTheme(_)
         | PromptState::AddProjectFailed { .. }
@@ -322,6 +323,8 @@ impl App {
             PromptState::HumanBoardCard { .. } => {
                 self.resolve_human_board_card(false);
             }
+            // Same as its Esc: the card dialog it was opened from comes back.
+            PromptState::AssignBoardCard(_) => self.leave_board_assign_picker(),
             PromptState::ConfirmDeleteTerminal { .. } => {
                 self.resolve_confirm_delete_terminal(false);
             }

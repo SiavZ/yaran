@@ -222,6 +222,8 @@ enum PromptMouseTarget {
     ChangeDefaultProviderItem(usize),
     ChangeProjectDefaultProviderItem(usize),
     SetTailscaleModeItem(usize),
+    /// A person in the human board's Assign picker.
+    AssignBoardCardItem(usize),
     RuntimeKillInput,
     RuntimeKillItem(usize),
     RuntimeKillCancel,
@@ -471,6 +473,7 @@ impl ButtonPressedTarget {
             | PromptMouseTarget::ChangeDefaultProviderItem(_)
             | PromptMouseTarget::ChangeProjectDefaultProviderItem(_)
             | PromptMouseTarget::SetTailscaleModeItem(_)
+            | PromptMouseTarget::AssignBoardCardItem(_)
             | PromptMouseTarget::RuntimeKillInput
             | PromptMouseTarget::RuntimeKillItem(_)
             | PromptMouseTarget::Checkbox(_)
@@ -2044,6 +2047,7 @@ impl App {
             | PromptState::ChangeDefaultProvider(_)
             | PromptState::ChangeProjectDefaultProvider(_)
             | PromptState::SetTailscaleMode(_)
+            | PromptState::AssignBoardCard(_)
             | PromptState::WatchRules(_) => {}
         }
         if refresh_path_completions {
@@ -4673,6 +4677,24 @@ impl App {
         Some(false)
     }
 
+    fn handle_assign_board_card_prompt_key(&mut self, key: KeyEvent) -> Option<bool> {
+        let PromptState::AssignBoardCard(picker) = &mut self.prompt else {
+            return None;
+        };
+        let palette_action = self.bindings.lookup(&key, BindingScope::Palette);
+        let dialog_action = self.bindings.lookup(&key, BindingScope::Dialog);
+        match palette_action.or(dialog_action) {
+            Some(Action::CloseOverlay) => self.leave_board_assign_picker(),
+            Some(Action::MoveDown) if picker.selected + 1 < picker.people.len() => {
+                picker.selected += 1;
+            }
+            Some(Action::MoveUp) if picker.selected > 0 => picker.selected -= 1,
+            Some(Action::Confirm) => self.pick_board_card_assignee(),
+            _ => {}
+        }
+        Some(false)
+    }
+
     fn handle_set_tailscale_mode_prompt_key(&mut self, key: KeyEvent) -> Option<bool> {
         let PromptState::SetTailscaleMode(prompt) = &mut self.prompt else {
             return None;
@@ -5740,6 +5762,9 @@ impl App {
             return Ok(Some(exit));
         }
         if let Some(exit) = self.handle_set_tailscale_mode_prompt_key(key) {
+            return Ok(Some(exit));
+        }
+        if let Some(exit) = self.handle_assign_board_card_prompt_key(key) {
             return Ok(Some(exit));
         }
         if let Some(exit) = self.handle_change_theme_prompt_key(key)? {
@@ -6837,6 +6862,12 @@ impl App {
                 offset,
             } => Self::overlay_row_at(list, offset, items, column, row)
                 .map(PromptMouseTarget::SetTailscaleModeItem),
+            OverlayMouseLayout::AssignBoardCard {
+                list,
+                items,
+                offset,
+            } => Self::overlay_row_at(list, offset, items, column, row)
+                .map(PromptMouseTarget::AssignBoardCardItem),
             OverlayMouseLayout::KillRunning {
                 input,
                 list,
@@ -8723,7 +8754,7 @@ impl App {
         }
     }
 
-    fn set_board_reply_cursor_from_mouse(&mut self, column: u16) {
+    fn set_board_reply_cursor_from_mouse(&mut self, column: u16, row: u16) {
         let Some(field) = (match self.overlay_layout.active {
             OverlayMouseLayout::HumanBoardCard { reply_field, .. } => reply_field,
             _ => None,
@@ -8737,14 +8768,15 @@ impl App {
         } = &mut self.prompt
         {
             let input = &mut reply.input;
-            // The field shows a window of its text that keeps the caret in
-            // view, so the click lands relative to where that window starts.
-            // Two border cells and the one-cell leading pad are not text.
-            let width = usize::from(field.width.saturating_sub(3));
-            let start =
-                super::human_board::single_line_window_start(&input.text, input.cursor, width);
-            input.cursor =
-                start + cursor_from_single_line_position(&input.text[start..], field, 1, column);
+            // The field shows the reply wrapped over its rows, a window of them
+            // that keeps the caret in view; the click lands relative to where
+            // that window starts. The border and a pad cell each side are not
+            // text.
+            let width = super::human_board_dialog::reply_text_width(field.width);
+            let (_, first, ..) = super::human_board_dialog::reply_window(input, width);
+            let row = usize::from(row.saturating_sub(field.y + 1)) + first;
+            let col = usize::from(column.saturating_sub(field.x + 2));
+            input.set_cursor_wrapped(width, row, col);
             *focus = super::human_board::HumanBoardCardFocus::Reply;
         }
     }
@@ -9130,6 +9162,9 @@ impl App {
         if !matches!(self.prompt, PromptState::HumanBoardCard { .. }) {
             return None;
         }
+        if let Some(handled) = self.handle_card_text_selection(mouse) {
+            return Some(handled);
+        }
         match mouse.kind {
             MouseEventKind::ScrollDown => {
                 self.scroll_error_dialog(MOUSE_WHEEL_LINES as i32);
@@ -9461,6 +9496,18 @@ impl App {
         }
     }
 
+    fn click_board_assign_item(&mut self, index: usize) {
+        let double_click = self.register_mouse_click(MouseClickTarget::CommandPalette, Some(index));
+        if let PromptState::AssignBoardCard(picker) = &mut self.prompt
+            && index < picker.people.len()
+        {
+            picker.selected = index;
+        }
+        if double_click {
+            self.pick_board_card_assignee();
+        }
+    }
+
     fn click_theme_item(&mut self, index: usize) {
         let double_click = self.register_mouse_click(MouseClickTarget::CommandPalette, Some(index));
         let mut moved = false;
@@ -9585,6 +9632,9 @@ impl App {
             PromptMouseTarget::SetTailscaleModeItem(index) => {
                 self.click_tailscale_mode_item(index);
             }
+            PromptMouseTarget::AssignBoardCardItem(index) => {
+                self.click_board_assign_item(index);
+            }
             PromptMouseTarget::ChangeThemeItem(index) => {
                 self.click_theme_item(index);
             }
@@ -9611,7 +9661,7 @@ impl App {
                 self.set_rename_cursor_from_mouse(mouse.column);
             }
             PromptMouseTarget::HumanBoardCardReply => {
-                self.set_board_reply_cursor_from_mouse(mouse.column);
+                self.set_board_reply_cursor_from_mouse(mouse.column, mouse.row);
             }
             PromptMouseTarget::HumanBoardCardRecipient => {
                 if let PromptState::HumanBoardCard { focus, .. } = &mut self.prompt {

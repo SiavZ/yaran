@@ -1826,6 +1826,15 @@ fn config_schema() -> Vec<ConfigEntry> {
             )),
             value_fn: |c| FieldValue::Str(c.board.relay_transport.clone()),
         },
+        ConfigEntry::Field {
+            key: "news_close_hours",
+            comment: Some(CommentSource::Static(
+                "# Hours after which a news card (What happened) closes by itself if nobody has\n\
+                 # marked it done: news asks nothing of anyone, so it should not pile up.\n\
+                 # Default 4. 0 keeps news open until somebody marks it done.",
+            )),
+            value_fn: |c| FieldValue::U32(c.board.news_close_hours),
+        },
     ]
 }
 

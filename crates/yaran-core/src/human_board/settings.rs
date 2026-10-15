@@ -41,6 +41,9 @@ pub struct BoardSettings {
     pub relay_to: Option<String>,
     /// The `yaran peer send --transport` a relayed message goes by.
     pub relay_transport: String,
+    /// How long an open news card stays before it closes by itself; `None`
+    /// keeps it until somebody marks it done.
+    pub news_close_after: Option<Duration>,
 }
 
 /// The transports `yaran peer send` takes.
@@ -118,6 +121,8 @@ impl BoardSettings {
             relay: config.relay,
             relay_to,
             relay_transport,
+            news_close_after: (config.news_close_hours > 0)
+                .then(|| Duration::from_secs(u64::from(config.news_close_hours) * 3600)),
         }
     }
 

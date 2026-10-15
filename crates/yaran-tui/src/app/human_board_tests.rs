@@ -10,7 +10,9 @@ use yaran_core::human_board::{Audience, Board, BoardStore, CardId, CardKind, New
 
 use super::*;
 use crate::app::test_support::{default_bindings, test_app};
-use crate::app::{FocusPane, PromptState, RightLower, RightSection};
+use crate::app::{
+    FocusPane, PromptState, RightLower, RightSection, TermGridPos, TerminalSelection,
+};
 
 fn at(minute: i64) -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 11, 12, 0, 0).unwrap() + ChronoDuration::minutes(minute)
@@ -680,27 +682,6 @@ fn type_text(app: &mut App, text: &str) {
     for c in text.chars() {
         app.handle_key(key(KeyCode::Char(c))).unwrap();
     }
-}
-
-#[test]
-fn the_window_keeps_the_caret_in_view() {
-    assert_eq!(single_line_window_start("short", 5, 20), 0);
-    let text = "abcdefghijklmnopqrstuvwxyz";
-    let start = single_line_window_start(text, text.len(), 10);
-    assert_eq!(
-        &text[start..],
-        "rstuvwxyz",
-        "nine letters and the caret cell"
-    );
-    assert_eq!(
-        single_line_window_start(text, 3, 10),
-        0,
-        "caret near the start"
-    );
-    // Wide glyphs count their two cells.
-    let wide = "日本語のテキスト";
-    let start = single_line_window_start(wide, wide.len(), 7);
-    assert_eq!(&wide[start..], "キスト");
 }
 
 #[test]
@@ -1492,7 +1473,10 @@ fn a_card_from_the_other_side_answers_its_person_through_the_board() {
         "{text}"
     );
     assert!(text.contains("Send"), "{text}");
-    assert!(text.contains("Assign to Sam"), "{text}");
+    assert!(
+        !text.contains("Assign"),
+        "a confirmation stays with whoever it was posted for: {text}"
+    );
 
     type_text(&mut app, "Which table exactly?");
     app.handle_key(key(KeyCode::Enter)).unwrap();
@@ -1563,17 +1547,62 @@ fn on_your_own_card_you_can_ask_the_other_person_instead_of_the_agent() {
 }
 
 #[test]
-fn assign_hands_the_card_to_the_next_person() {
+fn assign_opens_a_picker_of_everyone_and_esc_goes_back_to_the_card() {
     let (mut app, _tab) = two_sided_app("Alex", false);
+    // Only a task can be handed to someone else's queue.
+    BoardStore::new(&app.engine.paths.root)
+        .update(|board| {
+            board.cards[0].kind = CardKind::Task;
+            Ok(())
+        })
+        .unwrap();
+    app.load_human_board_now();
     app.open_selected_board_card();
+    assert!(screen(&mut app).contains("Assign\u{2026}"));
     app.assign_board_card_from_dialog();
+    let PromptState::AssignBoardCard(picker) = &app.prompt else {
+        panic!("the picker opens: {:?}", app.prompt);
+    };
+    assert_eq!(picker.people, ["Sam", "Alex"]);
+    assert_eq!(
+        picker.selected, 0,
+        "it starts on someone whose queue the card is not in"
+    );
+    let text = screen(&mut app);
+    assert!(text.contains("Assign card #S-1"), "{text}");
+    assert!(text.contains("has it now"), "{text}");
+    assert!(text.contains("(you)") || text.contains("you)"), "{text}");
+
+    // Esc: back to the card dialog, exactly as it was.
+    app.handle_key(key(KeyCode::Esc)).unwrap();
+    assert!(matches!(app.prompt, PromptState::HumanBoardCard { .. }));
+
+    // Pick Sam.
+    app.assign_board_card_from_dialog();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
     app.finish_board_job();
-    assert_eq!(card_s1(&app).assignee.as_deref(), Some("Sam"));
+    assert!(matches!(app.prompt, PromptState::None));
+    let card = card_s1(&app);
+    assert_eq!(card.assignee.as_deref(), Some("Sam"));
+    assert_eq!(card.assigned_by.as_deref(), Some("Alex"));
     assert!(
         latest_status(&app).contains("is now in Sam's queue"),
         "{}",
         latest_status(&app)
     );
+}
+
+#[test]
+fn news_and_confirmations_cannot_be_assigned() {
+    let (app, _tab) = two_sided_app("Alex", false);
+    let mut card = card_s1(&app);
+    assert!(!app.board_card_assignable(&card), "a confirmation");
+    card.kind = CardKind::Info;
+    assert!(!app.board_card_assignable(&card), "news");
+    card.kind = CardKind::Task;
+    assert!(app.board_card_assignable(&card), "a task");
+    card.resolved_at = Some(Utc::now());
+    assert!(!app.board_card_assignable(&card), "a done task");
 }
 
 #[test]
@@ -1758,39 +1787,188 @@ fn a_card_with_a_very_long_title_can_be_read_to_its_last_word() {
     );
 }
 
+/// Screen rows of `text`, and the column where `needle` starts on the first
+/// row holding it.
+fn find_on_screen(text: &str, needle: &str) -> Option<(usize, usize)> {
+    text.lines().enumerate().find_map(|(row, line)| {
+        line.find(needle)
+            .map(|byte| (row, line[..byte].chars().count()))
+    })
+}
+
 #[test]
-fn every_button_of_a_full_card_dialog_is_drawn_whole() {
-    let mut app = test_app(default_bindings());
-    app.engine.config.ui.human_board = true;
-    app.engine.config.board.people = vec!["Robin".to_string(), "Kai".to_string()];
-    app.engine.config.board.me = "Kai".to_string();
-    app.right_hidden = false;
-    let mut board = Board::default();
-    board.prefix = "G".to_string();
-    let mut card = new_card(CardKind::Task, Some("6001"), "Retention table");
-    card.assignee = Some("Kai".to_string());
-    card.origin = Some("Robin".to_string());
-    board.post(card, at(0)).unwrap();
-    BoardStore::new(&app.engine.paths.root)
-        .update(|current| {
-            *current = board;
-            Ok(())
-        })
-        .unwrap();
-    app.load_human_board_now();
-    app.show_right_tab(RightTab::Queue(None));
-    app.human_board.selected = Some(CardId::new("G", 1));
+fn typing_a_long_reply_grows_the_field_downward_and_moves_nothing_else() {
+    let (mut app, _tab) = two_sided_app("Alex", false);
+    app.open_selected_board_card();
+    let before = screen(&mut app);
+    let top = find_on_screen(&before, "Card S-1").expect("the dialog title");
+    let close = find_on_screen(&before, "Close").expect("Close");
+    let mark_done = find_on_screen(&before, "Mark done").expect("Mark done");
+    let reply_label = find_on_screen(&before, "Reply to").expect("the reply label");
+
+    type_text(&mut app, &"word ".repeat(120));
+    let after = screen(&mut app);
+    assert_eq!(
+        find_on_screen(&after, "Card S-1"),
+        Some(top),
+        "the dialog's top edge stays where it was"
+    );
+    assert_eq!(find_on_screen(&after, "Reply to"), Some(reply_label));
+    let close_after = find_on_screen(&after, "Close").unwrap();
+    assert_eq!(close_after.1, close.1, "Close keeps its column");
+    let action_after = find_on_screen(&after, "Send & mark done").unwrap();
+    assert!(
+        close_after.0 > close.0,
+        "the buttons moved down, the field grew"
+    );
+    assert_eq!(close_after.0, action_after.0);
+    // The action's label changed width, but its button did not move: the
+    // label is centred in the same box, so its start shifts by at most the
+    // difference in label length, never by a whole button.
+    assert!(action_after.1.abs_diff(mark_done.1) <= "Send & ".len());
+    // Five rows of reply at most.
+    let field_rows = after
+        .lines()
+        .filter(|line| line.contains("word word word"))
+        .count();
+    assert_eq!(
+        field_rows,
+        super::super::human_board_dialog::REPLY_MAX_ROWS as usize
+    );
+}
+
+#[test]
+fn every_element_of_the_card_dialog_shares_one_left_edge() {
+    let (mut app, _tab) = two_sided_app("Alex", false);
     app.open_selected_board_card();
     let text = screen(&mut app);
-    let row = text
-        .lines()
-        .find(|line| line.contains("Assign to Robin"))
-        .expect("the Assign button is drawn");
-    // The button keeps its padding like its neighbours: it is not squeezed
-    // against the dialog's border.
-    let at = row.find("Assign to Robin").unwrap();
+    // Only the dialog: the board's own row shows the same title elsewhere.
+    let top = find_on_screen(&text, "Card S-1").unwrap().0;
+    let dialog: String = text.lines().skip(top + 1).collect::<Vec<_>>().join("\n");
+    let title = find_on_screen(&dialog, "Drop the old audit table?")
+        .unwrap()
+        .1;
+    let kind = find_on_screen(&dialog, "Kind:").unwrap().1;
+    let reply = find_on_screen(&text, "Reply to").unwrap().1;
+    let lines: Vec<&str> = text.lines().collect();
+    let field_row = find_on_screen(&text, "Reply to").unwrap().0 + 1;
+    let field_left = lines[field_row]
+        .chars()
+        .position(|c| c == '\u{256d}')
+        .expect("the field's top-left corner");
+    let close_row = find_on_screen(&text, "Close").unwrap().0;
+    let button_left = lines[close_row - 1]
+        .chars()
+        .position(|c| c == '\u{256d}')
+        .expect("the first button's top-left corner");
+    assert_eq!(title, kind, "the title and the fields start together");
+    assert_eq!(kind, reply, "and the reply label");
+    assert_eq!(field_left, reply, "and the reply field");
+    assert_eq!(button_left, reply, "and the buttons");
+}
+
+#[test]
+fn a_drag_over_the_card_text_selects_it_and_copies_it() {
+    let (mut app, _tab) = two_sided_app("Alex", false);
+    app.open_selected_board_card();
+    screen(&mut app);
+    let body = app.human_board.card_view.body;
+    let at = |column: u16, row: u16, kind| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    // From the title's first cell to the fifth cell of its first row.
+    app.handle_mouse(at(body.x, body.y, MouseEventKind::Down(MouseButton::Left)));
+    app.handle_mouse(at(
+        body.x + 4,
+        body.y,
+        MouseEventKind::Drag(MouseButton::Left),
+    ));
+    let selection = app.human_board.card_view.selection.clone().unwrap();
+    assert!(selection.dragging);
+    let text = super::super::human_board_dialog::selected_card_text(
+        &app.human_board.card_view.rows,
+        &app.human_board.card_view.continues,
+        &selection,
+    );
+    assert_eq!(text, "Drop", "trailing blanks are not copied");
+    app.handle_mouse(at(
+        body.x + 4,
+        body.y,
+        MouseEventKind::Up(MouseButton::Left),
+    ));
     assert!(
-        row[..at].ends_with(' '),
-        "the Assign button has room before its label: {row}"
+        app.human_board
+            .card_view
+            .selection
+            .as_ref()
+            .is_some_and(|s| !s.dragging),
+        "the selection stays highlighted after the copy"
+    );
+    // A press on a control drops it.
+    app.handle_mouse(at(0, 0, MouseEventKind::Down(MouseButton::Left)));
+    assert!(app.human_board.card_view.selection.is_none());
+}
+
+#[test]
+fn a_copy_joins_soft_wrapped_rows_with_a_space_and_keeps_real_breaks() {
+    use super::super::human_board_dialog::selected_card_text;
+    let rows = vec![
+        "The first line wraps".to_string(),
+        "onto this row.".to_string(),
+        "A second line.".to_string(),
+    ];
+    let continues = vec![false, true, false];
+    let all = TerminalSelection {
+        anchor: TermGridPos { row: 0, col: 0 },
+        end: TermGridPos { row: 2, col: 40 },
+        dragging: false,
+        origin: Default::default(),
+    };
+    assert_eq!(
+        selected_card_text(&rows, &continues, &all),
+        "The first line wraps onto this row.\nA second line."
+    );
+}
+
+#[test]
+fn news_closes_by_itself_after_the_configured_hours() {
+    let mut app = board_app(Some({
+        let mut board = Board::default();
+        board
+            .post(
+                new_card(CardKind::Info, None, "Deployed"),
+                Utc::now() - chrono::Duration::hours(5),
+            )
+            .unwrap();
+        board
+            .post(
+                new_card(CardKind::Info, None, "Rolled"),
+                Utc::now() - chrono::Duration::hours(1),
+            )
+            .unwrap();
+        board
+            .post(
+                new_card(CardKind::Task, None, "Decide"),
+                Utc::now() - chrono::Duration::hours(9),
+            )
+            .unwrap();
+        board
+    }));
+    app.engine.config.board.news_close_hours = 4;
+    app.drain_human_board();
+    app.finish_board_job();
+    let board = BoardStore::new(&app.engine.paths.root).load().unwrap();
+    assert!(
+        !board.card(1).unwrap().is_open(),
+        "five-hour-old news closed"
+    );
+    assert_eq!(board.card(1).unwrap().resolved_by.as_deref(), Some("board"));
+    assert!(board.card(2).unwrap().is_open(), "fresh news stays");
+    assert!(
+        board.card(3).unwrap().is_open(),
+        "a task never closes by itself"
     );
 }
