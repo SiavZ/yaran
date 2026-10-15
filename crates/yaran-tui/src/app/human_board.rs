@@ -1021,6 +1021,22 @@ impl App {
             return recipients;
         }
         let poster_runs = target.as_ref().is_some_and(|target| target.is_poster);
+        // A card in someone else's queue is theirs to answer: asking them comes
+        // first, and answering the agent for them second.
+        let for_someone_else = card.assignee.as_deref().filter(|assignee| {
+            me.as_deref().is_some_and(|me| !same(assignee, me))
+                && people.iter().any(|person| same(person, assignee))
+        });
+        if let Some(assignee) = for_someone_else {
+            recipients.push(Recipient::Person {
+                name: people
+                    .iter()
+                    .find(|person| same(person, assignee))
+                    .cloned()
+                    .unwrap_or_else(|| assignee.to_string()),
+                poster: None,
+            });
+        }
         if poster_runs && let Some(target) = target.clone() {
             recipients.push(Recipient::Agent(target));
         }
@@ -1035,10 +1051,15 @@ impl App {
                 .is_none_or(|assignee| !same(person, assignee))
         });
         for person in others {
-            recipients.push(Recipient::Person {
-                name: person.clone(),
-                poster: None,
-            });
+            let already = recipients
+                .iter()
+                .any(|r| matches!(r, Recipient::Person { name, .. } if same(name, person)));
+            if !already {
+                recipients.push(Recipient::Person {
+                    name: person.clone(),
+                    poster: None,
+                });
+            }
         }
         if !poster_runs && let Some(target) = target {
             recipients.push(Recipient::Agent(target));

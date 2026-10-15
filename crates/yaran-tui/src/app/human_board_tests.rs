@@ -1523,16 +1523,19 @@ fn on_your_own_card_you_can_ask_the_other_person_instead_of_the_agent() {
     else {
         panic!("{:?}", app.prompt);
     };
-    assert!(matches!(reply.recipient(), super::Recipient::Agent(target) if target.is_poster));
     assert_eq!(reply.recipients.len(), 2);
-    // Tab reaches the recipient, Enter moves to the next one, Shift-Tab goes
-    // back to the field.
-    app.handle_key(key(KeyCode::Tab)).unwrap();
-    app.handle_key(key(KeyCode::Enter)).unwrap();
-    app.handle_key(key(KeyCode::BackTab)).unwrap();
+    // The card is in Alex's queue, so asking Alex comes first.
     let text = screen(&mut app);
     assert!(text.contains("Ask"), "{text}");
     assert!(text.contains(" Alex "), "{text}");
+    // Tab reaches the recipient, Enter moves to the next one (the agent that
+    // posted it), Enter again comes back round, Shift-Tab goes back to the
+    // field.
+    app.handle_key(key(KeyCode::Tab)).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    assert!(screen(&mut app).contains("(posted this card)"));
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::BackTab)).unwrap();
     type_text(&mut app, "Can you confirm before Friday?");
     app.handle_key(key(KeyCode::Enter)).unwrap();
     app.finish_board_job();
@@ -1718,13 +1721,15 @@ fn with_relaying_off_send_forwards_the_other_sides_reply_by_hand() {
     let (mut app, tab) = two_sided_app("Sam", false);
     other_side_says(&mut app, "Alex", "Yes, drop it.", false);
     app.open_selected_board_card();
+    // The card is Alex's; choose the agent that posted it as the recipient.
+    app.handle_key(key(KeyCode::Tab)).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
     let text = screen(&mut app);
     assert!(
         text.contains("Forward"),
         "an empty field offers to pass the reply on: {text}"
     );
-    // Close, then Send.
-    app.handle_key(key(KeyCode::Tab)).unwrap();
+    // From the recipient: Close, then Send.
     app.handle_key(key(KeyCode::Tab)).unwrap();
     app.handle_key(key(KeyCode::Tab)).unwrap();
     assert!(matches!(
@@ -1970,5 +1975,35 @@ fn news_closes_by_itself_after_the_configured_hours() {
     assert!(
         board.card(3).unwrap().is_open(),
         "a task never closes by itself"
+    );
+}
+
+#[test]
+fn a_card_in_someone_elses_queue_asks_them_first() {
+    // Sam's own agent posted the card for Alex; Sam opens it on Sam's board.
+    let (mut app, _tab) = two_sided_app("Sam", false);
+    app.open_selected_board_card();
+    let PromptState::HumanBoardCard {
+        reply: Some(reply), ..
+    } = &app.prompt
+    else {
+        panic!("{:?}", app.prompt);
+    };
+    assert_eq!(
+        reply.recipient(),
+        &super::Recipient::Person {
+            name: "Alex".to_string(),
+            poster: None,
+        },
+        "the card is Alex's to answer"
+    );
+    assert!(
+        matches!(&reply.recipients[1], super::Recipient::Agent(target) if target.is_poster),
+        "answering the agent for Alex is the second choice"
+    );
+    assert_eq!(reply.recipients.len(), 2, "Alex is offered once");
+    assert!(
+        !reply.enter_marks_done(),
+        "asking a person goes on with the card"
     );
 }
