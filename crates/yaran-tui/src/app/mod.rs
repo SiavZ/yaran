@@ -3408,6 +3408,12 @@ pub(crate) enum OverlayMouseLayout {
     HumanBoardCard {
         close_button: Rect,
         action_button: Rect,
+        /// Send, when the dialog has a reply field.
+        send_button: Option<Rect>,
+        /// Assign, when the board has another person to hand the card to.
+        assign_button: Option<Rect>,
+        /// The recipient chip, when there is more than one to choose from.
+        recipient_chip: Option<Rect>,
         /// The reply field's box, when the dialog has one, so a click can land
         /// the caret.
         reply_field: Option<Rect>,
@@ -3990,6 +3996,7 @@ pub(crate) mod components;
 mod first_load;
 mod hangup;
 mod human_board;
+mod human_board_relay;
 mod input;
 pub(crate) mod modal;
 mod orphan_worktrees;

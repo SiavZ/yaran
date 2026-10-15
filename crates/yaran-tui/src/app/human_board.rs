@@ -33,10 +33,11 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use yaran_core::config::BoardConfig;
 use yaran_core::human_board::sync::{BoardSyncer, SyncMode, SyncOutcome};
 use yaran_core::human_board::{
-    Audience, Board, BoardSettings, BoardStore, BoardWatcher, Card, CardId, CardKind,
+    Audience, Board, BoardSettings, BoardStore, BoardWatcher, Card, CardId, CardKind, NewMessage,
 };
 use yaran_core::ids::TabIdRef;
 use yaran_core::statusline::StatusTone;
@@ -186,6 +187,32 @@ pub(crate) enum BoardJob {
         id: CardId,
         label: String,
     },
+    /// Add a message to the card's conversation (and mark it done with it,
+    /// when the message says so).
+    Reply {
+        id: CardId,
+        label: String,
+        message: NewMessage,
+        /// The agent it was typed into, when it was; `None` when it went to a
+        /// person through the board.
+        sent_to: Option<String>,
+        /// The person it is for, when it went through the board.
+        for_person: Option<String>,
+    },
+    /// Put the card in another person's queue.
+    Assign {
+        id: CardId,
+        label: String,
+        person: String,
+    },
+    /// Record that messages another side wrote were passed to an agent here
+    /// by hand (the dialog's forward).
+    MarkRelayed {
+        id: CardId,
+        label: String,
+        keys: Vec<(DateTime<Utc>, String, String)>,
+        to: String,
+    },
 }
 
 /// Which control of the card dialog has focus.
@@ -194,21 +221,47 @@ pub(crate) enum HumanBoardCardFocus {
     /// The reply field: where focus starts whenever the dialog has one.
     #[default]
     Reply,
+    /// Who the reply goes to, when there is more than one choice: acting on
+    /// it moves to the next.
+    Recipient,
     /// Close, the safe button, and the start when there is no reply field.
     Close,
+    /// Send the reply without marking the card done (or pass on what another
+    /// side wrote, with the field empty).
+    Send,
     /// Mark done, Send & mark done, or Reopen.
     Action,
+    /// Put the card in the next person's queue.
+    Assign,
+}
+
+/// Which stops a card dialog's focus ring has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CardStops {
+    pub(crate) reply: bool,
+    pub(crate) recipient: bool,
+    pub(crate) assign: bool,
 }
 
 impl HumanBoardCardFocus {
-    /// The next stop of the ring. The reply field is a stop only when the
-    /// dialog has one.
-    pub(crate) fn step(self, forward: bool, has_reply: bool) -> Self {
-        let ring: &[Self] = if has_reply {
-            &[Self::Reply, Self::Close, Self::Action]
-        } else {
-            &[Self::Close, Self::Action]
-        };
+    /// The next stop of the ring: the reply field and the recipient (when the
+    /// dialog has them), then the buttons in the order they are drawn.
+    pub(crate) fn step(self, forward: bool, stops: CardStops) -> Self {
+        let mut ring: Vec<Self> = Vec::with_capacity(6);
+        if stops.reply {
+            ring.push(Self::Reply);
+            if stops.recipient {
+                ring.push(Self::Recipient);
+            }
+        }
+        ring.push(Self::Close);
+        if stops.reply {
+            ring.push(Self::Send);
+        }
+        ring.push(Self::Action);
+        if stops.assign {
+            ring.push(Self::Assign);
+        }
         let at = ring.iter().position(|stop| *stop == self).unwrap_or(0);
         let len = ring.len();
         ring[if forward {
@@ -231,11 +284,68 @@ pub(crate) struct ReplyTarget {
     pub(crate) is_poster: bool,
 }
 
+/// Who a reply typed in the card dialog goes to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Recipient {
+    /// Typed into an agent of this yaran, the way the person would type it.
+    Agent(ReplyTarget),
+    /// Added to the card's conversation for a person: it reaches them through
+    /// the board, and their yaran passes it on to an agent of theirs when the
+    /// card is one of theirs (`[board] relay`).
+    Person {
+        name: String,
+        /// The agent that posted the card on that person's side, if any.
+        poster: Option<String>,
+    },
+}
+
 /// The reply half of an open card's dialog.
 #[derive(Clone, Debug)]
 pub(crate) struct CardReply {
     pub(crate) input: TextInput,
-    pub(crate) target: ReplyTarget,
+    /// Who it can go to, the first the most likely; never empty.
+    pub(crate) recipients: Vec<Recipient>,
+    pub(crate) chosen: usize,
+    /// The card came from another person's board: an agent here is handed the
+    /// card, not answering it.
+    pub(crate) from_elsewhere: bool,
+}
+
+impl CardReply {
+    pub(crate) fn recipient(&self) -> &Recipient {
+        &self.recipients[self.chosen.min(self.recipients.len().saturating_sub(1))]
+    }
+
+    /// Move to the next recipient, round the list.
+    pub(crate) fn next_recipient(&mut self) {
+        if !self.recipients.is_empty() {
+            self.chosen = (self.chosen + 1) % self.recipients.len();
+        }
+    }
+
+    /// What Enter in the field does: send and mark the card done when it
+    /// answers the agent that asked (or, on a board without people, the agent
+    /// it goes to), and only send when the conversation goes on with a person
+    /// or the card is handed to an agent to work on.
+    pub(crate) fn enter_marks_done(&self) -> bool {
+        match self.recipient() {
+            Recipient::Agent(target) => {
+                !self.from_elsewhere && (target.is_poster || self.recipients.len() == 1)
+            }
+            Recipient::Person { .. } => false,
+        }
+    }
+}
+
+/// What happens once a reply typed into an agent has been submitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AfterSubmit {
+    /// Keep it in the card's conversation, and mark the card done with it.
+    Record { done: bool },
+    /// It passed on what another side wrote: record those messages as relayed.
+    Relayed {
+        keys: Vec<(DateTime<Utc>, String, String)>,
+    },
 }
 
 /// A reply already typed into an agent, waiting for its submitting Enter.
@@ -246,6 +356,7 @@ pub(crate) struct PendingReplySubmit {
     pub(crate) card_id: CardId,
     pub(crate) card_label: String,
     pub(crate) reply: String,
+    pub(crate) after: AfterSubmit,
 }
 
 /// Where a single-line field's visible text starts so the caret stays in view:
@@ -306,6 +417,8 @@ pub(crate) struct HumanBoardState {
     /// Replies typed into an agent whose submitting Enter is still due, oldest
     /// first.
     pub(crate) pending_submits: Vec<PendingReplySubmit>,
+    /// What this machine's person has read, and the relays in flight.
+    pub(crate) talk: super::human_board_relay::BoardTalk,
 }
 
 impl HumanBoardState {
@@ -490,6 +603,19 @@ pub(crate) fn run_board_job(store: &BoardStore, job: &BoardJob) -> Result<bool, 
                 board.resolve(id, Some(RESOLVED_BY), note.as_deref(), now)
             }
             BoardJob::Reopen { id, .. } => board.reopen(id, now),
+            BoardJob::Reply { id, message, .. } => {
+                let was_open = board.card(id).is_some_and(Card::is_open);
+                board.reply(id, message.clone(), now)?;
+                Ok(was_open && board.card(id).is_some_and(|card| !card.is_open()))
+            }
+            BoardJob::Assign { id, person, .. } => board.assign(id, Some(person), now),
+            BoardJob::MarkRelayed { id, keys, .. } => {
+                let mut changed = false;
+                for (at, from, text) in keys {
+                    changed |= board.mark_relayed(id, (*at, from, text), now)?;
+                }
+                Ok(changed)
+            }
         })
         .map_err(|err| format!("{err:#}"))
 }
@@ -532,6 +658,7 @@ impl App {
             self.human_board.board = None;
             self.human_board.known_open = None;
             self.human_board.selected = None;
+            self.human_board.talk.reset();
         }
         self.mark_frame_dirty();
     }
@@ -558,6 +685,7 @@ impl App {
         self.drain_human_board_job();
         self.drain_human_board_sync();
         self.submit_due_replies(Instant::now());
+        self.drain_board_talk();
         let Some(snapshot) = self
             .human_board
             .watcher
@@ -582,6 +710,7 @@ impl App {
         if let Some(message) = announcement(&cards_for_me(fresh, me.as_deref())) {
             self.set_info(message);
         }
+        self.after_board_snapshot();
     }
 
     fn sync_human_board_watcher(&mut self) {
@@ -775,33 +904,110 @@ impl App {
     }
 
     /// Open the selected card in its own dialog. An open card gets a reply
-    /// field when some agent can take the reply.
+    /// field when its reply can go somewhere: an agent running here, or a
+    /// person on the other side of a shared board. Opening a card counts it
+    /// and its conversation as read.
     pub(crate) fn open_selected_board_card(&mut self) {
         let Some(card) = self.human_board.selected_card().cloned() else {
             self.set_info("There is no card to open: the board is empty.");
             return;
         };
-        let reply = card
-            .is_open()
-            .then(|| self.reply_target_for(&card))
-            .flatten()
-            .map(|target| {
-                Box::new(CardReply {
-                    input: TextInput::new(),
-                    target,
-                })
-            });
+        self.ensure_human_board_settings();
+        let from_elsewhere = self.board_card_from_elsewhere(&card);
+        let recipients = if card.is_open() {
+            self.reply_recipients_for(&card)
+        } else {
+            Vec::new()
+        };
+        let reply = (!recipients.is_empty()).then(|| {
+            Box::new(CardReply {
+                input: TextInput::new(),
+                recipients,
+                chosen: 0,
+                from_elsewhere,
+            })
+        });
         let focus = if reply.is_some() {
             HumanBoardCardFocus::Reply
         } else {
             HumanBoardCardFocus::Close
         };
+        self.mark_board_card_read(&card);
         self.prompt = PromptState::HumanBoardCard {
             card: Box::new(card),
             focus,
             scroll: 0,
             reply,
         };
+    }
+
+    /// Whether `card` was posted on another person's board.
+    pub(crate) fn board_card_from_elsewhere(&self, card: &Card) -> bool {
+        let Some(settings) = self.human_board.settings.as_ref() else {
+            return false;
+        };
+        match (settings.me.as_deref(), settings.origin_of(card)) {
+            (Some(me), Some(origin)) => !yaran_core::human_board::same_person(&origin, me),
+            _ => false,
+        }
+    }
+
+    /// Who a reply to `card` can go to, the most likely first.
+    ///
+    /// A card from another person's board answers them first (their yaran
+    /// passes it to the agent that asked), then can be handed to the agent
+    /// selected here to work on. A card from this board answers the agent that
+    /// posted it when it runs here, then can go to any other person on the
+    /// board (the card's own person first); without a running poster the
+    /// selected agent takes it, as on a board without people.
+    pub(crate) fn reply_recipients_for(&self, card: &Card) -> Vec<Recipient> {
+        let (people, me, origin) = match self.human_board.settings.as_ref() {
+            Some(settings) => (
+                settings.people.clone(),
+                settings.me.clone(),
+                settings.origin_of(card),
+            ),
+            None => (Vec::new(), None, None),
+        };
+        let same = yaran_core::human_board::same_person;
+        let target = self.reply_target_for(card);
+        let mut recipients = Vec::new();
+        if let (Some(me), Some(origin)) = (me.as_deref(), origin.as_deref())
+            && !same(origin, me)
+        {
+            recipients.push(Recipient::Person {
+                name: origin.to_string(),
+                poster: card.from.clone(),
+            });
+            if let Some(target) = target.filter(|target| !target.is_poster) {
+                recipients.push(Recipient::Agent(target));
+            }
+            return recipients;
+        }
+        let poster_runs = target.as_ref().is_some_and(|target| target.is_poster);
+        if poster_runs && let Some(target) = target.clone() {
+            recipients.push(Recipient::Agent(target));
+        }
+        let mut others: Vec<&String> = people
+            .iter()
+            .filter(|person| me.as_deref().is_none_or(|me| !same(person, me)))
+            .collect();
+        // The person whose queue the card is in comes first.
+        others.sort_by_key(|person| {
+            card.assignee
+                .as_deref()
+                .is_none_or(|assignee| !same(person, assignee))
+        });
+        for person in others {
+            recipients.push(Recipient::Person {
+                name: person.clone(),
+                poster: None,
+            });
+        }
+        if !poster_runs && let Some(target) = target {
+            recipients.push(Recipient::Agent(target));
+        }
+        recipients
     }
 
     /// The agent a reply to `card` goes to: the agent that posted it when it is
@@ -824,7 +1030,11 @@ impl App {
                         session.deleted_at.is_none() && session.agent_handle == handle
                     })
                 });
-        if let Some(session) = poster
+        // Only an agent of this board posted it: a same-named agent on another
+        // person's machine is somebody else.
+        let posted_here = !self.board_card_from_elsewhere(card);
+        if posted_here
+            && let Some(session) = poster
             && let Some(tab_id) = running_tab(session)
         {
             return Some(ReplyTarget {
@@ -842,6 +1052,40 @@ impl App {
             label: self.session_label(session),
             is_poster: false,
         })
+    }
+
+    /// The person running this yaran, as the board names them in a
+    /// conversation; "human" without `[board] me`.
+    pub(crate) fn board_writer(&self) -> String {
+        self.human_board
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.me.clone())
+            .unwrap_or_else(|| RESOLVED_BY.to_string())
+    }
+
+    /// The person whose queue Assign moves `card` to: the next of `[board]
+    /// people` after the card's own. `None` without at least two people.
+    pub(crate) fn next_assignee(&self, card: &Card) -> Option<String> {
+        let settings = self.human_board.settings.as_ref()?;
+        let people = &settings.people;
+        if people.len() < 2 {
+            return None;
+        }
+        let same = yaran_core::human_board::same_person;
+        let current = card
+            .assignee
+            .as_deref()
+            .and_then(|assignee| people.iter().position(|person| same(person, assignee)));
+        let next = match current {
+            Some(at) => (at + 1) % people.len(),
+            // Anyone's card: hand it to the first person who is not me.
+            None => people
+                .iter()
+                .position(|person| settings.me.as_deref().is_none_or(|me| !same(person, me)))
+                .unwrap_or(0),
+        };
+        Some(people[next].clone())
     }
 
     /// Mark the selected card done, or reopen it when it already is.
@@ -867,8 +1111,8 @@ impl App {
     }
 
     /// Resolve the card dialog: close it, and act when its action was chosen.
-    /// With a reply typed, the action is sending it (which marks the card done
-    /// once it has been submitted); without one, it is mark done or reopen.
+    /// With a reply typed, the action is sending it and marking the card
+    /// done; without one, it is mark done or reopen.
     pub(crate) fn resolve_human_board_card(&mut self, act: bool) {
         if act
             && let PromptState::HumanBoardCard {
@@ -876,7 +1120,7 @@ impl App {
             } = &self.prompt
             && !reply.input.text.trim().is_empty()
         {
-            self.send_board_reply();
+            self.send_board_reply(true);
             return;
         }
         let prompt = std::mem::replace(&mut self.prompt, PromptState::None);
@@ -903,10 +1147,83 @@ impl App {
         self.dispatch_board_job(job);
     }
 
-    /// Send the reply typed in the open card dialog: type it into the target
-    /// agent now and schedule the submitting Enter. Anything that stops the
-    /// send leaves the dialog open with the reply still in it, and says why.
-    pub(crate) fn send_board_reply(&mut self) {
+    /// The card dialog's Assign: put the card in the next person's queue and
+    /// close the dialog.
+    pub(crate) fn assign_board_card_from_dialog(&mut self) {
+        let PromptState::HumanBoardCard { card, .. } = &self.prompt else {
+            return;
+        };
+        let Some(person) = self.next_assignee(card) else {
+            self.set_info(
+                "This board has no other person to assign the card to; add people in [board] \
+                 people.",
+            );
+            return;
+        };
+        let job = BoardJob::Assign {
+            id: card.id.clone(),
+            label: card.label(),
+            person,
+        };
+        if self.dispatch_board_job(job) {
+            self.prompt = PromptState::None;
+        }
+    }
+
+    /// The focus stops the open card dialog has.
+    pub(crate) fn board_card_stops(&self) -> CardStops {
+        let PromptState::HumanBoardCard { card, reply, .. } = &self.prompt else {
+            return CardStops::default();
+        };
+        CardStops {
+            reply: reply.is_some(),
+            recipient: reply
+                .as_ref()
+                .is_some_and(|reply| reply.recipients.len() > 1),
+            assign: self.next_assignee(card).is_some(),
+        }
+    }
+
+    /// The card dialog's recipient control: go to the next one.
+    pub(crate) fn cycle_board_reply_recipient(&mut self) {
+        if let PromptState::HumanBoardCard {
+            reply: Some(reply), ..
+        } = &mut self.prompt
+        {
+            reply.next_recipient();
+            self.mark_frame_dirty();
+        }
+    }
+
+    /// What another side wrote on `card` that has not been passed on: the
+    /// messages a forward would carry.
+    pub(crate) fn forwardable_messages(
+        &self,
+        card: &Card,
+    ) -> Vec<yaran_core::human_board::Message> {
+        let Some(me) = self
+            .human_board
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.me.clone())
+        else {
+            return Vec::new();
+        };
+        card.thread
+            .iter()
+            .filter(|message| message.relayed_at.is_none() && !message.is_from_side(&me))
+            .cloned()
+            .collect()
+    }
+
+    /// Send the reply typed in the open card dialog to its recipient, marking
+    /// the card done with it when `mark_done`. An agent here gets it typed
+    /// (the Enter follows on its delay, and the board is written after); a
+    /// person gets it through the card's conversation. With the field empty
+    /// and an agent chosen, Send passes on what another side wrote instead.
+    /// Anything that stops the send leaves the dialog open with the reply
+    /// still in it, and says why.
+    pub(crate) fn send_board_reply(&mut self, mark_done: bool) {
         let PromptState::HumanBoardCard {
             card,
             reply: Some(reply),
@@ -916,7 +1233,15 @@ impl App {
             return;
         };
         let text = reply.input.text.trim().to_string();
-        if text.is_empty() {
+        let recipient = reply.recipient().clone();
+        let from_elsewhere = reply.from_elsewhere;
+        let card = (**card).clone();
+        let forward = if text.is_empty() && !mark_done {
+            self.forwardable_messages(&card)
+        } else {
+            Vec::new()
+        };
+        if text.is_empty() && (forward.is_empty() || !matches!(recipient, Recipient::Agent(_))) {
             let focus_key = self
                 .bindings
                 .label_for_text_field_dialog(super::Action::ToggleSelection);
@@ -929,8 +1254,74 @@ impl App {
             });
             return;
         }
-        let target = reply.target.clone();
-        let card = (**card).clone();
+        match recipient {
+            Recipient::Person { name, .. } => {
+                let message = NewMessage {
+                    from: self.board_writer(),
+                    side: self
+                        .human_board
+                        .settings
+                        .as_ref()
+                        .and_then(|settings| settings.me.clone()),
+                    text,
+                    done: mark_done,
+                };
+                let job = BoardJob::Reply {
+                    id: card.id.clone(),
+                    label: card.label(),
+                    message,
+                    sent_to: None,
+                    for_person: Some(name),
+                };
+                if self.dispatch_board_job(job) {
+                    self.prompt = PromptState::None;
+                }
+            }
+            Recipient::Agent(target) => {
+                let (typed, after) = if text.is_empty() {
+                    let lines: Vec<String> = forward
+                        .iter()
+                        .map(|message| format!("{} wrote: {}", message.from, message.text))
+                        .collect();
+                    (
+                        lines.join(" / "),
+                        AfterSubmit::Relayed {
+                            keys: forward
+                                .iter()
+                                .map(|m| (m.at, m.from.clone(), m.text.clone()))
+                                .collect(),
+                        },
+                    )
+                } else {
+                    (text.clone(), AfterSubmit::Record { done: mark_done })
+                };
+                let mut prompt = yaran_core::human_board::render_reply(
+                    &self.engine.config.ui.human_board_reply_template,
+                    &card,
+                    &typed,
+                );
+                if from_elsewhere {
+                    prompt.push_str(&format!(
+                        " (Read the whole card with yaran board show {id}; report back on it with \
+                         yaran board reply {id}.)",
+                        id = card.id
+                    ));
+                }
+                self.type_board_reply(target, &card, prompt, text, after);
+            }
+        }
+    }
+
+    /// Type `prompt` into `target` now and schedule its submitting Enter, then
+    /// `after` once it is in.
+    fn type_board_reply(
+        &mut self,
+        target: ReplyTarget,
+        card: &Card,
+        prompt: String,
+        reply: String,
+        after: AfterSubmit,
+    ) {
         if !self
             .engine
             .providers
@@ -950,11 +1341,6 @@ impl App {
             ));
             return;
         }
-        let prompt = yaran_core::human_board::render_reply(
-            &self.engine.config.ui.human_board_reply_template,
-            &card,
-            &text,
-        );
         let writes = yaran_core::macros::compose_send_writes(&prompt);
         let (body, has_submit) = match writes.as_slice() {
             [body, _submit] => (body.clone(), true),
@@ -990,7 +1376,8 @@ impl App {
             target,
             card_id: card.id.clone(),
             card_label: card.label(),
-            reply: text,
+            reply,
+            after,
         });
     }
 
@@ -1029,12 +1416,31 @@ impl App {
                 ));
                 continue;
             }
-            self.dispatch_board_job(BoardJob::Resolve {
-                id: pending.card_id,
-                label: pending.card_label,
-                note: Some(pending.reply),
-                sent_to: Some(pending.target.label),
-            });
+            let job = match pending.after {
+                AfterSubmit::Record { done } => BoardJob::Reply {
+                    id: pending.card_id,
+                    label: pending.card_label,
+                    message: NewMessage {
+                        from: self.board_writer(),
+                        side: self
+                            .human_board
+                            .settings
+                            .as_ref()
+                            .and_then(|settings| settings.me.clone()),
+                        text: pending.reply,
+                        done,
+                    },
+                    sent_to: Some(pending.target.label),
+                    for_person: None,
+                },
+                AfterSubmit::Relayed { keys } => BoardJob::MarkRelayed {
+                    id: pending.card_id,
+                    label: pending.card_label,
+                    keys,
+                    to: pending.target.label,
+                },
+            };
+            self.dispatch_board_job(job);
         }
     }
 
@@ -1053,6 +1459,23 @@ impl App {
             } => format!("Sent your reply to {agent}; marking card {label} done\u{2026}"),
             BoardJob::Resolve { label, .. } => format!("Marking card {label} done\u{2026}"),
             BoardJob::Reopen { label, .. } => format!("Reopening card {label}\u{2026}"),
+            BoardJob::Reply {
+                label,
+                sent_to: Some(agent),
+                ..
+            } => format!("Sent your reply to {agent}; keeping it on card {label}\u{2026}"),
+            BoardJob::Reply {
+                label, for_person, ..
+            } => match for_person {
+                Some(person) => format!("Adding your reply for {person} to card {label}\u{2026}"),
+                None => format!("Adding your reply to card {label}\u{2026}"),
+            },
+            BoardJob::Assign { label, person, .. } => {
+                format!("Assigning card {label} to {person}\u{2026}")
+            }
+            BoardJob::MarkRelayed { label, to, .. } => {
+                format!("Passed the replies on card {label} to {to}; recording it\u{2026}")
+            }
         };
         self.status.set(
             Instant::now(),
@@ -1156,6 +1579,92 @@ impl App {
             (BoardJob::Reopen { label, .. }, Err(err)) => {
                 self.set_error(format!("Could not reopen card {label}: {err}"))
             }
+            (
+                BoardJob::Reply {
+                    label,
+                    sent_to: Some(agent),
+                    message,
+                    ..
+                },
+                Ok(closed),
+            ) => self.set_info(if message.done && closed {
+                format!(
+                    "Sent your reply to {agent} and marked card {label} done; the reply is kept \
+                     as the card's note and in its conversation."
+                )
+            } else if message.done {
+                format!(
+                    "Sent your reply to {agent}; card {label} was already done. The reply is kept \
+                     in its conversation."
+                )
+            } else {
+                format!(
+                    "Sent your reply to {agent}; it is kept in card {label}'s conversation and the \
+                     card stays open."
+                )
+            }),
+            (
+                BoardJob::Reply {
+                    label,
+                    sent_to: Some(agent),
+                    ..
+                },
+                Err(err),
+            ) => self.set_error(format!(
+                "Sent your reply to {agent}, but could not keep it on card {label}: {err}"
+            )),
+            (
+                BoardJob::Reply {
+                    label,
+                    for_person,
+                    message,
+                    ..
+                },
+                Ok(closed),
+            ) => {
+                let person = for_person
+                    .clone()
+                    .unwrap_or_else(|| "the other side".to_string());
+                let shared = self
+                    .human_board
+                    .settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.store.is_folder());
+                let reach = if shared {
+                    format!("it reaches {person} with the board's next sync")
+                } else {
+                    format!(
+                        "{person} sees it on this board (it is not shared: set [board] dir to \
+                         share it)"
+                    )
+                };
+                self.set_info(if message.done && closed {
+                    format!("Added your reply to card {label} and marked it done; {reach}.")
+                } else {
+                    format!("Added your reply to card {label}; {reach}. The card stays open.")
+                })
+            }
+            (BoardJob::Reply { label, .. }, Err(err)) => {
+                self.set_error(format!("Could not add your reply to card {label}: {err}"))
+            }
+            (BoardJob::Assign { label, person, .. }, Ok(true)) => self.set_info(format!(
+                "Card {label} is now in {person}'s queue; it shows on their tab and reaches \
+                 them with the board."
+            )),
+            (BoardJob::Assign { label, person, .. }, Ok(false)) => self.set_info(format!(
+                "Card {label} was already in {person}'s queue; nothing changed."
+            )),
+            (BoardJob::Assign { label, person, .. }, Err(err)) => {
+                self.set_error(format!("Could not assign card {label} to {person}: {err}"))
+            }
+            (BoardJob::MarkRelayed { label, to, .. }, Ok(_)) => self.set_info(format!(
+                "Passed the other side's replies on card {label} to {to}; the card shows they \
+                 were passed."
+            )),
+            (BoardJob::MarkRelayed { label, to, .. }, Err(err)) => self.set_error(format!(
+                "Passed the replies on card {label} to {to}, but could not record that on the \
+                 card: {err}"
+            )),
         }
     }
 

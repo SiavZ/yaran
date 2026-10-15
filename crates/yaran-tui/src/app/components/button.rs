@@ -68,6 +68,8 @@ pub(crate) enum ButtonPressedTarget {
     ConfirmDeleteWorktreeCancel,
     ConfirmDeleteWorktreeConfirm,
     HumanBoardCardClose,
+    HumanBoardCardSend,
+    HumanBoardCardAssign,
     HumanBoardCardAction,
     ConfirmDeleteTerminalCancel,
     ConfirmDeleteTerminalConfirm,

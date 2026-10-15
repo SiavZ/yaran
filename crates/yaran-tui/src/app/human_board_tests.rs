@@ -25,6 +25,7 @@ fn new_card(kind: CardKind, ticket: Option<&str>, title: &str) -> NewCard {
         title: title.to_string(),
         detail: None,
         from: Some("orchestrator".to_string()),
+        ..NewCard::default()
     }
 }
 
@@ -704,13 +705,44 @@ fn the_window_keeps_the_caret_in_view() {
 
 #[test]
 fn focus_rings_include_the_reply_field_only_when_there_is_one() {
-    use super::HumanBoardCardFocus as F;
-    assert_eq!(F::Reply.step(true, true), F::Close);
-    assert_eq!(F::Close.step(true, true), F::Action);
-    assert_eq!(F::Action.step(true, true), F::Reply);
-    assert_eq!(F::Reply.step(false, true), F::Action);
-    assert_eq!(F::Close.step(true, false), F::Action);
-    assert_eq!(F::Action.step(true, false), F::Close);
+    use super::{CardStops, HumanBoardCardFocus as F};
+    let reply = CardStops {
+        reply: true,
+        ..CardStops::default()
+    };
+    assert_eq!(F::Reply.step(true, reply), F::Close);
+    assert_eq!(F::Close.step(true, reply), F::Send);
+    assert_eq!(F::Send.step(true, reply), F::Action);
+    assert_eq!(F::Action.step(true, reply), F::Reply);
+    assert_eq!(F::Reply.step(false, reply), F::Action);
+    let bare = CardStops::default();
+    assert_eq!(F::Close.step(true, bare), F::Action);
+    assert_eq!(F::Action.step(true, bare), F::Close);
+    // A choice of recipients and another person add their stops in drawing
+    // order: the recipient after the field, Assign after the action.
+    let all = CardStops {
+        reply: true,
+        recipient: true,
+        assign: true,
+    };
+    let mut at = F::Reply;
+    let mut ring = vec![at];
+    for _ in 0..5 {
+        at = at.step(true, all);
+        ring.push(at);
+    }
+    assert_eq!(
+        ring,
+        [
+            F::Reply,
+            F::Recipient,
+            F::Close,
+            F::Send,
+            F::Action,
+            F::Assign
+        ]
+    );
+    assert_eq!(F::Assign.step(true, all), F::Reply);
 }
 
 #[test]
@@ -845,6 +877,7 @@ fn a_reply_to_an_agent_that_stopped_keeps_the_text_and_says_why() {
 fn mark_done_without_a_reply_still_works_from_the_button() {
     let (mut app, _tab) = reply_app();
     app.open_selected_board_card();
+    app.handle_key(key(KeyCode::Tab)).unwrap();
     app.handle_key(key(KeyCode::Tab)).unwrap();
     app.handle_key(key(KeyCode::Tab)).unwrap();
     assert!(matches!(
@@ -1347,4 +1380,344 @@ fn a_folder_board_reads_its_notes() {
     app.finish_board_job();
     let note = std::fs::read_to_string(folder.join("K-1.md")).unwrap();
     assert!(note.contains("status: done"), "{note}");
+}
+
+// ── A conversation between two people's boards ────────────────────────────
+
+/// A board shared by Sam and Alex, run by `me`, holding one card that Sam's
+/// agent `session-1` posted on Sam's board for Alex. The agent runs here only
+/// when `me` is Sam.
+fn two_sided_app(me: &str, blocking: bool) -> (App, String) {
+    let mut app = test_app(default_bindings());
+    app.engine.config.ui.human_board = true;
+    app.engine.config.board.people = vec!["Sam".to_string(), "Alex".to_string()];
+    app.engine.config.board.me = me.to_string();
+    app.right_hidden = false;
+    let mut board = Board::default();
+    board.prefix = "S".to_string();
+    let mut card = new_card(CardKind::Confirm, Some("db-9"), "Drop the old audit table?");
+    card.from = Some("session-1".to_string());
+    card.assignee = Some("Alex".to_string());
+    card.origin = Some("Sam".to_string());
+    card.blocking = Some(blocking);
+    board.post(card, at(0)).unwrap();
+    BoardStore::new(&app.engine.paths.root)
+        .update(|current| {
+            *current = board;
+            Ok(())
+        })
+        .unwrap();
+    let tab = app.focused_tab_id("session-1");
+    if me == "Sam" {
+        app.engine
+            .providers
+            .insert(yaran_core::ids::TabId::new(tab.clone()), echo_terminal());
+    }
+    app.load_human_board_now();
+    app.after_board_snapshot();
+    app.finish_board_seen_load();
+    // Every card, whoever's queue it is in.
+    app.show_right_tab(RightTab::Queue(None));
+    app.focus = FocusPane::Files;
+    app.right_section = RightSection::Board;
+    app.human_board.selected = Some(CardId::new("S", 1));
+    (app, tab)
+}
+
+fn card_s1(app: &App) -> Card {
+    BoardStore::new(&app.engine.paths.root)
+        .load()
+        .unwrap()
+        .card(CardId::new("S", 1))
+        .unwrap()
+        .clone()
+}
+
+/// Something written on the other side's machine lands on the board.
+fn other_side_says(app: &mut App, from: &str, text: &str, done: bool) {
+    BoardStore::new(&app.engine.paths.root)
+        .update(|board| {
+            board.reply(
+                CardId::new("S", 1),
+                yaran_core::human_board::NewMessage {
+                    from: from.to_string(),
+                    side: Some(from.to_string()),
+                    text: text.to_string(),
+                    done,
+                },
+                Utc::now(),
+            )
+        })
+        .unwrap();
+    app.load_human_board_now();
+    app.after_board_snapshot();
+}
+
+/// Every status open on the line, the queued ones too, one per line.
+fn latest_status(app: &App) -> String {
+    app.status
+        .snapshot()
+        .into_iter()
+        .map(|status| status.message)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_card_from_the_other_side_answers_its_person_through_the_board() {
+    let (mut app, _tab) = two_sided_app("Alex", false);
+    app.open_selected_board_card();
+    let PromptState::HumanBoardCard {
+        reply: Some(reply), ..
+    } = &app.prompt
+    else {
+        panic!("the card has a reply field: {:?}", app.prompt);
+    };
+    assert_eq!(
+        reply.recipient(),
+        &super::Recipient::Person {
+            name: "Sam".to_string(),
+            poster: Some("session-1".to_string()),
+        }
+    );
+    assert!(
+        !reply.enter_marks_done(),
+        "Enter goes on with the conversation"
+    );
+    let text = screen(&mut app);
+    assert!(text.contains("Reply to"), "{text}");
+    assert!(text.contains(" Sam "), "{text}");
+    assert!(
+        text.contains("(their session-1 posted this card):"),
+        "{text}"
+    );
+    assert!(text.contains("Send"), "{text}");
+    assert!(text.contains("Assign to Sam"), "{text}");
+
+    type_text(&mut app, "Which table exactly?");
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    assert!(
+        matches!(app.prompt, PromptState::None),
+        "the dialog closes on send"
+    );
+    app.finish_board_job();
+    let card = card_s1(&app);
+    assert!(card.is_open(), "a question keeps the card open");
+    assert_eq!(card.thread.len(), 1);
+    assert_eq!(card.thread[0].from, "Alex");
+    assert_eq!(card.thread[0].side.as_deref(), Some("Alex"));
+    assert_eq!(card.thread[0].text, "Which table exactly?");
+    assert!(
+        latest_status(&app).contains("Added your reply to card #S-1 [db-9]"),
+        "{}",
+        latest_status(&app)
+    );
+}
+
+#[test]
+fn send_and_mark_done_answers_the_other_side_and_closes_the_card() {
+    let (mut app, _tab) = two_sided_app("Alex", false);
+    app.open_selected_board_card();
+    type_text(&mut app, "Yes, drop it.");
+    // The action button with text in the field: send it and mark done.
+    app.resolve_human_board_card(true);
+    app.finish_board_job();
+    let card = card_s1(&app);
+    assert!(!card.is_open());
+    assert_eq!(card.resolved_by.as_deref(), Some("Alex"));
+    assert_eq!(card.resolution.as_deref(), Some("Yes, drop it."));
+    assert!(card.thread[0].done);
+}
+
+#[test]
+fn on_your_own_card_you_can_ask_the_other_person_instead_of_the_agent() {
+    let (mut app, tab) = two_sided_app("Sam", false);
+    app.open_selected_board_card();
+    let PromptState::HumanBoardCard {
+        reply: Some(reply), ..
+    } = &app.prompt
+    else {
+        panic!("{:?}", app.prompt);
+    };
+    assert!(matches!(reply.recipient(), super::Recipient::Agent(target) if target.is_poster));
+    assert_eq!(reply.recipients.len(), 2);
+    // Tab reaches the recipient, Enter moves to the next one, Shift-Tab goes
+    // back to the field.
+    app.handle_key(key(KeyCode::Tab)).unwrap();
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.handle_key(key(KeyCode::BackTab)).unwrap();
+    let text = screen(&mut app);
+    assert!(text.contains("Ask"), "{text}");
+    assert!(text.contains(" Alex "), "{text}");
+    type_text(&mut app, "Can you confirm before Friday?");
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    app.finish_board_job();
+    let card = card_s1(&app);
+    assert!(card.is_open());
+    assert_eq!(card.thread[0].from, "Sam");
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(
+        !terminal_text(&app, &tab).contains("Friday"),
+        "nothing was typed into the agent"
+    );
+}
+
+#[test]
+fn assign_hands_the_card_to_the_next_person() {
+    let (mut app, _tab) = two_sided_app("Alex", false);
+    app.open_selected_board_card();
+    app.assign_board_card_from_dialog();
+    app.finish_board_job();
+    assert_eq!(card_s1(&app).assignee.as_deref(), Some("Sam"));
+    assert!(
+        latest_status(&app).contains("is now in Sam's queue"),
+        "{}",
+        latest_status(&app)
+    );
+}
+
+#[test]
+fn the_dots_say_what_waits_and_what_is_unread() {
+    let (mut app, _tab) = two_sided_app("Sam", true);
+    let alex = yaran_core::human_board::Audience::Person("Alex");
+    // The poster is blocked and nobody answered: red. Nothing from Alex yet.
+    assert_eq!(app.board_queue_marks(&alex), (true, false));
+    let text = screen(&mut app);
+    assert!(text.contains("\u{25cf}"), "a dot on the tab strip: {text}");
+
+    other_side_says(&mut app, "Alex", "Which table?", false);
+    // Alex answered: the poster is no longer waiting on a person, and Sam has
+    // something unread.
+    assert_eq!(app.board_queue_marks(&alex), (false, true));
+    let card = card_s1(&app);
+    assert!(app.board_card_unread(&card));
+    app.open_selected_board_card();
+    assert!(!app.board_card_unread(&card), "opening the card reads it");
+    assert_eq!(app.board_queue_marks(&alex), (false, false));
+
+    // What Sam's own side writes is never unread for Sam.
+    BoardStore::new(&app.engine.paths.root)
+        .update(|board| {
+            board.reply(
+                CardId::new("S", 1),
+                yaran_core::human_board::NewMessage {
+                    from: "session-1".to_string(),
+                    side: Some("Sam".to_string()),
+                    text: "The audit_2019 table.".to_string(),
+                    done: false,
+                },
+                Utc::now(),
+            )
+        })
+        .unwrap();
+    app.load_human_board_now();
+    app.after_board_snapshot();
+    assert_eq!(
+        app.board_queue_marks(&alex),
+        (true, false),
+        "asked again: red, nothing unread"
+    );
+}
+
+#[test]
+fn a_reply_from_the_other_side_is_announced() {
+    let (mut app, _tab) = two_sided_app("Sam", false);
+    other_side_says(&mut app, "Alex", "Yes, but keep a backup.", true);
+    let status = latest_status(&app);
+    assert!(
+        status.contains("Alex answered and marked done card #S-1 [db-9]")
+            && status.contains("keep a backup"),
+        "{status}"
+    );
+}
+
+#[test]
+fn a_reply_from_the_other_side_is_relayed_to_the_agent_that_asked() {
+    use std::os::unix::fs::PermissionsExt;
+    let (mut app, _tab) = two_sided_app("Sam", false);
+    app.engine.config.board.relay = true;
+    app.engine.config.board.relay_transport = "amq".to_string();
+    let log = app.engine.paths.root.join("relayed.txt");
+    let fake = app.engine.paths.root.join("fake-yaran");
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    app.human_board.talk.relay_exe = Some(fake);
+    app.drain_human_board();
+
+    other_side_says(&mut app, "Alex", "Yes, drop it.", false);
+    app.drain_board_talk();
+    app.finish_board_relay();
+    let sent = std::fs::read_to_string(&log).expect("the relay ran");
+    let args: Vec<&str> = sent.lines().collect();
+    assert_eq!(
+        &args[..7],
+        [
+            "peer",
+            "send",
+            "--transport",
+            "amq",
+            "--from",
+            "alex",
+            "session-1"
+        ]
+    );
+    assert!(sent.contains("Alex answered on card #S-1 [db-9]"), "{sent}");
+    assert!(sent.contains("yaran board reply S-1"), "{sent}");
+    assert!(
+        card_s1(&app).thread[0].relayed_at.is_some(),
+        "the card shows it was passed"
+    );
+    assert!(
+        latest_status(&app).contains("Passed Alex's reply on card S-1 to session-1"),
+        "{}",
+        latest_status(&app)
+    );
+
+    // Read back with its record, nothing is planned again.
+    app.load_human_board_now();
+    app.after_board_snapshot();
+    app.drain_board_talk();
+    assert!(app.human_board.talk_relay_idle(), "nothing is sent twice");
+}
+
+#[test]
+fn with_relaying_off_send_forwards_the_other_sides_reply_by_hand() {
+    let (mut app, tab) = two_sided_app("Sam", false);
+    other_side_says(&mut app, "Alex", "Yes, drop it.", false);
+    app.open_selected_board_card();
+    let text = screen(&mut app);
+    assert!(
+        text.contains("Forward"),
+        "an empty field offers to pass the reply on: {text}"
+    );
+    // Close, then Send.
+    app.handle_key(key(KeyCode::Tab)).unwrap();
+    app.handle_key(key(KeyCode::Tab)).unwrap();
+    app.handle_key(key(KeyCode::Tab)).unwrap();
+    assert!(matches!(
+        app.prompt,
+        PromptState::HumanBoardCard {
+            focus: super::HumanBoardCardFocus::Send,
+            ..
+        }
+    ));
+    app.handle_key(key(KeyCode::Enter)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(
+        terminal_text(&app, &tab).contains("Alex wrote: Yes, drop it."),
+        "{}",
+        terminal_text(&app, &tab)
+    );
+    app.submit_due_replies(
+        std::time::Instant::now()
+            + std::time::Duration::from_millis(yaran_core::macros::COMPOSE_SUBMIT_DELAY_MS),
+    );
+    app.finish_board_job();
+    let card = card_s1(&app);
+    assert!(card.thread[0].relayed_at.is_some());
+    assert!(card.is_open(), "forwarding does not close the card");
 }

@@ -35,6 +35,8 @@
 pub mod cli;
 pub mod id;
 pub mod markdown;
+pub mod relay;
+pub mod seen;
 pub mod settings;
 pub mod store;
 pub mod sync;

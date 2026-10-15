@@ -5179,11 +5179,24 @@ impl App {
                     (changed_files > 0).then(|| (changed_files.to_string(), quiet))
                 }
             };
+            // A red dot: a card here holds its poster up until a person answers.
+            // A green one: something from another side nobody here has read.
+            let (waits, unread) = match tab {
+                RightTab::Queue(_) => {
+                    let view = tab
+                        .audience()
+                        .unwrap_or(yaran_core::human_board::Audience::Everyone);
+                    self.board_queue_marks(&view)
+                }
+                RightTab::Changes => (false, false),
+            };
+            let dots = usize::from(waits) + usize::from(unread);
             let width = display_width(&label)
                 + count
                     .as_ref()
                     .map(|(text, _)| 1 + display_width(text))
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                + if dots > 0 { 1 + dots } else { 0 };
             let room = usize::from(right.saturating_sub(x));
             if width > room {
                 if room > 0 {
@@ -5202,6 +5215,21 @@ impl App {
             if let Some((text, style)) = count {
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(text, style));
+            }
+            if dots > 0 {
+                spans.push(Span::raw(" "));
+            }
+            if waits {
+                spans.push(Span::styled(
+                    BOARD_DOT,
+                    Style::default().fg(self.theme.diff_remove),
+                ));
+            }
+            if unread {
+                spans.push(Span::styled(
+                    BOARD_DOT,
+                    Style::default().fg(self.theme.diff_add),
+                ));
             }
             let rect = Rect::new(x, area.y, width as u16, 1);
             Paragraph::new(Line::from(spans)).render(rect, buf);
@@ -5885,6 +5913,15 @@ impl App {
                         None => format!("#{}", card.id),
                     };
                     let age = compact_age_for(card, now);
+                    // The card's own dot, at the right edge: red while it holds
+                    // its poster up, green while it holds something unread.
+                    let dot = if self.board_card_waits(card) {
+                        Some(self.theme.diff_remove)
+                    } else if self.board_card_unread(card) {
+                        Some(self.theme.diff_add)
+                    } else {
+                        None
+                    };
                     let who = card
                         .assignee
                         .as_deref()
@@ -5896,7 +5933,7 @@ impl App {
                         + display_width(&reference)
                         + 1
                         + display_width(&who);
-                    let age_width = display_width(&age);
+                    let age_width = display_width(&age) + 2;
                     let title_budget = width.saturating_sub(fixed + age_width + 1);
                     let title = fit_width(&card.title, title_budget);
                     let padding = width
@@ -5916,6 +5953,11 @@ impl App {
                         Span::styled(" ".repeat(padding), base),
                         Span::styled(who, base.fg(self.theme.hint_desc_fg)),
                         Span::styled(age, base.fg(self.theme.hint_dim_desc_fg)),
+                        Span::styled(" ", base),
+                        match dot {
+                            Some(tone) => Span::styled(BOARD_DOT, base.fg(tone)),
+                            None => Span::styled(" ", base),
+                        },
                         Span::styled(" ", base),
                     ])
                 }
@@ -5940,9 +5982,9 @@ impl App {
         let card = card.clone();
         let focus = *focus;
         let scroll = *scroll;
-        let reply = reply
-            .as_ref()
-            .map(|reply| (reply.input.clone(), reply.target.clone()));
+        let reply = reply.as_ref().map(|reply| (**reply).clone());
+        let assign_to = self.next_assignee(&card);
+        let forwardable = self.forwardable_messages(&card);
         self.render_dim_overlay(frame);
         let dialog_width = 76.min(frame.area().width.max(1));
         let inner_width = dialog_width.saturating_sub(2);
@@ -6023,11 +6065,39 @@ impl App {
                 }
             }
         }
+        if !card.thread.is_empty() {
+            body.push(Line::from(""));
+            body.push(Line::from(Span::styled(
+                " Conversation",
+                label.add_modifier(Modifier::BOLD),
+            )));
+            for message in &card.thread {
+                let ago = yaran_core::human_board::compact_age(message.at, now);
+                let mut about = format!(" \u{b7} {}", age_words(&ago));
+                if message.done {
+                    about.push_str(" \u{b7} marked done");
+                }
+                if message.relayed_at.is_some() {
+                    about.push_str(" \u{b7} passed on");
+                }
+                body.push(Line::from(""));
+                body.push(Line::from(vec![
+                    Span::styled(" ", label),
+                    Span::styled(message.from.clone(), text.add_modifier(Modifier::BOLD)),
+                    Span::styled(about, label),
+                ]));
+                for line in message.text.lines() {
+                    for row in indented_body_lines(&format!("  {line}"), inner_width) {
+                        body.push(Line::from(Span::styled(row, text)));
+                    }
+                }
+            }
+        }
         body.push(Line::from(""));
 
         let has_text = reply
             .as_ref()
-            .is_some_and(|(input, _)| !input.text.trim().is_empty());
+            .is_some_and(|reply| !reply.input.text.trim().is_empty());
         let action_label = match (card.is_open(), has_text) {
             (true, true) => "Send & mark done",
             (true, false) => "Mark done",
@@ -6067,22 +6137,73 @@ impl App {
             .areas(dialog.rest);
 
         let mut reply_field = None;
-        if let Some((input, target)) = &reply {
+        let mut recipient_chip = None;
+        if let Some(reply) = &reply {
+            let input = &reply.input;
             let [label_area, field_area] = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(1), Constraint::Length(3)])
                 .areas(reply_area);
-            let who = if target.is_poster {
-                "posted this card"
+            let then = if reply.enter_marks_done() {
+                ", then mark done:"
             } else {
-                "selected agent"
+                ":"
             };
-            Paragraph::new(Line::from(vec![
-                Span::styled(" Reply to ", label),
-                name_chip(&target.label, &self.theme),
-                Span::styled(format!(" ({who}), then mark done:"), label),
-            ]))
-            .render(label_area, frame.buffer_mut());
+            let (lead, name, rest): (&str, String, String) = match reply.recipient() {
+                super::human_board::Recipient::Agent(target) if reply.from_elsewhere => (
+                    " Hand to ",
+                    target.label.clone(),
+                    " (your selected agent) to work on:".to_string(),
+                ),
+                super::human_board::Recipient::Agent(target) => (
+                    " Reply to ",
+                    target.label.clone(),
+                    if target.is_poster {
+                        format!(" (posted this card){then}")
+                    } else {
+                        format!(" (selected agent){then}")
+                    },
+                ),
+                super::human_board::Recipient::Person {
+                    name,
+                    poster: Some(poster),
+                } => (
+                    " Reply to ",
+                    name.clone(),
+                    format!(" (their {poster} posted this card):"),
+                ),
+                super::human_board::Recipient::Person { name, poster: None } => {
+                    (" Ask ", name.clone(), " on this card:".to_string())
+                }
+            };
+            let chip_focused = focus == Focus::Recipient;
+            let mut chip = name_chip(&name, &self.theme);
+            if chip_focused {
+                chip.style = chip
+                    .style
+                    .add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
+            }
+            let chip_width = display_width(&chip.content) as u16;
+            let chip_x = label_area.x + display_width(lead) as u16;
+            let mut spans = vec![Span::styled(lead, label), chip];
+            if reply.recipients.len() > 1 {
+                spans.push(Span::styled(
+                    " \u{21c4}",
+                    if chip_focused {
+                        self.theme.title_style(true)
+                    } else {
+                        label
+                    },
+                ));
+                recipient_chip = Some(Rect::new(
+                    chip_x,
+                    label_area.y,
+                    (chip_width + 2).min(label_area.right().saturating_sub(chip_x)),
+                    1,
+                ));
+            }
+            spans.push(Span::styled(rest, label));
+            Paragraph::new(Line::from(spans)).render(label_area, frame.buffer_mut());
             let field_focused = focus == Focus::Reply;
             let field_block = Block::default()
                 .borders(Borders::ALL)
@@ -6111,40 +6232,82 @@ impl App {
             .render(reply_area, frame.buffer_mut());
         }
 
-        let btn_width = shared_button_width(&["Close", "Send & mark done"]);
+        // The buttons, left to right in focus order: Close, Send (with a
+        // reply field), the action, and Assign (with another person to hand
+        // the card to). Each is as wide as its own label.
+        let send_label = if !has_text
+            && !forwardable.is_empty()
+            && reply.as_ref().is_some_and(|reply| {
+                matches!(reply.recipient(), super::human_board::Recipient::Agent(_))
+            }) {
+            "Forward"
+        } else {
+            "Send"
+        };
+        let assign_label = assign_to
+            .as_ref()
+            .map(|person| format!("Assign to {person}"));
+        let mut row: Vec<(ButtonPressedTarget, String, bool)> = vec![(
+            ButtonPressedTarget::HumanBoardCardClose,
+            "Close".to_string(),
+            focus == Focus::Close,
+        )];
+        if reply.is_some() {
+            row.push((
+                ButtonPressedTarget::HumanBoardCardSend,
+                send_label.to_string(),
+                focus == Focus::Send,
+            ));
+        }
+        row.push((
+            ButtonPressedTarget::HumanBoardCardAction,
+            action_label.to_string(),
+            focus == Focus::Action,
+        ));
+        if let Some(assign) = &assign_label {
+            row.push((
+                ButtonPressedTarget::HumanBoardCardAssign,
+                assign.clone(),
+                focus == Focus::Assign,
+            ));
+        }
         let gap = 2u16;
-        let total = btn_width * 2 + gap;
-        let left_offset = buttons_area.width.saturating_sub(total) / 2;
-        let close_area = Rect {
-            x: buttons_area.x + left_offset,
-            y: buttons_area.y,
-            width: btn_width,
-            height: 3,
-        };
-        let action_area = Rect {
-            x: close_area.x + btn_width + gap,
-            y: buttons_area.y,
-            width: btn_width,
-            height: 3,
-        };
-        Button::new("Close")
-            .kind(ButtonKind::Confirm)
-            .state(button_state_for(
-                ButtonPressedTarget::HumanBoardCardClose,
-                self.pressed_button,
-                focus == Focus::Close,
-                true,
-            ))
-            .render(frame, close_area, &self.theme);
-        Button::new(action_label)
-            .kind(ButtonKind::Confirm)
-            .state(button_state_for(
-                ButtonPressedTarget::HumanBoardCardAction,
-                self.pressed_button,
-                focus == Focus::Action,
-                true,
-            ))
-            .render(frame, action_area, &self.theme);
+        let widths: Vec<u16> = row
+            .iter()
+            .map(|(_, text, _)| shared_button_width(&[text.as_str()]))
+            .collect();
+        let total = widths.iter().sum::<u16>() + gap * (row.len() as u16).saturating_sub(1);
+        let mut x = buttons_area.x + buttons_area.width.saturating_sub(total) / 2;
+        let mut close_area = Rect::default();
+        let mut action_area = Rect::default();
+        let mut send_area = None;
+        let mut assign_area = None;
+        for ((target, text, focused), width) in row.iter().zip(widths) {
+            let width = width.min(buttons_area.right().saturating_sub(x));
+            let area = Rect {
+                x,
+                y: buttons_area.y,
+                width,
+                height: 3,
+            };
+            Button::new(text)
+                .kind(ButtonKind::Confirm)
+                .state(button_state_for(
+                    *target,
+                    self.pressed_button,
+                    *focused,
+                    true,
+                ))
+                .render(frame, area, &self.theme);
+            match target {
+                ButtonPressedTarget::HumanBoardCardClose => close_area = area,
+                ButtonPressedTarget::HumanBoardCardAction => action_area = area,
+                ButtonPressedTarget::HumanBoardCardSend => send_area = Some(area),
+                ButtonPressedTarget::HumanBoardCardAssign => assign_area = Some(area),
+                _ => {}
+            }
+            x = x.saturating_add(width + gap);
+        }
 
         let field_focused = reply.is_some() && focus == Focus::Reply;
         let confirm_key = self.bindings.label_for(Action::Confirm);
@@ -6155,10 +6318,11 @@ impl App {
         } else {
             Some(self.bindings.label_for(Action::ToggleSelection))
         };
-        let confirm_says = if field_focused {
-            "send & mark done"
-        } else {
-            "press"
+        let confirm_says = match &reply {
+            Some(reply) if field_focused && reply.enter_marks_done() => "send & mark done",
+            Some(_) if field_focused => "send",
+            _ if focus == Focus::Recipient => "next recipient",
+            _ => "press",
         };
         let hints = modal_hint_line(
             &self.theme,
@@ -6173,6 +6337,9 @@ impl App {
         self.overlay_layout.active = OverlayMouseLayout::HumanBoardCard {
             close_button: close_area,
             action_button: action_area,
+            send_button: send_area,
+            assign_button: assign_area,
+            recipient_chip,
             reply_field,
         };
     }
@@ -14136,6 +14303,10 @@ fn compact_age_for(
 }
 
 /// `5m` as words for a sentence: "5m ago", or "just now".
+/// The dot a board tab or row wears: red for a card waiting on a person,
+/// green for something unread from another side.
+const BOARD_DOT: &str = "\u{25cf}";
+
 fn age_words(compact: &str) -> String {
     if compact == "now" {
         "just now".to_string()

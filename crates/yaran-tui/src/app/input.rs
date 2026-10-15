@@ -234,8 +234,12 @@ enum PromptMouseTarget {
     ConfirmDeleteConfirm,
     HumanBoardCardClose,
     HumanBoardCardAction,
+    HumanBoardCardSend,
+    HumanBoardCardAssign,
     /// The card dialog's reply field.
     HumanBoardCardReply,
+    /// The card dialog's recipient chip: a click moves to the next one.
+    HumanBoardCardRecipient,
     ConfirmDeleteTerminalCancel,
     ConfirmDeleteTerminalConfirm,
     ConfirmCloseTabCancel,
@@ -334,6 +338,10 @@ impl ButtonPressedTarget {
             }
             PromptMouseTarget::HumanBoardCardAction => {
                 Some(ButtonPressedTarget::HumanBoardCardAction)
+            }
+            PromptMouseTarget::HumanBoardCardSend => Some(ButtonPressedTarget::HumanBoardCardSend),
+            PromptMouseTarget::HumanBoardCardAssign => {
+                Some(ButtonPressedTarget::HumanBoardCardAssign)
             }
             PromptMouseTarget::ConfirmDeleteTerminalCancel => {
                 Some(ButtonPressedTarget::ConfirmDeleteTerminalCancel)
@@ -468,6 +476,7 @@ impl ButtonPressedTarget {
             | PromptMouseTarget::Checkbox(_)
             | PromptMouseTarget::RenameInput
             | PromptMouseTarget::HumanBoardCardReply
+            | PromptMouseTarget::HumanBoardCardRecipient
             | PromptMouseTarget::NameNewAgentInput
             | PromptMouseTarget::NameNewAgentRow(_)
             | PromptMouseTarget::PullRequestInput
@@ -4997,14 +5006,25 @@ impl App {
         match modal_key_step(action, key, field_focused) {
             ModalKeyStep::Close => self.resolve_human_board_card(false),
             ModalKeyStep::MoveFocus(forward) => {
-                if let PromptState::HumanBoardCard { focus, reply, .. } = &mut self.prompt {
-                    *focus = focus.step(forward, reply.is_some());
+                let stops = self.board_card_stops();
+                if let PromptState::HumanBoardCard { focus, .. } = &mut self.prompt {
+                    *focus = focus.step(forward, stops);
                 }
             }
             ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus => match focus {
-                Focus::Reply if field_focused => self.send_board_reply(),
+                Focus::Reply if field_focused => {
+                    let done = matches!(
+                        &self.prompt,
+                        PromptState::HumanBoardCard { reply: Some(reply), .. }
+                            if reply.enter_marks_done()
+                    );
+                    self.send_board_reply(done);
+                }
                 Focus::Reply | Focus::Close => self.resolve_human_board_card(false),
+                Focus::Recipient => self.cycle_board_reply_recipient(),
+                Focus::Send => self.send_board_reply(false),
                 Focus::Action => self.resolve_human_board_card(true),
+                Focus::Assign => self.assign_board_card_from_dialog(),
             },
             ModalKeyStep::FallThroughToField => {
                 if field_focused
@@ -6873,20 +6893,33 @@ impl App {
             OverlayMouseLayout::HumanBoardCard {
                 close_button,
                 action_button,
+                send_button,
+                assign_button,
+                recipient_chip,
                 reply_field,
-            } => click_target(
-                &[
+            } => {
+                let mut buttons = vec![
                     (close_button, PromptMouseTarget::HumanBoardCardClose),
                     (action_button, PromptMouseTarget::HumanBoardCardAction),
-                ],
-                column,
-                row,
-            )
-            .or_else(|| {
-                reply_field
-                    .filter(|field| contains_point(*field, column, row))
-                    .map(|_| PromptMouseTarget::HumanBoardCardReply)
-            }),
+                ];
+                if let Some(send) = send_button {
+                    buttons.push((send, PromptMouseTarget::HumanBoardCardSend));
+                }
+                if let Some(assign) = assign_button {
+                    buttons.push((assign, PromptMouseTarget::HumanBoardCardAssign));
+                }
+                click_target(&buttons, column, row)
+                    .or_else(|| {
+                        recipient_chip
+                            .filter(|chip| contains_point(*chip, column, row))
+                            .map(|_| PromptMouseTarget::HumanBoardCardRecipient)
+                    })
+                    .or_else(|| {
+                        reply_field
+                            .filter(|field| contains_point(*field, column, row))
+                            .map(|_| PromptMouseTarget::HumanBoardCardReply)
+                    })
+            }
             OverlayMouseLayout::ConfirmDeleteTerminal {
                 cancel_button,
                 delete_button,
@@ -9580,6 +9613,12 @@ impl App {
             PromptMouseTarget::HumanBoardCardReply => {
                 self.set_board_reply_cursor_from_mouse(mouse.column);
             }
+            PromptMouseTarget::HumanBoardCardRecipient => {
+                if let PromptState::HumanBoardCard { focus, .. } = &mut self.prompt {
+                    *focus = super::human_board::HumanBoardCardFocus::Recipient;
+                }
+                self.cycle_board_reply_recipient();
+            }
             PromptMouseTarget::NameNewAgentInput => {
                 self.set_name_new_agent_cursor_from_mouse(mouse.column);
             }
@@ -9628,6 +9667,8 @@ impl App {
             | PromptMouseTarget::ConfirmDeleteWorktreeConfirm
             | PromptMouseTarget::HumanBoardCardClose
             | PromptMouseTarget::HumanBoardCardAction
+            | PromptMouseTarget::HumanBoardCardSend
+            | PromptMouseTarget::HumanBoardCardAssign
             | PromptMouseTarget::ConfirmDeleteTerminalCancel
             | PromptMouseTarget::ConfirmDeleteTerminalConfirm
             | PromptMouseTarget::ConfirmCloseTabCancel
@@ -9748,6 +9789,14 @@ impl App {
             }
             ButtonPressedTarget::HumanBoardCardAction => {
                 self.resolve_human_board_card(true);
+                false
+            }
+            ButtonPressedTarget::HumanBoardCardSend => {
+                self.send_board_reply(false);
+                false
+            }
+            ButtonPressedTarget::HumanBoardCardAssign => {
+                self.assign_board_card_from_dialog();
                 false
             }
             ButtonPressedTarget::ConfirmDeleteTerminalCancel => {

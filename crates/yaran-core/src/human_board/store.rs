@@ -91,8 +91,14 @@ impl BoardStore {
     /// The private board document of the same yaran home: where a board
     /// lived before it moved to a folder, for `yaran board import`.
     pub fn private_document(&self) -> BoardStore {
-        let root = self.lock_path.parent().unwrap_or(Path::new("."));
-        BoardStore::new(root)
+        BoardStore::new(self.home())
+    }
+
+    /// The yaran home this store locks through: where this machine keeps what
+    /// is its own about the board (what its person has read), even when the
+    /// cards themselves are shared.
+    pub fn home(&self) -> &Path {
+        self.lock_path.parent().unwrap_or(Path::new("."))
     }
 
     /// Read the board. A missing document or folder is an empty board; an
@@ -180,6 +186,11 @@ fn load_document(path: &Path) -> Result<Board> {
             path.display()
         )
     })
+}
+
+/// Write a file of this machine's own (owner-only) whole, through a rename.
+pub(crate) fn write_private(path: &Path, body: &[u8]) -> Result<()> {
+    write_atomic(path, body, Some(0o600))
 }
 
 fn write_document(path: &Path, board: &Board) -> Result<()> {
