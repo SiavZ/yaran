@@ -134,11 +134,18 @@ pub fn plan(
         let posted_here = origin
             .as_deref()
             .is_none_or(|origin| same_person(origin, me));
+        // Handed over: someone on another side assigned it to `me`. A card the
+        // other side's agents merely posted for `me` is a question for the
+        // person, and waits for them on the board.
         let handed_over = !posted_here
             && card
                 .assignee
                 .as_deref()
-                .is_some_and(|assignee| same_person(assignee, me));
+                .is_some_and(|assignee| same_person(assignee, me))
+            && card
+                .assigned_by
+                .as_deref()
+                .is_some_and(|by| !same_person(by, me));
         let to = match (&card.from, &settings.relay_to) {
             (Some(poster), _) if posted_here && is_local_agent(poster) => poster.clone(),
             (_, Some(relay_to)) if handed_over => relay_to.clone(),
@@ -156,6 +163,7 @@ pub fn plan(
         let person = pending
             .first()
             .map(|message| message.side.clone().unwrap_or_else(|| message.from.clone()))
+            .or_else(|| card.assigned_by.clone().filter(|_| card_itself))
             .or_else(|| origin.clone())
             .unwrap_or_else(|| "someone".to_string());
         let text = if card_itself {
@@ -368,6 +376,12 @@ mod tests {
             "Needed before Friday.",
             false,
         );
+        assert!(
+            plan(&board, &settings("Sam", Some("hub")), &here).is_empty(),
+            "posted for Sam is a question for Sam: it waits for the person"
+        );
+        board.assign(&id, None, Some("Alex"), at(1)).unwrap();
+        board.assign(&id, Some("Sam"), Some("Alex"), at(1)).unwrap();
 
         assert!(
             plan(&board, &settings("Sam", None), &here).is_empty(),

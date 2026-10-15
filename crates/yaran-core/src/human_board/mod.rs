@@ -329,6 +329,12 @@ pub struct Card {
     /// card's queue until somebody does.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub blocking: bool,
+    /// The person who last put the card in someone's queue with `assign` (the
+    /// card dialog's Assign), as opposed to the queue it was posted to. A card
+    /// another person assigned to you is work handed over; one merely posted
+    /// for you is a question for you.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_by: Option<String>,
     /// When the card itself was passed to an agent on another side (see
     /// [`Message::relayed_at`]), so it is passed once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -648,6 +654,7 @@ impl Board {
                 .origin
                 .as_deref()
                 .and_then(|origin| clean(origin, MAX_FROM_CHARS, false)),
+            assigned_by: None,
             blocking: card.blocking.unwrap_or(false),
             relayed_at: None,
             thread: Vec::new(),
@@ -800,14 +807,17 @@ impl Board {
         &mut self,
         id: impl Into<CardId>,
         assignee: Option<&str>,
+        by: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<bool> {
         let assignee = assignee.and_then(|assignee| clean(assignee, MAX_FROM_CHARS, false));
+        let by = by.and_then(|by| clean(by, MAX_FROM_CHARS, false));
         let card = self.card_mut(id)?;
         if same_assignee(card.assignee.as_deref(), assignee.as_deref()) {
             return Ok(false);
         }
         card.assignee = assignee;
+        card.assigned_by = by;
         card.updated_at = now;
         Ok(true)
     }

@@ -1721,3 +1721,39 @@ fn with_relaying_off_send_forwards_the_other_sides_reply_by_hand() {
     assert!(card.thread[0].relayed_at.is_some());
     assert!(card.is_open(), "forwarding does not close the card");
 }
+
+#[test]
+fn a_card_with_a_very_long_title_can_be_read_to_its_last_word() {
+    let mut board = Board::default();
+    let question = format!(
+        "Retention table - one line from Alex please: {} THE-LAST-WORDS",
+        "the draft policy says 30/14/7 days and the plan records the same resolution. ".repeat(60)
+    );
+    board
+        .post(new_card(CardKind::Task, Some("6001"), &question), at(0))
+        .unwrap();
+    let mut app = board_app(Some(board));
+    app.focus = FocusPane::Files;
+    app.right_section = RightSection::Board;
+    app.human_board.selected = Some(CardId::plain(1));
+    app.open_selected_board_card();
+    let text = screen(&mut app);
+    assert!(
+        text.contains("Retention table - one line from Alex please"),
+        "a short headline leads the card: {text}"
+    );
+    assert!(
+        text.contains("scroll"),
+        "a long card says it scrolls: {text}"
+    );
+    for _ in 0..40 {
+        if screen(&mut app).contains("THE-LAST-WORDS") {
+            break;
+        }
+        app.handle_key(key(KeyCode::PageDown)).unwrap();
+    }
+    assert!(
+        screen(&mut app).contains("THE-LAST-WORDS"),
+        "the whole question is in the card"
+    );
+}

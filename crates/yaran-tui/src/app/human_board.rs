@@ -204,6 +204,8 @@ pub(crate) enum BoardJob {
         id: CardId,
         label: String,
         person: String,
+        /// Who assigned it: this machine's person.
+        by: Option<String>,
     },
     /// Record that messages another side wrote were passed to an agent here
     /// by hand (the dialog's forward).
@@ -608,7 +610,9 @@ pub(crate) fn run_board_job(store: &BoardStore, job: &BoardJob) -> Result<bool, 
                 board.reply(id, message.clone(), now)?;
                 Ok(was_open && board.card(id).is_some_and(|card| !card.is_open()))
             }
-            BoardJob::Assign { id, person, .. } => board.assign(id, Some(person), now),
+            BoardJob::Assign { id, person, by, .. } => {
+                board.assign(id, Some(person), by.as_deref(), now)
+            }
             BoardJob::MarkRelayed { id, keys, .. } => {
                 let mut changed = false;
                 for (at, from, text) in keys {
@@ -1164,6 +1168,11 @@ impl App {
             id: card.id.clone(),
             label: card.label(),
             person,
+            by: self
+                .human_board
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.me.clone()),
         };
         if self.dispatch_board_job(job) {
             self.prompt = PromptState::None;

@@ -177,7 +177,8 @@ pub fn run_with(
             let assignee = settings.person(person)?;
             let (id, changed) = store.update(|board| {
                 let id = board.find(id)?;
-                let changed = board.assign(&id, assignee.as_deref(), Utc::now())?;
+                let changed =
+                    board.assign(&id, assignee.as_deref(), settings.me.as_deref(), Utc::now())?;
                 Ok((id, changed))
             })?;
             let queue = assignee

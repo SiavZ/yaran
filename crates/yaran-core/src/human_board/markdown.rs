@@ -39,7 +39,7 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone,
 use super::id::CardId;
 use super::{
     Card, CardKind, MAX_DETAIL_CHARS, MAX_FROM_CHARS, MAX_MESSAGE_CHARS, MAX_NOTE_CHARS,
-    MAX_THREAD_MESSAGES, MAX_TITLE_CHARS, Message, Priority, clean, normalize_ticket,
+    MAX_THREAD_MESSAGES, Message, Priority, clean, normalize_ticket,
 };
 
 /// Why a note that looks like a card could not be read as one.
@@ -80,6 +80,7 @@ pub fn render(card: &Card) -> String {
     text(&mut out, "resolved_by", card.resolved_by.as_deref());
     text(&mut out, "resolution", card.resolution.as_deref());
     text(&mut out, "origin", card.origin.as_deref());
+    text(&mut out, "assigned_by", card.assigned_by.as_deref());
     if card.blocking {
         word(&mut out, "blocking", "true");
     }
@@ -210,9 +211,9 @@ pub fn parse(
     let kind = CardKind::parse(kind_text).ok_or_else(|| {
         format!("its kind {kind_text:?} is not one of task, validate, confirm, info")
     })?;
-    let title = props
+    let raw_title = props
         .get("title")
-        .and_then(|title| clean(title, MAX_TITLE_CHARS, false))
+        .filter(|title| !title.trim().is_empty())
         .ok_or("it has no title")?;
     let id = match props.get("id") {
         Some(id) => CardId::parse(id).ok_or_else(|| format!("its id {id:?} is not a card id"))?,
@@ -257,6 +258,10 @@ pub fn parse(
     };
     let (detail_lines, thread) = split_conversation(&body, updated_at);
     let body = detail_lines.join("\n");
+    // A title typed too long for one row keeps a headline, and the whole of it
+    // opens the detail, as a posted card's does.
+    let (title, detail) = super::fit_title(raw_title, clean(body.trim(), MAX_DETAIL_CHARS, true))
+        .ok_or("it has no title")?;
     let blocking = match props.get("blocking") {
         Some(value) => parse_flag(value)
             .ok_or_else(|| format!("its blocking {value:?} is neither true nor false"))?,
@@ -272,10 +277,11 @@ pub fn parse(
             .and_then(|ticket| normalize_ticket(ticket)),
         title,
         origin: text_prop("origin", MAX_FROM_CHARS, false),
+        assigned_by: text_prop("assigned_by", MAX_FROM_CHARS, false),
         blocking,
         relayed_at: time("relayed")?,
         thread,
-        detail: clean(body.trim(), MAX_DETAIL_CHARS, true),
+        detail,
         from: text_prop("from", MAX_FROM_CHARS, false),
         created_at,
         updated_at,
@@ -664,6 +670,7 @@ mod tests {
             resolved_by: None,
             resolution: None,
             origin: None,
+            assigned_by: None,
             blocking: false,
             relayed_at: None,
             thread: Vec::new(),
@@ -763,9 +770,16 @@ mod tests {
         // passing it to the terminal.
         assert!(!card.title.contains('\x1b'), "{:?}", card.title);
         assert_eq!(card.title, "\\x1b[31mred\\x1b[0m title");
-        let long = format!("---\nkind: task\ntitle: {}\n---\n", "x".repeat(400));
+        let words = "word ".repeat(80);
+        let long = format!("---\nkind: task\ntitle: {words}\n---\nThe body.\n");
         let card = parse(&long, "G-3", at(0)).unwrap().unwrap();
-        assert_eq!(card.title.chars().count(), MAX_TITLE_CHARS);
+        assert!(card.title.chars().count() <= super::super::HEADLINE_CHARS + 1);
+        let detail = card.detail.unwrap();
+        assert!(
+            detail.starts_with(words.trim()),
+            "the whole title opens the detail"
+        );
+        assert!(detail.ends_with("The body."));
     }
 
     #[test]
