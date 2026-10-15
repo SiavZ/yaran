@@ -63,6 +63,49 @@ pub const BOARD_VERSION: u32 = 1;
 
 /// Longest title kept, in characters. A title is one row on the board.
 pub const MAX_TITLE_CHARS: usize = 300;
+/// Longest headline a card keeps when its title was too long to be one row:
+/// the whole title then opens the detail, so no word of it is lost.
+pub const HEADLINE_CHARS: usize = 120;
+
+/// A title and detail as a card keeps them. A title longer than
+/// [`MAX_TITLE_CHARS`] becomes a short headline (its first sentence or clause
+/// when one ends early enough, else whole words and an ellipsis), and the
+/// whole title moves to the top of the detail. `None` when no title is left.
+pub fn fit_title(title: &str, detail: Option<String>) -> Option<(String, Option<String>)> {
+    let full = clean(title, MAX_DETAIL_CHARS, false)?;
+    if full.chars().count() <= MAX_TITLE_CHARS {
+        return Some((full, detail));
+    }
+    let chars: Vec<char> = full.chars().collect();
+    let window: String = chars[..HEADLINE_CHARS.min(chars.len())].iter().collect();
+    let clause = [". ", "? ", "! ", ": ", "; ", " - ", " \u{2014} "]
+        .iter()
+        .filter_map(|mark| window.find(mark).map(|at| (at, *mark)))
+        .filter(|(at, _)| window[..*at].chars().count() >= 20)
+        .min_by_key(|(at, _)| *at);
+    let headline = match clause {
+        Some((at, mark)) => {
+            let keep = if mark.starts_with('?') || mark.starts_with('!') {
+                1
+            } else {
+                0
+            };
+            window[..at + keep].trim_end().to_string()
+        }
+        None => {
+            let cut = window
+                .rfind(' ')
+                .filter(|at| *at > 20)
+                .unwrap_or(window.len());
+            format!("{}\u{2026}", window[..cut].trim_end())
+        }
+    };
+    let detail = match detail {
+        Some(detail) => format!("{full}\n\n{detail}"),
+        None => full,
+    };
+    Some((headline, clean(&detail, MAX_DETAIL_CHARS, true)))
+}
 /// Longest detail kept, in characters. The detail is read in the card view.
 pub const MAX_DETAIL_CHARS: usize = 8_000;
 /// Longest ticket reference kept, in characters.
@@ -536,14 +579,14 @@ impl Board {
         let Some(kind) = card.kind else {
             bail!("a card needs a kind: one of task, validate, confirm, info");
         };
-        let Some(title) = clean(&card.title, MAX_TITLE_CHARS, false) else {
-            bail!("a card needs a title");
-        };
-        let ticket = card.ticket.as_deref().and_then(normalize_ticket);
         let detail = card
             .detail
             .as_deref()
             .and_then(|detail| clean(detail, MAX_DETAIL_CHARS, true));
+        let Some((title, detail)) = fit_title(&card.title, detail) else {
+            bail!("a card needs a title");
+        };
+        let ticket = card.ticket.as_deref().and_then(normalize_ticket);
         let from = card
             .from
             .as_deref()

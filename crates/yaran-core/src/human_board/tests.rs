@@ -128,10 +128,17 @@ fn card_text_is_sanitized_flattened_and_bounded() {
         card.title
     );
     assert!(card.title.starts_with("\\x1b]0;pwned\\x07 two lines"));
-    assert_eq!(card.title.chars().count(), MAX_TITLE_CHARS);
+    assert!(card.title.chars().count() <= HEADLINE_CHARS + 1);
     assert!(card.title.ends_with('\u{2026}'));
     assert_eq!(card.ticket.as_deref(), Some("42"));
-    assert_eq!(card.detail.as_deref(), Some("keep\nthe lines\\x1b[2J"));
+    // Nothing of the long title is lost: it opens the detail, whole.
+    let detail = card.detail.as_deref().unwrap();
+    assert!(
+        detail.starts_with("\\x1b]0;pwned\\x07 two lines"),
+        "{detail}"
+    );
+    assert!(detail.contains(&long), "{detail}");
+    assert!(detail.ends_with("keep\nthe lines\\x1b[2J"), "{detail}");
     assert_eq!(card.from, None, "a blank poster is no poster");
 }
 
@@ -721,4 +728,17 @@ fn relaying_is_recorded_once_and_does_not_count_as_news() {
     );
     assert!(board.set_blocking(&id, true, at(7)).unwrap());
     assert!(!board.set_blocking(&id, true, at(8)).unwrap());
+}
+
+#[test]
+fn a_long_title_keeps_a_headline_and_moves_whole_into_the_detail() {
+    let question = "Retention table - one line from Alex please: the draft policy says 30/14/7 days and the plan records that. ".repeat(4);
+    let (title, detail) = fit_title(&question, None).unwrap();
+    assert_eq!(title, "Retention table - one line from Alex please");
+    assert_eq!(detail.as_deref(), Some(question.trim()));
+    let (short, kept) = fit_title("Approve the payout terms", Some("why".to_string())).unwrap();
+    assert_eq!(
+        (short.as_str(), kept.as_deref()),
+        ("Approve the payout terms", Some("why"))
+    );
 }
