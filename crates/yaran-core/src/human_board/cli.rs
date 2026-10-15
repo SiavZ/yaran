@@ -84,8 +84,20 @@ Kinds:
 The poster is --from, else $YARAN_AMQ_HANDLE or $AM_ME, which yaran sets
 for every agent it launches.";
 
+/// The agent whose working directory `yaran board` runs in, when no handle
+/// variable says who is posting: set once by [`run_board`].
+static AGENT_HERE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
 /// Entry point for `yaran board <args>`.
 pub fn run_board(args: &[String], paths: &YaranPaths) -> Result<()> {
+    // An agent whose launch did not export its handle is still recognised by
+    // the directory it works in, so its posts and replies are signed with its
+    // handle rather than the person's name.
+    let _ = AGENT_HERE.set(
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| crate::peer::router::agent_handle_for_cwd(paths, &cwd)),
+    );
     let config = crate::config::load_config(paths);
     let settings = BoardSettings::from_config(&config.board, &paths.root);
     let mut stdin = std::io::stdin();
@@ -237,12 +249,14 @@ pub fn run_with(
     }
 }
 
-/// The poster when `--from` is not given: the handle yaran gives every agent.
+/// The poster when `--from` is not given: the handle yaran gives every agent,
+/// else the agent whose working directory this runs in.
 fn default_from() -> Option<String> {
     ["YARAN_AMQ_HANDLE", "AM_ME"]
         .iter()
         .find_map(|var| crate::brand_env::var(var).ok())
         .filter(|value| !value.trim().is_empty())
+        .or_else(|| AGENT_HERE.get().cloned().flatten())
 }
 
 /// A priority from the CLI, or an error naming the valid levels.

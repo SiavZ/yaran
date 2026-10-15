@@ -404,19 +404,15 @@ impl App {
         }) else {
             return;
         };
-        let exe = match talk
+        // The path yaran was started from, not the OS's answer now: once a newer
+        // build replaces the file, that answer names the unlinked old one.
+        let Some(exe) = talk
             .relay_exe
             .clone()
-            .map(Ok)
-            .unwrap_or_else(std::env::current_exe)
-        {
-            Ok(exe) => exe,
-            Err(err) => {
-                logger::warn(&format!(
-                    "cannot relay board replies: no path to yaran: {err}"
-                ));
-                return;
-            }
+            .or_else(yaran_core::reload_policy::reload_exe)
+        else {
+            logger::warn("cannot relay board replies: yaran cannot tell where it was started from");
+            return;
         };
         let store = settings.store.clone();
         let transport = settings.relay_transport.clone();
