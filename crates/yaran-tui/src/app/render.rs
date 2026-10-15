@@ -5986,7 +5986,26 @@ impl App {
         let assign_to = self.next_assignee(&card);
         let forwardable = self.forwardable_messages(&card);
         self.render_dim_overlay(frame);
-        let dialog_width = 76.min(frame.area().width.max(1));
+        // Wide enough for the widest row of buttons the dialog can show (Close,
+        // Send, Send & mark done, Assign to the next person), so none is cut
+        // off at the border; never wider than the screen.
+        let mut widest_row = vec!["Close", "Send & mark done"];
+        if reply.is_some() {
+            widest_row.push("Forward");
+        }
+        let assign_text = assign_to
+            .as_ref()
+            .map(|person| format!("Assign to {person}"));
+        if let Some(assign) = &assign_text {
+            widest_row.push(assign.as_str());
+        }
+        let buttons_width: u16 = widest_row
+            .iter()
+            .map(|label| shared_button_width(&[label]))
+            .sum::<u16>()
+            + 2 * (widest_row.len() as u16).saturating_sub(1)
+            + 4;
+        let dialog_width = buttons_width.max(76).min(frame.area().width.max(1));
         let inner_width = dialog_width.saturating_sub(2);
         let text = Style::default().fg(self.theme.text_fg);
         let label = Style::default().fg(self.theme.hint_desc_fg);

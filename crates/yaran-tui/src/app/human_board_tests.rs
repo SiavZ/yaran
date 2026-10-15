@@ -1757,3 +1757,40 @@ fn a_card_with_a_very_long_title_can_be_read_to_its_last_word() {
         "the whole question is in the card"
     );
 }
+
+#[test]
+fn every_button_of_a_full_card_dialog_is_drawn_whole() {
+    let mut app = test_app(default_bindings());
+    app.engine.config.ui.human_board = true;
+    app.engine.config.board.people = vec!["Robin".to_string(), "Kai".to_string()];
+    app.engine.config.board.me = "Kai".to_string();
+    app.right_hidden = false;
+    let mut board = Board::default();
+    board.prefix = "G".to_string();
+    let mut card = new_card(CardKind::Task, Some("6001"), "Retention table");
+    card.assignee = Some("Kai".to_string());
+    card.origin = Some("Robin".to_string());
+    board.post(card, at(0)).unwrap();
+    BoardStore::new(&app.engine.paths.root)
+        .update(|current| {
+            *current = board;
+            Ok(())
+        })
+        .unwrap();
+    app.load_human_board_now();
+    app.show_right_tab(RightTab::Queue(None));
+    app.human_board.selected = Some(CardId::new("G", 1));
+    app.open_selected_board_card();
+    let text = screen(&mut app);
+    let row = text
+        .lines()
+        .find(|line| line.contains("Assign to Robin"))
+        .expect("the Assign button is drawn");
+    // The button keeps its padding like its neighbours: it is not squeezed
+    // against the dialog's border.
+    let at = row.find("Assign to Robin").unwrap();
+    assert!(
+        row[..at].ends_with(' '),
+        "the Assign button has room before its label: {row}"
+    );
+}
