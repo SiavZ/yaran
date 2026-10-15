@@ -11,7 +11,8 @@ use yaran_core::human_board::{Audience, Board, BoardStore, CardId, CardKind, New
 use super::*;
 use crate::app::test_support::{default_bindings, test_app};
 use crate::app::{
-    FocusPane, PromptState, RightLower, RightSection, TermGridPos, TerminalSelection,
+    FocusPane, OverlayMouseLayout, PromptState, RightLower, RightSection, TermGridPos,
+    TerminalSelection,
 };
 
 fn at(minute: i64) -> chrono::DateTime<Utc> {
@@ -1866,10 +1867,21 @@ fn every_element_of_the_card_dialog_shares_one_left_edge() {
         .chars()
         .position(|c| c == '\u{256d}')
         .expect("the first button's top-left corner");
+    let key_line = lines
+        .iter()
+        .find(|line| line.contains("drag text to copy"))
+        .expect("the key line");
+    let key_left = key_line
+        .chars()
+        .position(|c| !c.is_whitespace() && c != '\u{2502}' && c != '\u{2551}')
+        .expect("text on the key line");
     assert_eq!(title, kind, "the title and the fields start together");
     assert_eq!(kind, reply, "and the reply label");
-    assert_eq!(field_left, reply, "and the reply field");
-    assert_eq!(button_left, reply, "and the buttons");
+    assert_eq!(key_left, reply, "and the key line");
+    // Boxes draw their border down the middle of a cell, so text one column in
+    // starts right where the borders do.
+    assert_eq!(field_left + 1, reply, "the reply field's border");
+    assert_eq!(button_left + 1, reply, "the buttons' borders");
 }
 
 #[test]
@@ -2006,4 +2018,62 @@ fn a_card_in_someone_elses_queue_asks_them_first() {
         !reply.enter_marks_done(),
         "asking a person goes on with the card"
     );
+}
+
+#[test]
+fn a_long_reply_scrolls_with_the_wheel_and_the_line_keys() {
+    let (mut app, _tab) = two_sided_app("Alex", false);
+    app.open_selected_board_card();
+    screen(&mut app);
+    type_text(&mut app, "FIRSTWORD ");
+    type_text(&mut app, &"word ".repeat(200));
+    let text = screen(&mut app);
+    assert!(
+        !text.contains("FIRSTWORD"),
+        "the field shows the end while typing"
+    );
+    let OverlayMouseLayout::HumanBoardCard {
+        reply_field: Some(field),
+        ..
+    } = app.overlay_layout.active
+    else {
+        panic!("the reply field is laid out");
+    };
+    let wheel = |kind| MouseEvent {
+        kind,
+        column: field.x + 3,
+        row: field.y + 2,
+        modifiers: KeyModifiers::NONE,
+    };
+    for _ in 0..40 {
+        app.handle_mouse(wheel(MouseEventKind::ScrollUp));
+    }
+    assert!(
+        screen(&mut app).contains("FIRSTWORD"),
+        "the wheel over the field reaches the start of the reply"
+    );
+    // Typing brings the end back.
+    type_text(&mut app, "LAST");
+    assert!(screen(&mut app).contains("LAST"));
+    assert!(!screen(&mut app).contains("FIRSTWORD"));
+    // The line keys move the caret between the reply's rows.
+    let PromptState::HumanBoardCard {
+        reply: Some(reply), ..
+    } = &app.prompt
+    else {
+        panic!();
+    };
+    let width = super::super::human_board_dialog::reply_text_width(field.width);
+    let (_, _, row_before, _) =
+        super::super::human_board_dialog::reply_window(&reply.input, width, reply.scroll);
+    app.handle_key(key(KeyCode::Up)).unwrap();
+    let PromptState::HumanBoardCard {
+        reply: Some(reply), ..
+    } = &app.prompt
+    else {
+        panic!();
+    };
+    let (_, _, row_after, _) =
+        super::super::human_board_dialog::reply_window(&reply.input, width, reply.scroll);
+    assert_eq!(row_after + 1, row_before, "Up moved the caret one row up");
 }

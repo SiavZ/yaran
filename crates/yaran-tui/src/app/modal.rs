@@ -1124,6 +1124,7 @@ mod tests {
                         )],
                         chosen: 0,
                         from_elsewhere: false,
+                        scroll: None,
                     })),
                 },
             ),

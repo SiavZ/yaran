@@ -319,6 +319,9 @@ pub(crate) struct CardReply {
     /// The card came from another person's board: an agent here is handed the
     /// card, not answering it.
     pub(crate) from_elsewhere: bool,
+    /// The first row of the reply the field shows, when the wheel moved it;
+    /// `None` keeps the caret's row in view (the reply's end while typing).
+    pub(crate) scroll: Option<usize>,
 }
 
 impl CardReply {
@@ -960,6 +963,7 @@ impl App {
                 recipients,
                 chosen: 0,
                 from_elsewhere,
+                scroll: None,
             })
         });
         let focus = if reply.is_some() {

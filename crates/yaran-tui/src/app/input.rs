@@ -5009,6 +5009,18 @@ impl App {
         // paging keys, and the line keys when they are not letters (a
         // single-line field does nothing with Up and Down).
         if field_focused {
+            // A reply that wraps over several rows moves between them with the
+            // line keys; on its first or last row they scroll the card.
+            let row_move = match self.bindings.lookup(&key, BindingScope::Help) {
+                Some(Action::MoveUp) if !matches!(key.code, KeyCode::Char(_)) => Some(-1),
+                Some(Action::MoveDown) if !matches!(key.code, KeyCode::Char(_)) => Some(1),
+                _ => None,
+            };
+            if let Some(delta) = row_move
+                && self.move_board_reply_row(delta)
+            {
+                return Some(false);
+            }
             let scrolls = match self.bindings.lookup(&key, BindingScope::Help) {
                 Some(Action::ScrollPageDown | Action::ScrollPageUp) => true,
                 Some(Action::MoveDown | Action::MoveUp) => !matches!(key.code, KeyCode::Char(_)),
@@ -5055,6 +5067,8 @@ impl App {
                     } = &mut self.prompt
                 {
                     reply.input.handle_key(key);
+                    // Typing brings the caret's row back into view.
+                    reply.scroll = None;
                 }
             }
         }
@@ -8773,7 +8787,8 @@ impl App {
             // that window starts. The border and a pad cell each side are not
             // text.
             let width = super::human_board_dialog::reply_text_width(field.width);
-            let (_, first, ..) = super::human_board_dialog::reply_window(input, width);
+            let (_, first, ..) =
+                super::human_board_dialog::reply_window(input, width, reply.scroll);
             let row = usize::from(row.saturating_sub(field.y + 1)) + first;
             let col = usize::from(column.saturating_sub(field.x + 2));
             input.set_cursor_wrapped(width, row, col);
@@ -9164,6 +9179,25 @@ impl App {
         }
         if let Some(handled) = self.handle_card_text_selection(mouse) {
             return Some(handled);
+        }
+        // The wheel over the reply field scrolls the reply, not the card.
+        let over_field = matches!(
+            self.overlay_layout.active,
+            OverlayMouseLayout::HumanBoardCard { reply_field: Some(field), .. }
+                if contains_point(field, mouse.column, mouse.row)
+        );
+        if over_field {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => {
+                    self.scroll_board_reply(1);
+                    return Some(false);
+                }
+                MouseEventKind::ScrollUp => {
+                    self.scroll_board_reply(-1);
+                    return Some(false);
+                }
+                _ => {}
+            }
         }
         match mouse.kind {
             MouseEventKind::ScrollDown => {

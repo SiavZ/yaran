@@ -32,6 +32,10 @@ pub(crate) const REPLY_MAX_ROWS: u16 = 5;
 const DIALOG_WIDTH: u16 = 92;
 /// Blank columns between the dialog's border and its content, each side.
 const PAD: u16 = 2;
+/// Columns plain text sits inside the content edge, each side. A box's border
+/// is drawn down the middle of its cell, so text one column in starts right
+/// where the boxes' lines begin.
+const TEXT_INSET: u16 = 1;
 /// Columns between two buttons.
 const BUTTON_GAP: u16 = 2;
 /// Cells between the reply field's border and its text, each side.
@@ -53,15 +57,19 @@ pub(crate) struct CardView {
 
 /// The rows of the reply field's text to show and where the caret is among
 /// them: `(rows, first, caret_row, caret_col)`, `first` being the index of the
-/// first row shown. Keeps the caret in view, the end of the reply when it is
-/// at the end.
+/// first row shown. `scroll` is where the wheel left the field; without it the
+/// caret's row stays in view (the end of the reply while typing).
 pub(crate) fn reply_window(
     input: &super::text_input::TextInput,
     text_width: usize,
+    scroll: Option<usize>,
 ) -> (Vec<String>, usize, usize, usize) {
     let (rows, caret_row, caret_col) = input.wrapped_rows(text_width);
     let visible = rows.len().clamp(1, REPLY_MAX_ROWS as usize);
-    let first = (caret_row + 1).saturating_sub(visible);
+    let last_first = rows.len().saturating_sub(visible);
+    let first = scroll
+        .unwrap_or_else(|| (caret_row + 1).saturating_sub(visible))
+        .min(last_first);
     (rows, first, caret_row, caret_col)
 }
 
@@ -138,6 +146,7 @@ impl App {
         let screen = frame.area();
         let width = DIALOG_WIDTH.min(screen.width.max(1));
         let content_width = width.saturating_sub(2 + 2 * PAD).max(1);
+        let text_width = content_width.saturating_sub(2 * TEXT_INSET).max(1);
         let text = Style::default().fg(self.theme.text_fg);
         let label = Style::default().fg(self.theme.hint_desc_fg);
         let now = chrono::Utc::now();
@@ -255,7 +264,7 @@ impl App {
             let rows = if indent {
                 wrap_styled_lines(
                     std::slice::from_ref(line),
-                    usize::from(content_width.saturating_sub(2)).max(1),
+                    usize::from(text_width.saturating_sub(2)).max(1),
                 )
                 .into_iter()
                 .map(|row| {
@@ -265,7 +274,7 @@ impl App {
                 })
                 .collect::<Vec<_>>()
             } else {
-                wrap_styled_lines(std::slice::from_ref(line), usize::from(content_width))
+                wrap_styled_lines(std::slice::from_ref(line), usize::from(text_width))
             };
             let rows = if rows.is_empty() {
                 vec![Line::from("")]
@@ -294,7 +303,11 @@ impl App {
         let reply_rows = reply
             .as_ref()
             .map(|reply| {
-                let (rows, ..) = reply_window(&reply.input, reply_text_width(field_box_width));
+                let (rows, ..) = reply_window(
+                    &reply.input,
+                    reply_text_width(field_box_width),
+                    reply.scroll,
+                );
                 rows.len().clamp(1, REPLY_MAX_ROWS as usize) as u16
             })
             .unwrap_or(0);
@@ -346,9 +359,10 @@ impl App {
         let inner = block.inner(area);
         block.render(area, frame.buffer_mut());
         let content_x = inner.x + PAD;
+        let text_x = content_x + TEXT_INSET;
 
         // ── The text, scrolled, with the selection over it ────────────────
-        let body = Rect::new(content_x, inner.y + 1, content_width, body_height);
+        let body = Rect::new(text_x, inner.y + 1, text_width, body_height);
         let max_scroll = total_rows.saturating_sub(body.height);
         let scroll = scroll.min(max_scroll);
         Paragraph::new(wrapped)
@@ -426,7 +440,7 @@ impl App {
                     .style
                     .add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
             }
-            let chip_x = content_x + display_width(lead) as u16;
+            let chip_x = text_x + display_width(lead) as u16;
             let chip_width = display_width(&chip.content) as u16;
             let mut spans = vec![Span::styled(lead, label), chip];
             if reply.recipients.len() > 1 {
@@ -441,10 +455,8 @@ impl App {
                 recipient_chip = Some(Rect::new(chip_x, y, chip_width + 2, 1));
             }
             spans.push(Span::styled(rest, label));
-            Paragraph::new(Line::from(spans)).render(
-                Rect::new(content_x, y, content_width, 1),
-                frame.buffer_mut(),
-            );
+            Paragraph::new(Line::from(spans))
+                .render(Rect::new(text_x, y, text_width, 1), frame.buffer_mut());
             y += 1;
 
             let field_focused = focus == Focus::Reply;
@@ -454,21 +466,41 @@ impl App {
                 .border_set(border::ROUNDED)
                 .border_style(self.theme.overlay_field_border_style(field_focused))
                 .render(field_area, frame.buffer_mut());
-            let text_width = reply_text_width(field_box_width);
-            let (rows, first, caret_row, caret_col) = reply_window(&reply.input, text_width);
-            let text_x = field_area.x + 1 + FIELD_PAD;
+            let field_text_width = reply_text_width(field_box_width);
+            let (rows, first, caret_row, caret_col) =
+                reply_window(&reply.input, field_text_width, reply.scroll);
+            let field_text_x = field_area.x + 1 + FIELD_PAD;
             for (offset, row) in rows
                 .iter()
                 .skip(first)
                 .take(reply_rows as usize)
                 .enumerate()
             {
-                frame
-                    .buffer_mut()
-                    .set_string(text_x, field_area.y + 1 + offset as u16, row, text);
+                frame.buffer_mut().set_string(
+                    field_text_x,
+                    field_area.y + 1 + offset as u16,
+                    row,
+                    text,
+                );
             }
+            // More reply than the field shows: the marker in its right border
+            // says where the window is, as the card's own marker does.
+            render_scroll_marker(
+                frame,
+                field_area,
+                Rect::new(
+                    field_text_x,
+                    field_area.y + 1,
+                    field_text_width as u16,
+                    reply_rows,
+                ),
+                first,
+                reply_rows as usize,
+                rows.len(),
+                self.theme.hint_key_fg,
+            );
             if field_focused && caret_row >= first && caret_row < first + reply_rows as usize {
-                let cx = text_x + caret_col.min(text_width.saturating_sub(1)) as u16;
+                let cx = field_text_x + caret_col.min(field_text_width.saturating_sub(1)) as u16;
                 let cy = field_area.y + 1 + (caret_row - first) as u16;
                 frame.buffer_mut()[(cx, cy)].set_style(
                     Style::default()
@@ -483,10 +515,7 @@ impl App {
                 "No agent is running to send a reply to; Mark done closes the card.",
                 label,
             )))
-            .render(
-                Rect::new(content_x, y, content_width, 1),
-                frame.buffer_mut(),
-            );
+            .render(Rect::new(text_x, y, text_width, 1), frame.buffer_mut());
             y += 2;
         }
 
@@ -551,16 +580,14 @@ impl App {
                 Hint::key(close_key, "close"),
             ],
         );
-        // The key line starts at the content edge like everything else.
+        // The key line starts where the text above it does.
         let mut hint_spans = hints.spans;
         if let Some(first) = hint_spans.first_mut() {
             first.content = first.content.trim_start().to_string().into();
         }
         hint_spans.push(Span::styled("  drag text to copy", label));
-        Paragraph::new(Line::from(hint_spans)).render(
-            Rect::new(content_x, y, content_width, 1),
-            frame.buffer_mut(),
-        );
+        Paragraph::new(Line::from(hint_spans))
+            .render(Rect::new(text_x, y, text_width, 1), frame.buffer_mut());
 
         self.overlay_layout.active = OverlayMouseLayout::HumanBoardCard {
             close_button: close_area,
@@ -666,6 +693,63 @@ impl App {
             items: people.len(),
             offset: state.offset(),
         };
+    }
+
+    /// The reply field's text width on screen, from the last frame.
+    fn board_reply_text_width(&self) -> Option<usize> {
+        match self.overlay_layout.active {
+            OverlayMouseLayout::HumanBoardCard {
+                reply_field: Some(field),
+                ..
+            } => Some(reply_text_width(field.width)),
+            _ => None,
+        }
+    }
+
+    /// Move the reply's caret `delta` rows up or down its wrapped rows, keeping
+    /// its column. `false` when the reply does not have a row there, so the
+    /// key can scroll the card instead.
+    pub(super) fn move_board_reply_row(&mut self, delta: isize) -> bool {
+        let Some(width) = self.board_reply_text_width() else {
+            return false;
+        };
+        let PromptState::HumanBoardCard {
+            reply: Some(reply), ..
+        } = &mut self.prompt
+        else {
+            return false;
+        };
+        let (rows, _, caret_row, caret_col) = reply_window(&reply.input, width, reply.scroll);
+        let Some(target) = caret_row
+            .checked_add_signed(delta)
+            .filter(|row| *row < rows.len())
+        else {
+            return false;
+        };
+        reply.input.set_cursor_wrapped(width, target, caret_col);
+        reply.scroll = None;
+        self.mark_frame_dirty();
+        true
+    }
+
+    /// Scroll the reply field's window `delta` rows, leaving the caret where it
+    /// is (the wheel over the field).
+    pub(super) fn scroll_board_reply(&mut self, delta: isize) {
+        let Some(width) = self.board_reply_text_width() else {
+            return;
+        };
+        let PromptState::HumanBoardCard {
+            reply: Some(reply), ..
+        } = &mut self.prompt
+        else {
+            return;
+        };
+        let (rows, first, ..) = reply_window(&reply.input, width, reply.scroll);
+        let visible = rows.len().clamp(1, REPLY_MAX_ROWS as usize);
+        let last_first = rows.len().saturating_sub(visible);
+        let next = first.saturating_add_signed(delta).min(last_first);
+        reply.scroll = Some(next);
+        self.mark_frame_dirty();
     }
 
     /// A press, drag or release of the left button over the card dialog's
