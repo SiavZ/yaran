@@ -374,7 +374,7 @@ impl Card {
             changed = true;
         }
         if changed {
-            self.thread.sort_by(|a, b| a.at.cmp(&b.at));
+            self.thread.sort_by_key(|message| message.at);
             self.thread.truncate(MAX_THREAD_MESSAGES);
         }
         changed
@@ -827,7 +827,7 @@ impl Board {
             relayed_at: None,
         };
         card.thread.push(stored.clone());
-        card.thread.sort_by(|a, b| a.at.cmp(&b.at));
+        card.thread.sort_by_key(|message| message.at);
         if message.done && card.is_open() {
             card.resolved_at = Some(now);
             card.resolved_by = Some(stored.from.clone());

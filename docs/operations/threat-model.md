@@ -1003,13 +1003,55 @@ remote can post, edit, reassign or resolve cards, and a card's poster and
 resolver are labels, not identities: the board inherits exactly the trust of
 the vault or repository it lives in. The push sends the checked-out branch, so
 commits other tools made in that repository and have not pushed yet go with
-it. A settled conflict keeps one whole card version and drops the other's edit.
-A note edited by hand to a newer `updated` time wins conflicts it should not.
+it. A settled conflict keeps one card version's fields and drops the other's
+edit to them (the messages of both versions' conversations are kept). A note
+edited by hand to a newer `updated` time wins conflicts it should not.
 
 **Detection.** The repository's history shows every board commit
 (`Update the shared board: …`) and merge; the board pane's bottom edge shows
 the last sync's time or failure and counts unreadable notes, and
 `yaran board list` names them.
+
+---
+
+## T23 — A card's conversation carries another person's words into this machine's agents
+
+**Attack scenario.** On a shared board a card holds a conversation, and with
+`[board] relay = true` the terminal UI passes what another side wrote on a card
+to the agent of this machine that posted it, and hands a card another person
+assigns to `me` to the agent named in `relay_to`. Whoever can write the shared
+folder or push to its remote can therefore put text in front of this
+operator's agents, written as if a colleague had said it: an instruction to
+push, deploy, delete or exfiltrate something, or text built to break out of
+the message it is quoted in.
+
+**Mitigation in code.** Relaying is off by default. Only a message written on
+another side (its `side` is not `me`) is passed, only to the agent that posted
+the card on this machine (a session of this yaran with that handle) or to the
+one configured `relay_to` agent for a card assigned to `me`, and never for a
+card this machine's agents did not post or was not handed. Message text gets
+the terminal sanitizer and the per-message length cap when it is written and
+again when a note is read, and a whole card's quoted detail is capped again in
+the relay. The send runs `yaran peer send` with the text as one argument (no
+shell), time-limited, over the same transports agents use between
+themselves; it is never typed into a terminal. Each message is passed once:
+only a send that went through is recorded on the card (`relayed`), a failed
+one is retried after a pause, and the card's conversation shows which
+messages were passed. The relayed text says who wrote it on which card and
+points the agent back at the card to answer, so the exchange stays on the
+board where both people can read it.
+
+**Residual risk.** A message's writer and side are labels, not identities: the
+relay trusts the shared folder exactly as T22 does, so anyone who can write it
+can speak as the other person to this machine's agents, and an agent acts on
+that text with its own permissions (the command guards an agent runs under
+still apply to what it then does). Turn `relay` on only for a folder whose
+writers you would let instruct your agents.
+
+**Detection.** Every relayed message is marked as passed in the card's
+conversation (and its note), the status line names each relay and its agent,
+the agent's message history holds the text it received, and the folder's
+repository history shows who changed the card.
 
 ---
 
@@ -1020,7 +1062,7 @@ update both `SECURITY.md` (the table) and this file (the
 paragraph). PRs that touch the surface listed above without
 updating these documents are blocked at review.
 
-The IDs `T1`–`T22` are stable references; new threats append at
+The IDs `T1`–`T23` are stable references; new threats append at
 the end (`T23`, `T24`, …) rather than reshuffling. Retired
 threats are kept in the table with a `~~strikethrough~~` and a
 note pointing to the PR that retired them. Threats that move to

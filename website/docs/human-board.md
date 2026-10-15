@@ -50,7 +50,7 @@ hidden.
 Move into the board with the pane keys, then:
 
 - the open key (the one that opens a diff in the Changes list) shows the whole card: what
-  it asks, the ticket, who posted it and when, and its full detail;
+  it asks, the ticket, who posted it and when, its full detail, and the conversation on it;
 - the stage key marks the selected card done, or reopens it when it is already done.
 
 The card view has a **Mark done** (or **Reopen**) button too. A click selects a card and a
@@ -72,14 +72,31 @@ yaran board priority 21 critical
 
 ## Replying from a card
 
-An open card's view has a reply box. Type your answer and press Enter: yaran types it into
-the agent that posted the card (or into the selected agent, when the poster is not running
-in this yaran), submits it, and marks the card done with your reply kept as its note. The
-box names the agent before you send anything, and the button reads **Send & mark done**
-while there is text in it.
+An open card's view has a reply box. The line above it names who your reply goes to before
+you send anything:
 
-The reply is typed exactly as you would type it yourself, with the card it answers in front
-of it:
+- **the agent that posted the card**, when it is running in this yaran: yaran types your
+  reply into it, exactly as you would type it yourself;
+- **the selected agent**, when the poster is not running here;
+- **a person**, on a board with [people](#a-queue-per-person): your reply joins the card's
+  conversation and reaches them with the board (see
+  [Talking across boards](#talking-across-boards)).
+
+When there is more than one choice, the name is a control of its own: move to it and press
+it (or click it) to go to the next one.
+
+Two buttons send:
+
+- **Send** keeps the card open, for a question or a reply in a longer exchange;
+- **Send & mark done** (it reads **Mark done** while the box is empty) closes the card with
+  your reply kept as its note.
+
+Pressing Enter in the box does what the key line under it says: it sends and marks done when
+you are answering the agent that asked, and only sends when the conversation goes on with a
+person or the card is handed to an agent to work on. Every reply is kept in the card's
+conversation.
+
+What is typed into an agent carries the card it answers in front of it:
 
 ```text
 Reply to board card #21 [mvp-go-1013] (MVP GO re-check COMPLETE): looks good, roll it
@@ -89,8 +106,12 @@ Change that wording with `human_board_reply_template` in `[ui]`. It understands 
 `{card}`, `{ticket}` and `{title}`; an empty template sends your reply alone.
 
 > [!NOTE]
-> A reply is a keystroke like any other: when another device is driving the agent's
-> terminal, the send is refused, nothing is marked done, and your reply stays in the box.
+> A reply typed into an agent is a keystroke like any other: when another device is driving
+> the agent's terminal, the send is refused, nothing is marked done, and your reply stays in
+> the box.
+
+On a board with people, **Assign to …** moves the card to the next person's queue, so you can
+hand a card to a colleague (and they can hand it back) without leaving it.
 
 ## Posting cards from an agent
 
@@ -99,6 +120,10 @@ Agents use the `yaran board` command, which works from inside any agent yaran la
 ```bash
 yaran board post --kind validate --ticket 4812 "Check the signup page on a phone"
 yaran board post --kind confirm --ticket 3770 --detail - "Merge the auth fix?" < why.md
+yaran board post --kind confirm --blocking "Can I drop the old audit table?"
+yaran board reply 12 "The audit_2019 table; nothing reads it since March."
+yaran board reply 12 --done "Dropped; the backup is in the bucket."
+yaran board show 12
 yaran board resolve --ticket 4812
 yaran board resolve 12 --note "shipped"
 yaran board list --all --json
@@ -108,8 +133,14 @@ yaran board list --all --json
   `--kind` updates that card instead of adding a second one.
 - `--detail -` reads the detail from standard input, for anything longer than a line.
 - The poster is recorded from the agent's handle, or `--from` when given.
+- `--blocking` says the agent cannot carry on until a person answers; the board marks the
+  card and its queue in red until somebody does (see [The dots](#the-dots)).
+- `yaran board reply` adds to a card's conversation, to answer a question a person asked on
+  it or to report on the work it asked for; `--done` marks the card done with it.
+  `yaran board show` prints one card whole, conversation included.
 - `yaran board list --all` shows the resolved cards too, so an agent can see what you
-  confirmed and carry on. Cards you clear here are recorded as resolved by `human`.
+  confirmed and carry on. Cards you clear here are recorded as resolved by `human` (by your
+  name, when `[board] me` is set).
 
 Tell your orchestrating agent about the board in its instructions, for example: "When a
 ticket needs the owner, post it with `yaran board post` instead of only saying so in your
@@ -146,7 +177,8 @@ yaran board list --for Alex
 On its own, the board lives in one file, `human_board.json`, in yaran's config directory,
 readable only by you. Point `[board] dir` at a folder instead and every card becomes a
 Markdown note there (`S-12.md`), with the card's fields as note properties and its detail
-as the body. Notes apps such as Obsidian show and edit them like any other note, and a
+as the body, followed by its conversation under a `## Conversation` heading, one callout per
+message. A reply written there by hand (a `> [!reply] Name` callout) is read like any other. Notes apps such as Obsidian show and edit them like any other note, and a
 person can change a card's `status` to `done` (or its `priority`, or its `assignee`) right
 there.
 
@@ -177,9 +209,61 @@ machine its own. A bare number such as `yaran board resolve 12` means this machi
 > [!IMPORTANT]
 > With `sync = "git"`, yaran pushes the branch the folder's repository has checked out,
 > including commits other tools made there and have not pushed yet. It never rebases or
-> forces. When two machines changed the same card, the later edit is kept. Anything else it
-> cannot merge, such as a conflict in another file, is undone and reported, and the sync
-> tries again later.
+> forces. When two machines changed the same card, the later edit is kept, and the messages
+> both added to its conversation are kept too. Anything else it cannot merge, such as a
+> conflict in another file, is undone and reported, and the sync tries again later.
+
+## Talking across boards
+
+On a shared board a card is a conversation between the people on it and their agents, the
+way a pull request review is. Say Sam's agent posts a card for Alex:
+
+1. Alex's board shows it in Alex's queue. Its view says **Reply to Sam** and names the agent
+   on Sam's side that posted it.
+2. Alex sends a question, or an answer with **Send & mark done**. It joins the card's
+   conversation and reaches Sam's board with the next sync.
+3. On Sam's board the card wears a green dot until Sam opens it. With
+   [relaying](#passing-replies-to-agents) on, Sam's yaran also passes Alex's words to the
+   agent that posted the card, which answers on the card with `yaran board reply`; that
+   answer reaches Alex the same way. Without it, the card's **Forward** (the Send button
+   while the box is empty) passes Alex's words on by hand.
+4. Either of them can write on the card at any point. Sam's own view offers **Ask Alex** as
+   well as replying to the agent, and Alex can **Hand to** an agent of their own (the
+   selected one) to work on the card and report back on it.
+
+### The dots
+
+A queue tab, and each card row, can wear a dot after its count:
+
+- **green**: something from another person's side that you have not opened yet (a card
+  posted on their board, or a message on one). Opening the card clears it.
+- **red**: a card that says its agent cannot carry on (`--blocking`) and that no person has
+  answered since the agent last asked. Answering, or marking it done, clears it.
+
+What you have read is kept per machine, in `human_board_seen.json` in yaran's config
+directory, never in the shared folder.
+
+### Passing replies to agents
+
+```toml
+[board]
+relay = true
+relay_to = "orchestrator"
+relay_transport = "auto"
+```
+
+With `relay` on, while the terminal UI runs, what another side writes on a card an agent of
+this machine posted is passed to that agent, as `yaran peer send` passes a message between
+agents (never typed into its terminal). A card another person assigns to `me` that no agent
+here posted goes to `relay_to`, an agent that can take the work on; without `relay_to` such
+cards wait on the board. Each message is passed once, the card's conversation shows that it
+was, and the status line says so. `relay_transport` picks the route the way
+`yaran peer send --transport` does.
+
+> [!WARNING]
+> With `relay` on, anyone who can write the shared folder can put words in front of your
+> agents as if a colleague had written them. Turn it on only for a folder whose writers you
+> would let instruct your agents.
 
 To move an existing private board into a new shared folder, set `dir` and run:
 

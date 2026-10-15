@@ -362,7 +362,7 @@ fn parse_messages(lines: &[&str], fallback: DateTime<Utc>) -> Option<Vec<Message
         .into_iter()
         .filter_map(|draft| message_from(&draft.header, &draft.text.join("\n"), fallback))
         .collect();
-    thread.sort_by(|a, b| a.at.cmp(&b.at));
+    thread.sort_by_key(|message| message.at);
     thread.truncate(MAX_THREAD_MESSAGES);
     Some(thread)
 }
