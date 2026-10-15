@@ -29,7 +29,7 @@ use super::*;
 /// The most rows the reply field grows to before it scrolls.
 pub(crate) const REPLY_MAX_ROWS: u16 = 5;
 /// The dialog's width when the terminal is wide enough.
-const DIALOG_WIDTH: u16 = 84;
+const DIALOG_WIDTH: u16 = 92;
 /// Blank columns between the dialog's border and its content, each side.
 const PAD: u16 = 2;
 /// Columns between two buttons.
@@ -551,8 +551,12 @@ impl App {
                 Hint::key(close_key, "close"),
             ],
         );
+        // The key line starts at the content edge like everything else.
         let mut hint_spans = hints.spans;
-        hint_spans.push(Span::styled("  drag over the text to copy it", label));
+        if let Some(first) = hint_spans.first_mut() {
+            first.content = first.content.trim_start().to_string().into();
+        }
+        hint_spans.push(Span::styled("  drag text to copy", label));
         Paragraph::new(Line::from(hint_spans)).render(
             Rect::new(content_x, y, content_width, 1),
             frame.buffer_mut(),
@@ -583,7 +587,7 @@ impl App {
             .as_ref()
             .and_then(|settings| settings.me.clone());
         self.render_dim_overlay(frame);
-        let width = 56.min(frame.area().width.max(1));
+        let width = 64.min(frame.area().width.max(1));
         let height = (people.len() as u16 + 5).min(frame.area().height.max(1));
         let area = centered_rect_exact(width, height, frame.area());
         self.clear_overlay_area(frame, area);
@@ -649,7 +653,11 @@ impl App {
             frame.buffer_mut(),
             &mut state,
         );
-        Paragraph::new(hints).render(
+        let mut hint_spans = hints.spans;
+        if let Some(first) = hint_spans.first_mut() {
+            first.content = first.content.trim_start().to_string().into();
+        }
+        Paragraph::new(Line::from(hint_spans)).render(
             Rect::new(content.x, list_area.bottom() + 1, content.width, 1),
             frame.buffer_mut(),
         );
