@@ -264,6 +264,8 @@ pub fn help_text() -> &'static str {
           yaran --version    Print the version and the git commit it was built from\n\
           yaran peer         Route messages between Yaran agent sessions\n\
                            (`yaran peer --help` for send, list, sync-amq)\n\
+          yaran board        Post cards for the person running yaran, or resolve\n\
+                           them (`yaran board --help` for post, resolve, list)\n\
           yaran session      Permanently purge an agent's data (yaran session --help)\n\n\
          Server subcommand:\n\
           yaran server                     Serve on the configured host and port\n\
@@ -345,6 +347,17 @@ mod tests {
         assert!(
             help.contains("yaran peer"),
             "--help must name the `yaran peer` subcommand:\n{help}"
+        );
+    }
+
+    /// `yaran board` is dispatched by the binary and is how agents reach the
+    /// human board, so the top-level help must name it.
+    #[test]
+    fn help_lists_the_board_subcommand() {
+        let help = help_text();
+        assert!(
+            help.contains("yaran board"),
+            "--help must name the `yaran board` subcommand:\n{help}"
         );
     }
 

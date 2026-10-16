@@ -754,6 +754,17 @@ impl Theme {
             .remove_modifier(NAME_CHIP_MARKER)
     }
 
+    /// A name chip in the selection tint rather than the body's swapped
+    /// colors: the quieter chip a dense view uses (the human board's card
+    /// dialog), where several bright chips in a column outshout the text. The
+    /// same unbreakable-chip marker as [`Theme::name_style`].
+    pub fn soft_name_style(&self) -> Style {
+        Style::default()
+            .fg(self.text_fg)
+            .bg(self.selection_bar_tint())
+            .remove_modifier(NAME_CHIP_MARKER)
+    }
+
     pub fn selection_style(&self) -> Style {
         Style::default()
             .fg(self.selection_fg)

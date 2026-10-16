@@ -196,6 +196,11 @@ enum MouseTarget {
     StagedFile(Option<usize>),
     CommitChrome,
     CommitText,
+    /// A row of the human board: the card slot under the pointer, or `None`
+    /// for a heading or the empty space below the cards.
+    BoardRow(Option<usize>),
+    /// A tab of the right column's strip, by its index in the strip.
+    RightTab(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,6 +222,8 @@ enum PromptMouseTarget {
     ChangeDefaultProviderItem(usize),
     ChangeProjectDefaultProviderItem(usize),
     SetTailscaleModeItem(usize),
+    /// A person in the human board's Assign picker.
+    AssignBoardCardItem(usize),
     RuntimeKillInput,
     RuntimeKillItem(usize),
     RuntimeKillCancel,
@@ -227,6 +234,14 @@ enum PromptMouseTarget {
     ConfirmKillConfirm,
     ConfirmDeleteCancel,
     ConfirmDeleteConfirm,
+    HumanBoardCardClose,
+    HumanBoardCardAction,
+    HumanBoardCardSend,
+    HumanBoardCardAssign,
+    /// The card dialog's reply field.
+    HumanBoardCardReply,
+    /// The card dialog's recipient chip: a click moves to the next one.
+    HumanBoardCardRecipient,
     ConfirmDeleteTerminalCancel,
     ConfirmDeleteTerminalConfirm,
     ConfirmCloseTabCancel,
@@ -319,6 +334,16 @@ impl ButtonPressedTarget {
             }
             PromptMouseTarget::ConfirmDeleteWorktreeConfirm => {
                 Some(ButtonPressedTarget::ConfirmDeleteWorktreeConfirm)
+            }
+            PromptMouseTarget::HumanBoardCardClose => {
+                Some(ButtonPressedTarget::HumanBoardCardClose)
+            }
+            PromptMouseTarget::HumanBoardCardAction => {
+                Some(ButtonPressedTarget::HumanBoardCardAction)
+            }
+            PromptMouseTarget::HumanBoardCardSend => Some(ButtonPressedTarget::HumanBoardCardSend),
+            PromptMouseTarget::HumanBoardCardAssign => {
+                Some(ButtonPressedTarget::HumanBoardCardAssign)
             }
             PromptMouseTarget::ConfirmDeleteTerminalCancel => {
                 Some(ButtonPressedTarget::ConfirmDeleteTerminalCancel)
@@ -448,10 +473,13 @@ impl ButtonPressedTarget {
             | PromptMouseTarget::ChangeDefaultProviderItem(_)
             | PromptMouseTarget::ChangeProjectDefaultProviderItem(_)
             | PromptMouseTarget::SetTailscaleModeItem(_)
+            | PromptMouseTarget::AssignBoardCardItem(_)
             | PromptMouseTarget::RuntimeKillInput
             | PromptMouseTarget::RuntimeKillItem(_)
             | PromptMouseTarget::Checkbox(_)
             | PromptMouseTarget::RenameInput
+            | PromptMouseTarget::HumanBoardCardReply
+            | PromptMouseTarget::HumanBoardCardRecipient
             | PromptMouseTarget::NameNewAgentInput
             | PromptMouseTarget::NameNewAgentRow(_)
             | PromptMouseTarget::PullRequestInput
@@ -1032,7 +1060,7 @@ impl App {
     }
 
     fn focus_next_pane(&mut self) {
-        let has_staged = !self.engine.staged_files.is_empty();
+        let lower = self.right_lower();
         if self.focus == FocusPane::Left
             && self.left_section == LeftSection::Projects
             && self.has_terminal_items()
@@ -1043,7 +1071,7 @@ impl App {
             self.left_section = LeftSection::Projects;
             self.focus = self.focus.next();
         } else if self.focus == FocusPane::Files {
-            match self.right_section.next(has_staged) {
+            match self.right_section.next(lower) {
                 Some(next) => {
                     self.right_section = next;
                     self.clamp_files_cursor();
@@ -1059,7 +1087,7 @@ impl App {
                 self.focus = self.focus.next();
             }
             if self.focus == FocusPane::Files {
-                self.right_section = RightSection::first();
+                self.right_section = RightSection::first(lower);
                 self.clamp_files_cursor();
             } else if self.focus == FocusPane::Left {
                 self.left_section = LeftSection::Projects;
@@ -1070,7 +1098,7 @@ impl App {
     }
 
     fn focus_previous_pane(&mut self) {
-        let has_staged = !self.engine.staged_files.is_empty();
+        let lower = self.right_lower();
         if self.focus == FocusPane::Left && self.left_section == LeftSection::Terminals {
             self.left_section = LeftSection::Projects;
         } else if self.focus == FocusPane::Left && self.left_section == LeftSection::Projects {
@@ -1079,7 +1107,7 @@ impl App {
                 self.focus = self.focus.previous();
             }
             if self.focus == FocusPane::Files {
-                self.right_section = RightSection::last(has_staged);
+                self.right_section = RightSection::last(lower);
                 self.clamp_files_cursor();
             }
         } else if self.focus == FocusPane::Files {
@@ -1096,7 +1124,7 @@ impl App {
                 self.focus = self.focus.previous();
             }
             if self.focus == FocusPane::Files {
-                self.right_section = RightSection::last(has_staged);
+                self.right_section = RightSection::last(lower);
                 self.clamp_files_cursor();
             } else if self.focus == FocusPane::Left {
                 if self.has_terminal_items() {
@@ -1978,9 +2006,16 @@ impl App {
             // The macro list, and the nested delete-confirm, own no text.
             PromptState::EditMacros { .. } => {}
 
+            // The card dialog's reply field takes a paste while it has focus.
+            PromptState::HumanBoardCard {
+                focus: super::human_board::HumanBoardCardFocus::Reply,
+                reply: Some(reply),
+                ..
+            } => reply.input.insert_str(text),
             // Report, confirm, and picker modals hold no text field; the
             // paste is dropped, as their key handlers drop plain characters.
             PromptState::AgentInfo(_)
+            | PromptState::HumanBoardCard { .. }
             | PromptState::AddProjectFailed { .. }
             | PromptState::FirstLoad(_)
             | PromptState::DebugInput { .. }
@@ -2012,6 +2047,7 @@ impl App {
             | PromptState::ChangeDefaultProvider(_)
             | PromptState::ChangeProjectDefaultProvider(_)
             | PromptState::SetTailscaleMode(_)
+            | PromptState::AssignBoardCard(_)
             | PromptState::WatchRules(_) => {}
         }
         if refresh_path_completions {
@@ -2510,6 +2546,10 @@ impl App {
     }
 
     fn handle_files_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.right_section == RightSection::Board {
+            self.handle_board_key(key);
+            return Ok(());
+        }
         if self.files_search_active {
             self.handle_files_search_key(key);
             return Ok(());
@@ -2561,12 +2601,47 @@ impl App {
                 Action::SearchNext if !self.advance_files_search_match() => {
                     self.set_info("No active file search matches.");
                 }
+                // The tab strip is there only while the board is on; without
+                // it these keys do nothing (`cycle_right_tab` says so).
+                Action::NextRightTab => self.cycle_right_tab(1),
+                Action::PrevRightTab => self.cycle_right_tab(-1),
                 _ => {}
             }
         } else if key.code == KeyCode::Esc && self.has_files_search() {
             self.clear_files_search();
         }
         Ok(())
+    }
+
+    /// Keys while the human board has the right column's focus. The board
+    /// borrows the Files pane's bindings for the same intents: movement moves
+    /// the selection, the open-diff key opens the card, and the stage key
+    /// marks it done (or reopens it), so rebinding those rebinds these too.
+    fn handle_board_key(&mut self, key: KeyEvent) {
+        let Some(action) = self.bindings.lookup(&key, BindingScope::Files) else {
+            return;
+        };
+        match action {
+            Action::MoveDown => self.human_board.move_selection(1),
+            Action::MoveUp => self.human_board.move_selection(-1),
+            Action::OpenDiff => self.open_selected_board_card(),
+            Action::StageUnstage => self.toggle_selected_board_card(),
+            Action::NextRightTab => self.cycle_right_tab(1),
+            Action::PrevRightTab => self.cycle_right_tab(-1),
+            // The git keys still act on the selected agent's worktree, as they
+            // do from anywhere in this pane.
+            Action::PushToRemote => {
+                if let Err(err) = self.push_to_remote() {
+                    self.set_error(format!("{err:#}"));
+                }
+            }
+            Action::PullFromRemote => {
+                if let Err(err) = self.pull_from_remote() {
+                    self.set_error(format!("{err:#}"));
+                }
+            }
+            _ => {}
+        }
     }
 
     fn handle_commit_input_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -2760,7 +2835,7 @@ impl App {
         let file = match self.right_section {
             RightSection::Staged => self.engine.staged_files.get(self.files_index),
             RightSection::Unstaged => self.engine.unstaged_files.get(self.files_index),
-            RightSection::CommitInput => return Ok(()),
+            RightSection::CommitInput | RightSection::Board => return Ok(()),
         };
         let Some(file) = file else { return Ok(()) };
         let path = file.path.clone();
@@ -2769,7 +2844,7 @@ impl App {
         let job = match self.right_section {
             RightSection::Unstaged => super::changes_job::ChangesJob::Stage { path },
             RightSection::Staged => super::changes_job::ChangesJob::Unstage { path },
-            RightSection::CommitInput => return Ok(()),
+            RightSection::CommitInput | RightSection::Board => return Ok(()),
         };
         self.dispatch_changes_job(worktree, job);
         Ok(())
@@ -2782,7 +2857,7 @@ impl App {
                 self.set_error("Unstage the file first to discard changes.");
                 return Ok(());
             }
-            RightSection::CommitInput => return Ok(()),
+            RightSection::CommitInput | RightSection::Board => return Ok(()),
         };
         let Some(file) = file else { return Ok(()) };
         // Capture only the path. The tracked/untracked classification that decides
@@ -4602,6 +4677,24 @@ impl App {
         Some(false)
     }
 
+    fn handle_assign_board_card_prompt_key(&mut self, key: KeyEvent) -> Option<bool> {
+        let PromptState::AssignBoardCard(picker) = &mut self.prompt else {
+            return None;
+        };
+        let palette_action = self.bindings.lookup(&key, BindingScope::Palette);
+        let dialog_action = self.bindings.lookup(&key, BindingScope::Dialog);
+        match palette_action.or(dialog_action) {
+            Some(Action::CloseOverlay) => self.leave_board_assign_picker(),
+            Some(Action::MoveDown) if picker.selected + 1 < picker.people.len() => {
+                picker.selected += 1;
+            }
+            Some(Action::MoveUp) if picker.selected > 0 => picker.selected -= 1,
+            Some(Action::Confirm) => self.pick_board_card_assignee(),
+            _ => {}
+        }
+        Some(false)
+    }
+
     fn handle_set_tailscale_mode_prompt_key(&mut self, key: KeyEvent) -> Option<bool> {
         let PromptState::SetTailscaleMode(prompt) = &mut self.prompt else {
             return None;
@@ -4900,6 +4993,84 @@ impl App {
                 }
             },
             ModalKeyStep::FallThroughToField => {}
+        }
+        Some(false)
+    }
+
+    fn handle_human_board_card_prompt_key(&mut self, key: KeyEvent) -> Option<bool> {
+        use super::human_board::HumanBoardCardFocus as Focus;
+        let PromptState::HumanBoardCard { focus, reply, .. } = &self.prompt else {
+            return None;
+        };
+        let focus = *focus;
+        let field_focused = focus == Focus::Reply && reply.is_some();
+        // The body scrolls from anywhere. While the reply field has focus a
+        // letter is typing, so only keys the field has no use for scroll: the
+        // paging keys, and the line keys when they are not letters (a
+        // single-line field does nothing with Up and Down).
+        if field_focused {
+            // A reply that wraps over several rows moves between them with the
+            // line keys; on its first or last row they scroll the card.
+            let row_move = match self.bindings.lookup(&key, BindingScope::Help) {
+                Some(Action::MoveUp) if !matches!(key.code, KeyCode::Char(_)) => Some(-1),
+                Some(Action::MoveDown) if !matches!(key.code, KeyCode::Char(_)) => Some(1),
+                _ => None,
+            };
+            if let Some(delta) = row_move
+                && self.move_board_reply_row(delta)
+            {
+                return Some(false);
+            }
+            let scrolls = match self.bindings.lookup(&key, BindingScope::Help) {
+                Some(Action::ScrollPageDown | Action::ScrollPageUp) => true,
+                Some(Action::MoveDown | Action::MoveUp) => !matches!(key.code, KeyCode::Char(_)),
+                _ => false,
+            };
+            if scrolls && self.scroll_error_dialog_for(&key) {
+                return Some(false);
+            }
+        } else if self.scroll_error_dialog_for(&key) {
+            return Some(false);
+        }
+        let action = if binding_lookup_is_suppressed(key, field_focused) {
+            None
+        } else {
+            self.bindings.lookup(&key, BindingScope::Dialog)
+        };
+        match modal_key_step(action, key, field_focused) {
+            ModalKeyStep::Close => self.resolve_human_board_card(false),
+            ModalKeyStep::MoveFocus(forward) => {
+                let stops = self.board_card_stops();
+                if let PromptState::HumanBoardCard { focus, .. } = &mut self.prompt {
+                    *focus = focus.step(forward, stops);
+                }
+            }
+            ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus => match focus {
+                Focus::Reply if field_focused => {
+                    let done = matches!(
+                        &self.prompt,
+                        PromptState::HumanBoardCard { reply: Some(reply), .. }
+                            if reply.enter_marks_done()
+                    );
+                    self.send_board_reply(done);
+                }
+                Focus::Reply | Focus::Close => self.resolve_human_board_card(false),
+                Focus::Recipient => self.cycle_board_reply_recipient(),
+                Focus::Send => self.send_board_reply(false),
+                Focus::Action => self.resolve_human_board_card(true),
+                Focus::Assign => self.assign_board_card_from_dialog(),
+            },
+            ModalKeyStep::FallThroughToField => {
+                if field_focused
+                    && let PromptState::HumanBoardCard {
+                        reply: Some(reply), ..
+                    } = &mut self.prompt
+                {
+                    reply.input.handle_key(key);
+                    // Typing brings the caret's row back into view.
+                    reply.scroll = None;
+                }
+            }
         }
         Some(false)
     }
@@ -5215,6 +5386,9 @@ impl App {
             return Some(exit);
         }
         if let Some(exit) = self.handle_confirm_delete_agent_prompt_key(key) {
+            return Some(exit);
+        }
+        if let Some(exit) = self.handle_human_board_card_prompt_key(key) {
             return Some(exit);
         }
         if let Some(exit) = self.handle_confirm_delete_terminal_prompt_key(key) {
@@ -5602,6 +5776,9 @@ impl App {
             return Ok(Some(exit));
         }
         if let Some(exit) = self.handle_set_tailscale_mode_prompt_key(key) {
+            return Ok(Some(exit));
+        }
+        if let Some(exit) = self.handle_assign_board_card_prompt_key(key) {
             return Ok(Some(exit));
         }
         if let Some(exit) = self.handle_change_theme_prompt_key(key)? {
@@ -6699,6 +6876,12 @@ impl App {
                 offset,
             } => Self::overlay_row_at(list, offset, items, column, row)
                 .map(PromptMouseTarget::SetTailscaleModeItem),
+            OverlayMouseLayout::AssignBoardCard {
+                list,
+                items,
+                offset,
+            } => Self::overlay_row_at(list, offset, items, column, row)
+                .map(PromptMouseTarget::AssignBoardCardItem),
             OverlayMouseLayout::KillRunning {
                 input,
                 list,
@@ -6751,6 +6934,36 @@ impl App {
                     column,
                     row,
                 )
+            }
+            OverlayMouseLayout::HumanBoardCard {
+                close_button,
+                action_button,
+                send_button,
+                assign_button,
+                recipient_chip,
+                reply_field,
+            } => {
+                let mut buttons = vec![
+                    (close_button, PromptMouseTarget::HumanBoardCardClose),
+                    (action_button, PromptMouseTarget::HumanBoardCardAction),
+                ];
+                if let Some(send) = send_button {
+                    buttons.push((send, PromptMouseTarget::HumanBoardCardSend));
+                }
+                if let Some(assign) = assign_button {
+                    buttons.push((assign, PromptMouseTarget::HumanBoardCardAssign));
+                }
+                click_target(&buttons, column, row)
+                    .or_else(|| {
+                        recipient_chip
+                            .filter(|chip| contains_point(*chip, column, row))
+                            .map(|_| PromptMouseTarget::HumanBoardCardRecipient)
+                    })
+                    .or_else(|| {
+                        reply_field
+                            .filter(|field| contains_point(*field, column, row))
+                            .map(|_| PromptMouseTarget::HumanBoardCardReply)
+                    })
             }
             OverlayMouseLayout::ConfirmDeleteTerminal {
                 cancel_button,
@@ -7080,6 +7293,26 @@ impl App {
             let file_index = (index < self.engine.staged_files.len()).then_some(index);
             return Some(MouseTarget::StagedFile(file_index));
         }
+        if let Some(index) = self
+            .mouse_layout
+            .right_tabs
+            .iter()
+            .position(|(area, _)| contains_point(*area, column, row))
+        {
+            return Some(MouseTarget::RightTab(index));
+        }
+        if let Some(area) = self.mouse_layout.board_list
+            && contains_point(area, column, row)
+        {
+            let index = usize::from(row.saturating_sub(area.y));
+            let slot = self
+                .mouse_layout
+                .board_row_to_slot
+                .get(index)
+                .copied()
+                .flatten();
+            return Some(MouseTarget::BoardRow(slot));
+        }
         if let Some(area) = self.mouse_layout.commit_area
             && contains_point(area, column, row)
         {
@@ -7162,6 +7395,24 @@ impl App {
             // Extend one row past each content edge to cover the border row.
             let hit_top = unstaged.y + unstaged.height; // first row after unstaged content (border)
             let hit_bottom = staged.y.saturating_sub(1); // last row before staged content (border)
+            if row >= hit_top
+                && row <= hit_bottom
+                && column >= right.x
+                && column < right.x + right.width
+            {
+                return Some(ResizeDragState::StagedDivider);
+            }
+        }
+
+        // Between Changes and the human board: the same split, and the same
+        // setting, as the staged list's, since the board takes its place.
+        if let (Some(unstaged), Some(board)) = (
+            self.mouse_layout.unstaged_list,
+            self.mouse_layout.board_list,
+        ) {
+            let right = self.mouse_layout.right;
+            let hit_top = unstaged.y + unstaged.height;
+            let hit_bottom = board.y.saturating_sub(1);
             if row >= hit_top
                 && row <= hit_bottom
                 && column >= right.x
@@ -7696,7 +7947,8 @@ impl App {
             .saturating_sub(self.last_error_dialog_height.max(1));
         let scroll = match &mut self.prompt {
             PromptState::ConfigReloadFailed { scroll, .. }
-            | PromptState::AddProjectFailed { scroll, .. } => scroll,
+            | PromptState::AddProjectFailed { scroll, .. }
+            | PromptState::HumanBoardCard { scroll, .. } => scroll,
             _ => return,
         };
         let next = if delta >= 0 {
@@ -8516,6 +8768,34 @@ impl App {
         }
     }
 
+    fn set_board_reply_cursor_from_mouse(&mut self, column: u16, row: u16) {
+        let Some(field) = (match self.overlay_layout.active {
+            OverlayMouseLayout::HumanBoardCard { reply_field, .. } => reply_field,
+            _ => None,
+        }) else {
+            return;
+        };
+        if let PromptState::HumanBoardCard {
+            focus,
+            reply: Some(reply),
+            ..
+        } = &mut self.prompt
+        {
+            let input = &mut reply.input;
+            // The field shows the reply wrapped over its rows, a window of them
+            // that keeps the caret in view; the click lands relative to where
+            // that window starts. The border and a pad cell each side are not
+            // text.
+            let width = super::human_board_dialog::reply_text_width(field.width);
+            let (_, first, ..) =
+                super::human_board_dialog::reply_window(input, width, reply.scroll);
+            let row = usize::from(row.saturating_sub(field.y + 1)) + first;
+            let col = usize::from(column.saturating_sub(field.x + 2));
+            input.set_cursor_wrapped(width, row, col);
+            *focus = super::human_board::HumanBoardCardFocus::Reply;
+        }
+    }
+
     fn set_pull_request_cursor_from_mouse(&mut self, column: u16) {
         let input_area = match self.overlay_layout.active {
             OverlayMouseLayout::PullRequestInput { input, .. } => input,
@@ -8891,6 +9171,47 @@ impl App {
         }
     }
 
+    /// The wheel over an open card scrolls its text, wherever the pointer is
+    /// on the dialog: a long card is read, not steered.
+    fn handle_human_board_card_mouse(&mut self, mouse: &MouseEvent) -> Option<bool> {
+        if !matches!(self.prompt, PromptState::HumanBoardCard { .. }) {
+            return None;
+        }
+        if let Some(handled) = self.handle_card_text_selection(mouse) {
+            return Some(handled);
+        }
+        // The wheel over the reply field scrolls the reply, not the card.
+        let over_field = matches!(
+            self.overlay_layout.active,
+            OverlayMouseLayout::HumanBoardCard { reply_field: Some(field), .. }
+                if contains_point(field, mouse.column, mouse.row)
+        );
+        if over_field {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => {
+                    self.scroll_board_reply(1);
+                    return Some(false);
+                }
+                MouseEventKind::ScrollUp => {
+                    self.scroll_board_reply(-1);
+                    return Some(false);
+                }
+                _ => {}
+            }
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollDown => {
+                self.scroll_error_dialog(MOUSE_WHEEL_LINES as i32);
+                Some(false)
+            }
+            MouseEventKind::ScrollUp => {
+                self.scroll_error_dialog(-(MOUSE_WHEEL_LINES as i32));
+                Some(false)
+            }
+            _ => None,
+        }
+    }
+
     fn handle_first_load_prompt_mouse(&mut self, mouse: &MouseEvent) -> Option<bool> {
         if !matches!(self.prompt, PromptState::FirstLoad(_)) {
             return None;
@@ -9096,6 +9417,9 @@ impl App {
     }
 
     pub(crate) fn handle_prompt_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if let Some(result) = self.handle_human_board_card_mouse(&mouse) {
+            return result;
+        }
         if let Some(result) = self.handle_first_load_prompt_mouse(&mouse) {
             return result;
         }
@@ -9203,6 +9527,18 @@ impl App {
         }
         if double_click {
             self.apply_set_tailscale_mode();
+        }
+    }
+
+    fn click_board_assign_item(&mut self, index: usize) {
+        let double_click = self.register_mouse_click(MouseClickTarget::CommandPalette, Some(index));
+        if let PromptState::AssignBoardCard(picker) = &mut self.prompt
+            && index < picker.people.len()
+        {
+            picker.selected = index;
+        }
+        if double_click {
+            self.pick_board_card_assignee();
         }
     }
 
@@ -9330,6 +9666,9 @@ impl App {
             PromptMouseTarget::SetTailscaleModeItem(index) => {
                 self.click_tailscale_mode_item(index);
             }
+            PromptMouseTarget::AssignBoardCardItem(index) => {
+                self.click_board_assign_item(index);
+            }
             PromptMouseTarget::ChangeThemeItem(index) => {
                 self.click_theme_item(index);
             }
@@ -9354,6 +9693,15 @@ impl App {
             }
             PromptMouseTarget::RenameInput => {
                 self.set_rename_cursor_from_mouse(mouse.column);
+            }
+            PromptMouseTarget::HumanBoardCardReply => {
+                self.set_board_reply_cursor_from_mouse(mouse.column, mouse.row);
+            }
+            PromptMouseTarget::HumanBoardCardRecipient => {
+                if let PromptState::HumanBoardCard { focus, .. } = &mut self.prompt {
+                    *focus = super::human_board::HumanBoardCardFocus::Recipient;
+                }
+                self.cycle_board_reply_recipient();
             }
             PromptMouseTarget::NameNewAgentInput => {
                 self.set_name_new_agent_cursor_from_mouse(mouse.column);
@@ -9401,6 +9749,10 @@ impl App {
             | PromptMouseTarget::ConfirmDeleteConfirm
             | PromptMouseTarget::ConfirmDeleteWorktreeCancel
             | PromptMouseTarget::ConfirmDeleteWorktreeConfirm
+            | PromptMouseTarget::HumanBoardCardClose
+            | PromptMouseTarget::HumanBoardCardAction
+            | PromptMouseTarget::HumanBoardCardSend
+            | PromptMouseTarget::HumanBoardCardAssign
             | PromptMouseTarget::ConfirmDeleteTerminalCancel
             | PromptMouseTarget::ConfirmDeleteTerminalConfirm
             | PromptMouseTarget::ConfirmCloseTabCancel
@@ -9514,6 +9866,22 @@ impl App {
             }
             ButtonPressedTarget::ConfirmDeleteWorktreeConfirm => {
                 self.resolve_confirm_delete_worktree(true)
+            }
+            ButtonPressedTarget::HumanBoardCardClose => {
+                self.resolve_human_board_card(false);
+                false
+            }
+            ButtonPressedTarget::HumanBoardCardAction => {
+                self.resolve_human_board_card(true);
+                false
+            }
+            ButtonPressedTarget::HumanBoardCardSend => {
+                self.send_board_reply(false);
+                false
+            }
+            ButtonPressedTarget::HumanBoardCardAssign => {
+                self.assign_board_card_from_dialog();
+                false
             }
             ButtonPressedTarget::ConfirmDeleteTerminalCancel => {
                 self.resolve_confirm_delete_terminal(false)
@@ -10866,6 +11234,28 @@ impl App {
             MouseTarget::CommitChrome => {
                 self.set_file_selection(RightSection::CommitInput, None);
             }
+            MouseTarget::RightTab(index) => {
+                if let Some((_, tab)) = self.mouse_layout.right_tabs.get(index).cloned() {
+                    self.focus = FocusPane::Files;
+                    self.fullscreen_overlay = FullscreenOverlay::None;
+                    self.input_target = InputTarget::None;
+                    self.show_right_tab(tab);
+                    self.right_section = RightSection::first(self.right_lower());
+                    self.clamp_files_cursor();
+                }
+            }
+            MouseTarget::BoardRow(slot) => {
+                self.focus_human_board();
+                self.fullscreen_overlay = FullscreenOverlay::None;
+                if let Some(slot) = slot {
+                    self.human_board.select_slot(slot);
+                    let double_click =
+                        self.register_mouse_click(MouseClickTarget::BoardPane, Some(slot));
+                    if double_click {
+                        self.open_selected_board_card();
+                    }
+                }
+            }
             MouseTarget::CommitText => {
                 let ready_to_edit = self.focus == FocusPane::Files
                     && self.right_section == RightSection::CommitInput
@@ -11125,6 +11515,10 @@ impl App {
                 self.focus = FocusPane::Files;
                 self.right_section = RightSection::CommitInput;
                 self.scroll_commit_input(down);
+            }
+            Some(MouseTarget::BoardRow(_)) => {
+                self.focus_human_board();
+                self.human_board.move_selection(if down { 1 } else { -1 });
             }
             _ => {}
         }
@@ -11995,6 +12389,9 @@ mod tests {
             staged_list: Some(Rect::new(78, 9, 21, 5)),
             commit_area: Some(Rect::new(77, 14, 23, 6)),
             commit_text_area: Some(Rect::new(78, 15, 21, 4)),
+            board_list: None,
+            board_row_to_slot: Vec::new(),
+            right_tabs: Vec::new(),
         };
     }
 

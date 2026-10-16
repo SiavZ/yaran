@@ -273,6 +273,51 @@ impl App {
         wrote
     }
 
+    /// [`Self::write_into_focused_pty`] for an agent tab named explicitly,
+    /// whichever pane has focus: the board's reply is typed into the agent it
+    /// is for, not into whatever happens to be on screen. The same single
+    /// critical section decides and enqueues.
+    pub(crate) fn write_into_agent_tab(&mut self, tab_id: &str, bytes: &[u8]) -> bool {
+        let seat = self.pty_ownership();
+        let Some(provider) = self.engine.providers.get(TabIdRef::new(tab_id)) else {
+            return false;
+        };
+        let Some(seat) = seat else {
+            let _ = provider.write_bytes(bytes);
+            return true;
+        };
+        let mut queue_full = false;
+        let wrote = seat.owners.write_if_owner(tab_id, seat.conn_id, || {
+            queue_full = !provider.enqueue_bytes(bytes);
+        });
+        if queue_full {
+            yaran_core::pty::log_dropped_pty_write();
+        }
+        if !wrote {
+            self.log_refused_pty_write(tab_id, &seat);
+        }
+        wrote
+    }
+
+    /// Why keystrokes from here would not reach `tab_id` right now, as the end
+    /// of a sentence, or `None` when they would. Nothing serving means no gate.
+    pub(crate) fn agent_tab_write_refusal(&self, tab_id: &str) -> Option<String> {
+        self.pty_ownership()?;
+        match self.pty_driver(tab_id) {
+            PtyDriver::Mine => None,
+            PtyDriver::Free => Some(
+                "nothing is driving its terminal yet, so keystrokes from here would not reach \
+                 it. Select the agent and press Take over on the card covering it first."
+                    .to_string(),
+            ),
+            PtyDriver::Elsewhere { device } => Some(format!(
+                "{} is driving its terminal, so keystrokes from here would not reach it. \
+                 Select the agent and press Take over first.",
+                device.unwrap_or_else(|| UNNAMED_DEVICE.to_string())
+            )),
+        }
+    }
+
     /// Say at debug why a write was dropped. The two refusals are one rung with
     /// two stories, and the card over the pane is already telling whichever is
     /// true.

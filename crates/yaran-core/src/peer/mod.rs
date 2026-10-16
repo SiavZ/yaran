@@ -17,7 +17,7 @@
 
 mod amq;
 mod handle;
-mod router;
+pub(crate) mod router;
 pub mod session_store;
 
 use std::path::Path;

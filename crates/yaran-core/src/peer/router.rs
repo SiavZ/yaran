@@ -700,6 +700,17 @@ fn yaran_tui_pid(paths: &YaranPaths) -> Option<u32> {
 /// The session whose directory contains `cwd`, preferring the deepest one.
 /// Two sessions at the same depth (a shared workspace) make the sender
 /// ambiguous, which is an error rather than a guess.
+/// The handle of the agent session whose directory holds `cwd`, the nearest
+/// one, as `yaran peer send` infers its sender. `None` when no session (or
+/// more than one at the same depth) holds it, or the store cannot be read.
+pub(crate) fn agent_handle_for_cwd(paths: &YaranPaths, cwd: &Path) -> Option<String> {
+    let sessions = load_sessions_if_present(paths).ok()?;
+    session_for_cwd(cwd, &sessions)
+        .ok()
+        .flatten()
+        .map(|session| session.agent_handle().to_string())
+}
+
 fn session_for_cwd<'a>(cwd: &Path, sessions: &'a [PeerSession]) -> Result<Option<&'a PeerSession>> {
     let cwd = canonical_or_raw(cwd);
     let mut nearest = None;

@@ -497,6 +497,13 @@ fn apply_patches(doc: &mut DocumentMut, config: &Config) {
         "sidebar_header_rule",
         config.ui.sidebar_header_rule,
     );
+    patch_table_bool(doc, "ui", "human_board", config.ui.human_board);
+    patch_table_str(
+        doc,
+        "ui",
+        "human_board_reply_template",
+        &config.ui.human_board_reply_template,
+    );
     patch_table_str(doc, "ui", "theme", &config.ui.theme);
 
     // --- [capabilities] ---
@@ -741,6 +748,33 @@ fn apply_patches(doc: &mut DocumentMut, config: &Config) {
         "storage",
         "backup_interval_minutes",
         config.storage.backup_interval_minutes,
+    );
+
+    // --- [board] (the human board's store, people and sync) ---
+    patch_table_str(doc, "board", "dir", &config.board.dir);
+    patch_table_string_array(doc, "board", "people", &config.board.people);
+    patch_table_str(doc, "board", "me", &config.board.me);
+    patch_table_str(doc, "board", "id_prefix", &config.board.id_prefix);
+    patch_table_str(doc, "board", "sync", &config.board.sync);
+    patch_table_u32(
+        doc,
+        "board",
+        "sync_interval_seconds",
+        config.board.sync_interval_seconds,
+    );
+    patch_table_bool(doc, "board", "relay", config.board.relay);
+    patch_table_str(doc, "board", "relay_to", &config.board.relay_to);
+    patch_table_str(
+        doc,
+        "board",
+        "relay_transport",
+        &config.board.relay_transport,
+    );
+    patch_table_u32(
+        doc,
+        "board",
+        "news_close_hours",
+        config.board.news_close_hours,
     );
 }
 
