@@ -269,6 +269,19 @@ yaran peer sync-amq
 
 `yaran peer send` sends to a Claude agent over Claude Peers and to every other provider over AMQ; pass `--transport amq` to override. If either end is in a shared workspace, yaran always routes through AMQ by the agent's immutable handle, because matching peers by working directory would be ambiguous. Every agent is launched with `YARAN_SESSION_ID`, `YARAN_STORE_ID`, `YARAN_PROVIDER` and `YARAN_AMQ_HANDLE`, and yaran refreshes AMQ's agent registry from `sessions.sqlite3` when the TUI or `yaran server` starts, and on `yaran peer sync-amq`.
 
+### Tasks for Human
+
+When agents work on their own, the moments that need a person (a decision only you can make, a change to check on a real device, a yes before a merge) scroll away in a terminal you are not watching. Agents can put those moments on the human board instead:
+
+```bash
+yaran board post --kind validate --ticket 4812 "Check the signup page on a phone"
+yaran board post --kind confirm --ticket 3770 --detail - "Merge the auth fix?" < why.md
+yaran board resolve --ticket 4812
+yaran board list --all --json
+```
+
+Turn on `[ui] human_board` (or run `toggle-human-board` from the palette) and the right column gets tabs: **Tasks for Human** (open cards grouped as Tasks for you, Validation, Confirmation needed and What happened, then the last few you marked done) and **Changes** (the changed files, the staged list and the commit box). It is the same board whatever agent is selected, a new card is announced on the status line, Enter opens a card in full, and the stage key marks it done (or reopens it). Cards carry a priority (`--priority critical|high|normal|low`); urgent ones lead their group. An open card also takes a reply: type it in the card's reply box and Enter sends it to the agent that posted the card as a prompt, then marks the card done with the reply kept as its note. List several people in `[board] people` and each gets a queue and a tab of their own (`yaran board post --for <person>`). The cards live in `human_board.json` in yaran's config directory, or, with `[board] dir`, as one Markdown note per card in a folder that a notes vault or a git repository shares between machines (`[board] sync = "git"` keeps it in step); agents see what you resolved with `yaran board list --all`.
+
 ### Per-Session Settings
 
 Every agent has its own settings drawer (the `session-settings` palette command, or its keybinding) covering context mode (Attended, Orchestrator or Worker), YOLO permissions (including OpenCode's `--auto` mode), per-rule arm and disarm for watch rules, auto-clear after a task is done, auto-compact on a `[compact]` sentinel, and an AMQ verify-envelope override. A Worker that opted into auto-compact and ends a reply with the literal `[compact]` gets `/compact` typed at its prompt, followed on the same line by the text of an instructions file (`[amq.inject].compact_instructions_path`, default `~/.claude/compact-instructions.txt`, or the session's own path); a missing or empty file types a bare `/compact` and logs a warning. Auto-compact waits under the same conditions as auto-clear, and the two sentinels never trigger each other. The defaults are cautious on purpose: a missing or corrupt settings record always loads as Attended with no YOLO, no auto-clear and no auto-compact, so tampering with the database cannot escalate a session into autonomous mode. Settings persist in `sessions.sqlite3` and follow the agent across detach and reconnect.

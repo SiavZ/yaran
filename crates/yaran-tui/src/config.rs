@@ -887,6 +887,20 @@ fn config_schema() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::Bool(c.ui.sidebar_header_rule),
         },
         ConfigEntry::Field {
+            key: "human_board",
+            comment: Some(CommentSource::Static(
+                "# Show the human board, titled \"Tasks for Human\", in the right column in\n# place of the Staged Changes list and the Commit Message box. Agents put\n# cards on it with `yaran board post --kind task|validate|confirm|info` when\n# something needs a person (a decision, a check on a real device, a yes\n# before they carry on) or should not be missed. The open cards are grouped\n# by kind and stay until somebody marks them done, here or with\n# `yaran board resolve`. The board is the same whatever agent is selected.\n# Default false: the right column keeps its staged list and commit box.\n# The \"toggle-human-board\" palette command flips this setting.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.ui.human_board),
+        },
+        ConfigEntry::Field {
+            key: "human_board_reply_template",
+            comment: Some(CommentSource::Static(
+                "# What a reply typed in a board card becomes when it is sent to an agent.\n# The card dialog has a reply box: Enter types the reply into the agent that\n# posted the card (or the selected agent when the poster is not running),\n# submits it, and marks the card done with the reply kept as its note.\n# Placeholders: {reply} the text you typed, {card} the card label\n# (\"#21 [ticket]\"), {ticket} the bare ticket, {title} the card title (cut to\n# 80 characters). Empty sends the reply alone; a template without {reply}\n# gets the reply appended, so what you typed is never dropped.",
+            )),
+            value_fn: |c| FieldValue::Str(c.ui.human_board_reply_template.clone()),
+        },
+        ConfigEntry::Field {
             key: "theme",
             comment: Some(CommentSource::Static(
                 "# Visual theme for the yaran interface.\n# Built-in options include \"yaran_dark\" (the default), plus any theme\n# bundled with the opaline engine, for example: \"catppuccin_mocha\",\n# \"catppuccin_frappe\", \"nord\", \"dracula\", \"gruvbox_dark\",\n# \"tokyo_night\", \"solarized_dark\", \"one_dark\", \"rose_pine\", and others.\n# To use a custom theme, drop a TOML file into <config_dir>/themes/<name>.toml\n# (with the same token format as opaline themes) and reference it here\n# by file stem. Unknown names fall back to yaran_dark with a warning.\n# Use the `change-theme` command in the palette (Ctrl-p) for an interactive picker.",
@@ -1707,6 +1721,119 @@ fn config_schema() -> Vec<ConfigEntry> {
                  # Default 30. Set to 0 to turn the copies off. Read at startup.",
             )),
             value_fn: |c| FieldValue::U32(c.storage.backup_interval_minutes),
+        },
+        ConfigEntry::Blank,
+        ConfigEntry::Comment(
+            "# The human board (\"Tasks for Human\", see [ui] human_board): where its\n\
+             # cards live, whose queues it has, and how a board shared between\n\
+             # machines is kept in step. Read at startup and on a config reload.",
+        ),
+        ConfigEntry::Section("board"),
+        ConfigEntry::Field {
+            key: "dir",
+            comment: Some(CommentSource::Static(
+                "# Where the cards live. Empty (the default) keeps them in human_board.json\n\
+                 # in this directory, private to this machine. A folder keeps one Markdown\n\
+                 # note per card there (G-12.md), which a notes app can show and edit; put\n\
+                 # it in a synced notes vault or a git repository and several people share\n\
+                 # one board. ~/ starts at your home directory. Run `yaran board import`\n\
+                 # once to copy the private board's cards into a new folder.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.dir.clone()),
+        },
+        ConfigEntry::Field {
+            key: "people",
+            comment: Some(CommentSource::Static(
+                "# The people the board has a queue for, e.g. [\"Sam\", \"Alex\"]. Each gets\n\
+                 # a tab in the right column, beside an All tab and the Changes tab, and\n\
+                 # agents put a card in someone's queue with `yaran board post --for Sam`.\n\
+                 # A card for nobody in particular is in every queue. Empty (the default):\n\
+                 # one queue for whoever runs yaran.",
+            )),
+            value_fn: |c| FieldValue::StrList(c.board.people.clone()),
+        },
+        ConfigEntry::Field {
+            key: "me",
+            comment: Some(CommentSource::Static(
+                "# Which of the people runs this yaran: their tab opens first, only their new\n\
+                 # cards are announced on the status line, and a card posted here without\n\
+                 # --for goes to their queue. Empty: no queue is this machine's own.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.me.clone()),
+        },
+        ConfigEntry::Field {
+            key: "id_prefix",
+            comment: Some(CommentSource::Static(
+                "# What this machine puts in front of the numbers of the cards it adds to a\n\
+                 # folder board (G makes G-12), so two machines never give out the same id.\n\
+                 # Give every machine sharing a folder its own. Letters and digits, starting\n\
+                 # with a letter, at most 8. Empty: the first letter of `me`.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.id_prefix.clone()),
+        },
+        ConfigEntry::Field {
+            key: "sync",
+            comment: Some(CommentSource::Static(
+                "# How a folder board is kept in step with the other machines:\n\
+                 #   \"off\"  yaran does not sync it (a sync app or a person does). Default.\n\
+                 #   \"git\"  the folder is inside a git repository whose branch has an\n\
+                 #          upstream: while the terminal UI runs, yaran commits the\n\
+                 #          folder's changes (and nothing else in the repository), merges\n\
+                 #          the upstream and pushes. Where two machines changed the same\n\
+                 #          card, the later edit is kept. It never rebases, never forces,\n\
+                 #          and stops to report anything else it cannot merge.\n\
+                 # `yaran board sync` runs one sync by hand.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.sync.clone()),
+        },
+        ConfigEntry::Field {
+            key: "sync_interval_seconds",
+            comment: Some(CommentSource::Static(
+                "# Seconds between syncs with sync = \"git\" (at least 15). A change made on\n\
+                 # this machine syncs a few seconds after it lands either way. Default 60.",
+            )),
+            value_fn: |c| FieldValue::U32(c.board.sync_interval_seconds),
+        },
+        ConfigEntry::Field {
+            key: "relay",
+            comment: Some(CommentSource::Static(
+                "# Carry a card's conversation between people and agents while the terminal\n\
+                 # UI runs. When another person replies on a card an agent of this machine\n\
+                 # posted, yaran passes the reply to that agent (as `yaran peer send` would,\n\
+                 # never by typing into its terminal) and the agent answers on the card with\n\
+                 # `yaran board reply`. A card another person assigns to `me` goes to\n\
+                 # relay_to. Every message is passed once, and the card shows it was.\n\
+                 # Default false: replies wait on the board for a person to pass on.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.board.relay),
+        },
+        ConfigEntry::Field {
+            key: "relay_to",
+            comment: Some(CommentSource::Static(
+                "# The agent (its handle) that gets the cards another person assigns to `me`\n\
+                 # when no agent of this machine posted them, and the replies on them: an\n\
+                 # orchestrating agent that can take the work on. Empty (the default): such\n\
+                 # cards wait on the board for a person.",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.relay_to.clone()),
+        },
+        ConfigEntry::Field {
+            key: "relay_transport",
+            comment: Some(CommentSource::Static(
+                "# How a relayed message reaches its agent, as `yaran peer send --transport`\n\
+                 # takes it: \"auto\" (the default: Claude Peers for a Claude agent, AMQ for\n\
+                 # anything else), \"amq\", or \"claude-peers\".",
+            )),
+            value_fn: |c| FieldValue::Str(c.board.relay_transport.clone()),
+        },
+        ConfigEntry::Field {
+            key: "news_close_hours",
+            comment: Some(CommentSource::Static(
+                "# Hours after which a news card (What happened) closes by itself if nobody has\n\
+                 # marked it done: news asks nothing of anyone, so it should not pile up.\n\
+                 # Default 4. 0 keeps news open until somebody marks it done.",
+            )),
+            value_fn: |c| FieldValue::U32(c.board.news_close_hours),
         },
     ]
 }

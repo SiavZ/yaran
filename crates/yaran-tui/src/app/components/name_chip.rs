@@ -60,6 +60,12 @@ pub(crate) fn labelled_name(
     ])
 }
 
+/// One name as a soft chip: [`name_chip`]'s shape in the selection tint (see
+/// [`Theme::soft_name_style`]).
+pub(crate) fn soft_name_chip(name: &str, theme: &Theme) -> Span<'static> {
+    Span::styled(format!(" {name} "), theme.soft_name_style())
+}
+
 /// A sentence as lines, split at every line break in its words, each line
 /// starting with `indent` in `text_style` (the dialogs' one-cell body margin).
 pub(crate) fn prose_lines(

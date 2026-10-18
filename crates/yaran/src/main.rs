@@ -33,6 +33,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("peer") => run_peer(args),
+        Some("board") => run_board(args),
         _ => run_tui_with_flip(),
     }
 }
@@ -46,6 +47,15 @@ fn run_peer(args: impl Iterator<Item = String>) -> Result<()> {
     let args = args.collect::<Vec<_>>();
     let paths = yaran_core::config::YaranPaths::discover()?;
     yaran_core::peer::run_peer(&args, &paths)
+}
+
+/// `yaran board ...`: put cards on the human board, or take them off.
+/// Dispatched early and lock-free for the same reasons as `yaran peer`: agents
+/// run it while a yaran holds the lock, and a card title may contain `--help`.
+fn run_board(args: impl Iterator<Item = String>) -> Result<()> {
+    let args = args.collect::<Vec<_>>();
+    let paths = yaran_core::config::YaranPaths::discover()?;
+    yaran_core::human_board::cli::run_board(&args, &paths)
 }
 
 /// Write the handoff and replace this process with the newer yaran binary.

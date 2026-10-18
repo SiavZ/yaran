@@ -599,6 +599,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         // value; the row is there so it can be changed from a browser.
     },
     PaletteCommand {
+        action: Action::ToggleHumanBoard,
+        name: "toggle-human-board",
+        description: "Show or hide the human board in place of the staged list and commit box",
+        // TUI-only for now: the board pane exists only in the terminal UI. The
+        // web has no counterpart yet, so there is no app-menu entry to add.
+    },
+    PaletteCommand {
         action: Action::ToggleRandomizedPetNameDefault,
         name: "toggle-randomized-pet-name-default",
         description: "Toggle whether new agent prompts start with a random pet name",

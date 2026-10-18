@@ -1765,6 +1765,19 @@ pub struct UiConfig {
     /// where a header is one line among many two-line rows. No effect on the
     /// flat list, which has no project headers. TUI-only.
     pub sidebar_header_rule: bool,
+    /// Show the human board ("Tasks for Human") in the right column, in place
+    /// of the Staged Changes list and the Commit Message box. Agents post cards
+    /// to it with `yaran board post` when something needs a person (a decision,
+    /// a check, a yes before they carry on) or should not be missed; the board
+    /// is the same whatever agent is selected. Default false: the right column
+    /// keeps its staged list and commit box. The `toggle-human-board` palette
+    /// command flips it. TUI-only.
+    pub human_board: bool,
+    /// The prompt a reply typed in a human-board card becomes when it is sent to
+    /// an agent. Placeholders: `{reply}`, `{card}` (`#21 [ticket]`), `{ticket}`,
+    /// `{title}`. Empty sends the reply alone; a template without `{reply}` gets
+    /// the reply appended. TUI-only.
+    pub human_board_reply_template: String,
     /// The agent-list sort mode, persisted so a chosen order (and the manual
     /// drag order it enables) survives restarts and is shared across clients:
     /// "active" (working/attention float up, the default), "updated", "created",
@@ -2305,6 +2318,8 @@ impl Default for UiConfig {
             sidebar_style: "grouped".to_string(),
             sidebar_density: "compact".to_string(),
             sidebar_header_rule: false,
+            human_board: false,
+            human_board_reply_template: crate::human_board::DEFAULT_REPLY_TEMPLATE.to_string(),
             theme: crate::theme::DEFAULT_THEME_NAME.to_string(),
         }
     }
@@ -3072,6 +3087,10 @@ pub struct Config {
     /// Session database maintenance (`[storage]`).
     #[serde(default)]
     pub storage: StorageConfig,
+    /// The human board's store, people and sync (`[board]`). See
+    /// [`crate::human_board`].
+    #[serde(default)]
+    pub board: BoardConfig,
     /// Shared main-workspace mode (fork shared-workspace Phase 4). `None` means
     /// this config predates workspace modes and keeps worktree isolation, the
     /// guarantee it was installed under. A freshly created config always
@@ -3190,6 +3209,8 @@ impl Default for Config {
                 sidebar_style: "grouped".to_string(),
                 sidebar_density: "compact".to_string(),
                 sidebar_header_rule: false,
+                human_board: false,
+                human_board_reply_template: crate::human_board::DEFAULT_REPLY_TEMPLATE.to_string(),
                 theme: crate::theme::DEFAULT_THEME_NAME.to_string(),
             },
             capabilities: CapabilitiesConfig::default(),
@@ -3200,6 +3221,7 @@ impl Default for Config {
             auto_resume: AutoResumeConfig::default(),
             limits: LimitsConfig::default(),
             storage: StorageConfig::default(),
+            board: BoardConfig::default(),
             workspace: Some(WorkspaceConfig::default()),
             amq: AmqConfig::default(),
         }
@@ -3380,6 +3402,70 @@ impl Default for StorageConfig {
         }
     }
 }
+
+/// The `[board]` section: where the human board keeps its cards, whose
+/// queues it has, and how a board shared between machines is kept in step.
+/// Resolved (and degraded where a value is unusable) by
+/// [`crate::human_board::BoardSettings`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BoardConfig {
+    /// Empty keeps the board in one file in the yaran home, private to this
+    /// machine. A folder keeps one Markdown note per card there, so a board
+    /// in a synced notes vault or a git repository can be shared.
+    pub dir: String,
+    /// The people the board has a queue for; each gets a tab in the right
+    /// column. Empty: one queue for whoever runs yaran.
+    pub people: Vec<String>,
+    /// Who runs this yaran: their queue is the first tab, and a card posted
+    /// without `--for` goes to it.
+    pub me: String,
+    /// What this machine puts in front of the numbers it gives new cards in a
+    /// shared folder (`G` makes `G-12`). Empty: the first letter of `me`.
+    pub id_prefix: String,
+    /// `"off"` or `"git"`. A string so an unknown value degrades to off at the
+    /// one reading site instead of refusing the whole file.
+    pub sync: String,
+    /// Seconds between background syncs while the terminal UI runs.
+    pub sync_interval_seconds: u32,
+    /// Pass what another person writes on a card to the agent that posted it
+    /// on this machine (and a card another person assigns to `me` to
+    /// `relay_to`), while the terminal UI runs.
+    pub relay: bool,
+    /// The agent handle that gets cards another person assigns to `me` when
+    /// no agent of this machine posted them. Empty: such cards wait on the
+    /// board for a person.
+    pub relay_to: String,
+    /// How a relayed message travels: `"auto"`, `"amq"` or `"claude-peers"`,
+    /// as `yaran peer send --transport` takes them.
+    pub relay_transport: String,
+    /// Hours after which an open news card ("What happened") closes by itself.
+    /// 0 keeps news open until somebody marks it done.
+    pub news_close_hours: u32,
+}
+
+impl Default for BoardConfig {
+    fn default() -> Self {
+        Self {
+            dir: String::new(),
+            people: Vec::new(),
+            me: String::new(),
+            id_prefix: String::new(),
+            sync: "off".to_string(),
+            sync_interval_seconds: DEFAULT_BOARD_SYNC_INTERVAL_SECONDS,
+            relay: false,
+            relay_to: String::new(),
+            relay_transport: "auto".to_string(),
+            news_close_hours: DEFAULT_BOARD_NEWS_CLOSE_HOURS,
+        }
+    }
+}
+
+/// Default for [`BoardConfig::news_close_hours`].
+pub const DEFAULT_BOARD_NEWS_CLOSE_HOURS: u32 = 4;
+
+/// Default for [`BoardConfig::sync_interval_seconds`].
+pub const DEFAULT_BOARD_SYNC_INTERVAL_SECONDS: u32 = 60;
 
 /// Default for [`StorageConfig::backup_interval_minutes`].
 pub const DEFAULT_BACKUP_INTERVAL_MINUTES: u32 = 30;

@@ -105,6 +105,7 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::ChangeDefaultProvider(_)
         | PromptState::ChangeProjectDefaultProvider(_)
         | PromptState::SetTailscaleMode(_)
+        | PromptState::AssignBoardCard(_)
         | PromptState::WatchRules(_)
         | PromptState::ChangeTheme(_)
         | PromptState::AddProjectFailed { .. }
@@ -114,7 +115,14 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         // Confirmations. Dismissal IS cancel here, and every one of these
         // already defaults its focus to Cancel, so an outside click resolves
         // them the same way the safe default button does.
+        // A card dialog with a reply typed into it holds free text the user
+        // has not sent: an outside click must not throw it away.
+        PromptState::HumanBoardCard {
+            reply: Some(reply), ..
+        } if !reply.input.text.trim().is_empty() => Blink,
+
         PromptState::ConfirmDeleteAgent { .. }
+        | PromptState::HumanBoardCard { .. }
         | PromptState::ConfirmDeleteTerminal { .. }
         | PromptState::ConfirmCloseTab { .. }
         | PromptState::ConfirmDetachAgent { .. }
@@ -312,6 +320,11 @@ impl App {
             }
             // Same as its Esc: a confirmation steps back to the list.
             PromptState::OrphanWorktrees(_) => self.cancel_orphan_worktrees_prompt(),
+            PromptState::HumanBoardCard { .. } => {
+                self.resolve_human_board_card(false);
+            }
+            // Same as its Esc: the card dialog it was opened from comes back.
+            PromptState::AssignBoardCard(_) => self.leave_board_assign_picker(),
             PromptState::ConfirmDeleteTerminal { .. } => {
                 self.resolve_confirm_delete_terminal(false);
             }

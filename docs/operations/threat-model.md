@@ -926,6 +926,135 @@ removing or overriding `[providers.jcode]` disables the provider.
 
 ---
 
+## T21 — Agent forges, floods or hides human-board cards, or injects escapes through them
+
+**Attack scenario.** Any process running as the operator, an agent included, can
+run `yaran board post` or edit `human_board.json` directly. A misbehaving agent
+could post under another agent's name, bury the cards that matter under hundreds
+of noise cards, resolve a card nobody looked at, or put terminal escape sequences
+in a title to repaint the operator's screen.
+
+**Mitigation in code.** The board is one file in the yaran config directory,
+created owner-only; every writer holds an exclusive `flock` on
+`human_board.lock` for its whole read-modify-write and lands the document with
+an atomic rename, so concurrent posts never lose a card and readers never see a
+half-written board. Every card string (title, detail, ticket, poster, note) is
+passed through the terminal sanitizer and bounded in length before it is
+stored, and the terminal UI renders it as plain text. Open cards are capped
+(`MAX_OPEN_CARDS`) and a post past the cap is refused with an error rather than
+dropping older cards; resolved history is pruned, open cards never are. A board
+the parser cannot read is shown as unreadable in the pane and is never
+overwritten, and a document from a newer schema is read but not rewritten.
+
+**Residual risk.** The poster field is a label taken from the launch
+environment (`YARAN_AMQ_HANDLE`/`AM_ME`) or `--from`, not an authenticated
+identity, and resolving a card is not authenticated either: both are
+same-UID actions under the single-user trust model accepted in T2. The board
+carries no executable content; nothing on it is ever run. A reply sent from a
+card's dialog is typed into an agent's terminal through the same ownership gate
+as any keystroke, and the default reply template quotes the card's title
+(sanitized, cut to 80 characters): agent-written text therefore reaches an
+agent's prompt only when the person sends a reply, by default only the agent
+that posted the card, and the dialog names that agent first. An empty
+`human_board_reply_template` sends the person's words alone.
+
+**Detection.** `yaran board list --all --json` shows every card with its
+poster, timestamps, and who resolved it; the file itself is plain JSON.
+
+---
+
+## T22 — A shared board folder carries foreign card text in, and its git sync publishes and merges
+
+**Attack scenario.** With `[board] dir` set, the board is a folder of Markdown
+notes that other machines and people also write, typically through a synced
+notes vault or a git repository. A note can therefore come from anyone with
+write access to that vault or remote, not only from this operator's agents: it
+may hold escape sequences, absurd sizes, malformed properties, a symlink to
+some other file, or two notes claiming one card id. With `[board] sync = "git"`
+yaran also runs git in the repository holding the folder on its own schedule:
+it commits, merges the upstream and pushes, so a hostile or simply busy
+repository state could make it publish something unintended, overwrite local
+work, or hang on a credential prompt.
+
+**Mitigation in code.** Every note is read through the same cleaning and length
+bounds a posted card gets (terminal sanitizer, per-field caps), a note larger
+than `MAX_NOTE_BYTES` is not read, symlinks are not followed, and a note that
+does not parse (or duplicates another's id) is listed as unreadable, left
+exactly as it is, and its id is never handed to a new card. A change rewrites
+only the notes of the cards it changed, each through a hidden temporary file
+and an atomic rename, under the same `flock` as the private board. The sync
+commits only the board folder's paths (a pathspec-limited commit, so whatever
+else is staged or modified in the repository stays out of it), holds the
+board lock while committing or merging so no half-written note is committed,
+does nothing while the repository is mid merge, rebase or cherry-pick, merges
+by fast-forward or merge commit and never rebases or forces, lets git refuse a
+merge that would overwrite uncommitted work, settles a conflict only when every
+conflicted path is a note directly in the board folder (keeping the card with
+the later `updated` time, deterministically on every machine) and otherwise
+aborts the merge and reports it. Every git call has a hard time limit, runs with
+`GIT_TERMINAL_PROMPT=0` and ssh in batch mode (unless the user configured an
+ssh command), and its error text is sanitized before it reaches the status
+line or the log. It pushes only to the branch's configured upstream, with a
+fully qualified refspec. The feature is off by default; nothing syncs unless
+`sync = "git"` is set.
+
+**Residual risk.** Anyone who can write the shared folder or push to its
+remote can post, edit, reassign or resolve cards, and a card's poster and
+resolver are labels, not identities: the board inherits exactly the trust of
+the vault or repository it lives in. The push sends the checked-out branch, so
+commits other tools made in that repository and have not pushed yet go with
+it. A settled conflict keeps one card version's fields and drops the other's
+edit to them (the messages of both versions' conversations are kept). A note
+edited by hand to a newer `updated` time wins conflicts it should not.
+
+**Detection.** The repository's history shows every board commit
+(`Update the shared board: …`) and merge; the board pane's bottom edge shows
+the last sync's time or failure and counts unreadable notes, and
+`yaran board list` names them.
+
+---
+
+## T23 — A card's conversation carries another person's words into this machine's agents
+
+**Attack scenario.** On a shared board a card holds a conversation, and with
+`[board] relay = true` the terminal UI passes what another side wrote on a card
+to the agent of this machine that posted it, and hands a card another person
+assigns to `me` to the agent named in `relay_to`. Whoever can write the shared
+folder or push to its remote can therefore put text in front of this
+operator's agents, written as if a colleague had said it: an instruction to
+push, deploy, delete or exfiltrate something, or text built to break out of
+the message it is quoted in.
+
+**Mitigation in code.** Relaying is off by default. Only a message written on
+another side (its `side` is not `me`) is passed, only to the agent that posted
+the card on this machine (a session of this yaran with that handle) or to the
+one configured `relay_to` agent for a card assigned to `me`, and never for a
+card this machine's agents did not post or was not handed. Message text gets
+the terminal sanitizer and the per-message length cap when it is written and
+again when a note is read, and a whole card's quoted detail is capped again in
+the relay. The send runs `yaran peer send` with the text as one argument (no
+shell), time-limited, over the same transports agents use between
+themselves; it is never typed into a terminal. Each message is passed once:
+only a send that went through is recorded on the card (`relayed`), a failed
+one is retried after a pause, and the card's conversation shows which
+messages were passed. The relayed text says who wrote it on which card and
+points the agent back at the card to answer, so the exchange stays on the
+board where both people can read it.
+
+**Residual risk.** A message's writer and side are labels, not identities: the
+relay trusts the shared folder exactly as T22 does, so anyone who can write it
+can speak as the other person to this machine's agents, and an agent acts on
+that text with its own permissions (the command guards an agent runs under
+still apply to what it then does). Turn `relay` on only for a folder whose
+writers you would let instruct your agents.
+
+**Detection.** Every relayed message is marked as passed in the card's
+conversation (and its note), the status line names each relay and its agent,
+the agent's message history holds the text it received, and the folder's
+repository history shows who changed the card.
+
+---
+
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must
@@ -933,8 +1062,8 @@ update both `SECURITY.md` (the table) and this file (the
 paragraph). PRs that touch the surface listed above without
 updating these documents are blocked at review.
 
-The IDs `T1`–`T20` are stable references; new threats append at
-the end (`T21`, `T22`, …) rather than reshuffling. Retired
+The IDs `T1`–`T23` are stable references; new threats append at
+the end (`T23`, `T24`, …) rather than reshuffling. Retired
 threats are kept in the table with a `~~strikethrough~~` and a
 note pointing to the PR that retired them. Threats that move to
 **accepted-risk in single-user-VM mode** keep their original ID,

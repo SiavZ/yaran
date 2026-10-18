@@ -5109,7 +5109,146 @@ impl App {
         if self.right_hidden {
             return;
         }
+        self.mouse_layout.right_tabs.clear();
 
+        // With the human board on, the column carries a strip of tabs (each
+        // person's queue, All, Changes) over either the board or the changed
+        // files. The collapsed rail stays a rail of file glyphs.
+        if self.human_board_enabled() && !self.right_collapsed && area.height >= 3 {
+            let [strip, body] = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(1)])
+                .areas(area);
+            self.render_right_tabs(frame, strip);
+            if self.right_lower() == RightLower::Board {
+                self.render_human_board(frame, body);
+            } else {
+                self.render_changes_column(frame, body);
+            }
+            return;
+        }
+        self.render_changes_column(frame, area);
+    }
+
+    /// The right column's tab strip while the board is on: one tab per queue
+    /// with how many of its cards wait on a person, then Changes with how many
+    /// files changed. Publishes each tab's rect for clicks; tabs are separated
+    /// by a divider cell with a space either side, so a click cannot land on
+    /// the neighbour.
+    fn render_right_tabs(&mut self, frame: &mut Frame, area: Rect) {
+        use super::human_board::RightTab;
+        let tabs = self.right_column_tabs();
+        let has_people = self
+            .human_board
+            .settings
+            .as_ref()
+            .is_some_and(|settings| settings.has_people());
+        let current = self.human_board.tab.clone();
+        let pane_focused = self.focus == FocusPane::Files;
+        let changed_files = self.engine.unstaged_files.len() + self.engine.staged_files.len();
+        let attention = Style::default().fg(self.theme.session_attention);
+        let quiet = Style::default().fg(self.theme.hint_dim_desc_fg);
+
+        let buf = frame.buffer_mut();
+        let base = Style::default().bg(self.theme.app_bg);
+        for x in area.x..area.right() {
+            buf[(x, area.y)].set_symbol(" ").set_style(base);
+        }
+        let mut x = area.x + 1;
+        let right = area.right();
+        for (index, tab) in tabs.iter().enumerate() {
+            let active = current.as_ref() == Some(tab);
+            let label = tab.label(has_people);
+            let count = match (tab, self.human_board.readable()) {
+                (RightTab::Queue(_), Some(board)) => {
+                    let view = tab
+                        .audience()
+                        .unwrap_or(yaran_core::human_board::Audience::Everyone);
+                    let waiting = board.waiting_count_in(&view);
+                    let news = board.news_count_in(&view);
+                    if waiting > 0 {
+                        Some((waiting.to_string(), attention))
+                    } else if news > 0 {
+                        Some((news.to_string(), quiet))
+                    } else {
+                        None
+                    }
+                }
+                (RightTab::Queue(_), None) => None,
+                (RightTab::Changes, _) => {
+                    (changed_files > 0).then(|| (changed_files.to_string(), quiet))
+                }
+            };
+            // A red dot: a card here holds its poster up until a person answers.
+            // A green one: something from another side nobody here has read.
+            let (waits, unread) = match tab {
+                RightTab::Queue(_) => {
+                    let view = tab
+                        .audience()
+                        .unwrap_or(yaran_core::human_board::Audience::Everyone);
+                    self.board_queue_marks(&view)
+                }
+                RightTab::Changes => (false, false),
+            };
+            let dots = usize::from(waits) + usize::from(unread);
+            let width = display_width(&label)
+                + count
+                    .as_ref()
+                    .map(|(text, _)| 1 + display_width(text))
+                    .unwrap_or(0)
+                + if dots > 0 { 1 + dots } else { 0 };
+            let room = usize::from(right.saturating_sub(x));
+            if width > room {
+                if room > 0 {
+                    buf[(x, area.y)].set_symbol("\u{2026}").set_style(quiet);
+                }
+                break;
+            }
+            let label_style = if active {
+                self.theme
+                    .title_style(pane_focused)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(self.theme.title_normal)
+            };
+            let mut spans = vec![Span::styled(label, label_style)];
+            if let Some((text, style)) = count {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(text, style));
+            }
+            if dots > 0 {
+                spans.push(Span::raw(" "));
+            }
+            if waits {
+                spans.push(Span::styled(
+                    BOARD_DOT,
+                    Style::default().fg(self.theme.diff_remove),
+                ));
+            }
+            if unread {
+                spans.push(Span::styled(
+                    BOARD_DOT,
+                    Style::default().fg(self.theme.diff_add),
+                ));
+            }
+            let rect = Rect::new(x, area.y, width as u16, 1);
+            Paragraph::new(Line::from(spans)).render(rect, buf);
+            self.mouse_layout.right_tabs.push((rect, tab.clone()));
+            x = x.saturating_add(width as u16);
+            if index + 1 < tabs.len() && right.saturating_sub(x) >= 3 {
+                buf[(x + 1, area.y)]
+                    .set_symbol("\u{2502}")
+                    .set_style(Style::default().fg(self.theme.border_normal));
+                x = x.saturating_add(3);
+            }
+        }
+    }
+
+    /// The right column as it is without the board: the Changes list, with
+    /// the Staged Changes list and the commit box under it when something is
+    /// staged (or the collapsed rail, or the quiet card for a folder git
+    /// cannot work with).
+    fn render_changes_column(&mut self, frame: &mut Frame, area: Rect) {
         // Show the shared non-repository message before even the collapsed rail;
         // an empty file region cannot explain a standalone folder on its own.
         if let Some(reason) = self.quiet_changes_reason() {
@@ -5295,17 +5434,37 @@ impl App {
         section: RightSection,
         show_hint: bool,
     ) -> Rect {
+        self.render_file_list_noted(frame, area, title_prefix, files, section, show_hint, None)
+    }
+
+    /// [`Self::render_file_list`] with a quiet note after the title's recap,
+    /// such as the count of staged files the human board is standing over.
+    #[allow(clippy::too_many_arguments)]
+    fn render_file_list_noted(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        title_prefix: &str,
+        files: &[ChangedFile],
+        section: RightSection,
+        show_hint: bool,
+        note: Option<&str>,
+    ) -> Rect {
         let pane_focused = self.focus == FocusPane::Files;
         let is_active_section = pane_focused && self.right_section == section;
-        let block = self.themed_block_line(
-            changed_files_group_title(
-                title_prefix,
-                files,
-                &self.theme,
-                self.theme.title_style(is_active_section),
-            ),
-            is_active_section,
+        let mut title = changed_files_group_title(
+            title_prefix,
+            files,
+            &self.theme,
+            self.theme.title_style(is_active_section),
         );
+        if let Some(note) = note {
+            title.spans.push(Span::styled(
+                format!(" \u{b7} {note}"),
+                Style::default().fg(self.theme.hint_dim_desc_fg),
+            ));
+        }
+        let block = self.themed_block_line(title, is_active_section);
         let inner = block.inner(area);
         block.render(area, frame.buffer_mut());
 
@@ -5471,6 +5630,342 @@ impl App {
         list_area
     }
 
+    /// The human board's title: its name, then how many cards wait on the
+    /// person and how many are news, when there are any. A narrow column gives
+    /// up the news count first, then the word "waiting" (leaving the count in
+    /// parentheses), so the one number that matters is never cut in half.
+    fn human_board_title(&self, focused: bool, max_width: usize) -> Line<'static> {
+        let view = self.human_board.view();
+        let name = match view {
+            yaran_core::human_board::Audience::Person(person) => format!("Tasks for {person}"),
+            yaran_core::human_board::Audience::Everyone => "Tasks for Human".to_string(),
+        };
+        let name = Span::styled(name, self.theme.title_style(focused));
+        let Some(board) = self.human_board.readable() else {
+            return Line::from(name);
+        };
+        let waiting = board.waiting_count_in(&view);
+        let news = board.news_count_in(&view);
+        let attention = Style::default()
+            .fg(self.theme.session_attention)
+            .add_modifier(Modifier::BOLD);
+        let quiet = Style::default().fg(self.theme.hint_dim_desc_fg);
+        let width = |spans: &[Span<'static>]| spans.iter().map(Span::width).sum::<usize>();
+
+        let mut full = vec![name.clone()];
+        if waiting > 0 {
+            full.push(Span::raw(" "));
+            let urgent = board.urgent_count_in(&view);
+            full.push(Span::styled(
+                if urgent > 0 {
+                    format!("{waiting} waiting ({urgent} urgent)")
+                } else {
+                    format!("{waiting} waiting")
+                },
+                attention,
+            ));
+        }
+        let without_news = full.clone();
+        if news > 0 {
+            full.push(Span::styled(
+                format!(
+                    "{}{}",
+                    if waiting > 0 { ", " } else { " " },
+                    count_of_with(news, "update", "updates")
+                ),
+                quiet,
+            ));
+        }
+        if width(&full) <= max_width {
+            return Line::from(full);
+        }
+        if waiting == 0 {
+            return Line::from(name);
+        }
+        if width(&without_news) <= max_width {
+            return Line::from(without_news);
+        }
+        Line::from(vec![
+            name,
+            Span::raw(" "),
+            Span::styled(format!("({waiting})"), attention),
+        ])
+    }
+
+    /// The board pane's bottom edge: notes that could not be read, on the
+    /// left, and how the last sync of a shared board went, on the right.
+    /// Clock times rather than ages, so the text needs no redraw to stay true.
+    fn human_board_footer(&self) -> (Option<Line<'static>>, Option<Line<'static>>) {
+        let warning = Style::default().fg(self.theme.warning_fg);
+        let quiet = Style::default().fg(self.theme.hint_dim_desc_fg);
+        let problems = self
+            .human_board
+            .readable()
+            .map(|board| board.problems.len())
+            .unwrap_or(0);
+        let left = (problems > 0).then(|| {
+            Line::from(Span::styled(
+                format!(
+                    " {} unreadable (yaran board list) ",
+                    count_of_with(problems, "note", "notes")
+                ),
+                warning,
+            ))
+        });
+        let right = self.human_board.last_sync.as_ref().map(|outcome| {
+            let at = outcome
+                .at
+                .with_timezone(&chrono::Local)
+                .format("%H:%M")
+                .to_string();
+            match &outcome.result {
+                Ok(_) => Line::from(Span::styled(format!(" synced {at} "), quiet)),
+                Err(_) => Line::from(Span::styled(format!(" sync failed {at} "), warning)),
+            }
+        });
+        (left, right)
+    }
+
+    /// The human board: open cards grouped by kind in the board's column
+    /// order, then the most recently resolved under "Done". Publishes the row
+    /// area and the row-to-card map for clicks.
+    fn render_human_board(&mut self, frame: &mut Frame, area: Rect) {
+        let pane_focused = self.focus == FocusPane::Files;
+        let active = pane_focused && self.right_section == RightSection::Board;
+        let title = self.human_board_title(active, usize::from(area.width.saturating_sub(2)));
+        let mut block = self.themed_block_line(title, active);
+        let (problems, sync) = self.human_board_footer();
+        if let Some(problems) = problems {
+            block = block.title_bottom(problems.left_aligned());
+        }
+        if let Some(sync) = sync {
+            block = block.title_bottom(sync.right_aligned());
+        }
+        let inner = block.inner(area);
+        block.render(area, frame.buffer_mut());
+
+        let (list_area, hint_area) = if active && inner.height >= 4 {
+            let [list, hint] = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(2)])
+                .areas(inner);
+            (list, Some(hint))
+        } else {
+            (inner, None)
+        };
+        self.mouse_layout.board_list = Some(list_area);
+        self.mouse_layout.board_row_to_slot.clear();
+
+        let dim = Style::default().fg(self.theme.hint_dim_desc_fg);
+        // Taken out for the paint and put straight back: the rows publish their
+        // click map through `&mut self`, and a clone per frame of a board with
+        // hundreds of cards is a cost for nothing.
+        let snapshot = self.human_board.board.take();
+        match &snapshot {
+            None => {
+                Paragraph::new(Line::from(Span::styled(" Reading the board\u{2026}", dim)))
+                    .render(list_area, frame.buffer_mut());
+            }
+            Some(Err(err)) => {
+                let lines = vec![
+                    Line::from(Span::styled(
+                        "The board could not be read:",
+                        Style::default().fg(self.theme.warning_fg),
+                    )),
+                    Line::from(Span::styled(err.clone(), dim)),
+                ];
+                render_board_prose(&lines, list_area, frame.buffer_mut());
+            }
+            Some(Ok(board)) => {
+                let selected_slot = self.human_board.selected_slot_in(board);
+                self.render_human_board_rows(frame, list_area, board, selected_slot, active);
+            }
+        }
+        self.human_board.board = snapshot;
+
+        if let Some(hint_area) = hint_area {
+            let open_key = self.bindings.label_for(Action::OpenDiff);
+            let done_key = self.bindings.label_for(Action::StageUnstage);
+            let desc_style = Style::default().fg(self.theme.hint_dim_desc_fg);
+            let mut spans: Vec<Span> = Vec::new();
+            spans.extend(self.theme.dim_key_badge_default(&open_key));
+            spans.push(Span::styled(" open  ", desc_style));
+            spans.extend(self.theme.dim_key_badge_default(&done_key));
+            spans.push(Span::styled(" done/reopen", desc_style));
+            Paragraph::new(Line::from(spans))
+                .block(
+                    Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(self.theme.border_normal)),
+                )
+                .render(hint_area, frame.buffer_mut());
+        }
+    }
+
+    fn render_human_board_rows(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        board: &yaran_core::human_board::Board,
+        selected_slot: Option<usize>,
+        active: bool,
+    ) {
+        use super::human_board::{BoardRow, DONE_HEADING, board_rows, fit_width};
+
+        let dim = Style::default().fg(self.theme.hint_dim_desc_fg);
+        let view = self.human_board.view();
+        let (rows, _) = board_rows(board, &view);
+        // Beside people's queues, the every-card view names whose each card is.
+        let show_assignee = view == yaran_core::human_board::Audience::Everyone
+            && self
+                .human_board
+                .settings
+                .as_ref()
+                .is_some_and(|settings| settings.has_people());
+        if rows.is_empty() {
+            let (headline, hint) = match view {
+                yaran_core::human_board::Audience::Person(person) => (
+                    format!("Nothing waits on {person} right now."),
+                    format!("Agents put cards here with yaran board post --for {person}."),
+                ),
+                yaran_core::human_board::Audience::Everyone => (
+                    "Nothing needs you right now.".to_string(),
+                    "Agents put cards here with yaran board post.".to_string(),
+                ),
+            };
+            let lines = vec![
+                Line::from(Span::styled(
+                    headline,
+                    Style::default().fg(self.theme.text_fg),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(hint, dim)),
+            ];
+            render_board_prose(&lines, area, frame.buffer_mut());
+            return;
+        }
+
+        let selected_row = rows.iter().position(
+            |row| matches!(row, BoardRow::Card { slot, .. } if Some(*slot) == selected_slot),
+        );
+        let viewport = usize::from(area.height);
+        let start = list_window_start(rows.len(), selected_row, viewport);
+        let end = start.saturating_add(viewport).min(rows.len());
+        // One column of right margin, as the file lists keep.
+        let width = usize::from(area.width).saturating_sub(1);
+        let now = chrono::Utc::now();
+        // The agent list's selection: a faint tint of the theme's accent behind
+        // the row, with the row's own text colours kept on top. The full
+        // selection bar is loud for a list read as often as this one.
+        let selection = Style::default().bg(self.theme.selection_bar_tint());
+
+        for (offset, row) in rows[start..end].iter().enumerate() {
+            let y = area.y + offset as u16;
+            let row_area = Rect::new(area.x, y, area.width, 1);
+            let line = match row {
+                BoardRow::Heading { kind, count } => {
+                    self.mouse_layout.board_row_to_slot.push(None);
+                    let (label, tone) = match kind {
+                        Some(kind) if kind.waits_on_human() => {
+                            (kind.heading(), self.theme.session_attention)
+                        }
+                        Some(kind) => (kind.heading(), self.theme.help_section_header_fg),
+                        None => (DONE_HEADING, self.theme.hint_dim_desc_fg),
+                    };
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {label}"),
+                            Style::default()
+                                .fg(self.theme.help_section_header_fg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!(" {count}"), Style::default().fg(tone)),
+                    ])
+                }
+                BoardRow::Card { id, slot } => {
+                    self.mouse_layout.board_row_to_slot.push(Some(*slot));
+                    let Some(card) = board.card(id) else {
+                        continue;
+                    };
+                    let selected = active && Some(*slot) == selected_slot;
+                    let base = if selected {
+                        selection
+                    } else {
+                        Style::default()
+                    };
+                    let open = card.is_open();
+                    // An open card wears its priority (nothing for the ordinary
+                    // queue); a done card wears its tick instead.
+                    let marker = if open {
+                        card.priority.marker()
+                    } else {
+                        " \u{2713}"
+                    };
+                    let marker_tone = match card.priority {
+                        _ if !open => self.theme.hint_dim_desc_fg,
+                        yaran_core::human_board::Priority::Critical => self.theme.status_error_fg,
+                        yaran_core::human_board::Priority::High => self.theme.warning_fg,
+                        yaran_core::human_board::Priority::Normal
+                        | yaran_core::human_board::Priority::Low => self.theme.hint_dim_desc_fg,
+                    };
+                    let reference = match &card.ticket {
+                        Some(ticket) => ticket.clone(),
+                        None => format!("#{}", card.id),
+                    };
+                    let age = compact_age_for(card, now);
+                    // The card's own dot, at the right edge: red while it holds
+                    // its poster up, green while it holds something unread.
+                    let dot = if self.board_card_waits(card) {
+                        Some(self.theme.diff_remove)
+                    } else if self.board_card_unread(card) {
+                        Some(self.theme.diff_add)
+                    } else {
+                        None
+                    };
+                    let who = card
+                        .assignee
+                        .as_deref()
+                        .filter(|_| show_assignee)
+                        .map(|person| format!("{person} "))
+                        .unwrap_or_default();
+                    let fixed = display_width(marker)
+                        + 1
+                        + display_width(&reference)
+                        + 1
+                        + display_width(&who);
+                    let age_width = display_width(&age) + 2;
+                    let title_budget = width.saturating_sub(fixed + age_width + 1);
+                    let title = fit_width(&card.title, title_budget);
+                    let padding = width
+                        .saturating_sub(fixed + display_width(&title) + age_width)
+                        .max(1);
+                    let (reference_tone, title_tone) = if open {
+                        (self.theme.branch_fg, self.theme.text_fg)
+                    } else {
+                        (self.theme.hint_dim_desc_fg, self.theme.hint_dim_desc_fg)
+                    };
+                    Line::from(vec![
+                        Span::styled(marker.to_string(), base.fg(marker_tone)),
+                        Span::styled(" ", base),
+                        Span::styled(reference, base.fg(reference_tone)),
+                        Span::styled(" ", base),
+                        Span::styled(title, base.fg(title_tone)),
+                        Span::styled(" ".repeat(padding), base),
+                        Span::styled(who, base.fg(self.theme.hint_desc_fg)),
+                        Span::styled(age, base.fg(self.theme.hint_dim_desc_fg)),
+                        Span::styled(" ", base),
+                        match dot {
+                            Some(tone) => Span::styled(BOARD_DOT, base.fg(tone)),
+                            None => Span::styled(" ", base),
+                        },
+                        Span::styled(" ", base),
+                    ])
+                }
+            };
+            Paragraph::new(line).render(row_area, frame.buffer_mut());
+        }
+    }
+
     /// Render the commit input as its own bordered block.
     fn render_commit_input_inner(&mut self, frame: &mut Frame, area: Rect, pane_focused: bool) {
         self.mouse_layout.commit_area = Some(area);
@@ -5627,6 +6122,7 @@ impl App {
             FocusPane::Left if is_on_project => HintContext::LeftProject,
             FocusPane::Left => HintContext::LeftSession,
             FocusPane::Center => HintContext::Center,
+            FocusPane::Files if self.right_section == RightSection::Board => HintContext::Board,
             FocusPane::Files => HintContext::Files,
         }
     }
@@ -11684,6 +12180,8 @@ impl App {
             PromptState::AddProjectFailed { .. } => self.render_add_project_failed_prompt(frame),
             PromptState::FirstLoad(_) => self.render_first_load_prompt_overlay(frame),
             PromptState::AgentInfo(_) => self.render_agent_info_prompt(frame),
+            PromptState::HumanBoardCard { .. } => self.render_human_board_card_prompt(frame),
+            PromptState::AssignBoardCard(_) => self.render_assign_board_card_prompt(frame),
             PromptState::ConfirmDeleteAgent { .. } => {
                 self.render_confirm_delete_agent_prompt(frame)
             }
@@ -13406,6 +13904,40 @@ fn companion_terminal_status_color(theme: &Theme, status: CompanionTerminalStatu
 /// widget paints only what fits but is handed every item first. Keep this in step
 /// with the widget; it holds only while every item is exactly one line tall and
 /// no scroll padding is set.
+/// Prose inside the board pane, wrapped one cell in from each side so a
+/// wrapped line keeps the same margin as the first.
+fn render_board_prose(lines: &[Line<'static>], area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    let inset = Rect {
+        x: area.x.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    let wrapped = wrap_styled_lines(lines, usize::from(inset.width));
+    render_wrapped_body(&wrapped, inset, buf);
+}
+
+/// A board row's age: how long since it was resolved for a done card, since
+/// it last changed for an open one.
+fn compact_age_for(
+    card: &yaran_core::human_board::Card,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    yaran_core::human_board::compact_age(card.resolved_at.unwrap_or(card.updated_at), now)
+}
+
+/// `5m` as words for a sentence: "5m ago", or "just now".
+/// The dot a board tab or row wears: red for a card waiting on a person,
+/// green for something unread from another side.
+const BOARD_DOT: &str = "\u{25cf}";
+
+pub(super) fn age_words(compact: &str) -> String {
+    if compact == "now" {
+        "just now".to_string()
+    } else {
+        format!("{compact} ago")
+    }
+}
+
 pub(crate) fn list_window_start(len: usize, selected: Option<usize>, viewport: usize) -> usize {
     if len == 0 || viewport == 0 {
         return 0;
