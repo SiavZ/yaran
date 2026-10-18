@@ -1571,8 +1571,21 @@ impl App {
                     status_message.to_string(),
                     outcome.wants_fullscreen,
                 );
+                // `dispatch_reconnect_plan_confirmed` stashes the op under the SESSION
+                // id, and the failed-view arms resolve it by the session id too. The
+                // slot tab's id is not the session id for an agent created after
+                // tabs became first-class, so resolving by the tab id alone missed
+                // the op there: the anonymous final printed beside it and the keyed
+                // "Launching…" spinner stayed up until the busy timeout. Resolve a
+                // slot-tab launch by its session id; an extra tab keeps its own id,
+                // which has no op, so it still cannot consume the slot tab's.
+                let op_key = if outcome.session.is_slot_tab(TabIdRef::new(&outcome.tab_id)) {
+                    outcome.session.id.clone()
+                } else {
+                    outcome.tab_id.clone()
+                };
                 self.resolve_reconnect_op_or(
-                    &outcome.tab_id,
+                    &op_key,
                     yaran_core::engine::LaunchOutcome::Ready {
                         status_message: status_message.into(),
                         quiet_on: outcome.status_quiet,
@@ -2957,6 +2970,54 @@ mod tests {
             app.pending_reconnect_ops.is_empty(),
             "the reconnect op must be consumed on resolution",
         );
+    }
+
+    /// The slot tab's id is not the session id (test_support: "session-1-slot"), and
+    /// a real reconnect reports its launch under that slot tab id. The op is stashed
+    /// under the session id, so the ready must still find it: before the fix the
+    /// keyed "Launching…" spinner stayed up beside an anonymous final until the
+    /// busy timeout.
+    #[test]
+    fn reconnect_ready_on_the_slot_tab_resolves_the_op_stashed_by_session_id() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        let session = app.engine.sessions[0].clone();
+        let slot_tab = session.slot_tab_id().as_str().to_string();
+        assert_ne!(
+            slot_tab, session.id,
+            "the fixture must keep the two ids apart"
+        );
+
+        let op = app.build_reconnect_status_op("Launching agent...".to_string());
+        let op_key = op.id().to_string();
+        app.apply_reaction(yaran_core::engine::EventReaction::Status(
+            op.pending_status(),
+        ));
+        app.pending_reconnect_ops.insert(session.id.clone(), op);
+
+        app.apply_agent_launch_ready_view(AgentLaunchReadyOutcome {
+            tab_id: slot_tab,
+            session: session.clone(),
+            pty_size: (80, 24),
+            detached_session_id: None,
+            wants_fullscreen: false,
+            status_quiet: yaran_core::statusline::QuietSurfaces::LOUD,
+            view: AgentLaunchReadyView::Reconnect {
+                status_message: "Reconnected.".to_string().into(),
+            },
+        });
+
+        assert!(
+            app.pending_reconnect_ops.is_empty(),
+            "the slot-tab ready must consume the op stashed under the session id",
+        );
+        let entry = app
+            .status
+            .snapshot()
+            .into_iter()
+            .find(|s| s.key.as_deref() == Some(op_key.as_str()))
+            .expect("the op's keyed entry must be replaced in place, not left spinning");
+        assert_eq!(entry.tone.as_str(), "info");
     }
 
     /// End to end on the reconnect path: a resumed launch's busy is shown, its
