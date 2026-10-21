@@ -6,7 +6,7 @@
 //! output it reads.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::ids::TabId;
 
@@ -79,6 +79,11 @@ pub struct WatchRuntime {
     /// The tab the last capped rescan reached. The next tick's rescans start
     /// after it, so the per-tick budget goes round-robin.
     pub rescan_cursor: Option<TabId>,
+    /// How long after a tab's PTY is spawned (or adopted) the built-in rules
+    /// take its screen as already seen. `None` is the engine's
+    /// `WATCH_BUILT_IN_STARTUP_SETTLE`; tests that are not about this window
+    /// set `Some(Duration::ZERO)`.
+    pub built_in_startup_settle: Option<Duration>,
     /// How many grid rescans ticks have performed. Tests pin the per-tick cap.
     #[cfg(test)]
     pub rescans: usize,
