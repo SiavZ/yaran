@@ -2159,6 +2159,12 @@ impl PtyClient {
         self.read_error.get().map(String::as_str)
     }
 
+    /// When this client's PTY was spawned, or adopted from the previous yaran
+    /// image after a reload (the agent itself may then be older).
+    pub fn spawned_at(&self) -> Instant {
+        self.spawned_at
+    }
+
     /// How long this child ran, from the spawn to the FIRST end-of-run fact
     /// observed, or `None` while it is still running (neither fact in yet).
     ///
