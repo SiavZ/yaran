@@ -305,7 +305,9 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         prompt: PromptState::None,
         input_target: InputTarget::None,
         session_surface: crate::model::SessionSurface::Agent,
-        clipboard: Clipboard::new(),
+        // Fixtures must never start the platform pasteboard worker. Tests that
+        // need copy results replace this with their own in-memory callback.
+        clipboard: Clipboard::from_fn(|_| Ok(())),
         active_terminal_id: None,
         focused_tabs: std::collections::HashMap::new(),
         host_forward_carry: Vec::new(),

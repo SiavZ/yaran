@@ -98,6 +98,13 @@ const MIN_CENTER_WIDTH_PCT: u16 = 20;
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 const ESC_AMBIGUITY_TIMEOUT: Duration = Duration::from_millis(25);
 
+#[cfg(test)]
+#[path = "host_click_regression_tests.rs"]
+mod host_click_regression_tests;
+#[cfg(test)]
+#[path = "host_selection_regression_tests.rs"]
+mod host_selection_regression_tests;
+
 /// The full-text field of whichever `Configure*` modal is open, read-only.
 /// Only the tests read a configure field without intending to mutate it.
 #[cfg(test)]
@@ -2231,14 +2238,23 @@ impl App {
         ));
     }
 
+    fn selection_text_has_drifted(sel: &TerminalSelection, now: SelectionOrigin) -> bool {
+        sel.origin.grid_size.1 != now.grid_size.1
+            || ((sel.origin.history_saturated || now.history_saturated)
+                && sel.origin.grid_generation != now.grid_generation)
+    }
+
     /// Retire a terminal selection whose text this can no longer FIND.
     ///
     /// `TerminalSelection::to_origin_row` corrects viewport rows by reading
     /// history growth as the grid's advancing bottom, which holds only while
     /// history can still grow. Once the ring is at capacity the two come apart
     /// (see the known limits on `to_origin_row`) and the correction under-counts
-    /// silently, so a selection stamped at capacity survives only while the grid
-    /// has not moved at all. Gated on saturation rather than on "output arrived",
+    /// silently, so a selection whose origin OR current frame is at capacity
+    /// survives only while the grid has not moved at all. A zero-extent press
+    /// remains solely for stationary-click replay; moving it after drift cancels
+    /// the gesture instead of extending stale text. Gated on saturation rather
+    /// than on "output arrived",
     /// because below capacity the correction is exact and following the text
     /// through output is what the translation exists for.
     ///
@@ -2249,7 +2265,7 @@ impl App {
     /// and its re-read is re-stamped along with it: a frame-wide window that
     /// fails toward keeping the selection.
     pub(crate) fn drop_drifted_selection(&mut self) {
-        let live_cols = self.snapshot_buf.cols;
+        let now = self.snapshot_selection_origin();
         let drifted = self.terminal_selection.as_ref().is_some_and(|sel| {
             // A WIDTH change reflows the grid under the recorded rows, at ANY
             // history depth, so it is its own retirement trigger and not a
@@ -2257,9 +2273,15 @@ impl App {
             // history and viewport without rewrapping them, and the offset and
             // total arithmetic translates that exactly, so the selection
             // follows its text. See `SelectionOrigin::grid_size`.
-            sel.origin.grid_size.1 != live_cols
-                || (sel.origin.history_saturated
-                    && sel.origin.grid_generation != self.grid_generation)
+            let pending_click = sel.dragging && sel.anchor == sel.end;
+            if pending_click {
+                // A press without movement is still a child click even if its
+                // text changed. Keep only that eligibility, never re-stamp the
+                // anchor. Any resize still cancels the pending gesture.
+                sel.origin.grid_size != now.grid_size
+            } else {
+                Self::selection_text_has_drifted(sel, now)
+            }
         });
         if drifted {
             self.terminal_selection = None;
@@ -11779,6 +11801,17 @@ impl App {
                 // selection (the borrow split this needs is the whole reason
                 // the translation is easy to leave out here).
                 let now = self.snapshot_selection_origin();
+                if let Some(sel) = self.terminal_selection.as_ref()
+                    && Self::selection_text_has_drifted(sel, now)
+                {
+                    // Motion within the original cell is still a click. A real
+                    // extension cannot use the old text anchor after drift, and
+                    // must become neither a selection nor a replay.
+                    if !sel.dragging || sel.anchor != sel.end || pos != Some(sel.anchor) {
+                        self.terminal_selection = None;
+                    }
+                    return;
+                }
                 if let Some(sel) = &mut self.terminal_selection
                     && sel.dragging
                     && let Some(pos) = pos
@@ -11848,6 +11881,11 @@ impl App {
         // come from, so the translation cannot be a frame out of step with the
         // rows it is correcting.
         let now = self.snapshot_selection_origin();
+        if Self::selection_text_has_drifted(&sel, now) {
+            // A stationary press may remain solely for click replay after a
+            // repaint. It is not a valid text selection for other copy callers.
+            return String::new();
+        }
 
         // Rows are recorded in the frame the drag started in, so translate each
         // live cell back into that frame before testing it. Without this the copy

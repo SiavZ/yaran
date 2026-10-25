@@ -417,11 +417,11 @@ pub struct App {
     )>,
     /// The draft for the create in flight, applied when it commits.
     pub(crate) armed_new_agent_settings: Option<yaran_core::session_settings::SessionSettings>,
-    /// How many times the selected surface's grid has been REBUILT (see
-    /// `refresh_snapshot_buf`). Not a clock and not a line count: it only
-    /// answers "has the grid moved since I looked?", which is the one question
-    /// `drop_drifted_selection` needs and the one the scroll numbers cannot
-    /// answer once the history ring is full.
+    /// Selection-coordinate generation for the selected surface. While a
+    /// selection exists, only text or scroll geometry changes advance it;
+    /// cursor/style-only rebuilds leave its coordinates valid. Outside a
+    /// selection, every dirty rebuild can advance this counter. It is neither
+    /// a clock nor a line count: saturation needs only a movement sentinel.
     pub(crate) grid_generation: u64,
     /// Background agent PTY presizing (see `presize.rs`).
     pub(crate) presize: presize::PresizeState,
@@ -3048,9 +3048,10 @@ pub(crate) struct SelectionOrigin {
     /// capacity is fixed when the emulator is built, so a reload that raises the
     /// setting leaves every running PTY on the old number.
     pub history_saturated: bool,
-    /// The value of `App::grid_generation` in this frame: how many times the
-    /// grid had been rebuilt when the origin was stamped. Only meaningful
-    /// alongside `history_saturated`; see `App::drop_drifted_selection`.
+    /// The value of `App::grid_generation` in this frame: the selected grid's
+    /// coordinate generation, excluding cursor/style-only refreshes while a
+    /// selection exists. Only meaningful alongside `history_saturated`; see
+    /// `App::drop_drifted_selection`.
     pub grid_generation: u64,
     /// The viewport dimensions (rows, cols) the selection was recorded against.
     ///
@@ -7799,11 +7800,18 @@ impl App {
                 self.last_link_open = None;
             }
             let collect_links = self.engine.config.capabilities.hyperlinks;
-            // A rebuild means the grid MOVED (output, a scroll, a resize). The
-            // counter is what lets `drop_drifted_selection` tell "nothing has
-            // happened since this selection was stamped" from "the grid has
-            // moved and, at saturation, I can no longer say by how much".
-            if provider.snapshot_into(&mut self.snapshot_buf, collect_links) {
+            // While a selection exists, only text or scroll geometry movement
+            // invalidates its coordinates. Cursor/style-only redraws still
+            // refresh every snapshot field, without retiring unchanged text.
+            // Outside a selection the legacy dirty-rebuild path stays cheap.
+            let moved = if self.terminal_selection.is_some() {
+                provider
+                    .snapshot_into_tracking_text(&mut self.snapshot_buf, collect_links)
+                    .unwrap_or(false)
+            } else {
+                provider.snapshot_into(&mut self.snapshot_buf, collect_links)
+            };
+            if moved {
                 self.grid_generation = self.grid_generation.wrapping_add(1);
             }
             true

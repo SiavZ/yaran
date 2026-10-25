@@ -1789,15 +1789,36 @@ impl PtyClient {
     /// `false` no cell carries a `link` and the interning work is skipped
     /// entirely, so a config that disables hyperlinks pays nothing.
     pub fn snapshot_into(&self, target: &mut TerminalSnapshot, collect_links: bool) -> bool {
+        self.snapshot_into_inner(target, collect_links, false)
+            .is_some()
+    }
+
+    /// Rebuild like [`Self::snapshot_into`], distinguishing text movement from
+    /// cursor, color and hyperlink updates. `None` means no rebuild; `Some(false)`
+    /// means the snapshot was refreshed but its text and scroll geometry match.
+    /// Cells are compared in place before replacement, without cloning a frame.
+    pub fn snapshot_into_tracking_text(
+        &self,
+        target: &mut TerminalSnapshot,
+        collect_links: bool,
+    ) -> Option<bool> {
+        self.snapshot_into_inner(target, collect_links, true)
+    }
+
+    fn snapshot_into_inner(
+        &self,
+        target: &mut TerminalSnapshot,
+        collect_links: bool,
+        track_text: bool,
+    ) -> Option<bool> {
         if !self.dirty.swap(false, Ordering::AcqRel) {
-            return false;
+            return None;
         }
         let Ok(terminal) = self.terminal.lock() else {
             logger::error("pty: terminal mutex poisoned; skipping snapshot rebuild");
-            return false;
+            return None;
         };
-        terminal.snapshot_into(target, collect_links);
-        true
+        Some(terminal.snapshot_into_tracking_text(target, collect_links, track_text))
     }
 
     pub fn scrollback_offset(&self) -> usize {
@@ -3017,9 +3038,23 @@ impl TerminalState {
     /// false, OSC 8 hyperlink interning is skipped and every cell's `link` is
     /// `None`.
     fn snapshot_into(&self, target: &mut TerminalSnapshot, collect_links: bool) {
+        self.snapshot_into_tracking_text(target, collect_links, false);
+    }
+
+    fn snapshot_into_tracking_text(
+        &self,
+        target: &mut TerminalSnapshot,
+        collect_links: bool,
+        track_text: bool,
+    ) -> bool {
         let renderable = self.term.renderable_content();
         let display_offset = renderable.display_offset;
         let history_size = self.term.grid().history_size();
+        let mut text_changed = track_text
+            && (target.rows != self.rows
+                || target.cols != self.cols
+                || target.scrollback_offset != display_offset
+                || target.scrollback_total != history_size);
         let colors = renderable.colors;
         let cursor = if renderable.cursor.shape == CursorShape::Hidden {
             None
@@ -3032,7 +3067,7 @@ impl TerminalState {
             })
         };
 
-        target.cells.clear();
+        let mut cell_index = 0;
         target.links.clear();
         // Per-call side index (URI -> index into `target.links`) so interning a
         // link that spans many cells stays O(1) instead of a linear scan of
@@ -3091,7 +3126,7 @@ impl TerminalState {
                 None
             };
 
-            target.cells.push(SnapshotCell {
+            let next = SnapshotCell {
                 row: point.line as u16,
                 col: point.column.0 as u16,
                 symbol,
@@ -3099,14 +3134,29 @@ impl TerminalState {
                 bg: convert_terminal_color(cell.bg, colors),
                 modifier: cell_modifier(cell),
                 link,
-            });
+            };
+            if let Some(previous) = target.cells.get_mut(cell_index) {
+                if track_text {
+                    text_changed |= previous.row != next.row
+                        || previous.col != next.col
+                        || previous.symbol != next.symbol;
+                }
+                *previous = next;
+            } else {
+                target.cells.push(next);
+                text_changed |= track_text;
+            }
+            cell_index += 1;
         }
+        text_changed |= track_text && cell_index != target.cells.len();
+        target.cells.truncate(cell_index);
 
         target.rows = self.rows;
         target.cols = self.cols;
         target.scrollback_offset = display_offset;
         target.scrollback_total = history_size;
         target.cursor = cursor;
+        text_changed
     }
 
     /// Build an ANSI byte sequence that repaints the terminal onto a freshly
@@ -8163,6 +8213,221 @@ mod tests {
             "Vec capacity should be reused across snapshot_into calls"
         );
         assert!(!buf.cells.is_empty());
+    }
+
+    #[test]
+    fn snapshot_text_change_ignores_cursor_style_and_links_but_refreshes_them() {
+        let mut terminal = TerminalState::with_scrollback(3, 20, 5);
+        terminal.process(b"STATIC TARGET");
+        let mut buf = TerminalSnapshot::empty();
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, true, true));
+        let text_cells = |buf: &TerminalSnapshot| {
+            buf.cells
+                .iter()
+                .map(|c| (c.row, c.col, c.symbol.clone()))
+                .collect::<Vec<_>>()
+        };
+        let before = text_cells(&buf);
+        let capacity = buf.cells.capacity();
+
+        terminal.process(b"\x1b[2;5H");
+        assert!(!terminal.snapshot_into_tracking_text(&mut buf, true, true));
+        assert_eq!(buf.cursor, Some(SnapshotCursor { row: 1, col: 4 }));
+        assert_eq!(text_cells(&buf), before);
+
+        let old_fg = buf
+            .cells
+            .iter()
+            .find(|c| c.row == 0 && c.col == 0)
+            .unwrap()
+            .fg;
+        terminal.process(b"\x1b[1;1H\x1b[31mSTATIC TARGET");
+        assert!(!terminal.snapshot_into_tracking_text(&mut buf, true, true));
+        assert_ne!(
+            buf.cells
+                .iter()
+                .find(|c| c.row == 0 && c.col == 0)
+                .unwrap()
+                .fg,
+            old_fg
+        );
+        assert_eq!(text_cells(&buf), before);
+
+        terminal.process(
+            b"\x1b[1;1H\x1b]8;;https://example.test/copy\x1b\\STATIC TARGET\x1b]8;;\x1b\\",
+        );
+        assert!(!terminal.snapshot_into_tracking_text(&mut buf, true, true));
+        assert!(
+            buf.links
+                .iter()
+                .any(|uri| uri == "https://example.test/copy")
+        );
+        assert!(buf.cells.iter().any(|c| c.link.is_some()));
+        assert_eq!(text_cells(&buf), before);
+        assert_eq!(buf.cells.capacity(), capacity);
+    }
+
+    #[test]
+    fn snapshot_text_change_reports_real_glyph_changes() {
+        let mut terminal = TerminalState::with_scrollback(3, 20, 5);
+        terminal.process(b"STATIC TARGET");
+        let mut buf = TerminalSnapshot::empty();
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, true, true));
+        terminal.process(b"\x1b[1;1HX");
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, true, true));
+        assert_eq!(
+            buf.cells
+                .iter()
+                .find(|c| c.row == 0 && c.col == 0)
+                .unwrap()
+                .symbol,
+            "X"
+        );
+        assert!(!terminal.snapshot_into_tracking_text(&mut buf, true, true));
+    }
+
+    #[test]
+    fn snapshot_text_change_reports_metadata_without_visible_glyph_changes() {
+        let mut terminal = TerminalState::with_scrollback(3, 12, 5);
+        let mut buf = TerminalSnapshot::empty();
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        let before: Vec<_> = buf
+            .cells
+            .iter()
+            .map(|c| (c.row, c.col, c.symbol.clone()))
+            .collect();
+        terminal.process(b"\r\n\r\n\r\n\r\n");
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        assert!(buf.scrollback_total > 0);
+        assert_eq!(
+            buf.cells
+                .iter()
+                .map(|c| (c.row, c.col, c.symbol.clone()))
+                .collect::<Vec<_>>(),
+            before
+        );
+        terminal.scroll(true, 1);
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        assert_eq!(buf.scrollback_offset, 1);
+        assert_eq!(
+            buf.cells
+                .iter()
+                .map(|c| (c.row, c.col, c.symbol.clone()))
+                .collect::<Vec<_>>(),
+            before
+        );
+        terminal.resize(2, 12);
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        terminal.resize(2, 10);
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+    }
+
+    #[test]
+    fn snapshot_text_change_detects_and_removes_stale_tail_cells() {
+        let terminal = TerminalState::with_scrollback(3, 12, 5);
+        let mut buf = TerminalSnapshot::empty();
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        let expected_len = buf.cells.len();
+        let extra = buf.cells.last().expect("grid has cells").clone();
+        buf.cells.push(extra);
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        assert_eq!(buf.cells.len(), expected_len);
+        assert!(!terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        buf.cells.pop();
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        assert_eq!(buf.cells.len(), expected_len);
+    }
+
+    #[test]
+    fn snapshot_text_change_tracks_combining_wide_and_tab_projection() {
+        let mut terminal = TerminalState::with_scrollback(3, 20, 5);
+        terminal.process("界e\u{301}\tZ".as_bytes());
+        let mut buf = TerminalSnapshot::empty();
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        assert!(
+            buf.cells
+                .iter()
+                .any(|c| c.row == 0 && c.col == 0 && c.symbol == "界")
+        );
+        assert!(!buf.cells.iter().any(|c| c.row == 0 && c.col == 1));
+        assert!(
+            buf.cells
+                .iter()
+                .any(|c| c.row == 0 && c.col == 2 && c.symbol == "e\u{301}")
+        );
+        assert!(
+            buf.cells
+                .iter()
+                .any(|c| c.row == 0 && c.col == 8 && c.symbol == "Z")
+        );
+        let before: Vec<_> = buf
+            .cells
+            .iter()
+            .map(|c| (c.row, c.col, c.symbol.clone()))
+            .collect();
+
+        terminal.process("\x1b[1;1H\x1b[31m界e\u{301}\tZ".as_bytes());
+        assert!(!terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        assert_eq!(
+            buf.cells
+                .iter()
+                .map(|c| (c.row, c.col, c.symbol.clone()))
+                .collect::<Vec<_>>(),
+            before
+        );
+
+        terminal.process(b"\x1b[1;1HAA");
+        assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
+        assert!(
+            buf.cells
+                .iter()
+                .any(|c| c.row == 0 && c.col == 1 && c.symbol == "A")
+        );
+
+        let mut combining = TerminalState::with_scrollback(3, 20, 5);
+        combining.process(b"e");
+        let mut combining_buf = TerminalSnapshot::empty();
+        assert!(combining.snapshot_into_tracking_text(&mut combining_buf, false, true));
+        combining.process("\u{301}".as_bytes());
+        assert!(combining.snapshot_into_tracking_text(&mut combining_buf, false, true));
+        assert!(
+            combining_buf
+                .cells
+                .iter()
+                .any(|c| c.row == 0 && c.col == 0 && c.symbol == "e\u{301}")
+        );
+    }
+
+    #[test]
+    fn public_snapshot_rebuilt_bool_stays_true_for_cursor_only_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = vec!["-c".to_string(), "sleep 30".to_string()];
+        let client = PtyClient::spawn("/bin/sh", &args, dir.path(), 3, 20, 5).unwrap();
+        let mut buf = TerminalSnapshot::empty();
+        client.terminal.lock().unwrap().process(b"STATIC TARGET");
+        client.dirty.store(true, Ordering::Release);
+        assert!(client.snapshot_into(&mut buf, false));
+        assert!(!client.snapshot_into(&mut buf, false));
+
+        client.terminal.lock().unwrap().process(b"\x1b[2;5H");
+        client.dirty.store(true, Ordering::Release);
+        assert!(client.snapshot_into(&mut buf, false));
+        assert_eq!(buf.cursor, Some(SnapshotCursor { row: 1, col: 4 }));
+        assert_eq!(client.snapshot_into_tracking_text(&mut buf, false), None);
+
+        client.terminal.lock().unwrap().process(b"\x1b[3;5H");
+        client.dirty.store(true, Ordering::Release);
+        assert_eq!(
+            client.snapshot_into_tracking_text(&mut buf, false),
+            Some(false)
+        );
+        assert_eq!(buf.cursor, Some(SnapshotCursor { row: 2, col: 4 }));
+        client.terminal.lock().unwrap().process(b"\x1b[1;1HX");
+        client.dirty.store(true, Ordering::Release);
+        assert_eq!(
+            client.snapshot_into_tracking_text(&mut buf, false),
+            Some(true)
+        );
     }
 
     #[test]
