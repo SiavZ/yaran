@@ -20,7 +20,7 @@ use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, GridCell, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::{self, Config, Term, TermMode};
+use alacritty_terminal::term::{self, Config, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{
     Color as TermColor, CursorShape, NamedColor, Processor, Rgb, StdSyncHandler,
 };
@@ -95,6 +95,12 @@ pub struct TerminalSnapshot {
     pub cols: u16,
     pub scrollback_offset: usize,
     pub scrollback_total: usize,
+    /// True when the snapshot rebuild followed a full terminal damage event.
+    /// Alacritty marks physical grid scrolls as full damage, including when the
+    /// scrollback ring is saturated and its size no longer changes.
+    pub full_damage: bool,
+    /// Viewport cells whose rendered text changed from the previous snapshot.
+    pub changed_text_cells: Vec<(u16, u16)>,
     pub cursor: Option<SnapshotCursor>,
     pub cells: Vec<SnapshotCell>,
     /// Interned OSC 8 hyperlink URIs referenced by `cells[..].link`. A per-snapshot
@@ -129,6 +135,8 @@ impl TerminalSnapshot {
             cols: 0,
             scrollback_offset: 0,
             scrollback_total: 0,
+            full_damage: false,
+            changed_text_cells: Vec::new(),
             cursor: None,
             cells: Vec::new(),
             links: Vec::new(),
@@ -1683,7 +1691,7 @@ impl PtyClient {
         // A poisoned grid lock (a panic mid-ingest on the reader thread) must
         // not take the whole TUI down mid-frame (fork dda3d23f): render an
         // empty snapshot and leave a breadcrumb instead.
-        let Ok(terminal) = self.terminal.lock() else {
+        let Ok(mut terminal) = self.terminal.lock() else {
             logger::error("pty: terminal mutex poisoned; rendering empty snapshot");
             return TerminalSnapshot::empty();
         };
@@ -1769,7 +1777,7 @@ impl PtyClient {
     pub fn subscribe_with_repaint(
         &self,
     ) -> (PtyViewerGuard, Vec<u8>, std::sync::mpsc::Receiver<Vec<u8>>) {
-        let terminal = self.terminal.lock().expect("terminal mutex poisoned");
+        let mut terminal = self.terminal.lock().expect("terminal mutex poisoned");
         // Order within the lock is immaterial (the reader cannot run either step
         // while we hold it), so keep registering first: the receiver exists before
         // anything is read off the grid.
@@ -1814,7 +1822,7 @@ impl PtyClient {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return None;
         }
-        let Ok(terminal) = self.terminal.lock() else {
+        let Ok(mut terminal) = self.terminal.lock() else {
             logger::error("pty: terminal mutex poisoned; skipping snapshot rebuild");
             return None;
         };
@@ -2250,7 +2258,7 @@ impl PtyClient {
             return None;
         }
         let repaint = match self.terminal.lock() {
-            Ok(terminal) => Some(terminal.reconnect_repaint()),
+            Ok(mut terminal) => Some(terminal.reconnect_repaint()),
             Err(_) => None,
         };
         let Some(repaint) = repaint else {
@@ -3027,7 +3035,7 @@ impl TerminalState {
         self.term.mode().contains(TermMode::APP_CURSOR)
     }
 
-    fn snapshot(&self) -> TerminalSnapshot {
+    fn snapshot(&mut self) -> TerminalSnapshot {
         let mut snap = TerminalSnapshot::empty();
         self.snapshot_into(&mut snap, true);
         snap
@@ -3037,16 +3045,27 @@ impl TerminalState {
     /// `cells` allocation to avoid per-frame heap churn. When `collect_links` is
     /// false, OSC 8 hyperlink interning is skipped and every cell's `link` is
     /// `None`.
-    fn snapshot_into(&self, target: &mut TerminalSnapshot, collect_links: bool) {
+    fn snapshot_into(&mut self, target: &mut TerminalSnapshot, collect_links: bool) {
         self.snapshot_into_tracking_text(target, collect_links, false);
     }
 
     fn snapshot_into_tracking_text(
-        &self,
+        &mut self,
         target: &mut TerminalSnapshot,
         collect_links: bool,
         track_text: bool,
     ) -> bool {
+        let damage = self.term.damage();
+        target.changed_text_cells.clear();
+        match damage {
+            TermDamage::Full => {
+                target.full_damage = true;
+            }
+            TermDamage::Partial(_) => {
+                target.full_damage = false;
+            }
+        }
+        self.term.reset_damage();
         let renderable = self.term.renderable_content();
         let display_offset = renderable.display_offset;
         let history_size = self.term.grid().history_size();
@@ -3140,6 +3159,12 @@ impl TerminalState {
                     text_changed |= previous.row != next.row
                         || previous.col != next.col
                         || previous.symbol != next.symbol;
+                    if previous.row == next.row
+                        && previous.col == next.col
+                        && previous.symbol != next.symbol
+                    {
+                        target.changed_text_cells.push((next.row, next.col));
+                    }
                 }
                 *previous = next;
             } else {
@@ -3170,7 +3195,7 @@ impl TerminalState {
     /// the history into the client's scrollback. Printing is the only way to
     /// populate a terminal's scrollback over a byte stream: absolute-positioned
     /// repaints overwrite the viewport without ever scrolling.
-    fn reconnect_repaint(&self) -> Vec<u8> {
+    fn reconnect_repaint(&mut self) -> Vec<u8> {
         if self.is_alt_screen() {
             self.reconnect_alt_screen_repaint()
         } else {
@@ -3178,7 +3203,7 @@ impl TerminalState {
         }
     }
 
-    fn reconnect_alt_screen_repaint(&self) -> Vec<u8> {
+    fn reconnect_alt_screen_repaint(&mut self) -> Vec<u8> {
         let snapshot = self.snapshot();
         let mut out = synthesize_repaint(&snapshot, true, self.scroll_region.region());
         // A hidden cursor is absent from the snapshot but still has a position
@@ -7373,7 +7398,7 @@ mod tests {
         wait_for_viewport(&client, "L00000001");
 
         client.attention_bell.store(false, Ordering::Release);
-        let held = client.terminal.lock().expect("terminal mutex poisoned");
+        let mut held = client.terminal.lock().expect("terminal mutex poisoned");
         client.write_bytes(b"2\r").expect("write");
         assert!(
             wait_until(std::time::Duration::from_secs(5), || client
@@ -8324,7 +8349,7 @@ mod tests {
 
     #[test]
     fn snapshot_text_change_detects_and_removes_stale_tail_cells() {
-        let terminal = TerminalState::with_scrollback(3, 12, 5);
+        let mut terminal = TerminalState::with_scrollback(3, 12, 5);
         let mut buf = TerminalSnapshot::empty();
         assert!(terminal.snapshot_into_tracking_text(&mut buf, false, true));
         let expected_len = buf.cells.len();
@@ -8570,6 +8595,8 @@ mod tests {
             cols: 3,
             scrollback_offset: 0,
             scrollback_total: 0,
+            full_damage: false,
+            changed_text_cells: Vec::new(),
             cursor: Some(SnapshotCursor { row: 0, col: 2 }),
             cells: vec![
                 repaint_cell(0, 0, "H", CellColor::Red),
@@ -8601,6 +8628,8 @@ mod tests {
             cols: 1,
             scrollback_offset: 0,
             scrollback_total: 0,
+            full_damage: false,
+            changed_text_cells: Vec::new(),
             cursor: None,
             cells: vec![repaint_cell(0, 0, "x", CellColor::Reset)],
             links: Vec::new(),

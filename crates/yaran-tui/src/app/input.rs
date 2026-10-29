@@ -2238,10 +2238,25 @@ impl App {
         ));
     }
 
-    fn selection_text_has_drifted(sel: &TerminalSelection, now: SelectionOrigin) -> bool {
-        sel.origin.grid_size.1 != now.grid_size.1
-            || ((sel.origin.history_saturated || now.history_saturated)
-                && sel.origin.grid_generation != now.grid_generation)
+    fn selection_text_has_drifted(
+        sel: &TerminalSelection,
+        now: SelectionOrigin,
+        changed_text_cells: &[(u16, u16)],
+    ) -> bool {
+        if sel.origin.grid_size.1 != now.grid_size.1 {
+            return true;
+        }
+        if !(sel.origin.history_saturated || now.history_saturated)
+            || sel.origin.grid_generation == now.grid_generation
+        {
+            return false;
+        }
+        if now.full_damage {
+            return true;
+        }
+        changed_text_cells
+            .iter()
+            .any(|(row, col)| sel.contains(*row, *col))
     }
 
     /// Retire a terminal selection whose text this can no longer FIND.
@@ -2275,12 +2290,9 @@ impl App {
             // follows its text. See `SelectionOrigin::grid_size`.
             let pending_click = sel.dragging && sel.anchor == sel.end;
             if pending_click {
-                // A press without movement is still a child click even if its
-                // text changed. Keep only that eligibility, never re-stamp the
-                // anchor. Any resize still cancels the pending gesture.
                 sel.origin.grid_size != now.grid_size
             } else {
-                Self::selection_text_has_drifted(sel, now)
+                Self::selection_text_has_drifted(sel, now, &self.snapshot_buf.changed_text_cells)
             }
         });
         if drifted {
@@ -11802,7 +11814,27 @@ impl App {
                 // the translation is easy to leave out here).
                 let now = self.snapshot_selection_origin();
                 if let Some(sel) = self.terminal_selection.as_ref()
-                    && Self::selection_text_has_drifted(sel, now)
+                    && sel.dragging
+                    && sel.anchor == sel.end
+                    && sel.origin.grid_size.1 == now.grid_size.1
+                    && (sel.origin.history_saturated || now.history_saturated)
+                    && sel.origin.grid_generation != now.grid_generation
+                    && self
+                        .snapshot_buf
+                        .changed_text_cells
+                        .iter()
+                        .any(|(row, _)| *row >= sel.anchor.row)
+                    && pos != Some(sel.anchor)
+                {
+                    self.terminal_selection = None;
+                    return;
+                }
+                if let Some(sel) = self.terminal_selection.as_ref()
+                    && Self::selection_text_has_drifted(
+                        sel,
+                        now,
+                        &self.snapshot_buf.changed_text_cells,
+                    )
                 {
                     // Motion within the original cell is still a click. A real
                     // extension cannot use the old text anchor after drift, and
@@ -11881,7 +11913,7 @@ impl App {
         // come from, so the translation cannot be a frame out of step with the
         // rows it is correcting.
         let now = self.snapshot_selection_origin();
-        if Self::selection_text_has_drifted(&sel, now) {
+        if Self::selection_text_has_drifted(&sel, now, &self.snapshot_buf.changed_text_cells) {
             // A stationary press may remain solely for click replay after a
             // repaint. It is not a valid text selection for other copy callers.
             return String::new();
