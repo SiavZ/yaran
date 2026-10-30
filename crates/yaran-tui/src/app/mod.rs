@@ -3052,6 +3052,7 @@ pub(crate) struct SelectionOrigin {
     /// Alacritty reports physical scrolling this way, distinct from a partial
     /// redraw such as an unrelated status-line update.
     pub full_damage: bool,
+    pub full_damage_epoch: u64,
     /// The value of `App::grid_generation` in this frame: the selected grid's
     /// coordinate generation, excluding cursor/style-only refreshes while a
     /// selection exists. Only meaningful alongside `history_saturated`; see
@@ -7759,6 +7760,7 @@ impl App {
         SelectionOrigin {
             history_saturated: capacity > 0 && self.snapshot_buf.scrollback_total >= capacity,
             full_damage: self.snapshot_buf.full_damage,
+            full_damage_epoch: self.snapshot_buf.full_damage_epoch,
             grid_generation: self.grid_generation,
             scrollback_offset: self.snapshot_buf.scrollback_offset,
             scrollback_total: self.snapshot_buf.scrollback_total,

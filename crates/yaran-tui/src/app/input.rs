@@ -2246,13 +2246,14 @@ impl App {
         if sel.origin.grid_size.1 != now.grid_size.1 {
             return true;
         }
-        if !(sel.origin.history_saturated || now.history_saturated)
-            || sel.origin.grid_generation == now.grid_generation
-        {
+        if !(sel.origin.history_saturated || now.history_saturated) {
             return false;
         }
-        if now.full_damage {
+        if sel.origin.full_damage_epoch != now.full_damage_epoch {
             return true;
+        }
+        if sel.origin.grid_generation == now.grid_generation {
+            return false;
         }
         changed_text_cells
             .iter()
@@ -2309,9 +2310,10 @@ impl App {
         }
         // Consume the rebuild this scroll caused, then adopt its generation.
         self.refresh_snapshot_buf();
-        let generation = self.grid_generation;
+        let current_origin = self.snapshot_selection_origin();
         if let Some(sel) = &mut self.terminal_selection {
-            sel.origin.grid_generation = generation;
+            sel.origin.grid_generation = current_origin.grid_generation;
+            sel.origin.full_damage_epoch = current_origin.full_damage_epoch;
         }
     }
 
@@ -11818,7 +11820,8 @@ impl App {
                     && sel.anchor == sel.end
                     && sel.origin.grid_size.1 == now.grid_size.1
                     && (sel.origin.history_saturated || now.history_saturated)
-                    && sel.origin.grid_generation != now.grid_generation
+                    && (sel.origin.grid_generation != now.grid_generation
+                        || sel.origin.full_damage_epoch != now.full_damage_epoch)
                     && self
                         .snapshot_buf
                         .changed_text_cells

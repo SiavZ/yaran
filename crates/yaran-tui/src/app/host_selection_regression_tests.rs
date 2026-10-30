@@ -798,3 +798,77 @@ fn host_selection_saturated_repeated_row_scroll_then_distinct_row_never_copies_w
         "release after the distinct-row scroll must not enqueue a clipboard copy, got {copied:?}"
     );
 }
+
+fn capture_hidden_scroll_copy(text: &str) -> anyhow::Result<()> {
+    CAPTURED_HIDDEN_SCROLL_COPIES
+        .lock()
+        .expect("hidden-scroll clipboard lock")
+        .push(text.to_string());
+    Ok(())
+}
+
+static CAPTURED_HIDDEN_SCROLL_COPIES: std::sync::Mutex<Vec<String>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[test]
+fn host_selection_saturated_scroll_that_keeps_same_visible_text_still_retires_selection() {
+    let repeated_rows = std::iter::repeat_n("STATIC TARGET", 40)
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let initial = format!("\x1b[?1002h{repeated_rows}");
+    let (mut app, mut output) = fixture(5, &initial, &["\r\nSTATIC TARGET"]);
+    wait_for_text(&mut app, "STATIC TARGET");
+    let backend = ratatui::backend::TestBackend::new(160, 28);
+    let mut terminal = ratatui::Terminal::new(backend).expect("private host renderer");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("establish real host pane geometry");
+    let row = wait_for_text(&mut app, "STATIC TARGET");
+    let area = app.mouse_layout.agent_term.expect("private pane geometry");
+    select_host_row(&mut app, "STATIC TARGET");
+    let origin = app.snapshot_selection_origin();
+    let before = app
+        .snapshot_buf
+        .cells
+        .iter()
+        .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
+        .collect::<Vec<_>>();
+
+    output.advance();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.refresh_snapshot_buf();
+        if app.snapshot_buf.full_damage_epoch != origin.full_damage_epoch {
+            break;
+        }
+        assert!(Instant::now() < deadline, "private scroll did not arrive");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(app.snapshot_buf.scrollback_offset, origin.scrollback_offset);
+    assert_eq!(app.snapshot_buf.scrollback_total, origin.scrollback_total);
+    assert_eq!(
+        app.snapshot_buf
+            .cells
+            .iter()
+            .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
+            .collect::<Vec<_>>(),
+        before,
+        "fixture must leave visible cells and scroll geometry unchanged"
+    );
+    assert_ne!(app.snapshot_buf.full_damage_epoch, origin.full_damage_epoch);
+    assert_eq!(
+        app.grid_generation, origin.grid_generation,
+        "identical text and geometry must not advance the legacy generation"
+    );
+    app.drop_drifted_selection();
+    assert_eq!(app.terminal_selection_text(), "");
+
+    CAPTURED_HIDDEN_SCROLL_COPIES.lock().unwrap().clear();
+    app.clipboard = crate::clipboard::Clipboard::from_fn(capture_hidden_scroll_copy);
+    app.handle_mouse(mouse_event(
+        MouseEventKind::Up(MouseButton::Left),
+        area.x + "STATIC TARGET".len() as u16 - 1,
+        area.y + row,
+    ));
+    assert!(CAPTURED_HIDDEN_SCROLL_COPIES.lock().unwrap().is_empty());
+}

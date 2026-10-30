@@ -99,6 +99,8 @@ pub struct TerminalSnapshot {
     /// Alacritty marks physical grid scrolls as full damage, including when the
     /// scrollback ring is saturated and its size no longer changes.
     pub full_damage: bool,
+    /// Monotonic count of full-damage events, including physical scrolls.
+    pub full_damage_epoch: u64,
     /// Viewport cells whose rendered text changed from the previous snapshot.
     pub changed_text_cells: Vec<(u16, u16)>,
     pub cursor: Option<SnapshotCursor>,
@@ -136,6 +138,7 @@ impl TerminalSnapshot {
             scrollback_offset: 0,
             scrollback_total: 0,
             full_damage: false,
+            full_damage_epoch: 0,
             changed_text_cells: Vec::new(),
             cursor: None,
             cells: Vec::new(),
@@ -2742,6 +2745,7 @@ struct TerminalState {
     /// See [`crate::scroll_margins`] for why it is a mirror of the engine's
     /// behaviour rather than an independent reading of the specification.
     scroll_region: ScrollRegionTracker,
+    full_damage_epoch: u64,
     /// Bumped by every call that can change what the grid shows: parsed
     /// output, a scroll, a resize. A reader that remembers the value can tell
     /// "nothing on this terminal changed" without rescanning it, which the
@@ -2778,6 +2782,7 @@ impl TerminalState {
             cols,
             last_content_hash: None,
             scroll_region: ScrollRegionTracker::new(rows, cols),
+            full_damage_epoch: 0,
             generation: next_terminal_generation_base(),
         }
     }
@@ -2819,6 +2824,9 @@ impl TerminalState {
     fn process(&mut self, data: &[u8]) -> Vec<u8> {
         self.generation = self.generation.wrapping_add(1);
         self.parser.advance(&mut self.term, data);
+        if matches!(self.term.damage(), TermDamage::Full) {
+            self.full_damage_epoch = self.full_damage_epoch.wrapping_add(1);
+        }
         self.clamp_display_offset_to_history();
         // The same bytes, through a second parser that watches only the scrolling
         // region. The two cannot disagree about a synchronized update, even
@@ -3055,16 +3063,12 @@ impl TerminalState {
         collect_links: bool,
         track_text: bool,
     ) -> bool {
+        let previous_full_damage_epoch = target.full_damage_epoch;
+        target.full_damage_epoch = self.full_damage_epoch;
         let damage = self.term.damage();
+        target.full_damage = previous_full_damage_epoch != self.full_damage_epoch
+            || matches!(damage, TermDamage::Full);
         target.changed_text_cells.clear();
-        match damage {
-            TermDamage::Full => {
-                target.full_damage = true;
-            }
-            TermDamage::Partial(_) => {
-                target.full_damage = false;
-            }
-        }
         self.term.reset_damage();
         let renderable = self.term.renderable_content();
         let display_offset = renderable.display_offset;
@@ -8456,6 +8460,42 @@ mod tests {
     }
 
     #[test]
+    fn full_damage_epoch_survives_an_intervening_snapshot_consumer() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = vec!["-c".to_string(), "sleep 30".to_string()];
+        let client = PtyClient::spawn("/bin/sh", &args, dir.path(), 3, 20, 5).unwrap();
+        let mut snapshot = TerminalSnapshot::empty();
+        client
+            .terminal
+            .lock()
+            .unwrap()
+            .process(b"\x1b[?1002h\r\nA\r\nB\r\nC\r\nD");
+        client.dirty.store(true, Ordering::Release);
+        assert!(
+            client
+                .snapshot_into_tracking_text(&mut snapshot, false)
+                .unwrap()
+        );
+        let initial_epoch = snapshot.full_damage_epoch;
+
+        client.terminal.lock().unwrap().process(b"\x1b[3;1H\r\n");
+        client.dirty.store(true, Ordering::Release);
+        let observational = client.snapshot();
+        assert!(observational.full_damage);
+        assert!(observational.full_damage_epoch > initial_epoch);
+
+        client.dirty.store(true, Ordering::Release);
+        let _tui_snapshot = client
+            .snapshot_into_tracking_text(&mut snapshot, false)
+            .unwrap();
+        assert_eq!(snapshot.full_damage_epoch, observational.full_damage_epoch);
+        assert!(
+            snapshot.full_damage,
+            "the TUI must still observe full damage"
+        );
+    }
+
+    #[test]
     fn snapshot_into_matches_snapshot() {
         let mut terminal = TerminalState::with_scrollback(3, 12, 100);
         terminal.process(b"hello\r\nworld\r\n");
@@ -8596,6 +8636,7 @@ mod tests {
             scrollback_offset: 0,
             scrollback_total: 0,
             full_damage: false,
+            full_damage_epoch: 0,
             changed_text_cells: Vec::new(),
             cursor: Some(SnapshotCursor { row: 0, col: 2 }),
             cells: vec![
@@ -8629,6 +8670,7 @@ mod tests {
             scrollback_offset: 0,
             scrollback_total: 0,
             full_damage: false,
+            full_damage_epoch: 0,
             changed_text_cells: Vec::new(),
             cursor: None,
             cells: vec![repaint_cell(0, 0, "x", CellColor::Reset)],
