@@ -754,6 +754,18 @@ mod tests {
     }
 
     #[test]
+    fn project_reorder_commands_are_in_the_palette() {
+        assert_eq!(
+            find_by_action(Action::MoveProjectUp).map(|command| command.name),
+            Some("move-project-up")
+        );
+        assert_eq!(
+            find_by_action(Action::MoveProjectDown).map(|command| command.name),
+            Some("move-project-down")
+        );
+    }
+
+    #[test]
     fn actions_are_unique() {
         let mut seen = std::collections::HashSet::new();
         for c in PALETTE_COMMANDS {
