@@ -55,9 +55,8 @@ pub struct PeerSession {
     pub title: Option<String>,
     /// The agent's AMQ identity: its inbox name under the shared AMQ root.
     pub agent_handle: String,
-    /// Several agents share one working directory. Such endpoints are always
-    /// routed over AMQ, because Claude Peers keys registrations by directory
-    /// and cannot tell them apart.
+    /// Several agents share one working directory. Mixed-provider routes from
+    /// such endpoints use AMQ. Claude-to-Claude routes still use Claude Peers.
     pub shared_workspace: bool,
     /// Ordinary-deleted row kept as a tombstone so its handle stays reserved.
     pub deleted: bool,

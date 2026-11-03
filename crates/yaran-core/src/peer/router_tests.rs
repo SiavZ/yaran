@@ -308,7 +308,7 @@ fn auto_routes_a_non_claude_target_via_amq() {
 }
 
 #[test]
-fn shared_sender_to_worktree_target_routes_via_amq() {
+fn shared_claude_sender_to_worktree_claude_target_routes_via_claude_peers() {
     let dir = tempdir().unwrap();
     let mut sender_session = session("s1", "claude", "sender", dir.path());
     sender_session.shared_workspace = true;
@@ -323,11 +323,31 @@ fn shared_sender_to_worktree_target_routes_via_amq() {
 
     let transport = choose_transport(TransportPreference::Auto, &sender, &target).unwrap();
 
-    assert_eq!(transport, ChosenTransport::Amq);
+    assert_eq!(transport, ChosenTransport::ClaudePeers);
 }
 
 #[test]
-fn worktree_sender_to_shared_target_routes_via_amq() {
+fn shared_claude_sender_to_worktree_codex_target_routes_via_amq() {
+    let dir = tempdir().unwrap();
+    let mut sender_session = session("s1", "claude", "sender", dir.path());
+    sender_session.shared_workspace = true;
+    let sender = SenderContext {
+        handle: "sender".to_string(),
+        session: Some(sender_session),
+    };
+    let target = PeerTarget {
+        handle: "target".to_string(),
+        session: Some(session("s2", "codex", "target", dir.path())),
+    };
+
+    assert_eq!(
+        choose_transport(TransportPreference::Auto, &sender, &target).unwrap(),
+        ChosenTransport::Amq
+    );
+}
+
+#[test]
+fn worktree_claude_sender_to_shared_claude_target_routes_via_claude_peers() {
     let dir = tempdir().unwrap();
     let sender = SenderContext {
         handle: "sender".to_string(),
@@ -342,12 +362,12 @@ fn worktree_sender_to_shared_target_routes_via_amq() {
 
     let transport = choose_transport(TransportPreference::Auto, &sender, &target).unwrap();
 
-    assert_eq!(transport, ChosenTransport::Amq);
+    assert_eq!(transport, ChosenTransport::ClaudePeers);
     assert_eq!(target.handle, "target");
 }
 
 #[test]
-fn shared_sender_to_shared_target_routes_via_amq() {
+fn shared_claude_sender_to_shared_claude_target_routes_via_claude_peers() {
     let dir = tempdir().unwrap();
     let mut sender_session = session("s1", "claude", "sender", dir.path());
     sender_session.shared_workspace = true;
@@ -364,7 +384,27 @@ fn shared_sender_to_shared_target_routes_via_amq() {
 
     let transport = choose_transport(TransportPreference::Auto, &sender, &target).unwrap();
 
-    assert_eq!(transport, ChosenTransport::Amq);
+    assert_eq!(transport, ChosenTransport::ClaudePeers);
+}
+
+#[test]
+fn explicit_amq_rejects_claude_to_claude_route() {
+    let dir = tempdir().unwrap();
+    let sender = SenderContext {
+        handle: "sender".to_string(),
+        session: Some(session("s1", "claude", "sender", dir.path())),
+    };
+    let target = PeerTarget {
+        handle: "target".to_string(),
+        session: Some(session("s2", "claude", "target", dir.path())),
+    };
+
+    let err = choose_transport(TransportPreference::Amq, &sender, &target)
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("Claude-to-Claude"));
+    assert!(err.contains("claude-peers"));
 }
 
 /// Default Claude targets go to Claude Peers whatever the sender's provider
@@ -392,7 +432,7 @@ fn worktree_endpoints_still_prefer_claude_peers() {
 }
 
 #[test]
-fn explicit_claude_peers_rejects_shared_sender() {
+fn explicit_claude_peers_accepts_shared_claude_sender() {
     let dir = tempdir().unwrap();
     let mut sender_session = session("s1", "claude", "sender", dir.path());
     sender_session.shared_workspace = true;
@@ -405,16 +445,14 @@ fn explicit_claude_peers_rejects_shared_sender() {
         session: Some(session("s2", "claude", "target", dir.path())),
     };
 
-    let err = choose_transport(TransportPreference::ClaudePeers, &sender, &target)
-        .unwrap_err()
-        .to_string();
-
-    assert!(err.contains("shared-workspace"));
-    assert!(err.contains("--transport amq"));
+    assert_eq!(
+        choose_transport(TransportPreference::ClaudePeers, &sender, &target).unwrap(),
+        ChosenTransport::ClaudePeers
+    );
 }
 
 #[test]
-fn explicit_claude_peers_rejects_shared_target() {
+fn explicit_claude_peers_accepts_shared_claude_target() {
     let dir = tempdir().unwrap();
     let sender = SenderContext {
         handle: "sender".to_string(),
@@ -427,12 +465,10 @@ fn explicit_claude_peers_rejects_shared_target() {
         session: Some(target_session),
     };
 
-    let err = choose_transport(TransportPreference::ClaudePeers, &sender, &target)
-        .unwrap_err()
-        .to_string();
-
-    assert!(err.contains("shared-workspace"));
-    assert!(err.contains("--transport amq"));
+    assert_eq!(
+        choose_transport(TransportPreference::ClaudePeers, &sender, &target).unwrap(),
+        ChosenTransport::ClaudePeers
+    );
 }
 
 #[test]

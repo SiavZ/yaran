@@ -267,7 +267,7 @@ yaran peer list
 yaran peer sync-amq
 ```
 
-`yaran peer send` sends to a Claude agent over Claude Peers and to every other provider over AMQ; pass `--transport amq` to override. If either end is in a shared workspace, yaran always routes through AMQ by the agent's immutable handle, because matching peers by working directory would be ambiguous. Every agent is launched with `YARAN_SESSION_ID`, `YARAN_STORE_ID`, `YARAN_PROVIDER` and `YARAN_AMQ_HANDLE`, and yaran refreshes AMQ's agent registry from `sessions.sqlite3` when the TUI or `yaran server` starts, and on `yaran peer sync-amq`.
+`yaran peer send` sends Claude-to-Claude messages over Claude Peers and messages to every other provider over AMQ. Claude-to-Claude routes keep using Claude Peers even when the sessions share a workspace; pass `--transport amq` only for routes that do not involve two Claude sessions. Shared-workspace routes involving another provider use AMQ by the agent's immutable handle, because matching peers by working directory would be ambiguous. Every agent is launched with `YARAN_SESSION_ID`, `YARAN_STORE_ID`, `YARAN_PROVIDER` and `YARAN_AMQ_HANDLE`, and yaran refreshes AMQ's agent registry from `sessions.sqlite3` when the TUI or `yaran server` starts, and on `yaran peer sync-amq`.
 
 ### Tasks for Human
 

@@ -3,9 +3,11 @@
 //!
 //! Transport rules (the fork's, unchanged):
 //!
-//! - Either endpoint in a shared workspace: always AMQ. Claude Peers keys a
-//!   registration by working directory, so it cannot tell the agents sharing
-//!   one apart, and an explicit `--transport claude-peers` is refused.
+//! - Claude-to-Claude routes always use Claude Peers, including sessions in a
+//!   shared workspace. An explicit `--transport amq` is refused for that pair.
+//! - Either endpoint in a shared workspace for other provider combinations:
+//!   always AMQ. Claude Peers keys a registration by working directory, so it
+//!   cannot tell mixed-provider agents sharing one apart.
 //! - Otherwise `auto` sends to a Claude target over Claude Peers (the broker
 //!   is then required, not a best-effort preference) and to anything else
 //!   over AMQ. `--transport amq` is the manual override.
@@ -81,8 +83,8 @@ yaran peer - route messages between Yaran agent sessions
 
 Subcommands:
   yaran peer send [--from <handle>] [--transport auto|amq|claude-peers] <target> <message...>
-                       Send through the Yaran router. Auto uses AMQ when either
-                       endpoint is shared; otherwise Claude targets use Peers.
+                       Send through the Yaran router. Claude-to-Claude routes
+                       always use Claude Peers; other shared routes use AMQ.
   yaran peer list        List Yaran sessions and transport health.
   yaran peer sync-amq    Reconcile AMQ's agent registry from sessions.sqlite3.
 
@@ -404,6 +406,17 @@ fn choose_transport(
     sender: &SenderContext,
     target: &PeerTarget,
 ) -> Result<ChosenTransport> {
+    let claude_to_claude = is_claude_session(sender.session.as_ref())
+        && is_claude_session(target.session.as_ref());
+    if claude_to_claude {
+        if preference == TransportPreference::Amq {
+            bail!(
+                "AMQ cannot route Claude-to-Claude sessions; use --transport claude-peers or omit --transport"
+            );
+        }
+        return Ok(ChosenTransport::ClaudePeers);
+    }
+
     let shared_endpoint = sender
         .session
         .as_ref()
