@@ -1515,6 +1515,26 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         }),
         hint_contexts: &[],
     },
+    BindingDef {
+        action: Action::MoveProjectUp,
+        default_keys: &[key!(shift - h)],
+        scopes: &[BindingScope::Left],
+        help: Some(HelpEntry {
+            section: "Projects pane",
+            description: "Move the selected project up",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::MoveProjectDown,
+        default_keys: &[key!(shift - l)],
+        scopes: &[BindingScope::Left],
+        help: Some(HelpEntry {
+            section: "Projects pane",
+            description: "Move the selected project down",
+        }),
+        hint_contexts: &[],
+    },
     // Manual reordering, the TUI equivalent of the web's drag-to-reorder. Up
     // and down one row are on Shift-K / Shift-J in the sidebar (fork 3da9bc6f,
     // the capital twins of k / j); in the terminals section

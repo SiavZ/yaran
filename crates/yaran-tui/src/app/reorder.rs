@@ -82,6 +82,71 @@ pub(crate) fn drop_marker_boundary(source: usize, hover: usize) -> usize {
 }
 
 impl App {
+    /// Move the selected project group in the TUI's grouped sidebar order and
+    /// persist that order. Orphan and standalone groups are not registered
+    /// projects, so they cannot be moved by this action.
+    pub(crate) fn move_selected_project(&mut self, dir: MoveDir) {
+        let Some(project_id) = self.selected_project_group_key() else {
+            if self.sidebar_style() != SidebarStyle::Grouped {
+                self.set_info("Project ordering is available in the grouped sidebar.");
+            } else {
+                self.set_info("Select a project header or one of its agents to move the project.");
+            }
+            return;
+        };
+        let Some(selected_pos) = self
+            .left_group_of_item(self.selected_left)
+            .map(|(pos, _)| pos)
+        else {
+            return;
+        };
+        let follow_session = self.selected_session().map(|session| session.id.clone());
+        let order: Vec<String> = self
+            .engine
+            .projects
+            .iter()
+            .map(|project| project.id.clone())
+            .collect();
+        let Some(index) = order.iter().position(|id| id == &project_id) else {
+            return;
+        };
+        let new_order = move_in_order(&order, index, dir);
+        if new_order == order {
+            return;
+        }
+        match self.engine.apply(Command::ReorderProjects {
+            project_ids: new_order,
+        }) {
+            Ok(reaction) => self.apply_reaction(reaction),
+            Err(err) => {
+                self.set_error(format!("Could not reorder projects: {err}"));
+                return;
+            }
+        }
+        let follow_group_key = project_id;
+        self.rebuild_left_items();
+        self.selected_left = self
+            .left_items()
+            .iter()
+            .position(|item| match item {
+                LeftItem::Group(group) => {
+                    follow_session.is_none()
+                        && self
+                            .left_group(*group)
+                            .is_some_and(|group| group.key == follow_group_key)
+                }
+                LeftItem::Session(index) => follow_session.as_ref().is_some_and(|id| {
+                    self.engine
+                        .sessions
+                        .get(*index)
+                        .is_some_and(|s| &s.id == id)
+                }),
+                LeftItem::InactiveToggle => false,
+            })
+            .unwrap_or(selected_pos);
+        self.set_info("Reordered projects.");
+    }
+
     /// Move the selected agent within the global agent order and switch the sort
     /// to manual (like the web's drag-to-reorder), keeping the selection on the
     /// moved agent. Guards like the rest of the palette: no selected agent posts

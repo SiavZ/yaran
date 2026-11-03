@@ -37,6 +37,8 @@ pub enum Action {
     /// harnesses sharing its checkout), wrapping. Fork binding `}` / `{`.
     NextSiblingAgent,
     PrevSiblingAgent,
+    MoveProjectUp,
+    MoveProjectDown,
     // Agent pane
     InteractAgent,
     ShowTerminal,
@@ -264,6 +266,8 @@ impl Action {
             Action::DeleteTerminal => "delete_terminal",
             Action::NextSiblingAgent => "next_sibling_agent",
             Action::PrevSiblingAgent => "prev_sibling_agent",
+            Action::MoveProjectUp => "move_project_up",
+            Action::MoveProjectDown => "move_project_down",
             Action::InteractAgent => "interact_agent",
             Action::ShowTerminal => "show_terminal",
             Action::NextTab => "next_tab",
@@ -439,6 +443,12 @@ impl Action {
             }
             Action::PrevSiblingAgent => {
                 "Select the previous agent in the selected agent's project (the agents sharing its checkout), wrapping around."
+            }
+            Action::MoveProjectUp => {
+                "Move the selected project up one position in the TUI sidebar."
+            }
+            Action::MoveProjectDown => {
+                "Move the selected project down one position in the TUI sidebar."
             }
             Action::InteractAgent => {
                 "Open the selected agent fullscreen, where keys go to the agent verbatim."
@@ -697,7 +707,9 @@ impl Action {
             | Action::DeleteSession
             | Action::DeleteTerminal
             | Action::NextSiblingAgent
-            | Action::PrevSiblingAgent => Some("Projects pane"),
+            | Action::PrevSiblingAgent
+            | Action::MoveProjectUp
+            | Action::MoveProjectDown => Some("Projects pane"),
             Action::NewAgentFromPr | Action::ManageProjects | Action::ManageWorktrees => None,
             Action::OpenMacroBar
             | Action::OpenCurrentPullRequest

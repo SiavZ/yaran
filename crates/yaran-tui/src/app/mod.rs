@@ -5539,8 +5539,17 @@ impl App {
             | Action::MoveTerminalDown
             | Action::MoveTerminalTop
             | Action::MoveTerminalBottom => !self.engine.companion_terminals.is_empty(),
+            Action::MoveProjectUp | Action::MoveProjectDown => {
+                self.sidebar_style() == SidebarStyle::Grouped
+                    && self.selected_project_group_key().is_some()
+            }
             _ => true,
         }
+    }
+
+    fn selected_project_group_key(&self) -> Option<String> {
+        let (_, group) = self.left_group_of_item(self.selected_left)?;
+        matches!(group.kind, LeftGroupKind::Project { .. }).then(|| group.key.clone())
     }
 
     /// True while a manual pull-request attach is still resolving for the
@@ -5713,6 +5722,14 @@ impl App {
             }
             "move-agent-bottom" => {
                 self.move_selected_agent(reorder::MoveDir::Bottom);
+                Ok(())
+            }
+            "move-project-up" => {
+                self.move_selected_project(reorder::MoveDir::Up);
+                Ok(())
+            }
+            "move-project-down" => {
+                self.move_selected_project(reorder::MoveDir::Down);
                 Ok(())
             }
             "delete-terminal" => self.delete_terminal_from_palette(),

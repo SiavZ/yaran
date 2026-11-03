@@ -275,6 +275,80 @@ fn move_agent_up_swaps_with_the_previous_sibling_in_its_project() {
 }
 
 #[test]
+fn move_project_down_from_agent_reorders_group_and_keeps_agent_selected() {
+    let mut app = grouped_app();
+    app.selected_left = 1; // first infrastructure agent
+
+    app.move_selected_project(super::reorder::MoveDir::Down);
+
+    assert_eq!(
+        labels(&app),
+        vec![
+            "#Jobzy-web",
+            "web-dev",
+            "#Jobzy-infra",
+            "infra-claude",
+            "infra-engineer",
+            "infra-opencode",
+        ]
+    );
+    assert_eq!(
+        app.selected_session().map(|session| session.id.as_str()),
+        Some("infra-claude")
+    );
+    assert_eq!(
+        app.engine
+            .projects
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>(),
+        ["web", "infra"]
+    );
+}
+
+#[test]
+fn move_project_up_from_header_keeps_selection_on_header() {
+    let mut app = grouped_app();
+    app.selected_left = 4; // second project header, web
+
+    app.move_selected_project(super::reorder::MoveDir::Up);
+
+    assert_eq!(labels(&app)[0], "#Jobzy-web");
+    assert!(matches!(
+        app.left_items()[app.selected_left],
+        LeftItem::Group(_)
+    ));
+    assert_eq!(
+        app.left_group_of_item(app.selected_left).unwrap().1.key,
+        "web"
+    );
+}
+
+#[test]
+fn moving_project_at_boundary_is_a_noop() {
+    let mut app = grouped_app();
+    app.selected_left = 0;
+    let before = app
+        .engine
+        .projects
+        .iter()
+        .map(|project| project.id.clone())
+        .collect::<Vec<_>>();
+
+    app.move_selected_project(super::reorder::MoveDir::Up);
+
+    assert_eq!(
+        app.engine
+            .projects
+            .iter()
+            .map(|project| project.id.clone())
+            .collect::<Vec<_>>(),
+        before
+    );
+    assert_eq!(labels(&app)[0], "#Jobzy-infra");
+}
+
+#[test]
 fn a_click_on_a_row_selects_that_agent() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::Terminal;

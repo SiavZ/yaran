@@ -1408,6 +1408,10 @@ impl App {
                 Action::ChooseWorktreeEditor => self.open_worktree_editor_picker()?,
                 Action::MoveAgentDown => self.move_selected_agent(super::reorder::MoveDir::Down),
                 Action::MoveAgentUp => self.move_selected_agent(super::reorder::MoveDir::Up),
+                Action::MoveProjectDown => {
+                    self.move_selected_project(super::reorder::MoveDir::Down)
+                }
+                Action::MoveProjectUp => self.move_selected_project(super::reorder::MoveDir::Up),
                 Action::NewTerminal => self.new_companion_terminal()?,
                 Action::NextSiblingAgent => self.select_sibling_agent(true),
                 Action::PrevSiblingAgent => self.select_sibling_agent(false),

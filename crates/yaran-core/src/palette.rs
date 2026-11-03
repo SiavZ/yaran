@@ -663,6 +663,16 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         description: "Move the selected agent to the bottom (sorting becomes manual)",
     },
     PaletteCommand {
+        action: Action::MoveProjectUp,
+        name: "move-project-up",
+        description: "Move the selected project up in the TUI sidebar",
+    },
+    PaletteCommand {
+        action: Action::MoveProjectDown,
+        name: "move-project-down",
+        description: "Move the selected project down in the TUI sidebar",
+    },
+    PaletteCommand {
         action: Action::MoveTerminalUp,
         name: "move-terminal-up",
         description: "Move the selected terminal up one position (sorting becomes manual)",
