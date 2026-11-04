@@ -1402,7 +1402,10 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(text.contains("One git worktree per coding agent"), "{text}");
+        assert!(
+            text.contains("Coding agents in your terminal or browser"),
+            "{text}"
+        );
         // This machine's resolved config path, straight from core.
         assert!(
             text.contains("/home/ada/.config/yaran/config.toml"),
@@ -1650,7 +1653,7 @@ mod tests {
         assert!(rendered.contains("Add a project"), "primary button missing");
         assert!(rendered.contains("Close"), "secondary button missing");
         assert!(
-            rendered.contains("One git worktree per coding agent"),
+            rendered.contains("Coding agents in your terminal or browser"),
             "the tagline must be painted"
         );
     }
@@ -1727,7 +1730,7 @@ mod tests {
             "the buttons must survive the narrow path"
         );
         assert!(
-            rendered.contains("One git worktree per coding agent"),
+            rendered.contains("Coding agents in your terminal or browser"),
             "the prose takes the full width instead"
         );
     }

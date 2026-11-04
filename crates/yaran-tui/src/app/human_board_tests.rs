@@ -628,6 +628,38 @@ fn a_narrow_column_keeps_the_waiting_count_and_drops_the_updates() {
     assert!(!title.contains("wai"), "no half-cut word: {title}");
 }
 
+#[test]
+fn a_compact_board_title_keeps_the_complete_waiting_count() {
+    let mut board = Board::default();
+    for index in 0..12 {
+        board
+            .post(
+                new_card(CardKind::Task, None, &format!("Review {index}")),
+                at(index),
+            )
+            .unwrap();
+    }
+    let mut app = board_app(Some(board));
+    for width in [80, 100] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let rows: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        let title = rows.iter().find(|row| row.contains("Tasks ")).unwrap();
+        assert!(title.contains("(12)"), "{title}");
+        let list = app.mouse_layout.board_list.unwrap();
+        let heading: String = (list.x..list.right())
+            .map(|x| terminal.backend().buffer()[(x, list.y)].symbol())
+            .collect();
+        assert!(heading.trim_end().ends_with(" 12"), "{heading}");
+    }
+}
+
 // ── Replying from the card dialog ──────────────────────────────────────────
 
 /// A terminal that echoes what it is sent in caret notation (`^M` for the

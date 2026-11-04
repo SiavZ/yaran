@@ -47,6 +47,7 @@ vi.mock("@dnd-kit/sortable", () => ({
 const reorderAgentsMock = vi.fn()
 const reorderTerminalsMock = vi.fn()
 const setAgentSortMock = vi.fn()
+const setAgentSearchMock = vi.fn()
 const openNewAgentPickerMock = vi.fn()
 const openAddProjectMock = vi.fn()
 const createStandaloneTerminalMock = vi.fn()
@@ -60,6 +61,7 @@ vi.mock("@/lib/store", async (importOriginal) => {
     reorderAgents: (...args: unknown[]) => reorderAgentsMock(...args),
     reorderTerminals: (...args: unknown[]) => reorderTerminalsMock(...args),
     setAgentSort: (...args: unknown[]) => setAgentSortMock(...args),
+    setAgentSearch: (...args: unknown[]) => setAgentSearchMock(...args),
     openNewAgentPicker: (...args: unknown[]) => openNewAgentPickerMock(...args),
     openAddProject: (...args: unknown[]) => openAddProjectMock(...args),
     createStandaloneTerminal: (...args: unknown[]) =>
@@ -209,6 +211,7 @@ beforeEach(() => {
   reorderAgentsMock.mockClear()
   reorderTerminalsMock.mockClear()
   setAgentSortMock.mockClear()
+  setAgentSearchMock.mockClear()
   openNewAgentPickerMock.mockClear()
   openAddProjectMock.mockClear()
   createStandaloneTerminalMock.mockClear()
@@ -240,6 +243,36 @@ function drop(handler: (event: DragEndEvent) => void, active: string, over: stri
 }
 
 describe("FlatAgentList section order", () => {
+  it("reuses list derivations on selection changes and rebuilds them when the workspace changes", async () => {
+    const flatList = await import("@/lib/flatList")
+    const sort = vi.spyOn(flatList, "sortMainSessions")
+    try {
+      const view = render(<FlatAgentList handlers={handlers} />)
+      expect(sort).toHaveBeenCalledTimes(1)
+
+      mockState = { ...mockState, selectedTarget: { kind: "agent", sessionId: "alpha" } }
+      view.rerender(<FlatAgentList handlers={handlers} />)
+      expect(sort).toHaveBeenCalledTimes(1)
+      expect(screen.getByText("Alpha").closest("button")?.getAttribute("aria-current")).toBe("true")
+
+      mockState = {
+        ...mockState,
+        spine: {
+          ...mockState.spine!,
+          sessions: mockState.spine!.sessions.map((session) =>
+            session.id === "alpha" ? { ...session, title: "Updated agent" } : session,
+          ),
+        },
+      }
+      view.rerender(<FlatAgentList handlers={handlers} />)
+      expect(sort).toHaveBeenCalledTimes(2)
+      expect(screen.queryByText("Alpha")).toBeNull()
+      expect(screen.getByText("Updated agent").closest("button")?.getAttribute("aria-current")).toBe("true")
+    } finally {
+      sort.mockRestore()
+    }
+  })
+
   it("renders Terminals ABOVE the Inactive quiet tail", () => {
     // Wanted order: main agents, then Terminals, then Inactive. Both section
     // headers exist in this fixture (a quiet session and two terminals), so
@@ -693,14 +726,9 @@ describe("FlatAgentList drag from any sort mode", () => {
   })
 })
 
-// The PR chip is an anchor whose click handler ALSO calls window.open (the
-// anchor is nested inside the row's button, where relying on the native default
-// alone is not dependable). Exactly one of the two may run, or the click opens
-// two tabs.
+// PR navigation has its own link, outside the agent's select button.
 describe("FlatAgentList PR chip", () => {
-  it("opens the PR once, suppressing the anchor's own navigation", () => {
-    const open = vi.fn()
-    vi.stubGlobal("open", open)
+  it("exposes an independent native PR link with one browser navigation", () => {
     mockState = makeState("name")
     mockState.spine!.sessions[0].pr = {
       number: 42,
@@ -709,13 +737,11 @@ describe("FlatAgentList PR chip", () => {
       state: "open",
     } as SessionView["pr"]
     render(<FlatAgentList handlers={handlers} />)
-    const chip = screen.getByLabelText("Pull request #42, open")
-    const click = new MouseEvent("click", { bubbles: true, cancelable: true })
-    fireEvent(chip, click)
-    expect(open).toHaveBeenCalledTimes(1)
-    // Unprevented, the browser follows the `target="_blank"` href as well and
-    // the user gets a second tab.
-    expect(click.defaultPrevented).toBe(true)
+    const link = screen.getByRole("link", { name: "Pull request #42, open" })
+    expect(link.getAttribute("href")).toBe("https://github.com/o/r/pull/42")
+    expect(link.getAttribute("target")).toBe("_blank")
+    expect(link.closest("button")).toBeNull()
+    expect(link.closest('[role="button"]')).toBeNull()
   })
 
   it("does not select the agent when the PR chip is clicked", () => {
@@ -1739,3 +1765,29 @@ describe("FlatAgentList working cue", () => {
   })
 })
 
+
+
+describe("workspace navigation accessibility", () => {
+  it("names the navigation and marks the current agent", () => {
+    mockState.selectedTarget = { kind: "agent", sessionId: "alpha" }
+    render(<FlatAgentList handlers={handlers} />)
+    expect(screen.getByRole("navigation", { name: "Agents and terminals" })).toBeTruthy()
+    expect(screen.getByText("Alpha").closest("button")?.getAttribute("aria-current")).toBe("true")
+    expect(screen.getByText("Zeta").closest("button")?.hasAttribute("aria-current")).toBe(false)
+  })
+
+  it("clears a search without taking keyboard focus away from the field", () => {
+    mockState.agentSearch = "missing"
+    render(<FlatAgentList handlers={handlers} />)
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }))
+    expect(setAgentSearchMock).toHaveBeenCalledWith("")
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Search agents and terminals" }))
+  })
+
+  it("does not announce an empty workspace before it has loaded", () => {
+    mockState.spine = null
+    render(<FlatAgentList handlers={handlers} />)
+    expect(screen.getByRole("status").textContent).toBe("Loading workspace…")
+    expect(screen.queryByText("No agents yet")).toBeNull()
+  })
+})

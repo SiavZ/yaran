@@ -75,9 +75,11 @@ export function CreateAgentDialog() {
           generating={createAgentNamePending}
           onSubmit={handleSubmit}
         />
-        <p className="text-xs text-muted-foreground">
-          Letters, digits, dashes, underscores and slashes. This becomes the
-          branch name.
+        <p id="create-agent-name-help" className="text-xs text-muted-foreground">
+          Letters, digits, dashes, underscores and slashes.{" "}
+          {dialog.kind === "new"
+            ? "In worktree mode, this also becomes the branch name."
+            : "This becomes the branch name."}
         </p>
         <AgentOptions
           showCopyChanges={dialog.showCopyChanges}
@@ -105,7 +107,11 @@ function handleEnter(
   event: KeyboardEvent<HTMLInputElement>,
   onSubmit: () => void,
 ): void {
-  if (event.key !== "Enter") return
+  if (
+    event.key !== "Enter" ||
+    event.nativeEvent.isComposing ||
+    event.keyCode === 229
+  ) return
   event.preventDefault()
   onSubmit()
 }
@@ -197,6 +203,8 @@ function AgentNameField({
   return (
     <div className="relative">
       <Input
+        aria-label={dialog.kind === "new" ? "Agent name" : "Branch name"}
+        aria-describedby="create-agent-name-help"
         value={value}
         onChange={handleNameChange}
         onKeyDown={(event) => handleEnter(event, onSubmit)}

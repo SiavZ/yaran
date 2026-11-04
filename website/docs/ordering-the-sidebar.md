@@ -16,11 +16,16 @@ it: pick a sort mode and let yaran keep the list in order, or place things by ha
 
 Agents sit up top; terminals get their own section below them. In the terminal UI those
 are two panes; on the web they are two labelled groups, and the Terminals group is
-collapsible. Dormant agents fold away into a collapsible "Inactive" tail. On the web the
-Terminals group sits above that tail; in the terminal UI the tail closes the Agents pane
-and Terminals is its own pane below. Every row is two lines: the name, then who it
-belongs to and what it is doing. The terminal UI looks like this (the spinner glyph
-animates while an agent works):
+collapsible. The terminal UI defaults to compact rows grouped under collapsible project
+headers. Set `ui.sidebar_style = "flat"` for one agent list with a collapsible Inactive
+tail, and `ui.sidebar_density = "comfortable"` for two-line rows showing the name,
+owner, and activity. These options are independent. A compact row has no second line, so
+it names a live state (Working, Typing, Needs you) at its right edge and stays quiet when
+the agent is idle; each project header keeps its agent count in the same right-hand column.
+
+The web uses two-line rows and puts Terminals above the Inactive tail. The terminal
+UI keeps Terminals in its own pane below Agents. This screenshot shows the terminal
+UI's flat, comfortable layout. The spinner animates while an agent works:
 
 ![The terminal UI sidebar: three active agents, one of them running three tabs, and a collapsed Inactive tail.](/screens/tui-agent-list-two-line.png)
 
@@ -31,6 +36,7 @@ matches on.
 
 Typing in the filter narrows the list to the rows that match, with the matching text
 picked out, and the pane title counts what survived.
+An empty terminal UI search explains that no agents match and shows how to clear it.
 
 ![The same sidebar filtered by the word retry: the title reads Agents 2 of 5 and only the two matching agents remain.](/screens/tui-sidebar-search.png)
 
@@ -59,8 +65,8 @@ too; pick manual and each holds the spot you put it in.
 
 **Drag it, on either surface.** Grab a row with the mouse and drop it where you want,
 in the browser or in the terminal UI. Agents reorder among agents and terminals among
-terminals; a terminal never jumps into the agent list, and vice versa. Agents move
-freely across projects, because the order is one list rather than one list per project.
+terminals; a terminal never jumps into the agent list, and vice versa. In the flat
+agent list, agents can move across projects because that view has one shared order.
 
 In the terminal UI the drag starts once you leave the row you pressed on, so an
 ordinary click still just selects, and a line marks the gap the row will drop into

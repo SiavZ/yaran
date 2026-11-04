@@ -2229,7 +2229,9 @@ impl Engine {
         let db_path = self.paths.sessions_db_path.clone();
         let action_for_panic = action.clone();
         let status_op_id_for_panic = status_op_id.clone();
-        self.spawn_background_worker(
+        let action_for_spawn_failure = action.clone();
+        let status_op_id_for_spawn_failure = status_op_id.clone();
+        let spawned = self.spawn_background_worker(
             BackgroundWorkerSpec {
                 label: "project-persistence".into(),
                 in_flight_key: None,
@@ -2310,6 +2312,18 @@ impl Engine {
                 });
             },
         );
+        if matches!(spawned, BackgroundSpawn::SpawnFailed) {
+            // No worker exists to release the caller's pending form/status.
+            let _ = self
+                .worker_tx
+                .send(WorkerEvent::ProjectPersistenceCompleted {
+                    action: action_for_spawn_failure,
+                    result: Err(
+                        "Could not start the project-persistence worker; please retry.".into(),
+                    ),
+                    status_op_id: status_op_id_for_spawn_failure,
+                });
+        }
     }
 
     /// Validate a raw path string before registering it as a project. Checks
@@ -8867,6 +8881,43 @@ mod tests {
         // Rolled back to the previous env.
         assert_eq!(engine.config.env.get("OLD").map(String::as_str), Some("v"));
         assert!(!engine.config.env.contains_key("NEW"));
+    }
+
+    #[test]
+    fn project_persistence_spawn_failure_reports_the_matching_completion() {
+        let (mut engine, _tmp) = test_engine();
+        engine.force_worker_spawn_failure = true;
+
+        engine
+            .apply(Command::PersistProject {
+                action: Box::new(ProjectPersistenceAction::UpdateEnv {
+                    project_id: "project-1".into(),
+                    project_name: "demo".into(),
+                    env: std::collections::BTreeMap::new(),
+                }),
+                status_op_id: Some("configure-save".into()),
+            })
+            .expect("dispatch");
+
+        let event = engine
+            .worker_rx
+            .try_recv()
+            .expect("a worker that never started must still report failure");
+        let EventReaction::ProjectPersistenceOutcome(outcome) = engine.process_worker_event(event)
+        else {
+            panic!("expected a project-persistence completion");
+        };
+        assert_eq!(outcome.status_op_id.as_deref(), Some("configure-save"));
+        assert!(matches!(
+            outcome.action,
+            ProjectPersistenceAction::UpdateEnv { ref project_id, .. } if project_id == "project-1"
+        ));
+        assert!(matches!(
+            outcome.view,
+            ProjectPersistenceView::PersistenceFailed { ref error }
+                if error.contains("Could not start")
+        ));
+        assert!(engine.worker_rx.try_recv().is_err(), "one completion only");
     }
 
     // -- Project add: SQLite rollback on config-write failure. --

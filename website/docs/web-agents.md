@@ -5,8 +5,8 @@ group: Web UI
 order: 64
 ---
 
-The whole agent lifecycle runs from the browser: spin one up (in a worktree and branch yaran
-manages, or standalone in a folder you already have), fork it, adopt an orphaned worktree,
+The whole agent lifecycle runs from the browser: spin one up in a project's shared checkout
+or isolated worktree, or standalone in a folder you already have, fork it, adopt an orphaned worktree,
 retarget its provider, and tear it down. This page is the click-by-click version;
 the concepts behind projects, agents, and providers are in
 [Creating agents](/docs/creating-agents).
@@ -42,8 +42,9 @@ button and one `⋯`. The button is a single click to a plain new agent, reading
 project** instead while you have none. The `⋯` groups everything else you can create from
 nothing, under **Agents** (from a pull request, from an existing worktree, or standalone in
 a folder you already have), **Terminals** (a standalone shell) and **Projects**. Use this
-door when you have not picked a project yet; it is the only place the reference-first flow
-lives. The Agents header above the list carries a **+** too.
+door when you have not picked a project yet. The cog menu's **New** submenu offers the same
+creation actions, including the reference-first PR flow. The Agents header above the list
+carries a **+** too.
 
 ### Starting from a pull request, with no project
 
@@ -78,10 +79,11 @@ The **New agent** dialog, reached from a project's `⋯` menu, skips the resolut
 project is already chosen, so **New agent from PR…** here takes a reference scoped to that
 project and a bare `123` is meaningful.
 
-![The New agent dialog with a branch name typed, ready to create the worktree and launch the agent.](/screens/new-agent-dialog.png)
+![The New agent dialog with an optional agent name entered, ready to launch with the project's workspace settings.](/screens/new-agent-dialog.png)
 
-- **New agent…** creates a fresh git worktree and branch and launches the agent. The branch
-  name is optional; leave it blank and yaran generates a memorable pet name.
+- **New agent…** launches in the project's configured shared checkout or creates an isolated
+  git worktree and branch. The agent name is optional; leave it blank and yaran generates a
+  memorable pet name. In worktree mode, that name also becomes the branch name.
 - **New agent from PR…** fetches a pull request's head branch into a new worktree. Give it
   a PR URL, `#123`, or just `123`. It appears only when GitHub integration and the `gh` CLI
   are available.

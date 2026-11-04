@@ -675,9 +675,13 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase()
     if (!needle) return []
-    return searchIndex
-      .filter((f) => f.toLowerCase().includes(needle))
-      .slice(0, MAX_SEARCH_RESULTS)
+    const matches: string[] = []
+    for (const path of searchIndex) {
+      if (!path.toLowerCase().includes(needle)) continue
+      matches.push(path)
+      if (matches.length === MAX_SEARCH_RESULTS) break
+    }
+    return matches
   }, [search, searchIndex])
 
   // Refetch the search index (a capped flat walk of the worktree). Called on
@@ -797,6 +801,8 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
   // rather than silently flipping an open diff tab back to file view.
   function requestOpen(path: string, opts?: { pin?: boolean }): void {
     editorOpenFile(root, path, opts)
+    // The phone explorer is a temporary picker. Leave room to read the file.
+    if (isMobile) explorerPanelRef.current?.collapse()
   }
 
   // Kept current here (an effect, not render) so the diff fetch's late callback
@@ -904,6 +910,7 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
         revalidateDirs([dir])
         if (kind === "file") {
           editorOpenFile(root, path, { mode: "file", pin: true })
+          if (isMobile) explorerPanelRef.current?.collapse()
         }
         return refreshSearchIndex()
       })
@@ -1467,8 +1474,9 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
                   <Input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
+                    aria-label="Search files"
                     placeholder="Search files…"
-                    className="h-8 pl-7 text-sm"
+                    className="h-8 pl-7 text-sm [@media(pointer:coarse)]:h-10"
                   />
                 </div>
                 <SimpleTooltip content="New file">
@@ -1476,6 +1484,7 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
                     size="icon-sm"
                     variant="ghost"
                     aria-label="New file"
+                    className="[@media(pointer:coarse)]:size-10"
                     onClick={() => setNewEntryTarget({ kind: "file", dir: "" })}
                   >
                     <FilePlus />
@@ -1493,6 +1502,7 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
                         size="icon-sm"
                         variant="ghost"
                         aria-label="Explorer actions"
+                        className="[@media(pointer:coarse)]:size-10"
                       />
                     }
                   >
@@ -1528,7 +1538,7 @@ export function EditorBody({ root, standalone = false }: EditorBodyProps) {
                             type="button"
                             onClick={() => requestOpen(p)}
                             className={cn(
-                              "flex w-full items-center gap-1.5 rounded px-1 py-1 hover:bg-muted",
+                              "flex w-full items-center gap-1.5 rounded px-1 py-1 hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring [@media(pointer:coarse)]:min-h-10",
                               p === openPath && "bg-muted",
                             )}
                           >

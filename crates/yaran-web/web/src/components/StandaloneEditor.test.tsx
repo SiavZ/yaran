@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import type { YaranState } from "@/lib/store"
 import {
@@ -194,6 +194,9 @@ describe("the standalone editor shell", () => {
       "@/components/StandaloneEditor"
     )
     render(<StandaloneEditorShell />)
+    // Commit the shell before waiting for the import it starts. Waiting inside
+    // the render's async act runs before React requests the lazy body.
+    await act(async () => { await vi.dynamicImportSettled() })
     // The body mounted: the (stubbed) code editor is on screen.
     await screen.findByTestId("code-editor")
     // The agent is named.

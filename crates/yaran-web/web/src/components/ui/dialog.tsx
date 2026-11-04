@@ -5,8 +5,27 @@ import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
 
-function Dialog({ ...props }: DialogPrimitive.Root.Props) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+function Dialog({ onOpenChange, ...props }: DialogPrimitive.Root.Props) {
+  return (
+    <DialogPrimitive.Root
+      data-slot="dialog"
+      {...props}
+      onOpenChange={(open, details) => {
+        // Escape cancels an IME candidate before it dismisses the form.
+        const event = details.event
+        if (
+          !open &&
+          details.reason === "escape-key" &&
+          event instanceof KeyboardEvent &&
+          (event.isComposing || event.keyCode === 229)
+        ) {
+          details.cancel()
+          return
+        }
+        onOpenChange?.(open, details)
+      }}
+    />
+  )
 }
 
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
@@ -71,6 +90,7 @@ function DialogContent({
         // min-w-0/truncate chains engage.
         className={cn(
           "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 grid-cols-[minmax(0,1fr)] gap-4 overflow-y-auto rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          showCloseButton && "[&_[data-slot=dialog-header]]:pr-10",
           className
         )}
         {...props}
@@ -82,7 +102,7 @@ function DialogContent({
             render={
               <Button
                 variant="ghost"
-                className="absolute top-2 right-2"
+                className="absolute top-2 right-2 max-md:size-10"
                 size="icon-sm"
               />
             }

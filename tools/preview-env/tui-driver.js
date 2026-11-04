@@ -86,6 +86,8 @@ function seedState() {
   let config = fs.readFileSync(configPath, "utf8")
   config = config
     .replace(/^provider = .*$/m, 'provider = "fake"')
+    // Captures create several agents per project in disposable worktrees.
+    .replace(/^default_mode = "shared"$/m, 'default_mode = "worktree"')
     .replace(/^disable_automated_welcome_screen = false$/m, "disable_automated_welcome_screen = true")
     .replace(/^disable_release_notes = false$/m, "disable_release_notes = true")
     .replace(/^github_integration = true$/m, "github_integration = false")
@@ -107,7 +109,8 @@ async function setFixture(name) {
   const text = fs.readFileSync(configPath, "utf8").replace(/\n\[env\][\s\S]*?(?=\n\[|$)/, "")
   fs.writeFileSync(configPath, `${text}\n[env]\nYARAN_FAKE_FIXTURE = "${name}"\n`)
   await palette("reload-config")
-  await waitFor("Configuration reloaded", 15000)
+  // Success waits its turn behind the workspace's queued info messages.
+  await waitFor("Configuration reloaded", 60000)
 }
 
 /// Seed a worktree no agent holds, with something uncommitted in it, so the
@@ -141,16 +144,22 @@ async function waitFor(needle, timeoutMs = 10000) {
   throw new Error(`timed out waiting for ${JSON.stringify(needle)}\n\n${captureText()}`)
 }
 
-/// Wait until any one of several strings is on screen, and say which.
-async function waitForAny(needles, timeoutMs = 10000) {
+/// Whether the header's path crumb ends in this agent's branch
+/// (`demo-api › main › retry-budget`). Agents are created on a branch named
+/// after them, so the crumb is how a journey knows which agent is selected.
+function headerNamesAgent(name) {
+  const header = captureText().split("\n")[0] || ""
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`(› |agent: )${escaped}(\\s|$)`).test(header)
+}
+
+async function waitForSelectedAgent(name, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const text = captureText()
-    const hit = needles.find((needle) => text.includes(needle))
-    if (hit) return hit
+    if (headerNamesAgent(name)) return
     await sleep(100)
   }
-  throw new Error(`timed out waiting for any of ${JSON.stringify(needles)}\n\n${captureText()}`)
+  throw new Error(`timed out waiting for the header to name ${JSON.stringify(name)}\n\n${captureText()}`)
 }
 
 function sendKeys(...keys) {
@@ -164,7 +173,7 @@ function sendText(text) {
 async function addProject(absolutePath, label) {
   await focusSidebar()
   sendKeys("a")
-  await waitFor("Add Project: /")
+  await waitFor("Add Project:")
   await browseTo(absolutePath)
   await waitFor(`Added project "${label}" to workspace`, 20000)
 }
@@ -181,21 +190,34 @@ async function palette(command) {
   // whatever was still highlighted underneath. Settle first, then confirm the
   // match is on the list, then run it.
   await sleep(800)
-  await waitFor(command)
+  if (!captureText().split("\n").some((line) => line.includes(command) && !line.includes("> "))) {
+    throw new Error(`palette command is unavailable: ${command}\n\n${captureText()}`)
+  }
   sendKeys("Enter")
   await sleep(800)
 }
 
-/// Put the focus on the agent pane without engaging it, which is where the
-/// pane's own chords (the macro bar) are answered and Enter still means "start
-/// typing". Only the center pane's footer offers Reconnect.
+// Click pane chrome, outside its rows/PTY, so focusing cannot select an agent
+// or forward a click. Footer text is not a focus signal: a long status hides it.
+async function focusPaneHeader(index) {
+  const lines = captureText().split("\n")
+  // The focused pane's title is a padded chip (`╭ Agents (2) `).
+  const top = lines.findIndex((line) => /^╭ ?Agents/.test(line))
+  const borders = top < 0 ? [] : [...lines[top].matchAll(/╭/g)].map((match) => match.index)
+  if (borders[index] === undefined) throw new Error(`pane header is not visible\n\n${captureText()}`)
+  // With multiple tabs the top border belongs to a pill. Find the titled pane
+  // border below it so focusing neither selects a tab nor types into its PTY.
+  const row = lines.findIndex((line, i) => i >= top && line[borders[index]] === "╭" && line[borders[index] + 1] !== "─")
+  if (row < 0) throw new Error(`titled pane header is not visible\n\n${captureText()}`)
+  const column = borders[index] + 3
+  sendText(`\x1b[<0;${column};${row + 1}M\x1b[<0;${column};${row + 1}m`)
+  await sleep(300)
+}
+
+/// Focus the center without engaging it. Reset typeability at the sidebar first.
 async function focusPane() {
-  for (let i = 0; i < 4; i++) {
-    if (captureText().includes("Reconnect")) return
-    sendKeys("Tab")
-    await sleep(500)
-  }
-  throw new Error(`the agent pane never took focus\n\n${captureText()}`)
+  await focusSidebar()
+  await focusPaneHeader(1)
 }
 
 /// Add one provider tab to the selected agent and wait for it to be there.
@@ -208,23 +230,13 @@ async function addTab(expectedCount) {
   await palette("new-agent-tab")
   await waitFor("New Tab Provider", 15000)
   sendKeys("Enter")
-  await waitFor(`${expectedCount} tabs`, 30000)
+  await waitFor(`│ ${expectedCount} │`, 30000)
   await focusSidebar()
 }
 
-/// Put the focus back on the sidebar. Some actions (adding a tab) leave the
-/// agent pane focused AND interactive, where every key is forwarded to the child
-/// and a journey's next chord would be typed at the agent instead of acted on.
-/// Tab cycles the panes, and only the sidebar's footer offers Add project (the
-/// changes pane's footer opens with the same Move that a looser test would have
-/// matched).
+/// Focus the sidebar without moving its selection, even when a status hides hints.
 async function focusSidebar() {
-  for (let i = 0; i < 4; i++) {
-    if (captureText().includes("Add project")) return
-    sendKeys("Tab")
-    await sleep(500)
-  }
-  throw new Error(`the sidebar never took focus\n\n${captureText()}`)
+  await focusPaneHeader(0)
 }
 
 /// Type an absolute path into whichever folder browser is open. The browser's
@@ -248,7 +260,7 @@ async function createStandaloneAgent(absolutePath, label) {
   await browseTo(absolutePath)
   await waitFor("Name standalone agent", 20000)
   sendKeys("Enter")
-  await waitFor(`agent "${label}" running`, 60000)
+  await waitFor(`folder: ${absolutePath.replace(/^\/root(?=\/|$)/, "~")}`, 60000)
   await sleep(600)
 }
 
@@ -258,20 +270,20 @@ async function createAgent(projectIndex, name) {
   await focusSidebar()
   sendKeys("n")
   await waitFor("New agent in project")
-  if (projectIndex > 0) sendKeys(...Array(projectIndex).fill("Down"))
+  const projectName = ["demo-api", "demo-web"][projectIndex]
+  if (!projectName) throw new Error(`unknown capture project index ${projectIndex}`)
+  // The picker sorts by recency, so an index into the seeded projects is not
+  // an index into its current rows. Search the intended fixture by name.
+  sendKeys("/")
+  sendText(projectName)
   sendKeys("Enter")
   await waitFor("Name New Agent", 20000)
   sendText(name)
   sendKeys("Enter")
-  // Wait for the creation to REPORT, not merely for the row to appear. The row
-  // shows up while the worktree is still being made, and yaran focuses the new
-  // agent's pane when it finishes: a journey that carried on at the row would
-  // have its next keystrokes stolen by that focus change.
-  //
-  // Either report ends the wait. An agent born on a fixture that exits at once
-  // (which is how a journey stages the Inactive tail) never shows the created
-  // line at all: the error pre-empts it and drops the infos queued behind it.
-  await waitForAny([`"${name}" in project`, 'Press "r" to relaunch'], 60000)
+  // The launch completion selects this agent and updates the header. Status
+  // wording may quote a generated branch, and failure fixtures replace success
+  // immediately, so neither status is a reliable signal for the next gesture.
+  await waitForSelectedAgent(name, 60000)
   await sleep(600)
   // yaran focuses the new agent's pane, and it is interactive there: leave every
   // journey on the sidebar so the next key is a yaran key, whatever it is.
@@ -287,7 +299,7 @@ async function selectAgent(name, maxRows = 24) {
   sendKeys(...Array(maxRows).fill("Up"))
   await sleep(600)
   for (let i = 0; i < maxRows; i++) {
-    if (captureText().includes(`agent: ${name}`)) return
+    if (headerNamesAgent(name)) return
     sendKeys("Down")
     await sleep(300)
   }

@@ -11,6 +11,7 @@ import type { ProjectWorktreeEntryView } from "@/lib/types"
 let mockState: YaranState
 const openNewAgentPicker = vi.fn()
 const deleteProjectWorktree = vi.fn()
+const attachWorktree = vi.fn()
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
   return {
@@ -18,6 +19,7 @@ vi.mock("@/lib/store", async (importOriginal) => {
     useYaran: () => mockState,
     openNewAgentPicker: (...args: unknown[]) => openNewAgentPicker(...args),
     deleteProjectWorktree: (...args: unknown[]) => deleteProjectWorktree(...args),
+    attachWorktree: (...args: unknown[]) => attachWorktree(...args),
   }
 })
 
@@ -107,6 +109,7 @@ beforeEach(() => {
   installBootStubs()
   openNewAgentPicker.mockClear()
   deleteProjectWorktree.mockClear()
+  attachWorktree.mockClear()
 })
 
 afterEach(() => {
@@ -115,6 +118,16 @@ afterEach(() => {
 })
 
 describe("WorktreesDialog", () => {
+  it.each([{ isComposing: true }, { keyCode: 229 }])("does not adopt a worktree while confirming IME text: %o", (composition) => {
+    seed([entry({ worktree_path: "/wt/free", branch_name: "free" })])
+    render(<WorktreesDialog />)
+    fireEvent.click(screen.getByRole("button", { name: /free.*\/wt\/free/ }))
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Display name" }), { key: "Enter", ...composition })
+    expect(attachWorktree).not.toHaveBeenCalled()
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Display name" }), { key: "Enter" })
+    expect(attachWorktree).toHaveBeenCalled()
+  })
+
   it("is titled Worktrees and still offers adoption as a row action", () => {
     // One surface does both jobs: the dialog is the manager, and adopting is an
     // action on a row rather than the purpose of a separate dialog.

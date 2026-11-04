@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -12,7 +12,7 @@ import {
 import { InlineCode } from "@/components/ui/inline-code"
 import { Textarea } from "@/components/ui/textarea"
 import { useVanishedTargetGuard } from "@/hooks/use-vanished-target"
-import { envToText, parseEnv } from "@/lib/env"
+import { envToText, parseEnv, validateEnv } from "@/lib/env"
 import { closeAgentEnv, updateProjectSettings, useYaran } from "@/lib/store"
 import type { ProjectView, SessionView } from "@/lib/types"
 import { sessionLabel, workspaceProjectId } from "@/lib/agentWorkspace"
@@ -23,19 +23,41 @@ import { sessionLabel, workspaceProjectId } from "@/lib/agentWorkspace"
 function AgentEnvForm({
   session,
   project,
+  saving,
+  setSaving,
+  savingRef,
 }: {
   session: SessionView
   project: ProjectView
+  saving: boolean
+  setSaving: (value: boolean) => void
+  savingRef: React.RefObject<boolean>
 }) {
+  const mounted = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const [text, setText] = useState(() => envToText(project.env))
+  const envError = validateEnv(text)
   const agentName = sessionLabel(session)
 
   async function handleSave() {
+    if (savingRef.current || envError) return
     const env = parseEnv(text)
     // No-op when unchanged (skips the request and just closes).
-    const patch =
-      JSON.stringify(env) === JSON.stringify(project.env) ? {} : { env }
-    if (await updateProjectSettings(project.id, patch)) closeAgentEnv()
+    const keys = Object.keys(env)
+    const unchanged = keys.length === Object.keys(project.env).length
+      && keys.every((key) => Object.hasOwn(project.env, key) && env[key] === project.env[key])
+    const patch = unchanged ? {} : { env }
+    savingRef.current = true
+    setSaving(true)
+    try {
+      if (await updateProjectSettings(project.id, patch) && mounted.current) closeAgentEnv()
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }
 
   return (
@@ -51,29 +73,40 @@ function AgentEnvForm({
         </DialogDescription>
       </DialogHeader>
       <Textarea
+        aria-label="Project environment variables"
+        aria-invalid={envError !== null}
+        aria-describedby={envError ? "agent-env-error" : undefined}
+        disabled={saving}
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="KEY=VALUE"
         className="min-h-48 font-mono"
         autoFocus
       />
+      {envError && <p id="agent-env-error" role="alert" className="text-sm text-destructive">{envError}</p>}
       <DialogFooter>
-        <Button variant="outline" onClick={closeAgentEnv}>
+        <Button variant="outline" disabled={saving} onClick={closeAgentEnv}>
           Cancel
         </Button>
-        <Button onClick={() => void handleSave()}>Save</Button>
+        <Button onClick={() => void handleSave()} disabled={saving || envError !== null} aria-busy={saving}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
       </DialogFooter>
     </DialogContent>
   )
 }
 
 export function AgentEnvDialog() {
+  const savingRef = useRef(false)
+  const [saving, setSaving] = useState(false)
   const { spine, agentEnvTarget } = useYaran()
-  const session = spine?.sessions.find((s) => s.id === agentEnvTarget)
-  const project = spine?.projects.find(
-    (p) =>
-      session !== undefined && p.id === workspaceProjectId(session.workspace),
-  )
+  const session = agentEnvTarget === null
+    ? undefined
+    : spine?.sessions.find((s) => s.id === agentEnvTarget)
+  const projectId = session ? workspaceProjectId(session.workspace) : null
+  const project = projectId === null
+    ? undefined
+    : spine?.projects.find((p) => p.id === projectId)
   // Closes the dialog when the agent or its project vanishes from the
   // ViewModel; see the hook.
   const open = useVanishedTargetGuard(
@@ -86,11 +119,11 @@ export function AgentEnvDialog() {
     <Dialog
       open={open}
       onOpenChange={(o) => {
-        if (!o) closeAgentEnv()
+        if (!o && !savingRef.current) closeAgentEnv()
       }}
     >
       {open && session && project && (
-        <AgentEnvForm session={session} project={project} />
+        <AgentEnvForm key={session.id} session={session} project={project} saving={saving} setSaving={setSaving} savingRef={savingRef} />
       )}
     </Dialog>
   )

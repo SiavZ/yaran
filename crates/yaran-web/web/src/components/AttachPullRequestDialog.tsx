@@ -23,7 +23,9 @@ import {
 // body names it, so replacing it is an informed act.
 export function AttachPullRequestDialog() {
   const { attachPullRequestTarget, attachPullRequestDraft, spine } = useYaran()
-  const session = spine?.sessions.find((s) => s.id === attachPullRequestTarget)
+  const session = attachPullRequestTarget === null
+    ? undefined
+    : spine?.sessions.find((s) => s.id === attachPullRequestTarget)
   // Closes the dialog when the agent vanishes from the ViewModel: attaching a
   // PR to a deleted agent is moot. See the hook.
   const open = useVanishedTargetGuard(
@@ -67,10 +69,15 @@ export function AttachPullRequestDialog() {
           </p>
         ) : null}
         <Input
+          aria-label="GitHub pull request"
           value={attachPullRequestDraft}
           onChange={(e) => setAttachPullRequestDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") {
+            if (
+              e.key === "Enter" &&
+              !e.nativeEvent.isComposing &&
+              e.keyCode !== 229
+            ) {
               e.preventDefault()
               handleSubmit()
             }

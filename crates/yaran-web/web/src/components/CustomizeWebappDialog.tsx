@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState } from "react"
+import { Fragment, useMemo, useRef, useState } from "react"
 import { Check } from "lucide-react"
 import {
   notifyError,
@@ -130,9 +130,7 @@ function FaviconControl({
   )
 }
 
-// Clamps to the nearer bound WHILE TYPING, so a number field never rejects a
-// keystroke mid-edit. An out-of-range configured value degrades to the documented
-// default instead (`clampTerminalFontSize`); the two answer different questions.
+// Clamp a completed edit, while leaving incomplete numeric prefixes typeable.
 function clampToControl(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n))
 }
@@ -178,13 +176,15 @@ function NumberControl({
         setText(raw)
         if (raw.trim() === "") return
         const parsed = Number(raw)
-        if (!Number.isFinite(parsed)) return
-        onChange(clampToControl(parsed, min, max))
+        if (Number.isFinite(parsed) && parsed >= min && parsed <= max) onChange(parsed)
       }}
       onBlur={() => {
-        // Leaving the field empty reverts the displayed text to the last committed
-        // value, rather than stranding a blank input over a stale override.
-        if (text.trim() === "") setText(String(value))
+        const parsed = Number(text)
+        const next = text.trim() !== "" && Number.isFinite(parsed)
+          ? clampToControl(parsed, min, max)
+          : value
+        setText(String(next))
+        onChange(next)
       }}
     />
   )
@@ -541,6 +541,19 @@ function CustomizeWebappForm({
   // `overrides` holds only the fields touched in this dialog session; every other
   // row renders live bootstrap, so another client's change is not reverted on Save.
   const [overrides, setOverrides] = useState<Record<string, SettingValue>>({})
+  const [search, setSearch] = useState("")
+  const query = search.toLocaleLowerCase().trim()
+  const groups = useMemo(() => {
+    if (!query) return SETTING_GROUPS
+    const terms = query.split(/\s+/)
+    return SETTING_GROUPS.map((group) => ({
+      ...group,
+      settings: group.settings.filter((d) => {
+        const text = `${group.caption} ${d.label} ${d.description} ${d.key}`.toLocaleLowerCase()
+        return terms.every((term) => text.includes(term))
+      }),
+    })).filter((group) => group.settings.length > 0)
+  }, [query])
 
   // The pre-touch baseline for a row. Any field the store tracks an optimistic
   // override for must read the override-aware selector rather than raw bootstrap:
@@ -617,7 +630,7 @@ function CustomizeWebappForm({
   }
 
   return (
-    <DialogContent className="max-h-[85vh] sm:max-w-2xl">
+    <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-2xl">
       <DialogHeader>
         <DialogTitle>Settings</DialogTitle>
         <DialogDescription>
@@ -627,24 +640,38 @@ function CustomizeWebappForm({
         </DialogDescription>
       </DialogHeader>
 
-      <ScrollArea className="max-h-[60vh] pr-3">
+      <Input
+        type="search"
+        aria-label="Search settings"
+        placeholder="Search settings…"
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        className="shrink-0"
+      />
+
+      <ScrollArea className="min-h-0 max-h-[60dvh] flex-1 pr-3">
         <div className="flex flex-col gap-6">
-          {SETTING_GROUPS.map((group) => (
+          {groups.length === 0 && (
+            <p role="status" className="py-6 text-center text-sm text-muted-foreground">
+              No settings match. Try a different search.
+            </p>
+          )}
+          {groups.map((group) => (
             <div key={group.surface} className="flex flex-col gap-1">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-3 max-md:flex-col max-md:items-start">
                 <p className="text-xs font-medium text-muted-foreground">
                   {group.caption}
                 </p>
-                <Button
+                {!query && <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   disabled={saving}
-                  className="max-md:min-h-10 shrink-0 text-xs"
+                  className="max-md:min-h-10 max-md:self-end shrink-0 text-xs"
                   onClick={() => resetSection(group.settings)}
                 >
                   Reset section to defaults…
-                </Button>
+                </Button>}
               </div>
               <div className="divide-y divide-border">
                 {group.settings.map((d) => (

@@ -22,12 +22,12 @@ pub const ELLIPSIS_STEP_MS: u64 = 400;
 /// The dimmest the pulse ever gets, as a fraction of full brightness. The word
 /// must stay readable at the bottom of the cycle, so this is a dip and not a
 /// blink.
-pub const PULSE_FLOOR: f32 = 0.4;
+pub const PULSE_FLOOR: f32 = 0.8;
 
 /// How far toward the surrounding muted tone the word travels at the bottom of
 /// the pulse, on a surface that has no opacity to dip.
 ///
-/// A pixel can simply become 40% as bright as it was, so [`PULSE_FLOOR`] is the
+/// A pixel can simply become 80% as bright as it was, so [`PULSE_FLOOR`] is the
 /// whole answer there. A terminal cell cannot: it has one foreground color and
 /// no alpha, so the same dip has to be expressed as a blend between the working
 /// color and the quiet tone it sits beside, and how far along that line the

@@ -2726,6 +2726,9 @@ impl App {
     }
 
     pub(crate) fn apply_configure_startup_command(&mut self) -> Result<()> {
+        if self.configure_save_op.is_some() {
+            return Ok(());
+        }
         let (project_id, project_name, command) = match &self.prompt {
             PromptState::ConfigureStartupCommand {
                 project_id,
@@ -2739,7 +2742,6 @@ impl App {
             ),
             _ => return Ok(()),
         };
-        self.prompt = PromptState::None;
         self.input_target = InputTarget::None;
         if !self
             .engine
@@ -2779,12 +2781,13 @@ impl App {
         self.pending_persist_ops.insert(op_id.clone(), op);
         let reaction = self.engine.apply(Command::PersistProject {
             action: Box::new(ProjectPersistenceAction::UpdateStartupCommand {
-                project_id,
+                project_id: project_id.clone(),
                 project_name: project_name.clone(),
                 startup_command,
             }),
-            status_op_id: Some(op_id),
+            status_op_id: Some(op_id.clone()),
         })?;
+        self.configure_save_op = Some((op_id, project_id));
         self.apply_reaction(reaction);
         self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
         Ok(())
@@ -2840,17 +2843,27 @@ impl App {
             }
             _ => return Ok(()),
         };
-        self.prompt = PromptState::None;
+        if self.engine.reloading {
+            self.set_warning("Configuration is reloading. Wait for it to finish, then save again.");
+            return Ok(());
+        }
         self.input_target = InputTarget::None;
         // PersistGlobalEnv now eager-saves and returns a FINAL status synchronously
         // (success or rollback error); surface that and do NOT set a trailing Busy,
         // which would never clear (the work already completed).
         let reaction = self.engine.apply(Command::PersistGlobalEnv { env })?;
+        if matches!(&reaction, yaran_core::engine::EventReaction::Status(status) if status.tone == StatusTone::Info)
+        {
+            self.prompt = PromptState::None;
+        }
         self.apply_reaction(reaction);
         Ok(())
     }
 
     pub(crate) fn apply_configure_project_env(&mut self) -> Result<()> {
+        if self.configure_save_op.is_some() {
+            return Ok(());
+        }
         let (project_id, project_name, env) = match &self.prompt {
             PromptState::ConfigureProjectEnv {
                 project_id,
@@ -2871,7 +2884,6 @@ impl App {
             }
             _ => return Ok(()),
         };
-        self.prompt = PromptState::None;
         self.input_target = InputTarget::None;
         if !self
             .engine
@@ -2905,12 +2917,13 @@ impl App {
         self.pending_persist_ops.insert(op_id.clone(), op);
         let reaction = self.engine.apply(Command::PersistProject {
             action: Box::new(ProjectPersistenceAction::UpdateEnv {
-                project_id,
+                project_id: project_id.clone(),
                 project_name: project_name.clone(),
                 env,
             }),
-            status_op_id: Some(op_id),
+            status_op_id: Some(op_id.clone()),
         })?;
+        self.configure_save_op = Some((op_id, project_id));
         self.apply_reaction(reaction);
         self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
         Ok(())
@@ -4799,6 +4812,7 @@ mod tests {
             pending_tailscale_mode_op: None,
             server_flip_preflight_pending: false,
             pending_persist_ops: std::collections::HashMap::new(),
+            configure_save_op: None,
             pending_worktree_ops: std::collections::HashMap::new(),
             pending_pr_lookup_ops: std::collections::HashMap::new(),
             pending_pr_reference: None,

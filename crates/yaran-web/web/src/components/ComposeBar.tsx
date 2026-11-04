@@ -137,6 +137,7 @@ export function ComposeBar({
   // key uses (see AccessoryBar's `keyDown`): the press must never shift focus
   // off the compose textarea, or the soft keyboard would dismiss on every Send.
   const onSendPointerDown = (event: React.PointerEvent) => {
+    if (event.button > 0) return
     event.preventDefault()
     trySend()
   }
@@ -218,12 +219,9 @@ export function ComposeBar({
           autoCorrect="on"
           autoCapitalize="sentences"
           spellCheck={true}
-          // text-sm matches the xterm canvas next door in size only; the face
-          // is the app's sans, because this is prose a person composes with
-          // autocorrect and an IME, not a view of terminal content. An input
-          // font under 16px normally trips iOS Safari's auto-zoom-on-focus,
-          // which index.html's viewport `maximum-scale=1` disables. leading-5
-          // pins the line-height to a parseable 20px for `autosize`'s read.
+          // The coarse-pointer rule in index.css keeps editable type at 16px
+          // to avoid Safari focus zoom while preserving user pinch zoom.
+          // leading-5 pins the line-height for autosize's measured read.
           className="w-full resize-none bg-transparent px-3 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground"
         />
       </div>

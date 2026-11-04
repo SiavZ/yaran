@@ -43,13 +43,19 @@ export function CommitDialog() {
           <DialogTitle>Commit changes</DialogTitle>
         </DialogHeader>
         <Textarea
+          aria-label="Commit message"
           placeholder="Commit message…"
           value={commitDraft}
           onChange={(e) => setCommitDraft(e.target.value)}
           className="min-h-24 resize-none"
           autoFocus
           onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            if (
+              (e.metaKey || e.ctrlKey) &&
+              e.key === "Enter" &&
+              !e.nativeEvent.isComposing &&
+              e.keyCode !== 229
+            ) {
               e.preventDefault()
               handleCommit()
             }

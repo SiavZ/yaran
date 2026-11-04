@@ -132,7 +132,7 @@ custom host.
 > **start-web-server** while the background server serves is refused with a note saying
 > so.
 
-While it serves, the top bar grows a crumb right after the version: `● serving :3890` on
+While it serves, the top bar grows a crumb right after the yaran name: `● serving :3890` on
 its own, becoming `● serving :3890 · 3 connected` once somebody is on it. The count is
 browser tabs, not people, so one laptop with two tabs open counts as two, and a tab that
 vanished without saying goodbye keeps counting until yaran notices the socket is dead.

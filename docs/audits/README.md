@@ -1,5 +1,15 @@
 # Audits
 
+The [2026-11-04 web UI/UX audit](2026-11-04-ui-ux.md) records the T3 Code
+comparison, fixed findings, scoring rubric, verification, and coverage limits.
+
+The separate [2026-11-04 TUI UI/UX audit](2026-11-04-tui-ui-ux.md) covers the
+terminal interface, its fixes, real terminal captures, checks and scoring limits.
+
+The [main TUI redesign and review](2026-11-04-tui-main-workspace.md) records the
+later visible workspace changes implemented with Opus 5.5 and independently
+reviewed before installation.
+
 Point-in-time audit reports of the fork (audit01, audit02, audit03 with its
 disposition in `audit03/99-disposition.md`).
 

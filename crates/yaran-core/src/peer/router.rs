@@ -406,8 +406,8 @@ fn choose_transport(
     sender: &SenderContext,
     target: &PeerTarget,
 ) -> Result<ChosenTransport> {
-    let claude_to_claude = is_claude_session(sender.session.as_ref())
-        && is_claude_session(target.session.as_ref());
+    let claude_to_claude =
+        is_claude_session(sender.session.as_ref()) && is_claude_session(target.session.as_ref());
     if claude_to_claude {
         if preference == TransportPreference::Amq {
             bail!(

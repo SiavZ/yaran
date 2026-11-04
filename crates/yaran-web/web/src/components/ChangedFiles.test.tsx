@@ -499,13 +499,45 @@ describe("the changes pane's multi-select", () => {
     expect(openEditor).toHaveBeenCalledTimes(1)
   })
 
+  it("opens the standalone diff on a phone where the overlay is unavailable", () => {
+    const oldWidth = window.innerWidth
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 })
+    const open = vi.spyOn(window, "open").mockReturnValue(null)
+    try {
+      render(<ChangedFiles />)
+      fireEvent.click(screen.getByRole("button", { name: "Open diff for a.ts" }))
+      expect(open).toHaveBeenCalledExactlyOnceWith(
+        standaloneEditorHash(agentRoot("s1"), { mode: "diff", path: "a.ts" }),
+        "_blank",
+        "noopener",
+      )
+      expect(openEditor).not.toHaveBeenCalled()
+      check("b.ts")
+      expect(open).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: oldWidth })
+      open.mockRestore()
+    }
+  })
+
+  it("exposes a separate keyboard button to open each file's diff", () => {
+    render(<ChangedFiles />)
+    const openDiff = screen.getByRole("button", { name: "Open diff for a.ts" })
+    expect(openDiff.tagName).toBe("BUTTON")
+    openDiff.focus()
+    expect(document.activeElement).toBe(openDiff)
+    fireEvent.click(openDiff, { detail: 0 })
+    expect(openEditor).toHaveBeenCalledExactlyOnceWith(agentRoot("s1"), "a.ts", "diff")
+    expect(screen.getByLabelText("Select a.ts").getAttribute("aria-checked")).toBe("false")
+  })
+
   // The leading slot belongs to the status marker again. The checkbox lives IN
   // that slot rather than in a column of its own, so nothing on the row moved
   // to make room for multi-select.
   it("keeps the status marker in the row's leading slot, before the path", () => {
     render(<ChangedFiles />)
     const path = screen.getByText("a.ts")
-    const row = path.closest('[role="row"]')!
+    const row = path.closest('[data-file-row]')!
     const marker = within(row as HTMLElement).getByRole("img", { name: "Modified" })
     expect(
       path.compareDocumentPosition(marker) & Node.DOCUMENT_POSITION_PRECEDING,
@@ -528,7 +560,7 @@ describe("the changes pane's multi-select", () => {
     const path = screen.getByText("a.ts")
     const box = screen.getByLabelText("Select a.ts")
     const marker = within(
-      path.closest('[role="row"]') as HTMLElement,
+      path.closest('[data-file-row]') as HTMLElement,
     ).getByRole("img", { name: "Modified" })
     expect(
       path.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_PRECEDING,
@@ -585,7 +617,7 @@ describe("the changes pane's multi-select", () => {
   // it instead.
   it("names the file's status in the slot's tooltip", () => {
     render(<ChangedFiles />)
-    const row = screen.getByText("a.ts").closest('[role="row"]') as HTMLElement
+    const row = screen.getByText("a.ts").closest('[data-file-row]') as HTMLElement
     const tip = within(row).getByTestId("tooltip-content")
     expect(tip.textContent).toBe("Modified")
     // Its trigger is the whole SLOT, the box holding both the marker and the
@@ -602,7 +634,7 @@ describe("the changes pane's multi-select", () => {
   it("puts the path and its counts in one baseline container, in that order", () => {
     render(<ChangedFiles />)
     const path = screen.getByText("a.ts")
-    const row = path.closest('[role="row"]') as HTMLElement
+    const row = path.closest('[data-file-row]') as HTMLElement
     const counts = within(row).getByText("+1")
     const box = path.closest(".items-baseline")
     expect(box).toBeTruthy()

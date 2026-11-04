@@ -62,7 +62,7 @@ function ConfigEditorForm({
         </ChunkBoundary>
       </div>
       {error ? (
-        <p className="max-h-24 overflow-y-auto font-mono text-sm break-words whitespace-pre-wrap text-destructive">
+        <p role="alert" className="max-h-24 overflow-y-auto font-mono text-sm break-words whitespace-pre-wrap text-destructive">
           {error}
         </p>
       ) : null}
@@ -123,7 +123,7 @@ export function ConfigEditorDialog() {
           // editor here: saving its blank content would overwrite the real
           // config.toml. Show the error and a Retry instead.
           <div className="flex flex-col gap-4 py-8">
-            <p className="text-center text-sm text-destructive">
+            <p role="alert" className="text-center text-sm text-destructive">
               {configEditorError}
             </p>
             <DialogFooter>

@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import type { CreateAgentTarget, YaranState } from "@/lib/store"
 
 let mockState: YaranState
+const submitNameDialog = vi.fn()
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
-  return { ...actual, useYaran: () => mockState }
+  return { ...actual, useYaran: () => mockState, submitNameDialog: (...args: unknown[]) => submitNameDialog(...args) }
 })
 
 function installBootStubs() {
@@ -56,6 +57,7 @@ function seed(target: CreateAgentTarget, overrides: Partial<YaranState> = {}) {
 }
 
 beforeEach(() => {
+  submitNameDialog.mockClear()
   installBootStubs()
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     callback(0)
@@ -69,6 +71,17 @@ afterEach(() => {
 })
 
 describe("CreateAgentDialog", () => {
+  it.each([{ isComposing: true }, { keyCode: 229 }])("does not create while confirming IME text: %o", async (composition) => {
+    seed({ kind: "new", projectId: "p1" }, { createAgentDraft: "feature" })
+    const { CreateAgentDialog } = await import("./CreateAgentDialog")
+    render(<CreateAgentDialog />)
+    const input = screen.getByRole("textbox", { name: "Agent name" })
+    fireEvent.keyDown(input, { key: "Enter", ...composition })
+    expect(submitNameDialog).not.toHaveBeenCalled()
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(submitNameDialog).toHaveBeenCalledWith("feature")
+  })
+
   it("renders new-agent controls for a project", async () => {
     seed({ kind: "new", projectId: "p1" })
     const { CreateAgentDialog } = await import("./CreateAgentDialog")
@@ -76,6 +89,10 @@ describe("CreateAgentDialog", () => {
 
     expect(screen.getByRole("heading").textContent).toBe("New agent in acme")
     expect(screen.getByText("acme", { selector: "code" })).toBeTruthy()
+    expect(screen.getByRole("textbox", { name: "Agent name" })).toBeTruthy()
+    expect(screen.getByPlaceholderText("Agent name (optional)")).toBeTruthy()
+    expect(screen.getByText(/configured shared checkout or isolated worktree/)).toBeTruthy()
+    expect(screen.getByText(/In worktree mode, this also becomes the branch name/)).toBeTruthy()
     expect(screen.getByRole("button", { name: "Create agent" })).toBeTruthy()
     expect(
       screen.getByText("Copy uncommitted changes from the project checkout"),

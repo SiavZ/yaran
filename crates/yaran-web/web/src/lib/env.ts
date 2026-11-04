@@ -10,18 +10,28 @@ export function envToText(env: Record<string, string>): string {
     .join("\n")
 }
 
-// Parse `KEY=VALUE` text back to an object. Blank lines and `#` comments are skipped; the
-// first `=` splits, so a value may itself contain `=`.
+// Editors must reject malformed lines before replacing the whole environment.
+export function validateEnv(text: string): string | null {
+  for (const [index, raw] of text.split("\n").entries()) {
+    const line = raw.trim()
+    if (line === "" || line.startsWith("#")) continue
+    const eq = line.indexOf("=")
+    if (eq <= 0) {
+      return `Line ${index + 1} must use KEY=VALUE.`
+    }
+  }
+  return null
+}
+
+// Blank lines and comments are skipped; values may themselves contain `=`.
 export function parseEnv(text: string): Record<string, string> {
-  const env: Record<string, string> = {}
+  const env: Record<string, string> = Object.create(null)
   for (const raw of text.split("\n")) {
     const line = raw.trim()
     if (line === "" || line.startsWith("#")) continue
     const eq = line.indexOf("=")
     if (eq <= 0) continue // skip lines with no key
-    const key = line.slice(0, eq).trim()
-    const value = line.slice(eq + 1) // keep value as-is (may contain '=')
-    if (key) env[key] = value
+    env[line.slice(0, eq).trim()] = line.slice(eq + 1)
   }
   return env
 }

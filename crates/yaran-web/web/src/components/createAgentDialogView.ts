@@ -60,8 +60,8 @@ function newDialogView(
     kind: "new",
     title: ["New agent in ", ...projectNamed(spine, target.projectId)],
     description:
-      "Creates a git worktree + branch and launches the agent. Tick “Use randomized pet name” to autofill a generated name.",
-    namePlaceholder: "Branch name (optional)",
+      "Launches the project's default provider in its configured shared checkout or isolated worktree. Use a randomized pet name or enter your own.",
+    namePlaceholder: "Agent name (optional)",
     nameAutoFocus: true,
     showPrFields: false,
     prPlaceholder: "",

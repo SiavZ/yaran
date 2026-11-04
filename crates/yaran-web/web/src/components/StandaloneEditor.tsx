@@ -1,7 +1,7 @@
 import { FileCode2, Loader2, SquareTerminal } from "lucide-react"
 
 import { AgentNotFound } from "@/components/AgentNotFound"
-import { EditorBody } from "@/components/EditorBody"
+import { LazyEditorBody } from "@/components/LazyEditorBody"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useVisualViewportHeight } from "@/hooks/use-visual-viewport"
 import { swallowMissedFileDrop } from "@/lib/editorDrop"
@@ -80,7 +80,7 @@ export function StandaloneEditorShell() {
               </span>
             )}
           </div>
-          <EditorBody
+          <LazyEditorBody
             key={rootKey(editorTarget.root)}
             root={editorTarget.root}
             standalone
