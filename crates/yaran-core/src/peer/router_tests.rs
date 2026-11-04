@@ -161,13 +161,132 @@ fn daemon_roles_are_recognised_from_command_lines() {
 #[test]
 fn host_classifier_finds_the_yaran_pane_by_ancestry() {
     let mut child = Command::new("sleep").arg("5").spawn().unwrap();
-    let classify = peer_host_classifier(Some(std::process::id()));
-    assert_eq!(classify(child.id()), PeerHost::Pane);
-    let unrelated = peer_host_classifier(None);
-    assert_eq!(unrelated(child.id()), PeerHost::Client);
-    assert_eq!(unrelated(u32::MAX - 7), PeerHost::Client);
+    let classify = ProcessTable::snapshot(Some(std::process::id()));
+    assert_eq!(classify.host_of(child.id()), PeerHost::Pane);
+    let unrelated = ProcessTable::snapshot(None);
+    assert_eq!(unrelated.host_of(child.id()), PeerHost::Client);
+    assert_eq!(unrelated.host_of(u32::MAX - 7), PeerHost::Client);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Claude Code's in-place relaunch rebuilt these lanes' argv without the
+/// channel flag (observed live: `claude --resume <id> --model default ...`).
+#[test]
+fn peers_channel_flag_is_recognised_from_command_lines() {
+    let cmd = |parts: &[&str]| parts.iter().map(OsString::from).collect::<Vec<_>>();
+    assert!(command_loads_peers_channel(&cmd(&[
+        "claude",
+        "--dangerously-skip-permissions",
+        "--dangerously-load-development-channels",
+        "server:claude-peers",
+        "--effort",
+        "high",
+    ])));
+    assert!(command_loads_peers_channel(&cmd(&[
+        "claude",
+        "--dangerously-load-development-channels",
+        "server:other",
+        "server:claude-peers",
+    ])));
+    assert!(command_loads_peers_channel(&cmd(&[
+        "claude",
+        "--dangerously-load-development-channels=server:claude-peers",
+    ])));
+    assert!(!command_loads_peers_channel(&cmd(&[
+        "/Users/x/.local/bin/claude",
+        "--resume",
+        "22ef48c4-2bee-43ff-9330-093af217a8d6",
+        "--allow-dangerously-skip-permissions",
+        "--model",
+        "default",
+        "--permission-mode",
+        "bypassPermissions",
+    ])));
+    // The channel name only counts as the flag's value.
+    assert!(!command_loads_peers_channel(&cmd(&[
+        "claude",
+        "--dangerously-load-development-channels",
+        "server:other",
+        "--append-system-prompt",
+        "server:claude-peers",
+    ])));
+}
+
+/// A `claude` process standing in for a pane: `sh` exec'd as `claude`, with
+/// or without the channel flag in its argv.
+fn fake_claude(extra: &[&str]) -> std::process::Child {
+    use std::os::unix::process::CommandExt;
+    Command::new("/bin/sh")
+        .arg0("claude")
+        .args(["-c", "sleep 5; :", "claude"])
+        .args(extra)
+        .spawn()
+        .unwrap()
+}
+
+/// The silent-lanes incident: the broker held one registration per lane,
+/// so every message was "delivered" into a Claude that had dropped the
+/// channel and discarded it. Such a target must read as unreachable.
+#[test]
+fn registration_hosted_by_a_claude_without_the_channel_is_unreachable() {
+    let dir = tempdir().unwrap();
+    let (wt, session) = worktree_session(&dir);
+    let mut deaf = fake_claude(&["--resume", "abc", "--model", "default"]);
+    let mut listening = fake_claude(&[
+        "--dangerously-load-development-channels",
+        "server:claude-peers",
+    ]);
+    let processes = ProcessTable::snapshot(None);
+
+    assert_eq!(processes.loads_peers_channel(deaf.id()), Some(false));
+    assert_eq!(processes.loads_peers_channel(listening.id()), Some(true));
+    assert_eq!(
+        reachable_claude_peer(
+            &session,
+            &[peer("deaf", &wt, deaf.id(), "2026-11-03T13:15:00Z")],
+            &processes
+        ),
+        Err(Unreachable::ChannelOff)
+    );
+    assert_eq!(
+        reachable_claude_peer(
+            &session,
+            &[peer("ok", &wt, listening.id(), "2026-11-03T13:15:00Z")],
+            &processes
+        ),
+        Ok("ok".to_string())
+    );
+    // No pid from the broker: nothing to inspect, so the registration is trusted.
+    let mut unknown = peer("unknown", &wt, 1, "2026-11-03T13:15:00Z");
+    unknown.pid = None;
+    assert_eq!(
+        reachable_claude_peer(&session, &[unknown], &processes),
+        Ok("unknown".to_string())
+    );
+    assert_eq!(
+        reachable_claude_peer(&session, &[], &processes),
+        Err(Unreachable::Unregistered)
+    );
+
+    // A deaf sender must not sign as itself: the reply would be dropped too.
+    let sender = SenderContext {
+        handle: "deaf-lane".to_string(),
+        session: Some(session.clone()),
+    };
+    let (from_id, message) = claude_peers_sender(
+        &sender,
+        &[peer("deaf", &wt, deaf.id(), "2026-11-03T13:15:00Z")],
+        "status?",
+        &processes,
+    );
+    assert_eq!(from_id, "deaf-lane");
+    assert!(message.contains("yaran peer send deaf-lane"));
+
+    for child in [&mut deaf, &mut listening] {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 #[test]
@@ -530,7 +649,8 @@ fn non_claude_sender_gets_yaran_reply_hint_for_claude_peers() {
         session: Some(session("s1", "codex", "sender", &dir.path().join("sender"))),
     };
 
-    let (from_id, message) = claude_peers_sender(&sender, &[], "status?", None);
+    let (from_id, message) =
+        claude_peers_sender(&sender, &[], "status?", &ProcessTable::snapshot(None));
 
     assert_eq!(from_id, "sender");
     assert!(message.contains("yaran peer send sender"));
@@ -549,7 +669,12 @@ fn registered_claude_sender_sends_as_itself_without_preamble() {
     let mut registration = peer("peer-7", &wt, 1, "2026-09-16T00:00:00Z");
     registration.pid = None;
 
-    let (from_id, message) = claude_peers_sender(&sender, &[registration], "status?", None);
+    let (from_id, message) = claude_peers_sender(
+        &sender,
+        &[registration],
+        "status?",
+        &ProcessTable::snapshot(None),
+    );
 
     assert_eq!(from_id, "peer-7");
     assert_eq!(message, "status?");
