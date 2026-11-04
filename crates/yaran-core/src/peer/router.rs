@@ -11,12 +11,16 @@
 //! - Otherwise `auto` sends to a Claude target over Claude Peers (the broker
 //!   is then required, not a best-effort preference) and to anything else
 //!   over AMQ. `--transport amq` is the manual override.
+//! - A Claude target whose Claude Code no longer loads the claude-peers
+//!   channel (its in-place relaunch drops the flag) would have the push
+//!   drained and discarded, so `auto` delivers over AMQ instead and says so;
+//!   an explicit `--transport claude-peers` is refused.
 //!
 //! Only live sessions whose directory still exists are listed or routable.
 
 use std::collections::HashSet;
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -128,16 +132,33 @@ fn run_peer_send(args: &[String], paths: &YaranPaths) -> Result<()> {
                  Restart Claude agents after installing claude-peers, or pass --transport amq \
                  explicitly for a manual override",
             )?;
-            let yaran_pid = yaran_tui_pid(paths);
-            let to_id =
-                claude_peer_id_for_session(target_session, &peers, yaran_pid).ok_or_else(|| {
-                    anyhow!(
-                        "Claude Peers is not registered for target {}",
-                        target_session.agent_handle()
-                    )
-                })?;
+            let processes = ProcessTable::snapshot(yaran_tui_pid(paths));
+            let to_id = match reachable_claude_peer(target_session, &peers, &processes) {
+                Ok(id) => id,
+                Err(Unreachable::Unregistered) => bail!(
+                    "Claude Peers is not registered for target {}",
+                    target_session.agent_handle()
+                ),
+                Err(Unreachable::ChannelOff) if parsed.transport == TransportPreference::Auto => {
+                    let root = require_amq_root(paths)?;
+                    amq_send(&root, &sender.handle, &target.handle, &parsed.message)?;
+                    println!(
+                        "sent via amq: {} -> {} ({} is not listening on the claude-peers channel \
+                         because Claude Code relaunched itself without it; restart the agent in \
+                         yaran to restore Claude Peers)",
+                        sender.handle, target.handle, target.handle
+                    );
+                    return Ok(());
+                }
+                Err(Unreachable::ChannelOff) => bail!(
+                    "{} is not listening on the claude-peers channel because Claude Code \
+                     relaunched itself without it, so a Claude Peers message would be dropped; \
+                     omit --transport to deliver over AMQ, or restart the agent in yaran",
+                    target.handle
+                ),
+            };
             let (from_id, message) =
-                claude_peers_sender(&sender, &peers, &parsed.message, yaran_pid);
+                claude_peers_sender(&sender, &peers, &parsed.message, &processes);
             claude_peers_send(&from_id, &to_id, &message)?;
             println!(
                 "sent via claude-peers: {} -> {}",
@@ -159,13 +180,29 @@ fn run_peer_list(args: &[String], paths: &YaranPaths) -> Result<()> {
     let report = sync_amq_agents(paths)?;
     let sessions = load_sessions_if_present(paths)?;
 
+    let peers = claude_peers_list().ok();
+    let processes = peers
+        .as_ref()
+        .map(|_| ProcessTable::snapshot(yaran_tui_pid(paths)));
     println!("Yaran peers:");
     if sessions.is_empty() {
         println!("  (no persisted sessions)");
     } else {
         for session in &sessions {
+            let note = match (&peers, &processes) {
+                (Some(peers), Some(processes)) if session.is_claude() => {
+                    match reachable_claude_peer(session, peers, processes) {
+                        Ok(_) => "",
+                        Err(Unreachable::Unregistered) => "  [not registered with Claude Peers]",
+                        Err(Unreachable::ChannelOff) => {
+                            "  [claude-peers channel off: messages go via AMQ until restarted]"
+                        }
+                    }
+                }
+                _ => "",
+            };
             println!(
-                "  {:<32} {:<8} {}",
+                "  {:<32} {:<8} {}{note}",
                 session.agent_handle(),
                 session.provider,
                 session.directory
@@ -185,9 +222,9 @@ fn run_peer_list(args: &[String], paths: &YaranPaths) -> Result<()> {
         );
     }
 
-    match claude_peers_list() {
-        Ok(peers) => println!("Claude Peers broker: {} peer(s) registered", peers.len()),
-        Err(_) => println!("Claude Peers broker: unavailable"),
+    match &peers {
+        Some(peers) => println!("Claude Peers broker: {} peer(s) registered", peers.len()),
+        None => println!("Claude Peers broker: unavailable"),
     }
 
     Ok(())
@@ -406,8 +443,8 @@ fn choose_transport(
     sender: &SenderContext,
     target: &PeerTarget,
 ) -> Result<ChosenTransport> {
-    let claude_to_claude = is_claude_session(sender.session.as_ref())
-        && is_claude_session(target.session.as_ref());
+    let claude_to_claude =
+        is_claude_session(sender.session.as_ref()) && is_claude_session(target.session.as_ref());
     if claude_to_claude {
         if preference == TransportPreference::Amq {
             bail!(
@@ -518,11 +555,12 @@ fn claude_peers_sender(
     sender: &SenderContext,
     peers: &[ClaudePeer],
     message: &str,
-    yaran_pid: Option<u32>,
+    processes: &ProcessTable,
 ) -> (String, String) {
+    // A sender whose channel is off would never see the reply pushed back.
     if let Some(session) = sender.session.as_ref()
         && session.is_claude()
-        && let Some(id) = claude_peer_id_for_session(session, peers, yaran_pid)
+        && let Ok(id) = reachable_claude_peer(session, peers, processes)
     {
         return (id, message.to_string());
     }
@@ -606,12 +644,31 @@ enum PeerHost {
     DaemonSession,
 }
 
-fn claude_peer_id_for_session(
+/// Why a Claude session cannot take a Claude Peers push right now.
+#[derive(Debug, PartialEq, Eq)]
+enum Unreachable {
+    Unregistered,
+    /// Registered, but its Claude Code did not load the channel: the MCP
+    /// server drains the broker queue and Claude Code discards each push.
+    ChannelOff,
+}
+
+/// The registration that owns `session`, provided it can receive a push.
+fn reachable_claude_peer(
     session: &PeerSession,
     peers: &[ClaudePeer],
-    yaran_pid: Option<u32>,
-) -> Option<String> {
-    select_claude_peer_id(session, peers, peer_host_classifier(yaran_pid))
+    processes: &ProcessTable,
+) -> std::result::Result<String, Unreachable> {
+    let id = select_claude_peer_id(session, peers, |pid| processes.host_of(pid))
+        .ok_or(Unreachable::Unregistered)?;
+    let pid = peers
+        .iter()
+        .find(|peer| peer.id == id)
+        .and_then(|peer| peer.pid);
+    if pid.and_then(|pid| processes.loads_peers_channel(pid)) == Some(false) {
+        return Err(Unreachable::ChannelOff);
+    }
+    Ok(id)
 }
 
 /// Choose which Claude Peers registration owns `session`.
@@ -654,24 +711,34 @@ fn select_claude_peer_id(
         .map(|peer| peer.id.clone())
 }
 
-/// Snapshot the process table once and classify a registration's owner by
-/// walking its ancestry: the registered pid is the peer's MCP server, whose
-/// parents reveal whether a daemon spare, a daemon session host, or the yaran
-/// TUI is behind it.
-fn peer_host_classifier(yaran_pid: Option<u32>) -> impl Fn(u32) -> PeerHost {
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
-    );
-    move |pid: u32| {
+/// One snapshot of the process table, taken once per command. A
+/// registration's pid is the peer's MCP server; its ancestry tells who hosts
+/// it and whether that host loaded the channel.
+struct ProcessTable {
+    system: System,
+    yaran_pid: Option<u32>,
+}
+
+impl ProcessTable {
+    fn snapshot(yaran_pid: Option<u32>) -> Self {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
+        Self { system, yaran_pid }
+    }
+
+    /// Whether a daemon spare, a daemon session host, or the yaran TUI is
+    /// behind the registration.
+    fn host_of(&self, pid: u32) -> PeerHost {
         let mut current = sysinfo::Pid::from_u32(pid);
         for _ in 0..MAX_ANCESTRY_DEPTH {
-            if yaran_pid == Some(current.as_u32()) {
+            if self.yaran_pid == Some(current.as_u32()) {
                 return PeerHost::Pane;
             }
-            let Some(proc) = system.process(current) else {
+            let Some(proc) = self.system.process(current) else {
                 return PeerHost::Client;
             };
             if let Some(kind) = daemon_host_kind(proc.cmd()) {
@@ -684,6 +751,59 @@ fn peer_host_classifier(yaran_pid: Option<u32>) -> impl Fn(u32) -> PeerHost {
         }
         PeerHost::Client
     }
+
+    /// Whether the nearest `claude` at or above the registration's MCP
+    /// server loaded the claude-peers channel. `None` when no `claude` is
+    /// found, which keeps the old behaviour of trusting the registration.
+    fn loads_peers_channel(&self, pid: u32) -> Option<bool> {
+        let mut current = sysinfo::Pid::from_u32(pid);
+        for _ in 0..MAX_ANCESTRY_DEPTH {
+            let proc = self.system.process(current)?;
+            let command = proc.cmd();
+            if command_loads_peers_channel(command) {
+                return Some(true);
+            }
+            if command.first().and_then(|arg0| Path::new(arg0).file_name())
+                == Some(OsStr::new("claude"))
+            {
+                return Some(false);
+            }
+            current = proc.parent()?;
+        }
+        None
+    }
+}
+
+/// Claude Code only pushes `server:` channel messages it was started with
+/// `--dangerously-load-development-channels server:claude-peers` for; its
+/// in-place relaunch (after an update, for example) rebuilds argv without it.
+fn command_loads_peers_channel(command: &[OsString]) -> bool {
+    const FLAG: &str = "--dangerously-load-development-channels";
+    let names = |value: &str| {
+        value
+            .split([',', ' '])
+            .any(|name| name == "server:claude-peers")
+    };
+    let mut in_flag = false;
+    for arg in command {
+        let arg = arg.to_string_lossy();
+        if let Some(value) = arg
+            .strip_prefix(FLAG)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            if names(value) {
+                return true;
+            }
+            in_flag = false;
+        } else if arg == FLAG {
+            in_flag = true;
+        } else if arg.starts_with('-') {
+            in_flag = false;
+        } else if in_flag && names(&arg) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Recognise the Claude Code daemon's process roles from a command line.
