@@ -55,7 +55,7 @@ pub const WELCOME_TIPS: &[WelcomeTip] = &[
     },
     WelcomeTip {
         web: Some(
-            "Hit `New agent`, search any project, pick a provider, and go. The more, the merrier.",
+            "Hit `New agent`, search for a project, and name your agent. It starts with that project's default provider. The more, the merrier.",
         ),
         tui: Some(|resolve| {
             format!(
@@ -82,7 +82,7 @@ pub const WELCOME_TIPS: &[WelcomeTip] = &[
         }),
     },
     WelcomeTip {
-        web: Some("Hover a changed file and hit `Stage`. Git add, minus the typing."),
+        web: Some("Open a changed file's `⋯` menu and choose `Stage`. Git add, minus the typing."),
         tui: Some(|resolve| {
             format!(
                 "`{}` stages or unstages the selected file. Git add, minus the typing.",
@@ -195,10 +195,10 @@ pub const WELCOME_TIPS: &[WelcomeTip] = &[
     },
     WelcomeTip {
         web: Some(
-            "Worktrees are the secret sauce: an agent in a project gets its own isolated branch. No conflicts, ever.",
+            "Want agents on separate branches? Set the project's `workspace_mode` to `worktree`. New agents get their own isolated checkout.",
         ),
         tui: Some(|_resolve| {
-            "Worktrees are the secret sauce: an agent in a project gets its own isolated branch. No conflicts, ever.".into()
+            "Want agents on separate branches? Set the project's `workspace_mode` to `worktree`. New agents get their own isolated checkout.".into()
         }),
     },
     // The standalone star: one indicator, learned once, on both surfaces.
@@ -232,7 +232,7 @@ pub const WELCOME_TIPS: &[WelcomeTip] = &[
     },
     WelcomeTip {
         web: Some(
-            "Macros let you save and replay prompts. The floating `Macros…` button drops one into the terminal without sending it, so you still get the last word.",
+            "Macros let you save and replay prompts. Use `Macros…` in the pane header, or the macro icon on a phone, to insert one without sending it. You still get the last word.",
         ),
         tui: Some(|resolve| {
             format!(
@@ -294,7 +294,7 @@ pub const WELCOME_TIPS: &[WelcomeTip] = &[
     },
     WelcomeTip {
         web: Some(
-            "Leave the branch name blank in `New agent…` and yaran names your next chaos gremlin for you.",
+            "Leave the name blank in `New agent…` and yaran names your next chaos gremlin for you.",
         ),
         tui: Some(|_resolve| {
             "New agent prompt looking too empty? Tick the pet-name checkbox and let yaran name your next chaos gremlin.".into()
@@ -380,7 +380,7 @@ pub const WELCOME_TIPS: &[WelcomeTip] = &[
     },
     WelcomeTip {
         web: Some(
-            "Need a plain shell before you've added a single project? The `+` on the `Terminals` divider opens one in your home directory, owned by nothing at all.",
+            "Need a plain shell before you've added a single project? Open the launcher's `⋯` menu and choose `New standalone terminal in your home folder`. No project required.",
         ),
         tui: Some(|_resolve| {
             "Need a plain shell before you've added a single project? `new-standalone-terminal` in the palette opens one in your home directory, owned by nothing at all.".into()
@@ -448,7 +448,7 @@ pub const WELCOME_TIPS: &[WelcomeTip] = &[
     },
     WelcomeTip {
         web: Some(
-            "Hover an agent's status icon to see how it's doing: green runs, amber waits, gray is gone.",
+            "Read the state word under each agent, such as `Working`, `Idle`, or `Needs you`. Hover the row for process and workspace details.",
         ),
         tui: None,
     },

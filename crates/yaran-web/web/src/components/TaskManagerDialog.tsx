@@ -10,7 +10,6 @@ import {
 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -542,22 +541,18 @@ function MobileRow({
         row.nested && "ml-4",
       )}
     >
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col gap-1.5">
         <div className="flex min-w-0 items-center gap-1.5">
           {isTotal ? null : (
             <ExpandToggle row={row} expanded={expanded} onToggle={onToggle} />
           )}
           <RowIcon kind={row.kind} />
-          <div className="min-w-0">
-            {/* Truncate here (a phone genuinely cannot fit a long branch name),
-                but the tooltip keeps the full name reachable. */}
-            <SimpleTooltip content={row.name}>
-              <div className="flex min-w-0 items-center gap-1.5 truncate text-sm">
-                <span className="truncate">{row.name}</span>
-                {row.kind === "yaran" ? <YaranBadge /> : null}
-              </div>
-            </SimpleTooltip>
-            <div className="truncate text-xs text-muted-foreground tabular-nums">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5 text-sm">
+              <span className="break-all">{row.name}</span>
+              {row.kind === "yaran" ? <YaranBadge /> : null}
+            </div>
+            <div className="text-xs text-muted-foreground tabular-nums">
               {cpu} · {mem} · {procs} procs
             </div>
           </div>
@@ -568,7 +563,7 @@ function MobileRow({
             variant="outline"
             onClick={onStop}
             aria-label={row.stopLabel}
-            className="max-md:min-h-10 shrink-0"
+            className="max-md:min-h-10 shrink-0 self-end"
           >
             <CircleStop aria-hidden />
             Force stop
@@ -580,9 +575,9 @@ function MobileRow({
           {children.map((child) => (
             <li
               key={child.pid}
-              className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+              className="flex flex-col gap-0.5 text-xs text-muted-foreground"
             >
-              <span className="truncate font-mono">
+              <span className="break-all font-mono">
                 {child.name}
                 {/* Same root marker as desktop: the breakdown includes the row's
                     own process so the numbers add up, and it must not read as a
@@ -632,7 +627,7 @@ function ConfirmStopAllDialog({ open }: { open: boolean }) {
           <DialogTitle>Force stop everything?</DialogTitle>
           <DialogDescription>
             {`This stops ${formatRegularCount(agents, "agent")} and ${formatRegularCount(terminals, "terminal")} immediately, with no shutdown wait. `}
-            Agents detach and stay in Projects, reopenable; terminals are
+            Agents detach and stay in the agent list, reopenable; terminals are
             destroyed and cannot be recovered.
           </DialogDescription>
         </DialogHeader>

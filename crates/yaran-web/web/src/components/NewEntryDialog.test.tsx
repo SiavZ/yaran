@@ -59,6 +59,15 @@ describe("NewEntryDialog", () => {
     expect(onSubmit).toHaveBeenCalledWith("new.ts")
   })
 
+  it.each([{ isComposing: true }, { keyCode: 229 }])("does not create while confirming IME text: %o", (composition) => {
+    const onSubmit = vi.fn(() => Promise.resolve())
+    render(<NewEntryDialog target={{ kind: "file", dir: "src" }} onClose={() => {}} onSubmit={onSubmit} />)
+    const input = screen.getByRole("textbox", { name: "File name" })
+    fireEvent.change(input, { target: { value: "日本語.ts" } })
+    fireEvent.keyDown(input, { key: "Enter", ...composition })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
   it("shows the target dir, using / for the root", () => {
     render(
       <NewEntryDialog

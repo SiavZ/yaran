@@ -71,6 +71,19 @@ afterEach(() => cleanup())
 beforeEach(() => vi.clearAllMocks())
 
 describe("AddProjectDialog picker", () => {
+  it.each([{ isComposing: true }, { keyCode: 229 }])("does not create a folder while confirming IME text: %o", (composition) => {
+    seed()
+    render(<AddProjectDialog />)
+    fireEvent.click(screen.getByRole("button", { name: "New folder" }))
+    const input = screen.getByRole("textbox", { name: "Folder name" })
+    fireEvent.change(input, { target: { value: "日本語" } })
+    fireEvent.keyDown(input, { key: "Enter", ...composition })
+    expect(screen.getByRole("textbox", { name: "Folder name" })).toBeTruthy()
+    fireEvent.keyDown(input, { key: "Escape", ...composition })
+    expect(screen.getByRole("textbox", { name: "Folder name" })).toBeTruthy()
+    expect(closeAddProject).not.toHaveBeenCalled()
+  })
+
   it("keeps the footer disabled until an explicit selection exists", () => {
     // The primary button must never act on wherever the user happens to be
     // standing (the rejected location-driven design).
@@ -80,6 +93,16 @@ describe("AddProjectDialog picker", () => {
     const primary = buttons.find((b) => b.textContent === "Add project")!
     expect(primary).toBeTruthy()
     expect(primary.hasAttribute("disabled")).toBe(true)
+  })
+
+  it("shows a failed folder inspection and blocks adding until it can be checked", () => {
+    seed({ projectPathInspection: { ...plainInspection("/home/u/notes"), error: "Could not inspect the path." } as unknown as YaranState["projectPathInspection"] })
+    render(<AddProjectDialog />)
+    fireEvent.click(screen.getByRole("button", { name: /Use this folder/ }))
+    expect(screen.getByRole("alert").textContent).toContain("Could not inspect the path.")
+    expect((screen.getByRole("button", { name: "Add project" }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    expect(addProject).not.toHaveBeenCalled()
   })
 
   it("pins a Use-this-folder row that selects the browse path and fires inspect", () => {

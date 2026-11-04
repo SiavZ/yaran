@@ -29,6 +29,11 @@ value.
 
 ## Managing the config
 
+In the browser, open the cog menu's **Preferences…** dialog and use **Search settings…**
+to find a setting by its label, description, group, or config key. Clear the search to
+see every group again. Settings outside that dialog are available through
+**Configuration → Edit config file…** in the cog menu.
+
 A handful of subcommands handle the file without you hunting for it:
 
 - `yaran config path` prints the absolute path to the active config file.

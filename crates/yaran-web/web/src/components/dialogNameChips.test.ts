@@ -103,7 +103,7 @@ const ALLOWED: { file: string; line: string; reason: string }[] = [
   },
   {
     file: "components/TaskManagerDialog.tsx",
-    line: '<span className="truncate font-mono">',
+    line: '<span className="break-all font-mono">',
     reason: "A child process's name in the phone layout's row, out of the chip rule's scope.",
   },
   {

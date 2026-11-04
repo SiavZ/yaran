@@ -26,7 +26,9 @@ import { workspaceBranchName } from "@/lib/agentWorkspace"
 // the new-agent dialog, so the input stays fully controlled.
 export function RenameSessionDialog() {
   const { renameTarget, renameDraft, spine } = useYaran()
-  const session = spine?.sessions.find((s) => s.id === renameTarget)
+  const session = renameTarget === null
+    ? undefined
+    : spine?.sessions.find((s) => s.id === renameTarget)
   // A standalone agent has no branch, so a rename is a title change and
   // nothing more: the "also rename the branch" affordance has nothing to
   // rename. An empty string is the existing "no branch here" signal this
@@ -68,6 +70,8 @@ export function RenameSessionDialog() {
           </DialogDescription>
         </DialogHeader>
         <Input
+          aria-label="Agent name"
+          aria-describedby="rename-agent-help"
           value={renameDraft}
           onChange={(e) => {
             const el = e.target
@@ -83,7 +87,11 @@ export function RenameSessionDialog() {
             }
           }}
           onKeyDown={(e) => {
-            if (e.key === "Enter") {
+            if (
+              e.key === "Enter" &&
+              !e.nativeEvent.isComposing &&
+              e.keyCode !== 229
+            ) {
               e.preventDefault()
               handleSubmit()
             }
@@ -92,7 +100,7 @@ export function RenameSessionDialog() {
           aria-invalid={invalidNonEmpty}
           autoFocus
         />
-        <p className="text-xs text-muted-foreground">
+        <p id="rename-agent-help" className="text-xs text-muted-foreground">
           Letters, digits, dashes, underscores and slashes. Leave empty to use
           the branch name.
         </p>

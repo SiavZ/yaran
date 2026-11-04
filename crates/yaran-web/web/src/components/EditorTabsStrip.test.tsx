@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
 import type { YaranState } from "@/lib/store"
 import type { EditorTab } from "@/lib/editorTabs"
@@ -70,6 +70,40 @@ afterEach(() => {
 })
 
 describe("EditorTabsStrip", () => {
+  it("provides a roving file-tab list with arrows and Home/End", async () => {
+    seed("s1", [tab({ id: "t1" }), tab({ id: "t2", path: "b.ts" })], "t1")
+    render(<EditorTabsStrip root={agentRoot("s1")} />)
+    const tabs = within(screen.getByRole("tablist", { name: "Files" })).getAllByRole("tab")
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1])
+    tabs[0].focus()
+    fireEvent.keyDown(tabs[0], { key: "ArrowRight" })
+    await waitFor(() => expect(document.activeElement).toBe(tabs[1]))
+    fireEvent.keyDown(tabs[1], { key: "ArrowRight" })
+    await waitFor(() => expect(document.activeElement).toBe(tabs[0]))
+    fireEvent.keyDown(tabs[0], { key: "End" })
+    await waitFor(() => expect(document.activeElement).toBe(tabs[1]))
+    fireEvent.keyDown(tabs[1], { key: "Home" })
+    await waitFor(() => expect(document.activeElement).toBe(tabs[0]))
+    expect(editorActivateTabMock).not.toHaveBeenCalled()
+    fireEvent.click(tabs[1], { detail: 0 })
+    expect(editorActivateTabMock).toHaveBeenCalledExactlyOnceWith(agentRoot("s1"), "t2")
+  })
+
+  it("does not activate a tab when its Close button is used from the keyboard", () => {
+    seed("s1", [tab({ id: "t1" }), tab({ id: "t2", path: "b.ts" })], "t1")
+    render(<EditorTabsStrip root={agentRoot("s1")} />)
+    const close = screen.getByLabelText("Close b.ts")
+    close.focus()
+    fireEvent.keyDown(close, { key: "ArrowRight" })
+    expect(document.activeElement).toBe(close)
+    fireEvent.keyDown(close, { key: "Enter" })
+    fireEvent.keyDown(close, { key: " " })
+    fireEvent.click(close, { detail: 0 })
+    expect(editorActivateTabMock).not.toHaveBeenCalled()
+    expect(editorCloseTabMock).toHaveBeenCalledExactlyOnceWith(agentRoot("s1"), "t2")
+    expect(close.closest('[role="tab"]')).toBeNull()
+  })
+
   it("renders one pill per tab with the basename label", () => {
     seed(
       "s1",
@@ -175,7 +209,7 @@ describe("EditorTabsStrip", () => {
     // (max-md:size-8 fits inside the 34px pill without adding height).
     seed("s1", [tab({ id: "t1" })], "t1")
     render(<EditorTabsStrip root={agentRoot("s1")} />)
-    const pill = screen.getByText("a.ts").closest('[role="tab"]') as HTMLElement
+    const pill = screen.getByText("a.ts").closest('[role="tab"]')!.parentElement!
     expect(pill.className).toContain("max-md:min-h-8.5")
     // py-0 on the phone: the 32px close-button hit area already fills the
     // 34px pill; keeping py-1 would push the rendered height to 42px.

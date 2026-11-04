@@ -39,18 +39,18 @@ pub struct WelcomeScreen {
 /// new install shows, and a headline mentioning only a terminal would teach the
 /// user that yaran is a terminal-only product with no later prompt to unlearn it.
 pub const TAGLINE: &str =
-    "One git worktree per coding agent, watched from your terminal or your browser.";
+    "Coding agents in your terminal or browser, with shared checkouts or git worktrees.";
 
 pub const STEPS: &[WelcomeStep] = &[
     WelcomeStep {
         number: 1,
         title: "Add a project",
-        detail: "Point yaran at any git repo. Your checkout is left alone.",
+        detail: "Point yaran at any git repo on this machine.",
     },
     WelcomeStep {
         number: 2,
         title: "Create an agent",
-        detail: "It gets its own worktree and a branch-style name, so two agents never collide.",
+        detail: "Agents share the project's checkout by default. Choose worktree mode for isolation.",
     },
     WelcomeStep {
         number: 3,
@@ -69,8 +69,8 @@ pub fn welcome_screen(config_path: &Path) -> WelcomeScreen {
         tagline: TAGLINE,
         paragraphs: vec![
             "Start by adding a project: any git repo on this machine. Then create agents \
-             on it. Each agent gets its own git worktree and a branch-style name, so they \
-             work in parallel without ever tripping over each other's files."
+             on it. Agents share the project's checkout by default. Set the project's \
+             workspace_mode to worktree for a separate checkout and branch per agent."
                 .to_string(),
             "Each agent runs whatever AI CLI you point it at. There is no protocol layer \
              and no adapter to write: if a tool runs in a terminal, it can be a provider."
@@ -130,7 +130,16 @@ mod tests {
     fn the_prose_covers_every_thing_a_new_user_must_learn() {
         let s = screen();
         let all = format!("{} {}", s.tagline, s.paragraphs.join(" ")).to_lowercase();
-        for needle in ["project", "agent", "worktree", "branch", "cli"] {
+        for needle in [
+            "project",
+            "agent",
+            "worktree",
+            "branch",
+            "cli",
+            "share",
+            "default",
+            "workspace_mode",
+        ] {
             assert!(
                 all.contains(needle),
                 "the intro never mentions {needle}: {all}"

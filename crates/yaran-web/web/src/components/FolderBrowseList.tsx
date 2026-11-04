@@ -48,7 +48,7 @@ export function FolderBrowseList({
   return (
     <ScrollArea className="h-[50vh] rounded-md border md:h-80">
       {loading ? (
-        <div className="flex h-[50vh] items-center justify-center md:h-80">
+        <div role="status" aria-label="Loading folders" className="flex h-[50vh] items-center justify-center md:h-80">
           <GlyphSpinner className="text-lg text-muted-foreground" />
         </div>
       ) : (
@@ -60,8 +60,9 @@ export function FolderBrowseList({
               commit action rather than another folder row. */}
           <button
             type="button"
+            aria-pressed={committed}
             onClick={() => onCommit(path)}
-            className={`flex min-h-11 items-center gap-2 border-l-2 border-primary/60 px-3 py-2 text-left text-sm hover:bg-accent md:min-h-0 ${
+            className={`flex min-h-11 items-center gap-2 border-l-2 border-primary/60 px-3 py-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:min-h-0 ${
               committed ? "bg-accent" : "bg-muted/40"
             }`}
           >
@@ -87,7 +88,7 @@ export function FolderBrowseList({
                   onClick={() => onOpen(entry)}
                   // min-h-11 on phones gives each row a ≥44px touch target;
                   // desktop keeps the compact py-2 density via md:.
-                  className="flex min-h-11 items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent md:min-h-0"
+                  className="flex min-h-11 items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:min-h-0"
                 >
                   <CornerLeftUp className="size-4 shrink-0 text-muted-foreground" />
                   <span className="shrink-0">Up to</span>
@@ -105,7 +106,7 @@ export function FolderBrowseList({
                 key={entry.path}
                 type="button"
                 onClick={() => onOpen(entry)}
-                className="flex min-h-11 items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent md:min-h-0"
+                className="flex min-h-11 items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:min-h-0"
               >
                 <Icon className="size-4 shrink-0 text-muted-foreground" />
                 <span className="flex-1 truncate">{entry.label}</span>

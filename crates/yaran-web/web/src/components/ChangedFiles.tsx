@@ -239,7 +239,7 @@ function FileRow({
 
   return (
     <div
-      role="row"
+      data-file-row
       className="group flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted max-md:min-h-11"
       onClick={() => onOpenDiff(file.path)}
     >
@@ -254,7 +254,11 @@ function FileRow({
 
       {/* Path and counts share one baseline container: their line boxes differ,
         * so under the row's items-center the digits read as superscript. */}
-      <div className="flex min-w-0 flex-1 items-baseline gap-2">
+      <button
+        type="button"
+        aria-label={`Open diff for ${file.path}`}
+        className="flex min-w-0 flex-1 items-baseline gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-ring pointer-coarse:min-h-11"
+      >
         {/* Long paths ellipsize at the start (direction:rtl) so the filename
           * stays visible, with text-left keeping short paths left-aligned. The
           * path is a <bdi> LTR isolate, or the rtl container reorders a dotfile
@@ -288,7 +292,7 @@ function FileRow({
             )}
           </span>
         )}
-      </div>
+      </button>
 
       {/* The wrapper consumes no width until the row is hovered, the menu is
         * open, or an action is in flight (aria-busy, so the spinner outlives the
@@ -758,10 +762,17 @@ function ChangesList({
   branchGit,
   onToggle,
 }: ChangesListProps) {
+  const isMobile = useIsMobile()
   const hasChanges = changed.staged.length > 0 || changed.unstaged.length > 0
   const hasMatches = filtered.staged.length > 0 || filtered.unstaged.length > 0
-  const openDiff = (path: string) =>
-    openEditor(agentRoot(sessionId), path, "diff")
+  const openDiff = (path: string) => {
+    const root = agentRoot(sessionId)
+    if (isMobile) {
+      window.open(standaloneEditorHash(root, { mode: "diff", path }), "_blank", "noopener")
+    } else {
+      openEditor(root, path, "diff")
+    }
+  }
 
   return (
     <ScrollArea className="min-h-0 flex-1">

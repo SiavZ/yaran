@@ -145,6 +145,13 @@ describe("AttachPullRequestDialog", () => {
     expect(submitAttachPullRequest).not.toHaveBeenCalled()
   })
 
+  it.each([{ isComposing: true }, { keyCode: 229 }])("does not attach while confirming IME text: %o", (composition) => {
+    seed("s1", "#123", [bare])
+    render(<AttachPullRequestDialog />)
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "GitHub pull request" }), { key: "Enter", ...composition })
+    expect(submitAttachPullRequest).not.toHaveBeenCalled()
+  })
+
   it("cancel closes without submitting", () => {
     seed("s1", "#123", [bare])
     render(<AttachPullRequestDialog />)

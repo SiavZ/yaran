@@ -1,6 +1,6 @@
 import { Loader2, RefreshCw } from "lucide-react"
-import { useEffect, useState } from "react"
-import { createPortal } from "react-dom"
+import { useEffect, useRef, useState } from "react"
+import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
 
 import { Button } from "@/components/ui/button"
 import type { ReconnectPlanEvent } from "@/lib/reconnectingSocket"
@@ -129,36 +129,42 @@ function copyFor(plan: ReconnectPlanEvent | null): OverlayFace {
 // and attempts at once, in every face.
 export function OfflineOverlay() {
   const { offline, reconnectPlan } = useYaran()
-  if (!offline) return null
+  const reconnectButton = useRef<HTMLButtonElement>(null)
   const face = copyFor(reconnectPlan)
 
-  return createPortal(
-    <div
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="offline-overlay-title"
-      aria-describedby="offline-overlay-desc"
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/40 p-6 backdrop-grayscale supports-backdrop-filter:backdrop-blur-sm"
+  return (
+    <DialogPrimitive.Root
+      open={offline}
+      disablePointerDismissal
+      // Connectivity owns this dialog. Escape cannot make the workspace usable.
+      onOpenChange={(_, details) => details.cancel()}
     >
-      <div className="w-full max-w-md rounded-xl border bg-card p-6 text-center text-card-foreground shadow-xl">
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Backdrop className="fixed inset-0 z-[100] bg-background/40 backdrop-grayscale supports-backdrop-filter:backdrop-blur-sm" />
+        <DialogPrimitive.Popup
+          role="alertdialog"
+          aria-modal="true"
+          initialFocus={reconnectButton}
+          className="fixed top-1/2 left-1/2 z-[100] max-h-[calc(100dvh-3rem)] w-[calc(100%-3rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border bg-card p-6 text-center text-card-foreground shadow-xl outline-none"
+        >
         <pre
           aria-hidden
-          className="mx-auto mb-6 inline-block text-left font-blocks text-[11px] leading-[1.15] text-muted-foreground"
+          className="mx-auto mb-6 inline-block text-left font-blocks text-[clamp(8px,2.8vw,11px)] leading-[1.15] text-muted-foreground"
         >
           {YARAN_ART}
         </pre>
-        <h1
+        <DialogPrimitive.Title
           id="offline-overlay-title"
           className="mb-1.5 flex items-center justify-center gap-2 text-lg font-semibold"
         >
           {face.spinner ? (
             <Loader2
-              className="size-4 animate-spin text-muted-foreground"
+              className="size-4 motion-safe:animate-spin text-muted-foreground"
               aria-hidden
             />
           ) : null}
           {face.title}
-        </h1>
+        </DialogPrimitive.Title>
         <div className="mb-6 space-y-1 text-sm leading-relaxed text-muted-foreground">
           {face.counter !== null && face.counter.at !== null ? (
             <CountdownLine
@@ -171,21 +177,26 @@ export function OfflineOverlay() {
               and lives here; one that ticks is drawn above and repeated here
               without its seconds, so the attempt is announced once per attempt
               rather than once per second. */}
-          <div id="offline-overlay-desc" aria-live="polite" className="space-y-1">
+          <DialogPrimitive.Description
+            render={<div />}
+            id="offline-overlay-desc"
+            aria-live="polite"
+            className="space-y-1"
+          >
             {face.counter === null ? null : face.counter.at === null ? (
               <p>{face.counter.text}</p>
             ) : (
               <p className="sr-only">{face.counter.text}</p>
             )}
             <p>{face.stable}</p>
-          </div>
+          </DialogPrimitive.Description>
         </div>
-        <Button onClick={reconnect}>
+        <Button ref={reconnectButton} onClick={reconnect} className="max-md:min-h-11">
           <RefreshCw aria-hidden />
           {face.button}
         </Button>
-      </div>
-    </div>,
-    document.body,
+        </DialogPrimitive.Popup>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   )
 }

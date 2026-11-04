@@ -75,12 +75,10 @@ describe("Yaran Blocks font wiring", () => {
   it("both React art sites render through font-blocks, not bare font-mono", () => {
     for (const file of ["./Welcome.tsx", "./OfflineOverlay.tsx"]) {
       const src = read(file)
-      expect(src, `${file} art <pre> must use font-blocks`).toContain(
-        "font-blocks text-[11px] leading-[1.15]",
-      )
-      expect(src, `${file} art <pre> must not fall back to the system mono stack first`).not.toContain(
-        "font-mono text-[11px]",
-      )
+      const classes = src.match(/<pre\b[\s\S]*?className="([^"]+)"/)?.[1].split(/\s+/)
+      expect(classes, `${file} art <pre> must use font-blocks`).toContain("font-blocks")
+      expect(classes).toContain("leading-[1.15]")
+      expect(classes, `${file} art <pre> must not use the system mono stack first`).not.toContain("font-mono")
     }
   })
 

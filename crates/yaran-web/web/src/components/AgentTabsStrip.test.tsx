@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
 import type { YaranState } from "@/lib/store"
 import type { SessionView } from "@/lib/types"
@@ -9,6 +9,7 @@ import { ONLY_TAB_CLOSE_REFUSAL } from "@/lib/agentTabs"
 let mockState: YaranState
 const addTabMock = vi.fn()
 const openCloseTabMock = vi.fn()
+const selectTabMock = vi.fn()
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
   return {
@@ -16,6 +17,7 @@ vi.mock("@/lib/store", async (importOriginal) => {
     useYaran: () => mockState,
     addTab: (...args: unknown[]) => addTabMock(...args),
     openCloseTab: (...args: unknown[]) => openCloseTabMock(...args),
+    selectTab: (...args: unknown[]) => selectTabMock(...args),
   }
 })
 
@@ -60,6 +62,7 @@ beforeEach(() => {
   installBootStubs()
   addTabMock.mockClear()
   openCloseTabMock.mockClear()
+  selectTabMock.mockClear()
   mockState = {
     bootstrap: { available_providers: ["claude", "codex", "opencode"] },
     spine: {
@@ -75,6 +78,37 @@ afterEach(() => {
 })
 
 describe("AgentTabsStrip", () => {
+  it("provides roving tab focus without launching a different pane until activation", async () => {
+    render(<AgentTabsStrip session={session()} activeTabId="s1" maxTabs={20} />)
+    const list = screen.getByRole("tablist", { name: "Agent tabs" })
+    const tabs = within(list).getAllByRole("tab")
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1])
+    tabs[0].focus()
+    fireEvent.keyDown(tabs[0], { key: "ArrowLeft" })
+    await waitFor(() => expect(document.activeElement).toBe(tabs[1]))
+    fireEvent.keyDown(tabs[1], { key: "ArrowRight" })
+    await waitFor(() => expect(document.activeElement).toBe(tabs[0]))
+    fireEvent.keyDown(tabs[0], { key: "End" })
+    await waitFor(() => expect(document.activeElement).toBe(tabs[1]))
+    fireEvent.keyDown(tabs[1], { key: "Home" })
+    await waitFor(() => expect(document.activeElement).toBe(tabs[0]))
+    expect(selectTabMock).not.toHaveBeenCalled()
+    fireEvent.click(tabs[1], { detail: 0 })
+    expect(selectTabMock).toHaveBeenCalledExactlyOnceWith("s1", "b2")
+  })
+
+  it("keeps tab actions independent from tab selection and arrow navigation", () => {
+    render(<AgentTabsStrip session={session()} activeTabId="s1" maxTabs={20} />)
+    const action = screen.getAllByLabelText("Tab actions")[1]
+    action.focus()
+    fireEvent.keyDown(action, { key: "ArrowRight" })
+    expect(document.activeElement).toBe(action)
+    fireEvent.keyDown(action, { key: "Enter" })
+    fireEvent.keyDown(action, { key: " " })
+    expect(selectTabMock).not.toHaveBeenCalled()
+    expect(action.closest('[role="tab"]')).toBeNull()
+  })
+
   it("exposes exactly one close affordance per pill (the ⋯ menu, no standalone ✕)", () => {
     render(<AgentTabsStrip session={session()} activeTabId="s1" maxTabs={20} />)
     // There is no standalone ✕ button (aria-label "Close tab"); closing lives
@@ -183,15 +217,15 @@ describe("AgentTabsStrip phone height", () => {
   it("pins the pill to 36px tall with no padding of its own", () => {
     render(<AgentTabsStrip session={session()} activeTabId="s1" maxTabs={20} />)
     for (const pill of screen.getAllByRole("tab")) {
-      expect(pill.className).toContain("max-md:min-h-9")
-      expect(pill.className).toContain("max-md:py-0")
-      expect(pill.className).not.toContain("max-md:min-h-11")
+      expect(pill.parentElement!.className).toContain("max-md:min-h-9")
+      expect(pill.parentElement!.className).toContain("max-md:py-0")
+      expect(pill.parentElement!.className).not.toContain("max-md:min-h-11")
     }
   })
 
   it("halves the strip's own padding so the strip gets shorter, not just the pill", () => {
     render(<AgentTabsStrip session={session()} activeTabId="s1" maxTabs={20} />)
-    const strip = screen.getAllByRole("tab")[0].parentElement
+    const strip = screen.getByRole("tablist").parentElement
     expect(strip?.className).toContain("max-md:py-0.5")
   })
 

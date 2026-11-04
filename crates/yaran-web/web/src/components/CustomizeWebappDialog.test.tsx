@@ -559,6 +559,7 @@ describe("CustomizeWebappDialog", () => {
     // ui.attention_grace_seconds caps at 300.
     const input = screen.getByLabelText("Attention grace") as HTMLInputElement
     fireEvent.change(input, { target: { value: "99999" } })
+    fireEvent.blur(input)
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
     await waitFor(() => expect(closeCustomizeWebapp).toHaveBeenCalled())
@@ -893,5 +894,65 @@ describe("CustomizeWebappDialog", () => {
     expect(patch.defaults).toEqual({
       enable_randomized_pet_name_by_default: true,
     })
+  })
+})
+
+
+describe("settings search", () => {
+  it("finds settings by config key and keeps edits when the search changes", () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+    const instance = screen.getByRole("textbox", { name: "Instance name" })
+    fireEvent.change(instance, { target: { value: "My workspace" } })
+    const search = screen.getByRole("searchbox", { name: "Search settings" })
+    fireEvent.change(search, { target: { value: "ui.terminal_font_size" } })
+    expect(screen.getByLabelText("Terminal font size")).toBeTruthy()
+    expect(screen.queryByRole("textbox", { name: "Instance name" })).toBeNull()
+    expect(screen.queryByRole("button", { name: /Reset section/ })).toBeNull()
+    fireEvent.change(search, { target: { value: "" } })
+    expect((screen.getByRole("textbox", { name: "Instance name" }) as HTMLInputElement).value).toBe("My workspace")
+  })
+
+  it("explains empty results and recovers on clearing the search", () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+    const search = screen.getByRole("searchbox", { name: "Search settings" })
+    fireEvent.change(search, { target: { value: "no-such-setting-xyz" } })
+    expect(screen.getByRole("status").textContent).toContain("No settings match")
+    fireEvent.change(search, { target: { value: "" } })
+    expect(screen.getByRole("textbox", { name: "Instance name" })).toBeTruthy()
+  })
+
+  it("keeps filtered controls live across configuration updates", () => {
+    seed({ terminal_font_size: 14 })
+    const { rerender } = render(<CustomizeWebappDialog />)
+    const search = screen.getByRole("searchbox", { name: "Search settings" })
+    fireEvent.change(search, { target: { value: "  TERMINAL   FONT  " } })
+    expect((screen.getByLabelText("Terminal font size") as HTMLInputElement).value).toBe("14")
+
+    seed({ terminal_font_size: 18 })
+    rerender(<CustomizeWebappDialog />)
+    expect((screen.getByLabelText("Terminal font size") as HTMLInputElement).value).toBe("18")
+    expect(screen.queryByRole("textbox", { name: "Instance name" })).toBeNull()
+
+    fireEvent.change(search, { target: { value: "   " } })
+    expect(screen.getByRole("textbox", { name: "Instance name" })).toBeTruthy()
+    expect(screen.getAllByRole("button", { name: /Reset section/ }).length).toBeGreaterThan(0)
+  })
+})
+
+
+describe("numeric settings entry", () => {
+  it("lets the user type 16 as two keystrokes instead of clamping its first digit", async () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+    const input = screen.getByRole("spinbutton", { name: "Terminal font size" }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: "1" } })
+    expect(input.value).toBe("1")
+    fireEvent.change(input, { target: { value: "16" } })
+    expect(input.value).toBe("16")
+    fireEvent.blur(input)
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(saveSettings).toHaveBeenCalledWith({ ui: { terminal_font_size: 16 } }))
   })
 })

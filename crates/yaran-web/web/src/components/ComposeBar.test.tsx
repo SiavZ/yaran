@@ -37,6 +37,14 @@ function sendButton(): HTMLElement {
 }
 
 describe("ComposeBar", () => {
+  it.each([1, 2])("does not send a draft on mouse button %s", (button) => {
+    render(<Harness initial="keep this draft" />)
+    const event = new MouseEvent("pointerdown", { bubbles: true, button })
+    fireEvent(sendButton(), event)
+    expect(onSend).not.toHaveBeenCalled()
+    expect(textarea().value).toBe("keep this draft")
+  })
+
   it("Enter inserts a newline in the buffer and never calls onSend", () => {
     render(<Harness />)
     const ta = textarea()

@@ -394,6 +394,7 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         pending_tailscale_mode_op: None,
         server_flip_preflight_pending: false,
         pending_persist_ops: std::collections::HashMap::new(),
+        configure_save_op: None,
         pending_worktree_ops: std::collections::HashMap::new(),
         pending_pr_lookup_ops: std::collections::HashMap::new(),
         pending_pr_reference: None,

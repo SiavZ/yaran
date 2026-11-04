@@ -8,7 +8,14 @@ module.exports = async ({ createAgent, palette, sleep }) => {
 }
 
 // The screen's own frame title and the button the caption names.
-module.exports.expectText = ["Welcome to yaran", "Add a project"]
+module.exports.expectText = [
+  "Welcome to Yaran",
+  "Add a project",
+  "Coding agents in your terminal or browser, with shared",
+  "checkouts or git worktrees.",
+  "Agents share the project's checkout by",
+  "default. Set the project's workspace_mode to worktree",
+]
 
 module.exports.file = "tui-welcome-screen.png"
 module.exports.cols = 140

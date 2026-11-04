@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+  act,
   cleanup,
   configure,
   fireEvent,
@@ -2320,7 +2321,9 @@ describe("when the file changes on disk underneath the editor", () => {
       size: TYPED.length,
     })
     put(PATH, TYPED, "2026-03-03T00:00:00+00:00")
-    fireEvent.click(screen.getByRole("button", { name: /save/i }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /save/i }))
+    })
     // Wait for the save to have LANDED in the buffer, not merely to have been
     // sent: the re-baseline is what the stale check then disagrees with.
     await waitFor(() =>
@@ -2330,8 +2333,8 @@ describe("when the file changes on disk underneath the editor", () => {
     // Now the stale check answers, describing the file as it was BEFORE the
     // save. It disagrees with the new baseline, so a banner goes up about a
     // change that is the user's own save.
-    releaseInfo!()
-    await screen.findByRole("status")
+    await act(async () => { releaseInfo!() })
+    expect(screen.getByRole("status").textContent).toContain("changed on disk")
 
     // The next check compares the buffer against a disk that matches it
     // exactly. That is the moment the banner has to come down.
@@ -2593,6 +2596,26 @@ describe("the file tree follows what the agent writes", () => {
     expect(listMock.mock.calls.length).toBe(2)
   })
 
+  it("stops searching after 300 matches and still finds later files for a narrower query", async () => {
+    const matches = Array.from({ length: 300 }, (_, i) => `src/match-${i}.ts`)
+    const files = ["README.md", ...matches, "src/tail.ts"]
+    const readTail = vi.fn(() => "src/tail.ts")
+    Object.defineProperty(files, 301, { get: readTail })
+    listMock.mockResolvedValue({ files, truncated: false })
+    await mountTree()
+
+    const search = screen.getByRole("textbox", { name: "Search files" })
+    fireEvent.change(search, { target: { value: " MATCH- " } })
+    const results = screen.getAllByRole("button", { name: /^src\/match-\d+\.ts$/ })
+    expect(results.map((button) => button.textContent)).toEqual(matches)
+    expect(readTail).not.toHaveBeenCalled()
+
+    fireEvent.change(search, { target: { value: "TAIL" } })
+    expect(screen.getByRole("button", { name: "src/tail.ts" })).toBeTruthy()
+    expect(screen.queryByRole("button", { name: /^src\/match-/ })).toBeNull()
+    expect(readTail).toHaveBeenCalled()
+  })
+
   it("refetches the loaded directories when another editor tab is activated", async () => {
     const open = [
       { id: "tab-a", path: "alpha.md" },
@@ -2656,5 +2679,59 @@ describe("the file tree follows what the agent writes", () => {
     rootEntries = [entry("notes.md", false), entry("later.ts", false)]
     fireEvent(window, new Event("focus"))
     expect(await screen.findByText("later.ts")).toBeTruthy()
+  })
+})
+
+
+describe("phone file selection", () => {
+  beforeEach(() => { vi.clearAllMocks(); installBootStubs() })
+  afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+  it("collapses the explorer only after a new file is successfully created", async () => {
+    const { unmount } = await mountWithTab(PATH)
+    unmount()
+    const oldWidth = window.innerWidth
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 })
+    const create = pending<void>()
+    createFileMock.mockImplementationOnce(() => create.promise)
+    try {
+      const { EditorBody } = await import("@/components/EditorBody")
+      render(<EditorBody root={agentRoot(SESSION)} standalone />)
+      const ref = recordedPanelProps.filter((p) => p.id === "editor-explorer").at(-1)?.panelRef as { current: { collapse: () => void } }
+      fireEvent.click(screen.getByRole("button", { name: "Show the file explorer" }))
+      fireEvent.click(screen.getByRole("button", { name: "New file", hidden: true }))
+      fireEvent.change(await screen.findByPlaceholderText("example.ts"), {
+        target: { value: "phone.ts" },
+      })
+      const collapse = vi.spyOn(ref.current, "collapse")
+      fireEvent.click(screen.getByRole("button", { name: /^create$/i }))
+      expect(createFileMock).toHaveBeenCalledWith(agentRoot(SESSION), "phone.ts")
+      expect(collapse).not.toHaveBeenCalled()
+      await act(async () => create.resolve())
+      expect(collapse).toHaveBeenCalledOnce()
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: oldWidth })
+    }
+  })
+
+  it("collapses the explorer after a search selection so code has the screen", async () => {
+    listMock.mockResolvedValue({ files: [PATH], truncated: false })
+    const { unmount } = await mountWithTab(PATH)
+    unmount()
+    const oldWidth = window.innerWidth
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 })
+    try {
+      const { EditorBody } = await import("@/components/EditorBody")
+      render(<EditorBody root={agentRoot(SESSION)} standalone />)
+      const ref = recordedPanelProps.filter((p) => p.id === "editor-explorer").at(-1)?.panelRef as { current: { collapse: () => void } }
+      fireEvent.click(screen.getByRole("button", { name: "Show the file explorer" }))
+      fireEvent.change(screen.getByRole("textbox", { name: "Search files", hidden: true }), { target: { value: "big" } })
+      const result = await screen.findByRole("button", { name: PATH, hidden: true })
+      const collapse = vi.spyOn(ref.current, "collapse")
+      fireEvent.click(result)
+      expect(collapse).toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: oldWidth })
+    }
   })
 })

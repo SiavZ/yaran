@@ -15,11 +15,13 @@ import {
 export function SimpleTooltip({
   content,
   children,
+  anchor,
   side = "top",
   delay = 300,
 }: {
   content: React.ReactNode
   children: React.ReactElement
+  anchor?: React.ComponentProps<typeof TooltipContent>["anchor"]
   side?: React.ComponentProps<typeof TooltipContent>["side"]
   delay?: number
 }) {
@@ -30,7 +32,7 @@ export function SimpleTooltip({
     <TooltipProvider delay={delay}>
       <Tooltip>
         <TooltipTrigger render={children} />
-        <TooltipContent side={side}>{content}</TooltipContent>
+        <TooltipContent anchor={anchor} side={side}>{content}</TooltipContent>
       </Tooltip>
     </TooltipProvider>
   )

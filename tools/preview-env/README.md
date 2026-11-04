@@ -150,6 +150,8 @@ than clicking; see the routes in `crates/yaran-web/src/`.
 fixed terminal grid. It drives a small journey script, captures the styled terminal
 cells, and renders them in headless Chromium. The capture has its own `YARAN_HOME`,
 repositories, and process lock, so it can run while the web preview is up.
+The fixture uses isolated worktrees for multiple agents; scenes choose sidebar
+style and density explicitly when their captions depend on those settings.
 
 The default 160×45 grid renders 2632 pixels wide at 2× scale and is the desktop
 baseline. Use `--cols` and `--rows` only for a different terminal class.
@@ -230,6 +232,7 @@ pieces an ordinary preview must not have, and they are installed only under
 
 | Fixture | Why |
 | --- | --- |
+| Worktree workspace mode | The scenes create several agents per project and write into their isolated worktrees, regardless of the ordinary first-run default. |
 | `screens/fixtures/gh` | A stand-in `gh` answering only yaran's auth probe and its bounded `pr view`, so the pull-request chip, banner and from-PR dialog are shootable without a GitHub login. |
 | `screens/fixtures/notes-agent` | A transcript provider installed as `claude`, so the folder agent's pane shows a scripted session rather than a streaming fixture. |
 | An `opencode` alias | yaran refuses a tab for a CLI that is not on PATH, and the tab strip shows one tab per provider, so `opencode` points at the fake provider for the length of the run. |

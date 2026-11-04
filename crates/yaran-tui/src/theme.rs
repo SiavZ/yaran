@@ -39,6 +39,46 @@ fn blendable_rgb(color: Color) -> Option<(u8, u8, u8)> {
     }
 }
 
+/// WCAG relative luminance of a color with defined channels.
+fn relative_luminance(color: Color) -> f64 {
+    let (r, g, b) =
+        blendable_rgb(color).unwrap_or_else(|| panic!("{color:?} has no RGB behind it to measure"));
+    let linear = |channel: u8| {
+        let c = f64::from(channel) / 255.0;
+        if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+}
+
+/// WCAG contrast ratio between two colors, 1.0 to 21.0, order-free.
+fn contrast(a: Color, b: Color) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// The first of `candidates` that reaches 4.5:1 on `background`, else the one
+/// with the best contrast. A color with no RGB behind it (a 256-color index,
+/// `Reset`) cannot be measured, so the first candidate stands.
+fn readable_on(background: Color, candidates: [Color; 4]) -> Color {
+    if blendable_rgb(background).is_none() {
+        return candidates[0];
+    }
+    let measurable = candidates
+        .into_iter()
+        .filter(|c| blendable_rgb(*c).is_some());
+    measurable
+        .clone()
+        .find(|c| contrast(*c, background) >= 4.5)
+        .or_else(|| {
+            measurable.max_by(|a, b| contrast(*a, background).total_cmp(&contrast(*b, background)))
+        })
+        .unwrap_or(candidates[0])
+}
+
 /// The working state word's shade at `step`, the quantized pulse cell from
 /// `yaran_core::working_cue::pulse_step`. Full `working` at the top of the pulse,
 /// blended toward `muted` by `working_cue::mute_blend` as the level falls, so
@@ -400,10 +440,31 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     // returns OpalineColor::FALLBACK (gray) for missing tokens, which keeps
     // unknown themes legible rather than panicking.
     let text_primary = theme.color("text.primary");
-    let text_muted = theme.color("text.muted");
     let text_dim = theme.color("text.dim");
     let bg_base = theme.color("bg.base");
     let bg_panel = theme.color("bg.panel");
+    // Preserve each hue, moving it toward black or white only as far as
+    // needed for readable text on both surfaces. Explicit yaran tokens win.
+    let body_target = [OpalineColor::BLACK, OpalineColor::WHITE]
+        .into_iter()
+        .find(|foreground| {
+            [bg_base, bg_panel].into_iter().all(|background| {
+                contrast(into_ratatui(*foreground), into_ratatui(background)) >= 4.5
+            })
+        })
+        .unwrap_or(text_primary);
+    let readable_body_color = |foreground: OpalineColor| {
+        (0u8..=20)
+            .map(|step| foreground.lerp(body_target, f32::from(step) / 20.0))
+            .find(|foreground| {
+                [bg_base, bg_panel].into_iter().all(|background| {
+                    contrast(into_ratatui(*foreground), into_ratatui(background)) >= 4.5
+                })
+            })
+            .unwrap_or(text_primary)
+    };
+    let text_muted = readable_body_color(theme.color("text.muted"));
+    let readable_dim = readable_body_color(text_dim);
     theme.register_default_token("yaran.app_bg", bg_base);
     theme.register_default_token("yaran.text_fg", text_primary);
     let bg_highlight = theme.color("bg.highlight");
@@ -412,10 +473,10 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     let accent_secondary = theme.color("accent.secondary");
     let border_focused = theme.color("border.focused");
     let border_unfocused = theme.color("border.unfocused");
-    let success = theme.color("success");
-    let error = theme.color("error");
-    let warning = theme.color("warning");
-    let info = theme.color("info");
+    let success = readable_body_color(theme.color("success"));
+    let error = readable_body_color(theme.color("error"));
+    let warning = readable_body_color(theme.color("warning"));
+    let info = readable_body_color(theme.color("info"));
 
     // Header / chrome
     theme.register_default_token("yaran.header_fg", text_primary);
@@ -429,9 +490,24 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     theme.register_default_token("yaran.title_focused", accent_primary);
     theme.register_default_token("yaran.title_normal", text_muted);
 
+    // Prefer the theme's own body colors for accent text. Light palettes can
+    // otherwise put white text on orange; explicit yaran tokens still win.
+    let readable_foreground = |background| {
+        [
+            bg_base,
+            text_primary,
+            OpalineColor::BLACK,
+            OpalineColor::WHITE,
+        ]
+        .into_iter()
+        .find(|foreground| contrast(into_ratatui(*foreground), into_ratatui(background)) >= 4.5)
+        .unwrap_or(OpalineColor::BLACK)
+    };
+
     // Selection
-    theme.register_default_token("yaran.selection_fg", bg_base);
     theme.register_default_token("yaran.selection_bg", accent_primary);
+    let selection_bg = theme.color("yaran.selection_bg");
+    theme.register_default_token("yaran.selection_fg", readable_foreground(selection_bg));
 
     // Projects & sessions
     theme.register_default_token("yaran.project_icon", accent_primary);
@@ -439,10 +515,16 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     theme.register_default_token("yaran.standalone_location_fg", info);
     theme.register_default_token("yaran.session_active", text_primary);
     theme.register_default_token("yaran.session_detached", warning);
-    theme.register_default_token("yaran.session_exited", text_dim);
-    theme.register_default_token("yaran.session_deleting", text_dim);
-    theme.register_default_token("yaran.session_attention", accent_primary);
-    theme.register_default_token("yaran.session_typing", accent_secondary);
+    theme.register_default_token("yaran.session_exited", readable_dim);
+    theme.register_default_token("yaran.session_deleting", readable_dim);
+    theme.register_default_token(
+        "yaran.session_attention",
+        readable_body_color(accent_primary),
+    );
+    theme.register_default_token(
+        "yaran.session_typing",
+        readable_body_color(accent_secondary),
+    );
     theme.register_default_token("yaran.session_working", success);
 
     // Status line
@@ -469,13 +551,13 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     theme.register_default_token("yaran.diff_line_number_sep", border_unfocused);
 
     // Hint / footer bar
-    theme.register_default_token("yaran.hint_key_fg", accent_primary);
+    theme.register_default_token("yaran.hint_key_fg", readable_body_color(accent_primary));
     theme.register_default_token("yaran.hint_bracket_fg", text_dim);
     theme.register_default_token("yaran.hint_key_bg", bg_panel);
     theme.register_default_token("yaran.hint_desc_fg", text_muted);
-    theme.register_default_token("yaran.hint_dim_key_fg", text_dim);
+    theme.register_default_token("yaran.hint_dim_key_fg", readable_dim);
     theme.register_default_token("yaran.hint_dim_bracket_fg", border_unfocused);
-    theme.register_default_token("yaran.hint_dim_desc_fg", text_dim);
+    theme.register_default_token("yaran.hint_dim_desc_fg", readable_dim);
     theme.register_default_token("yaran.hint_bar_bg", bg_panel);
 
     // Overlays
@@ -488,8 +570,8 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
 
     // Provider / branch / scrollback
     theme.register_default_token("yaran.provider_label_fg", text_muted);
-    theme.register_default_token("yaran.branch_fg", accent_primary);
-    theme.register_default_token("yaran.terminal_hint_fg", text_dim);
+    theme.register_default_token("yaran.branch_fg", readable_body_color(accent_primary));
+    theme.register_default_token("yaran.terminal_hint_fg", readable_dim);
     theme.register_default_token("yaran.scroll_indicator_fg", text_primary);
     theme.register_default_token("yaran.scroll_indicator_bg", bg_active);
     theme.register_default_token("yaran.warning_fg", warning);
@@ -503,9 +585,13 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     theme.register_default_token("yaran.button_danger_border", error);
 
     // Help overlay
-    theme.register_default_token("yaran.help_section_header_fg", accent_primary);
-    theme.register_default_token("yaran.help_banner_fg", bg_base);
+    theme.register_default_token(
+        "yaran.help_section_header_fg",
+        readable_body_color(accent_primary),
+    );
     theme.register_default_token("yaran.help_banner_bg", accent_primary);
+    let help_banner_bg = theme.color("yaran.help_banner_bg");
+    theme.register_default_token("yaran.help_banner_fg", readable_foreground(help_banner_bg));
     theme.register_default_token("yaran.help_body_fg", text_muted);
 
     // Input
@@ -518,8 +604,11 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     theme.register_default_token("yaran.nudge_border", warning);
     theme.register_default_token("yaran.tip_pill_fg", text_primary);
     theme.register_default_token("yaran.tip_pill_bg", bg_highlight);
-    theme.register_default_token("yaran.tip_text_fg", text_dim);
-    theme.register_default_token("yaran.tip_highlight_fg", accent_secondary);
+    theme.register_default_token("yaran.tip_text_fg", readable_dim);
+    theme.register_default_token(
+        "yaran.tip_highlight_fg",
+        readable_body_color(accent_secondary),
+    );
 
     // Pull request colors default to GitHub's PR state palette instead of the
     // active theme's semantic colors. User themes may still override these
@@ -769,6 +858,34 @@ impl Theme {
         Style::default()
             .fg(self.selection_fg)
             .bg(self.selection_bg)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// The title chip of the FOCUSED pane: the focused title's own accent as the
+    /// background, with whichever body color reads on it, so the pane that owns
+    /// the keys reads at a glance without a token of its own. Deliberately not
+    /// the selection colors, which mean "the selected row" inside a pane.
+    pub fn pane_focus_chip_style(&self) -> Style {
+        Style::default()
+            .fg(readable_on(
+                self.title_focused,
+                [self.app_bg, self.text_fg, Color::Black, Color::White],
+            ))
+            .bg(self.title_focused)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// The title chip of a pane whose keystrokes reach its terminal: the typing
+    /// state's own color as the background, with whichever of the theme's body
+    /// colors reads on it. Typing is what the user is doing there, so it wears
+    /// the same violet the sidebar's "Typing" word does.
+    pub fn pane_input_chip_style(&self) -> Style {
+        Style::default()
+            .fg(readable_on(
+                self.session_typing,
+                [self.app_bg, self.text_fg, Color::Black, Color::White],
+            ))
+            .bg(self.session_typing)
             .add_modifier(Modifier::BOLD)
     }
 
@@ -1041,11 +1158,8 @@ mod tests {
 
     /// Snapshot of the original `Theme::default_dark()` palette, kept here as
     /// an oracle so the bundled yaran-dark TOML can be verified field-for-field
-    /// against the pre-Opaline behavior. One deliberate exception:
-    /// `session_attention` was intentionally recolored from the historical
-    /// yellow to cyan when the attention indicator moved to the accent color,
-    /// so for that field the oracle tracks the current intended value, not the
-    /// pre-Opaline one.
+    /// against the intended palette. Attention moved from yellow to cyan;
+    /// secondary text was brightened after the TUI contrast audit.
     fn default_dark_archived() -> Theme {
         Theme {
             // app_bg matches the historical overlay_bg shade so dark-terminal
@@ -1058,7 +1172,7 @@ mod tests {
             text_fg: Color::White,
             header_fg: Color::White,
             header_bg: Color::Rgb(30, 30, 30),
-            header_label_fg: Color::Rgb(120, 120, 120),
+            header_label_fg: Color::Rgb(160, 160, 160),
             header_separator_fg: Color::Rgb(60, 60, 60),
             border_focused: Color::Cyan,
             border_normal: Color::Rgb(80, 80, 80),
@@ -1073,8 +1187,8 @@ mod tests {
             standalone_location_fg: Color::Rgb(125, 150, 160),
             session_active: Color::Rgb(210, 210, 210),
             session_detached: Color::Yellow,
-            session_exited: Color::Rgb(100, 100, 100),
-            session_deleting: Color::Rgb(100, 100, 100),
+            session_exited: Color::Rgb(160, 160, 160),
+            session_deleting: Color::Rgb(160, 160, 160),
             // Maps to `accent.primary`, so the bundled yaran-dark theme resolves
             // it to the same cyan as `title_focused`/`border_focused`.
             session_attention: Color::Cyan,
@@ -1086,11 +1200,11 @@ mod tests {
             // from the neutral `session_active` so a streaming row reads as green
             // while an idle-active row stays neutral.
             session_working: Color::Rgb(0x22, 0xc5, 0x5e),
-            status_info_fg: Color::Rgb(100, 100, 100),
+            status_info_fg: Color::Rgb(160, 160, 160),
             status_info_bg: Color::Rgb(25, 25, 25),
             status_busy_fg: Color::Yellow,
             status_busy_bg: Color::Rgb(40, 35, 15),
-            status_error_fg: Color::Red,
+            status_error_fg: Color::Rgb(255, 85, 85),
             status_error_bg: Color::Rgb(50, 20, 20),
             diff_add: Color::Green,
             diff_remove: Color::Red,
@@ -1103,16 +1217,16 @@ mod tests {
             hint_desc_fg: Color::Rgb(160, 160, 160),
             hint_dim_key_fg: Color::Rgb(80, 140, 160),
             hint_dim_bracket_fg: Color::Rgb(60, 60, 60),
-            hint_dim_desc_fg: Color::Rgb(100, 100, 100),
+            hint_dim_desc_fg: Color::Rgb(150, 150, 150),
             hint_bar_bg: Color::Rgb(25, 25, 25),
             overlay_border: Color::Cyan,
             overlay_border_refused: Color::Red,
             overlay_bg: Color::Rgb(20, 20, 20),
             overlay_dim_bg: Color::Rgb(10, 10, 10),
             prompt_cursor: Color::Cyan,
-            provider_label_fg: Color::Rgb(100, 100, 100),
+            provider_label_fg: Color::Rgb(160, 160, 160),
             branch_fg: Color::Cyan,
-            terminal_hint_fg: Color::Rgb(80, 80, 80),
+            terminal_hint_fg: Color::Rgb(160, 160, 160),
             scroll_indicator_fg: Color::Rgb(210, 210, 210),
             scroll_indicator_bg: Color::Rgb(55, 55, 55),
             warning_fg: Color::Yellow,
@@ -1135,8 +1249,8 @@ mod tests {
             nudge_border: Color::Rgb(180, 150, 50),
             tip_pill_fg: Color::Rgb(180, 180, 180),
             tip_pill_bg: Color::Rgb(70, 50, 120),
-            tip_text_fg: Color::Rgb(90, 90, 90),
-            tip_highlight_fg: Color::Rgb(0, 120, 120),
+            tip_text_fg: Color::Rgb(160, 160, 160),
+            tip_highlight_fg: Color::Rgb(0, 184, 184),
             diff_line_number_fg: Color::Rgb(90, 90, 110),
             diff_line_number_sep: Color::Rgb(60, 60, 70),
             pr_open_bg: Color::Rgb(35, 134, 54),
@@ -1152,11 +1266,11 @@ mod tests {
         }
     }
 
-    /// Bundled yaran-dark TOML must reproduce the original palette exactly,
+    /// Bundled yaran-dark TOML must reproduce the intended palette exactly,
     /// field for field. If a token in `assets/themes/yaran-dark.toml` is
     /// retyped wrong, this test will pinpoint which one drifted.
     #[test]
-    fn yaran_dark_matches_original_palette() {
+    fn yaran_dark_matches_intended_palette() {
         let actual = load_from_str(YARAN_DARK_TOML).expect("bundled yaran-dark must parse");
         let expected = default_dark_archived();
 
@@ -1567,25 +1681,86 @@ info = "info"
         (tmp, paths)
     }
 
-    /// WCAG relative luminance of a color with defined channels.
-    fn relative_luminance(color: Color) -> f64 {
-        let (r, g, b) = blendable_rgb(color)
-            .unwrap_or_else(|| panic!("{color:?} has no RGB behind it to measure"));
-        let linear = |channel: u8| {
-            let c = f64::from(channel) / 255.0;
-            if c <= 0.039_28 {
-                c / 12.92
-            } else {
-                ((c + 0.055) / 1.055).powf(2.4)
+    #[test]
+    fn inherited_text_has_readable_contrast_in_every_bundled_theme() {
+        let (_tmp, paths) = scratch_paths();
+        let listings = discover_available(&paths);
+        assert!(listings.iter().any(|listing| listing.id == "ayu_light"));
+        for listing in listings {
+            let theme = load(&listing.id, &paths).unwrap();
+            for (name, fg, bg) in [
+                ("selection", theme.selection_fg, theme.selection_bg),
+                ("help banner", theme.help_banner_fg, theme.help_banner_bg),
+                ("button and hint text", theme.hint_desc_fg, theme.overlay_bg),
+                ("warning", theme.warning_fg, theme.overlay_bg),
+                ("help body", theme.help_body_fg, theme.overlay_bg),
+                ("status", theme.status_info_fg, theme.status_info_bg),
+                ("error", theme.status_error_fg, theme.status_error_bg),
+                (
+                    "terminal instructions",
+                    theme.terminal_hint_fg,
+                    theme.app_bg,
+                ),
+                ("tip", theme.tip_text_fg, theme.app_bg),
+                ("provider", theme.provider_label_fg, theme.app_bg),
+            ] {
+                assert!(
+                    contrast(fg, bg) >= 4.5,
+                    "{} {name}: {:.2}:1",
+                    listing.id,
+                    contrast(fg, bg),
+                );
             }
-        };
-        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        }
     }
 
-    /// WCAG contrast ratio between two colors, 1.0 to 21.0, order-free.
-    fn contrast(a: Color, b: Color) -> f64 {
-        let (la, lb) = (relative_luminance(a), relative_luminance(b));
-        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    /// Both pane title chips (the focused pane's and the engaged-input pane's)
+    /// are readable in every theme yaran can load, and they differ from each
+    /// other, so "keys go to the terminal" never looks like plain focus.
+    #[test]
+    fn pane_title_chips_are_readable_and_distinct_in_every_bundled_theme() {
+        let (_tmp, paths) = scratch_paths();
+        for listing in discover_available(&paths) {
+            let theme = load(&listing.id, &paths).unwrap();
+            for (name, style) in [
+                ("focus", theme.pane_focus_chip_style()),
+                ("input", theme.pane_input_chip_style()),
+            ] {
+                let (fg, bg) = (style.fg.unwrap(), style.bg.unwrap());
+                assert!(
+                    contrast(fg, bg) >= 4.5,
+                    "{} {name} chip: {:.2}:1",
+                    listing.id,
+                    contrast(fg, bg)
+                );
+            }
+            assert_ne!(
+                theme.pane_focus_chip_style().bg,
+                theme.pane_input_chip_style().bg,
+                "{}: the input chip must not look like the focus chip",
+                listing.id
+            );
+        }
+    }
+
+    #[test]
+    fn default_theme_instructions_and_feedback_have_readable_contrast() {
+        let theme = Theme::default_dark();
+        for (name, fg, bg) in [
+            ("status", theme.status_info_fg, theme.status_info_bg),
+            (
+                "terminal instructions",
+                theme.terminal_hint_fg,
+                theme.app_bg,
+            ),
+            ("tip", theme.tip_text_fg, theme.app_bg),
+            ("tip action", theme.tip_highlight_fg, theme.app_bg),
+            ("provider", theme.provider_label_fg, theme.app_bg),
+            ("inactive", theme.session_exited, theme.app_bg),
+            ("secondary hints", theme.hint_dim_desc_fg, theme.overlay_bg),
+        ] {
+            assert!(contrast(fg, bg) >= 4.5, "{name}: {:.2}:1", contrast(fg, bg));
+        }
     }
 
     /// The name chip is the dialog body's own two colors swapped, in every

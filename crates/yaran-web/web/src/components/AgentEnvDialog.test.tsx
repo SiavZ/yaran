@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import type { YaranState } from "@/lib/store"
 
@@ -67,6 +67,16 @@ afterEach(() => {
 })
 
 describe("AgentEnvDialog", () => {
+  it("keeps malformed environment lines in the editor and blocks Save", () => {
+    seed("s1", [session], [project])
+    render(<AgentEnvDialog />)
+    const input = screen.getByRole("textbox", { name: "Project environment variables" })
+    fireEvent.change(input, { target: { value: "MISSING_EQUALS" } })
+    expect(screen.getByRole("alert").textContent).toBe("Line 1 must use KEY=VALUE.")
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true)
+    expect(closeAgentEnv).not.toHaveBeenCalled()
+  })
+
   it("renders the form when session and project resolve", () => {
     seed("s1", [session], [project])
     render(<AgentEnvDialog />)

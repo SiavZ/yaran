@@ -18,12 +18,8 @@ import { describe, expect, it } from "vitest"
 //    indicator AND is what makes env(safe-area-inset-*) report real values
 //    (they are 0 without it). The mobile root's env() padding in App.tsx and
 //    the fullscreen terminal column in TerminalPane.tsx depend on it.
-//  - maximum-scale=1: the compose textarea is 14px type, and any input font
-//    under 16px trips iOS Safari's auto-zoom-on-focus. maximum-scale=1 is the
-//    standard, accessibility-preserving fix: Chromium/Android ignores it
-//    entirely, and since iOS 10 Safari ignores it for USER pinch-zoom (so
-//    accessibility zoom keeps working) while it still disables the
-//    focus-triggered auto-zoom.
+//  - No maximum-scale/user-scalable restriction: touch inputs use at least
+//    16px type to prevent Safari focus zoom without restricting user zoom.
 //  - width=device-width, initial-scale=1.0: the ordinary responsive base the
 //    directives above compose with.
 const html = readFileSync(
@@ -49,8 +45,8 @@ describe("index.html viewport meta", () => {
     expect(meta).toContain("viewport-fit=cover")
   })
 
-  it("disables the iOS input-focus auto-zoom via maximum-scale=1", () => {
-    expect(meta).toContain("maximum-scale=1")
+  it("allows users to zoom without a scale limit", () => {
+    expect(meta).not.toMatch(/maximum-scale|user-scalable/)
   })
 
   it("keeps the responsive base directives", () => {

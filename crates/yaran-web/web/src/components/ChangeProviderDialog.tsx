@@ -66,12 +66,12 @@ function ChangeProviderForm({
       </DialogHeader>
 
       <div className="grid gap-2">
-        <label className="text-sm font-medium">Provider</label>
+        <label htmlFor="agent-provider" className="text-sm font-medium">Provider</label>
         <Select
           value={provider}
           onValueChange={(value) => setProvider(value ?? provider)}
         >
-          <SelectTrigger className="w-full max-md:min-h-11">
+          <SelectTrigger id="agent-provider" className="w-full max-md:min-h-11">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -103,7 +103,9 @@ function ChangeProviderForm({
 // the server re-validates the choice.
 export function ChangeProviderDialog() {
   const { changeProviderTarget, spine, bootstrap } = useYaran()
-  const session = spine?.sessions.find((s) => s.id === changeProviderTarget)
+  const session = changeProviderTarget === null
+    ? undefined
+    : spine?.sessions.find((s) => s.id === changeProviderTarget)
   // Closes the dialog when the agent vanishes from the ViewModel; this is
   // orthogonal to the save flow above, which deliberately stays open on a
   // rejected save. See the hook.

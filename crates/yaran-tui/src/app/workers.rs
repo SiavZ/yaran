@@ -1258,6 +1258,26 @@ impl App {
         let Some(op) = self.pending_persist_ops.remove(id) else {
             return false;
         };
+        if let Some((pending_id, project_id)) = self.configure_save_op.as_ref()
+            && pending_id == id
+        {
+            let same_project = match &self.prompt {
+                PromptState::ConfigureStartupCommand {
+                    project_id: current,
+                    ..
+                }
+                | PromptState::ConfigureProjectEnv {
+                    project_id: current,
+                    ..
+                } => current == project_id,
+                _ => false,
+            };
+            self.configure_save_op = None;
+            if same_project && matches!(&outcome, PersistFinalOutcome::Saved) {
+                self.prompt = PromptState::None;
+                self.input_target = InputTarget::None;
+            }
+        }
         let resolved = op.resolve(&outcome);
         self.apply_reaction(resolved.into_reaction());
         true

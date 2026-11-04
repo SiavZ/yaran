@@ -547,15 +547,6 @@ const TIP_GAP: u16 = 2;
 /// Maximum number of wrapped lines a tip may occupy.
 const TIP_MAX_LINES: u16 = 3;
 
-/// Capitalize the first character of a string.
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(first) => format!("{}{}", first.to_uppercase(), c.as_str()),
-        None => String::new(),
-    }
-}
-
 /// A one-column pad on each side of the left-pane row text: the left gutter
 /// also hosts the selection frame, and the right gets an equal pad so the text
 /// (and the Inactive rule) sit evenly between two matching margins.
@@ -566,6 +557,10 @@ const LEFT_PANE_GUTTER: u16 = 1;
 /// branch fork in most terminals and is width-1; the `#<number>` follows it.
 /// The sidebar badge on a shared main-workspace agent's row.
 pub(crate) const SHARED_WORKSPACE_BADGE: &str = "SHARED ";
+/// Cells of glyph and name a compact row keeps before it gives up its state word.
+const COMPACT_STATE_MIN_HEAD: u16 = 8;
+/// The compact sidebar's selected-row marker, painted in the left gutter.
+const COMPACT_SELECTION_BAR: &str = "▌";
 
 const PR_BADGE_GLYPH: &str = "⎇";
 
@@ -590,6 +585,78 @@ fn truncate_to_width(s: &str, max_w: u16) -> String {
         w += cw;
     }
     out
+}
+
+/// Whether a compact sidebar row spells its state word out: only the live
+/// states, which change from moment to moment and are what a scan looks for.
+fn compact_row_names_state(word: &str) -> bool {
+    matches!(word, AGENT_WORKING_WORD | "Typing" | "Needs you")
+}
+
+/// Hint cells the footer keeps beside its mode chip; narrower, the chip yields.
+const FOOTER_CHIP_MIN_HINTS: usize = 24;
+/// The word an engaged pane's title chip leads with: keys go to the terminal.
+const PANE_INPUT_LABEL: &str = "INPUT";
+
+/// A pane title padded one cell each side so it never touches the corner, and,
+/// for the focused (or engaged) pane, painted as one `chip`. An empty title stays
+/// empty: a bare frame has nothing to label. Callers that already padded their
+/// title are trimmed first, so every pane gets the same one-cell inset.
+fn pane_title(title: Line<'_>, chip: Option<Style>) -> Line<'_> {
+    if title
+        .spans
+        .iter()
+        .all(|span| span.content.trim().is_empty())
+    {
+        return title;
+    }
+    let mut spans: Vec<Span<'_>> = title.spans;
+    if let Some(first) = spans.first_mut() {
+        first.content = first.content.trim_start().to_string().into();
+    }
+    if let Some(last) = spans.last_mut() {
+        last.content = last.content.trim_end().to_string().into();
+    }
+    let edge_style = spans.first().map_or_else(Style::default, |span| span.style);
+    spans.insert(0, Span::styled(" ", edge_style));
+    spans.push(Span::styled(" ", edge_style));
+    if let Some(chip) = chip {
+        for span in &mut spans {
+            span.style = span.style.patch(chip);
+        }
+    }
+    Line::from(spans)
+}
+
+/// Between two facts in the header (the project, the provider, a live chip).
+const HEADER_FACT_SEPARATOR: &str = "  ·  ";
+/// Between the steps of one path in the header: project › branch › agent branch.
+const HEADER_PATH_SEPARATOR: &str = " › ";
+
+/// The header's flush-right version: `development · <commit>` padded against the
+/// crumbs already in `left`. The commit goes first when the bar is narrow, then
+/// the version; the crumbs are never cut to make room for either.
+fn header_version_spans(left: &[Span<'static>], width: u16, style: Style) -> Vec<Span<'static>> {
+    let used: usize = left.iter().map(|s| display_width(s.content.as_ref())).sum();
+    let full = format!(
+        "{} · {} ",
+        env!("YARAN_DISPLAY_VERSION"),
+        yaran_core::version::GIT_COMMIT
+    );
+    let short = format!("{} ", env!("YARAN_DISPLAY_VERSION"));
+    const GAP: usize = 3;
+    let width = usize::from(width);
+    let Some(text) = [full, short]
+        .into_iter()
+        .find(|text| used + GAP + display_width(text) <= width)
+    else {
+        return Vec::new();
+    };
+    let pad = width - used - display_width(&text);
+    vec![
+        Span::styled(" ".repeat(pad), style),
+        Span::styled(text, style),
+    ]
 }
 
 /// Truncate a line of styled spans to `max_w` terminal cells, appending a
@@ -1619,15 +1686,19 @@ impl App {
 
     fn render_header(&self, frame: &mut Frame, area: Rect) {
         let bg = self.theme.header_bg;
-        let sep_fg = self.theme.header_separator_fg;
         let label_fg = self.theme.header_label_fg;
-        let mut spans = vec![
-            Span::styled(" Yaran ", Style::default().fg(label_fg).bg(bg)),
-            Span::styled(
-                env!("YARAN_DISPLAY_VERSION"),
-                Style::default().fg(self.theme.branch_fg).bg(bg),
-            ),
-        ];
+        let value =
+            |text: String| Span::styled(text, Style::default().fg(self.theme.branch_fg).bg(bg));
+        let label = |text: &'static str| Span::styled(text, Style::default().fg(label_fg).bg(bg));
+        // The brand leads, in the focused-title accent, so the bar reads as the
+        // app's own chrome rather than another row of crumbs.
+        let mut spans = vec![Span::styled(
+            " Yaran ",
+            Style::default()
+                .fg(self.theme.title_focused)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        )];
         // First, and outside the two selection arms below: a listener is a fact
         // about the process rather than about the selected row, so it must be
         // said with nothing selected. First because this header clips its tail
@@ -1639,7 +1710,7 @@ impl App {
         // every frame, so it cannot be overwritten by an unrelated status, and
         // honest about its scope: another yaran home is invisible from here.
         if let Some(summary) = self.engine.shared_multi_writer_summary() {
-            spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
+            spans.push(self.header_separator(HEADER_FACT_SEPARATOR));
             spans.push(Span::styled(
                 summary.badge(),
                 Style::default()
@@ -1658,46 +1729,28 @@ impl App {
             .and_then(|session| session.folder_path())
             .map(|folder| yaran_core::home_path::shorten_home(std::path::Path::new(folder)))
         {
-            spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
-            spans.push(Span::styled(
-                "folder: ",
-                Style::default().fg(label_fg).bg(bg),
-            ));
-            spans.push(Span::styled(
-                folder,
-                Style::default().fg(self.theme.branch_fg).bg(bg),
-            ));
+            spans.push(self.header_separator(HEADER_FACT_SEPARATOR));
+            spans.push(label("folder: "));
+            spans.push(value(folder));
             if let Some(session) = self.selected_session() {
-                spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
-                spans.push(Span::styled(
-                    "provider: ",
-                    Style::default().fg(label_fg).bg(bg),
-                ));
-                spans.push(Span::styled(
-                    session.provider.as_str().to_string(),
-                    Style::default().fg(self.theme.branch_fg).bg(bg),
-                ));
+                spans.push(self.header_separator(HEADER_FACT_SEPARATOR));
+                spans.push(label("provider: "));
+                spans.push(value(session.provider.as_str().to_string()));
             }
             self.push_live_header_chip(&mut spans, self.running_terminals_chip());
         } else if let Some(project) = self.selected_project() {
-            spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
-            spans.push(Span::styled(
-                "project: ",
-                Style::default().fg(label_fg).bg(bg),
-            ));
+            // Project, branch and (when it differs) the agent's branch read as one
+            // path, so they need no labels: `demo-api › main › retry-budget`.
+            spans.push(self.header_separator(HEADER_FACT_SEPARATOR));
             spans.push(Span::styled(
                 project.name.clone(),
-                Style::default().fg(self.theme.branch_fg).bg(bg),
+                Style::default()
+                    .fg(self.theme.header_fg)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
-            spans.push(Span::styled(
-                "branch: ",
-                Style::default().fg(label_fg).bg(bg),
-            ));
-            spans.push(Span::styled(
-                project.current_branch.clone(),
-                Style::default().fg(self.theme.branch_fg).bg(bg),
-            ));
+            spans.push(self.header_separator(HEADER_PATH_SEPARATOR));
+            spans.push(value(project.current_branch.clone()));
             if let Some(session) = self.selected_session() {
                 // Two independent reasons to show the agent crumb: the agent sits
                 // on a different branch than the project's current one, or its
@@ -1712,86 +1765,67 @@ impl App {
                     && (differs_from_project || drifted)
                 {
                     // The helper appends "(orig: <initial>)" only on drift and
-                    // returns the bare value (no label); we keep the themed
-                    // "agent: " label and style the value ourselves.
-                    let value =
-                        top_bar_branch_suffix(&managed.branch_name, &managed.initial_branch);
-                    spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
-                    spans.push(Span::styled(
-                        "agent: ",
-                        Style::default().fg(label_fg).bg(bg),
-                    ));
-                    spans.push(Span::styled(
-                        value,
-                        Style::default().fg(self.theme.branch_fg).bg(bg),
-                    ));
+                    // returns the bare value (no label).
+                    spans.push(self.header_separator(HEADER_PATH_SEPARATOR));
+                    spans.push(value(top_bar_branch_suffix(
+                        &managed.branch_name,
+                        &managed.initial_branch,
+                    )));
                 }
             }
-            spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
+            spans.push(self.header_separator(HEADER_FACT_SEPARATOR));
             let has_project_override = self
                 .engine
                 .project_uses_explicit_default_provider(&project.id);
-            let provider_label = if has_project_override {
+            spans.push(label(if has_project_override {
                 "project provider: "
             } else {
                 "default provider: "
-            };
-            spans.push(Span::styled(
-                provider_label,
-                Style::default().fg(label_fg).bg(bg),
-            ));
-            spans.push(Span::styled(
-                project.default_provider.as_str().to_string(),
-                Style::default().fg(self.theme.branch_fg).bg(bg),
-            ));
+            }));
+            spans.push(value(project.default_provider.as_str().to_string()));
             // A project override that restates the global default is one fact,
             // so the global crumb only appears when the two providers differ.
             if has_project_override
                 && project.default_provider.as_str()
                     != self.engine.config.default_provider().as_str()
             {
-                spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
-                spans.push(Span::styled(
-                    "global default: ",
-                    Style::default().fg(label_fg).bg(bg),
-                ));
-                spans.push(Span::styled(
+                spans.push(self.header_separator(HEADER_FACT_SEPARATOR));
+                spans.push(label("global default: "));
+                spans.push(value(
                     self.engine.config.default_provider().as_str().to_string(),
-                    Style::default().fg(self.theme.branch_fg).bg(bg),
                 ));
             }
             if let Some(session) = self.selected_session()
                 && session.provider != project.default_provider
             {
-                spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
-                spans.push(Span::styled(
-                    "current provider: ",
-                    Style::default().fg(label_fg).bg(bg),
-                ));
-                spans.push(Span::styled(
-                    session.provider.as_str().to_string(),
-                    Style::default().fg(self.theme.branch_fg).bg(bg),
-                ));
+                spans.push(self.header_separator(HEADER_FACT_SEPARATOR));
+                spans.push(label("current provider: "));
+                spans.push(value(session.provider.as_str().to_string()));
             }
             self.push_live_header_chip(&mut spans, self.running_terminals_chip());
         }
-        // The BUILD, last: every development build says "development", so the
-        // commit is what tells two of them apart. It trails rather than riding
-        // on the version because this header clips its tail, and the crumbs
-        // before it (above all the serving chip) matter more on a narrow
-        // terminal than a build id that `yaran --version` also reports.
-        spans.push(Span::styled(" ╱ ", Style::default().fg(sep_fg).bg(bg)));
-        spans.push(Span::styled(
-            "build: ",
-            Style::default().fg(label_fg).bg(bg),
-        ));
-        spans.push(Span::styled(
-            yaran_core::version::GIT_COMMIT,
-            Style::default().fg(self.theme.branch_fg).bg(bg),
-        ));
-        Paragraph::new(Line::from(spans))
+        // The version and build, flush right and quiet: every development build
+        // says "development", so the commit is what tells two of them apart. They
+        // are the first thing to give way on a narrow terminal (the crumbs before
+        // them matter more, and `yaran --version` reports both).
+        let version =
+            header_version_spans(&spans, area.width, Style::default().fg(label_fg).bg(bg));
+        spans.extend(version);
+        Paragraph::new(Line::from(ellipsize_spans(spans, area.width)))
             .style(self.theme.header_style())
             .render(area, frame.buffer_mut());
+    }
+
+    /// One header separator in the separator tone.
+    fn header_separator(&self, text: &'static str) -> Span<'static> {
+        // Label strength rather than the border tone: on a light theme the
+        // border tone vanishes and the crumbs would run together.
+        Span::styled(
+            text,
+            Style::default()
+                .fg(self.theme.header_label_fg)
+                .bg(self.theme.header_bg),
+        )
     }
 
     /// Append a live-state header crumb: the separator, then `label` in the
@@ -1804,10 +1838,7 @@ impl App {
             return;
         };
         let bg = self.theme.header_bg;
-        spans.push(Span::styled(
-            " ╱ ",
-            Style::default().fg(self.theme.header_separator_fg).bg(bg),
-        ));
+        spans.push(self.header_separator(HEADER_FACT_SEPARATOR));
         spans.push(Span::styled(
             label,
             Style::default().fg(self.theme.session_active).bg(bg),
@@ -1946,6 +1977,42 @@ impl App {
         }
     }
 
+    /// The row's state word, its painted text and its color. The one working
+    /// cue: the word pulses between the working token and the muted tone beside
+    /// it, and a cycling ellipsis runs after it in a slot three cells wide, so
+    /// whatever follows it never moves as the dots come and go.
+    fn agent_row_state_word(
+        &self,
+        session: &AgentSession,
+        cues: AgentRowCues,
+        muted: Color,
+        steady_color: Color,
+    ) -> (&'static str, String, Color) {
+        let word = agent_state_word(
+            session.status,
+            cues.working,
+            cues.typing,
+            cues.needs_attention,
+        );
+        if cues.working && !cues.deleting && word == AGENT_WORKING_WORD {
+            let elapsed = self.start_time.elapsed().as_millis() as u64;
+            return (
+                word,
+                format!("{word}{}", yaran_core::working_cue::ellipsis_slot(elapsed)),
+                crate::theme::working_word_color(
+                    self.theme.session_working,
+                    muted,
+                    yaran_core::working_cue::pulse_step(elapsed),
+                ),
+            );
+        }
+        (
+            word,
+            word.to_string(),
+            self.agent_row_state_color(word, cues.deleting, steady_color),
+        )
+    }
+
     /// Build the two-line flat agent row, mirroring the web sidebar row:
     /// line one is the status glyph + name + PR badge; line two is the dim
     /// `project · state word · branch (when it diverges from the name) · tabs`.
@@ -1953,13 +2020,7 @@ impl App {
     fn render_agent_row(&self, session: &AgentSession, text_width: u16) -> ListItem<'static> {
         let label = session.display_label();
         let cues = self.agent_row_cues(session);
-        let AgentRowCues {
-            needs_attention,
-            working,
-            typing,
-            deleting,
-            ..
-        } = cues;
+        let AgentRowCues { deleting, .. } = cues;
         let (steady_dot, steady_color) = self.theme.session_dot(&session.status);
         let dot = self.agent_row_glyph(cues, steady_dot);
         let (base_color, glyph_color) = self.agent_row_colors(session.status, cues, steady_color);
@@ -2051,27 +2112,8 @@ impl App {
         } else {
             (marker, name_span)
         };
-        let word = agent_state_word(session.status, working, typing, needs_attention);
-        // The one working cue: the word pulses between the working token and the
-        // muted tone beside it, and a cycling ellipsis runs after it in a slot
-        // three cells wide, so the tab count behind it never moves as the dots
-        // come and go.
-        let (word_text, word_color) = if working && !deleting && word == AGENT_WORKING_WORD {
-            let elapsed = self.start_time.elapsed().as_millis() as u64;
-            (
-                format!("{word}{}", yaran_core::working_cue::ellipsis_slot(elapsed)),
-                crate::theme::working_word_color(
-                    self.theme.session_working,
-                    muted,
-                    yaran_core::working_cue::pulse_step(elapsed),
-                ),
-            )
-        } else {
-            (
-                word.to_string(),
-                self.agent_row_state_color(word, deleting, steady_color),
-            )
-        };
+        let (_, word_text, word_color) =
+            self.agent_row_state_word(session, cues, muted, steady_color);
         // Show the branch only when it differs from the displayed name (i.e. a
         // title is set), so it is not repeated as the name on line one, and
         // never at all for an agent that has no branch.
@@ -2194,12 +2236,25 @@ impl App {
             return;
         };
         if self.sidebar_density() == SidebarDensity::Compact {
-            // Every compact item is one line: a single-row tint, no frame.
+            // Every compact item is one line: a single-row tint, no frame, and an
+            // accent bar in the left gutter so the row reads as selected even
+            // where the tint is faint. The bar is the focus accent while the
+            // sidebar has the keys and the quiet border tone while it does not.
             if let Some(rel) = map.iter().position(|&i| i == sel) {
                 let tint = self.theme.selection_bar_tint();
                 let y = list_inner.y + rel as u16;
                 for x in list_inner.x..list_inner.x + list_inner.width {
                     buf[(x, y)].set_bg(tint);
+                }
+                if list_inner.width > 0 {
+                    let bar = if self.focus == FocusPane::Left {
+                        self.theme.border_focused
+                    } else {
+                        self.theme.border_normal
+                    };
+                    buf[(list_inner.x, y)]
+                        .set_symbol(COMPACT_SELECTION_BAR)
+                        .set_fg(bar);
                 }
             }
             return;
@@ -2633,10 +2688,28 @@ impl App {
                 Style::default().fg(name_color).add_modifier(Modifier::BOLD),
             ),
         ];
+        let count_style = Style::default().fg(self.theme.provider_label_fg);
+        // The count sits flush right, a column the eye can run down, unless the
+        // header rule is on: that rule runs from the end of the label to the
+        // gutter, so the count stays inline beside the name there.
+        if group.agent_count > 0 && !self.engine.config.ui.sidebar_header_rule {
+            let count = group.agent_count.to_string();
+            let name_w: usize = spans
+                .iter()
+                .map(|s| display_width(s.content.as_ref()))
+                .sum();
+            // The name outranks its count: on a narrow sidebar the count goes
+            // rather than cutting the project name.
+            if name_w + 2 + display_width(&count) > usize::from(text_width) {
+                return Line::from(ellipsize_spans(spans, text_width));
+            }
+            let count = vec![Span::styled(count, count_style)];
+            return Line::from(right_align_line(spans, count, text_width, 2));
+        }
         if group.agent_count > 0 {
             spans.push(Span::styled(
                 format!(" ({})", group.agent_count),
-                Style::default().fg(self.theme.provider_label_fg),
+                count_style,
             ));
         }
         Line::from(ellipsize_spans(spans, text_width))
@@ -2849,7 +2922,21 @@ impl App {
         };
 
         let mut right: Vec<Span<'static>> = Vec::new();
+        // A compact row has no second line for the state word, so a LIVE state
+        // (working, typing, needs you) rides flush right, the first thing a scan
+        // down the column meets. The quiet states say nothing: Idle is the
+        // default, and a detached or exited row already wears its own glyph and
+        // sits under the Inactive divider.
+        let (word, word_text, word_color) =
+            self.agent_row_state_word(session, cues, muted, steady_color);
+        let live_word = compact_row_names_state(word);
+        if live_word {
+            right.push(Span::styled(word_text, Style::default().fg(word_color)));
+        }
         if session.shared_workspace() {
+            if !right.is_empty() {
+                right.push(Span::raw(" "));
+            }
             right.push(Span::styled(
                 SHARED_WORKSPACE_BADGE,
                 Style::default()
@@ -2858,6 +2945,10 @@ impl App {
             ));
         }
         if let Some(pr) = self.engine.pr_statuses.get(&session.id) {
+            // The SHARED badge carries its own trailing gap.
+            if !right.is_empty() && !session.shared_workspace() {
+                right.push(Span::raw(" "));
+            }
             let pr_color = match pr.state {
                 crate::model::PrState::Merged => self.theme.pr_merged_label,
                 crate::model::PrState::Closed => self.theme.pr_closed_label,
@@ -2896,6 +2987,10 @@ impl App {
         let right_w = width(&right);
         let body = if !right.is_empty() && full_w.saturating_add(2 + right_w) <= avail {
             right_align_line(full, right, avail, 2)
+        } else if live_word && right_w.saturating_add(2 + COMPACT_STATE_MIN_HEAD) <= avail {
+            // Too narrow for everything: the state outranks the harness suffix,
+            // and then the tail of the name, which ellipsizes to make room.
+            right_align_line(head, right, avail, 2)
         } else if full_w <= avail {
             full
         } else {
@@ -3020,6 +3115,23 @@ impl App {
             frame.buffer_mut(),
             &mut state,
         );
+        if item_heights.is_empty()
+            && self
+                .agent_filter
+                .as_ref()
+                .is_some_and(|input| !input.text.trim().is_empty())
+        {
+            let close_key = self.bindings.label_for(Action::CloseOverlay);
+            let mut clear_hint = self.theme.key_badge_default(&close_key);
+            clear_hint.push(Span::styled(
+                " clear",
+                Style::default().fg(self.theme.hint_desc_fg),
+            ));
+            let lines = vec![Line::from("No matching agents."), Line::from(clear_hint)];
+            Paragraph::new(wrap_styled_lines(&lines, usize::from(geometry.body.width)))
+                .style(Style::default().fg(self.theme.hint_desc_fg))
+                .render(geometry.body, frame.buffer_mut());
+        }
         // Agent rows are three lines tall, so a click row does not map 1:1 to a
         // list item: rebuild the reverse map from the post-render scroll offset
         // and each item's rendered height.
@@ -3195,11 +3307,20 @@ impl App {
         // The VISIBLE terminals: sorted, then pruned by the live sidebar query
         // exactly as the agent list above is. Every index below (the rows, the
         // selection, the mouse map) is an index into this list.
-        let terminal_items = self.terminal_items();
+        let all_terminals = self.sorted_terminal_items();
+        let query = self.active_filter_query();
+        let terminal_items: Vec<_> = all_terminals
+            .iter()
+            .copied()
+            .filter(|(_, terminal)| {
+                query
+                    .as_deref()
+                    .is_none_or(|query| self.terminal_matches_filter(terminal, query))
+            })
+            .collect();
         let has_terminals = !terminal_items.is_empty();
         // Titles disambiguate against the unfiltered list, and the pane total
         // remains stable while a search changes visible rows.
-        let all_terminals = self.sorted_terminal_items();
         let total_terminal_count = all_terminals.len();
 
         let (projects_area, terminals_area) = self.left_sidebar_areas(area, has_terminals);
@@ -5081,6 +5202,17 @@ impl App {
             card_up,
         );
 
+        // Keys are reaching this terminal right now: not while a take-over card
+        // holds them, while scroll mode swallows them, or while scrolled back
+        // (typing is paused there). The block is repainted over the plain one;
+        // it draws only the frame, so the grid inside is untouched.
+        let engaged =
+            receives_keys && !card_up && scrollback_offset == 0 && !self.scroll_mode_active();
+        if engaged {
+            self.engaged_pane_block(title)
+                .render(area, frame.buffer_mut());
+        }
+
         if rendered_content {
             self.welcome_logo_visible = false;
             self.render_agent_scrollbar(frame, area, term_area);
@@ -5458,6 +5590,10 @@ impl App {
             &self.theme,
             self.theme.title_style(is_active_section),
         );
+        // Leave room for both borders and the title's two padding cells.
+        if title.width() > usize::from(area.width.saturating_sub(4)) {
+            title.spans.truncate(1);
+        }
         if let Some(note) = note {
             title.spans.push(Span::styled(
                 format!(" \u{b7} {note}"),
@@ -5494,6 +5630,7 @@ impl App {
         if let Some(search_area) = search_area {
             let query = format!("/ {}", self.files_search.text);
             Paragraph::new(query)
+                .style(Style::default().fg(self.theme.text_fg))
                 .block(
                     Block::default()
                         .borders(Borders::BOTTOM)
@@ -5540,13 +5677,14 @@ impl App {
                     .saturating_sub(stats_width)
                     .saturating_sub(1);
 
-                let path = if is_selected {
-                    file.path.clone()
-                } else {
-                    git::ellipsize_middle(&file.path, path_budget.max(10))
-                };
-
-                let path_display_width = path.chars().count();
+                let path: String = ellipsize_spans(
+                    vec![Span::raw(file.path.clone())],
+                    u16::try_from(path_budget).unwrap_or(u16::MAX),
+                )
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect();
+                let path_display_width = display_width(&path);
                 let padding = content_width
                     .saturating_sub(prefix_width)
                     .saturating_sub(path_display_width)
@@ -5561,22 +5699,19 @@ impl App {
                 let mut spans = vec![
                     Span::styled(
                         format!("{:>2} ", file.status),
-                        base_style.fg(self.theme.file_status_fg),
+                        if is_selected {
+                            base_style
+                        } else {
+                            base_style.fg(self.theme.file_status_fg)
+                        },
                     ),
                     Span::styled(path, base_style),
                     Span::styled(" ".repeat(padding), base_style),
                 ];
-                // For stats spans, keep their green/red fg but apply selection bg when selected.
-                let stats_base = if is_selected {
-                    Style::default()
-                        .bg(self.theme.selection_bg)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
+                // The selected foreground is paired with its background for
+                // contrast; the status and +/- signs still convey meaning.
                 spans.extend(stats.into_iter().map(|s| {
-                    let fg = s.style.fg.unwrap_or(Color::Reset);
-                    Span::styled(s.content, stats_base.fg(fg))
+                    Span::styled(s.content, if is_selected { sel_style } else { s.style })
                 }));
                 // The reserved right-margin column is part of the row: painted
                 // in the row's own style so a selection highlight reaches the
@@ -5592,7 +5727,12 @@ impl App {
                 .filter(|_| !files.is_empty())
                 .map(|index| index.min(files.len().saturating_sub(1)) - window_start),
         );
-        StatefulWidget::render(List::new(items), list_area, frame.buffer_mut(), &mut state);
+        StatefulWidget::render(
+            List::new(items).style(Style::default().fg(self.theme.text_fg)),
+            list_area,
+            frame.buffer_mut(),
+            &mut state,
+        );
 
         // Hint bar inside the block (same style as agent terminal / diff view).
         if let Some(ha) = hint_area {
@@ -5641,8 +5781,9 @@ impl App {
             yaran_core::human_board::Audience::Everyone => "Tasks for Human".to_string(),
         };
         let name = Span::styled(name, self.theme.title_style(focused));
+        let max_w = u16::try_from(max_width).unwrap_or(u16::MAX);
         let Some(board) = self.human_board.readable() else {
-            return Line::from(name);
+            return Line::from(ellipsize_spans(vec![name], max_w));
         };
         let waiting = board.waiting_count_in(&view);
         let news = board.news_count_in(&view);
@@ -5680,16 +5821,15 @@ impl App {
             return Line::from(full);
         }
         if waiting == 0 {
-            return Line::from(name);
+            return Line::from(ellipsize_spans(vec![name], max_w));
         }
         if width(&without_news) <= max_width {
             return Line::from(without_news);
         }
-        Line::from(vec![
-            name,
-            Span::raw(" "),
-            Span::styled(format!("({waiting})"), attention),
-        ])
+        let count = format!(" ({waiting})");
+        let mut title = ellipsize_spans(vec![name], max_w.saturating_sub(count.cell_width()));
+        title.push(Span::styled(count, attention));
+        Line::from(title)
     }
 
     /// The board pane's bottom edge: notes that could not be read, on the
@@ -5732,7 +5872,7 @@ impl App {
     fn render_human_board(&mut self, frame: &mut Frame, area: Rect) {
         let pane_focused = self.focus == FocusPane::Files;
         let active = pane_focused && self.right_section == RightSection::Board;
-        let title = self.human_board_title(active, usize::from(area.width.saturating_sub(2)));
+        let title = self.human_board_title(active, usize::from(area.width.saturating_sub(4)));
         let mut block = self.themed_block_line(title, active);
         let (problems, sync) = self.human_board_footer();
         if let Some(problems) = problems {
@@ -5872,14 +6012,18 @@ impl App {
                         Some(kind) => (kind.heading(), self.theme.help_section_header_fg),
                         None => (DONE_HEADING, self.theme.hint_dim_desc_fg),
                     };
+                    let count = format!(" {count}");
                     Line::from(vec![
                         Span::styled(
-                            format!(" {label}"),
+                            fit_width(
+                                &format!(" {label}"),
+                                width.saturating_sub(display_width(&count)),
+                            ),
                             Style::default()
                                 .fg(self.theme.help_section_header_fg)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!(" {count}"), Style::default().fg(tone)),
+                        Span::styled(count, Style::default().fg(tone)),
                     ])
                 }
                 BoardRow::Card { id, slot } => {
@@ -6048,7 +6192,15 @@ impl App {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
-        let hints = self.footer_hints_for(self.footer_hint_context());
+        let hints = if self.center_typeable()
+            || matches!(
+                self.input_target,
+                InputTarget::Agent | InputTarget::Terminal
+            ) {
+            self.footer_input_hints()
+        } else {
+            self.footer_hints_for(self.footer_hint_context())
+        };
         let [hints_area, status_area] = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1)])
@@ -6097,7 +6249,22 @@ impl App {
             return;
         }
 
-        let hint_spans = self.footer_hint_spans(&hints, hints_area.width as usize);
+        // The hints are about one pane, so the row says which one first, and
+        // says INPUT instead while keystrokes are going to a terminal.
+        let (chip_text, chip_style) = self.footer_mode_chip();
+        let chip_w = display_width(&chip_text) + 1;
+        let mut hint_spans: Vec<Span<'_>> = Vec::new();
+        let room = if usize::from(hints_area.width) >= chip_w + FOOTER_CHIP_MIN_HINTS {
+            hint_spans.push(Span::styled(chip_text, chip_style));
+            hint_spans.push(Span::styled(
+                " ",
+                Style::default().bg(self.theme.hint_bar_bg),
+            ));
+            usize::from(hints_area.width) - chip_w
+        } else {
+            usize::from(hints_area.width)
+        };
+        hint_spans.extend(self.footer_hint_spans(&hints, room));
         Paragraph::new(Line::from(hint_spans))
             .style(Style::default().bg(self.theme.hint_bar_bg))
             .render(hints_area, frame.buffer_mut());
@@ -6108,6 +6275,71 @@ impl App {
             // chip-free: the status line is outside the chip rule, names and all.
             .wrap(Wrap { trim: false })
             .render(status_area, frame.buffer_mut());
+    }
+
+    /// Whether keystrokes are going to a terminal right now (a typeable center
+    /// pane, or a fullscreen surface taking input), outside scroll mode.
+    fn footer_keys_reach_pty(&self) -> bool {
+        (self.center_typeable()
+            || matches!(
+                self.input_target,
+                InputTarget::Agent | InputTarget::Terminal
+            ))
+            && !self.scroll_mode_active()
+            && !self.focused_pty_is_covered_by_card()
+            && self
+                .selected_terminal_surface_client()
+                .is_some_and(|pty| pty.scrollback_offset() == 0)
+    }
+
+    /// Only chords that remain available at a live terminal, including while
+    /// typing is paused by scrollback or a take-over card. Fullscreen keeps its
+    /// own toggle; the pane's hint line names its scroll and take-over actions.
+    fn footer_input_hints(&self) -> Vec<(String, &'static str)> {
+        if matches!(
+            self.input_target,
+            InputTarget::Agent | InputTarget::Terminal
+        ) {
+            let exit = self.bindings.label_for(Action::ToggleFullscreen);
+            return [(exit, "Minimize")]
+                .into_iter()
+                .filter(|(key, _)| !key.is_empty())
+                .collect();
+        }
+        let tab_reaches_agent = self.engine.config.ui.tab_reaches_agent;
+        [
+            (Action::ToggleFullscreen, "Fullscreen"),
+            (Action::FocusNext, "Next pane"),
+            (Action::FocusPrev, "Previous pane"),
+            (Action::OpenPalette, "Palette"),
+        ]
+        .into_iter()
+        .filter_map(|(action, desc)| {
+            self.bindings
+                .label_for_typeable_center(action, tab_reaches_agent)
+                .map(|key| (key, desc))
+        })
+        .collect()
+    }
+
+    /// The footer's leading chip: the focused pane's name, in the focus chip
+    /// style, or `INPUT` in the typing tone while keystrokes reach a terminal.
+    fn footer_mode_chip(&self) -> (String, Style) {
+        if self.footer_keys_reach_pty() {
+            return (
+                format!(" {PANE_INPUT_LABEL} "),
+                self.theme.pane_input_chip_style(),
+            );
+        }
+        let pane = match self.focus {
+            FocusPane::Left if self.left_section == LeftSection::Terminals => "Terminals",
+            FocusPane::Left => "Agents",
+            FocusPane::Center if matches!(self.center_mode, CenterMode::Diff { .. }) => "Diff",
+            FocusPane::Center => "Agent",
+            FocusPane::Files if self.right_section == RightSection::Board => "Board",
+            FocusPane::Files => "Changes",
+        };
+        (format!(" {pane} "), self.theme.pane_focus_chip_style())
     }
 
     fn footer_hint_context(&self) -> HintContext {
@@ -6172,6 +6404,10 @@ impl App {
             StatusTone::Warning => (self.theme.warning_fg, self.theme.status_info_bg),
             StatusTone::Error => (self.theme.status_error_fg, self.theme.status_error_bg),
         };
+        // Nothing to say: no orphan dot either, so an idle footer is quiet.
+        if status_text.is_empty() {
+            return (Line::default(), status_bg);
+        }
         let prefix = format!(" {dot} ");
         let prefix_w = prefix.chars().count();
         let max_status_chars = (status_area.width as usize) * (status_area.height as usize);
@@ -6251,15 +6487,15 @@ impl App {
             body_style,
         )));
         lines.push(Line::from(Span::styled(
-            "Each project maps to a git worktree, and you can spawn",
+            "Project agents can share a checkout or use isolated",
             body_style,
         )));
         lines.push(Line::from(Span::styled(
-            "unlimited agents, and unlimited companion terminals",
+            "git worktrees. Each agent can have provider tabs and",
             body_style,
         )));
         lines.push(Line::from(Span::styled(
-            "for each agent, all running side by side.",
+            "companion terminals, all running side by side.",
             body_style,
         )));
         lines.push(Line::from(""));
@@ -6304,7 +6540,7 @@ impl App {
                     .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             )));
             for (key, desc) in bindings {
-                let padding = 14usize.saturating_sub(key.len() + 2);
+                let padding = 14usize.saturating_sub(display_width(key) + 2).max(2);
                 let mut spans = vec![Span::raw("  ")];
                 spans.extend(owned_key_badge(&self.theme, key));
                 spans.push(Span::raw(" ".repeat(padding)));
@@ -6329,7 +6565,7 @@ impl App {
         {
             let key = "Ctrl-x";
             let desc = "Hold Ctrl and press X (e.g. Ctrl-p)";
-            let padding = 14usize.saturating_sub(key.len() + 2);
+            let padding = 14usize.saturating_sub(display_width(key) + 2).max(2);
             let mut spans = vec![Span::raw("  ")];
             spans.extend(owned_key_badge(&self.theme, key));
             spans.push(Span::raw(" ".repeat(padding)));
@@ -6980,7 +7216,7 @@ impl App {
                 &self.theme,
             ),
             Line::from(vec![Span::styled(
-                " Selecting a theme applies it instantly and saves it to config.toml.",
+                " Preview a theme, then confirm to save it.",
                 Style::default().fg(self.theme.hint_desc_fg),
             )]),
         ];
@@ -8433,20 +8669,6 @@ impl App {
             return;
         };
         self.render_dim_overlay(frame);
-        let area = centered_rect(56, 32, frame.area());
-        self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block("Confirm Kill");
-        let inner = outer.inner(area);
-        outer.render(area, frame.buffer_mut());
-
-        let [body_area, _, buttons_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .areas(inner);
 
         let targets = confirm_prompt.target_ids.len();
         let (agent_count, terminal_count) = confirm_prompt.target_ids.iter().fold(
@@ -8487,6 +8709,27 @@ impl App {
                 Style::default().fg(self.theme.hint_desc_fg),
             )),
         ];
+        let dialog_width = 60u16.min(frame.area().width.max(1));
+        let (lines, body_height) = exact_body(&lines, dialog_width.saturating_sub(2));
+        let area = centered_rect_exact(
+            dialog_width,
+            2 + body_height + 1 + 3,
+            self.dim_overlay_area(frame.area()),
+        );
+        self.clear_overlay_area(frame, area);
+        let outer = self.themed_overlay_block("Confirm Kill");
+        let inner = outer.inner(area);
+        outer.render(area, frame.buffer_mut());
+
+        let [body_area, _, buttons_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(body_height),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ])
+            .areas(inner);
+
         render_wrapped_body(&lines, body_area, frame.buffer_mut());
 
         let btn_width = 16u16;
@@ -8831,21 +9074,6 @@ impl App {
             return;
         };
         self.render_dim_overlay(frame);
-        let area = centered_rect(56, 30, frame.area());
-        self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block("Delete Terminal");
-        let inner = outer.inner(area);
-        outer.render(area, frame.buffer_mut());
-
-        let [body_area, _, buttons_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .areas(inner);
-
         let mut lines = vec![
             Line::from(""),
             Line::from(vec![
@@ -8864,6 +9092,27 @@ impl App {
                 Style::default().fg(self.theme.warning_fg),
             )));
         }
+        // A percentage height clipped the terminal's name and kill warning on
+        // short screens. Size the dialog to its wrapped body and fixed buttons.
+        let dialog_width = 60u16.min(frame.area().width.max(1));
+        let (lines, body_height) = exact_body(&lines, dialog_width.saturating_sub(2));
+        let area = centered_rect_exact(
+            dialog_width,
+            2 + body_height + 1 + 3,
+            self.dim_overlay_area(frame.area()),
+        );
+        self.clear_overlay_area(frame, area);
+        let outer = self.themed_overlay_block("Delete Terminal");
+        let inner = outer.inner(area);
+        outer.render(area, frame.buffer_mut());
+        let [body_area, _, buttons_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(body_height),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ])
+            .areas(inner);
         render_wrapped_body(&lines, body_area, frame.buffer_mut());
 
         let btn_width = 16u16;
@@ -9473,20 +9722,6 @@ impl App {
             return;
         };
         self.render_dim_overlay(frame);
-        let area = centered_rect(56, 30, frame.area());
-        self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block("Quit Yaran");
-        let inner = outer.inner(area);
-        outer.render(area, frame.buffer_mut());
-
-        let [body_area, _, buttons_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .areas(inner);
 
         let process_desc = quit_process_description(*agent_count, *terminal_count);
         let lines = vec![
@@ -9511,6 +9746,27 @@ impl App {
                 Style::default().fg(self.theme.hint_desc_fg),
             )),
         ];
+        let dialog_width = 60u16.min(frame.area().width.max(1));
+        let (lines, body_height) = exact_body(&lines, dialog_width.saturating_sub(2));
+        let area = centered_rect_exact(
+            dialog_width,
+            2 + body_height + 1 + 3,
+            self.dim_overlay_area(frame.area()),
+        );
+        self.clear_overlay_area(frame, area);
+        let outer = self.themed_overlay_block("Quit Yaran");
+        let inner = outer.inner(area);
+        outer.render(area, frame.buffer_mut());
+
+        let [body_area, _, buttons_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(body_height),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ])
+            .areas(inner);
+
         render_wrapped_body(&lines, body_area, frame.buffer_mut());
 
         let btn_width = 16u16;
@@ -9565,20 +9821,6 @@ impl App {
             return;
         };
         self.render_dim_overlay(frame);
-        let area = centered_rect(56, 30, frame.area());
-        self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block("Discard Changes");
-        let inner = outer.inner(area);
-        outer.render(area, frame.buffer_mut());
-
-        let [body_area, _, buttons_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .areas(inner);
 
         let lines = vec![
             Line::from(""),
@@ -9593,6 +9835,27 @@ impl App {
                 Style::default().fg(self.theme.warning_fg),
             )),
         ];
+        let dialog_width = 60u16.min(frame.area().width.max(1));
+        let (lines, body_height) = exact_body(&lines, dialog_width.saturating_sub(2));
+        let area = centered_rect_exact(
+            dialog_width,
+            2 + body_height + 1 + 3,
+            self.dim_overlay_area(frame.area()),
+        );
+        self.clear_overlay_area(frame, area);
+        let outer = self.themed_overlay_block("Discard Changes");
+        let inner = outer.inner(area);
+        outer.render(area, frame.buffer_mut());
+
+        let [body_area, _, buttons_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(body_height),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ])
+            .areas(inner);
+
         render_wrapped_body(&lines, body_area, frame.buffer_mut());
 
         let btn_width = 16u16;
@@ -9644,20 +9907,6 @@ impl App {
             return;
         };
         self.render_dim_overlay(frame);
-        let area = centered_rect(60, 36, frame.area());
-        self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block("Repository Has No Commits");
-        let inner = outer.inner(area);
-        outer.render(area, frame.buffer_mut());
-
-        let [body_area, _, buttons_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .areas(inner);
 
         let lines = vec![
             Line::from(""),
@@ -9677,6 +9926,27 @@ impl App {
                 Style::default().fg(self.theme.hint_desc_fg),
             )),
         ];
+        let dialog_width = 60u16.min(frame.area().width.max(1));
+        let (lines, body_height) = exact_body(&lines, dialog_width.saturating_sub(2));
+        let area = centered_rect_exact(
+            dialog_width,
+            2 + body_height + 1 + 3,
+            self.dim_overlay_area(frame.area()),
+        );
+        self.clear_overlay_area(frame, area);
+        let outer = self.themed_overlay_block("Repository Has No Commits");
+        let inner = outer.inner(area);
+        outer.render(area, frame.buffer_mut());
+
+        let [body_area, _, buttons_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(body_height),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ])
+            .areas(inner);
+
         render_wrapped_body(&lines, body_area, frame.buffer_mut());
 
         let btn_width = 22u16;
@@ -9734,20 +10004,6 @@ impl App {
             return;
         };
         self.render_dim_overlay(frame);
-        let area = centered_rect(60, 40, frame.area());
-        self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block("Not a Git Repository");
-        let inner = outer.inner(area);
-        outer.render(area, frame.buffer_mut());
-
-        let [body_area, _, buttons_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .areas(inner);
 
         let mut lines = vec![
             Line::from(""),
@@ -9782,6 +10038,27 @@ impl App {
             " Your existing files are left untouched (untracked).",
             Style::default().fg(self.theme.hint_desc_fg),
         )));
+        let dialog_width = 60u16.min(frame.area().width.max(1));
+        let (lines, body_height) = exact_body(&lines, dialog_width.saturating_sub(2));
+        let area = centered_rect_exact(
+            dialog_width,
+            2 + body_height + 1 + 3,
+            self.dim_overlay_area(frame.area()),
+        );
+        self.clear_overlay_area(frame, area);
+        let outer = self.themed_overlay_block("Not a Git Repository");
+        let inner = outer.inner(area);
+        outer.render(area, frame.buffer_mut());
+
+        let [body_area, _, buttons_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(body_height),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ])
+            .areas(inner);
+
         render_wrapped_body(&lines, body_area, frame.buffer_mut());
 
         let btn_width = 22u16;
@@ -10051,28 +10328,12 @@ impl App {
         let existing_agent = existing_agent.clone();
         let focus = *focus;
         self.render_dim_overlay(frame);
-        let area = centered_rect(60, 30, frame.area());
-        self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block("Another Agent Is Writing Here");
-        let inner = outer.inner(area);
-        outer.render(area, frame.buffer_mut());
 
-        let [body_area, _, buttons_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .areas(inner);
         let lines = vec![
             Line::from(""),
             Line::from(vec![
                 Span::raw(" Agent "),
-                Span::styled(
-                    existing_agent,
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
+                name_chip(&existing_agent, &self.theme),
                 Span::raw(" is already running in this shared checkout."),
             ]),
             Line::from(""),
@@ -10085,11 +10346,28 @@ impl App {
                 Style::default().fg(self.theme.warning_fg),
             )),
         ];
-        // chip-free: the agent name is bolded as its own span, the same way
-        // upstream renders it, and this fork's dialog predates the chip rule.
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .render(body_area, frame.buffer_mut());
+        let dialog_width = 60u16.min(frame.area().width.max(1));
+        let (lines, body_height) = exact_body(&lines, dialog_width.saturating_sub(2));
+        let area = centered_rect_exact(
+            dialog_width,
+            2 + body_height + 1 + 3,
+            self.dim_overlay_area(frame.area()),
+        );
+        self.clear_overlay_area(frame, area);
+        let outer = self.themed_overlay_block("Another Agent Is Writing Here");
+        let inner = outer.inner(area);
+        outer.render(area, frame.buffer_mut());
+
+        let [body_area, _, buttons_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(body_height),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ])
+            .areas(inner);
+
+        render_wrapped_body(&lines, body_area, frame.buffer_mut());
 
         let btn_width = 16u16;
         let gap = 2u16;
@@ -10142,20 +10420,6 @@ impl App {
             return;
         };
         self.render_dim_overlay(frame);
-        let area = centered_rect(60, 30, frame.area());
-        self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block("Branch Already Exists");
-        let inner = outer.inner(area);
-        outer.render(area, frame.buffer_mut());
-
-        let [body_area, _, buttons_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .areas(inner);
 
         let location_label = match location {
             crate::git::BranchLocation::Local => "local",
@@ -10178,6 +10442,27 @@ impl App {
             " allowing you to continue working on it.",
             Style::default().fg(self.theme.warning_fg),
         )));
+        let dialog_width = 60u16.min(frame.area().width.max(1));
+        let (lines, body_height) = exact_body(&lines, dialog_width.saturating_sub(2));
+        let area = centered_rect_exact(
+            dialog_width,
+            2 + body_height + 1 + 3,
+            self.dim_overlay_area(frame.area()),
+        );
+        self.clear_overlay_area(frame, area);
+        let outer = self.themed_overlay_block("Branch Already Exists");
+        let inner = outer.inner(area);
+        outer.render(area, frame.buffer_mut());
+
+        let [body_area, _, buttons_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(body_height),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ])
+            .areas(inner);
+
         render_wrapped_body(&lines, body_area, frame.buffer_mut());
 
         let btn_width = 16u16;
@@ -10774,10 +11059,15 @@ impl App {
             PromptState::ConfigureProjectEnv { .. } | PromptState::ConfigureGlobalEnv { .. }
         );
         let is_global_env = matches!(&self.prompt, PromptState::ConfigureGlobalEnv { .. });
+        let saving = self.configure_save_op.is_some();
         self.render_dim_overlay(frame);
         // Reserve a blank row plus three button rows for misclick safety and the
         // full-text field's controls. Width must fit the complete key footer.
-        let area = centered_rect_exact(84, if is_env { 22 } else { 20 }, frame.area());
+        let area = centered_rect_exact(
+            84,
+            if is_env { 22 } else { 20 },
+            self.dim_overlay_area(frame.area()),
+        );
         self.clear_overlay_area(frame, area);
         let outer = self.themed_overlay_block(if is_global_env {
             "Configure Global Environment"
@@ -10830,7 +11120,7 @@ impl App {
 
         // Focus routes the next modal action; engagement lets the field consume
         // keys. Focused but unengaged renders a border without a caret.
-        let field_focused = focus == ConfigureFieldFocus::Input;
+        let field_focused = !saving && focus == ConfigureFieldFocus::Input;
         let engaged = self.input_target == InputTarget::StartupCommand;
         let text_area = self.render_modal_text_field_frame(
             frame,
@@ -10913,22 +11203,24 @@ impl App {
                 ButtonPressedTarget::ConfigureFieldCancel,
                 self.pressed_button,
                 focus == ConfigureFieldFocus::Cancel,
-                true,
+                !saving,
             ))
             .render(frame, cancel_button, &self.theme);
-        Button::new("Save")
+        Button::new(if saving { "Saving..." } else { "Save" })
             .kind(ButtonKind::Confirm)
             .state(button_state_for(
                 ButtonPressedTarget::ConfigureFieldSave,
                 self.pressed_button,
                 focus == ConfigureFieldFocus::Save,
-                true,
+                !saving,
             ))
             .render(frame, save_button, &self.theme);
 
         // ── Hints. Every key is resolved through the bindings. ────
         let close_key = self.bindings.label_for(Action::CloseOverlay);
-        let hints: Vec<Hint> = if engaged {
+        let hints: Vec<Hint> = if saving {
+            vec![Hint::plain("Saving configuration...")]
+        } else if engaged {
             vec![
                 Hint::key(
                     self.bindings.labels_for(Action::ExitCommitInput),
@@ -11261,7 +11553,28 @@ impl App {
             return;
         };
         self.render_dim_overlay(frame);
-        let popup = centered_rect(78, 72, frame.area());
+        let buttons = [
+            KillRunningFooterAction::Cancel,
+            KillRunningFooterAction::Hovered,
+            KillRunningFooterAction::Selected,
+            KillRunningFooterAction::Visible,
+        ];
+        let gap = 2u16;
+        // These are four distinct actions, not picker confirmation controls;
+        // three have no keyboard equivalent. Extra width balances long labels.
+        let button_widths = buttons.map(|action| {
+            let label_chars =
+                u16::try_from(action.button_label().chars().count()).unwrap_or(u16::MAX);
+            label_chars.saturating_add(6)
+        });
+        let total_width = button_widths.iter().sum::<u16>() + gap * 3;
+        let bounds = self.dim_overlay_area(frame.area());
+        let preferred = centered_rect(78, 72, bounds);
+        let popup = centered_rect_exact(
+            preferred.width.max(total_width.saturating_add(2)),
+            preferred.height,
+            bounds,
+        );
         self.clear_overlay_area(frame, popup);
 
         let visible_indices = Self::visible_kill_running_indices(prompt);
@@ -11435,21 +11748,6 @@ impl App {
             .wrap(Wrap { trim: false })
             .render(legend_area, frame.buffer_mut());
 
-        let buttons = [
-            KillRunningFooterAction::Cancel,
-            KillRunningFooterAction::Hovered,
-            KillRunningFooterAction::Selected,
-            KillRunningFooterAction::Visible,
-        ];
-        let gap = 2u16;
-        // These are four distinct actions, not picker confirmation controls;
-        // three have no keyboard equivalent. Extra width balances long labels.
-        let button_widths = buttons.map(|action| {
-            let label_chars =
-                u16::try_from(action.button_label().chars().count()).unwrap_or(u16::MAX);
-            label_chars.saturating_add(6)
-        });
-        let total_width = button_widths.iter().sum::<u16>() + gap * 3;
         let start_x = buttons_area.x + buttons_area.width.saturating_sub(total_width) / 2;
         let mut cursor_x = start_x;
         let mut button_rects = [Rect::default(); 4];
@@ -12253,7 +12551,11 @@ impl App {
     fn render_edit_macros(&mut self, frame: &mut Frame) {
         // Pre-compute the popup layout so we can set the display width for
         // soft-wrapping before taking the immutable borrow on self.prompt.
-        let popup = centered_rect_exact(MACRO_EDIT_POPUP.0, MACRO_EDIT_POPUP.1, frame.area());
+        let popup = centered_rect_exact(
+            MACRO_EDIT_POPUP.0,
+            MACRO_EDIT_POPUP.1,
+            self.dim_overlay_area(frame.area()),
+        );
         {
             // Temporarily borrow prompt mutably to set the text input's
             // viewport to match the available inner area after all borders,
@@ -12715,20 +13017,6 @@ impl App {
 
     fn render_confirm_delete_macro(&mut self, frame: &mut Frame, name: &str, focus: ConfirmFocus) {
         self.render_dim_overlay(frame);
-        let area = centered_rect(56, 30, frame.area());
-        self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block("Delete Macro");
-        let inner = outer.inner(area);
-        outer.render(area, frame.buffer_mut());
-
-        let [body_area, _, buttons_area] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-            ])
-            .areas(inner);
 
         let lines = vec![
             Line::from(""),
@@ -12739,6 +13027,27 @@ impl App {
             ]),
             Line::from(""),
         ];
+        let dialog_width = 60u16.min(frame.area().width.max(1));
+        let (lines, body_height) = exact_body(&lines, dialog_width.saturating_sub(2));
+        let area = centered_rect_exact(
+            dialog_width,
+            2 + body_height + 1 + 3,
+            self.dim_overlay_area(frame.area()),
+        );
+        self.clear_overlay_area(frame, area);
+        let outer = self.themed_overlay_block("Delete Macro");
+        let inner = outer.inner(area);
+        outer.render(area, frame.buffer_mut());
+
+        let [body_area, _, buttons_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(body_height),
+                Constraint::Length(1),
+                Constraint::Length(3),
+            ])
+            .areas(inner);
+
         render_wrapped_body(&lines, body_area, frame.buffer_mut());
 
         let btn_width = 16u16;
@@ -12883,12 +13192,12 @@ impl App {
 
     fn render_fullscreen_agent(&mut self, frame: &mut Frame) {
         self.render_dim_overlay(frame);
-        let area = centered_rect(96, 94, frame.area());
+        let area = centered_rect(96, 94, self.dim_overlay_area(frame.area()));
         self.paint_modal_surface(frame, area, self.theme.app_bg);
         let title = match self.selected_session() {
             Some(session) => {
                 // Reflect the focused tab's provider in the fullscreen title.
-                let provider = capitalize(self.focused_tab_provider(session).as_str());
+                let provider = self.focused_tab_provider(session);
                 let name = session.display_label();
                 let pr_suffix = self
                     .engine
@@ -12896,7 +13205,7 @@ impl App {
                     .get(&session.id)
                     .map(|pr| format!(" · {}#{}", pr.owner_repo, pr.number))
                     .unwrap_or_default();
-                format!(" {provider} agent · {name}{pr_suffix} ")
+                format!("{name} · {}{pr_suffix}", provider.as_str())
             }
             None => " Agent ".to_string(),
         };
@@ -12912,7 +13221,7 @@ impl App {
 
     fn render_fullscreen_terminal(&mut self, frame: &mut Frame) {
         self.render_dim_overlay(frame);
-        let area = centered_rect(96, 94, frame.area());
+        let area = centered_rect(96, 94, self.dim_overlay_area(frame.area()));
         self.paint_modal_surface(frame, area, self.theme.app_bg);
         let saved = self.session_surface;
         self.session_surface = SessionSurface::Terminal;
@@ -12922,7 +13231,7 @@ impl App {
 
     fn render_fullscreen_startup_log(&mut self, frame: &mut Frame) {
         self.render_dim_overlay(frame);
-        let area = centered_rect(96, 94, frame.area());
+        let area = centered_rect(96, 94, self.dim_overlay_area(frame.area()));
         self.paint_modal_surface(frame, area, self.theme.app_bg);
 
         let title = self
@@ -13258,11 +13567,30 @@ impl App {
     /// as the changes groups' recap, whose figures wear the diff colors rather
     /// than the title's.
     fn themed_block_line<'a>(&self, title: Line<'a>, focused: bool) -> Block<'a> {
+        let chip = focused.then(|| self.theme.pane_focus_chip_style());
         Block::default()
-            .title(title)
+            .title(pane_title(title, chip))
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
             .border_style(self.theme.border_style(focused))
+    }
+
+    /// The pane block while its keystrokes reach the terminal inside it: the
+    /// border and an `INPUT` title chip in the typing tone, so typing into a
+    /// PTY never looks like ordinary pane focus.
+    fn engaged_pane_block<'a>(&self, title: &'a str) -> Block<'a> {
+        let chip = self.theme.pane_input_chip_style();
+        let title = title.trim();
+        let label = if title.is_empty() {
+            PANE_INPUT_LABEL.to_string()
+        } else {
+            format!("{PANE_INPUT_LABEL} · {title}")
+        };
+        Block::default()
+            .title(pane_title(Line::from(Span::raw(label)), Some(chip)))
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .border_style(Style::default().fg(self.theme.session_typing))
     }
 
     /// Reset `area` to a blank surface and fill it with the modal overlay
@@ -13470,9 +13798,11 @@ impl App {
 
     fn center_pane_agent_title(&self) -> String {
         if let Some(session) = self.selected_session() {
-            // Reflect the FOCUSED tab's provider, not just the Main one.
-            let provider = capitalize(self.focused_tab_provider(session).as_str());
-            let base = format!("{provider} agent");
+            // Name first, as the sidebar row reads: several agents usually share
+            // a harness, so the agent is what tells this pane apart. The FOCUSED
+            // tab's provider follows, not just the first tab's.
+            let provider = self.focused_tab_provider(session);
+            let base = format!("{} · {}", session.display_label(), provider.as_str());
             // Who else is looking at the terminal this caption names. The FOCUSED
             // tab's own count, not the agent's total: the caption titles one pane
             // showing one tab, and the sidebar row is where the agent-wide number
@@ -13488,7 +13818,7 @@ impl App {
             let base = format!("{base}{remote}");
             let count = self.session_terminal_count(&session.id);
             if count > 0 {
-                return format!("{base} (+ {})", count_of(count, "terminal"));
+                return format!("{base} · {}", count_of(count, "terminal"));
             }
             return base;
         }
@@ -14976,8 +15306,12 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(
-            rendered.contains(&format!("build: {}", yaran_core::version::GIT_COMMIT)),
-            "the header must show build: {}; got:\n{rendered}",
+            rendered.contains(&format!(
+                "{} · {}",
+                env!("YARAN_DISPLAY_VERSION"),
+                yaran_core::version::GIT_COMMIT
+            )),
+            "the header must show the version and build {}; got:\n{rendered}",
             yaran_core::version::GIT_COMMIT
         );
     }
@@ -16368,6 +16702,33 @@ mod tests {
             );
         }
         app
+    }
+
+    #[test]
+    fn active_terminal_sort_keeps_a_quiet_foreground_app_ahead_of_an_idle_shell() {
+        let mut app = app_with_two_terminals();
+        app.engine.config.ui.agent_sort = "active".into();
+        app.engine
+            .companion_terminals
+            .get_mut("term-2")
+            .unwrap()
+            .foreground_cmd = Some("vim".into());
+        assert!(app.engine.terminal_is_working("term-2"));
+        assert!(!app.engine.is_agent_streaming("term-2"));
+
+        let order = |app: &App| {
+            app.sorted_terminal_items()
+                .iter()
+                .map(|(id, _)| (*id).clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&app), ["term-2", "term-1"]);
+        app.engine.note_pty_input("term-1");
+        assert_eq!(
+            order(&app),
+            ["term-1", "term-2"],
+            "typing and running share the active bucket's stable manual order"
+        );
     }
 
     /// The journey: a standalone terminal appears in the sidebar, and because it
@@ -17903,8 +18264,10 @@ mod tests {
         // The direct statement of the same rule, immune to how many boxes the
         // pane's own empty state happens to draw: a pill is labelled with its
         // provider, and no pill is painted here.
+        // The pane's own title names its provider; nothing else may.
+        let title = format!("{} · claude", app.engine.sessions[0].display_label());
         assert!(
-            !painted.contains("claude"),
+            !painted.replacen(&title, "", 1).contains("claude"),
             "no tab pill may be painted in fullscreen; got:\n{painted}"
         );
         assert!(
@@ -19723,6 +20086,240 @@ mod tests {
         terminal.backend_mut().assert_cursor_position(expected);
     }
 
+    /// The center pane's top-left corner cell and its top border row as text.
+    fn center_title_row(
+        app: &App,
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) -> (Color, String) {
+        let buf = terminal.backend().buffer();
+        let area = app.mouse_layout.agent_term.expect("agent pane drawn");
+        // The pane border sits one row above the hint-split terminal area.
+        let y = area.y - 1;
+        let x0 = area.x - 1;
+        let row: String = (x0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect();
+        (buf[(x0, y)].fg, row)
+    }
+
+    /// While keystrokes reach the agent's PTY, the pane says so in its own
+    /// chrome: the border takes the typing tone and the title leads with an
+    /// INPUT chip, and the footer's mode chip says INPUT too. Plain focus (the
+    /// sidebar has the keys) and a scrolled-back pane (typing is paused) do not.
+    #[test]
+    fn a_typeable_pane_wears_the_input_chrome_and_plain_focus_does_not() {
+        let mut app = app_with_parked_agent_cursor();
+        app.center_mode = CenterMode::Agent;
+        app.focus = FocusPane::Center;
+        app.input_target = InputTarget::None;
+        app.fullscreen_overlay = FullscreenOverlay::None;
+        assert!(app.center_typeable(), "test setup: pane must be typeable");
+
+        let (terminal, _) = draw_caret_frame(&mut app);
+        let (corner, title) = center_title_row(&app, &terminal);
+        assert_eq!(corner, app.theme.session_typing, "{title}");
+        assert!(title.starts_with("╭ INPUT · "), "{title}");
+        let chip_cell = &terminal.backend().buffer()[(
+            app.mouse_layout.agent_term.unwrap().x + 1,
+            app.mouse_layout.agent_term.unwrap().y - 1,
+        )];
+        assert_eq!(chip_cell.bg, app.theme.session_typing);
+        let rows = buffer_rows(terminal.backend().buffer());
+        let hints = &rows[rows.len() - 2];
+        assert!(hints.starts_with(" INPUT  "), "{hints:?}");
+        // Only the chords that stay yaran's; a key the agent receives (the
+        // reconnect key, plain Enter) is not advertised.
+        let palette = app.bindings.label_for(Action::OpenPalette);
+        assert!(hints.contains(&format!("<{palette}> Palette")), "{hints:?}");
+        let reconnect = app.bindings.label_for(Action::ReconnectAgent);
+        assert!(!hints.contains(&format!("<{reconnect}>")), "{hints:?}");
+
+        // The sidebar has the keys: the center is a plain, unfocused pane.
+        app.focus = FocusPane::Left;
+        let (terminal, _) = draw_caret_frame(&mut app);
+        let (corner, title) = center_title_row(&app, &terminal);
+        assert_eq!(corner, app.theme.border_normal, "{title}");
+        assert!(!title.contains("INPUT"), "{title}");
+        let rows = buffer_rows(terminal.backend().buffer());
+        assert!(
+            rows[rows.len() - 2].starts_with(" Agents  "),
+            "{:?}",
+            rows[rows.len() - 2]
+        );
+    }
+
+    /// An idle status row is blank: no orphan dot with nothing after it.
+    #[test]
+    fn an_empty_status_row_paints_no_dot() {
+        let mut app = test_app(default_bindings());
+        assert!(
+            app.status.most_recent_tui().is_none(),
+            "test setup: no status"
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("render");
+        let rows = buffer_rows(terminal.backend().buffer());
+        assert_eq!(rows.last().unwrap().trim(), "", "{:?}", rows.last());
+    }
+
+    /// The header keeps every crumb and lets the flush-right version give way:
+    /// the commit first, then the version, and never a crumb.
+    #[test]
+    fn the_header_version_gives_way_before_any_crumb() {
+        let mut app = test_app(default_bindings());
+        let commit = yaran_core::version::GIT_COMMIT;
+        let version = env!("YARAN_DISPLAY_VERSION");
+        let wide = header_row(&mut app, 200);
+        assert!(
+            wide.trim_end().ends_with(&format!("{version} · {commit}")),
+            "{wide}"
+        );
+        let crumbs = wide[..wide.find(version).unwrap()].trim_end().to_string();
+        let crumbs_w = display_width(&crumbs);
+        // Room for the crumbs and the bare version only.
+        let narrow = header_row(&mut app, (crumbs_w + 3 + display_width(version) + 1) as u16);
+        assert!(narrow.starts_with(&crumbs), "{narrow}");
+        assert!(
+            narrow.contains(version) && !narrow.contains(commit),
+            "{narrow}"
+        );
+        // No room for either: the crumbs stand alone, uncut.
+        let tight = header_row(&mut app, crumbs_w as u16 + 1);
+        assert!(
+            tight.starts_with(&crumbs) && !tight.contains(version),
+            "{tight}"
+        );
+        let clipped = header_row(&mut app, 40);
+        assert!(clipped.trim_end().ends_with('…'), "{clipped}");
+    }
+
+    #[test]
+    fn a_covered_pty_does_not_advertise_input_in_the_footer() {
+        let mut app = app_with_parked_agent_cursor();
+        let (companion, _, _) =
+            crate::app::background_server::tests::FakeCompanion::serving_with_ownership();
+        app.companion = Some(companion);
+        app.focus = FocusPane::Center;
+        assert!(app.center_typeable());
+        assert!(app.focused_pty_is_covered_by_card());
+
+        let (terminal, _) = draw_caret_frame(&mut app);
+        let (_, title) = center_title_row(&app, &terminal);
+        let rows = buffer_rows(terminal.backend().buffer());
+        assert!(!title.contains("INPUT"), "{title}");
+        assert!(rows[rows.len() - 2].starts_with(" Agent  "), "{rows:?}");
+    }
+
+    #[test]
+    fn fullscreen_keeps_the_footer_visible_and_its_minimize_hint_when_paused() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = app_with_parked_agent_cursor();
+        app.focus = FocusPane::Center;
+        app.fullscreen_overlay = FullscreenOverlay::Agent;
+        app.input_target = InputTarget::Agent;
+        let mut terminal = Terminal::new(TestBackend::new(160, 45)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let rows = buffer_rows(terminal.backend().buffer());
+        let footer = &rows[rows.len() - 2];
+        assert!(footer.starts_with(" INPUT  "), "{footer}");
+        assert!(footer.contains("Minimize"), "{footer}");
+
+        app.scroll_mode
+            .insert(app.selected_terminal_surface_id().unwrap());
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let rows = buffer_rows(terminal.backend().buffer());
+        let footer = &rows[rows.len() - 2];
+        assert!(!footer.contains("INPUT"), "{footer}");
+        assert!(footer.contains("Minimize"), "{footer}");
+    }
+
+    #[test]
+    fn changed_file_paths_and_search_use_the_theme_text_color() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = test_app(default_bindings());
+        app.theme = crate::theme::load("ayu_light", &app.engine.paths).unwrap();
+        app.focus = FocusPane::Files;
+        app.right_section = RightSection::Unstaged;
+        app.files_search_active = true;
+        app.files_search.set_text("other".into());
+        let files: Vec<_> = ["selected.rs", "src/other.rs"]
+            .into_iter()
+            .map(|path| ChangedFile {
+                status: "M".into(),
+                path: path.into(),
+                additions: 1,
+                deletions: 0,
+                binary: false,
+                diff_excluded: false,
+                renamed_from: None,
+            })
+            .collect();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                app.render_file_list(
+                    frame,
+                    frame.area(),
+                    "Changes",
+                    &files,
+                    RightSection::Unstaged,
+                    false,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows = buffer_rows(buffer);
+        for text in ["src/other.rs", "/ other"] {
+            let y = rows.iter().position(|row| row.contains(text)).unwrap();
+            let x = rows[y].find(text).unwrap();
+            for column in x..x + text.len() {
+                assert_eq!(
+                    buffer[(column as u16, y as u16)].fg,
+                    app.theme.text_fg,
+                    "{text} must remain readable on the light surface"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn padded_changed_file_headings_keep_complete_totals_or_omit_them() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let app = test_app(default_bindings());
+        let files = [ChangedFile {
+            status: "M".into(),
+            path: "file.rs".into(),
+            additions: 1,
+            deletions: 1,
+            binary: false,
+            diff_excluded: false,
+            renamed_from: None,
+        }];
+        for (width, totals_fit) in [(19, false), (21, true)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 6)).unwrap();
+            terminal
+                .draw(|frame| {
+                    app.render_file_list(
+                        frame,
+                        frame.area(),
+                        "Changes",
+                        &files,
+                        RightSection::Unstaged,
+                        false,
+                    );
+                })
+                .unwrap();
+            let header = &buffer_rows(terminal.backend().buffer())[0];
+            assert!(header.contains("Changes (1)"), "{header}");
+            if totals_fit {
+                assert!(header.contains("+1 -1"), "{header}");
+            } else {
+                assert!(!header.contains('+') && !header.contains('-'), "{header}");
+            }
+        }
+    }
+
     /// The windowed typeable pane's hint line says where typing goes and names
     /// the chords that stay yaran's (fullscreen toggle, next pane), every label
     /// resolved through the bindings rather than hardcoded.
@@ -20021,6 +20618,11 @@ mod tests {
         assert!(app.center_typeable(), "typeability is not scroll state");
 
         let (mut terminal, _) = draw_caret_frame(&mut app);
+
+        let (_, title) = center_title_row(&app, &terminal);
+        assert!(!title.contains("INPUT"), "{title}");
+        let rows = buffer_rows(terminal.backend().buffer());
+        assert!(rows[rows.len() - 2].starts_with(" Agent  "), "{rows:?}");
 
         // Scrolled back, the cursor cell maps below the viewport (or not at
         // all), so the render gate must leave the hardware cursor alone.
@@ -21066,33 +21668,6 @@ mod tests {
         assert!(wrapped_rows(&lines, 20) > 1);
     }
 
-    // ── Unit tests for capitalize ─────────────────────────────────
-
-    #[test]
-    fn capitalize_normal_string() {
-        assert_eq!(capitalize("claude"), "Claude");
-    }
-
-    #[test]
-    fn capitalize_already_capitalized() {
-        assert_eq!(capitalize("Claude"), "Claude");
-    }
-
-    #[test]
-    fn capitalize_single_char() {
-        assert_eq!(capitalize("c"), "C");
-    }
-
-    #[test]
-    fn capitalize_empty_string() {
-        assert_eq!(capitalize(""), "");
-    }
-
-    #[test]
-    fn capitalize_all_uppercase() {
-        assert_eq!(capitalize("CODEX"), "CODEX");
-    }
-
     // ── PTY cell colors render verbatim in every mode ──────────────
 
     /// The non-interactive (minimized, not focused) agent pane must paint the
@@ -21177,6 +21752,218 @@ mod tests {
     fn format_bytes_gib_range() {
         assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GiB");
         assert_eq!(format_bytes(1024 * 1024 * 1024 * 3), "3.0 GiB");
+    }
+
+    #[test]
+    fn kill_running_actions_fit_inside_the_picker_at_80_columns() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = test_app(default_bindings());
+        app.prompt = PromptState::KillRunning(KillRunningPrompt {
+            runtimes: vec![],
+            list: SearchableList::new(),
+            selected_ids: HashSet::new(),
+            focus: KillRunningFocus::List,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let OverlayMouseLayout::KillRunning {
+            list,
+            cancel_button,
+            hovered_button,
+            selected_button,
+            visible_button,
+            ..
+        } = app.overlay_layout.active
+        else {
+            panic!("expected the kill-running picker");
+        };
+        let buffer = terminal.backend().buffer();
+        for (rect, label) in [
+            (cancel_button, "Cancel"),
+            (hovered_button, "Kill Hovered"),
+            (selected_button, "Kill Selected"),
+            (visible_button, "Kill Visible"),
+        ] {
+            assert!(
+                rect.x >= list.x && rect.right() <= list.right(),
+                "{label}: {rect:?}"
+            );
+            assert!(
+                rect.right() <= 80 && rect.bottom() <= 22,
+                "{label}: {rect:?}"
+            );
+            let row: String = (rect.x..rect.right())
+                .map(|x| buffer[(x, rect.y + 1)].symbol())
+                .collect();
+            assert!(row.contains(label), "{label}: {row}");
+        }
+    }
+
+    #[test]
+    fn confirmation_context_and_warnings_fit_short_screens() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let path =
+            "src/very-long-component-name-with-context-and-a-file-that-needs-to-be-reviewed.rs";
+        let cases = vec![
+            (
+                PromptState::ConfirmDiscardFile {
+                    file_path: path.into(),
+                    focus: ConfirmFocus::Cancel,
+                },
+                vec![path, "This action cannot be undone.", "Cancel", "Discard"],
+            ),
+            (
+                PromptState::ConfirmDiscardFile {
+                    file_path: "src/長い名前の変更ファイル.rs".into(),
+                    focus: ConfirmFocus::Cancel,
+                },
+                vec![
+                    "src/長い名前の変更ファイル.rs",
+                    "cannot be undone",
+                    "Discard",
+                ],
+            ),
+            (
+                PromptState::ConfirmQuit {
+                    agent_count: 2,
+                    terminal_count: 1,
+                    focus: ConfirmFocus::Cancel,
+                },
+                vec![
+                    "will be killed",
+                    "work will be lost",
+                    "worktrees are preserved",
+                    "Quit",
+                ],
+            ),
+            (
+                PromptState::ConfirmKillRunning(ConfirmKillRunningPrompt {
+                    previous: KillRunningPrompt {
+                        runtimes: vec![],
+                        list: SearchableList::new(),
+                        selected_ids: HashSet::new(),
+                        focus: KillRunningFocus::Footer(KillRunningFooterAction::Selected),
+                    },
+                    action: KillRunningAction::Selected,
+                    target_ids: vec![RuntimeTargetId::Agent("session-1".into())],
+                    focus: ConfirmFocus::Cancel,
+                }),
+                vec![
+                    "1 running process",
+                    "lost immediately",
+                    "files remain on disk",
+                    "Cancel",
+                ],
+            ),
+            (
+                PromptState::ConfirmSharedWriter {
+                    existing_agent: "long-running-agent-in-shared-workspace".into(),
+                    action: SharedWriterAction::Reconnect {
+                        session_id: "session-1".into(),
+                        force: false,
+                        seek_fullscreen: false,
+                    },
+                    focus: ConfirmFocus::Cancel,
+                },
+                vec![
+                    "long-running-agent-in-shared-workspace",
+                    "overwrite each other's work",
+                    "Start Anyway",
+                ],
+            ),
+            (
+                PromptState::ConfirmCreateInitialCommit {
+                    path: "/capture/repos/empty-repository".into(),
+                    name: "empty-repository".into(),
+                    focus: ConfirmFocus::Cancel,
+                },
+                vec![
+                    "empty-repository",
+                    "empty initial commit",
+                    "files are left untouched",
+                    "Create Commit & Add",
+                ],
+            ),
+            (
+                PromptState::ConfirmInitRepo {
+                    path: "/capture/repos/plain-folder".into(),
+                    name: "plain-folder".into(),
+                    candidates: vec!["node_modules".into(), "target".into()],
+                    focus: ConfirmFocus::Cancel,
+                    return_prompt: Box::new(PromptState::None),
+                },
+                vec![
+                    "plain-folder",
+                    "node_modules",
+                    "files are left untouched",
+                    "Initialize & Add",
+                ],
+            ),
+        ];
+        for (prompt, expected) in cases {
+            let mut app = test_app(default_bindings());
+            app.prompt = prompt;
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .flat_map(|cell| cell.symbol().chars())
+                .filter(|c| !c.is_whitespace() && *c != '│')
+                .collect();
+            for expected in expected {
+                let expected: String = expected.chars().filter(|c| !c.is_whitespace()).collect();
+                assert!(text.contains(&expected), "missing {expected}: {text}");
+            }
+        }
+
+        let mut app = test_app(default_bindings());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let name = "Release notes and regression review";
+        terminal
+            .draw(|frame| app.render_confirm_delete_macro(frame, name, ConfirmFocus::Cancel))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            text.contains(name) && text.contains("Cancel") && text.contains("Delete"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn delete_terminal_confirm_keeps_identity_and_warning_visible_on_short_screens() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for foreground_cmd in [None, Some("vim".to_string())] {
+            let mut app = test_app(default_bindings());
+            let running = foreground_cmd.is_some();
+            app.prompt = PromptState::ConfirmDeleteTerminal {
+                terminal_id: "term-1".into(),
+                terminal_label: "Terminal 1".into(),
+                foreground_cmd,
+                focus: ConfirmFocus::Cancel,
+            };
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("Terminal 1"), "{text}");
+            assert!(text.contains("Cancel") && text.contains("Delete"), "{text}");
+            assert_eq!(text.contains("will be killed"), running, "{text}");
+        }
     }
 
     #[test]
@@ -22279,6 +23066,37 @@ mod tests {
     /// rows it admits to being. Measured on the real content, at the widths that
     /// wrap it: paint the same lines with ratatui's `Wrap { trim: false }` (what
     /// the overlay used to do) and with our pre-wrap, and compare every cell.
+    #[test]
+    fn long_help_key_labels_stay_separate_from_their_description() {
+        let app = test_app(default_bindings());
+        let line = app
+            .help_content_lines(100)
+            .into_iter()
+            .find(|line| line.to_string().contains("Focus previous pane"))
+            .expect("previous-pane help row")
+            .to_string();
+        assert!(line.contains(">  Focus previous pane"), "{line}");
+    }
+
+    #[test]
+    fn an_empty_agent_search_explains_how_to_clear_it() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = test_app(default_bindings());
+        app.agent_filter = Some(TextInput::with_text("no-such-agent".into()));
+        app.rebuild_left_items();
+        let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("No matching agents."), "{rendered}");
+        assert!(rendered.contains("<Esc> clear"), "{rendered}");
+    }
+
     #[test]
     fn pre_wrapping_the_help_page_paints_what_wrap_did() {
         use ratatui::Terminal;
@@ -25314,11 +26132,11 @@ mod tests {
     /// The macro modal's footer row, read out of the popup's own inner rect
     /// rather than off the whole terminal row (which carries the dimmed app
     /// behind it).
-    fn macro_modal_footer(buf: &ratatui::buffer::Buffer) -> String {
+    fn macro_modal_footer(app: &App, buf: &ratatui::buffer::Buffer) -> String {
         let popup = super::centered_rect_exact(
             super::MACRO_EDIT_POPUP.0,
             super::MACRO_EDIT_POPUP.1,
-            buf.area,
+            app.dim_overlay_area(buf.area),
         );
         let y = popup.y + popup.height - 2;
         ((popup.x + 1)..(popup.x + popup.width - 1))
@@ -25339,7 +26157,7 @@ mod tests {
                 .map(|span| span.content.as_ref())
                 .collect::<String>()
         };
-        let footer = macro_modal_footer(&buf);
+        let footer = macro_modal_footer(&app, &buf);
         assert!(
             footer.trim_end() == expected,
             "footer {:?} is not the shared hint line {:?}",
@@ -25357,7 +26175,7 @@ mod tests {
         let popup = super::centered_rect_exact(
             super::MACRO_EDIT_POPUP.0,
             super::MACRO_EDIT_POPUP.1,
-            buf.area,
+            app.dim_overlay_area(buf.area),
         );
         let y = popup.y + popup.height - 2;
         let last_text_col = popup.x + 1 + expected.chars().count() as u16;
@@ -25385,7 +26203,7 @@ mod tests {
         );
         let mut app = macro_list_app(bindings);
         let buf = render_to_buffer(&mut app);
-        let footer = macro_modal_footer(&buf);
+        let footer = macro_modal_footer(&app, &buf);
         assert!(
             footer.contains("Ctrl-t") && footer.contains("Ctrl-x"),
             "the footer must name the rebound keys, got {footer:?}"
@@ -25505,7 +26323,7 @@ mod tests {
 
         let buf = render_to_buffer(&mut app);
         assert_eq!(
-            macro_modal_footer(&buf).trim(),
+            macro_modal_footer(&app, &buf).trim(),
             "",
             "the macro list's footer must not stay readable under the delete-confirm"
         );

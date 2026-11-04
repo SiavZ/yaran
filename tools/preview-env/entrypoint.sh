@@ -60,6 +60,9 @@ done
 # file is how the host tells a screens container from a plain one.
 if [ "${YARAN_SCREENS:-0}" = "1" ] && [ -d /fixtures ]; then
   echo "entrypoint: installing screenshot fixtures (stand-in gh, transcript provider)"
+  # The scenes seed several agents per project and write into their worktrees.
+  # Keep that fixture independent of the ordinary first-run workspace default.
+  sed -i 's/^default_mode = "shared"$/default_mode = "worktree"/' "$YARAN_HOME/config.toml"
   install -m 0755 /fixtures/gh /usr/local/bin/gh
   install -m 0755 /fixtures/notes-agent /usr/local/bin/claude
   # The tab strip shows one tab per provider, and yaran refuses to open a tab for a

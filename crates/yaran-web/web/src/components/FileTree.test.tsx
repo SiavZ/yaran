@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { StrictMode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 
@@ -9,6 +10,9 @@ import { agentRoot } from "@/lib/editorRoot"
 // FileTree talks to the server exclusively through `fileApi.tree`, so mocking
 // that one function is enough to drive every scenario below without a real
 // server. Follows TerminalArea.test.tsx's style of mocking only what's needed.
+let coarsePointer = false
+vi.mock("@/hooks/use-coarse-pointer", () => ({ useIsCoarsePointer: () => coarsePointer }))
+
 const treeMock = vi.fn<(sessionId: string, dir: string) => Promise<unknown>>()
 vi.mock("@/lib/fileApi", () => ({
   fileApi: {
@@ -69,6 +73,7 @@ function dir(path: string): DirEntry {
 }
 
 beforeEach(() => {
+  coarsePointer = false
   treeMock.mockReset()
   for (const spy of Object.values(notifyMocks)) spy.mockClear()
 })
@@ -1254,5 +1259,29 @@ describe("vanishedDirPaths", () => {
   it("ignores a file that left, and a directory that became a file", () => {
     expect(vanishedDirPaths([file("a.ts")], [])).toEqual([])
     expect(vanishedDirPaths([dir("thing")], [file("thing")])).toEqual(["thing"])
+  })
+})
+
+
+describe("FileTree touch geometry", () => {
+  it("uses 40px targets and the same height for virtualization on a touch device", async () => {
+    coarsePointer = true
+    treeMock.mockResolvedValue({ dir: "", entries: Array.from({ length: 50 }, (_, i) => file(`file-${i}.ts`)) })
+    render(<FileTree root={agentRoot("s1")} openPath="file-0.ts" changed={new Map()} initialPath={null} onOpen={() => {}} />)
+    const row = (await screen.findByText("file-0.ts")).closest("button")!
+    expect(row.style.height).toBe("40px")
+    expect(row.getAttribute("aria-current")).toBe("true")
+    const list = row.closest("ul")!
+    expect(list.parentElement?.style.height).toBe("2000px")
+    expect(list.querySelectorAll("li").length).toBeLessThan(50)
+  })
+})
+
+
+describe("FileTree effect lifecycle", () => {
+  it("finishes loading through StrictMode's setup-cleanup-setup cycle", async () => {
+    treeMock.mockResolvedValue({ dir: "", entries: [file("ready.ts")] })
+    render(<StrictMode><FileTree root={agentRoot("s1")} openPath={null} changed={new Map()} initialPath={null} onOpen={() => {}} /></StrictMode>)
+    expect(await screen.findByText("ready.ts")).toBeTruthy()
   })
 })

@@ -18,3 +18,5 @@ module.exports.cols = 160
 module.exports.rows = 45
 module.exports.theme = "yaran_dark"
 module.exports.fixture = "steady"
+module.exports.config = (text) => text
+  .replace(/^sidebar_density = "compact"$/m, 'sidebar_density = "comfortable"')

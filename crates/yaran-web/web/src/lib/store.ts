@@ -4273,14 +4273,16 @@ export function closeGlobalEnv(): void {
   setState({ globalEnvOpen: false })
 }
 
-export function saveGlobalEnv(env: Record<string, string>): void {
-  configApi
-    .persistGlobalEnv(env)
-    .catch((e) =>
-      notifyError(
-        e instanceof Error ? e.message : "Could not save the global environment.",
-      ),
+export async function saveGlobalEnv(env: Record<string, string>): Promise<boolean> {
+  try {
+    await configApi.persistGlobalEnv(env)
+    return true
+  } catch (e) {
+    notifyError(
+      e instanceof Error ? e.message : "Could not save the global environment.",
     )
+    return false
+  }
 }
 
 export function openProjectSettings(projectId: string): void {
@@ -5464,23 +5466,23 @@ export function closeMacrosDialog(): void {
 // Persist the draft wholesale via `update_macros`. The server validates
 // (empty/duplicate names, empty text, unknown surface) and reports the outcome
 // on the status lane; a config reload emits `config.changed`, refetching
-// `bootstrap.macros`. The dialog closes optimistically; a rejection surfaces as
-// an error toast, and reopening re-seeds from the (unchanged) bootstrap.
-export function saveMacros(macros: MacroView[]): void {
+// `bootstrap.macros`. The editor keeps its draft until this write succeeds.
+export async function saveMacros(macros: MacroView[]): Promise<boolean> {
   // `update_macros` is a WHOLESALE replace of the entire `[macros]` map. Before
   // the bootstrap document has loaded, `openMacrosDialog` seeded an EMPTY draft,
   // so saving would wipe the server's macros. Refuse until we hold the
   // authoritative list (the Save button is also disabled in this window).
   if (state.bootstrap === null) {
     notifyError("Macros aren't loaded yet. Try again in a moment.")
-    return
+    return false
   }
-  configApi
-    .updateMacros(macros)
-    .catch((e) =>
-      notifyError(e instanceof Error ? e.message : "Could not save the macros."),
-    )
-  closeMacrosDialog()
+  try {
+    await configApi.updateMacros(macros)
+    return true
+  } catch (e) {
+    notifyError(e instanceof Error ? e.message : "Could not save the macros.")
+    return false
+  }
 }
 
 // Persist a drag-reorder of the macro editor's list through the same wholesale
