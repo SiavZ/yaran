@@ -152,6 +152,19 @@ async function loadStore() {
 }
 
 describe("store write actions route to REST", () => {
+  it("global environment persistence reports success and keeps failures actionable", async () => {
+    const mod = await loadStore()
+    expect(await mod.saveGlobalEnv({ API_KEY: "value" })).toBe(true)
+    expect(actionCalls[0]).toEqual({
+      url: "/api/v1/global-env",
+      method: "PUT",
+      body: { env: { API_KEY: "value" } },
+    })
+    actionFails = true
+    expect(await mod.saveGlobalEnv({ API_KEY: "new" })).toBe(false)
+    expect(toast.error).toHaveBeenCalledWith("the server said no", { duration: ERROR_DURATION })
+  })
+
   it("createAgent POSTs the new-session endpoint", async () => {
     const mod = await loadStore()
     mod.createAgent("p1", "feat")

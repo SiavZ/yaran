@@ -1,4 +1,5 @@
 import { Suspense, type ReactNode } from "react"
+import { Plus, SquarePlus } from "lucide-react"
 
 import { AgentNotFound } from "@/components/AgentNotFound"
 import { AgentTabsStrip } from "@/components/AgentTabsStrip"
@@ -9,8 +10,10 @@ import { PrBanner } from "@/components/PrBanner"
 import { TheaterChrome } from "@/components/TheaterChrome"
 import { TheaterPill } from "@/components/TheaterPill"
 import { Welcome } from "@/components/Welcome"
+import { Button } from "@/components/ui/button"
 import { shouldShowTabStrip } from "@/lib/agentTabs"
-import { useYaran } from "@/lib/store"
+import { openAddProject, openNewAgentPicker, useYaran } from "@/lib/store"
+import { launcherVerb } from "@/lib/launcherVerb"
 import type { Bootstrap } from "@/lib/bootstrapApi"
 import type { AgentTabView, PrView, SessionView } from "@/lib/types"
 
@@ -166,7 +169,21 @@ export function TerminalArea() {
   // screen. It vanishes the moment a target is selected (the loading state is
   // the terminal pane's readiness spinner, not this).
   if (!selectedTarget) {
-    return <Welcome />
+    const addProject = launcherVerb(spine ? spine.projects.length : null) === "add-project"
+    return (
+      <Welcome
+        action={spine && (
+          <Button
+            variant="outline"
+            className="mt-3 max-md:min-h-11"
+            onClick={addProject ? openAddProject : () => openNewAgentPicker("new")}
+          >
+            {addProject ? <SquarePlus /> : <Plus />}
+            {addProject ? "Add project" : "New agent"}
+          </Button>
+        )}
+      />
+    )
   }
 
   const {

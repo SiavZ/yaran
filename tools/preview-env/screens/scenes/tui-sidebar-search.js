@@ -53,3 +53,6 @@ module.exports.rows = 45
 module.exports.theme = "yaran_dark"
 module.exports.crop = "sidebar"
 module.exports.fixture = "steady"
+module.exports.config = (text) => text
+  .replace(/^sidebar_style = "grouped"$/m, 'sidebar_style = "flat"')
+  .replace(/^sidebar_density = "compact"$/m, 'sidebar_density = "comfortable"')

@@ -1199,6 +1199,9 @@ impl App {
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Result<bool> {
+        if self.configure_save_op.is_some() {
+            return Ok(false);
+        }
         // A keystroke retires a live row drag: the pointer and the keyboard must
         // not both be moving the sidebar. The close-overlay key is the advertised
         // way out of a drag, so it is consumed only once the gesture became one;
@@ -11626,6 +11629,9 @@ impl App {
     }
 
     pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if self.configure_save_op.is_some() {
+            return false;
+        }
         if let Some(should_exit) = self.route_prompt_mouse(mouse) {
             return should_exit;
         }
@@ -14684,14 +14690,26 @@ not_a_real_action = ["x"]
     /// as a valid environment block AND as a startup command.
     const CONFIGURE_BODY: &str = "KEY=value";
 
-    /// Whether the modal attempted to write anything. The three modals persist
-    /// through different paths, so the observation differs per modal; what the
-    /// reachability test cares about is only "did a write happen".
+    /// Observe committed values after the modal's persistence worker finishes.
     fn configure_wrote(app: &App, which: &str) -> bool {
         match which {
             "ConfigureGlobalEnv" => !app.engine.config.env.is_empty(),
-            _ => !app.pending_persist_ops.is_empty(),
+            "ConfigureStartupCommand" => app.engine.projects[0].startup_command.is_some(),
+            "ConfigureProjectEnv" => !app.engine.projects[0].env.is_empty(),
+            _ => panic!("unknown configure modal {which}"),
         }
+    }
+
+    fn finish_configure_save(app: &mut App) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.configure_save_op.is_some() && std::time::Instant::now() < deadline {
+            app.drain_events();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            app.configure_save_op.is_none(),
+            "configure save must finish"
+        );
     }
 
     #[test]
@@ -14792,6 +14810,8 @@ not_a_real_action = ["x"]
                 }
                 app.handle_key(key(KeyCode::Enter)).expect("confirm");
 
+                finish_configure_save(&mut app);
+
                 let closed = matches!(app.prompt, PromptState::None);
                 let wrote = configure_wrote(&app, which);
                 committed |= closed && wrote;
@@ -14856,6 +14876,7 @@ not_a_real_action = ["x"]
             let (x, y) = (save.x + save.width / 2, save.y + save.height / 2);
             app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), x, y));
             app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), x, y));
+            finish_configure_save(&mut app);
             assert!(
                 matches!(app.prompt, PromptState::None),
                 "{which}: clicking Save closes the modal"
@@ -22467,6 +22488,15 @@ not_a_real_action = ["x"]
     #[test]
     fn mouse_click_commit_text_first_click_only_focuses_commit_input() {
         let mut app = test_app(default_bindings());
+        app.engine.staged_files = vec![ChangedFile {
+            path: "staged.txt".into(),
+            status: "M".into(),
+            additions: 1,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            renamed_from: None,
+        }];
         install_mouse_layout(&mut app);
         app.commit_input = TextInput::with_text("hello world".to_string());
         app.focus = FocusPane::Center;
@@ -22481,6 +22511,15 @@ not_a_real_action = ["x"]
     #[test]
     fn mouse_click_commit_text_second_click_enters_edit_mode_and_moves_cursor() {
         let mut app = test_app(default_bindings());
+        app.engine.staged_files = vec![ChangedFile {
+            path: "staged.txt".into(),
+            status: "M".into(),
+            additions: 1,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            renamed_from: None,
+        }];
         install_mouse_layout(&mut app);
         app.commit_input = TextInput::with_text("abc\ndef".to_string());
         app.commit_input.cursor = 0;
@@ -22496,6 +22535,15 @@ not_a_real_action = ["x"]
     #[test]
     fn mouse_journey_commit_chrome_then_text_enters_editing() {
         let mut app = test_app(default_bindings());
+        app.engine.staged_files = vec![ChangedFile {
+            path: "staged.txt".into(),
+            status: "M".into(),
+            additions: 1,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            renamed_from: None,
+        }];
         install_mouse_layout(&mut app);
         app.commit_input = TextInput::with_text("hello".to_string());
         app.focus = FocusPane::Center;
@@ -29563,6 +29611,15 @@ cyan = "#00ffff"
     #[test]
     fn focus_next_walks_the_right_pane_sections_before_leaving_it() {
         let mut app = test_app(default_bindings());
+        app.engine.staged_files = vec![ChangedFile {
+            path: "staged.txt".into(),
+            status: "M".into(),
+            additions: 1,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            renamed_from: None,
+        }];
         app.focus = FocusPane::Center;
 
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
@@ -29585,6 +29642,15 @@ cyan = "#00ffff"
     #[test]
     fn focus_previous_walks_the_right_pane_sections_before_leaving_it() {
         let mut app = test_app(default_bindings());
+        app.engine.staged_files = vec![ChangedFile {
+            path: "staged.txt".into(),
+            status: "M".into(),
+            additions: 1,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            renamed_from: None,
+        }];
         app.focus = FocusPane::Files;
         app.right_section = RightSection::CommitInput;
 
@@ -35371,8 +35437,8 @@ cyan = "#00ffff"
             .collect();
 
         assert!(
-            rendered.contains("Yaran development"),
-            "expected local build version label, got: {rendered}"
+            rendered.starts_with(" Yaran ") && rendered.contains("development · "),
+            "expected the brand and the local build version label, got: {rendered}"
         );
     }
 
@@ -35543,12 +35609,12 @@ cyan = "#00ffff"
             .map(|cell| cell.symbol())
             .collect();
         assert!(
-            rendered.contains("Codex agent"),
-            "pane title should still say Codex (running) after the swap, got: {rendered}"
+            rendered.contains("agent-branch · codex "),
+            "pane title should still say codex (running) after the swap, got: {rendered}"
         );
         assert!(
-            !rendered.contains("Opencode agent"),
-            "pane title should NOT claim Opencode is running yet, got: {rendered}"
+            !rendered.contains("agent-branch · opencode"),
+            "pane title should NOT claim opencode is running yet, got: {rendered}"
         );
 
         // The flat sidebar row no longer carries a provider suffix (it matches the

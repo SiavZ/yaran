@@ -717,6 +717,8 @@ pub struct App {
     /// only supplies which branch fired and any error string.
     pub(crate) pending_persist_ops:
         HashMap<String, yaran_core::engine::HandlerStatusOp<PersistFinalOutcome>>,
+    /// Keep the configure form and its draft until its matching save completes.
+    pub(crate) configure_save_op: Option<(String, String)>,
     /// In-flight worktree-picker load ops whose final is decided in the
     /// completion handler. The picker dispatch mints a
     /// [`yaran_core::engine::HandlerStatusOp`] (its own opaque id), shows its
@@ -4046,6 +4048,8 @@ mod shared_workspace_tests;
 #[cfg(test)]
 mod test_support;
 pub(crate) mod text_input;
+#[cfg(test)]
+mod ui_audit_tests;
 mod workers;
 mod worktree_manager;
 
@@ -4436,6 +4440,7 @@ impl App {
             pending_tailscale_mode_op: None,
             server_flip_preflight_pending: false,
             pending_persist_ops: HashMap::new(),
+            configure_save_op: None,
             pending_worktree_ops: HashMap::new(),
             pending_pr_lookup_ops: HashMap::new(),
             pending_pr_reference: None,
@@ -6929,6 +6934,20 @@ impl App {
     }
 
     pub(crate) fn clamp_files_cursor(&mut self) {
+        // A commit can remove the staged list and commit box while either still
+        // owns focus. Return to the visible list before routing another key.
+        if self.right_lower() == RightLower::Nothing {
+            if matches!(
+                self.right_section,
+                RightSection::Staged | RightSection::CommitInput
+            ) {
+                self.right_section = RightSection::Unstaged;
+                self.files_index = 0;
+            }
+            if self.input_target == InputTarget::CommitMessage {
+                self.input_target = InputTarget::None;
+            }
+        }
         if matches!(
             self.right_section,
             RightSection::CommitInput | RightSection::Board
@@ -7500,7 +7519,7 @@ impl App {
                 // Stable float: working-or-typing terminals rise above the rest,
                 // each group keeping base order. Matches the web `activeFirst`.
                 let (hot, rest): (Vec<_>, Vec<_>) = items.into_iter().partition(|(id, _)| {
-                    self.engine.is_agent_streaming(id) || self.engine.is_typing(id)
+                    self.engine.terminal_is_working(id) || self.engine.is_typing(id)
                 });
                 items = hot;
                 items.extend(rest);
@@ -8018,6 +8037,38 @@ pub(crate) fn runtime_project_to_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn last_staged_file_disappearing_returns_focus_to_visible_changes() {
+        for section in [RightSection::Staged, RightSection::CommitInput] {
+            let mut app = test_support::test_app(test_support::default_bindings());
+            app.focus = FocusPane::Files;
+            app.right_section = section;
+            app.input_target = InputTarget::CommitMessage;
+            app.files_index = 5;
+            app.engine.staged_files.clear();
+            app.engine.unstaged_files = vec![ChangedFile {
+                path: "audit-note.txt".into(),
+                status: "?".into(),
+                additions: 1,
+                deletions: 0,
+                binary: false,
+                diff_excluded: false,
+                renamed_from: None,
+            }];
+
+            app.clamp_files_cursor();
+
+            assert_eq!(app.right_section, RightSection::Unstaged);
+            assert_eq!(app.files_index, 0);
+            assert_eq!(app.input_target, InputTarget::None);
+            app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+                .unwrap();
+            assert!(
+                matches!(&app.prompt, PromptState::ConfirmDiscardFile { file_path, .. } if file_path == "audit-note.txt")
+            );
+        }
+    }
 
     /// Every command the palette lists must reach an arm of `execute_command`,
     /// never the catch-all that reports it as unknown. Each name runs on a

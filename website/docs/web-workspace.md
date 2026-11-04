@@ -437,8 +437,9 @@ only what you do in it.
 
 ## Macros
 
-A floating **Macros…** button drops prewritten prompt snippets into the focused terminal
-without submitting them, so you review and press Enter yourself. Each macro is scoped to
+Use **Macros…** in the desktop pane header, or the macro icon in the phone's action flap
+or theater pill, to insert a saved prompt without submitting it. Review it and press
+Enter yourself. Each macro is scoped to
 agents, terminals, or both, and multi-line macros are inserted so they do not submit line
 by line. Full details in [Managing Macros](/docs/macros).
 

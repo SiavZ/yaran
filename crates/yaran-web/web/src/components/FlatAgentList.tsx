@@ -21,14 +21,16 @@ import {
   Ellipsis,
   Folder,
   GitPullRequest,
+  Loader2,
   Plus,
   Search,
   SquarePlus,
   SquareTerminal,
   TriangleAlert,
+  X,
 } from "lucide-react"
 import type { ComponentProps, CSSProperties, ReactNode } from "react"
-import { useState } from "react"
+import { useMemo, useRef, useState } from "react"
 
 import { AgentVitalsTooltip } from "@/components/AgentVitalsTooltip"
 import { PaneMenuBody } from "@/components/PaneMenu"
@@ -299,6 +301,7 @@ function AgentFlatRow({
     opacity: isDragging ? 0.6 : undefined,
   }
   const dragProps = sortable ? { ...attributes, ...listeners } : {}
+  const rowRef = useRef<HTMLDivElement>(null)
 
   return (
     // While dragging, the row visibly LIFTS (shadow + stacking) so a touch
@@ -309,6 +312,7 @@ function AgentFlatRow({
       className={cn("flex flex-col", isDragging && "z-10 rounded-md shadow-lg")}
     >
       <div
+        ref={rowRef}
         className={cn(
           // The wrapper owns the highlight so it spans both lines and the trailing
           // ⋯; the button below is transparent and fills the row.
@@ -318,6 +322,8 @@ function AgentFlatRow({
         )}
       >
         <SimpleTooltip
+          // Position beyond the trailing controls, which expand on hover.
+          anchor={rowRef}
           content={
             <AgentVitalsTooltip
               session={session}
@@ -331,16 +337,16 @@ function AgentFlatRow({
           <button
             {...dragProps}
             type="button"
+            aria-current={agentSelected ? "true" : undefined}
             onClick={() => handlers.onSelectSession(session.id)}
-            className={cn(
-              "flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 py-2 pl-2 text-left max-md:min-h-11",
-              dimmed && "opacity-70",
-            )}
+            className="flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 rounded-md py-2 pl-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring max-md:min-h-11"
           >
             <span
               aria-label={attention ? "Needs attention" : undefined}
               className={cn(
                 "mt-0.5 inline-flex shrink-0",
+                // Dim the glyph only; fading the text drops muted labels below AA.
+                dimmed && "opacity-70",
                 attention
                   ? "text-cyan-100 motion-safe:animate-attention-pulse motion-reduce:animate-none"
                   : "text-sidebar-accent-foreground",
@@ -357,37 +363,6 @@ function AgentFlatRow({
               {/* Line one: name + PR + time. */}
               <span className="flex items-center gap-2">
                 <RowName text={label} query={query} />
-                {session.pr ? (
-                  <SimpleTooltip
-                    content={`#${session.pr.number} · ${session.pr.title} (${prStateLabel(session.pr.state)})`}
-                    side="right"
-                  >
-                    <a
-                      href={session.pr.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label={prAriaLabel(session.pr.number, session.pr.state)}
-                      className={cn(
-                        "inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 transition-colors",
-                        prIconClass(session.pr.state),
-                        prIconHoverClass(session.pr.state),
-                      )}
-                      onClick={(event) => {
-                        // `stopPropagation` keeps the click off the row's select
-                        // handler; `preventDefault` keeps this to ONE tab, since
-                        // the anchor's `target="_blank"` would open a second.
-                        event.preventDefault()
-                        event.stopPropagation()
-                        window.open(session.pr!.url, "_blank", "noopener")
-                      }}
-                    >
-                      <GitPullRequest className="size-3.5" />
-                      <span className="text-xs font-medium tabular-nums">
-                        #{session.pr.number}
-                      </span>
-                    </a>
-                  </SimpleTooltip>
-                ) : null}
                 {/* Typing cue: the violet caret, kept as the RIGHTMOST indicator so
                     its position is stable whether or not a PR badge is shown (the PR
                     sits to its left). The working pulse is suppressed while
@@ -426,6 +401,31 @@ function AgentFlatRow({
             </span>
           </button>
         </SimpleTooltip>
+
+        {session.pr ? (
+          <SimpleTooltip
+            anchor={rowRef}
+            content={`#${session.pr.number} · ${session.pr.title} (${prStateLabel(session.pr.state)})`}
+            side="right"
+          >
+            {/* A sibling of the select button so keyboard and screen-reader
+                users can open the PR without activating the agent. */}
+            <a
+              href={session.pr.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={prAriaLabel(session.pr.number, session.pr.state)}
+              className={cn(
+                "ml-1 inline-flex h-8 shrink-0 self-center items-center gap-0.5 rounded px-1 text-xs font-medium tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-ring [@media(pointer:coarse)]:min-h-10 [@media(pointer:coarse)]:min-w-10",
+                prIconClass(session.pr.state),
+                prIconHoverClass(session.pr.state),
+              )}
+            >
+              <GitPullRequest aria-hidden className="size-3.5" />
+              <span>#{session.pr.number}</span>
+            </a>
+          </SimpleTooltip>
+        ) : null}
 
         <DropdownMenu>
           <div
@@ -537,8 +537,9 @@ function TerminalFlatRow({
       <button
         {...dragProps}
         type="button"
+        aria-current={active ? "true" : undefined}
         onClick={() => onSelect(terminal.id, owner)}
-        className="flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 py-2 pl-2 text-left max-md:min-h-10"
+        className="flex min-w-0 flex-1 touch-manipulation items-start gap-2.5 rounded-md py-2 pl-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring max-md:min-h-10"
       >
         <SquareTerminal
           className={cn(
@@ -926,15 +927,19 @@ function flatListEmptyState(input: {
   }
 }
 
-function flatAgentListModel(yaran: YaranState) {
+function flatAgentListModel(
+  yaran: Pick<
+    YaranState,
+    "spine" | "agentSearch" | "pendingAgentOrder" | "pendingTerminalOrder"
+  >,
+  agentSort: FlatSortKey,
+) {
   const {
     spine,
-    selectedTarget,
     agentSearch: rawAgentSearch,
     pendingAgentOrder,
     pendingTerminalOrder,
   } = yaran
-  const agentSort = agentSortValue(yaran)
   const agentSearch = rawAgentSearch ?? ""
   const rawSessions = spine?.sessions ?? []
   const rawProjects = spine?.projects ?? []
@@ -953,22 +958,13 @@ function flatAgentListModel(yaran: YaranState) {
   const query = agentSearch
   const visibleMain = matchingSessions(sortedMain, projectName, query)
   const visibleQuiet = matchingSessions(sortedQuiet, projectName, query)
-  const orderedProjects = [...withAgents, ...withoutAgents]
-    .map((id) => rawProjects.find((project) => project.id === id))
-    .filter((project): project is (typeof rawProjects)[number] =>
-      project !== undefined
-    )
-  const assembledTerminals = assembleFlatTerminals(
+  const projectIds = new Set([...withAgents, ...withoutAgents])
+  const baseTerminals = assembleFlatTerminals(
     rawTerminals,
     coreSessions,
-    orderedProjects,
+    rawProjects.filter((project) => projectIds.has(project.id)),
     projectName,
-  )
-  const baseTerminals = assembledTerminals
-    .slice()
-    .sort((left, right) =>
-      left.terminal.sort_order - right.terminal.sort_order
-    )
+  ).sort((left, right) => left.terminal.sort_order - right.terminal.sort_order)
   const overlaidTerminals: FlatTerminal[] = pendingTerminalOrder
     ? reorderById(
         baseTerminals.map((terminal) => ({
@@ -999,8 +995,6 @@ function flatAgentListModel(yaran: YaranState) {
     })
 
   return {
-    selectedTarget,
-    agentSort,
     agentSearch,
     coreSessions,
     projectName,
@@ -1020,8 +1014,14 @@ function flatAgentListModel(yaran: YaranState) {
 export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
   const yaran = useYaran()
   const {
+    spine,
     selectedTarget,
-    agentSort,
+    agentSearch: rawAgentSearch,
+    pendingAgentOrder,
+    pendingTerminalOrder,
+  } = yaran
+  const agentSort = agentSortValue(yaran)
+  const {
     agentSearch,
     coreSessions,
     projectName,
@@ -1035,7 +1035,13 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
     emptyVerbIsAddProject,
     nothing,
     nothingMatches,
-  } = flatAgentListModel(yaran)
+  } = useMemo(
+    () => flatAgentListModel(
+      { spine, agentSearch: rawAgentSearch, pendingAgentOrder, pendingTerminalOrder },
+      agentSort,
+    ),
+    [spine, rawAgentSearch, pendingAgentOrder, pendingTerminalOrder, agentSort],
+  )
   // Mouse drags on a 6px pull; touch drags on a HOLD, or it fights the list's
   // scroll gesture. The values live in lib/dragActivation.ts.
   const sensors = useSensors(
@@ -1070,7 +1076,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <nav aria-label="Agents and terminals" className="flex min-h-0 flex-1 flex-col">
       {/* Header: the section word and its count on the left, the section's own
           controls (new agent, sort) at the right edge, then search. px-2 matches
           the sidebar header (the logo row's p-2) and the list below, so the search
@@ -1120,20 +1126,43 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
             </div>
           ) : null}
         </div>
-        <div className="flex items-center gap-2 rounded-md border border-input bg-input/30 px-2.5 max-md:min-h-10">
-          <Search className="size-4 shrink-0 text-muted-foreground" />
+        <div className="flex items-center gap-2 rounded-md border border-input bg-input/30 px-2.5 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/50 max-md:min-h-10">
+          <Search aria-hidden className="size-4 shrink-0 text-muted-foreground" />
           <input
             value={agentSearch}
             onChange={(event) => setAgentSearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+                setAgentSearch("")
+              }
+            }}
             placeholder="Search agents and terminals"
             aria-label="Search agents and terminals"
             className="min-w-0 flex-1 bg-transparent py-1.5 text-sm outline-none placeholder:text-muted-foreground"
           />
+          {agentSearch && (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={(event) => {
+                setAgentSearch("")
+                event.currentTarget.parentElement?.querySelector("input")?.focus()
+              }}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring [@media(pointer:coarse)]:size-10"
+            >
+              <X aria-hidden className="size-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 no-scrollbar">
-        {nothing ? (
+        {!yaran.spine ? (
+          <p role="status" className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
+            <Loader2 aria-hidden className="size-4 motion-safe:animate-spin" />
+            Loading workspace…
+          </p>
+        ) : nothing ? (
           <Empty className="border-0 p-4">
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -1174,7 +1203,7 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
             </EmptyContent>
           </Empty>
         ) : nothingMatches ? (
-          <p className="px-3 py-4 text-sm text-muted-foreground">
+          <p role="status" className="px-3 py-4 text-sm text-muted-foreground">
             Nothing matches “{query}”.
           </p>
         ) : (
@@ -1236,6 +1265,6 @@ export function FlatAgentList({ handlers }: { handlers: FlatSelectHandlers }) {
           </>
         )}
       </div>
-    </div>
+    </nav>
   )
 }

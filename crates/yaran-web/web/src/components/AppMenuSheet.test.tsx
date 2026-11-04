@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 const openCustomizeWebapp = vi.fn()
 const sortAgents = vi.fn()
@@ -235,6 +235,51 @@ describe("AppMenuSheet", () => {
     expect(submenuRow.getAttribute("aria-expanded")).toBe("false")
     const plainRow = screen.getByText("Preferences…").closest("button")!
     expect(plainRow.getAttribute("aria-haspopup")).toBeNull()
+  })
+
+  it("moves one menu tab stop with arrows, Home, End, and letter keys", async () => {
+    render(<Harness />)
+    const rows = screen.getAllByRole("menuitem")
+    await waitFor(() => expect(document.activeElement).toBe(rows[0]))
+    expect(rows.filter((row) => row.tabIndex === 0)).toEqual([rows[0]])
+
+    fireEvent.keyDown(rows[0], { key: "ArrowUp" })
+    expect(document.activeElement).toBe(rows.at(-1))
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" })
+    expect(document.activeElement).toBe(rows[0])
+    fireEvent.keyDown(rows[0], { key: "End" })
+    expect(document.activeElement).toBe(rows.at(-1))
+    fireEvent.keyDown(document.activeElement!, { key: "Home" })
+    expect(document.activeElement).toBe(rows[0])
+    fireEvent.keyDown(rows[0], { key: "p" })
+    const preferences = screen.getByText("Preferences…").closest("button")!
+    expect(document.activeElement).toBe(preferences)
+    expect(rows.filter((row) => row.tabIndex === 0)).toEqual([preferences])
+  })
+
+  it("focuses a drilled menu and restores its parent row on both ways back", async () => {
+    render(<Harness />)
+    const configuration = screen.getByText("Configuration").closest("button")!
+    configuration.focus()
+    fireEvent.keyDown(configuration, { key: "ArrowRight" })
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getAllByRole("menuitem")[0]),
+    )
+    expect(screen.getByText("Edit config file…")).toBeTruthy()
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowLeft" })
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByText("Configuration").closest("button"),
+      ),
+    )
+
+    fireEvent.click(screen.getByText("Configuration"))
+    fireEvent.click(screen.getByLabelText("Back"))
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByText("Configuration").closest("button"),
+      ),
+    )
   })
 
   it("renders every row with an icon", () => {

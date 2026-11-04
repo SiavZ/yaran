@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
-import type { DragEndEvent } from "@dnd-kit/core"
+import type { DragEndEvent, KeyboardSensorOptions } from "@dnd-kit/core"
 import type { YaranState } from "@/lib/store"
 import type { MacroView } from "@/lib/types"
 
@@ -12,37 +12,57 @@ import type { MacroView } from "@/lib/types"
 // DragEndEvents. useSortable is a static stub; what these tests pin is the
 // dialog's own wiring: rows carry the sortable attributes, a drop reorders the
 // draft, a persisted reorder goes through `persistMacroOrder`, and a refused
-// save snaps the order back, not dnd-kit's internals.
+// save snaps the order back. Keyboard activation uses the real library gate
+// against the row's registered activator, without pretending jsdom lays out a drag.
 const dragEndHandlers: ((event: DragEndEvent) => void)[] = []
-vi.mock("@dnd-kit/core", () => ({
-  DndContext: ({
-    children,
-    onDragEnd,
-  }: {
-    children: React.ReactNode
-    onDragEnd: (event: DragEndEvent) => void
-  }) => {
-    dragEndHandlers.push(onDragEnd)
-    return children
-  },
-  MouseSensor: class {},
-  TouchSensor: class {},
-  closestCenter: () => {},
-  useSensor: () => ({}),
-  useSensors: (...sensors: unknown[]) => sensors,
-}))
-vi.mock("@dnd-kit/sortable", () => ({
-  SortableContext: ({ children }: { children: React.ReactNode }) => children,
-  verticalListSortingStrategy: {},
-  useSortable: () => ({
-    attributes: { role: "button", "aria-roledescription": "sortable" },
-    listeners: {},
-    setNodeRef: () => {},
-    transform: null,
-    transition: undefined,
-    isDragging: false,
-  }),
-}))
+type TestSensor = { sensor: unknown; options: KeyboardSensorOptions }
+let sensorDefinitions: TestSensor[] = []
+const activatorNodes = new Map<string, HTMLElement | null>()
+const sortableDisabled = new Map<string, boolean | undefined>()
+vi.mock("@dnd-kit/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@dnd-kit/core")>()
+  return {
+    DndContext: ({
+      children,
+      onDragEnd,
+      sensors,
+    }: {
+      children: React.ReactNode
+      onDragEnd: (event: DragEndEvent) => void
+      sensors: TestSensor[]
+    }) => {
+      dragEndHandlers.push(onDragEnd)
+      sensorDefinitions = sensors
+      return children
+    },
+    KeyboardSensor: actual.KeyboardSensor,
+    MouseSensor: class {},
+    TouchSensor: class {},
+    closestCenter: () => {},
+    useSensor: (sensor: unknown, options: KeyboardSensorOptions) => ({ sensor, options }),
+    useSensors: (...sensors: unknown[]) => sensors,
+  }
+})
+vi.mock("@dnd-kit/sortable", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@dnd-kit/sortable")>()
+  return {
+    SortableContext: ({ children }: { children: React.ReactNode }) => children,
+    sortableKeyboardCoordinates: actual.sortableKeyboardCoordinates,
+    verticalListSortingStrategy: {},
+    useSortable: ({ id, disabled }: { id: string; disabled?: boolean }) => {
+      sortableDisabled.set(id, disabled)
+      return {
+        attributes: { role: "button", "aria-roledescription": "sortable" },
+        listeners: {},
+        setNodeRef: () => {},
+        setActivatorNodeRef: (node: HTMLElement | null) => { activatorNodes.set(id, node) },
+        transform: null,
+        transition: undefined,
+        isDragging: false,
+      }
+    },
+  }
+})
 
 const persistMacroOrderMock = vi.fn<(macros: MacroView[]) => Promise<boolean>>()
 let mockState: YaranState
@@ -125,6 +145,9 @@ async function endDrag(activeId: string, overId: string | null) {
 beforeEach(() => {
   installStubs()
   dragEndHandlers.length = 0
+  sensorDefinitions = []
+  activatorNodes.clear()
+  sortableDisabled.clear()
   persistMacroOrderMock.mockReset()
   persistMacroOrderMock.mockResolvedValue(true)
 })
@@ -135,6 +158,23 @@ afterEach(() => {
 })
 
 describe("MacrosDialog reorder", () => {
+  it("edits and reorders without mutating the store draft", async () => {
+    const initial = seedMacros.map((macro) => Object.freeze({ ...macro }))
+    Object.freeze(initial)
+    seed(initial)
+    render(<MacrosDialog />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Review" }))
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
+      target: { value: "Review changes" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Save macro" }))
+    await endDrag("macro-0", "macro-2")
+
+    expect(renderedNames()).toEqual(["Build", "Deploy", "Review changes"])
+    expect(initial).toEqual(seedMacros)
+  })
+
   it("renders the draft rows in order, each carrying the sortable attributes", () => {
     seed(seedMacros)
     render(<MacrosDialog />)
@@ -145,6 +185,67 @@ describe("MacrosDialog reorder", () => {
     for (const li of screen.getAllByRole("listitem")) {
       expect(li.querySelector('[aria-roledescription="sortable"]')).toBeTruthy()
     }
+  })
+
+  it.each(["Space", "Enter"])("activates keyboard sorting with %s on the row, without intercepting Edit", async (code) => {
+    const { KeyboardSensor } = await import("@dnd-kit/core")
+    const { sortableKeyboardCoordinates } = await import("@dnd-kit/sortable")
+    seed(seedMacros)
+    render(<MacrosDialog />)
+
+    const keyboard = sensorDefinitions.find(({ sensor }) => sensor === KeyboardSensor)
+    expect(keyboard?.options.coordinateGetter).toBe(sortableKeyboardCoordinates)
+    const row = screen.getAllByRole("listitem")[0]
+    const activator = row.querySelector<HTMLElement>('[aria-roledescription="sortable"]')!
+    const edit = screen.getByRole("button", { name: "Edit Review" })
+    const context = {
+      active: {
+        id: "macro-0", key: "macro-0", node: { current: row },
+        activatorNode: { current: activatorNodes.get("macro-0") ?? null },
+        data: { current: {} },
+      },
+    }
+    const handler = KeyboardSensor.activators[0].handler
+    const preventDefault = vi.fn()
+    const event = { nativeEvent: new KeyboardEvent("keydown", { code }), preventDefault }
+
+    expect(handler({ ...event, target: activator }, keyboard!.options, context)).toBe(true)
+    expect(handler({ ...event, target: edit }, keyboard!.options, context)).toBe(false)
+    expect(preventDefault).toHaveBeenCalledOnce()
+    fireEvent.click(edit)
+    expect(screen.getByRole("textbox", { name: "Name" }).getAttribute("value")).toBe("Review")
+    expect(persistMacroOrderMock).not.toHaveBeenCalled()
+  })
+
+  it("lets row arrows reach the document drag sensor while isolating nested controls", () => {
+    seed(seedMacros)
+    render(<MacrosDialog />)
+    const row = screen.getAllByRole("listitem")[0]
+    const activator = row.querySelector<HTMLElement>('[aria-roledescription="sortable"]')!
+    const onKeyDown = vi.fn()
+    document.addEventListener("keydown", onKeyDown)
+    try {
+      fireEvent.keyDown(activator, { key: "ArrowDown", code: "ArrowDown" })
+      expect(onKeyDown).toHaveBeenCalledOnce()
+      fireEvent.keyDown(screen.getByRole("button", { name: "Edit Review" }), {
+        key: "ArrowDown", code: "ArrowDown",
+      })
+      expect(onKeyDown).toHaveBeenCalledOnce()
+    } finally {
+      document.removeEventListener("keydown", onKeyDown)
+    }
+  })
+
+  it("shows friendly surface labels before opening the choices", () => {
+    seed(seedMacros)
+    render(<MacrosDialog />)
+    for (const [name, label] of [["Review", "Agent"], ["Build", "Terminal"], ["Deploy", "Both"]]) {
+      fireEvent.click(screen.getByRole("button", { name: `Edit ${name}` }))
+      expect(within(screen.getByRole("combobox", { name: "Surface" })).getByText(label)).toBeTruthy()
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Add macro" }))
+    expect(within(screen.getByRole("combobox", { name: "Surface" })).getByText("Agent")).toBeTruthy()
   })
 
   it("a drop moves the row and persists the reordered list wholesale", async () => {
@@ -208,5 +309,29 @@ describe("MacrosDialog reorder", () => {
 
     expect(renderedNames()).toEqual(["Deploy", "Review", "Build"])
     expect(persistMacroOrderMock).not.toHaveBeenCalled()
+  })
+})
+
+
+describe("macro save recovery", () => {
+  it("keeps the edited list after failure and prevents dismissal during the write", async () => {
+    const store = await import("@/lib/store")
+    let finish!: (ok: boolean) => void
+    vi.mocked(store.saveMacros).mockReturnValueOnce(new Promise<boolean>((resolve) => { finish = resolve }))
+    vi.mocked(store.closeMacrosDialog).mockClear()
+    seed([{ name: "Unsaved macro", text: "keep me", surface: "both" }])
+    render(<MacrosDialog />)
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true)
+    expect([...sortableDisabled.values()]).toEqual([true])
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" })
+    expect(store.closeMacrosDialog).not.toHaveBeenCalled()
+    await act(async () => { finish(false) })
+    expect([...sortableDisabled.values()]).toEqual([false])
+    expect(screen.getByText("Unsaved macro")).toBeTruthy()
+    expect(store.closeMacrosDialog).not.toHaveBeenCalled()
+    vi.mocked(store.saveMacros).mockResolvedValueOnce(true)
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(store.closeMacrosDialog).toHaveBeenCalledOnce())
   })
 })

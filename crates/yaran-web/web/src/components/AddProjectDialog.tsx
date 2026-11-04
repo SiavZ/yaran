@@ -95,12 +95,14 @@ function NewFolderControl({ browsePath }: { browsePath: string }) {
     )
   }
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex w-full flex-wrap items-center gap-1 sm:w-auto">
       <Input
+        aria-label="Folder name"
         autoFocus
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return
           if (e.key === "Enter") {
             e.preventDefault()
             create()
@@ -116,7 +118,7 @@ function NewFolderControl({ browsePath }: { browsePath: string }) {
           }
         }}
         placeholder="Folder name"
-        className="h-8 max-md:min-h-10 w-40"
+        className="h-8 min-w-0 flex-1 basis-24 max-md:min-h-10 sm:w-40 sm:flex-none"
       />
       <Button
         variant="outline"
@@ -269,6 +271,7 @@ interface SelectionDetailsProps extends InspectionMessagesProps {
   selected: string
   name: string
   inspecting: boolean
+  error: string | null
   setName: (name: string) => void
 }
 
@@ -276,12 +279,14 @@ function SelectionDetails({
   selected,
   name,
   inspecting,
+  error,
   setName,
   ...messages
 }: SelectionDetailsProps) {
   return (
     <div className="flex flex-col gap-2">
       <Input
+        aria-label="Project name"
         value={name}
         onChange={(event) => setName(event.target.value)}
         placeholder="Project name (optional)"
@@ -292,6 +297,9 @@ function SelectionDetails({
           <GlyphSpinner className="text-muted-foreground" />
           Checking the folder…
         </span>
+      ) : null}
+      {error ? (
+        <p role="alert" className="text-sm text-destructive">{error} Choose Use this folder to try again.</p>
       ) : null}
       <InspectionMessages {...messages} />
     </div>
@@ -316,7 +324,7 @@ function AddProjectFooter({
   onAdd,
 }: AddProjectFooterProps) {
   return (
-    <DialogFooter>
+    <DialogFooter className="shrink-0">
       <Button variant="outline" onClick={closeAddProject}>
         Cancel
       </Button>
@@ -483,7 +491,7 @@ function AddProjectBrowser() {
   }
 
   function handleAdd() {
-    if (!selected) return
+    if (!selected || !inspection || inspection.loading || inspection.error) return
     if (primary.action === "blocked") return
     if (primary.action === "init-repo") {
       initProject(selected, name)
@@ -502,50 +510,53 @@ function AddProjectBrowser() {
   const usingThisFolder = selected === browsePath
 
   return (
-    <DialogContent className="sm:max-w-xl" showCloseButton={false}>
-      <DialogHeader>
-        <DialogTitle>Add a project</DialogTitle>
-        {addProjectIntent === "init" ? (
-          <span className="text-xs text-muted-foreground">
-            Pick or create a folder, then choose Use this folder; yaran will
-            initialize a git repository in it.
-          </span>
-        ) : null}
-        <div className="flex items-center justify-between gap-2">
-          <PathField value={browsePath} />
-          <NewFolderControl browsePath={browsePath} />
-        </div>
-      </DialogHeader>
+    <DialogContent className="flex flex-col sm:max-w-xl" showCloseButton={false}>
+      <div className="grid min-h-0 gap-4 overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Add a project</DialogTitle>
+          {addProjectIntent === "init" ? (
+            <span className="text-xs text-muted-foreground">
+              Pick or create a folder, then choose Use this folder; yaran will
+              initialize a git repository in it.
+            </span>
+          ) : null}
+          <div className="flex flex-wrap items-center justify-between gap-2 [&>input]:basis-32 [&>input]:flex-1">
+            <PathField value={browsePath} />
+            <NewFolderControl browsePath={browsePath} />
+          </div>
+        </DialogHeader>
 
-      <FolderBrowseList
-        path={browsePath}
-        entries={browseEntries}
-        loading={browseLoading}
-        commitLabel="Use this folder"
-        committed={usingThisFolder}
-        onCommit={selectTarget}
-        onOpen={handleEntryClick}
-      />
-
-      {selected ? (
-        <SelectionDetails
-          selected={selected}
-          name={name}
-          inspecting={inspecting}
-          setName={setName}
-          init={init}
-          blocked={blocked}
-          noCommits={noCommits}
-          branch={branch}
-          checkoutDefault={checkoutDefault}
-          setCheckoutDefault={setCheckoutDefault}
+        <FolderBrowseList
+          path={browsePath}
+          entries={browseEntries}
+          loading={browseLoading}
+          commitLabel="Use this folder"
+          committed={usingThisFolder}
+          onCommit={selectTarget}
+          onOpen={handleEntryClick}
         />
-      ) : null}
 
+        {selected ? (
+          <SelectionDetails
+            selected={selected}
+            name={name}
+            inspecting={inspecting}
+            error={inspection?.error ?? null}
+            setName={setName}
+            init={init}
+            blocked={blocked}
+            noCommits={noCommits}
+            branch={branch}
+            checkoutDefault={checkoutDefault}
+            setCheckoutDefault={setCheckoutDefault}
+          />
+        ) : null}
+
+      </div>
       <AddProjectFooter
         selected={selected}
         inspecting={inspecting}
-        inspected={!!inspection}
+        inspected={!!inspection && !inspection.error}
         primary={primary}
         hasBranchWarning={!!branch}
         onAdd={handleAdd}

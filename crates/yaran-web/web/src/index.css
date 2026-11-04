@@ -212,7 +212,8 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
 
 @keyframes working-pulse {
     0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    /* Keep the status word above AA contrast through the whole cycle. */
+    50% { opacity: 0.8; }
 }
 
 /* Discrete by design: the dots appear and disappear, they never fade. The
@@ -467,6 +468,16 @@ input, textarea, .allow-select, .xterm, .xterm * { user-select: text; }
   html {
     @apply font-sans;
     }
+}
+
+/* Keep native focus zoom off on touch devices without restricting user zoom.
+   Hidden editor/PTY inputs keep their calibrated cursor and IME geometry. */
+@media (pointer: coarse) {
+  input:not(.xterm-helper-textarea),
+  textarea:not(.xterm-helper-textarea):not(.inputarea),
+  select {
+    font-size: max(1em, 16px) !important;
+  }
 }
 
 /* ===========================================================================

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 
 import type { YaranState } from "@/lib/store"
 import type { ReconnectPlanEvent } from "@/lib/reconnectingSocket"
@@ -77,6 +77,28 @@ describe("OfflineOverlay", () => {
     seed({ offline: true, conn: "connecting", reconnectPlan: plan() })
     render(<OfflineOverlay />)
     expect(screen.getByRole("alertdialog")).toBeTruthy()
+  })
+
+  it("isolates focus while offline and restores the previous control on recovery", async () => {
+    seed({ offline: false, conn: "open" })
+    const view = () => <><button>Workspace action</button><OfflineOverlay /></>
+    const { rerender } = render(view())
+    const workspaceAction = screen.getByRole("button", { name: "Workspace action" })
+    workspaceAction.focus()
+
+    seed({ offline: true, conn: "closed", reconnectPlan: plan() })
+    rerender(view())
+    const retry = screen.getByRole("button", { name: "Reconnect now" })
+    await waitFor(() => expect(document.activeElement).toBe(retry))
+    expect(screen.queryByRole("button", { name: "Workspace action" })).toBeNull()
+    fireEvent.keyDown(retry, { key: "Escape" })
+    expect(screen.getByRole("alertdialog")).toBeTruthy()
+    expect(document.activeElement).toBe(retry)
+
+    seed({ offline: false, conn: "open" })
+    rerender(view())
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(workspaceAction))
   })
 })
 

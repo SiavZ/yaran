@@ -34,6 +34,11 @@ env* opens the project's variables one per line:
 
 ![The terminal UI project environment editor, showing three KEY=value lines for a project with Cancel and Save buttons below them.](/screens/tui-project-env-editor.png)
 
+The terminal UI keeps your draft open if a save fails. Correct the reported problem
+and save again. Project environment and startup-command editors show a saving state
+and wait for the write to finish before closing; their controls pause during that write.
+Invalid environment lines are rejected without replacing the project's saved variables.
+
 ### Global environment variables
 
 A top-level `[env]` table applies to every project. Project-level `env` keys override

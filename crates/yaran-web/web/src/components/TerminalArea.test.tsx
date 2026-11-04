@@ -9,9 +9,11 @@ import type { YaranState } from "@/lib/store"
 // action (and nothing else) is what launches a dormant tab.
 let mockState: YaranState
 const startDormantTabMock = vi.fn()
+const openAddProjectMock = vi.fn()
+const openNewAgentPickerMock = vi.fn()
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
-  return { ...actual, useYaran: () => mockState, startDormantTab: startDormantTabMock }
+  return { ...actual, useYaran: () => mockState, startDormantTab: startDormantTabMock, openAddProject: openAddProjectMock, openNewAgentPicker: openNewAgentPickerMock }
 })
 
 // Replace the lazy terminal pane with a prop-recording stub: the owner-ref
@@ -473,5 +475,22 @@ describe("terminalAreaModel", () => {
     expect(
       model({ target: { kind: "agent", sessionId: "s1", tabId: "s1" } }).dormant,
     ).toBe(false)
+  })
+})
+
+
+describe("home next step", () => {
+  it("offers Add project in the center of a confirmed empty workspace", () => {
+    mockState = { ...mockState, selectedTarget: null, routeNotFound: null, spine: { projects: [], sessions: [], terminals: [], sidebar: null } } as unknown as YaranState
+    render(<TerminalArea />)
+    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    expect(openAddProjectMock).toHaveBeenCalled()
+  })
+
+  it("offers New agent when a project is available", () => {
+    mockState = { ...mockState, selectedTarget: null, routeNotFound: null, spine: { projects: [{ id: "p1" }], sessions: [], terminals: [], sidebar: null } } as unknown as YaranState
+    render(<TerminalArea />)
+    fireEvent.click(screen.getByRole("button", { name: "New agent" }))
+    expect(openNewAgentPickerMock).toHaveBeenCalledWith("new")
   })
 })

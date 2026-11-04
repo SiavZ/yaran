@@ -1,7 +1,8 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import {
   DndContext,
+  KeyboardSensor,
   MouseSensor,
   TouchSensor,
   closestCenter,
@@ -11,6 +12,7 @@ import {
 import type { DragEndEvent } from "@dnd-kit/core"
 import {
   SortableContext,
+  sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
@@ -69,17 +71,19 @@ const SURFACE_LABEL: Record<MacroSurface, string> = {
   both: "Both",
 }
 
-// The form body mounts only while the dialog is open and seeds its working copy
-// from the store draft via a lazy initializer, so no set-state-in-effect. The
-// whole list is edited locally; Save sends it wholesale via `update_macros`.
-function MacrosEditor({ initial }: { initial: MacroView[] }) {
+// The form mounts only while open. Edits replace arrays and entries, so the
+// store's seeded draft needs no second clone; Save writes the whole list.
+function MacrosEditor({ initial, saving, setSaving, savingRef }: {
+  initial: MacroView[]
+  saving: boolean
+  setSaving: (value: boolean) => void
+  savingRef: React.RefObject<boolean>
+}) {
   // The bootstrap document holds the authoritative macro list. Until it loads,
   // the draft was seeded empty, so a wholesale save would wipe the server's
   // macros: disable Save in that window (the store also refuses it defensively).
   const { bootstrap } = useYaran()
-  const [macros, setMacros] = useState<MacroView[]>(() =>
-    initial.map((m) => ({ ...m })),
-  )
+  const [macros, setMacros] = useState(initial)
   const [mode, setMode] = useState<EditorMode>({ kind: "list" })
   // The draft index pending delete confirmation, or null. Inline confirm row
   // (the dialog's established confirm style) rather than a nested modal.
@@ -91,9 +95,11 @@ function MacrosEditor({ initial }: { initial: MacroView[] }) {
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: MOUSE_DRAG_ACTIVATION }),
     useSensor(TouchSensor, { activationConstraint: TOUCH_DRAG_ACTIVATION }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
 
   function handleDragEnd(event: DragEndEvent) {
+    if (savingRef.current) return
     const { active, over } = event
     if (!over) return
     const prev = macros
@@ -107,12 +113,16 @@ function MacrosEditor({ initial }: { initial: MacroView[] }) {
     // draft and the eventual Save carries it.
     setMacros(next)
     if (bootstrap === null || validateMacros(next) !== null) return
-    void persistMacroOrder(next).then((ok) => {
-      if (ok) return
-      // Snap back, but only if nothing else edited the draft while the save
-      // was in flight; a functional update makes the check race-free.
-      setMacros((current) => (current === next ? prev : current))
-    })
+    savingRef.current = true
+    setSaving(true)
+    void persistMacroOrder(next)
+      .then((ok) => {
+        if (!ok) setMacros((current) => (current === next ? prev : current))
+      })
+      .finally(() => {
+        savingRef.current = false
+        setSaving(false)
+      })
   }
 
   if (mode.kind === "form") {
@@ -129,10 +139,32 @@ function MacrosEditor({ initial }: { initial: MacroView[] }) {
   }
 
   const validationError = validateMacros(macros)
+  async function save() {
+    if (savingRef.current || validationError || bootstrap === null) return
+    savingRef.current = true
+    setSaving(true)
+    try {
+      if (await saveMacros(macros)) closeMacrosDialog()
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
+  }
 
   return (
-    <DialogContent showCloseButton={false} className="sm:max-w-lg">
-      <DialogHeader>
+    <DialogContent
+      showCloseButton={false}
+      className="flex flex-col sm:max-w-lg"
+      onKeyDown={(event) => {
+        // dnd-kit listens on document; let focused row keys pass the dialog's
+        // composite-key boundary while keeping nested controls isolated.
+        if (
+          event.target instanceof HTMLElement &&
+          event.target.getAttribute("aria-roledescription") === "sortable"
+        ) event.preventBaseUIHandler()
+      }}
+    >
+      <DialogHeader className="shrink-0">
         <DialogTitle>Edit macros</DialogTitle>
         <DialogDescription>
           Text macros you can send to an agent or a terminal from the macro
@@ -140,6 +172,7 @@ function MacrosEditor({ initial }: { initial: MacroView[] }) {
         </DialogDescription>
       </DialogHeader>
 
+      <fieldset disabled={saving} className="contents">
       {macros.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted-foreground">
           No macros yet. Add one to get started.
@@ -154,12 +187,13 @@ function MacrosEditor({ initial }: { initial: MacroView[] }) {
             items={macroDragIds(macros)}
             strategy={verticalListSortingStrategy}
           >
-            <ul className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+            <ul className="flex min-h-0 max-h-72 flex-col gap-1 overflow-y-auto">
               {macros.map((macro, index) => (
                 <SortableMacroRow
                   key={index}
                   macro={macro}
                   index={index}
+                  disabled={saving}
                   deleteOpen={deleteIndex === index}
                   onEdit={() => {
                     setDeleteIndex(null)
@@ -181,7 +215,7 @@ function MacrosEditor({ initial }: { initial: MacroView[] }) {
       <Button
         variant="outline"
         size="sm"
-        className="w-full"
+        className="w-full shrink-0"
         onClick={() => {
           setDeleteIndex(null)
           setMode({ kind: "form", index: "new" })
@@ -190,22 +224,24 @@ function MacrosEditor({ initial }: { initial: MacroView[] }) {
         <ListPlus />
         Add macro
       </Button>
+      </fieldset>
 
       {validationError ? (
-        <p className="text-xs text-destructive">{validationError}</p>
+        <p className="shrink-0 text-xs text-destructive">{validationError}</p>
       ) : null}
 
       {/* Misclick-safe spacing between the list/add controls and the footer. */}
-      <div className="h-1" />
-      <DialogFooter>
-        <Button variant="outline" onClick={closeMacrosDialog}>
+      <div className="h-1 shrink-0" />
+      <DialogFooter className="shrink-0">
+        <Button variant="outline" disabled={saving} onClick={closeMacrosDialog}>
           Cancel
         </Button>
         <Button
-          onClick={() => saveMacros(macros)}
-          disabled={validationError !== null || bootstrap === null}
+          onClick={() => void save()}
+          disabled={saving || validationError !== null || bootstrap === null}
+          aria-busy={saving}
         >
-          Save
+          {saving ? "Saving…" : "Save"}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -219,6 +255,7 @@ function MacrosEditor({ initial }: { initial: MacroView[] }) {
 function SortableMacroRow({
   macro,
   index,
+  disabled,
   deleteOpen,
   onEdit,
   onAskDelete,
@@ -227,14 +264,15 @@ function SortableMacroRow({
 }: {
   macro: MacroView
   index: number
+  disabled: boolean
   deleteOpen: boolean
   onEdit: () => void
   onAskDelete: () => void
   onCancelDelete: () => void
   onConfirmDelete: () => void
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: `macro-${index}` })
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
+    useSortable({ id: `macro-${index}`, disabled })
   const style: CSSProperties = {
     // Vertical reorder list: lock the drag to the Y axis (see AgentFlatRow).
     transform: transform
@@ -260,6 +298,7 @@ function SortableMacroRow({
       )}
     >
       <div
+        ref={setActivatorNodeRef}
         {...attributes}
         {...listeners}
         className="flex touch-manipulation flex-col gap-1.5"
@@ -346,10 +385,11 @@ function MacroForm({
 
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium text-muted-foreground">
+          <label htmlFor="macro-name" className="text-sm font-medium text-muted-foreground">
             Name
           </label>
           <Input
+            id="macro-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Review"
@@ -358,10 +398,11 @@ function MacroForm({
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium text-muted-foreground">
+          <label htmlFor="macro-text" className="text-sm font-medium text-muted-foreground">
             Text
           </label>
           <Textarea
+            id="macro-text"
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="review this code for bugs"
@@ -374,7 +415,7 @@ function MacroForm({
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium text-muted-foreground">
+          <label htmlFor="macro-surface" className="text-sm font-medium text-muted-foreground">
             Surface
           </label>
           <Select
@@ -383,8 +424,8 @@ function MacroForm({
               if (typeof v === "string" && isMacroSurface(v)) setSurface(v)
             }}
           >
-            <SelectTrigger className="w-full">
-              <SelectValue />
+            <SelectTrigger id="macro-surface" className="w-full">
+              <SelectValue>{SURFACE_LABEL[surface]}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               {MACRO_SURFACE_OPTIONS.map((option) => (
@@ -418,15 +459,17 @@ function MacroForm({
 
 export function MacrosDialog() {
   const { macrosDialogOpen, macrosDraft } = useYaran()
+  const savingRef = useRef(false)
+  const [saving, setSaving] = useState(false)
 
   return (
     <Dialog
       open={macrosDialogOpen}
       onOpenChange={(o) => {
-        if (!o) closeMacrosDialog()
+        if (!o && !savingRef.current) closeMacrosDialog()
       }}
     >
-      {macrosDialogOpen && <MacrosEditor initial={macrosDraft} />}
+      {macrosDialogOpen && <MacrosEditor initial={macrosDraft} saving={saving} setSaving={setSaving} savingRef={savingRef} />}
     </Dialog>
   )
 }

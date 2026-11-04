@@ -1,4 +1,5 @@
 import { Bot, Check, ChevronDown, Ellipsis, Plus, Replace, X } from "lucide-react"
+import { Tabs as TabsPrimitive } from "@base-ui/react/tabs"
 
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { AttentionDot } from "@/components/AttentionDot"
@@ -57,17 +58,24 @@ export function AgentTabsStrip({
     // `max-md:py-0.5` halves the strip's own vertical padding to go with the
     // shorter phone pill below: shrinking the pill alone would leave the strip
     // the same height. Desktop padding is unchanged.
-    <div className="flex items-center gap-1 overflow-x-auto border-b bg-muted/30 px-2 py-1 max-md:py-0.5">
-      {session.tabs.map((tab, i) => (
-        <TabPill
-          key={tab.id}
-          session={session}
-          tab={tab}
-          label={labels[i]}
-          active={tab.id === activeTabId}
-          providers={providers}
-        />
-      ))}
+    <TabsPrimitive.Root
+      value={activeTabId}
+      onValueChange={(id: string) => selectTab(session.id, id)}
+      className="flex items-center gap-1 overflow-x-auto border-b bg-muted/30 px-2 py-1 max-md:py-0.5"
+    >
+      {/* Manual activation keeps arrow-key navigation from reconnecting PTYs. */}
+      <TabsPrimitive.List aria-label="Agent tabs" className="flex shrink-0 items-center gap-1">
+        {session.tabs.map((tab, i) => (
+          <TabPill
+            key={tab.id}
+            session={session}
+            tab={tab}
+            label={labels[i]}
+            active={tab.id === activeTabId}
+            providers={providers}
+          />
+        ))}
+      </TabsPrimitive.List>
       {/* Split "+" control: the main button quick-adds the project default
           provider, the adjacent caret opens a menu to pick another configured
           one. The gap between the halves is the misclick-safe spacing. */}
@@ -128,7 +136,7 @@ export function AgentTabsStrip({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-    </div>
+    </TabsPrimitive.Root>
   )
 }
 
@@ -151,22 +159,8 @@ function TabPill({
   // only the second one refuses.
   const soleTab = session.tabs.length <= 1
 
-  function select() {
-    selectTab(session.id, tab.id)
-  }
-
   return (
     <div
-      role="tab"
-      aria-selected={active}
-      tabIndex={0}
-      onClick={select}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault()
-          select()
-        }
-      }}
       // `max-md:min-h-9` (36px) relaxes the 40px touch-target floor on the
       // vertical axis only. The neighbours there are the mobile header, whose
       // controls end at its bottom edge, and the PTY, where a mis-tap costs a
@@ -176,28 +170,34 @@ function TabPill({
       className={cn(
         // `max-md:py-0` goes with it: the pill's own 4px padding would sit on
         // top of the 32px ⋯ hit area inside and overshoot the 36px again.
-        "group/tab flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-sm transition-colors max-md:min-h-9 max-md:py-0",
+        "group/tab flex shrink-0 items-stretch gap-1.5 rounded-md border px-2 py-1 text-sm transition-colors max-md:min-h-9 max-md:py-0",
         active
           ? "border-border bg-background text-foreground"
           : "border-transparent bg-muted text-muted-foreground hover:text-foreground",
       )}
     >
-      <Bot
-        className={cn(
-          "size-3.5 shrink-0 motion-safe:transition-opacity motion-safe:duration-300",
-          tab.working && "motion-safe:animate-working-pulse",
-        )}
-      />
-      {/* Cyan attention dot on the flagged tab's pill (a permission prompt or a
-          finished turn on this specific tab). */}
-      {tab.needs_attention && <AttentionDot />}
-      <span className="max-w-40 truncate">{label}</span>
+      <TabsPrimitive.Tab
+        value={tab.id}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <Bot
+          className={cn(
+            "size-3.5 shrink-0 motion-safe:transition-opacity motion-safe:duration-300",
+            tab.working && "motion-safe:animate-working-pulse",
+          )}
+        />
+        {/* Cyan attention dot on the flagged tab's pill (a permission prompt or a
+            finished turn on this specific tab). */}
+        {tab.needs_attention && <AttentionDot />}
+        <span className="max-w-40 truncate">{label}</span>
+      </TabsPrimitive.Tab>
       {/* The ⋯ trigger consumes no layout space at rest: the wrapper's
           max-width collapses to zero rather than opacity alone, which would
           still reserve the box's width, and animates open on hover,
           focus-within, or `data-popup-open` (Base UI does not mirror that onto
           `aria-expanded`). Always revealed on touch. */}
       <div
+        onKeyDown={(event) => event.stopPropagation()}
         className={cn(
           "flex shrink-0 items-center overflow-hidden transition-[max-width,opacity] duration-200 ease-out max-md:max-w-none motion-reduce:transition-none max-w-0 opacity-0 group-hover/tab:max-w-8 group-hover/tab:opacity-100 group-focus-within/tab:max-w-8 group-focus-within/tab:opacity-100 has-[[data-popup-open]]:max-w-8 has-[[data-popup-open]]:opacity-100",
           ALWAYS_REVEALED_ON_TOUCH,

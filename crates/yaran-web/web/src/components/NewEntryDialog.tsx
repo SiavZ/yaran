@@ -87,20 +87,26 @@ function NewEntryDialogBody({
         </DialogDescription>
       </DialogHeader>
       <Input
+        aria-label={target.kind === "file" ? "File name" : "Folder name"}
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder={target.kind === "file" ? "example.ts" : "components"}
         autoFocus
         aria-invalid={name.length > 0 && !validation.ok}
+        aria-describedby={name.length > 0 && !validation.ok ? "new-entry-error" : undefined}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
+          if (
+            e.key === "Enter" &&
+            !e.nativeEvent.isComposing &&
+            e.keyCode !== 229
+          ) {
             e.preventDefault()
             submit()
           }
         }}
       />
       {name.length > 0 && !validation.ok && (
-        <p className="text-sm text-destructive">{validation.error}</p>
+        <p id="new-entry-error" role="alert" className="text-sm text-destructive">{validation.error}</p>
       )}
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>

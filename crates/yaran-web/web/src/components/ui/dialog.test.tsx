@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest"
-import { cleanup, render } from "@testing-library/react"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 
@@ -11,6 +11,15 @@ function overlay() {
 }
 
 describe("DialogContent destructive backdrop", () => {
+  it.each([{ isComposing: true }, { keyCode: 229 }])("keeps the form open when Escape cancels IME composition: %o", (composition) => {
+    const onOpenChange = vi.fn()
+    render(<Dialog open onOpenChange={onOpenChange}><DialogContent><DialogTitle>Form</DialogTitle><input aria-label="Name" /></DialogContent></Dialog>)
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Name" }), { key: "Escape", ...composition })
+    expect(onOpenChange).not.toHaveBeenCalled()
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Name" }), { key: "Escape" })
+    expect(onOpenChange).toHaveBeenCalled()
+  })
+
   it("keeps the modest blur on every overlay", () => {
     render(
       <Dialog open>

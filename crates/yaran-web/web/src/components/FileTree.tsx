@@ -11,6 +11,7 @@ import { fileApi } from "@/lib/fileApi"
 import { dragCarriesFiles } from "@/lib/fileDrop"
 import { classifyDroppedItems } from "@/lib/editorDrop"
 import type { DroppedItems } from "@/lib/editorDrop"
+import { useIsCoarsePointer } from "@/hooks/use-coarse-pointer"
 import { useFilePicker } from "@/hooks/use-file-picker"
 import { targetDirForCreate } from "@/lib/fileTreeOps"
 import {
@@ -25,7 +26,6 @@ import type { EditorRoot } from "@/lib/editorRoot"
 
 const noop = () => {}
 
-const ROW_HEIGHT = 28 // px, must match the py-1 + text-sm row height
 const OVERSCAN = 10 // rows to render above/below the viewport
 
 interface FileTreeProps {
@@ -100,6 +100,8 @@ export function FileTree({
   fileDropEnabled = false,
   onFilesDropped,
 }: FileTreeProps) {
+  // Virtualization and hit areas must use the same measured row size.
+  const rowHeight = useIsCoarsePointer() ? 40 : 28
   // The picker behind "Upload here…". It feeds the same `onFilesDropped` the
   // drag does, with the same per-row destination, so the two gestures cannot
   // land in two places. `folders` is always empty (no `webkitdirectory` here,
@@ -141,6 +143,7 @@ export function FileTree({
   const pendingRefreshRef = useRef<number | null>(null)
 
   useEffect(() => {
+    unmountedRef.current = false
     return () => {
       unmountedRef.current = true
     }
@@ -436,12 +439,12 @@ export function FileTree({
 
   const rootState = dirs.get("")
 
-  const totalHeight = rows.length * ROW_HEIGHT
+  const totalHeight = rows.length * rowHeight
 
-  const firstVisible = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN)
+  const firstVisible = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN)
   const lastVisible = Math.min(
     rows.length - 1,
-    Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN,
+    Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN,
   )
   const visibleRows = rows.slice(firstVisible, lastVisible + 1)
 
@@ -548,7 +551,7 @@ export function FileTree({
             <button
               type="button"
               onClick={() => fetchDir("")}
-              className="flex items-center gap-1 rounded px-1 py-0.5 text-sm text-muted-foreground hover:bg-muted"
+              className="flex items-center gap-1 rounded px-1 py-0.5 text-sm text-muted-foreground hover:bg-muted [@media(pointer:coarse)]:min-h-10"
             >
               <RotateCw className="size-3.5" />
               Retry
@@ -564,7 +567,7 @@ export function FileTree({
         <ul
           style={{
             position: "absolute",
-            top: firstVisible * ROW_HEIGHT,
+            top: firstVisible * rowHeight,
             left: 0,
             right: 0,
           }}
@@ -592,12 +595,12 @@ export function FileTree({
                           targetDirForCreate({ kind: "dir", path: row.path }),
                         )}
                         className={cn(
-                          "flex w-full items-center gap-1 rounded py-1 pr-1 text-left hover:bg-muted",
+                          "flex w-full items-center gap-1 rounded py-1 pr-1 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
                           dropClass(row.path),
                         )}
                         style={{
                           paddingLeft: `${row.depth * 0.75 + 0.25}rem`,
-                          height: ROW_HEIGHT,
+                          height: rowHeight,
                         }}
                       />
                     }
@@ -649,7 +652,7 @@ export function FileTree({
                   className="flex items-center gap-1 py-1 pr-1 text-muted-foreground"
                   style={{
                     paddingLeft: `${row.depth * 0.75 + 0.25}rem`,
-                    height: ROW_HEIGHT,
+                    height: rowHeight,
                   }}
                 >
                   <Loader2 className="size-3.5 shrink-0 motion-safe:animate-spin" />
@@ -666,7 +669,7 @@ export function FileTree({
                   className="flex w-full items-center gap-1 rounded py-1 pr-1 text-left text-muted-foreground hover:bg-muted"
                   style={{
                     paddingLeft: `${row.depth * 0.75 + 0.25}rem`,
-                    height: ROW_HEIGHT,
+                    height: rowHeight,
                   }}
                 >
                   <RotateCw className="size-3.5 shrink-0" />
@@ -680,6 +683,7 @@ export function FileTree({
                     render={
                       <button
                         type="button"
+                        aria-current={row.path === openPath ? "true" : undefined}
                         onClick={() => onOpen(row.path)}
                         onDoubleClick={() => onOpen(row.path, { pin: true })}
                         // See the dir row's identical comment: stops this
@@ -693,10 +697,10 @@ export function FileTree({
                         )}
                         style={{
                           paddingLeft: `${row.depth * 0.75 + 0.25}rem`,
-                          height: ROW_HEIGHT,
+                          height: rowHeight,
                         }}
                         className={cn(
-                          "flex w-full items-center gap-1.5 rounded py-1 pr-1 text-left hover:bg-muted",
+                          "flex w-full items-center gap-1.5 rounded py-1 pr-1 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
                           row.path === openPath && "bg-muted",
                           dropClass(row.path),
                         )}

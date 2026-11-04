@@ -68,4 +68,13 @@ describe("RenameEntryDialog", () => {
     fireEvent.keyDown(input, { key: "Enter" })
     expect(onSubmit).toHaveBeenCalledWith("new.ts")
   })
+
+  it.each([{ isComposing: true }, { keyCode: 229 }])("does not rename while confirming IME text: %o", (composition) => {
+    const onSubmit = vi.fn(() => Promise.resolve())
+    render(<RenameEntryDialog target={{ path: "old.ts", isDir: false }} isDirty={false} onClose={() => {}} onSubmit={onSubmit} />)
+    const input = screen.getByRole("textbox", { name: "New name" })
+    fireEvent.change(input, { target: { value: "日本語.ts" } })
+    fireEvent.keyDown(input, { key: "Enter", ...composition })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
 })

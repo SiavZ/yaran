@@ -1,4 +1,5 @@
 import { X } from "lucide-react"
+import { Tabs as TabsPrimitive } from "@base-ui/react/tabs"
 
 import { FileTreeIcon } from "@/components/FileTreeIcon"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
@@ -34,31 +35,34 @@ export function EditorTabsStrip({ root }: { root: EditorRoot }) {
   }
 
   return (
-    <div className="flex items-center gap-1 overflow-x-auto border-b bg-muted/30 px-2 py-1">
-      {tabs.map((tab) => (
-        <TabPill
-          key={tab.id}
-          tab={tab}
-          active={tab.id === state?.activeId}
-          onActivate={() => editorActivateTab(root, tab.id)}
-          onPin={() => editorPinTab(root, tab.id)}
-          onClose={() => requestClose(tab)}
-        />
-      ))}
-    </div>
+    <TabsPrimitive.Root
+      value={state?.activeId}
+      onValueChange={(id: string) => editorActivateTab(root, id)}
+      className="flex items-center gap-1 overflow-x-auto border-b bg-muted/30 px-2 py-1"
+    >
+      <TabsPrimitive.List aria-label="Files" className="flex shrink-0 items-center gap-1">
+        {tabs.map((tab) => (
+          <TabPill
+            key={tab.id}
+            tab={tab}
+            active={tab.id === state?.activeId}
+            onPin={() => editorPinTab(root, tab.id)}
+            onClose={() => requestClose(tab)}
+          />
+        ))}
+      </TabsPrimitive.List>
+    </TabsPrimitive.Root>
   )
 }
 
 function TabPill({
   tab,
   active,
-  onActivate,
   onPin,
   onClose,
 }: {
   tab: EditorTab
   active: boolean
-  onActivate: () => void
   onPin: () => void
   onClose: () => void
 }) {
@@ -67,19 +71,8 @@ function TabPill({
   return (
     <SimpleTooltip content={tab.path}>
       <div
-        role="tab"
-        aria-selected={active}
-        tabIndex={0}
-        onClick={onActivate}
-        onDoubleClick={onPin}
         onAuxClick={(e) => {
           if (e.button === 1) onClose()
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault()
-            onActivate()
-          }
         }}
         // max-md:min-h-8.5 pins the phone pill to the header File/Diff toggle's
         // rendered height, deliberately under the 40px touch-target floor: the
@@ -87,34 +80,40 @@ function TabPill({
         // scarce resource on a phone. max-md:py-0 goes with it, or the close
         // button's own hit area adds the padding back and overshoots.
         className={cn(
-          "group/etab flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-sm transition-colors max-md:min-h-8.5 max-md:py-0",
+          "group/etab flex shrink-0 items-stretch gap-1.5 rounded-md border px-2 py-1 text-sm transition-colors max-md:min-h-8.5 max-md:py-0",
           active
             ? "border-border bg-background text-foreground"
             : "border-transparent bg-muted text-muted-foreground hover:text-foreground",
         )}
       >
-        <FileTreeIcon kind={fileIconKind(tab.path)} />
-        <span
-          // `pr-0.5` is inside the truncating (overflow-hidden) box on
-          // purpose: an italic final ascender leans past the content edge and
-          // gets clipped without it. Unconditional so a preview tab pinning
-          // itself never shifts the label.
-          className={cn("max-w-40 truncate pr-0.5", tab.preview && "italic")}
+        <TabsPrimitive.Tab
+          value={tab.id}
+          onDoubleClick={onPin}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring"
         >
-          {basename}
-        </span>
-        {/* Dirty dot to the left of the close ✕ (the plan's simpler accepted
-            variant: always show ✕, dot appears alongside it when dirty). */}
-        {tab.dirty && (
-          <>
-            <SimpleTooltip content="Unsaved changes">
-              <span className="shrink-0 text-primary" aria-hidden="true">
-                ●
-              </span>
-            </SimpleTooltip>
-            <span className="sr-only">unsaved changes</span>
-          </>
-        )}
+          <FileTreeIcon kind={fileIconKind(tab.path)} />
+          <span
+            // `pr-0.5` is inside the truncating (overflow-hidden) box on
+            // purpose: an italic final ascender leans past the content edge and
+            // gets clipped without it. Unconditional so a preview tab pinning
+            // itself never shifts the label.
+            className={cn("max-w-40 truncate pr-0.5", tab.preview && "italic")}
+          >
+            {basename}
+          </span>
+          {/* Dirty dot to the left of the close ✕ (the plan's simpler accepted
+              variant: always show ✕, dot appears alongside it when dirty). */}
+          {tab.dirty && (
+            <>
+              <SimpleTooltip content="Unsaved changes">
+                <span className="shrink-0 text-primary" aria-hidden="true">
+                  ●
+                </span>
+              </SimpleTooltip>
+              <span className="sr-only">unsaved changes</span>
+            </>
+          )}
+        </TabsPrimitive.Tab>
         <button
           type="button"
           aria-label={`Close ${basename}`}
@@ -122,10 +121,11 @@ function TabPill({
             e.stopPropagation()
             onClose()
           }}
+          onKeyDown={(event) => event.stopPropagation()}
           // max-md:size-8 keeps a larger-than-visual tap area (32px against
           // the icon's 14px glyph) without adding to the pill's 34px height:
           // the cheap tap forgiveness the reduced pill still affords.
-          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground max-md:size-8"
+          className="flex size-5 shrink-0 self-center items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring max-md:size-8"
         >
           <X className="size-3.5" />
         </button>

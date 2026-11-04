@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -26,20 +26,39 @@ import { sessionLabel, workspaceProjectId } from "@/lib/agentWorkspace"
 function AgentStartupCommandForm({
   session,
   project,
+  saving,
+  setSaving,
+  savingRef,
 }: {
   session: SessionView
   project: ProjectView
+  saving: boolean
+  setSaving: (value: boolean) => void
+  savingRef: React.RefObject<boolean>
 }) {
+  const mounted = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const [startup, setStartup] = useState(() => project.startup_command ?? "")
   const agentName = sessionLabel(session)
 
   async function handleSave() {
+    if (savingRef.current) return
     const next = startup.trim() === "" ? null : startup
     // No-op when unchanged; `updateProjectSettings` skips the request on an empty
     // patch, so saving without a change just closes.
     const patch =
       next === (project.startup_command ?? null) ? {} : { startup_command: next }
-    if (await updateProjectSettings(project.id, patch)) closeAgentStartupCommand()
+    savingRef.current = true
+    setSaving(true)
+    try {
+      if (await updateProjectSettings(project.id, patch) && mounted.current) closeAgentStartupCommand()
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }
 
   return (
@@ -55,12 +74,19 @@ function AgentStartupCommandForm({
         </DialogDescription>
       </DialogHeader>
       <Textarea
+        aria-label="Startup command"
+        disabled={saving}
         value={startup}
         onChange={(e) => setStartup(e.target.value)}
         onKeyDown={(e) => {
           // Plain Enter inserts a newline (a startup command can be multi-line);
           // Cmd/Ctrl-Enter saves, matching the common textarea submit convention.
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          if (
+            e.key === "Enter" &&
+            (e.metaKey || e.ctrlKey) &&
+            !e.nativeEvent.isComposing &&
+            e.keyCode !== 229
+          ) {
             e.preventDefault()
             void handleSave()
           }
@@ -70,24 +96,28 @@ function AgentStartupCommandForm({
         autoFocus
       />
       <DialogFooter>
-        <Button variant="outline" onClick={closeAgentStartupCommand}>
+        <Button variant="outline" disabled={saving} onClick={closeAgentStartupCommand}>
           Cancel
         </Button>
-        <Button onClick={() => void handleSave()}>Save</Button>
+        <Button onClick={() => void handleSave()} disabled={saving} aria-busy={saving}>{saving ? "Saving…" : "Save"}</Button>
       </DialogFooter>
     </DialogContent>
   )
 }
 
 export function AgentStartupCommandDialog() {
+  const savingRef = useRef(false)
+  const [saving, setSaving] = useState(false)
   const { spine, agentStartupCommandTarget } = useYaran()
-  const session = spine?.sessions.find((s) => s.id === agentStartupCommandTarget)
+  const session = agentStartupCommandTarget === null
+    ? undefined
+    : spine?.sessions.find((s) => s.id === agentStartupCommandTarget)
   // A standalone agent belongs to no project, so the lookup must not happen at
   // all for one rather than miss.
-  const project = spine?.projects.find(
-    (p) =>
-      session !== undefined && p.id === workspaceProjectId(session.workspace),
-  )
+  const projectId = session ? workspaceProjectId(session.workspace) : null
+  const project = projectId === null
+    ? undefined
+    : spine?.projects.find((p) => p.id === projectId)
   // Closes the dialog when the agent or its project vanishes from the
   // ViewModel; see the hook.
   const open = useVanishedTargetGuard(
@@ -100,11 +130,11 @@ export function AgentStartupCommandDialog() {
     <Dialog
       open={open}
       onOpenChange={(o) => {
-        if (!o) closeAgentStartupCommand()
+        if (!o && !savingRef.current) closeAgentStartupCommand()
       }}
     >
       {open && session && project && (
-        <AgentStartupCommandForm session={session} project={project} />
+        <AgentStartupCommandForm key={session.id} session={session} project={project} saving={saving} setSaving={setSaving} savingRef={savingRef} />
       )}
     </Dialog>
   )

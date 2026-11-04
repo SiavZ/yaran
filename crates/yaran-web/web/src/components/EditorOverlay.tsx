@@ -7,7 +7,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile"
 import { closeEditor, useYaran } from "@/lib/store"
 import { rootKey } from "@/lib/editorRoot"
-import { EditorBody } from "@/components/EditorBody"
+import { LazyEditorBody } from "@/components/LazyEditorBody"
 import { swallowMissedFileDrop } from "@/lib/editorDrop"
 
 
@@ -43,7 +43,7 @@ export function EditorOverlay() {
           Browse, edit, and diff files in this worktree.
         </DialogDescription>
         {editorTarget && (
-          <EditorBody
+          <LazyEditorBody
             key={rootKey(editorTarget.root)}
             root={editorTarget.root}
           />

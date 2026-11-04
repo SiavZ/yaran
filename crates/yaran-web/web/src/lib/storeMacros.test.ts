@@ -311,7 +311,7 @@ describe("store macros commands", () => {
     expect(pty.sent).toHaveLength(1)
   })
 
-  it("saveMacros PUTs the FULL ordered entries to /api/v1/macros and closes", async () => {
+  it("saveMacros PUTs the full ordered entries and leaves closing to the editor", async () => {
     const mod = await loadStore()
     mod.openMacrosDialog()
 
@@ -321,7 +321,7 @@ describe("store macros commands", () => {
       { name: "Review", text: "review this", surface: "agent" },
       { name: "New", text: "added", surface: "both" },
     ]
-    mod.saveMacros(edited)
+    expect(await mod.saveMacros(edited)).toBe(true)
 
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/v1/macros",
@@ -338,8 +338,8 @@ describe("store macros commands", () => {
       entries: MacroView[]
     }).entries
     expect(sent.map((m) => m.name)).toEqual(["Build", "Review", "New"])
-    // The dialog closes after dispatching the save.
-    expect(mod.getSnapshot().macrosDialogOpen).toBe(false)
+    // The editor closes only after its awaited success.
+    expect(mod.getSnapshot().macrosDialogOpen).toBe(true)
   })
 
   it("persistMacroOrder PUTs the reordered entries, keeps the dialog open, resolves true", async () => {

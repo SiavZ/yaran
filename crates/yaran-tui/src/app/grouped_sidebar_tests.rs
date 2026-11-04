@@ -385,8 +385,19 @@ fn the_grouped_sidebar_renders_headers_with_counts_and_every_harness() {
     let mut terminal = Terminal::new(TestBackend::new(120, 50)).expect("terminal");
     terminal.draw(|frame| app.render(frame)).expect("render");
     let screen = screen_text(terminal.backend().buffer());
-    assert!(screen.contains("▾ Jobzy-infra (3)"), "{screen}");
-    assert!(screen.contains("▾ Jobzy-web (1)"), "{screen}");
+    // Each header's count sits flush right in the sidebar's own column.
+    let sidebar_cell = |line: &str| line.split('│').nth(1).unwrap_or("").trim().to_string();
+    for (name, count) in [("▾ Jobzy-infra", "3"), ("▾ Jobzy-web", "1")] {
+        assert!(
+            screen
+                .lines()
+                .map(sidebar_cell)
+                .any(|cell| cell.starts_with(name)
+                    && cell.ends_with(count)
+                    && cell[name.len()..cell.len() - count.len()].trim().is_empty()),
+            "{name} … {count}\n{screen}"
+        );
+    }
     for name in [
         "infra-claude",
         "infra-engineer",
@@ -605,25 +616,99 @@ fn compact_grouped_renders_one_line_per_header_and_agent_with_tree_connectors() 
     let buffer = draw(&mut app);
     let rows = sidebar_rows(&app, &buffer);
     assert_eq!(rows.len(), 6, "{rows:#?}");
-    let expected: [(&str, bool); 6] = [
-        ("▾ Jobzy-infra (3)", false),
-        ("├ ● infra-claude (claude)", true),
-        ("├ ● infra-engineer (codex)", true),
-        ("└ ◎ infra-opencode (opencode)", true),
-        ("▾ Jobzy-web (1)", false),
-        ("└ ● web-dev (claude)", true),
+    // A header's count sits flush right; an agent's SHARED badge does too.
+    let expected: [(&str, &str); 6] = [
+        ("▾ Jobzy-infra", "3"),
+        ("├ ● infra-claude (claude)", "SHARED"),
+        ("├ ● infra-engineer (codex)", "SHARED"),
+        ("└ ◎ infra-opencode (opencode)", "SHARED"),
+        ("▾ Jobzy-web", "1"),
+        ("└ ● web-dev (claude)", "SHARED"),
     ];
-    for (row, (left, shared)) in rows.iter().zip(expected) {
+    for (row, (left, right)) in rows.iter().zip(expected) {
         assert!(row.starts_with(left), "{row:?} should start {left:?}");
-        if shared {
-            // The SHARED badge is pinned to the right edge, past a gap.
-            assert!(row.ends_with("SHARED"), "{row:?}");
-            let gap = &row[left.len()..row.len() - "SHARED".len()];
-            assert!(gap.len() >= 2 && gap.trim().is_empty(), "{row:?}");
-        } else {
-            assert_eq!(row, left);
+        assert!(row.ends_with(right), "{row:?} should end {right:?}");
+        let gap = &row[left.len()..row.len() - right.len()];
+        assert!(gap.len() >= 2 && gap.trim().is_empty(), "{row:?}");
+    }
+}
+
+/// On a sidebar too narrow for both, a project header keeps its name whole and
+/// drops the count, rather than cutting the name to fit the number.
+#[test]
+fn a_narrow_project_header_keeps_its_name_over_its_count() {
+    let mut app = compact_app("grouped");
+    app.left_width_pct = 13;
+    let buffer = draw(&mut app);
+    let rows = sidebar_rows(&app, &buffer);
+    let text_width = app.mouse_layout.left_list.width as usize - 2;
+    assert!(
+        ("▾ Jobzy-web".len()..="▾ Jobzy-web".len() + 2).contains(&(text_width - 1))
+            || text_width < 16,
+        "test setup: {text_width}"
+    );
+    let header = rows
+        .iter()
+        .find(|row| row.starts_with("▾ Jobzy-web"))
+        .unwrap_or_else(|| panic!("the whole name stays: {rows:#?}"));
+    assert_eq!(header, "▾ Jobzy-web", "{rows:#?}");
+}
+
+/// A compact row has no second line, so a LIVE state word rides flush right
+/// (before the badges); the quiet states (idle, detached) stay unspoken. When
+/// the row is too narrow for name, harness and state, the harness gives way
+/// first: the state is what a scan down the column is looking for.
+#[test]
+fn compact_rows_name_live_states_flush_right_and_keep_them_when_narrow() {
+    let mut app = compact_app("grouped");
+    let slot = app.engine.sessions[0].slot_tab_id().to_string();
+    app.engine.needs_attention.insert(TabId::new(slot));
+    let flagged = app.engine.sessions[0].display_label();
+    let buffer = draw(&mut app);
+    let rows = sidebar_rows(&app, &buffer);
+    let row = |needle: &str| {
+        rows.iter()
+            .find(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} missing: {rows:#?}"))
+            .clone()
+    };
+    assert!(row(&flagged).ends_with("Needs you SHARED"), "{rows:#?}");
+    for quiet in ["infra-engineer", "infra-opencode", "web-dev"] {
+        let r = row(quiet);
+        for word in ["Idle", "Detached", "Needs you"] {
+            assert!(!r.contains(word), "{r:?} must not spell {word}");
         }
     }
+
+    // Narrow enough that the harness suffix cannot stay beside the state
+    // (name + harness + state + badge is 43 cells; name + state + badge is 34).
+    app.left_width_pct = 35;
+    let buffer = draw(&mut app);
+    let rows = sidebar_rows(&app, &buffer);
+    let line = rows
+        .iter()
+        .find(|row| row.contains(&flagged))
+        .unwrap_or_else(|| panic!("{flagged} missing: {rows:#?}"));
+    let text_width = app.mouse_layout.left_list.width as usize - 2;
+    assert!((34..43).contains(&text_width), "test setup: {text_width}");
+    assert!(line.ends_with("Needs you SHARED"), "{line:?}");
+    assert!(
+        !line.contains("(claude)"),
+        "the harness gives way first: {line:?}"
+    );
+
+    // Narrower still: the name's tail ellipsizes before the state goes.
+    app.left_width_pct = 28;
+    let buffer = draw(&mut app);
+    let rows = sidebar_rows(&app, &buffer);
+    let line = rows
+        .iter()
+        .find(|row| row.starts_with("├ ") && row.contains("Needs you"))
+        .unwrap_or_else(|| panic!("flagged row missing: {rows:#?}"));
+    assert!(
+        line.contains('…') && line.ends_with("Needs you SHARED"),
+        "{line:?}"
+    );
 }
 
 #[test]
@@ -684,7 +769,11 @@ fn compact_list_reserves_no_top_margin_row() {
     let mut app = compact_app("grouped");
     let buffer = draw(&mut app);
     let rows = sidebar_rows(&app, &buffer);
-    assert_eq!(rows.first().map(String::as_str), Some("▾ Jobzy-infra (3)"));
+    let first = rows.first().expect("a first row");
+    assert!(
+        first.starts_with("▾ Jobzy-infra") && first.ends_with('3'),
+        "{first:?}"
+    );
     // The list starts on the block's first inner row.
     let list = app.mouse_layout.left_list;
     let above: String = (list.x..list.x + list.width)

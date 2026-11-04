@@ -95,27 +95,33 @@ function RenameEntryDialogBody({
         </DialogTitle>
       </DialogHeader>
       <Input
+        aria-label="New name"
         value={name}
         onChange={(e) => setName(e.target.value)}
         autoFocus
         onFocus={(e) => e.currentTarget.select()}
         disabled={isDirty}
         aria-invalid={name.length > 0 && !validation.ok}
+        aria-describedby={isDirty || (name.length > 0 && !validation.ok) ? "rename-entry-error" : undefined}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
+          if (
+            e.key === "Enter" &&
+            !e.nativeEvent.isComposing &&
+            e.keyCode !== 229
+          ) {
             e.preventDefault()
             submit()
           }
         }}
       />
       {isDirty ? (
-        <p className="text-sm text-destructive">
+        <p id="rename-entry-error" role="alert" className="text-sm text-destructive">
           Save or discard changes in this file before renaming.
         </p>
       ) : (
         name.length > 0 &&
         !validation.ok && (
-          <p className="text-sm text-destructive">{validation.error}</p>
+          <p id="rename-entry-error" role="alert" className="text-sm text-destructive">{validation.error}</p>
         )
       )}
       <DialogFooter>

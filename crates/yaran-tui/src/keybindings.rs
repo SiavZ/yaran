@@ -3415,6 +3415,8 @@ mod tests {
             "move-agent-down",
             "move-agent-top",
             "move-agent-up",
+            "move-project-down",
+            "move-project-up",
             "move-terminal-bottom",
             "move-terminal-down",
             "move-terminal-top",

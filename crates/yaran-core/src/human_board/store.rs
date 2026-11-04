@@ -639,6 +639,8 @@ mod tests {
     #[test]
     fn the_watcher_sees_a_note_change_in_a_folder() {
         let (_home, store) = folder();
+        // Watch note changes, not the empty folder appearing before its first note.
+        fs::create_dir_all(store.path()).unwrap();
         let watcher = BoardWatcher::spawn(store.clone(), Duration::from_millis(10)).unwrap();
         let wait = Duration::from_secs(5);
         assert!(

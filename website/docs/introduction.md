@@ -47,17 +47,18 @@ yaran has three nouns:
 
 - **Projects** are git repositories you have added to yaran. A project points at a
   checkout on disk and remembers your preferences for it.
-- **Agents** are sessions running inside a project. Each one gets its own git worktree
-  on its own branch, so two agents on the same repo never step on each other. A
+- **Agents** are sessions running inside a project. Shared agents use its registered
+  checkout; worktree agents get a separate checkout and branch. The project's workspace
+  setting chooses which mode new agents use. A
   **standalone agent** is the exception you ask for by name: it runs in a folder you
   already have, with no branch and no worktree of yaran's, and yaran never creates, moves
   or removes that folder. See [Creating agents](/docs/creating-agents).
 - **Providers** are the CLIs that power agents. Claude, Codex, OpenCode, and Copilot
   ship configured out of the box, and you can wire up any other command yourself.
 
-The flow is: add a project, spin up an agent, pick a provider. yaran creates the worktree,
-launches the CLI in a real terminal, and tracks the session so you can walk away and
-reconnect later.
+The flow is: add a project, choose its default provider, and spin up an agent. yaran
+launches the CLI in the project's configured workspace and tracks the session so you can
+walk away and reconnect later.
 
 ## The three panes
 
@@ -73,7 +74,10 @@ Both front ends lay the workspace out the same way:
 - The **right pane** shows the files an agent has changed, with diffs.
 
 This is the terminal UI, with a prompt being typed straight into the center pane while the
-agent streams its work and the sidebar marks the agent as typing.
+agent streams its work and the sidebar marks the agent as typing. While your keystrokes are
+reaching an agent or terminal, its pane says so: the border turns the typing color, its
+title leads with **INPUT**, and the hint bar at the bottom starts with **INPUT** instead of
+the name of the focused pane.
 
 ![The terminal UI: the agent list on the left, a running agent's terminal in the middle with a prompt being typed into it, and the changed files on the right.](/screens/tui-typing-in-pane.png)
 

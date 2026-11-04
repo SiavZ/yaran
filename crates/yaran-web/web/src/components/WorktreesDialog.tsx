@@ -378,6 +378,7 @@ function WorktreesBody({ projectId }: { projectId: string }) {
       {selected ? (
         <div className="grid gap-1">
           <Input
+            aria-label="Display name"
             value={name}
             onChange={(e) => {
               const el = e.target
@@ -393,7 +394,11 @@ function WorktreesBody({ projectId }: { projectId: string }) {
               }
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
+              if (
+                e.key === "Enter" &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
                 e.preventDefault()
                 handleAttach()
               }
@@ -431,7 +436,9 @@ function WorktreesBody({ projectId }: { projectId: string }) {
 // Its store surface is named `attachWorktree` rather than after these labels.
 export function WorktreesDialog() {
   const { attachWorktreeTarget, spine } = useYaran()
-  const project = spine?.projects.find((p) => p.id === attachWorktreeTarget)
+  const project = attachWorktreeTarget === null
+    ? undefined
+    : spine?.projects.find((p) => p.id === attachWorktreeTarget)
   // Closes the dialog when the project vanishes from the ViewModel: managing
   // the worktrees of a deleted project is moot. See the hook.
   const open = useVanishedTargetGuard(
