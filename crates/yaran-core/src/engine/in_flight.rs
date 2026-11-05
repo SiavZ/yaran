@@ -36,6 +36,10 @@ pub enum InFlightKey {
     /// recreate succeeded or failed.
     RecreateWorkingCopy(String),
     ResourceStats,
+    /// The Claude conversation follower's read is running. One at a time, so
+    /// a slow filesystem cannot stack reads behind the next tick. Cleared by
+    /// the `ClaudeLiveSessionsRead` handler.
+    ClaudeSessionFollow,
     /// A one-shot PR check (foreground/refs-watcher/exit trigger) is running for
     /// this session id. Bounds concurrent `gh` subprocesses for one session (a
     /// call can run up to `GH_CALL_TIMEOUT`, longer than the debounce). Cleared

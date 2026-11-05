@@ -4579,6 +4579,7 @@ impl App {
         self.engine.spawn_changed_files_poller();
         self.engine.spawn_branch_sync_worker();
         self.engine.spawn_limits_watchdogs();
+        self.engine.spawn_claude_session_follower();
         self.engine.spawn_project_worktree_links();
         self.engine.spawn_backup_worker();
         self.engine.spawn_project_branch_status_checks();

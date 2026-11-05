@@ -812,6 +812,17 @@ CWD; zero or multiple candidates time out or fail closed and block another
 uncaptured launch in that CWD rather than guessing. All diagnostics sanitize
 provider-controlled fields under the `yaran::resume_recovery` tracing target.
 
+While a Claude agent runs, yaran also follows it onto the conversation it is
+actually in (a `/clear` or `/resume` moves it to a new UUID) by reading Claude
+Code's own per-process record, `~/.claude/sessions/<pid>.json`, every 20
+seconds on a worker. A record is used only for the agent's own PTY child pid,
+only when it was written no earlier than that process started (so a record left
+by a crashed process whose pid was reused is ignored), only for an interactive
+session whose recorded directory canonically equals the agent's, and only when
+its id is a valid UUID; reads are size-bounded, and a newer capture recorded
+while the read ran always wins. A conversation Claude opened in another
+directory is therefore never adopted for this agent.
+
 **Residual risk.** The documented trust model grants same-UID processes access
 to both provider roots. Such a process can race filesystem names or forge one
 otherwise-valid transcript during the capture window; Yaran is not a security
