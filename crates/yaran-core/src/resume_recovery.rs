@@ -255,6 +255,121 @@ impl ProviderDataRoots {
     }
 }
 
+/// A running Claude tab whose live conversation id the engine wants checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeLiveSessionTarget {
+    pub session_id: String,
+    /// The tab's PTY child, which is the Claude process itself.
+    pub pid: u32,
+    pub directory: PathBuf,
+    /// The id yaran has recorded for this agent, as it stood when asked.
+    pub recorded: Option<String>,
+}
+
+/// A Claude tab that has moved to a conversation other than the recorded one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeLiveSession {
+    pub session_id: String,
+    pub live_id: String,
+    /// The recorded id the comparison was made against, so the engine can
+    /// skip the update when a capture changed the record in the meantime.
+    pub recorded: Option<String>,
+}
+
+/// Claude Code's per-process records: one `<pid>.json` for each running
+/// interactive Claude, removed when it exits.
+pub fn claude_live_sessions_dir() -> Option<PathBuf> {
+    home::home_dir().map(|home| home.join(".claude/sessions"))
+}
+
+/// Upper bound on a per-process record. The real ones are well under 1 KB.
+const MAX_CLAUDE_LIVE_RECORD_BYTES: u64 = 64 * 1024;
+
+/// The conversation a running Claude process is in right now, from Claude
+/// Code's own record of it.
+///
+/// Why: `/clear` and `/resume` move a running Claude onto another
+/// conversation id, so the id captured at launch goes stale, and resuming it
+/// later reopens an old conversation. Claude restores a resumed session's
+/// last model, so that also brings back the old conversation's model.
+///
+/// `None` unless the record really is this process's: the same pid, written
+/// no earlier than the process started (an earlier Claude that crashed and
+/// whose pid was reused leaves its record behind), an interactive session in
+/// `directory`, and a UUID id.
+pub fn parse_claude_live_session(
+    record: &str,
+    pid: u32,
+    process_started_ms: u64,
+    directory: &Path,
+) -> Option<String> {
+    let value: Value = serde_json::from_str(record).ok()?;
+    if value.get("pid")?.as_u64()? != u64::from(pid) {
+        return None;
+    }
+    // The process start time is whole seconds; allow for that rounding.
+    let started_at = value.get("startedAt")?.as_u64()?;
+    if started_at.saturating_add(2_000) < process_started_ms {
+        return None;
+    }
+    if value
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind != "interactive")
+    {
+        return None;
+    }
+    let cwd = Path::new(value.get("cwd")?.as_str()?);
+    let same_dir = |a: &Path, b: &Path| match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    if !same_dir(cwd, directory) {
+        return None;
+    }
+    let id = value.get("sessionId")?.as_str()?;
+    provider_resume_id_is_valid("claude", id).then(|| id.to_string())
+}
+
+/// Read each target's record and report the ones whose live conversation
+/// differs from the recorded id. Runs on a worker: it touches the filesystem
+/// and the process table.
+pub fn read_claude_live_sessions(
+    sessions_dir: &Path,
+    targets: Vec<ClaudeLiveSessionTarget>,
+) -> Vec<ClaudeLiveSession> {
+    use std::io::Read;
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let pids: Vec<Pid> = targets.iter().map(|t| Pid::from_u32(t.pid)).collect();
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    targets
+        .into_iter()
+        .filter_map(|target| {
+            let started_ms = system.process(Pid::from_u32(target.pid))?.start_time() * 1000;
+            let mut record = String::new();
+            File::open(sessions_dir.join(format!("{}.json", target.pid)))
+                .ok()?
+                .take(MAX_CLAUDE_LIVE_RECORD_BYTES)
+                .read_to_string(&mut record)
+                .ok()?;
+            let live_id =
+                parse_claude_live_session(&record, target.pid, started_ms, &target.directory)?;
+            let moved = target.recorded.as_deref() != Some(live_id.as_str());
+            moved.then_some(ClaudeLiveSession {
+                session_id: target.session_id,
+                live_id,
+                recorded: target.recorded,
+            })
+        })
+        .collect()
+}
+
 /// Minimum size for a jcode session file to count as resumable. A pane that
 /// spawned fresh and sat idle leaves a near-empty session (~1-3 KB); real
 /// working sessions start around 50 KB. Resuming an idle shell would hide
@@ -1250,6 +1365,115 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
+
+    fn live_record(pid: u32, started_at: u64, cwd: &Path, id: &str) -> String {
+        serde_json::json!({
+            "pid": pid,
+            "sessionId": id,
+            "cwd": cwd.to_string_lossy(),
+            "startedAt": started_at,
+            "kind": "interactive",
+            "status": "idle",
+        })
+        .to_string()
+    }
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    /// Observed live: a lane captured at launch as one id had moved on (after
+    /// `/clear`) to another, and Claude Code's `<pid>.json` named the new one.
+    #[test]
+    fn a_running_claudes_own_record_names_its_current_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Uuid::new_v4().to_string();
+        let started = 1_793_877_688_000;
+        let record = live_record(4242, started + 500, dir.path(), &id);
+        assert_eq!(
+            parse_claude_live_session(&record, 4242, started, dir.path()),
+            Some(id.clone())
+        );
+        // An in-place `/restart` rewrites the record later than the process
+        // started, which is still this process.
+        let record = live_record(4242, started + 3_600_000, dir.path(), &id);
+        assert_eq!(
+            parse_claude_live_session(&record, 4242, started, dir.path()),
+            Some(id)
+        );
+    }
+
+    #[test]
+    fn records_that_are_not_this_processs_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let id = Uuid::new_v4().to_string();
+        let started = 1_793_877_688_000;
+        let parse = |record: &str| parse_claude_live_session(record, 4242, started, dir.path());
+        // Another pid's record.
+        assert_eq!(parse(&live_record(4243, started, dir.path(), &id)), None);
+        // Left behind by an earlier Claude whose pid was reused.
+        assert_eq!(
+            parse(&live_record(4242, started - 60_000, dir.path(), &id)),
+            None
+        );
+        // A Claude in another directory.
+        assert_eq!(parse(&live_record(4242, started, other.path(), &id)), None);
+        // Not a usable id, or not JSON at all.
+        assert_eq!(
+            parse(&live_record(4242, started, dir.path(), "--help")),
+            None
+        );
+        assert_eq!(parse("not json"), None);
+        // A background session is not the pane's conversation.
+        let mut value: Value =
+            serde_json::from_str(&live_record(4242, started, dir.path(), &id)).unwrap();
+        value["kind"] = Value::from("bg");
+        assert_eq!(parse(&value.to_string()), None);
+    }
+
+    /// The worker reads the real process table: a live child with a fresh
+    /// record is reported only when it differs from the recorded id.
+    #[test]
+    fn live_sessions_are_reported_only_when_they_moved() {
+        let records = tempfile::tempdir().unwrap();
+        let workdir = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let live_id = Uuid::new_v4().to_string();
+        fs::write(
+            records.path().join(format!("{pid}.json")),
+            live_record(pid, now_ms(), workdir.path(), &live_id),
+        )
+        .unwrap();
+        let target = |recorded: Option<&str>| ClaudeLiveSessionTarget {
+            session_id: "s1".into(),
+            pid,
+            directory: workdir.path().to_path_buf(),
+            recorded: recorded.map(str::to_string),
+        };
+        let stale = Uuid::new_v4().to_string();
+
+        assert_eq!(
+            read_claude_live_sessions(records.path(), vec![target(Some(&stale))]),
+            vec![ClaudeLiveSession {
+                session_id: "s1".into(),
+                live_id: live_id.clone(),
+                recorded: Some(stale),
+            }]
+        );
+        assert!(read_claude_live_sessions(records.path(), vec![target(Some(&live_id))]).is_empty());
+        let _ = child.kill();
+        let _ = child.wait();
+        // Gone: no process, nothing reported even though the record is still there.
+        assert!(read_claude_live_sessions(records.path(), vec![target(None)]).is_empty());
+    }
     use crate::model::{
         AgentWorkspace, BranchProvenance, ManagedWorkspace, ProjectBranchStatus, ProviderKind,
         SessionStatus,

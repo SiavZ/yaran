@@ -670,6 +670,7 @@ pub(crate) fn spawn_global_workers(engine: &mut Engine) {
     engine.spawn_changed_files_poller();
     engine.spawn_branch_sync_worker();
     engine.spawn_limits_watchdogs();
+    engine.spawn_claude_session_follower();
     engine.spawn_project_worktree_links();
     engine.spawn_backup_worker();
     engine.spawn_project_branch_status_checks();

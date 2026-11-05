@@ -548,6 +548,12 @@ pub enum WorkerEvent {
     DiskUsageSampled(u8),
     /// `[limits]` scrollback watchdog tick; the engine estimates and acts.
     ScrollbackWatchdogTick,
+    /// The Claude conversation follower's tick: the engine lists its running
+    /// Claude tabs and hands them to a worker to read.
+    ClaudeSessionFollowTick,
+    /// Running Claude tabs whose live conversation differs from the id yaran
+    /// recorded for the agent.
+    ClaudeLiveSessionsRead(Vec<crate::resume_recovery::ClaudeLiveSession>),
     /// One run of the `gh` host probe finished.
     ///
     /// `generation` is stamped before the probe is spawned and travels on every

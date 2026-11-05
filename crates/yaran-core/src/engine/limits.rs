@@ -50,6 +50,9 @@ pub struct LimitsRuntime {
     /// The `[storage]` backup worker's single-instance flag (engine/backup.rs).
     /// Kept with the other watchdog flags so the engine gains one field.
     pub(crate) backup_worker_started: Arc<AtomicBool>,
+    /// The Claude conversation follower's single-instance flag
+    /// (engine/provider_sessions.rs), kept here for the same reason.
+    pub(crate) claude_session_follow_started: Arc<AtomicBool>,
 }
 
 impl Engine {

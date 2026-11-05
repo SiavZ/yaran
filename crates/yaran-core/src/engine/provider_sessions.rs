@@ -15,18 +15,165 @@
 //! - Startup relaunches (upstream's auto-reopen, and the fork's
 //!   `auto_resume_on_start`) go through one candidate filter and one throttle.
 
-use std::path::Path;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::auto_resume::QueuedStartupLaunch;
 use crate::engine::events::{EventReaction, StatusUpdate};
+use crate::engine::spawn_worker::{BackgroundWorkerSpec, LoopControl, LoopWorkerSpec};
 use crate::engine::{Command, Engine, InFlightKey};
-use crate::ids::TabIdRef;
+use crate::ids::{SessionIdRef, TabIdRef};
 use crate::model::{AgentSession, ProviderKind};
-use crate::resume_recovery::{self, ProviderSessionLaunch, ResumeIdInput};
+use crate::resume_recovery::{
+    self, ClaudeLiveSession, ClaudeLiveSessionTarget, ProviderSessionLaunch, ResumeIdInput,
+};
 use crate::worker::{AgentLaunchKind, WorkerEvent};
 
+/// How often a running Claude tab's live conversation is compared with the
+/// recorded id. A `/clear` is followed within this window; a restart inside
+/// it still resumes the conversation from before the `/clear`.
+pub const CLAUDE_SESSION_FOLLOW_INTERVAL: Duration = Duration::from_secs(20);
+
 impl Engine {
+    /// Start following running Claude tabs onto the conversation they are
+    /// actually in. The id captured at launch goes stale on `/clear` or
+    /// `/resume`, and a relaunch that resumes it reopens an old conversation
+    /// with that conversation's model. Idempotent, like the watchdogs.
+    pub fn spawn_claude_session_follower(&self) {
+        let started_flag = &self.limits.claude_session_follow_started;
+        if started_flag.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let started = self.spawn_loop_worker(
+            LoopWorkerSpec {
+                label: "claude-session-follow".into(),
+                feature: "resuming each Claude agent's current conversation".into(),
+                remedy: crate::poller_status::REMEDY_RESTART_YARAN.into(),
+            },
+            move |tx| {
+                thread::sleep(CLAUDE_SESSION_FOLLOW_INTERVAL);
+                // The tabs live on the engine thread, so the loop only ticks.
+                if tx.send(WorkerEvent::ClaudeSessionFollowTick).is_err() {
+                    return LoopControl::Break;
+                }
+                LoopControl::Continue
+            },
+        );
+        if !started {
+            started_flag.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// One follower tick: hand the running Claude tabs to a worker that reads
+    /// Claude Code's per-process records. Silent, like every background poll.
+    pub(crate) fn handle_claude_session_follow_tick(&mut self) -> EventReaction {
+        if self.is_in_flight(&InFlightKey::ClaudeSessionFollow) {
+            return EventReaction::Nothing;
+        }
+        let targets = self.claude_session_follow_targets();
+        let Some(dir) = resume_recovery::claude_live_sessions_dir() else {
+            return EventReaction::Nothing;
+        };
+        if targets.is_empty() {
+            return EventReaction::Nothing;
+        }
+        self.spawn_claude_live_session_read(dir, targets);
+        EventReaction::Nothing
+    }
+
+    fn spawn_claude_live_session_read(
+        &mut self,
+        dir: PathBuf,
+        targets: Vec<ClaudeLiveSessionTarget>,
+    ) {
+        self.spawn_background_worker(
+            BackgroundWorkerSpec {
+                label: "claude-session-follow-read".into(),
+                in_flight_key: Some(InFlightKey::ClaudeSessionFollow),
+                panic_event: Some(Box::new(
+                    |_| WorkerEvent::ClaudeLiveSessionsRead(Vec::new()),
+                )),
+            },
+            move |tx| {
+                let found = resume_recovery::read_claude_live_sessions(&dir, targets);
+                let _ = tx.send(WorkerEvent::ClaudeLiveSessionsRead(found));
+            },
+        );
+    }
+
+    /// Every agent whose session-slot tab is running Claude with a known
+    /// process. Only the slot tab's conversation is the one a relaunch
+    /// resumes by id (see [`Self::provider_session_launch`]), so extra tabs
+    /// are never followed.
+    pub(crate) fn claude_session_follow_targets(&self) -> Vec<ClaudeLiveSessionTarget> {
+        self.sessions
+            .iter()
+            .filter_map(|session| {
+                let slot = self.slot_tab_id_of(SessionIdRef::new(&session.id));
+                let provider = self.tab_running_provider(session, slot);
+                if provider.as_str() != "claude"
+                    || !crate::config::provider_config(&self.config, &provider)
+                        .supports_session_resume_by_id()
+                {
+                    return None;
+                }
+                let pid = self.providers.get(slot)?.child_process_id()?;
+                Some(ClaudeLiveSessionTarget {
+                    session_id: session.id.clone(),
+                    pid,
+                    directory: PathBuf::from(session.directory()),
+                    recorded: self
+                        .session_store
+                        .provider_session_id(&session.id, "claude")
+                        .ok()
+                        .flatten(),
+                })
+            })
+            .collect()
+    }
+
+    /// Record the conversations running Claude tabs have moved to, so the
+    /// next relaunch resumes the conversation the agent was last in.
+    pub(crate) fn process_claude_live_sessions(
+        &mut self,
+        found: Vec<ClaudeLiveSession>,
+    ) -> EventReaction {
+        self.clear_in_flight(&InFlightKey::ClaudeSessionFollow);
+        for live in found {
+            if self.session_by_id(&live.session_id).is_none() {
+                continue;
+            }
+            let current = self
+                .session_store
+                .provider_session_id(&live.session_id, "claude")
+                .ok()
+                .flatten();
+            // A launch recorded a new id while the read ran: that one wins.
+            if current != live.recorded || current.as_deref() == Some(live.live_id.as_str()) {
+                continue;
+            }
+            match self.session_store.set_provider_session_id(
+                &live.session_id,
+                "claude",
+                &live.live_id,
+            ) {
+                Ok(()) => crate::logger::info(&format!(
+                    "agent {} moved to Claude conversation {} (was {}); its next start resumes it",
+                    live.session_id,
+                    live.live_id,
+                    current.as_deref().unwrap_or("none"),
+                )),
+                Err(err) => crate::logger::warn(&format!(
+                    "could not record Claude conversation {} for agent {}: {err:#}",
+                    live.live_id, live.session_id,
+                )),
+            }
+        }
+        EventReaction::Nothing
+    }
+
     /// How a launch of `provider` on `tab_id` reaches its conversation, given
     /// upstream's own `resume` decision for it.
     ///
@@ -378,6 +525,93 @@ mod tests {
             managed.worktree_path = dir.to_string_lossy().to_string();
         }
         session
+    }
+
+    /// The follower records the conversation a running Claude moved to, so the
+    /// next relaunch resumes it (and, with it, the model it last used).
+    #[test]
+    fn a_followed_claude_conversation_becomes_the_one_resumed() {
+        let (mut engine, tmp) = test_engine();
+        let session = session_in(tmp.path(), "s1", "claude");
+        engine.session_store.create_session(&session).unwrap();
+        engine.sessions.push(session);
+        let launched = uuid::Uuid::new_v4().to_string();
+        let live = uuid::Uuid::new_v4().to_string();
+        engine
+            .session_store
+            .set_provider_session_id("s1", "claude", &launched)
+            .unwrap();
+        engine.mark_in_flight(InFlightKey::ClaudeSessionFollow);
+
+        engine.process_claude_live_sessions(vec![ClaudeLiveSession {
+            session_id: "s1".into(),
+            live_id: live.clone(),
+            recorded: Some(launched),
+        }]);
+
+        assert!(!engine.is_in_flight(&InFlightKey::ClaudeSessionFollow));
+        assert_eq!(
+            engine
+                .session_store
+                .provider_session_id("s1", "claude")
+                .unwrap(),
+            Some(live)
+        );
+    }
+
+    /// A launch that captured a new id while the read ran wins, and an agent
+    /// deleted meanwhile is left alone.
+    #[test]
+    fn a_follow_result_never_overwrites_a_newer_record() {
+        let (mut engine, tmp) = test_engine();
+        let session = session_in(tmp.path(), "s1", "claude");
+        engine.session_store.create_session(&session).unwrap();
+        engine.sessions.push(session);
+        let captured = uuid::Uuid::new_v4().to_string();
+        engine
+            .session_store
+            .set_provider_session_id("s1", "claude", &captured)
+            .unwrap();
+
+        engine.process_claude_live_sessions(vec![
+            ClaudeLiveSession {
+                session_id: "s1".into(),
+                live_id: uuid::Uuid::new_v4().to_string(),
+                recorded: Some(uuid::Uuid::new_v4().to_string()),
+            },
+            ClaudeLiveSession {
+                session_id: "gone".into(),
+                live_id: uuid::Uuid::new_v4().to_string(),
+                recorded: None,
+            },
+        ]);
+
+        assert_eq!(
+            engine
+                .session_store
+                .provider_session_id("s1", "claude")
+                .unwrap(),
+            Some(captured)
+        );
+        assert_eq!(
+            engine
+                .session_store
+                .provider_session_id("gone", "claude")
+                .unwrap(),
+            None
+        );
+    }
+
+    /// No running Claude tab: a tick reads nothing and starts no worker.
+    #[test]
+    fn a_follow_tick_with_nothing_running_starts_no_read() {
+        let (mut engine, tmp) = test_engine();
+        let session = session_in(tmp.path(), "s1", "claude");
+        engine.session_store.create_session(&session).unwrap();
+        engine.sessions.push(session);
+        assert!(engine.claude_session_follow_targets().is_empty());
+        engine.handle_claude_session_follow_tick();
+        assert!(!engine.is_in_flight(&InFlightKey::ClaudeSessionFollow));
     }
 
     /// A stored id is preferred over upstream's resume-latest flag, and the

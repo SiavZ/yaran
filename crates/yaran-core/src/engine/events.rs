@@ -3859,6 +3859,8 @@ impl Engine {
             }
             WorkerEvent::DiskUsageSampled(pct) => self.handle_disk_usage_event(pct),
             WorkerEvent::ScrollbackWatchdogTick => self.handle_scrollback_watchdog_tick(),
+            WorkerEvent::ClaudeSessionFollowTick => self.handle_claude_session_follow_tick(),
+            WorkerEvent::ClaudeLiveSessionsRead(found) => self.process_claude_live_sessions(found),
             WorkerEvent::NonDefaultBranchCheckoutCompleted {
                 action,
                 target_branch,
