@@ -1055,6 +1055,42 @@ repository history shows who changed the card.
 
 ---
 
+## T24 — Claude Code's self-relaunch runs through a launcher yaran installs
+
+**Attack scenario.** `claude-amq` sets `CLAUDE_CODE_PROCESS_WRAPPER` to
+`claude-peers-launcher`, so every time Claude Code execs itself again (its
+`/restart`, its switch onto an updated build, its background daemon and the
+sessions and spares that daemon hosts, when started from a yaran pane) it runs
+that script first. Whoever can modify the script runs code in every one of
+those processes with the operator's permissions. A launcher that adds flags
+to the wrong process could also start a background session on a prompt nobody
+is there to answer.
+
+**Mitigation in code.** The launcher is installed next to `claude-amq` with the
+same mode and the same ownership advice (root-owned, `0444`, see T3), and is
+referenced by absolute path, which Claude Code requires. It always `exec`s the
+command it was given and passes the environment through unchanged; the only
+change it ever makes is appending
+`--dangerously-load-development-channels server:claude-peers`, and only when
+the relaunch is still on the terminal `claude-amq` started on, is an
+interactive invocation (no subcommand, `-p`, `--print`, `--bare` or `--`),
+does not carry the flag already, and `CLAUDE_PEERS_DISABLE` is not `1`.
+Anything else, including every daemon-hosted process, runs exactly as asked.
+`claude-amq` does not replace a launcher the operator already set.
+
+**Residual risk.** The script is a second executable on the self-exec path of
+every Claude process started from a yaran pane, so its integrity matters as
+much as `claude-amq`'s. With an operator launcher already set, a Claude Code
+restart turns claude-peers off for that pane again, and `yaran peer` falls
+back to AMQ for it.
+
+**Detection.** `claude-amq` warns when it leaves an existing
+`CLAUDE_CODE_PROCESS_WRAPPER` alone; `claude daemon status` names the launcher
+the background service records; `yaran peer list` marks any Claude agent that
+is running without the channel.
+
+---
+
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must

@@ -309,6 +309,15 @@ fi
 # Set CLAUDE_PEERS_DISABLE=1 only for low-level diagnostics.
 if [[ "${CLAUDE_PEERS_DISABLE:-}" != "1" ]]; then
   EXTRA+=(--dangerously-load-development-channels server:claude-peers)
+  # Claude Code's /restart and its switch onto an updated build re-exec
+  # through CLAUDE_CODE_PROCESS_WRAPPER with an argv that drops the flag
+  # above; claude-peers-launcher puts it back for this pane's terminal.
+  PEERS_LAUNCHER="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/claude-peers-launcher"
+  if [[ -n "${CLAUDE_CODE_PROCESS_WRAPPER:-}" ]]; then
+    printf 'claude-amq: CLAUDE_CODE_PROCESS_WRAPPER is already set, so a Claude Code /restart will turn claude-peers off for this pane\n' >&2
+  elif [[ -x "$PEERS_LAUNCHER" ]] && PANE_TTY=$(tty 2>/dev/null); then
+    export CLAUDE_CODE_PROCESS_WRAPPER="$PEERS_LAUNCHER" YARAN_CLAUDE_PEERS_TTY="$PANE_TTY"
+  fi
 fi
 
 # audit03 Phase 01 §15: per-session system-prompt override.
