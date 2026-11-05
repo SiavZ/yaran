@@ -49,6 +49,16 @@ pub const WATCH_RESCAN_SPREAD_TICKS: usize = 4;
 /// buys nothing and would only delay them.
 pub const WATCH_MIN_RESCANS_PER_TICK: usize = 4;
 
+/// A freshly started agent's first output replays what it showed before: a
+/// resumed session redraws its transcript, and a reload adopts its terminal as
+/// it was. A `[task-done]` or `[compact]` in that replay is old, yet a new
+/// engine has seen none of it, so it would read as fresh and reset the agent's
+/// context. For this long after a tab's PTY is spawned (or adopted) the
+/// built-in rules therefore take its screen as already seen; a sentinel printed
+/// later fires as usual. Long enough for a resumed TUI to finish drawing its
+/// history. User rules are not held: they often answer a startup prompt.
+pub const WATCH_BUILT_IN_STARTUP_SETTLE: Duration = Duration::from_secs(10);
+
 /// How long a read of a compact instructions file stays current. An older one
 /// is repeated in the background, so an edited file reaches the rule without a
 /// restart.
@@ -415,6 +425,11 @@ impl Engine {
             let Some(client) = self.providers.get(tab.as_ref_id()) else {
                 continue;
             };
+            let settling = now.saturating_duration_since(client.spawned_at())
+                < self
+                    .watch
+                    .built_in_startup_settle
+                    .unwrap_or(WATCH_BUILT_IN_STARTUP_SETTLE);
             let rescan = if recently_scanned || budget == 0 {
                 None
             } else {
@@ -454,6 +469,24 @@ impl Engine {
                 self.watch.suppress_until.remove(&tab);
                 if let Some(attached) = self.watch.attached.get_mut(&tab) {
                     attached.engine.rebaseline_keyed(snapshot, key);
+                }
+            }
+            if settling && let Some(attached) = self.watch.attached.get_mut(&tab) {
+                // What a tab shows this soon after its spawn is not new to the
+                // agent (see WATCH_BUILT_IN_STARTUP_SETTLE).
+                if attached.auto_clear_idx.is_some() {
+                    attached.engine.rebaseline_kind_keyed(
+                        snapshot,
+                        key,
+                        WatchRuleKind::BuiltInAutoClear,
+                    );
+                }
+                if attached.auto_compact_idx.is_some() {
+                    attached.engine.rebaseline_kind_keyed(
+                        snapshot,
+                        key,
+                        WatchRuleKind::BuiltInAutoCompact,
+                    );
                 }
             }
             let session_id = self
@@ -1378,6 +1411,108 @@ mod tests {
             row_state(&engine, clear),
             Some(crate::watch::RuleStateKind::Idle),
             "the rebuilt auto-clear rule must not schedule a clear"
+        );
+    }
+
+    /// A restarted agent replays its old screen first: a resumed session
+    /// redraws its transcript, ending in the `[task-done]` it printed before
+    /// the restart. The built-in auto-clear takes that replay as already seen
+    /// and fires only on a sentinel printed after the startup settle window.
+    #[test]
+    fn a_sentinel_replayed_by_a_restarted_agent_does_not_clear_it() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let tmp = crate::test_scratch::ScratchDir::new();
+        let go = tmp.path().join("go");
+        let script = format!(
+            "printf 'replayed: [task-done]\\n'; while [ ! -e '{}' ]; do sleep 0.02; done; \
+             printf 'new work: [task-done]\\n'; exec sleep 30",
+            go.display()
+        );
+        let client = PtyClient::spawn(
+            "sh",
+            &["-c".to_string(), script],
+            &std::env::temp_dir(),
+            24,
+            80,
+            100,
+        )
+        .expect("spawn scripted pty");
+        let (mut engine, _guard) = engine_with_tab(client, Vec::new());
+        let settle = Duration::from_millis(600);
+        engine.watch.built_in_startup_settle = Some(settle);
+        engine
+            .amq
+            .session_settings
+            .insert("s1".to_string(), worker_settings(true, false, None));
+        let tab = TabIdRef::new("s1-slot");
+        let screen = |engine: &Engine| engine.providers[tab].scan_recent_lines(WATCH_SCAN_ROWS);
+        assert!(wait_for(
+            || screen(&engine).contains("replayed: [task-done]")
+        ));
+
+        // Tick through the window and past it, as the run loop would.
+        let settled = engine.providers[tab].spawned_at() + settle + WATCH_RESCAN_INTERVAL;
+        while Instant::now() < settled {
+            engine.tick_watch_rules();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for _ in 0..5 {
+            engine.tick_watch_rules();
+        }
+        let clear = crate::watch::builtin::AUTO_CLEAR_LABEL;
+        assert_eq!(
+            row_state(&engine, clear),
+            Some(crate::watch::RuleStateKind::Idle),
+            "a replayed sentinel must not schedule a clear"
+        );
+        assert_eq!(
+            engine.watch.auto_clear_guard_checks.load(Relaxed),
+            0,
+            "the replayed sentinel was absorbed, never offered to the guard"
+        );
+
+        std::fs::write(&go, b"").unwrap();
+        assert!(wait_for(
+            || screen(&engine).contains("new work: [task-done]")
+        ));
+        std::thread::sleep(WATCH_RESCAN_INTERVAL);
+        engine.tick_watch_rules();
+        assert_eq!(
+            row_state(&engine, clear),
+            Some(crate::watch::RuleStateKind::Pending),
+            "a sentinel printed after the window schedules the clear"
+        );
+    }
+
+    /// The startup settle window holds only the built-in rules: a user rule
+    /// still answers a prompt the agent shows as it starts.
+    #[test]
+    fn a_user_rule_still_answers_a_startup_prompt_inside_the_window() {
+        let (mut engine, _guard) = engine_with_tab(
+            printing_pty("Trust this folder? [task-done]"),
+            vec![instant_rule("Trust this folder", "yes")],
+        );
+        engine.watch.built_in_startup_settle = Some(Duration::from_secs(60));
+        engine
+            .amq
+            .session_settings
+            .insert("s1".to_string(), worker_settings(true, false, None));
+        let tab = TabIdRef::new("s1-slot");
+        assert!(wait_for(|| engine.providers[tab]
+            .scan_recent_lines(WATCH_SCAN_ROWS)
+            .contains("Trust this folder")));
+        let mut statuses = engine.tick_watch_rules();
+        statuses.extend(engine.tick_watch_rules());
+        assert!(
+            statuses
+                .iter()
+                .any(|s| s.message.contains("fired (attempt 1/3)")),
+            "{statuses:?}"
+        );
+        assert_eq!(
+            row_state(&engine, crate::watch::builtin::AUTO_CLEAR_LABEL),
+            Some(crate::watch::RuleStateKind::Idle),
+            "the built-in stays held inside the window"
         );
     }
 
