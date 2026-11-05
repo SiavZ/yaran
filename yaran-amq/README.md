@@ -30,6 +30,7 @@ yaran-amq/
 ├── install.sh                         # one-shot installer (idempotent)
 ├── wrappers/
 │   ├── claude-amq                     # wraps `claude` with AMQ co-op + history seed
+│   ├── claude-peers-launcher          # keeps the claude-peers channel across Claude Code restarts
 │   ├── codex-amq                      # wraps `codex` with AMQ co-op
 │   ├── gemini-amq                     # wraps `gemini` with AMQ co-op
 │   └── jcode-amq                      # wraps `jcode` with AMQ co-op (--no-update forced)
@@ -135,7 +136,8 @@ that `--continue` refuses.
 - yaran creates a git worktree per pane; each pane gets its own CWD and Claude session storage.
 - The `claude-amq` wrapper sets `AM_ME = <branch>`, ensures `--no-init`, and uses the shared `AMQ_GLOBAL_ROOT` queue. It safely recovers a dead exact-owner claim before `amq coop exec --require-wake`; AMQ refuses recovery when the recorded owner is still live, and the wrapper refuses to launch if wake is unavailable.
 - `--continue --fork-session` lets a worktree pick up the parent repo's most-recent chat as context, forking off cleanly so deferred-tool markers don't block resume.
-- Agents should use `yaran peer send <peer> "..."`. The router uses Claude Peers for Claude targets and AMQ for non-Claude targets. If Claude Peers is unavailable for a Claude target, the send fails loudly instead of silently falling back to AMQ.
+- Agents should use `yaran peer send <peer> "..."`. The router uses Claude Peers for Claude targets and AMQ for non-Claude targets. If Claude Peers is unavailable for a Claude target, the send fails loudly; if the target is registered but its Claude Code is running without the claude-peers channel, the router delivers over AMQ and says so, because a Claude Peers push would be discarded.
+- Claude Code's `/restart`, and its switch onto an updated build, relaunch it without `--dangerously-load-development-channels`. `claude-amq` therefore sets `CLAUDE_CODE_PROCESS_WRAPPER` to `claude-peers-launcher`, which puts the flag back when the pane's own session relaunches, so claude-peers keeps working across restarts. Each relaunch shows Claude Code's development-channel warning again; a watch rule that answers it needs a budget above one attempt (`max_attempts = 0` for unlimited), because the pane is the same one. If you already set `CLAUDE_CODE_PROCESS_WRAPPER` yourself, `claude-amq` leaves it alone and warns.
 
 ## Kernel compatibility (TIOCSTI)
 

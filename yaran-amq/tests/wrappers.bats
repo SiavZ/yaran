@@ -32,6 +32,7 @@ setup() {
   # Force-unset every env knob the wrappers consult so each test starts
   # from a clean default-deny baseline regardless of the host shell.
   unset CLAUDE_AMQ_YOLO CLAUDE_YOLO CLAUDE_AMQ_SAFE CLAUDE_PEERS_DISABLE
+  unset CLAUDE_CODE_PROCESS_WRAPPER
   unset CODEX_AMQ_YOLO CODEX_AMQ_BYPASS_HOOK_TRUST
   unset CLAUDE_AMQ_SEED_FROM_PARENT CLAUDE_AMQ_NO_SEED
   # audit03 Phase 01 §15: YARAN_SYSTEM_PROMPT is a per-session env var
@@ -123,6 +124,49 @@ assert_argv_missing() {
   [ "$status" -eq 0 ]
   assert_argv_missing "--dangerously-load-development-channels"
   assert_argv_missing "server:claude-peers"
+}
+
+# A fake `tty` stands in for the pane terminal yaran gives the wrapper.
+fake_tty() {
+  mkdir -p "$TEST_HOME/bin"
+  if [[ -n "$1" ]]; then
+    printf '#!/bin/sh\necho %s\n' "$1" >"$TEST_HOME/bin/tty"
+  else
+    printf '#!/bin/sh\necho "not a tty"\nexit 1\n' >"$TEST_HOME/bin/tty"
+  fi
+  chmod +x "$TEST_HOME/bin/tty"
+  export PATH="$TEST_HOME/bin:$PATH"
+  export AMQ_FAKE_ENV_FILE="$TEST_HOME/env.log"
+}
+
+# Claude Code's /restart re-execs through CLAUDE_CODE_PROCESS_WRAPPER with
+# an argv that drops the channel flag; the launcher is what puts it back.
+@test "claude-amq routes Claude Code's self-relaunch through claude-peers-launcher" {
+  fake_tty /dev/ttys-pane
+  run "$WRAPPERS_DIR/claude-amq"
+  [ "$status" -eq 0 ]
+  grep -Fxq "CLAUDE_CODE_PROCESS_WRAPPER=$(cd "$WRAPPERS_DIR" && pwd)/claude-peers-launcher" "$AMQ_FAKE_ENV_FILE"
+  grep -Fxq "YARAN_CLAUDE_PEERS_TTY=/dev/ttys-pane" "$AMQ_FAKE_ENV_FILE"
+}
+
+@test "claude-amq leaves an operator's CLAUDE_CODE_PROCESS_WRAPPER alone and says so" {
+  fake_tty /dev/ttys-pane
+  CLAUDE_CODE_PROCESS_WRAPPER=/opt/corp/launcher run "$WRAPPERS_DIR/claude-amq"
+  [ "$status" -eq 0 ]
+  grep -Fxq "CLAUDE_CODE_PROCESS_WRAPPER=/opt/corp/launcher" "$AMQ_FAKE_ENV_FILE"
+  [[ "$output" == *"CLAUDE_CODE_PROCESS_WRAPPER is already set"* ]]
+}
+
+@test "claude-amq sets no launcher without claude-peers or without a terminal" {
+  fake_tty /dev/ttys-pane
+  CLAUDE_PEERS_DISABLE=1 run "$WRAPPERS_DIR/claude-amq"
+  [ "$status" -eq 0 ]
+  grep -Fxq "CLAUDE_CODE_PROCESS_WRAPPER=<unset>" "$AMQ_FAKE_ENV_FILE"
+  : >"$AMQ_FAKE_ENV_FILE"
+  fake_tty ""
+  run "$WRAPPERS_DIR/claude-amq"
+  [ "$status" -eq 0 ]
+  grep -Fxq "CLAUDE_CODE_PROCESS_WRAPPER=<unset>" "$AMQ_FAKE_ENV_FILE"
 }
 
 @test "codex-amq does not pass sandbox-bypass flag by default" {

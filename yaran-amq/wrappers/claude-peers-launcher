@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# claude-peers-launcher: the CLAUDE_CODE_PROCESS_WRAPPER claude-amq sets.
+#
+# claude-amq starts Claude with --dangerously-load-development-channels
+# server:claude-peers. Claude Code's /restart, and its switch onto an
+# updated build, exec themselves again through this launcher as
+# `<launcher> <claude> <args...>` with an argv that no longer carries that
+# flag. Without it the claude-peers MCP server keeps draining the broker
+# and Claude Code discards every push, so peer messages are lost.
+#
+# The flag goes back only on the pane's own relaunch: still on the terminal
+# claude-amq started on, an interactive argv, flag not already there.
+# Everything else Claude Code spawns through a launcher (the background
+# daemon, the sessions it hosts, warm spares) runs exactly as asked, because
+# nobody would be there to answer the development-channel prompt.
+#
+# Launcher contract: always exec, never fork; pass the environment through.
+set -uo pipefail
+
+if [[ $# -eq 0 ]]; then
+  printf 'claude-peers-launcher: no command to run\n' >&2
+  exit 64
+fi
+
+restores_channel() {
+  [[ "${CLAUDE_PEERS_DISABLE:-}" != "1" ]] || return 1
+  [[ -n "${YARAN_CLAUDE_PEERS_TTY:-}" ]] || return 1
+  [[ "$(tty 2>/dev/null)" == "$YARAN_CLAUDE_PEERS_TTY" ]] || return 1
+  shift
+  # A subcommand (daemon, bg-pty-host, bg-spare, mcp, ...) is not the REPL.
+  [[ $# -eq 0 || "$1" == -* ]] || return 1
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -p | --print | --bare | -- | --dangerously-load-development-channels | --dangerously-load-development-channels=*)
+        return 1
+        ;;
+    esac
+  done
+}
+
+# Appended last: the flag is variadic, so anything after it would be read
+# as another channel name.
+if restores_channel "$@"; then
+  exec "$@" --dangerously-load-development-channels server:claude-peers
+fi
+exec "$@"

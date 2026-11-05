@@ -384,6 +384,7 @@ fi
 # 5. install wrappers --------------------------------------------------------
 say "installing wrappers to $LOCAL_BIN"
 install -m 0755 "$HERE/wrappers/claude-amq"  "$LOCAL_BIN/claude-amq"
+install -m 0755 "$HERE/wrappers/claude-peers-launcher" "$LOCAL_BIN/claude-peers-launcher"
 install -m 0755 "$HERE/wrappers/codex-amq"   "$LOCAL_BIN/codex-amq"
 install -m 0755 "$HERE/wrappers/gemini-amq"  "$LOCAL_BIN/gemini-amq"
 install -m 0755 "$HERE/wrappers/jcode-amq"   "$LOCAL_BIN/jcode-amq"

@@ -25,6 +25,14 @@ if [[ -n "${AMQ_FAKE_ARGV_FILE:-}" ]]; then
     printf 'END\n'
   } >>"$AMQ_FAKE_ARGV_FILE"
 fi
+# Optional: record the launcher environment the wrapper handed over, so a
+# test can assert what Claude Code will inherit across its own re-exec.
+if [[ -n "${AMQ_FAKE_ENV_FILE:-}" ]]; then
+  {
+    printf 'CLAUDE_CODE_PROCESS_WRAPPER=%s\n' "${CLAUDE_CODE_PROCESS_WRAPPER-<unset>}"
+    printf 'YARAN_CLAUDE_PEERS_TTY=%s\n' "${YARAN_CLAUDE_PEERS_TTY-<unset>}"
+  } >>"$AMQ_FAKE_ENV_FILE"
+fi
 if [[ "${AMQ_FAKE_FAIL_RECOVER_OWNER:-0}" == "1" && "${1:-}" == "wake" && "${2:-}" == "recover-owner" ]]; then
   exit 42
 fi
