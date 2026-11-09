@@ -32,7 +32,10 @@ setup() {
   # Force-unset every env knob the wrappers consult so each test starts
   # from a clean default-deny baseline regardless of the host shell.
   unset CLAUDE_AMQ_YOLO CLAUDE_YOLO CLAUDE_AMQ_SAFE CLAUDE_PEERS_DISABLE
-  unset CLAUDE_CODE_PROCESS_WRAPPER
+  unset CLAUDE_CODE_PROCESS_WRAPPER CLAUDE_PEERS_BROKER_WAIT CLAUDE_CONFIG_DIR
+  # A port of the test's own, so no test ever reaches a real broker on 7899.
+  CLAUDE_PEERS_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+  export CLAUDE_PEERS_PORT
   unset CODEX_AMQ_YOLO CODEX_AMQ_BYPASS_HOOK_TRUST
   unset CLAUDE_AMQ_SEED_FROM_PARENT CLAUDE_AMQ_NO_SEED
   # audit03 Phase 01 §15: YARAN_SYSTEM_PROMPT is a per-session env var
@@ -56,6 +59,9 @@ setup() {
 }
 
 teardown() {
+  if [[ -f "$TEST_HOME/broker-starts.log" ]]; then
+    while read -r pid _; do kill "$pid" 2>/dev/null || true; done <"$TEST_HOME/broker-starts.log"
+  fi
   teardown_isolated_home
 }
 
@@ -167,6 +173,82 @@ fake_tty() {
   run "$WRAPPERS_DIR/claude-amq"
   [ "$status" -eq 0 ]
   grep -Fxq "CLAUDE_CODE_PROCESS_WRAPPER=<unset>" "$AMQ_FAKE_ENV_FILE"
+}
+
+# Registers a stand-in claude-peers server with Claude Code's config. Its
+# "bun" records each broker start (pid and process group), then either
+# answers /health on $CLAUDE_PEERS_PORT like the real broker or, given
+# "silent", never answers.
+fake_peers_broker() {
+  local mode="${1:-serve}"
+  mkdir -p "$TEST_HOME/bin" "$TEST_HOME/peers"
+  : >"$TEST_HOME/peers/server.ts"
+  : >"$TEST_HOME/peers/broker.ts"
+  cat >"$TEST_HOME/bin/fake-bun" <<SH
+#!/usr/bin/env bash
+printf '%s %s\n' "\$\$" "\$(ps -o pgid= -p \$\$ | tr -d ' ')" >>"$TEST_HOME/broker-starts.log"
+[[ "$mode" == silent ]] && exec sleep 30
+exec python3 -c '
+import http.server, os
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a):
+        pass
+http.server.HTTPServer(("127.0.0.1", int(os.environ["CLAUDE_PEERS_PORT"])), H).serve_forever()
+'
+SH
+  chmod +x "$TEST_HOME/bin/fake-bun"
+  jq -n --arg bun "$TEST_HOME/bin/fake-bun" --arg server "$TEST_HOME/peers/server.ts" \
+    '{mcpServers: {"claude-peers": {type: "stdio", command: $bun, args: [$server]}}}' \
+    >"$TEST_HOME/.claude.json"
+}
+
+# Observed after a reboot: yaran reopened 15 lanes at once, every lane's
+# claude-peers server gave up on its broker after 6 seconds, and none came
+# back. The wrapper now has the broker up before Claude starts.
+@test "claude-amq starts the registered Claude Peers broker in its own process group first" {
+  fake_peers_broker
+  run "$WRAPPERS_DIR/claude-amq"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l <"$TEST_HOME/broker-starts.log")" -eq 1 ]
+  read -r pid pgid <"$TEST_HOME/broker-starts.log"
+  # Its own group: stopping the lane that started it must not stop it.
+  [ "$pid" = "$pgid" ]
+  curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$CLAUDE_PEERS_PORT/health"
+  assert_argv_contains "server:claude-peers"
+}
+
+@test "claude-amq launches started together start one broker and do not wait on each other" {
+  fake_peers_broker
+  "$WRAPPERS_DIR/claude-amq" >/dev/null 2>&1 &
+  first=$!
+  AM_ME=otherpane "$WRAPPERS_DIR/claude-amq" >/dev/null 2>&1
+  wait "$first"
+  [ "$(wc -l <"$TEST_HOME/broker-starts.log")" -eq 1 ]
+  # A third launch finds it running and starts nothing.
+  run "$WRAPPERS_DIR/claude-amq"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l <"$TEST_HOME/broker-starts.log")" -eq 1 ]
+}
+
+@test "claude-amq still starts Claude, and says so, when the broker never answers" {
+  fake_peers_broker silent
+  CLAUDE_PEERS_BROKER_WAIT=1 run "$WRAPPERS_DIR/claude-amq"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Claude Peers broker did not answer within 1s"* ]]
+  assert_argv_contains "server:claude-peers"
+}
+
+@test "claude-amq starts no broker without a registered claude-peers server or with peers off" {
+  run "$WRAPPERS_DIR/claude-amq"
+  [ "$status" -eq 0 ]
+  [ ! -e "$TEST_HOME/broker-starts.log" ]
+  [[ "$output" != *"did not answer"* ]]
+  fake_peers_broker
+  CLAUDE_PEERS_DISABLE=1 run "$WRAPPERS_DIR/claude-amq"
+  [ "$status" -eq 0 ]
+  [ ! -e "$TEST_HOME/broker-starts.log" ]
 }
 
 @test "codex-amq does not pass sandbox-bypass flag by default" {

@@ -818,10 +818,13 @@ Code's own per-process record, `~/.claude/sessions/<pid>.json`, every 20
 seconds on a worker. A record is used only for the agent's own PTY child pid,
 only when it was written no earlier than that process started (so a record left
 by a crashed process whose pid was reused is ignored), only for an interactive
-session whose recorded directory canonically equals the agent's, and only when
-its id is a valid UUID; reads are size-bounded, and a newer capture recorded
-while the read ran always wins. A conversation Claude opened in another
-directory is therefore never adopted for this agent.
+session, and only when its id is a valid UUID; reads are size-bounded, and a
+newer capture recorded while the read ran always wins. The conversation may be
+recorded under another directory when the agent's own pane `/resume`d it from
+there; a relaunch then continues it in the agent's directory under a new id,
+and the original transcript is only read. Resuming checks that the transcript
+exists in the agent's project or, failing that, in another Claude project, so
+a missing id still never silently starts a blank conversation.
 
 **Residual risk.** The documented trust model grants same-UID processes access
 to both provider roots. Such a process can race filesystem names or forge one
@@ -1088,6 +1091,12 @@ interactive invocation (no subcommand, `-p`, `--print`, `--bare` or `--`),
 does not carry the flag already, and `CLAUDE_PEERS_DISABLE` is not `1`.
 Anything else, including every daemon-hosted process, runs exactly as asked.
 `claude-amq` does not replace a launcher the operator already set.
+
+`claude-amq` also starts the Claude Peers broker when it is not answering:
+only the `broker.ts` beside the `server.ts` that Claude Code's own config
+registers as `claude-peers`, run with that registration's command, once under
+a lock, in a process group of its own and with no terminal. It is the same
+same-UID loopback daemon that the MCP server would otherwise start itself.
 
 **Residual risk.** The script is a second executable on the self-exec path of
 every Claude process started from a yaran pane, so its integrity matters as

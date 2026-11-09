@@ -261,7 +261,6 @@ pub struct ClaudeLiveSessionTarget {
     pub session_id: String,
     /// The tab's PTY child, which is the Claude process itself.
     pub pid: u32,
-    pub directory: PathBuf,
     /// The id yaran has recorded for this agent, as it stood when asked.
     pub recorded: Option<String>,
 }
@@ -295,13 +294,14 @@ const MAX_CLAUDE_LIVE_RECORD_BYTES: u64 = 64 * 1024;
 ///
 /// `None` unless the record really is this process's: the same pid, written
 /// no earlier than the process started (an earlier Claude that crashed and
-/// whose pid was reused leaves its record behind), an interactive session in
-/// `directory`, and a UUID id.
+/// whose pid was reused leaves its record behind), an interactive session,
+/// and a UUID id. The conversation may live under another directory: a
+/// `/resume` in the pane can pick one from elsewhere, and it is still the one
+/// this agent is in, so a relaunch continues it (in the agent's directory).
 pub fn parse_claude_live_session(
     record: &str,
     pid: u32,
     process_started_ms: u64,
-    directory: &Path,
 ) -> Option<String> {
     let value: Value = serde_json::from_str(record).ok()?;
     if value.get("pid")?.as_u64()? != u64::from(pid) {
@@ -317,14 +317,6 @@ pub fn parse_claude_live_session(
         .and_then(Value::as_str)
         .is_some_and(|kind| kind != "interactive")
     {
-        return None;
-    }
-    let cwd = Path::new(value.get("cwd")?.as_str()?);
-    let same_dir = |a: &Path, b: &Path| match (fs::canonicalize(a), fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
-    };
-    if !same_dir(cwd, directory) {
         return None;
     }
     let id = value.get("sessionId")?.as_str()?;
@@ -358,8 +350,7 @@ pub fn read_claude_live_sessions(
                 .take(MAX_CLAUDE_LIVE_RECORD_BYTES)
                 .read_to_string(&mut record)
                 .ok()?;
-            let live_id =
-                parse_claude_live_session(&record, target.pid, started_ms, &target.directory)?;
+            let live_id = parse_claude_live_session(&record, target.pid, started_ms)?;
             let moved = target.recorded.as_deref() != Some(live_id.as_str());
             moved.then_some(ClaudeLiveSession {
                 session_id: target.session_id,
@@ -1206,11 +1197,25 @@ pub fn claude_resume_target_exists(cwd: &Path, session_id: &str) -> bool {
     let Ok(roots) = ProviderDataRoots::from_home() else {
         return false;
     };
-    let transcript = roots
-        .claude_projects
-        .join(encode_claude_project_dir(cwd))
-        .join(format!("{session_id}.jsonl"));
-    is_resumable_claude_transcript(&transcript)
+    claude_transcript_exists_in(&roots.claude_projects, cwd, session_id)
+}
+
+/// The agent's own project first, then any other. `claude --resume <id>`
+/// also continues a conversation recorded under another directory (in the
+/// current one, under a new id), and that is where an agent's conversation
+/// lives after a `/resume` in its pane picked one from elsewhere. Callers pass
+/// an id already checked to be a UUID, so it cannot leave `projects`.
+fn claude_transcript_exists_in(projects: &Path, cwd: &Path, session_id: &str) -> bool {
+    let file = format!("{session_id}.jsonl");
+    if is_resumable_claude_transcript(&projects.join(encode_claude_project_dir(cwd)).join(&file)) {
+        return true;
+    }
+    let Ok(entries) = fs::read_dir(projects) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| is_resumable_claude_transcript(&entry.path().join(&file)))
 }
 
 fn is_resumable_claude_transcript(path: &Path) -> bool {
@@ -1394,25 +1399,30 @@ mod tests {
         let started = 1_793_877_688_000;
         let record = live_record(4242, started + 500, dir.path(), &id);
         assert_eq!(
-            parse_claude_live_session(&record, 4242, started, dir.path()),
+            parse_claude_live_session(&record, 4242, started),
             Some(id.clone())
         );
         // An in-place `/restart` rewrites the record later than the process
         // started, which is still this process.
         let record = live_record(4242, started + 3_600_000, dir.path(), &id);
         assert_eq!(
-            parse_claude_live_session(&record, 4242, started, dir.path()),
-            Some(id)
+            parse_claude_live_session(&record, 4242, started),
+            Some(id.clone())
         );
+        // Observed live: the orchestrator's pane `/resume`d a conversation
+        // recorded under another lane's directory and kept working there. It
+        // is still this agent's conversation, so it is followed.
+        let other = tempfile::tempdir().unwrap();
+        let record = live_record(4242, started + 500, other.path(), &id);
+        assert_eq!(parse_claude_live_session(&record, 4242, started), Some(id));
     }
 
     #[test]
     fn records_that_are_not_this_processs_are_ignored() {
         let dir = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
         let id = Uuid::new_v4().to_string();
         let started = 1_793_877_688_000;
-        let parse = |record: &str| parse_claude_live_session(record, 4242, started, dir.path());
+        let parse = |record: &str| parse_claude_live_session(record, 4242, started);
         // Another pid's record.
         assert_eq!(parse(&live_record(4243, started, dir.path(), &id)), None);
         // Left behind by an earlier Claude whose pid was reused.
@@ -1420,8 +1430,6 @@ mod tests {
             parse(&live_record(4242, started - 60_000, dir.path(), &id)),
             None
         );
-        // A Claude in another directory.
-        assert_eq!(parse(&live_record(4242, started, other.path(), &id)), None);
         // Not a usable id, or not JSON at all.
         assert_eq!(
             parse(&live_record(4242, started, dir.path(), "--help")),
@@ -1433,6 +1441,41 @@ mod tests {
             serde_json::from_str(&live_record(4242, started, dir.path(), &id)).unwrap();
         value["kind"] = Value::from("bg");
         assert_eq!(parse(&value.to_string()), None);
+    }
+
+    /// A conversation recorded under another directory still counts: a relaunch
+    /// continues it, so the agent does not start blank.
+    #[test]
+    fn a_resume_target_is_found_under_any_claude_project() {
+        let projects = tempfile::tempdir().unwrap();
+        let agent_dir = Path::new("/work/Jobzy");
+        let id = Uuid::new_v4().to_string();
+        let own = projects.path().join(encode_claude_project_dir(agent_dir));
+        let elsewhere = projects.path().join("-work-Jobzy-Jobzy-Contracts");
+        fs::create_dir_all(&own).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        assert!(!claude_transcript_exists_in(
+            projects.path(),
+            agent_dir,
+            &id
+        ));
+        fs::write(elsewhere.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        assert!(claude_transcript_exists_in(projects.path(), agent_dir, &id));
+        let own_id = Uuid::new_v4().to_string();
+        fs::write(own.join(format!("{own_id}.jsonl")), "{}\n").unwrap();
+        assert!(claude_transcript_exists_in(
+            projects.path(),
+            agent_dir,
+            &own_id
+        ));
+        // An empty file is not a conversation anywhere.
+        let empty = Uuid::new_v4().to_string();
+        fs::write(elsewhere.join(format!("{empty}.jsonl")), "").unwrap();
+        assert!(!claude_transcript_exists_in(
+            projects.path(),
+            agent_dir,
+            &empty
+        ));
     }
 
     /// The worker reads the real process table: a live child with a fresh
@@ -1455,7 +1498,6 @@ mod tests {
         let target = |recorded: Option<&str>| ClaudeLiveSessionTarget {
             session_id: "s1".into(),
             pid,
-            directory: workdir.path().to_path_buf(),
             recorded: recorded.map(str::to_string),
         };
         let stale = Uuid::new_v4().to_string();

@@ -289,6 +289,44 @@ fn registration_hosted_by_a_claude_without_the_channel_is_unreachable() {
     }
 }
 
+/// Observed after a reboot: every lane's claude-peers server had died, and
+/// sends to them failed. An outage now costs Claude Peers, not the message.
+#[test]
+fn a_target_claude_peers_cannot_reach_gets_the_message_over_amq() {
+    for why in [
+        PeersUnavailable::Broker,
+        PeersUnavailable::Target(Unreachable::Unregistered),
+        PeersUnavailable::Target(Unreachable::ChannelOff),
+    ] {
+        let reason = amq_fallback_reason(TransportPreference::Auto, &why, "infra").unwrap();
+        assert_eq!(reason, why.reason("infra"));
+    }
+    assert!(
+        PeersUnavailable::Target(Unreachable::Unregistered)
+            .reason("infra")
+            .contains("/mcp")
+    );
+    assert!(
+        PeersUnavailable::Broker
+            .reason("infra")
+            .contains("not answering")
+    );
+}
+
+/// Asking for Claude Peers explicitly means Claude Peers or nothing.
+#[test]
+fn explicit_claude_peers_is_refused_with_the_reason_when_it_cannot_reach() {
+    let err = amq_fallback_reason(
+        TransportPreference::ClaudePeers,
+        &PeersUnavailable::Target(Unreachable::Unregistered),
+        "infra",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("infra has no Claude Peers registration"));
+    assert!(err.contains("omit --transport to deliver over AMQ"));
+}
+
 #[test]
 fn yaran_pid_is_read_from_the_lockfile() {
     let dir = tempdir().unwrap();

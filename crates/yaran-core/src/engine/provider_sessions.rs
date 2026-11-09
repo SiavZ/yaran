@@ -123,7 +123,6 @@ impl Engine {
                 Some(ClaudeLiveSessionTarget {
                     session_id: session.id.clone(),
                     pid,
-                    directory: PathBuf::from(session.directory()),
                     recorded: self
                         .session_store
                         .provider_session_id(&session.id, "claude")

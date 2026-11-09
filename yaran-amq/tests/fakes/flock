@@ -23,6 +23,13 @@ if [[ $# -eq 1 && "$1" =~ ^[0-9]+$ ]] && command -v ruby >/dev/null 2>&1; then
   ' "$1" "$nonblocking"
 fi
 
+# -o (close the lock fd before running the command) is what the shim does
+# anyway: ruby opens the lock close-on-exec, and the mkdir lock has no fd.
+args=()
+for arg in "$@"; do
+  [[ "$arg" == "-o" ]] || args+=("$arg")
+done
+set -- "${args[@]}"
 [[ "${1:-}" == "-x" && $# -ge 3 ]] || exit 64
 lock_path="$2"
 shift 2

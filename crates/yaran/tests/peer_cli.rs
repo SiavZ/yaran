@@ -91,7 +91,7 @@ fn peer_help_list_and_sync_run_through_the_binary() {
 }
 
 #[test]
-fn peer_send_refuses_unknown_targets_and_requires_the_broker_for_claude() {
+fn peer_send_refuses_unknown_targets_and_falls_back_to_amq_without_the_broker() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
     let amq = tmp.path().join("amq");
@@ -109,15 +109,67 @@ fn peer_send_refuses_unknown_targets_and_requires_the_broker_for_claude() {
         String::from_utf8_lossy(&unknown.stderr).contains("does not exist or is not reachable")
     );
 
-    // A Claude target defaults to Claude Peers and fails loudly without it,
-    // naming the manual AMQ override.
-    let claude = yaran(
-        &home,
-        &amq,
-        &["peer", "send", "worker", "--status", "please"],
+    // A stand-in `amq` records the hand-off, so the test needs no AMQ install.
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let sent = tmp.path().join("amq-sent.log");
+    std::fs::write(
+        bin.join("amq"),
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n", sent.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        bin.join("amq"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
     );
-    assert!(!claude.status.success());
-    let err = String::from_utf8_lossy(&claude.stderr);
-    assert!(err.contains("require Claude Peers"), "{err}");
-    assert!(err.contains("--transport amq"), "{err}");
+    let send = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yaran"))
+            .args(args)
+            .env("YARAN_HOME", &home)
+            .env("AMQ_GLOBAL_ROOT", &amq)
+            .env("PATH", &path)
+            .env_remove("AM_ROOT")
+            .env_remove("YARAN_SESSION_ID")
+            .env_remove("YARAN_AMQ_HANDLE")
+            .env_remove("AM_ME")
+            .env("CLAUDE_PEERS_PORT", "9")
+            .output()
+            .expect("run yaran")
+    };
+
+    // With the broker down a Claude target still gets the message, over AMQ,
+    // and the output says why.
+    let claude = send(&["peer", "send", "worker", "--status", "please"]);
+    let out = String::from_utf8_lossy(&claude.stdout);
+    assert!(
+        claude.status.success(),
+        "{out}{}",
+        String::from_utf8_lossy(&claude.stderr)
+    );
+    assert!(out.contains("sent via amq:"), "{out}");
+    assert!(out.contains("broker is not answering"), "{out}");
+    let handed = std::fs::read_to_string(&sent).unwrap();
+    assert!(handed.contains("--status please"), "{handed}");
+
+    // Asking for Claude Peers explicitly refuses rather than falling back.
+    let explicit = send(&[
+        "peer",
+        "send",
+        "--transport",
+        "claude-peers",
+        "worker",
+        "hi",
+    ]);
+    assert!(!explicit.status.success());
+    let err = String::from_utf8_lossy(&explicit.stderr);
+    assert!(
+        err.contains("omit --transport to deliver over AMQ"),
+        "{err}"
+    );
 }
