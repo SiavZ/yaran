@@ -14,7 +14,7 @@ version = "0.1.0"
 # The MSRV. Checked by the `msrv` job in .github/workflows/pr.yml. Declared here
 # rather than pinned in a rust-toolchain.toml so contributors and CI build on
 # current stable while a too-new language or std feature still fails a PR.
-rust-version = "1.88"
+rust-version = "1.89"
 
 [workspace.dependencies]
 # 1.0.103 is a floor: earlier releases carry RUSTSEC-2026-0190 (unsound

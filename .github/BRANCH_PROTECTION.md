@@ -30,7 +30,7 @@ GitHub UI (Settings → Branches → Protection rules → main).
 - **Recommended (not currently required) but run on every PR**:
   - `Format`, `Clippy`, `Web lint`, `Web build and unit tests`,
     `yaran-web dependency isolation`, `Reject YARAN_DISABLE_UI_BUILD`, and
-    `MSRV (1.88)` (`cargo +1.88.0 check`, which keeps the workspace's
+    `MSRV (1.89)` (`cargo +1.89.0 check`, which keeps the workspace's
     declared `rust-version` true).
     Add them to the protection if you treat them as merge gates; the recipe
     below shows the syntax.
