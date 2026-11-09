@@ -41,7 +41,7 @@ fn peer_selection_prefers_the_daemon_hosted_session() {
         _ => PeerHost::Client,
     };
     assert_eq!(
-        select_claude_peer_id(&session, &peers, host_of),
+        select_claude_peer_id(&session, &peers, host_of, |_| None),
         Some("daemon-host".to_string()),
     );
 }
@@ -63,7 +63,7 @@ fn peer_selection_prefers_the_pane_over_spares_and_strangers() {
         _ => PeerHost::Client,
     };
     assert_eq!(
-        select_claude_peer_id(&session, &peers, host_of),
+        select_claude_peer_id(&session, &peers, host_of, |_| None),
         Some("pane".to_string()),
     );
 }
@@ -77,13 +77,13 @@ fn peer_selection_takes_newest_registration_among_equal_hosts() {
         peer("new-host", &wt, 2, "2026-09-16T01:00:00Z"),
     ];
     assert_eq!(
-        select_claude_peer_id(&session, &peers, |_| PeerHost::DaemonSession),
+        select_claude_peer_id(&session, &peers, |_| PeerHost::DaemonSession, |_| None),
         Some("new-host".to_string()),
     );
     // Only spares left (TUI gone, or a broker without pids): still
     // deterministic rather than list order.
     assert_eq!(
-        select_claude_peer_id(&session, &peers, |_| PeerHost::Spare),
+        select_claude_peer_id(&session, &peers, |_| PeerHost::Spare, |_| None),
         Some("new-host".to_string()),
     );
 }
@@ -96,15 +96,123 @@ fn peer_selection_ignores_other_worktrees_and_reports_no_match() {
     fs::create_dir_all(&other).unwrap();
     let peers = vec![peer("elsewhere", &other, 1001, "2026-09-16T00:00:09Z")];
     assert_eq!(
-        select_claude_peer_id(&session, &peers, |_| PeerHost::DaemonSession),
+        select_claude_peer_id(&session, &peers, |_| PeerHost::DaemonSession, |_| None),
         None
     );
     // A single match needs no disambiguation at all, spare or not.
     let peers = vec![peer("only", &wt, 1, "2026-09-16T00:00:01Z")];
     assert_eq!(
-        select_claude_peer_id(&session, &peers, |_| PeerHost::Spare),
+        select_claude_peer_id(&session, &peers, |_| PeerHost::Spare, |_| None),
         Some("only".to_string()),
     );
+}
+
+/// Observed live: the orchestrator's pane `/resume`d a conversation recorded
+/// under contracts-engineer's directory, so its registration sat there. Its
+/// own directory had none (every message fell back to AMQ), and contracts
+/// had two candidates. The agent named in the registration's environment
+/// decides both.
+#[test]
+fn peer_selection_follows_the_agent_named_in_the_registration() {
+    let dir = tempdir().unwrap();
+    let own = dir.path().join("Jobzy");
+    let other = dir.path().join("Jobzy-Contracts");
+    fs::create_dir_all(&own).unwrap();
+    fs::create_dir_all(&other).unwrap();
+    let orchestrator = session("orch", "claude", "jobzy-orchestrator", &own);
+    let contracts = session("contracts", "claude", "contracts-engineer", &other);
+    let peers = vec![
+        peer("orch-peer", &other, 10, "2026-11-09T10:21:00Z"),
+        peer("contracts-peer", &other, 20, "2026-11-09T10:20:00Z"),
+    ];
+    let owner = |pid: u32| match pid {
+        10 => Some("orch".to_string()),
+        20 => Some("contracts".to_string()),
+        _ => None,
+    };
+    assert_eq!(
+        select_claude_peer_id(&orchestrator, &peers, |_| PeerHost::Pane, owner),
+        Some("orch-peer".to_string()),
+    );
+    // The orchestrator's registration is newer, and still not contracts'.
+    assert_eq!(
+        select_claude_peer_id(&contracts, &peers, |_| PeerHost::Pane, owner),
+        Some("contracts-peer".to_string()),
+    );
+}
+
+/// The directory fallback serves registrations that name no agent, and never
+/// one that names a different agent.
+#[test]
+fn directory_fallback_never_takes_another_agents_registration() {
+    let dir = tempdir().unwrap();
+    let (wt, session) = worktree_session(&dir);
+    let peers = vec![
+        peer("someone-else", &wt, 10, "2026-11-09T10:21:00Z"),
+        peer("unnamed", &wt, 20, "2026-11-09T10:20:00Z"),
+    ];
+    let owner = |pid: u32| (pid == 10).then(|| "another-agent".to_string());
+    assert_eq!(
+        select_claude_peer_id(&session, &peers, |_| PeerHost::Pane, owner),
+        Some("unnamed".to_string()),
+    );
+    let only_foreign = vec![peer("someone-else", &wt, 10, "2026-11-09T10:21:00Z")];
+    assert_eq!(
+        select_claude_peer_id(&session, &only_foreign, |_| PeerHost::Pane, owner),
+        None,
+    );
+}
+
+/// Not a check on its own: the process `a_registrations_agent_is_read_from_its_process_environment`
+/// spawns. macOS hides the environment of its own platform binaries (`sh`,
+/// `sleep`) from other processes, so the probe is this test binary.
+#[test]
+fn env_probe_helper() {
+    if std::env::var_os("YARAN_ENV_PROBE_SLEEP").is_some() {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+}
+
+/// The agent id comes from the real process table: a process launched with
+/// `YARAN_SESSION_ID` names it, as a claude-peers server inherits it.
+#[test]
+fn a_registrations_agent_is_read_from_its_process_environment() {
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "peer::router::tests::env_probe_helper",
+            "--exact",
+            "--test-threads=1",
+        ])
+        .env("YARAN_ENV_PROBE_SLEEP", "1")
+        .env("YARAN_SESSION_ID", "agent-7")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let processes = ProcessTable::snapshot(None);
+    let named = processes.yaran_session_of(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(named, Some("agent-7".to_string()));
+}
+
+#[test]
+fn the_yaran_session_id_wins_over_the_legacy_name() {
+    let env = |parts: &[&str]| parts.iter().map(OsString::from).collect::<Vec<_>>();
+    assert_eq!(
+        session_id_in_environ(&env(&["DUX_SESSION_ID=old", "YARAN_SESSION_ID=new"])),
+        Some("new".to_string())
+    );
+    assert_eq!(
+        session_id_in_environ(&env(&["DUX_SESSION_ID=old"])),
+        Some("old".to_string())
+    );
+    assert_eq!(
+        session_id_in_environ(&env(&["YARAN_SESSION_ID_X=nope"])),
+        None
+    );
+    assert_eq!(session_id_in_environ(&env(&["YARAN_SESSION_ID="])), None);
 }
 
 /// A broker that predates `pid` / `registered_at` still parses, and its
