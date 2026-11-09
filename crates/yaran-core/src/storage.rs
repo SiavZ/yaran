@@ -1026,7 +1026,11 @@ impl SessionStore {
     /// like the database itself, because it carries the same per-project env.
     pub fn backup_to(&self, dst: &std::path::Path) -> Result<()> {
         self.conn
-            .backup(rusqlite::MAIN_DB, dst, None::<fn(rusqlite::backup::Progress)>)
+            .backup(
+                rusqlite::MAIN_DB,
+                dst,
+                None::<fn(rusqlite::backup::Progress)>,
+            )
             .with_context(|| format!("backup to {} failed", dst.display()))?;
         crate::file_modes::restrict_to_owner_best_effort(dst, "session database backup");
         Ok(())
