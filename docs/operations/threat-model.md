@@ -908,8 +908,12 @@ not.
 The inject-bridge can deliver AMQ wakes through each provider's own push
 channel instead of typing into the PTY: claude panes via the claude-peers
 channel (`yaran peer send --transport claude-peers`, the live registration
+whose process environment names the receiving agent's `YARAN_SESSION_ID`, or
+for registrations that name no agent the one in the receiver's directory,
 chosen by host kind: daemon-hosted session, then the pane yaran spawned, then
-other clients, daemon spares last) and jcode panes via the daemon's client
+other clients, daemon spares last; a registration naming a different agent is
+never chosen. The environment is a same-UID label, trusted exactly as T2's
+`--me` is) and jcode panes via the daemon's client
 protocol (`jcode debug -S <session> client:message`). The jcode session is
 picked from `clients:map`: a client whose working directory is the receiver's
 worktree, or whose directory basename equals the receiver handle; if none

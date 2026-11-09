@@ -16,6 +16,9 @@
 //!   claude-peers server died, or its Claude Code no longer loads the channel
 //!   and would discard the push), `auto` delivers over AMQ instead and says
 //!   why; an explicit `--transport claude-peers` is refused with the reason.
+//! - A Claude target's registration is the one whose process names the agent
+//!   (`YARAN_SESSION_ID`), wherever its working directory is; the directory
+//!   is only the fallback for registrations that name no agent.
 //!
 //! Only live sessions whose directory still exists are listed or routable.
 
@@ -702,8 +705,13 @@ fn reachable_claude_peer(
     peers: &[ClaudePeer],
     processes: &ProcessTable,
 ) -> std::result::Result<String, Unreachable> {
-    let id = select_claude_peer_id(session, peers, |pid| processes.host_of(pid))
-        .ok_or(Unreachable::Unregistered)?;
+    let id = select_claude_peer_id(
+        session,
+        peers,
+        |pid| processes.host_of(pid),
+        |pid| processes.yaran_session_of(pid),
+    )
+    .ok_or(Unreachable::Unregistered)?;
     let pid = peers
         .iter()
         .find(|peer| peer.id == id)
@@ -727,16 +735,35 @@ fn reachable_claude_peer(
 /// So rank by host kind (daemon session, then pane, then anything else,
 /// spares last), then by newest registration, then by heartbeat so the
 /// choice stays deterministic.
+///
+/// Identity comes first: a registration whose process names its yaran agent
+/// (`YARAN_SESSION_ID`, which every agent is launched with and its MCP server
+/// inherits) belongs to that agent whatever its directory. A pane that
+/// `/resume`d a conversation recorded elsewhere has moved its working
+/// directory there, and would otherwise be unreachable at its own directory
+/// and mistaken for the agent that lives in the other one. The directory is
+/// only the fallback, for registrations that name no agent, and never hands
+/// one agent another agent's registration.
 fn select_claude_peer_id(
     session: &PeerSession,
     peers: &[ClaudePeer],
     host_of: impl Fn(u32) -> PeerHost,
+    session_of: impl Fn(u32) -> Option<String>,
 ) -> Option<String> {
-    let session_path = canonical_or_raw(Path::new(&session.directory));
-    let candidates: Vec<&ClaudePeer> = peers
+    let owner = |peer: &ClaudePeer| peer.pid.and_then(&session_of);
+    let mut candidates: Vec<&ClaudePeer> = peers
         .iter()
-        .filter(|peer| canonical_or_raw(Path::new(&peer.cwd)) == session_path)
+        .filter(|peer| owner(peer).as_deref() == Some(session.id.as_str()))
         .collect();
+    if candidates.is_empty() {
+        let session_path = canonical_or_raw(Path::new(&session.directory));
+        candidates = peers
+            .iter()
+            .filter(|peer| {
+                owner(peer).is_none() && canonical_or_raw(Path::new(&peer.cwd)) == session_path
+            })
+            .collect();
+    }
     if candidates.len() <= 1 {
         return candidates.first().map(|peer| peer.id.clone());
     }
@@ -768,9 +795,29 @@ impl ProcessTable {
         system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+            ProcessRefreshKind::nothing()
+                .with_cmd(UpdateKind::Always)
+                .with_environ(UpdateKind::Always),
         );
         Self { system, yaran_pid }
+    }
+
+    /// The yaran agent a registration's process belongs to: the
+    /// `YARAN_SESSION_ID` (or legacy `DUX_SESSION_ID`) in its environment or
+    /// its nearest ancestor's. `None` for a Claude yaran did not launch.
+    fn yaran_session_of(&self, pid: u32) -> Option<String> {
+        let mut current = sysinfo::Pid::from_u32(pid);
+        for _ in 0..MAX_ANCESTRY_DEPTH {
+            if self.yaran_pid == Some(current.as_u32()) {
+                return None;
+            }
+            let proc = self.system.process(current)?;
+            if let Some(id) = session_id_in_environ(proc.environ()) {
+                return Some(id);
+            }
+            current = proc.parent()?;
+        }
+        None
     }
 
     /// Whether a daemon spare, a daemon session host, or the yaran TUI is
@@ -815,6 +862,23 @@ impl ProcessTable {
         }
         None
     }
+}
+
+/// The yaran session id an environment names. `YARAN_SESSION_ID` wins, even
+/// set empty; `DUX_SESSION_ID` is the fallback only when it is absent.
+fn session_id_in_environ(environ: &[OsString]) -> Option<String> {
+    let value_of = |key: &str| {
+        environ.iter().find_map(|entry| {
+            entry
+                .to_str()?
+                .strip_prefix(key)?
+                .strip_prefix('=')
+                .map(str::to_string)
+        })
+    };
+    value_of("YARAN_SESSION_ID")
+        .or_else(|| value_of("DUX_SESSION_ID"))
+        .filter(|id| !id.is_empty())
 }
 
 /// Claude Code only pushes `server:` channel messages it was started with
