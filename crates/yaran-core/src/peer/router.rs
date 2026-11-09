@@ -11,10 +11,11 @@
 //! - Otherwise `auto` sends to a Claude target over Claude Peers (the broker
 //!   is then required, not a best-effort preference) and to anything else
 //!   over AMQ. `--transport amq` is the manual override.
-//! - A Claude target whose Claude Code no longer loads the claude-peers
-//!   channel (its in-place relaunch drops the flag) would have the push
-//!   drained and discarded, so `auto` delivers over AMQ instead and says so;
-//!   an explicit `--transport claude-peers` is refused.
+//! - When a Claude target cannot take a Claude Peers push right now (the
+//!   broker is not answering, the target has no registration because its
+//!   claude-peers server died, or its Claude Code no longer loads the channel
+//!   and would discard the push), `auto` delivers over AMQ instead and says
+//!   why; an explicit `--transport claude-peers` is refused with the reason.
 //!
 //! Only live sessions whose directory still exists are listed or routable.
 
@@ -127,43 +128,36 @@ fn run_peer_send(args: &[String], paths: &YaranPaths) -> Result<()> {
                 .session
                 .as_ref()
                 .ok_or_else(|| anyhow!("Claude Peers requires a known Claude target session"))?;
-            let peers = claude_peers_list().context(
-                "Claude-targeted routes require Claude Peers, but the broker is unavailable. \
-                 Restart Claude agents after installing claude-peers, or pass --transport amq \
-                 explicitly for a manual override",
-            )?;
-            let processes = ProcessTable::snapshot(yaran_tui_pid(paths));
-            let to_id = match reachable_claude_peer(target_session, &peers, &processes) {
-                Ok(id) => id,
-                Err(Unreachable::Unregistered) => bail!(
-                    "Claude Peers is not registered for target {}",
-                    target_session.agent_handle()
-                ),
-                Err(Unreachable::ChannelOff) if parsed.transport == TransportPreference::Auto => {
+            let route = match claude_peers_list() {
+                Err(_) => Err(PeersUnavailable::Broker),
+                Ok(peers) => {
+                    let processes = ProcessTable::snapshot(yaran_tui_pid(paths));
+                    match reachable_claude_peer(target_session, &peers, &processes) {
+                        Ok(to_id) => Ok((peers, processes, to_id)),
+                        Err(unreachable) => Err(PeersUnavailable::Target(unreachable)),
+                    }
+                }
+            };
+            match route {
+                Ok((peers, processes, to_id)) => {
+                    let (from_id, message) =
+                        claude_peers_sender(&sender, &peers, &parsed.message, &processes);
+                    claude_peers_send(&from_id, &to_id, &message)?;
+                    println!(
+                        "sent via claude-peers: {} -> {}",
+                        sender.handle, target.handle
+                    );
+                }
+                Err(why) => {
+                    let reason = amq_fallback_reason(parsed.transport, &why, &target.handle)?;
                     let root = require_amq_root(paths)?;
                     amq_send(&root, &sender.handle, &target.handle, &parsed.message)?;
                     println!(
-                        "sent via amq: {} -> {} ({} is not listening on the claude-peers channel \
-                         because Claude Code relaunched itself without it; restart the agent in \
-                         yaran to restore Claude Peers)",
-                        sender.handle, target.handle, target.handle
+                        "sent via amq: {} -> {} ({reason})",
+                        sender.handle, target.handle
                     );
-                    return Ok(());
                 }
-                Err(Unreachable::ChannelOff) => bail!(
-                    "{} is not listening on the claude-peers channel because Claude Code \
-                     relaunched itself without it, so a Claude Peers message would be dropped; \
-                     omit --transport to deliver over AMQ, or restart the agent in yaran",
-                    target.handle
-                ),
-            };
-            let (from_id, message) =
-                claude_peers_sender(&sender, &peers, &parsed.message, &processes);
-            claude_peers_send(&from_id, &to_id, &message)?;
-            println!(
-                "sent via claude-peers: {} -> {}",
-                sender.handle, target.handle
-            );
+            }
         }
         ChosenTransport::Amq => {
             let root = require_amq_root(paths)?;
@@ -193,7 +187,9 @@ fn run_peer_list(args: &[String], paths: &YaranPaths) -> Result<()> {
                 (Some(peers), Some(processes)) if session.is_claude() => {
                     match reachable_claude_peer(session, peers, processes) {
                         Ok(_) => "",
-                        Err(Unreachable::Unregistered) => "  [not registered with Claude Peers]",
+                        Err(Unreachable::Unregistered) => {
+                            "  [not registered with Claude Peers: messages go via AMQ until its claude-peers server is reconnected]"
+                        }
                         Err(Unreachable::ChannelOff) => {
                             "  [claude-peers channel off: messages go via AMQ until restarted]"
                         }
@@ -224,7 +220,7 @@ fn run_peer_list(args: &[String], paths: &YaranPaths) -> Result<()> {
 
     match &peers {
         Some(peers) => println!("Claude Peers broker: {} peer(s) registered", peers.len()),
-        None => println!("Claude Peers broker: unavailable"),
+        None => println!("Claude Peers broker: unavailable (messages to Claude agents go via AMQ)"),
     }
 
     Ok(())
@@ -651,6 +647,53 @@ enum Unreachable {
     /// Registered, but its Claude Code did not load the channel: the MCP
     /// server drains the broker queue and Claude Code discards each push.
     ChannelOff,
+}
+
+/// Why a Claude target cannot take a Claude Peers push right now.
+#[derive(Debug, PartialEq, Eq)]
+enum PeersUnavailable {
+    /// The broker is not answering at all.
+    Broker,
+    Target(Unreachable),
+}
+
+impl PeersUnavailable {
+    /// What is wrong and how to get Claude Peers back, for the send output.
+    fn reason(&self, target: &str) -> String {
+        match self {
+            Self::Broker => {
+                "the Claude Peers broker is not answering; the next Claude agent yaran \
+                             starts brings it back"
+                    .to_string()
+            }
+            Self::Target(Unreachable::Unregistered) => format!(
+                "{target} has no Claude Peers registration because its claude-peers server is not \
+                 running; reconnect claude-peers with /mcp in that agent, or restart it in yaran"
+            ),
+            Self::Target(Unreachable::ChannelOff) => format!(
+                "{target} is not listening on the claude-peers channel because Claude Code \
+                 relaunched itself without it; restart the agent in yaran to restore Claude Peers"
+            ),
+        }
+    }
+}
+
+/// A Claude target that cannot take a push gets the message over AMQ, so an
+/// outage never stops agents talking; an explicit `--transport claude-peers`
+/// asked for Claude Peers only and is refused instead. Returns the reason the
+/// send output names.
+fn amq_fallback_reason(
+    preference: TransportPreference,
+    why: &PeersUnavailable,
+    target: &str,
+) -> Result<String> {
+    let reason = why.reason(target);
+    if preference == TransportPreference::ClaudePeers {
+        bail!(
+            "{reason}. A Claude Peers message cannot reach it now; omit --transport to deliver over AMQ"
+        );
+    }
+    Ok(reason)
 }
 
 /// The registration that owns `session`, provided it can receive a push.

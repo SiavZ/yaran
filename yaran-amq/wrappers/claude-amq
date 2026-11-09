@@ -302,6 +302,49 @@ if [[ "${CLAUDE_AMQ_YOLO:-${CLAUDE_YOLO:-}}" == "1" ]]; then
   printf 'claude-amq: YOLO enabled — tool calls will not prompt\n' >&2
 fi
 
+# Claude Peers' MCP server gives its broker 6 seconds to answer, then exits
+# for the rest of the session, and Claude Code never restarts it. When yaran
+# starts many lanes at once (after a reboot) the broker misses that window in
+# every lane. So start the broker the registered server would start, once,
+# under a lock, and wait for it before Claude starts. It runs in a process
+# group of its own: yaran stops an agent by signalling its whole group, which
+# would otherwise take the one shared broker down with whichever lane started
+# it. CLAUDE_PEERS_BROKER_WAIT sets the wait in seconds (default 30).
+claude_peers_broker_alive() {
+  curl -fsS -m 2 -o /dev/null "http://127.0.0.1:${CLAUDE_PEERS_PORT:-7899}/health" 2>/dev/null
+}
+
+start_claude_peers_broker_locked() {
+  claude_peers_broker_alive && return 0
+  # Job control puts the background job in a process group of its own, and
+  # works everywhere bash does (a `setsid` on PATH can be a no-op shim).
+  (set -m; nohup "$CLAUDE_PEERS_BROKER_BUN" "$CLAUDE_PEERS_BROKER_SCRIPT" \
+    </dev/null >/dev/null 2>>"$CLAUDE_PEERS_BROKER_LOG" &)
+  local deadline=$((SECONDS + ${CLAUDE_PEERS_BROKER_WAIT:-30}))
+  while ((SECONDS < deadline)); do
+    claude_peers_broker_alive && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+ensure_claude_peers_broker() {
+  local cfg="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" bun server
+  command -v curl >/dev/null 2>&1 || return 0
+  claude_peers_broker_alive && return 0
+  # Not registered with Claude Code: nothing would load the channel anyway.
+  bun=$(jq -r '.mcpServers["claude-peers"].command // empty' "$cfg" 2>/dev/null) || return 0
+  server=$(jq -r '[.mcpServers["claude-peers"].args[]? | select(endswith("server.ts"))][0] // empty' \
+    "$cfg" 2>/dev/null) || return 0
+  [[ -n "$bun" && -n "$server" && -f "${server%/*}/broker.ts" ]] || return 0
+  export CLAUDE_PEERS_BROKER_BUN="$bun" CLAUDE_PEERS_BROKER_SCRIPT="${server%/*}/broker.ts"
+  export CLAUDE_PEERS_BROKER_LOG="$ROOT/meta/claude-peers-broker.log"
+  export -f claude_peers_broker_alive start_claude_peers_broker_locked
+  # -o: the broker must not inherit the lock, or every later launch waits on it.
+  "$FLOCK_BIN" -x -o "$ROOT/meta/claude-peers-broker.lock" \
+    bash -uo pipefail -c start_claude_peers_broker_locked
+}
+
 # Claude-targeted Yaran routing is intentionally forced through Claude
 # Peers. Claude Code's allowlisted --channels path no longer accepts
 # local `server:` channels; Claude Peers' own docs require the dev-channel
@@ -309,6 +352,10 @@ fi
 # Set CLAUDE_PEERS_DISABLE=1 only for low-level diagnostics.
 if [[ "${CLAUDE_PEERS_DISABLE:-}" != "1" ]]; then
   EXTRA+=(--dangerously-load-development-channels server:claude-peers)
+  if ! ensure_claude_peers_broker; then
+    printf 'claude-amq: the Claude Peers broker did not answer within %ss, so claude-peers may be unavailable in this session; yaran peer send falls back to AMQ\n' \
+      "${CLAUDE_PEERS_BROKER_WAIT:-30}" >&2
+  fi
   # Claude Code's /restart and its switch onto an updated build re-exec
   # through CLAUDE_CODE_PROCESS_WRAPPER with an argv that drops the flag
   # above; claude-peers-launcher puts it back for this pane's terminal.
