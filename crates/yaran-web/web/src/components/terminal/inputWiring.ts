@@ -104,18 +104,27 @@ function terminalKeyAction(
   return false
 }
 
-function registerMouseCopy(
-  options: TerminalInputWiringOptions,
-): Disposable {
+export type MouseCopyOptions = {
+  term: Pick<Terminal, "getSelection" | "modes">
+  container: HTMLDivElement
+  live: LiveSettings
+  isMac: boolean
+  focusTypingSurface: () => void
+}
+
+export function registerMouseCopy(options: MouseCopyOptions): Disposable {
   let mouseDown: { x: number; y: number } | null = null
-  const onMouseDown = (event: MouseEvent) => {
-    if (event.button === 0) {
-      mouseDown = { x: event.clientX, y: event.clientY }
-    }
+  let outsideReleaseWatch: ((event: MouseEvent) => void) | null = null
+  const disarmOutsideRelease = () => {
+    if (!outsideReleaseWatch) return
+    document.removeEventListener("mouseup", outsideReleaseWatch, true)
+    outsideReleaseWatch = null
   }
-  const onMouseUp = (event: MouseEvent) => {
+  const finish = (event: MouseEvent) => {
+    if (event.button !== 0) return
     const down = mouseDown
     mouseDown = null
+    disarmOutsideRelease()
     const dragged =
       down !== null &&
       Math.hypot(event.clientX - down.x, event.clientY - down.y) >=
@@ -134,10 +143,31 @@ function registerMouseCopy(
       raiseMouseCaptureHint(options.isMac)
     }
   }
+  const onMouseDown = (event: MouseEvent) => {
+    if (event.button !== 0) return
+    disarmOutsideRelease()
+    mouseDown = { x: event.clientX, y: event.clientY }
+    const watch = (release: MouseEvent) => {
+      if (release.button !== 0) return
+      disarmOutsideRelease()
+      if (
+        release.target instanceof Node &&
+        options.container.contains(release.target)
+      ) {
+        return
+      }
+      finish(release)
+    }
+    outsideReleaseWatch = watch
+    document.addEventListener("mouseup", watch, true)
+  }
+  const onMouseUp = (event: MouseEvent) => finish(event)
   options.container.addEventListener("mousedown", onMouseDown)
   options.container.addEventListener("mouseup", onMouseUp)
   return {
     dispose: () => {
+      disarmOutsideRelease()
+      mouseDown = null
       options.container.removeEventListener("mousedown", onMouseDown)
       options.container.removeEventListener("mouseup", onMouseUp)
     },

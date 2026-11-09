@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { fireEvent } from "@testing-library/dom"
 import type { Terminal } from "@xterm/xterm"
 
 import { focusTypingSurfaceIn } from "./inputSurface"
 import type { LiveSettings } from "./liveValues"
 import {
   registerComposeFocusGuard,
+  registerMouseCopy,
   suspendTerminalTabStop,
 } from "./inputWiring"
 
@@ -14,12 +16,22 @@ import {
 // pulls in the store, which touches `localStorage` at import time. This
 // environment does not provide one, so the store gets the smallest stand-in
 // that satisfies the bindings; nothing here reads a draft.
-vi.mock("@/lib/notify", () => ({ notifyError: () => {} }))
+vi.mock("@/lib/notify", () => ({
+  notifyError: () => {},
+  notifySuccess: () => {},
+}))
 vi.mock("@/lib/store", () => ({
   useYaran: () => ({}),
   composeDraft: () => "",
   peekComposeDraft: () => "",
   setComposeDraft: () => {},
+}))
+const copied: string[] = []
+vi.mock("@/lib/clipboard", () => ({
+  copyToClipboard: async (text: string) => {
+    copied.push(text)
+    return true
+  },
 }))
 
 // A stand-in for xterm's hidden textarea inside the pane's container: the guard
@@ -54,6 +66,58 @@ async function settle(): Promise<void> {
 
 afterEach(() => {
   document.body.innerHTML = ""
+  copied.length = 0
+})
+
+describe("registerMouseCopy", () => {
+  const setup = () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const selection = "selected text"
+    const term = {
+      getSelection: () => selection,
+      modes: { mouseTrackingMode: "none" },
+    }
+    const live = {
+      current: { copyOnSelect: true },
+    } as unknown as LiveSettings
+    return {
+      container,
+      term,
+      dispose: registerMouseCopy({
+        term,
+        container,
+        live,
+        isMac: true,
+        focusTypingSurface: () => {},
+      }),
+    }
+  }
+
+  it("copies a primary drag released outside the terminal pane", async () => {
+    const test = setup()
+    fireEvent.mouseDown(test.container, { button: 0, clientX: 10, clientY: 10 })
+    fireEvent.mouseUp(document.body, { button: 0, clientX: 40, clientY: 10 })
+    await settle()
+    expect(copied).toEqual(["selected text"])
+    test.dispose.dispose()
+  })
+
+  it("ignores secondary-button releases while a selection exists", () => {
+    const test = setup()
+    fireEvent.mouseUp(test.container, { button: 2, clientX: 10, clientY: 10 })
+    fireEvent.mouseUp(test.container, { button: 1, clientX: 10, clientY: 10 })
+    expect(copied).toEqual([])
+    test.dispose.dispose()
+  })
+
+  it("removes its document release watcher when disposed mid-drag", () => {
+    const test = setup()
+    fireEvent.mouseDown(test.container, { button: 0, clientX: 10, clientY: 10 })
+    test.dispose.dispose()
+    fireEvent.mouseUp(document.body, { button: 0, clientX: 40, clientY: 10 })
+    expect(copied).toEqual([])
+  })
 })
 
 describe("registerComposeFocusGuard", () => {
