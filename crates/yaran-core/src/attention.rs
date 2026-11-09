@@ -947,6 +947,29 @@ mod tests {
     }
 
     #[test]
+    fn capture_never_records_mouse_mode_csi() {
+        // Mouse tracking and encoding modes are CSI DECSET/DECRST, not OSC, so no
+        // captured kind can carry one to the host, bare or inside a tmux envelope.
+        let csi: [&[u8]; 5] = [
+            b"\x1b[?1000h",
+            b"\x1b[?1002h",
+            b"\x1b[?1003h",
+            b"\x1b[?1006h",
+            b"\x1b[?1002l",
+        ];
+        for seq in csi {
+            assert!(capture_once(seq).is_empty());
+            assert!(capture_once(&tmux_wrap(seq)).is_empty());
+            assert!(scan_once(seq).is_empty());
+        }
+        // Next to a real capture, only the OSC is recorded.
+        let caps = capture_once(b"\x1b[?1002h\x1b]9;done\x07\x1b[?1006h");
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].kind, CapturedKind::Notify);
+        assert_eq!(caps[0].bytes, b"\x1b]9;done\x1b\\".to_vec());
+    }
+
+    #[test]
     fn capture_from_inside_tmux_envelope_is_unwrapped() {
         let caps = capture_once(b"\x1bPtmux;\x1b\x1b]9;msg\x07\x1b\\");
         assert_eq!(caps.len(), 1);
