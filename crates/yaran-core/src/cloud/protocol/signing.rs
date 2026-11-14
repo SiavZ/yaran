@@ -21,8 +21,7 @@
 //! ├── cloud::machine_api
 //! ├── cloud::protocol
 //! ├── cloud::signed_request
-//! └── cloud::test_support
-//! ├── cloud::push_link
+//! ├── cloud::test_support
 //! └── yaran-core[test cloud_push_emitter]::mock_worker
 //! <module-headers:end>
 

@@ -4339,7 +4339,7 @@ impl App {
             paths.config_path.clone(),
             worker_tx.clone(),
         );
-        let push = yaran_core::engine::PushHook::new(&config, worker_tx.clone());
+        let push = yaran_core::engine::PushHook::new(&config, &paths, worker_tx.clone());
         let engine = Engine {
             config,
             paths,

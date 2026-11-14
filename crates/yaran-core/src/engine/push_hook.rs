@@ -12,10 +12,12 @@
 //! <module-headers:begin>
 //! Uses:
 //! engine/push_hook.rs
+//! ├── cloud::config
 //! ├── cloud::protocol::machine
 //! ├── cloud::push_config
 //! ├── cloud::push_edges
 //! ├── cloud::push_emitter
+//! ├── cloud::push_link
 //! ├── cloud::push_queue
 //! ├── config
 //! ├── engine
@@ -37,18 +39,20 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::Engine;
 use super::attention_decision::attention_engaged;
+use crate::cloud::config::CloudMode;
 use crate::cloud::protocol::machine::{
     AttentionEvent, AttentionKind, EndingToken, Event, ExitEvent, ExitKind, RowStateToken,
 };
 use crate::cloud::push_config::PushSettings;
 use crate::cloud::push_edges::{EdgeKind, PushEdges};
 use crate::cloud::push_emitter::PushEmitter;
+use crate::cloud::push_link::paired_link_factory;
 use crate::cloud::push_queue::{event_ts, new_event_id};
-use crate::config::Config;
+use crate::config::{Config, YaranPaths};
 use crate::ids::{TabId, TabIdRef};
 use crate::model::AgentWorkspace;
 use crate::row_state::{RowState, agent_row_state};
@@ -66,13 +70,22 @@ pub struct PushHook {
 }
 
 impl PushHook {
-    pub fn new(config: &Config, status_lane: Sender<WorkerEvent>) -> Self {
-        Self::with_emitter(PushEmitter::new(push_settings(config), Some(status_lane)))
+    /// The engine's hook: events go out signed as the machine paired under `paths`.
+    pub fn new(config: &Config, paths: &YaranPaths, status_lane: Sender<WorkerEvent>) -> Self {
+        let link = paired_link_factory(
+            &paths.root,
+            Duration::from_secs(config.cloud.request_timeout_seconds.max(1)),
+        );
+        Self::with_emitter(PushEmitter::with_link(
+            push_settings(config),
+            Some(status_lane),
+            link,
+        ))
     }
 
     /// Push off and no status lane (test engines).
     pub fn off() -> Self {
-        Self::with_emitter(PushEmitter::new(PushSettings::off(), None))
+        Self::with_emitter(PushEmitter::off())
     }
 
     pub fn with_emitter(emitter: PushEmitter) -> Self {
@@ -84,10 +97,13 @@ impl PushHook {
     }
 }
 
-/// The emitter's settings from config. shortcut: always off until Phase 09 adds
-/// `[cloud]`; then `PushSettings::new(cloud.push_notifications && mode != no, &cloud.push)`.
-pub(crate) fn push_settings(_config: &Config) -> PushSettings {
-    PushSettings::off()
+/// The emitter's settings from config: on while `push_notifications` and mode is not `no`.
+pub(crate) fn push_settings(config: &Config) -> PushSettings {
+    let cloud = &config.cloud;
+    PushSettings::new(
+        cloud.push_notifications && cloud.mode() != CloudMode::No,
+        &cloud.push,
+    )
 }
 
 #[derive(Debug, Clone)]

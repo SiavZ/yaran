@@ -40,9 +40,9 @@
 //! ├── engine::events
 //! ├── engine::shared_workspace
 //! ├── statusline
+//! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-tui::app::sessions
 //! ├── yaran-web::cloud_mode_routes
-//! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-web::config_routes
 //! ├── yaran-web::engine_actor
 //! ├── yaran-web::first_load_routes

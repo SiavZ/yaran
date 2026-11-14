@@ -26,7 +26,7 @@ use super::*;
 use crate::cloud::protocol::ErrorCode;
 use crate::cloud::protocol::machine::{AttentionKind, MachineConfig};
 use crate::cloud::protocol::machine::{EventBatch, EventBatchResult};
-use crate::cloud::push_link::LinkError;
+use crate::cloud::push_link::MachineApiError;
 use crate::cloud::push_queue::tests::attention;
 use crate::cloud::push_runner::{Verdict, classify};
 use std::time::Instant;
@@ -46,11 +46,11 @@ impl MachineLink for FakeLink {
     fn org_name(&mut self) -> Option<String> {
         self.paired.then(|| "acme".to_string())
     }
-    fn machine_config(&mut self) -> Result<MachineConfig, LinkError> {
+    fn machine_config(&mut self) -> Result<MachineConfig, MachineApiError> {
         self.calls.lock().unwrap().configs += 1;
-        Err(LinkError::Network("no config in this fake".into()))
+        Err(MachineApiError::Network("no config in this fake".into()))
     }
-    fn post_events(&mut self, batch: &EventBatch) -> Result<EventBatchResult, LinkError> {
+    fn post_events(&mut self, batch: &EventBatch) -> Result<EventBatchResult, MachineApiError> {
         self.calls.lock().unwrap().batches.push(batch.clone());
         Ok(EventBatchResult {
             accepted: batch
@@ -106,38 +106,38 @@ fn wait_for(cond: impl Fn() -> bool) {
 
 #[test]
 fn push_emitter_classifies_every_answer() {
-    let refused = |code, retryable| LinkError::Refused {
-        code,
+    // Whether a refusal retries is the registry's answer for its code.
+    let refused = |code: ErrorCode| MachineApiError::Refused {
+        code: code.as_str().into(),
         message: "m".into(),
-        retryable,
         retry_after: None,
     };
-    assert_eq!(classify(Err(LinkError::Revoked)), Verdict::Revoked);
+    assert_eq!(classify(Err(MachineApiError::Revoked)), Verdict::Revoked);
     assert_eq!(
-        classify(Err(refused(ErrorCode::MachineUnknown, false))),
+        classify(Err(refused(ErrorCode::MachineUnknown))),
         Verdict::Revoked
     );
     assert!(matches!(
-        classify(Err(refused(ErrorCode::RateLimited, true))),
+        classify(Err(refused(ErrorCode::RateLimited))),
         Verdict::Retry { .. }
     ));
     assert!(matches!(
-        classify(Err(refused(ErrorCode::PayloadTooLarge, false))),
+        classify(Err(refused(ErrorCode::PayloadTooLarge))),
         Verdict::DropBatch { .. }
     ));
     assert!(matches!(
-        classify(Err(refused(ErrorCode::ValidationFailed, false))),
+        classify(Err(refused(ErrorCode::ValidationFailed))),
         Verdict::DropBatch { .. }
     ));
-    let server = |status| LinkError::Server {
+    let server = |status| MachineApiError::Server {
         status,
-        retry_after: Some(Duration::from_secs(7)),
+        retry_after: Some(7),
     };
     assert_eq!(
         classify(Err(server(503))),
         Verdict::Retry {
             after: Some(Duration::from_secs(7)),
-            error: "HTTP 503".into()
+            error: "the control plane answered HTTP 503".into()
         }
     );
     assert!(matches!(
@@ -145,15 +145,15 @@ fn push_emitter_classifies_every_answer() {
         Verdict::DropBatch { .. }
     ));
     assert!(matches!(
-        classify(Err(LinkError::Network("x".into()))),
+        classify(Err(MachineApiError::Network("x".into()))),
         Verdict::Retry { after: None, .. }
     ));
     assert!(matches!(
-        classify(Err(LinkError::Malformed("x".into()))),
+        classify(Err(MachineApiError::Malformed("x".into()))),
         Verdict::DropBatch { .. }
     ));
     assert_eq!(
-        classify(Err(LinkError::ClockSkew { server_time: None })),
+        classify(Err(MachineApiError::ClockSkew { server_time: None })),
         Verdict::ClockSkew { server_time: None }
     );
     let delivered = classify(Ok(EventBatchResult {

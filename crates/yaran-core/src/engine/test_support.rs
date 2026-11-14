@@ -25,6 +25,7 @@
 //! ├── engine
 //! ├── engine::amq
 //! ├── engine::backup
+//! ├── engine::cloud_mode
 //! ├── engine::command
 //! ├── engine::companion
 //! ├── engine::events

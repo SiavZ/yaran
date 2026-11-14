@@ -1,9 +1,9 @@
 //! The emitter's two `[cloud]` keys and the resolved settings the `cloud-push` thread runs on.
 //!
-//! `PushKeys` is shaped to be flattened into Phase 09's `CloudConfig`, so the keys sit
+//! `PushKeys` is flattened into `CloudConfig`, so the keys sit
 //! beside `mode` and `push_notifications` in the same section. `PushSettings` is what the
 //! engine hands the emitter on start and on every reload: the on/off gate
-//! (`push_notifications` and `mode != no`, both 09's keys, never `ui.attention_indicator`)
+//! (`push_notifications` and `mode != no`, never `ui.attention_indicator`)
 //! plus the two windows, clamped here so a hand-edited value cannot wedge the thread.
 //!
 //! - Pure values; no I/O.
@@ -15,6 +15,8 @@
 //! Used by:
 //! cloud/push_config.rs
 //! ├── cloud
+//! ├── cloud::config
+//! ├── cloud::config_patch
 //! ├── cloud::push_emitter
 //! ├── cloud::push_runner
 //! ├── engine::push_hook
@@ -67,7 +69,7 @@ impl PushSettings {
         Self::new(false, &PushKeys::default())
     }
 
-    /// `enabled` is 09's gate: `push_notifications && mode != no`.
+    /// `enabled` is the gate: `push_notifications && mode != no`.
     pub fn new(enabled: bool, keys: &PushKeys) -> Self {
         let ttl = keys
             .push_offline_ttl_seconds

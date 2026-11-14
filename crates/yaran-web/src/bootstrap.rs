@@ -147,7 +147,7 @@ pub fn bootstrap_engine(paths: &YaranPaths) -> Result<Engine> {
     let github_integration_enabled = config.ui.github_integration;
     let config_writer =
         ConfigWriteQueue::with_status_lane(paths.config_path.clone(), worker_tx.clone());
-    let push = yaran_core::engine::PushHook::new(&config, worker_tx.clone());
+    let push = yaran_core::engine::PushHook::new(&config, paths, worker_tx.clone());
 
     let mut engine = Engine {
         config,

@@ -43,7 +43,7 @@ use super::protocol::ErrorCode;
 use super::protocol::machine::{Event, EventBatch, EventBatchResult, PushDetail};
 use super::push_config::PushSettings;
 use super::push_emitter::{CONFIG_RECHECK, Msg};
-use super::push_link::{LinkError, MachineLink};
+use super::push_link::{MachineApiError, MachineLink, describe, says_revoked};
 use super::push_queue::PushQueue;
 use crate::engine::StatusUpdate;
 use crate::status_text;
@@ -82,42 +82,44 @@ pub(crate) enum Verdict {
     },
 }
 
-pub(crate) fn classify(result: Result<EventBatchResult, LinkError>) -> Verdict {
-    match result {
-        Ok(r) => Verdict::Delivered {
-            acknowledged: r.accepted.into_iter().chain(r.duplicates).collect(),
-            push_enabled: r.push_enabled,
-        },
-        Err(err) => {
-            let error = err.describe();
-            match err {
-                LinkError::Revoked => Verdict::Revoked,
-                LinkError::Refused {
-                    code: ErrorCode::MachineUnknown,
-                    ..
-                } => Verdict::Revoked,
-                LinkError::ClockSkew { server_time } => Verdict::ClockSkew { server_time },
-                LinkError::Refused {
-                    retryable: true,
-                    retry_after,
-                    ..
-                } => Verdict::Retry {
-                    after: retry_after,
-                    error,
-                },
-                LinkError::Server {
-                    status,
-                    retry_after,
-                } if status == 429 || status >= 500 => Verdict::Retry {
-                    after: retry_after,
-                    error,
-                },
-                LinkError::Network(_) => Verdict::Retry { after: None, error },
-                LinkError::Refused { .. } | LinkError::Server { .. } | LinkError::Malformed(_) => {
-                    Verdict::DropBatch { error }
-                }
-            }
+pub(crate) fn classify(result: Result<EventBatchResult, MachineApiError>) -> Verdict {
+    let err = match result {
+        Ok(r) => {
+            return Verdict::Delivered {
+                acknowledged: r.accepted.into_iter().chain(r.duplicates).collect(),
+                push_enabled: r.push_enabled,
+            };
         }
+        Err(err) => err,
+    };
+    if says_revoked(&err) {
+        return Verdict::Revoked;
+    }
+    let error = describe(&err);
+    match err {
+        MachineApiError::ClockSkew { server_time } => Verdict::ClockSkew { server_time },
+        MachineApiError::Refused {
+            code, retry_after, ..
+        } if ErrorCode::parse(&code).is_retryable() => Verdict::Retry {
+            after: retry_after.map(Duration::from_secs),
+            error,
+        },
+        MachineApiError::Server {
+            status,
+            retry_after,
+        } if status == 429 || status >= 500 => Verdict::Retry {
+            after: retry_after.map(Duration::from_secs),
+            error,
+        },
+        // The credentials may be mid-rewrite or about to come back; the batch keeps.
+        MachineApiError::Network(_)
+        | MachineApiError::NotPaired
+        | MachineApiError::Credentials(_) => Verdict::Retry { after: None, error },
+        MachineApiError::Revoked
+        | MachineApiError::Refused { .. }
+        | MachineApiError::Server { .. }
+        | MachineApiError::Malformed(_)
+        | MachineApiError::ProtocolUnsupported { .. } => Verdict::DropBatch { error },
     }
 }
 
@@ -308,15 +310,9 @@ impl Runner {
                 }
                 self.paused = !config.push.enabled;
             }
-            Err(
-                LinkError::Revoked
-                | LinkError::Refused {
-                    code: ErrorCode::MachineUnknown,
-                    ..
-                },
-            ) => self.revoke(org),
+            Err(err) if says_revoked(&err) => self.revoke(org),
             Err(err) => {
-                tracing::debug!(target: "yaran::cloud::push", error = %err.describe(), "machine config fetch failed; keeping the cached limits")
+                tracing::debug!(target: "yaran::cloud::push", error = %describe(&err), "machine config fetch failed; keeping the cached limits")
             }
         }
     }

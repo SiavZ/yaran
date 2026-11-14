@@ -1,6 +1,7 @@
 //! The phone-notification emitter against a mock Worker: signed delivery, retries with the
 //! same ids, acknowledgement, pause and resume, `detail = minimal`, revocation, clock skew,
 //! offline expiry and recovery, unpaired silence, and a hung Worker that never stalls `offer`.
+//! The link is the production `PairedLink` over real credentials and the signed client.
 //!
 //! - Integration test; the Worker is `support/mock_worker.rs` on loopback.
 //!
@@ -10,29 +11,36 @@
 #[path = "support/mock_worker.rs"]
 mod mock_worker;
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mock_worker::{Answer, MACHINE_ID, MockWorker, machine_key};
+use mock_worker::{Answer, MACHINE_ID, MockWorker, machine_key_pkcs8};
 use serde_json::json;
+use yaran_core::cloud::credentials;
+use yaran_core::cloud::machine_api::{ApiFactory, MachineApi};
+use yaran_core::cloud::paths::CloudPaths;
 use yaran_core::cloud::protocol::machine::{AttentionEvent, AttentionKind, Event, RowStateToken};
+use yaran_core::cloud::protocol::rules::b64url_encode;
 use yaran_core::cloud::push_config::PushSettings;
 use yaran_core::cloud::push_emitter::{LinkFactory, PushEmitter};
-use yaran_core::cloud::push_link::{HttpMachineLink, LinkCredentials};
+use yaran_core::cloud::push_link::PairedLink;
 use yaran_core::cloud::push_queue::{event_ts, new_event_id};
+use yaran_core::cloud::revocation::RevocationSignal;
+use yaran_core::cloud::test_support::{SAMPLE_ORG, sample_credentials};
 use yaran_core::statusline::StatusTone;
 use yaran_core::wire::status_keys::CLOUD_PUSH;
 use yaran_core::worker::WorkerEvent;
 
+/// The production link against the mock Worker: real credentials, the real signed client,
+/// only the transport pointed at loopback.
 struct Rig {
     worker: MockWorker,
     emitter: PushEmitter,
     statuses: Receiver<WorkerEvent>,
-    paired: Arc<AtomicBool>,
-    revoked: Arc<AtomicUsize>,
-    org_url: Arc<Mutex<String>>,
+    paths: CloudPaths,
+    transport: Arc<Mutex<String>>,
+    _root: tempfile::TempDir,
 }
 
 fn settings(ttl: Duration) -> PushSettings {
@@ -43,34 +51,35 @@ fn settings(ttl: Duration) -> PushSettings {
     }
 }
 
+/// Pair `paths` as the 02 test machine the mock verifies signatures for.
+fn pair(paths: &CloudPaths) {
+    let mut creds = sample_credentials(SAMPLE_ORG);
+    creds.machine_id = MACHINE_ID.into();
+    creds.machine_key_pkcs8 = b64url_encode(&machine_key_pkcs8());
+    creds.org_name = "acme".into();
+    credentials::update(paths, |_| Ok(Some(creds.clone()))).expect("write credentials");
+}
+
 fn rig_with(ttl: Duration) -> Rig {
     let worker = MockWorker::start();
-    let paired = Arc::new(AtomicBool::new(true));
-    let revoked = Arc::new(AtomicUsize::new(0));
-    let org_url = Arc::new(Mutex::new(worker.base.clone()));
-    let key = Arc::new(machine_key().0);
+    let root = tempfile::tempdir().unwrap();
+    let paths = CloudPaths::from_root(root.path());
+    pair(&paths);
+    let transport = Arc::new(Mutex::new(worker.base.clone()));
+    let api: ApiFactory = {
+        let transport = transport.clone();
+        Arc::new(move |org, paths| {
+            Ok(MachineApi::new(org, paths, Duration::from_secs(5))?
+                .with_test_transport(&transport.lock().unwrap()))
+        })
+    };
     let factory: LinkFactory = {
-        let (paired, revoked, org_url) = (paired.clone(), revoked.clone(), org_url.clone());
+        let paths = paths.clone();
         Arc::new(move || {
-            let (paired, revoked, org_url, key) = (
-                paired.clone(),
-                revoked.clone(),
-                org_url.clone(),
-                key.clone(),
-            );
-            Box::new(HttpMachineLink::new(
-                Box::new(move || {
-                    paired.load(Ordering::SeqCst).then(|| LinkCredentials {
-                        org_url: org_url.lock().unwrap().clone(),
-                        org_name: "acme".into(),
-                        machine_id: MACHINE_ID.into(),
-                        key: key.clone(),
-                    })
-                }),
-                Box::new(move || {
-                    revoked.fetch_add(1, Ordering::SeqCst);
-                }),
-            ))
+            Box::new(PairedLink {
+                paths: paths.clone(),
+                api: api.clone(),
+            })
         })
     };
     let (tx, statuses) = mpsc::channel();
@@ -79,9 +88,9 @@ fn rig_with(ttl: Duration) -> Rig {
         worker,
         emitter,
         statuses,
-        paired,
-        revoked,
-        org_url,
+        paths,
+        transport,
+        _root: root,
     }
 }
 
@@ -255,6 +264,7 @@ fn minimal_detail_sends_no_label_or_project() {
 #[test]
 fn machine_revoked_stops_the_emitter_and_reports_on_both_seams() {
     let mut rig = rig();
+    let before = RevocationSignal::global().generation();
     rig.worker
         .script([Answer::Error(410, "machine_revoked", None, None)]);
     rig.emitter.offer(event("a1", RAISE));
@@ -264,11 +274,11 @@ fn machine_revoked_stops_the_emitter_and_reports_on_both_seams() {
         message.contains("no longer paired") && message.contains("acme"),
         "{message}"
     );
-    assert_eq!(
-        rig.revoked.load(Ordering::SeqCst),
-        1,
-        "verdict handed to 09/10's seam"
+    assert!(
+        RevocationSignal::global().generation() > before,
+        "the verdict raised the revocation signal"
     );
+    assert!(credentials::read(&rig.paths).unwrap().unwrap().is_revoked());
     rig.emitter.offer(event("a2", RAISE));
     quiet(300);
     assert_eq!(rig.worker.posts().len(), 1, "stopped for good");
@@ -298,7 +308,7 @@ fn signature_expired_names_the_clock_offset() {
 fn offline_beyond_the_ttl_warns_then_recovery_posts_an_info() {
     let mut rig = rig_with(Duration::from_secs(1));
     let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    *rig.org_url.lock().unwrap() = format!("http://{}", dead.local_addr().unwrap());
+    *rig.transport.lock().unwrap() = format!("http://{}", dead.local_addr().unwrap());
     drop(dead);
     rig.emitter.offer(event("a1", RAISE));
     let (tone, message) = next_status(&rig);
@@ -307,7 +317,7 @@ fn offline_beyond_the_ttl_warns_then_recovery_posts_an_info() {
         message.contains("1 phone notification") && message.contains("could not be reached"),
         "{message}"
     );
-    *rig.org_url.lock().unwrap() = rig.worker.base.clone();
+    *rig.transport.lock().unwrap() = rig.worker.base.clone();
     let started = Instant::now();
     while rig.worker.posts().is_empty() {
         assert!(
@@ -325,7 +335,7 @@ fn offline_beyond_the_ttl_warns_then_recovery_posts_an_info() {
 #[test]
 fn an_unpaired_machine_makes_no_request() {
     let mut rig = rig();
-    rig.paired.store(false, Ordering::SeqCst);
+    credentials::delete(&rig.paths).unwrap();
     rig.emitter.offer(event("a1", RAISE));
     quiet(300);
     assert!(rig.worker.seen.lock().unwrap().is_empty());

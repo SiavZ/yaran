@@ -79,11 +79,19 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
+/// The 02 test machine key's PKCS#8 v2 bytes (`fixtures/sig/machine-request.json`).
+pub fn machine_key_pkcs8() -> Vec<u8> {
+    unhex(
+        fixture("sig/machine-request.json")["pkcs8_v2_hex"]
+            .as_str()
+            .unwrap(),
+    )
+}
+
 /// The 02 test machine key (`fixtures/sig/machine-request.json`).
 pub fn machine_key() -> (Ed25519KeyPair, Vec<u8>) {
     let f = fixture("sig/machine-request.json");
-    let key =
-        Ed25519KeyPair::from_pkcs8(&unhex(f["pkcs8_v2_hex"].as_str().unwrap())).expect("pkcs8");
+    let key = Ed25519KeyPair::from_pkcs8(&machine_key_pkcs8()).expect("pkcs8");
     let public = b64url_decode(f["public_key"].as_str().unwrap()).expect("public key");
     (key, public)
 }

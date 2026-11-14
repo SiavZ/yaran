@@ -16,9 +16,9 @@
 //! ├── config_queue
 //! ├── config_write
 //! ├── engine::amq
+//! ├── engine::attention_decision
 //! ├── engine::backup
 //! ├── engine::cloud_mode
-//! ├── engine::attention_decision
 //! ├── engine::command
 //! ├── engine::companion
 //! ├── engine::config_saver
@@ -73,9 +73,9 @@
 //! ├── config_reload_status
 //! ├── crate
 //! ├── engine::amq
+//! ├── engine::attention_decision
 //! ├── engine::backup
 //! ├── engine::cloud_mode
-//! ├── engine::attention_decision
 //! ├── engine::command
 //! ├── engine::companion
 //! ├── engine::events

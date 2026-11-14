@@ -11,6 +11,7 @@
 //! ├── cloud::protocol::machine
 //! ├── cloud::push_config
 //! ├── cloud::push_emitter
+//! ├── config
 //! ├── engine
 //! ├── engine::push_hook
 //! ├── engine::test_support
@@ -278,4 +279,19 @@ fn push_hook_never_blocks_on_a_full_channel() {
     );
     assert!(started.elapsed() < std::time::Duration::from_millis(100));
     assert_eq!(engine.push.emitter.dropped(), 1);
+}
+
+#[test]
+fn push_follows_the_cloud_section() {
+    use super::push_settings;
+    let mut config = crate::config::Config::default();
+    assert!(push_settings(&config).enabled, "on by default");
+    config.cloud.mode = "no".into();
+    assert!(!push_settings(&config).enabled, "mode no turns it off");
+    config.cloud.mode = "auto".into();
+    config.cloud.push_notifications = false;
+    assert!(!push_settings(&config).enabled);
+    config.cloud.push_notifications = true;
+    config.cloud.push.push_coalesce_seconds = 0;
+    assert_eq!(push_settings(&config).coalesce, std::time::Duration::ZERO);
 }

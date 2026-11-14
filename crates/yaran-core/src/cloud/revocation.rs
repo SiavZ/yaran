@@ -14,7 +14,9 @@
 //! Used by:
 //! cloud/revocation.rs
 //! ├── cloud
-//! └── cloud::machine_api
+//! ├── cloud::machine_api
+//! ├── cloud::push_link
+//! └── yaran-core[test cloud_push_emitter]
 //! <module-headers:end>
 
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -2,9 +2,9 @@
 //!
 //! The engine holds a `PushEmitter` and offers owned events with `try_send`, so the tick
 //! never blocks: a full channel counts a drop. The thread coalesces through `PushQueue`,
-//! reads pairing state from Phase 09 at flush time (unpaired drops quietly), honours the
+//! reads the credentials at flush time (unpaired drops quietly), honours the
 //! org's cached `MachineConfig` (`push.enabled`, `push.detail`, `events`), retries with
-//! the same event ids, and stops for good on revocation, handing the verdict to 09/10.
+//! the same event ids, and stops for good on revocation, raising the revocation signal.
 //!
 //! - Owns its thread; the engine (`!Send`) only ever sees the handle.
 //! - Statuses go out on the engine's worker lane under one key, warnings plus the one
@@ -27,6 +27,7 @@
 //! cloud/push_emitter.rs
 //! ├── cloud
 //! ├── cloud::push_emitter::tests
+//! ├── cloud::push_link
 //! ├── cloud::push_runner
 //! ├── engine::push_hook
 //! ├── engine::push_hook::tests
@@ -43,7 +44,7 @@ use std::time::Duration;
 
 use super::protocol::machine::Event;
 use super::push_config::PushSettings;
-use super::push_link::{HttpMachineLink, MachineLink};
+use super::push_link::MachineLink;
 use super::push_runner::Runner;
 use crate::worker::WorkerEvent;
 
@@ -65,21 +66,23 @@ pub(crate) enum Msg {
 /// The engine's handle.
 pub struct PushEmitter {
     status_lane: Option<Sender<WorkerEvent>>,
-    factory: LinkFactory,
+    /// `None`: no identity to send with, so the emitter never starts.
+    factory: Option<LinkFactory>,
     tx: Option<SyncSender<Msg>>,
     worker: Option<(JoinHandle<()>, Arc<AtomicBool>)>,
     dropped: u64,
 }
 
 impl PushEmitter {
-    /// What the engine builds. shortcut: unpaired until Phase 09's credentials store and
-    /// `MachineApi` exist; then the factory builds a link over them.
-    pub fn new(settings: PushSettings, status_lane: Option<Sender<WorkerEvent>>) -> Self {
-        Self::with_link(
-            settings,
-            status_lane,
-            Arc::new(|| Box::new(HttpMachineLink::unpaired())),
-        )
+    /// An emitter with no identity behind it (test engines): every retune leaves it off.
+    pub fn off() -> Self {
+        Self {
+            status_lane: None,
+            factory: None,
+            tx: None,
+            worker: None,
+            dropped: 0,
+        }
     }
 
     pub fn with_link(
@@ -89,7 +92,7 @@ impl PushEmitter {
     ) -> Self {
         let mut emitter = Self {
             status_lane,
-            factory,
+            factory: Some(factory),
             tx: None,
             worker: None,
             dropped: 0,
@@ -102,7 +105,7 @@ impl PushEmitter {
     #[cfg(test)]
     pub(crate) fn capture(capacity: usize) -> (Self, Receiver<Msg>) {
         let (tx, rx) = mpsc::sync_channel(capacity);
-        let mut emitter = Self::new(PushSettings::off(), None);
+        let mut emitter = Self::off();
         emitter.tx = Some(tx);
         (emitter, rx)
     }
@@ -148,11 +151,14 @@ impl PushEmitter {
     }
 
     fn start(&mut self, settings: PushSettings) {
+        let Some(factory) = &self.factory else {
+            return;
+        };
         let (tx, rx) = mpsc::sync_channel(CHANNEL_CAPACITY);
         let flush = Arc::new(AtomicBool::new(false));
         let runner = Runner::new(
             rx,
-            (self.factory)(),
+            factory(),
             settings,
             self.status_lane.clone(),
             flush.clone(),
