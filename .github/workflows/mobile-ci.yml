@@ -1,0 +1,105 @@
+# Mobile CI: the phone app's JS half (shell and Capacitor plugins), fastlane, then the
+# Android and iOS legs as reusable sub-workflows.
+#
+# Responsibilities: called by gates.yml's `mobile` seam job (filter `mobile`) and by
+# release-mobile.yml's check stage; no secrets, read-only token. The shell
+# (mobile/app, Phase 14) runs typecheck, lint, test and build, a double `vite build`
+# compared with diff -r, npm audit and the deny.toml license gate; each plugin under
+# mobile/plugins/ runs the same; 14's generated license lists must match the tree; the
+# F-Droid listing stays within its length limits; `fastlane lanes` loads.
+# Uses: .github/scripts/npm_license_gate.sh, tools/release-trains/check-versions.mjs,
+# _mobile-android-ci.yml, _mobile-ios-ci.yml.
+name: Mobile CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  js:
+    name: Shell and plugins
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: mobile/**/package-lock.json
+
+      - name: Shell (mobile/app)
+        working-directory: mobile/app
+        run: |
+          set -euo pipefail
+          npm ci
+          npx tsc --noEmit
+          npm run lint
+          npm test
+          npm run build
+          npm audit --omit=dev --audit-level=high
+          bash "$GITHUB_WORKSPACE/.github/scripts/npm_license_gate.sh" .
+
+      - name: Web bundle is deterministic (second vite build, diff -r)
+        working-directory: mobile/app
+        run: |
+          set -euo pipefail
+          cp -R dist "$RUNNER_TEMP/dist-first"
+          npm run build
+          diff -r "$RUNNER_TEMP/dist-first" dist
+
+      # Plugin script sets differ (Capacitor's template has no test script), so only
+      # build is mandatory; every script a plugin does define must pass.
+      - name: Plugins (mobile/plugins/*)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for dir in mobile/plugins/*/; do
+            [ -f "$dir/package.json" ] || continue
+            echo "::group::$dir"
+            (cd "$dir" && npm ci && npm run --if-present typecheck && npm run --if-present lint \
+              && npm run --if-present test && npm run build \
+              && npm audit --omit=dev --audit-level=high \
+              && bash "$GITHUB_WORKSPACE/.github/scripts/npm_license_gate.sh" .)
+            echo "::endgroup::"
+          done
+
+      - name: Generated license lists match the dependency tree (Phase 14)
+        run: bash mobile/scripts/licenses.sh --check
+
+      - name: F-Droid listing within its length limits
+        run: node tools/release-trains/check-versions.mjs --metadata
+
+  fastlane:
+    name: fastlane lanes load
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Load toolchain pins
+        run: grep -E '^[A-Z0-9_]+=' mobile/toolchain.env >> "$GITHUB_ENV"
+        working-directory: .
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: mobile
+      - name: List lanes
+        run: bundle exec fastlane lanes
+
+  android:
+    name: Android
+    uses: ./.github/workflows/_mobile-android-ci.yml
+
+  ios:
+    name: iOS
+    uses: ./.github/workflows/_mobile-ios-ci.yml

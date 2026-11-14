@@ -1,0 +1,134 @@
+# Store promotion for an already-released yaran-mobile-v* build (operated by Phase 22).
+#
+# Responsibilities: a manual dispatch moves one channel forward; when to do so is 22's
+# rollout policy. play: promote between Play tracks with an optional staged rollout,
+# behind the D23 enrollment gate (the lane runs check-versions.mjs --play first).
+# appstore: submit the TestFlight build for review with phased release. github: publish
+# the stable draft release, still never "latest" (R17). Each channel is its own job in
+# its own environment, so a GitHub publish touches no store secret.
+# Uses: mobile/fastlane (lanes android promote, ios submit), tools/release-trains/versions.mjs.
+name: Mobile store promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Which channel to promote.
+        type: choice
+        options: [play, appstore, github]
+        required: true
+      tag:
+        description: The released tag, yaran-mobile-vX.Y.Z.
+        type: string
+        required: true
+      track:
+        description: "play: target track (internal, alpha, beta, production)."
+        type: string
+        default: production
+      from_track:
+        description: "play: track the release is promoted from."
+        type: string
+        default: internal
+      rollout_fraction:
+        description: "play: staged rollout fraction, e.g. 0.1; empty for a full rollout."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-store-promote-${{ inputs.channel }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  tag:
+    name: Validate the tag
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - id: v
+        run: |
+          node tools/release-trains/versions.mjs "$TAG" | tee -a "$GITHUB_OUTPUT"
+          grep -qx 'train=mobile' "$GITHUB_OUTPUT"
+
+  play:
+    name: Play promote
+    needs: tag
+    if: inputs.channel == 'play'
+    runs-on: ubuntu-24.04
+    environment: android-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - name: Load toolchain pins
+        run: grep -E '^[A-Z0-9_]+=' mobile/toolchain.env >> "$GITHUB_ENV"
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: mobile
+      - name: fastlane android promote (D23 gate first)
+        working-directory: mobile
+        env:
+          PLAY_TRACK_FROM: ${{ inputs.from_track }}
+          PLAY_TRACK_TO: ${{ inputs.track }}
+          PLAY_ROLLOUT: ${{ inputs.rollout_fraction }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: bundle exec fastlane android promote
+
+  appstore:
+    name: App Store submit
+    needs: tag
+    if: inputs.channel == 'appstore'
+    runs-on: macos-26
+    environment: ios-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Load toolchain pins
+        run: grep -E '^[A-Z0-9_]+=' mobile/toolchain.env >> "$GITHUB_ENV"
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: mobile
+      - name: fastlane ios submit (phased release)
+        working-directory: mobile
+        env:
+          IOS_APP_VERSION: ${{ needs.tag.outputs.version }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_B64: ${{ secrets.ASC_KEY_P8_B64 }}
+        run: bundle exec fastlane ios submit
+
+  github:
+    name: Publish the GitHub release
+    needs: tag
+    if: inputs.channel == 'github'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Publish the draft, never as latest
+        run: gh release edit "$TAG" --draft=false --latest=false

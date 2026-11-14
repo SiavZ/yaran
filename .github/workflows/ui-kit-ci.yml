@@ -1,0 +1,46 @@
+# UI kit CI: the shared design-token and component kit (packages/ui-kit, Phase 14).
+#
+# Responsibilities: called by gates.yml's `ui-kit` seam job; no secrets. Runs the
+# commands Phase 14 names (typecheck, Vitest, native-colour drift check), then npm audit
+# and the deny.toml license gate. The kit's consumers are built by their own suites,
+# which the `cloud` and `mobile` filters already trigger on a kit change.
+# Uses: .github/scripts/npm_license_gate.sh.
+name: UI kit CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kit:
+    name: UI kit
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: packages/ui-kit
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: packages/ui-kit/package-lock.json
+
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Test
+        run: npm test
+      - name: Native colours match the tokens
+        run: node scripts/export-native-colors.mjs --check
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+      - name: Licenses within the deny.toml allowlist
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/npm_license_gate.sh" .

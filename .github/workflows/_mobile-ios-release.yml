@@ -1,0 +1,64 @@
+# iOS release leg of release-mobile.yml: the App Store-signed IPA via fastlane.
+#
+# Responsibilities: runs on macos-26 in the `ios-release` environment. `fastlane ios
+# build` (mobile/fastlane/lanes/ios.rb) creates a temporary keychain (setup_ci), loads
+# the App Store Connect Team key, fetches the App and NotificationService profiles with
+# match in readonly mode, and archives. The IPA and dSYMs stay workflow artifacts: an
+# IPA is not installable from GitHub, so it is never a release asset. Also writes the
+# SwiftPM half of the license inventory.
+# Uses: .github/actions/ios-setup, mobile/fastlane (Gemfile.lock-pinned fastlane),
+# tools/release-trains/swiftpm-licenses.mjs.
+name: Mobile iOS release
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: iOS release build
+    runs-on: macos-26
+    environment: ios-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ios-setup
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: mobile
+
+      - name: fastlane ios build
+        working-directory: mobile
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_B64: ${{ secrets.ASC_KEY_P8_B64 }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          IOS_OUTPUT_DIR: ${{ runner.temp }}/ios
+        run: bundle exec fastlane ios build
+
+      - name: SwiftPM license inventory part
+        run: >-
+          mkdir -p "$RUNNER_TEMP/licenses" && node tools/release-trains/swiftpm-licenses.mjs
+          --resolved mobile/ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+          --map mobile/ios/licenses-swiftpm.json --out "$RUNNER_TEMP/licenses/swiftpm.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-ipa
+          path: ${{ runner.temp }}/ios
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-licenses
+          path: ${{ runner.temp }}/licenses
+          retention-days: 7
+          if-no-files-found: error

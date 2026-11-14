@@ -1,0 +1,65 @@
+# Weekly cloudflared pin watch (Phase 10 hand-over, T29).
+#
+# Responsibilities: runs Phase 10's `tools/cloudflared-pin/bump.sh --check`, which fails
+# when the pinned cloudflared is older than 60 days or a VULN- release has gone
+# unadopted for 7 days. The check is time-dependent, so it never runs on PRs. On failure
+# it opens one issue labelled ops:p2, or comments on the one already open, so a stale
+# pin is never reported twice.
+# Uses: tools/cloudflared-pin/bump.sh (Phase 10).
+name: cloudflared pin watch
+
+on:
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Pin freshness
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TITLE: "cloudflared pin needs a bump"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: bump.sh --check
+        id: check
+        run: |
+          set -o pipefail
+          if bash tools/cloudflared-pin/bump.sh --check 2>&1 | tee "$RUNNER_TEMP/check.txt"; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open or update the one ops:p2 issue
+        if: steps.check.outputs.stale == 'true'
+        run: |
+          set -euo pipefail
+          {
+            echo "The weekly pin watch failed on $(date -u +%F) (run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/check.txt"
+            echo '```'
+            echo
+            echo "Run tools/cloudflared-pin/bump.sh to adopt the new release (Phase 10)."
+          } > "$RUNNER_TEMP/body.md"
+          gh label create ops:p2 --color B60205 --description "Operations, priority 2" 2>/dev/null || true
+          existing="$(gh issue list --state open --label ops:p2 --search "in:title \"$TITLE\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --title "$TITLE" --label ops:p2 --body-file "$RUNNER_TEMP/body.md"
+          fi
+      - name: Fail the run while the pin is stale
+        if: steps.check.outputs.stale == 'true'
+        run: exit 1

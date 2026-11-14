@@ -1,0 +1,338 @@
+# Release train yaran-cloud-vX.Y.Z[-rc.N] (D15): protocol, org Worker and push relay.
+#
+# Responsibilities: a tag push builds the protocol tarball, 07's assembled self-contained
+# Worker deploy tree (checked for self-containment, the D19 wrangler config and the
+# publisher callbacks), the reproducible Worker and relay tarballs and three SBOMs, then:
+# release candidates publish the tree to the generated `cloud-deploy-rc` branch (19's
+# staging) and a prerelease; stable tags publish the release, deploy the relay after a
+# reviewer approves (push-relay-production) and append the tree to `cloud-deploy`, the
+# branch the Deploy button and 07's update checker read (D18). The workflow creates the
+# release itself, never "latest" (R17), so release.yml does not run.
+# Per-release values ride on the annotated tag as trailers: `Min-Update-From: X.Y.Z`
+# (default 0.0.0) and `Security: true` (default false), both copied into release.json.
+# Uses: tools/release-trains/{versions,check-versions,check-deploy-tree,release-manifest}.mjs,
+# cloud/worker's `npm run assemble-deploy-tree` (07), .github/scripts/publish_deploy_branch.sh,
+# cloud-ci.yml, cloud-protocol.yml, _publish-train-release.yml.
+name: Release (cloud)
+
+on:
+  push:
+    tags: ["yaran-cloud-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cloud-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  check:
+    name: Check versions
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - id: v
+        name: Parse the tag
+        run: |
+          node tools/release-trains/versions.mjs "$TAG" | tee -a "$GITHUB_OUTPUT"
+          grep -qx 'train=cloud' "$GITHUB_OUTPUT"
+      - name: Literals match the tag (and the publisher domain is real on stable tags)
+        env:
+          PRERELEASE: ${{ steps.v.outputs.prerelease }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then node tools/release-trains/check-versions.mjs "$TAG"
+          else node tools/release-trains/check-versions.mjs "$TAG" --publisher; fi
+
+  ci:
+    name: Cloud CI
+    needs: check
+    uses: ./.github/workflows/cloud-ci.yml
+
+  protocol:
+    name: Protocol
+    needs: check
+    uses: ./.github/workflows/cloud-protocol.yml
+
+  build:
+    name: Build bundles and the deploy tree
+    needs: [check, ci, protocol]
+    runs-on: ubuntu-24.04
+    env:
+      V: ${{ needs.check.outputs.version }}
+      PRERELEASE: ${{ needs.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+
+      - name: Install packages
+        run: |
+          set -euo pipefail
+          for p in protocol worker push-relay; do npm ci --prefix "cloud/$p"; done
+          {
+            echo "DIST=$RUNNER_TEMP/dist"
+            echo "TREE_OUT=$RUNNER_TEMP/tree"
+            echo "RELAY_OUT=$RUNNER_TEMP/relay"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/dist" "$RUNNER_TEMP/relay"
+
+      # Attached to the release only; there is no npm package (D16).
+      - name: Protocol tarball
+        run: |
+          set -euo pipefail
+          (cd cloud/protocol && npm pack --pack-destination "$DIST")
+          mv "$DIST"/yaran-protocol-*.tgz "$DIST/yaran-cloud-protocol-$V.tgz"
+
+      - name: Assemble the deploy tree (Phase 07's assembler)
+        working-directory: cloud/worker
+        run: npm run assemble-deploy-tree -- --out "$TREE_OUT" --tag "$TAG" --publisher "$GITHUB_WORKSPACE/publisher.json"
+
+      - name: Deploy tree is self-contained, D19-clean and carries the publisher callback
+        run: node tools/release-trains/check-deploy-tree.mjs "$TREE_OUT/worker" --tag "$TAG" --publisher publisher.json --isolated-build
+
+      - name: Relay bundle
+        run: |
+          set -euo pipefail
+          (cd cloud/push-relay && npx wrangler deploy --dry-run --outdir "$RELAY_OUT/dist")
+          cp cloud/push-relay/wrangler.jsonc "$RELAY_OUT/"
+
+      # release.yml's recipe: epoch-pinned metadata, sorted, gzip -n, packed twice
+      # across a second boundary and compared.
+      - name: Worker and relay tarballs (reproducible)
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          pack() {
+            local out="$1" dir="$2"; shift 2
+            tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${SOURCE_DATE_EPOCH}" \
+              --use-compress-program='gzip -n' -cf "$out" -C "$dir" "$@"
+          }
+          twice() {
+            pack "$1.first" "${@:2}"; sleep 2; pack "$@"
+            cmp "$1.first" "$1" || { echo "Reproducibility check FAILED for $1." >&2; exit 1; }
+            rm "$1.first"
+          }
+          # The manifest names the tarball's own hash, so it stays outside it.
+          twice "$DIST/yaran-cloud-worker-$V.tar.gz" "$TREE_OUT" --exclude=worker/release.json worker
+          (cd "$DIST" && sha256sum "yaran-cloud-worker-$V.tar.gz" > "yaran-cloud-worker-$V.tar.gz.sha256")
+          twice "$DIST/yaran-cloud-relay-$V.tar.gz" "$RELAY_OUT" dist wrangler.jsonc
+
+      - name: release.json (02's ReleaseManifest, schema-validated)
+        run: |
+          set -euo pipefail
+          # checkout leaves the tag lightweight; fetch the annotated tag object itself.
+          git fetch --force --no-tags --quiet origin "refs/tags/$TAG:refs/tags/$TAG"
+          trailers="$(git for-each-ref "refs/tags/$TAG" --format='%(contents)' | git interpret-trailers --parse)"
+          min="$(printf '%s\n' "$trailers" | sed -n 's/^Min-Update-From: *//p' | tail -1)"
+          security=()
+          printf '%s\n' "$trailers" | grep -qix 'Security: *true' && security=(--security)
+          node tools/release-trains/release-manifest.mjs --tag "$TAG" \
+            --tarball "$DIST/yaran-cloud-worker-$V.tar.gz" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/yaran-cloud-worker-$V.tar.gz" \
+            --notes-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" \
+            --min-update-from "${min:-0.0.0}" "${security[@]}" --out "$TREE_OUT/worker/release.json"
+          cat "$TREE_OUT/worker/release.json"
+
+      - name: SBOMs (CycloneDX, production dependencies)
+        run: |
+          set -euo pipefail
+          for p in protocol worker push-relay; do
+            name="${p#push-}"
+            (cd "cloud/$p" && npm sbom --sbom-format cyclonedx --omit dev) > "$DIST/yaran-cloud-$name-$V.cdx.json"
+          done
+
+      - name: Release notes
+        run: |
+          {
+            echo "yaran cloud $V: the protocol package, the org Worker and the push relay."
+            echo
+            echo "The Worker tarball's hash is in release.json on the generated deploy branch;"
+            echo "the org Worker's update job verifies the tarball's attestation before applying it."
+          } > "$DIST/RELEASE_NOTES.md"
+          tar -cf "$RUNNER_TEMP/deploy-tree.tar" -C "$TREE_OUT" worker
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloud-release
+          path: ${{ env.DIST }}
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloud-deploy-tree
+          path: ${{ runner.temp }}/deploy-tree.tar
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy-branch-rc:
+    name: Publish the tree to cloud-deploy-rc
+    needs: [check, build]
+    if: needs.check.outputs.prerelease == 'true'
+    runs-on: ubuntu-24.04
+    environment: cloud-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Fallback writer when the ruleset cannot name GitHub Actions (T52); empty means the token.
+          ssh-key: ${{ secrets.CLOUD_DEPLOY_KEY }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cloud-deploy-tree
+          path: ${{ runner.temp }}
+      - name: Append the tree to cloud-deploy-rc (refuses an older candidate)
+        run: |
+          tar -xf "$RUNNER_TEMP/deploy-tree.tar" -C "$RUNNER_TEMP"
+          bash .github/scripts/publish_deploy_branch.sh cloud-deploy-rc "$RUNNER_TEMP/worker" "$TAG" "$GITHUB_SHA"
+
+  # Reserved for Phase 19: the end-to-end stage on release candidates. Its PR adds
+  #   e2e:
+  #     needs: deploy-branch-rc
+  #     uses: ./.github/workflows/e2e.yml
+  # and adds `e2e` to publish's needs and success condition.
+
+  publish:
+    name: Publish
+    needs: [check, build, deploy-branch-rc]
+    if: >-
+      !cancelled() && needs.build.result == 'success'
+      && contains(fromJSON('["success", "skipped"]'), needs.deploy-branch-rc.result)
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/_publish-train-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+      artifact: cloud-release
+      checksums-file: yaran-cloud-checksums.txt
+      prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
+      expected-files: |
+        yaran-cloud-protocol-${{ needs.check.outputs.version }}.tgz
+        yaran-cloud-worker-${{ needs.check.outputs.version }}.tar.gz
+        yaran-cloud-worker-${{ needs.check.outputs.version }}.tar.gz.sha256
+        yaran-cloud-relay-${{ needs.check.outputs.version }}.tar.gz
+        yaran-cloud-protocol-${{ needs.check.outputs.version }}.cdx.json
+        yaran-cloud-worker-${{ needs.check.outputs.version }}.cdx.json
+        yaran-cloud-relay-${{ needs.check.outputs.version }}.cdx.json
+
+  deploy-relay:
+    name: Deploy the push relay
+    needs: [check, publish]
+    if: needs.check.outputs.prerelease == 'false' && vars.RELAY_RUNTIME != 'vm'
+    runs-on: ubuntu-24.04
+    environment: push-relay-production
+    env:
+      V: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - name: Install
+        run: npm ci --prefix cloud/protocol && npm ci --prefix cloud/push-relay
+      # RELAY_RUNTIME=container uses the same deploy; wrangler builds the image here.
+      - uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloud/push-relay
+          command: deploy
+      - name: Smoke check reports the tag version
+        run: |
+          set -euo pipefail
+          relay="$(sed -n 's/^relayUrl=//p' mobile/publisher.properties)"
+          curl -fsS --retry 5 --retry-all-errors "$relay/healthz" | jq -e --arg v "$V" '.version == $v'
+
+  relay-image:
+    name: Relay OCI image (RELAY_RUNTIME=vm)
+    needs: [check, publish]
+    if: needs.check.outputs.prerelease == 'false' && vars.RELAY_RUNTIME == 'vm'
+    runs-on: ubuntu-24.04
+    environment: push-relay-production
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Build and push to GHCR
+        id: image
+        env:
+          V: ${{ needs.check.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/push-relay"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -f cloud/push-relay/container/Dockerfile -t "$image:$V" cloud/push-relay
+          docker push "$image:$V"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$image:$V")"
+          { echo "name=$image"; echo "digest=${digest#*@}"; } >> "$GITHUB_OUTPUT"
+          echo "Pushed $digest; the VM pulls it by digest (22 runbook)."
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+  deploy-branch:
+    name: Publish the tree to cloud-deploy
+    needs: [check, build, publish]
+    if: needs.check.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    environment: cloud-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ssh-key: ${{ secrets.CLOUD_DEPLOY_KEY }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cloud-deploy-tree
+          path: ${{ runner.temp }}
+      - name: Append the tree to cloud-deploy (refuses a tag that is not newer)
+        run: |
+          tar -xf "$RUNNER_TEMP/deploy-tree.tar" -C "$RUNNER_TEMP"
+          bash .github/scripts/publish_deploy_branch.sh cloud-deploy "$RUNNER_TEMP/worker" "$TAG" "$GITHUB_SHA"
+      # raw.githubusercontent.com caches for up to five minutes.
+      - name: The URL 07's checker reads serves the built manifest
+        run: |
+          set -euo pipefail
+          url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/cloud-deploy/worker/release.json"
+          for _ in $(seq 1 12); do
+            if curl -fsS "$url" -o "$RUNNER_TEMP/served.json" && cmp -s "$RUNNER_TEMP/served.json" "$RUNNER_TEMP/worker/release.json"; then
+              echo "OK: $url serves the built release.json"; exit 0
+            fi
+            sleep 30
+          done
+          echo "$url does not serve the built release.json after six minutes." >&2
+          exit 1

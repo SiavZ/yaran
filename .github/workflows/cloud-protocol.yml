@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: cloud/protocol/package-lock.json
 
@@ -47,3 +47,10 @@ jobs:
 
       - name: Fixtures reproduce byte for byte
         run: node scripts/gen-vectors.mjs --check
+
+      # Phase 18: the same audit and deny.toml license gate as every cloud and mobile package.
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Licenses within the deny.toml allowlist
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/npm_license_gate.sh" .

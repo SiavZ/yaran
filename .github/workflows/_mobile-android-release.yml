@@ -1,0 +1,127 @@
+# Android release leg of release-mobile.yml: signed GitHub APKs, the upload-signed Play
+# AAB, SBOMs and the Android half of the license inventory.
+#
+# Responsibilities: runs in the `android-release` environment (reviewer-gated secrets).
+# Gradle builds unsigned; the two APKs (foss, play) are signed here with the ONE D14
+# app-signing key by apksigner from build-tools 34 (v2+v3), the AAB with the separate
+# upload key (Play re-signs it with the app key enrolled under D23). Both APKs must
+# report the committed fingerprint before anything is uploaded. Keystores live in
+# RUNNER_TEMP with mode 600 and are deleted whatever happens.
+# Uses: .github/actions/android-setup, .github/scripts/check_apk_cert.sh,
+# .github/scripts/npm_license_gate.sh, tools/release-trains/license-allowlist.mjs.
+name: Mobile Android release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Full version from the tag (X.Y.Z[-rc.N]).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Android release build and signing
+    runs-on: ubuntu-24.04
+    environment: android-release
+    env:
+      V: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-setup
+
+      # G5 fallback only: the play flavor's Firebase config. foss never needs it.
+      - name: Firebase config for the play flavor (when configured)
+        env:
+          PLAY_GOOGLE_SERVICES_JSON: ${{ secrets.PLAY_GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$PLAY_GOOGLE_SERVICES_JSON" ]; then
+            mkdir -p mobile/android/app/src/play
+            printf '%s' "$PLAY_GOOGLE_SERVICES_JSON" > mobile/android/app/src/play/google-services.json
+          fi
+
+      - name: License allowlist for jk1 (from deny.toml)
+        run: node tools/release-trains/license-allowlist.mjs --jk1 mobile/android/build/allowed-licenses.json
+
+      - name: Unsigned release builds, license and SBOM gates
+        working-directory: mobile/android
+        run: >-
+          ./gradlew --no-daemon -PrequirePublisherDomain=true
+          :app:verifyFossDependencies checkLicense cyclonedxBom
+          assembleFossRelease assemblePlayRelease bundlePlayRelease
+
+      - name: Sign the APKs (app key) and the AAB (upload key)
+        env:
+          APP_KS_B64: ${{ secrets.ANDROID_APP_SIGNING_KEYSTORE_B64 }}
+          ANDROID_APP_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_APP_SIGNING_STORE_PASSWORD }}
+          ANDROID_APP_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_APP_SIGNING_KEY_ALIAS }}
+          ANDROID_APP_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_APP_SIGNING_KEY_PASSWORD }}
+          UPLOAD_KS_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keys="$RUNNER_TEMP/keys"; mkdir -p "$keys" "$RUNNER_TEMP/dist" "$RUNNER_TEMP/aab"
+          trap 'rm -rf "$keys"' EXIT
+          printf '%s' "$APP_KS_B64" | base64 -d > "$keys/app.jks"
+          printf '%s' "$UPLOAD_KS_B64" | base64 -d > "$keys/upload.jks"
+          for flavor in foss play; do
+            in="$(find "mobile/android/app/build/outputs/apk/$flavor/release" -name '*.apk' | head -1)"
+            test -n "$in"
+            zipalign -c -p 4 "$in" || { zipalign -f -p 4 "$in" "$RUNNER_TEMP/aligned.apk"; in="$RUNNER_TEMP/aligned.apk"; }
+            apksigner sign --ks "$keys/app.jks" --ks-key-alias "$ANDROID_APP_SIGNING_KEY_ALIAS" \
+              --ks-pass env:ANDROID_APP_SIGNING_STORE_PASSWORD --key-pass env:ANDROID_APP_SIGNING_KEY_PASSWORD \
+              --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true \
+              --out "$RUNNER_TEMP/dist/yaran-mobile-$V-$flavor.apk" "$in"
+          done
+          aab="$RUNNER_TEMP/aab/yaran-mobile-$V-play.aab"
+          cp "$(find mobile/android/app/build/outputs/bundle/playRelease -name '*.aab' | head -1)" "$aab"
+          jarsigner -keystore "$keys/upload.jks" -storepass:env ANDROID_UPLOAD_STORE_PASSWORD \
+            -keypass:env ANDROID_UPLOAD_KEY_PASSWORD -sigalg SHA256withRSA -digestalg SHA-256 \
+            "$aab" "$ANDROID_UPLOAD_KEY_ALIAS"
+
+      - name: Both APKs carry the committed app-signing fingerprint
+        run: |
+          for flavor in foss play; do
+            bash .github/scripts/check_apk_cert.sh "$RUNNER_TEMP/dist/yaran-mobile-$V-$flavor.apk"
+          done
+
+      - name: SBOMs and license inventory parts
+        run: |
+          set -euo pipefail
+          bom="$(find mobile/android/app/build/reports -name 'bom.json' | head -1)"
+          test -n "$bom"
+          cp "$bom" "$RUNNER_TEMP/dist/yaran-mobile-$V-android-sbom.cdx.json"
+          (cd mobile/app && npm sbom --sbom-format cyclonedx --omit dev) > "$RUNNER_TEMP/dist/yaran-mobile-$V-js-sbom.cdx.json"
+          mkdir -p "$RUNNER_TEMP/licenses"
+          bash .github/scripts/npm_license_gate.sh mobile/app "$RUNNER_TEMP/licenses/npm.json"
+          report="$(find mobile/android/app/build/reports/dependency-license -name 'index.json' | head -1)"
+          test -n "$report"
+          cp "$report" "$RUNNER_TEMP/licenses/gradle.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-release
+          path: ${{ runner.temp }}/dist
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-licenses
+          path: ${{ runner.temp }}/licenses
+          retention-days: 7
+          if-no-files-found: error
+      # The AAB is never a GitHub release asset; only play-internal reads it.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-aab
+          path: ${{ runner.temp }}/aab
+          retention-days: 7
+          if-no-files-found: error

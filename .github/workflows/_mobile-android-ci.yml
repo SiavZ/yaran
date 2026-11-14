@@ -1,0 +1,108 @@
+# Android CI leg of mobile-ci.yml: lint, unit and UI tests, license and SBOM gates,
+# dependency verification, the FOSS classpath guard and a reproducibility proof.
+#
+# Responsibilities: no secrets; builds are unsigned. Gradle enforces
+# mobile/android/gradle/verification-metadata.xml itself; this leg refuses to run
+# without it. The jk1 license gate reads the deny.toml allowlist written into
+# mobile/android/build/allowed-licenses.json. The unsigned foss APK is built in two
+# clean checkouts at different paths and compared with cmp (diffoscope on a mismatch).
+# A debug-signed APK must fail the release signer gate.
+# Uses: .github/actions/android-setup, .github/scripts/check_apk_cert.sh,
+# tools/release-trains/license-allowlist.mjs.
+name: Mobile Android CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Android build and checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-setup
+
+      - name: Dependency verification metadata is committed
+        run: test -f mobile/android/gradle/verification-metadata.xml
+
+      - name: License allowlist for jk1 (from deny.toml)
+        run: node tools/release-trains/license-allowlist.mjs --jk1 mobile/android/build/allowed-licenses.json
+
+      # verifyFossDependencies is Phase 14's (and 16's) assertion that the foss release
+      # classpath holds no Firebase, GMS or embedded-FCM artifact.
+      - name: Gradle checks and unsigned builds
+        working-directory: mobile/android
+        run: >-
+          ./gradlew --no-daemon
+          lintFossRelease lintPlayRelease testFossDebugUnitTest testPlayDebugUnitTest
+          ktlintCheck detekt checkLicense cyclonedxBom :app:verifyFossDependencies
+          assembleFossDebug assembleFossRelease bundlePlayRelease
+
+      - name: The release signer gate refuses a debug-signed APK
+        run: |
+          set -euo pipefail
+          apk="$(find mobile/android/app/build/outputs/apk/foss/debug -name '*.apk' | head -1)"
+          test -n "$apk"
+          if bash .github/scripts/check_apk_cert.sh "$apk"; then
+            echo "check_apk_cert.sh accepted a debug-signed APK" >&2
+            exit 1
+          fi
+
+  reproducible:
+    name: Android reproducibility
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: a
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: b/elsewhere
+      - uses: ./a/.github/actions/android-setup
+        with:
+          root: a
+      - uses: ./a/.github/actions/android-setup
+        with:
+          root: b/elsewhere
+      - name: Build the unsigned foss APK in both checkouts and compare
+        run: |
+          set -euo pipefail
+          for root in a b/elsewhere; do
+            (cd "$root/mobile/android" && ./gradlew --no-daemon assembleFossRelease)
+          done
+          first="$(find a/mobile/android/app/build/outputs/apk/foss/release -name '*.apk' | head -1)"
+          second="$(find b/elsewhere/mobile/android/app/build/outputs/apk/foss/release -name '*.apk' | head -1)"
+          if ! cmp "$first" "$second"; then
+            sudo apt-get install -y --no-install-recommends diffoscope-minimal >/dev/null
+            diffoscope "$first" "$second" || true
+            echo "The foss APK is not reproducible across checkout paths." >&2
+            exit 1
+          fi
+
+  ui-tests:
+    name: Android UI tests (API 36 emulator)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-setup
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          working-directory: mobile/android
+          script: ./gradlew --no-daemon connectedFossDebugAndroidTest

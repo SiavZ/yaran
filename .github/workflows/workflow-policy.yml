@@ -1,0 +1,64 @@
+# Workflow policy: the supply-chain rules every workflow in this repository obeys.
+#
+# Responsibilities: runs on every PR and push to main with no paths filter, so its one
+# job is a required check of its own (`Workflow policy`, .github/BRANCH_PROTECTION.md).
+# It holds no secrets and only reads the tree.
+# Uses: .github/scripts/check_workflow_policy.sh (SHA pins, top-level permissions, no
+# pull_request_target, no secrets: inherit, --latest=false on new-train releases, one
+# writer of the cloud-deploy branches, documented environments), its fixture test
+# .github/scripts/test_check_workflow_policy.sh, the release-helper tests
+# .github/scripts/test_release_scripts.sh, and actionlint from its checksummed release.
+name: Workflow policy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflow-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    # BRANCH-PROTECTION CONTRACT: `Workflow policy` is a required status check on main.
+    # Renaming this job leaves the required context unreported and blocks every PR.
+    name: Workflow policy
+    runs-on: ubuntu-24.04
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      # sha256 of actionlint_1.7.12_linux_amd64.tar.gz from the GitHub release.
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+
+      - name: Policy rules prove themselves on fixtures
+        run: bash .github/scripts/test_check_workflow_policy.sh
+
+      - name: Release helpers (signer gate, deploy-branch publisher)
+        run: bash .github/scripts/test_release_scripts.sh
+
+      - name: Check every workflow against the policy
+        run: bash .github/scripts/check_workflow_policy.sh
+
+      - name: Install actionlint (pinned release, SHA-256 checked)
+        run: |
+          set -euo pipefail
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/actionlint.tgz" "$url"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/actionlint.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tgz" -C "$RUNNER_TEMP" actionlint
+
+      # SC2035 (info) is ignored for the three pre-existing `*.tar.gz` globs in
+      # release.yml's publish steps, which this policy must not rewrite.
+      - name: actionlint
+        run: '"$RUNNER_TEMP/actionlint" -color -ignore "SC2035:info"'

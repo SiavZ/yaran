@@ -1,0 +1,85 @@
+# Cloud CI: the org Worker (cloud/worker, Phases 04-07) and the push relay
+# (cloud/push-relay, Phase 08), one matrix leg each.
+#
+# Responsibilities: called by gates.yml's `cloud` seam job (filter `cloud`) and by
+# release-cloud.yml's check stage; no secrets, read-only token. Each package must expose
+# the npm scripts typecheck, lint, test and build (a contract on 04 and 08). Beyond them:
+# npm audit, the deny.toml license gate, a deterministic wrangler bundle (built twice,
+# diff -r), and for the Worker the D19 wrangler-config check and the "no vendored
+# protocol on main" check (D18). cloud/protocol's own suite is cloud-protocol.yml.
+# Uses: .github/scripts/npm_license_gate.sh, tools/release-trains/check-deploy-tree.mjs.
+name: Cloud CI
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [cloud/worker, cloud/push-relay]
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            ${{ matrix.package }}/package-lock.json
+            cloud/protocol/package-lock.json
+
+      # The Worker resolves @yaran/protocol through its file:../protocol dependency (R4),
+      # whose own dependencies live in cloud/protocol/node_modules.
+      - name: Install (protocol first, for the file dependency)
+        run: |
+          npm ci --prefix ../protocol
+          npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Licenses within the deny.toml allowlist
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/npm_license_gate.sh" .
+
+      - name: Bundle is deterministic (two wrangler dry runs, diff -r)
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/bundle-a"
+          npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/bundle-b"
+          diff -r "$RUNNER_TEMP/bundle-a" "$RUNNER_TEMP/bundle-b"
+
+      - name: Worker config ships workers_dev on, preview_urls off, no route (D19)
+        if: matrix.package == 'cloud/worker'
+        working-directory: .
+        run: node tools/release-trains/check-deploy-tree.mjs --config-only cloud/worker
+
+      # D18: the protocol is bundled only into the generated cloud-deploy tree.
+      - name: No vendored protocol copy on main
+        if: matrix.package == 'cloud/worker'
+        run: |
+          if [ -e vendor ]; then
+            echo "cloud/worker/vendor exists on main; the protocol is vendored only in the generated deploy tree that release-cloud.yml publishes (D18)." >&2
+            exit 1
+          fi
