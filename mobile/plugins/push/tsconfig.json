@@ -1,10 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "lib": ["ES2023", "DOM"],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "jsx": "react-jsx",
     "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -16,9 +15,8 @@
     "noEmit": true,
     "paths": {
       "@yaran/push": ["./src/index.ts"],
-      "@yaran/protocol": ["../../../cloud/protocol/src/index.ts"],
-      "*": ["./node_modules/@types/*", "./node_modules/*"]
+      "@yaran/protocol": ["../../../cloud/protocol/src/index.ts"]
     }
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "../../app/src/push/**/*.ts", "../../app/src/push/**/*.tsx"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

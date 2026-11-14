@@ -10,15 +10,19 @@
  *
  * <module-headers:begin>
  * Uses:
- * mobile/app/src/push/notificationTap.ts
- * └── mobile/app/src/push/pushStrings.ts
- * External: @yaran/push
+ * src/push/notificationTap.ts
+ * ├── @yaran/machine-view:src/index.ts
+ * ├── @yaran/push:src/index.ts
+ * └── src/push/pushStrings.ts
+ * External: none
  *
  * Used by:
- * mobile/app/src/push/notificationTap.ts
- * └── mobile/app/src/push/notificationTap.test.ts
+ * src/push/notificationTap.ts
+ * ├── src/push/notificationTap.test.ts
+ * └── src/push/pushWiring.ts
  * <module-headers:end>
  */
+import { agentRoute } from "@yaran/machine-view";
 import { isNotificationTappedEvent, type PushPlugin } from "@yaran/push";
 import type { PushStringKey } from "./pushStrings.ts";
 
@@ -36,11 +40,8 @@ export interface TapDeps {
 
 export type TapOutcome = "invalid" | "unpaired" | "opened" | "muted";
 
-/** `#/agent/<sid>` or `#/agent/<sid>/tab/<tab>`, each segment encoded (web store.ts grammar). */
-export function agentRoute(agentId: string, tabId?: string): string {
-  const base = `#/agent/${encodeURIComponent(agentId)}`;
-  return tabId === undefined ? base : `${base}/tab/${encodeURIComponent(tabId)}`;
-}
+/** Phase 15's route builder (`#/agent/<sid>[/tab/<tab>]`, each segment encoded). */
+export { agentRoute };
 
 export async function handleTap(deps: TapDeps, event: unknown): Promise<TapOutcome> {
   if (!isNotificationTappedEvent(event)) return "invalid";

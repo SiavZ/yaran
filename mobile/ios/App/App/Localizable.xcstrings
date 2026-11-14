@@ -1,6 +1,27 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "PUSH_ACTION_MUTE_MACHINE" : {
+      "comment" : "Notification action that mutes the machine the notification came from.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Mute this machine" } }
+      }
+    },
+    "PUSH_GENERIC_BODY" : {
+      "comment" : "Body of the relay's generic push alert (02 §9), shown when the extension cannot decrypt.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open yaran to see which agent." } }
+      }
+    },
+    "PUSH_GENERIC_TITLE" : {
+      "comment" : "Title of the relay's generic push alert (02 §9), shown when the extension cannot decrypt.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "An agent needs attention" } }
+      }
+    },
     "lock.prompt" : {
       "comment" : "Reason shown in the Face ID / Touch ID / passcode prompt when App Lock unlocks.",
       "extractionState" : "manual",

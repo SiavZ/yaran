@@ -9,12 +9,14 @@
  * External: none
  *
  * Used by:
- * mobile/app/src/push/pushStrings.ts
- * ├── mobile/app/src/push/NotificationSettingsSection.test.tsx
- * ├── mobile/app/src/push/NotificationSettingsSection.tsx
- * ├── mobile/app/src/push/notificationTap.ts
- * ├── mobile/app/src/push/pushPermission.test.ts
- * └── mobile/app/src/push/pushPermission.ts
+ * src/push/pushStrings.ts
+ * ├── src/push/NotificationSettingsSection.test.tsx
+ * ├── src/push/NotificationSettingsSection.tsx
+ * ├── src/push/notificationTap.ts
+ * ├── src/push/pushPermission.test.ts
+ * ├── src/push/pushPermission.ts
+ * ├── src/push/pushWiring.ts
+ * └── src/screens/settings/NotificationSettings.tsx
  * <module-headers:end>
  */
 export const pushStrings = {
@@ -55,3 +57,8 @@ export const pushStrings = {
 export type PushStringKey = keyof typeof pushStrings;
 
 export const DISTRIBUTORS_URL = "https://unifiedpush.org/users/distributors/";
+
+/** The English text for `key` with its `{placeholders}` filled; a missing one keeps its braces. */
+export function pushText(key: PushStringKey, vars: Record<string, string> = {}): string {
+  return pushStrings[key].replace(/\{(\w+)\}/g, (whole, name: string) => vars[name] ?? whole);
+}

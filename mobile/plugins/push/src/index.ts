@@ -11,6 +11,16 @@
  * External: @capacitor/core
  *
  * Used by: entry point (package entry of @yaran/push (the "." export in mobile/plugins/push/package.json), imported by the shell)
+ * src/index.ts
+ * ├── @yaran/mobile-shell:src/push/NotificationSettingsSection.tsx
+ * ├── @yaran/mobile-shell:src/push/notificationTap.ts
+ * ├── @yaran/mobile-shell:src/push/pushDeps.ts
+ * ├── @yaran/mobile-shell:src/push/pushPermission.ts
+ * ├── @yaran/mobile-shell:src/push/pushRegistration.ts
+ * ├── @yaran/mobile-shell:src/push/pushTestKit.ts
+ * ├── @yaran/mobile-shell:src/push/pushWiring.test.ts
+ * ├── @yaran/mobile-shell:src/push/pushWiring.ts
+ * └── @yaran/mobile-shell:src/screens/settings/NotificationSettings.tsx
  * <module-headers:end>
  */
 import { registerPlugin } from "@capacitor/core";

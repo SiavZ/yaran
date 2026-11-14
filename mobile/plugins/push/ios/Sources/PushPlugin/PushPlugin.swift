@@ -10,7 +10,7 @@
 /// - Bindings: the app sets `PushPlugin.orgApi` at launch to an adapter over Phase 15's
 ///   `OrgApiClient`/`DeviceKeyStore`; Info.plist carries `YaranAppGroup`, `YaranRelayURL`,
 ///   `YaranFlavor` and `YaranApnsEnvironment` from the publisher build config (Phase 14).
-/// - Not compiled here (needs Capacitor and Xcode); its logic lives in YaranPushRegistration.
+/// - Type-checked against Mac Catalyst by machine-view's typecheck-catalyst.sh; its logic lives in YaranPushRegistration.
 ///
 /// <module-headers:begin>
 /// Uses:
@@ -27,6 +27,7 @@
 ///
 /// Used by: entry point (Capacitor plugin class, registered by CAPBridgedPlugin under jsName Push)
 /// PushPlugin/PushPlugin
+/// ├── App/AppDelegate (inferred)
 /// └── PushPlugin/NotificationRouter+Push (inferred)
 /// <module-headers:end>
 import Capacitor

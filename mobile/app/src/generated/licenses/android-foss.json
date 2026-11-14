@@ -207,9 +207,34 @@
       "license": "Apache-2.0"
     },
     {
+      "name": "com.google.code.findbugs:jsr305",
+      "version": "3.0.2",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "com.google.code.gson:gson",
+      "version": "2.13.2",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "com.google.crypto.tink:tink",
+      "version": "1.23.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "com.google.errorprone:error_prone_annotations",
+      "version": "2.41.0",
+      "license": "Apache-2.0"
+    },
+    {
       "name": "com.google.guava:listenablefuture",
       "version": "1.0",
       "license": "Apache-2.0"
+    },
+    {
+      "name": "com.google.protobuf:protobuf-java",
+      "version": "4.33.6",
+      "license": "BSD-3-Clause"
     },
     {
       "name": "org.apache.cordova:framework",
@@ -244,6 +269,11 @@
     {
       "name": "org.jspecify:jspecify",
       "version": "1.0.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "org.unifiedpush.android:connector",
+      "version": "3.3.5",
       "license": "Apache-2.0"
     }
   ]

@@ -6,17 +6,20 @@
  *
  * <module-headers:begin>
  * Uses:
- * mobile/app/src/push/pushTestKit.ts
- * ├── mobile/app/src/push/pushPermission.ts
- * └── mobile/app/src/push/pushRegistration.ts
- * External: @yaran/protocol, @yaran/push
+ * src/push/pushTestKit.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── @yaran/push:src/index.ts
+ * ├── src/push/pushPermission.ts
+ * └── src/push/pushRegistration.ts
+ * External: none
  *
  * Used by:
- * mobile/app/src/push/pushTestKit.ts
- * ├── mobile/app/src/push/NotificationSettingsSection.test.tsx
- * ├── mobile/app/src/push/notificationTap.test.ts
- * ├── mobile/app/src/push/pushPermission.test.ts
- * └── mobile/app/src/push/pushRegistration.test.ts
+ * src/push/pushTestKit.ts
+ * ├── src/push/NotificationSettingsSection.test.tsx
+ * ├── src/push/notificationTap.test.ts
+ * ├── src/push/pushPermission.test.ts
+ * ├── src/push/pushRegistration.test.ts
+ * └── src/push/pushWiring.test.ts
  * <module-headers:end>
  */
 import type { Device, Meta } from "@yaran/protocol";

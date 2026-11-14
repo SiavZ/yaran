@@ -7,13 +7,13 @@
  *
  * <module-headers:begin>
  * Uses:
- * mobile/app/src/push/NotificationSettingsSection.test.tsx
- * ├── mobile/app/src/push/NotificationSettingsSection.tsx
- * ├── mobile/app/src/push/pushStrings.ts
- * └── mobile/app/src/push/pushTestKit.ts
+ * src/push/NotificationSettingsSection.test.tsx
+ * ├── src/push/NotificationSettingsSection.tsx
+ * ├── src/push/pushStrings.ts
+ * └── src/push/pushTestKit.ts
  * External: @testing-library/react, vitest
  *
- * Used by: entry point (vitest (jsdom), via npm test in mobile/plugins/push until Phase 14's mobile/app runs them)
+ * Used by: entry point (vitest, via npm test in mobile/app)
  * <module-headers:end>
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";

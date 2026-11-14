@@ -7,7 +7,7 @@
 /// - Loads no Capacitor and no third-party code (memory: the NSE limit is about 24 MB per an
 ///   Apple engineer on the forums, not the docs).
 /// - On any failure, and in `serviceExtensionTimeWillExpire`, the relay's generic alert stays.
-/// - Not compiled here: the target joins Phase 14's Xcode project.
+/// - Type-checked against Mac Catalyst by typecheck-catalyst.sh; the target is in the Xcode project, not built here.
 ///
 /// <module-headers:begin>
 /// Uses:

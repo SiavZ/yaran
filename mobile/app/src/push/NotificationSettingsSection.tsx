@@ -10,14 +10,16 @@
  *
  * <module-headers:begin>
  * Uses:
- * mobile/app/src/push/NotificationSettingsSection.tsx
- * ├── mobile/app/src/push/pushPermission.ts
- * └── mobile/app/src/push/pushStrings.ts
- * External: @yaran/push
+ * src/push/NotificationSettingsSection.tsx
+ * ├── @yaran/push:src/index.ts
+ * ├── src/push/pushPermission.ts
+ * └── src/push/pushStrings.ts
+ * External: none
  *
  * Used by:
- * mobile/app/src/push/NotificationSettingsSection.tsx
- * └── mobile/app/src/push/NotificationSettingsSection.test.tsx
+ * src/push/NotificationSettingsSection.tsx
+ * ├── src/push/NotificationSettingsSection.test.tsx
+ * └── src/screens/settings/NotificationSettings.tsx
  * <module-headers:end>
  */
 import type { DistributorList } from "@yaran/push";

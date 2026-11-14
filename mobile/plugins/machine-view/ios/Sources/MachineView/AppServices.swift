@@ -27,6 +27,7 @@
 /// Used by:
 /// MachineView/AppServices
 /// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineView/NativeOrgApi (inferred)
 /// └── MachineView/SessionPlugin (inferred)
 /// <module-headers:end>
 import Foundation

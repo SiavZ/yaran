@@ -14,7 +14,7 @@
  * └── io.github.siavz.yaran.push.YaranPushService (inferred)
  * External: android.app, android.content, org.junit, org.junit.Assert, org.junit.runner, org.robolectric, org.robolectric.Shadows, org.unifiedpush.android.connector.data
  *
- * Used by: entry point (JUnit/Robolectric, via ./gradlew testDebugUnitTest in mobile/plugins/push/android)
+ * Used by: entry point (JUnit/Robolectric, via ./gradlew test in mobile/android)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.push

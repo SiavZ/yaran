@@ -52,6 +52,13 @@ val appId =
         ?.trim()
         ?.takeIf { it.isNotEmpty() } ?: publisherValue("appId")
 val publisherDomain = publisherValue("publisherDomain")
+
+// The play flavor's push transport (Phase 16, G5): -Pyaran.playPushTransport wins, then the
+// publisher config, then the primary path. app-push.gradle reads the same property.
+val playPushTransport =
+    (findProperty("yaran.playPushTransport") as String?)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: publisherValue("playPushTransport").ifEmpty { "embedded-fcm" }
+extra["yaran.playPushTransport"] = playPushTransport
 val isDevelopmentBuild = publisherDomain.isEmpty()
 
 require(Regex("[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+").matches(appId)) {
@@ -82,7 +89,7 @@ android {
         buildConfigField("boolean", "PUBLISHER_CALLBACK_ENABLED", "${!isDevelopmentBuild}")
         buildConfigField("boolean", "DEV_CALLBACK_ENABLED", "$isDevelopmentBuild")
         buildConfigField("String", "RELAY_URL", javaString(publisherValue("relayUrl")))
-        buildConfigField("String", "PLAY_PUSH_TRANSPORT", javaString(publisherValue("playPushTransport")))
+        buildConfigField("String", "PLAY_PUSH_TRANSPORT", javaString(playPushTransport))
         // e2e-only values: off and empty everywhere but the e2e build type.
         buildConfigField("boolean", "E2E_WEBVIEW_DEBUG", "false")
         buildConfigField("String", "E2E_CONTROL_PLANE_URL", javaString(""))
@@ -207,9 +214,11 @@ dependencies {
     implementation(project(":capacitor-android"))
     implementation(project(":yaran-core"))
     testImplementation(libs.junit)
+    testImplementation(libs.json)
 }
 
 apply(from = "capacitor.build.gradle")
+apply(from = "../../plugins/push/android/app-push.gradle")
 
 // License lists for the shell's About screen (work item 13): mobile/scripts/licenses.sh runs
 // exportLibraryDefinitions<Flavor>Release with -PaboutLibraries.outputFile=<path>. Offline:

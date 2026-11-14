@@ -4,13 +4,13 @@
  *
  * <module-headers:begin>
  * Uses:
- * mobile/app/src/push/pushPermission.test.ts
- * ├── mobile/app/src/push/pushPermission.ts
- * ├── mobile/app/src/push/pushStrings.ts
- * └── mobile/app/src/push/pushTestKit.ts
+ * src/push/pushPermission.test.ts
+ * ├── src/push/pushPermission.ts
+ * ├── src/push/pushStrings.ts
+ * └── src/push/pushTestKit.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in mobile/plugins/push until Phase 14's mobile/app runs them)
+ * Used by: entry point (vitest, via npm test in mobile/app)
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";

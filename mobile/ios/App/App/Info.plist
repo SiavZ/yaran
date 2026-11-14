@@ -85,6 +85,10 @@
 	<true/>
 	<key>YaranPublisherDomain</key>
 	<string>$(PUBLISHER_DOMAIN)</string>
+	<key>YaranAppGroup</key>
+	<string>group.$(APP_ID)</string>
+	<key>YaranRelayURL</key>
+	<string>$(RELAY_URL)</string>
 	<key>YaranE2E</key>
 	<string>$(YARAN_E2E)</string>
 	<key>YaranE2EControlPlaneURL</key>

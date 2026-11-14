@@ -182,6 +182,9 @@ msgstr "No org added"
 msgid "No org added yet."
 msgstr "No org added yet."
 
+msgid "None of your orgs offers notifications yet."
+msgstr "None of your orgs offers notifications yet."
+
 msgid "Notifications"
 msgstr "Notifications"
 
@@ -405,9 +408,6 @@ msgstr "This app is too old for the org's control plane. Update the app."
 msgid "This app only accepts plain-ASCII org domains, so look-alike characters cannot fake one."
 msgstr "This app only accepts plain-ASCII org domains, so look-alike characters cannot fake one."
 
-msgid "This build doesn't include notifications yet."
-msgstr "This build doesn't include notifications yet."
-
 msgid "This build doesn't update itself. If you installed it from F-Droid, F-Droid updates it; if you installed it by hand, new versions are published on GitHub."
 msgstr "This build doesn't update itself. If you installed it from F-Droid, F-Droid updates it; if you installed it by hand, new versions are published on GitHub."
 
@@ -462,6 +462,9 @@ msgstr "Traffic to this org goes through Cloudflare, which decrypts it at its ed
 
 msgid "Try again"
 msgstr "Try again"
+
+msgid "Turn off"
+msgstr "Turn off"
 
 msgid "Type the address your admin gave you, such as cp.example.com."
 msgstr "Type the address your admin gave you, such as cp.example.com."

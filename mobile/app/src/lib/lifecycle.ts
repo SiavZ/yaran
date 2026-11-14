@@ -1,13 +1,13 @@
 /**
  * App lifecycle wiring: deep links, resume refresh, lock state and reopening the last machine.
  *
- * On resume every org's machine list refreshes (the lock check itself is native: the
+ * On resume every org's machine list refreshes and its push registration reconciles (the lock check itself is native: the
  * activity/scene delegate engages the cover, and `AppLock`'s `lockStateChanged` event tells
  * the shell to show the lock screen). On launch, when "Reopen last machine" is on and the
  * app is not locked, the last opened machine opens again through Phase 15's `MachineView`.
  *
  * - Every listener is removed by the returned teardown.
- * - Seam (Phase 16): push reconciliation on foreground hooks into the `resume` listener here.
+ * - Push: the native listeners (taps, endpoint changes, queued registrations) install here.
  *
  * <module-headers:begin>
  * Uses:
@@ -18,7 +18,8 @@
  * ├── src/lib/machinesStore.ts
  * ├── src/lib/openMachine.ts
  * ├── src/lib/orgStore.ts
- * └── src/lib/settingsStore.ts
+ * ├── src/lib/settingsStore.ts
+ * └── src/push/pushWiring.ts
  * External: @capacitor/app
  *
  * Used by:
@@ -34,11 +35,13 @@ import { installDeepLinks } from './deepLinks.ts';
 import { log } from './diagnostics.ts';
 import { machinesStore, refreshMachines } from './machinesStore.ts';
 import { openMachine } from './openMachine.ts';
+import { installPush, reconcileAllPush } from '../push/pushWiring.ts';
 import { orgStore } from './orgStore.ts';
 import { settingsStore } from './settingsStore.ts';
 
 export function refreshAllOrgs(): void {
   for (const org of orgStore.get().orgs) void refreshMachines(org.id);
+  reconcileAllPush();
 }
 
 /** Opens the last machine when the setting is on and its org is still added. */
@@ -63,8 +66,10 @@ export async function installLifecycle(onLock: (locked: boolean) => void): Promi
   const removeLinks = await installDeepLinks();
   const resume = await App.addListener('resume', refreshAllOrgs);
   const lock = await AppLock.addListener('lockStateChanged', (e) => onLock(e.locked));
+  const removePush = await installPush();
   return () => {
     removeLinks();
+    removePush();
     void resume.remove();
     void lock.remove();
   };

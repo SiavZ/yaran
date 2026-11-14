@@ -22,6 +22,7 @@
  * ├── src/App.tsx
  * ├── src/lib/lifecycle.ts
  * ├── src/lib/openMachine.test.ts
+ * ├── src/push/pushWiring.ts
  * └── src/screens/machines/MachineList.tsx
  * <module-headers:end>
  */

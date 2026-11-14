@@ -13,6 +13,7 @@
 ///
 /// Used by:
 /// YaranPushRegistration/OrgApiGateway
+/// ├── App/AppDelegate (inferred)
 /// ├── PushPlugin/PushPlugin (inferred)
 /// ├── YaranPushRegistration/DeviceRegistrar (inferred)
 /// └── YaranPushRegistrationTests/StubURLProtocol (inferred)

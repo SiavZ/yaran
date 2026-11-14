@@ -18,6 +18,7 @@
  * src/lib/notify.ts
  * ├── src/lib/deepLinks.ts
  * ├── src/lib/notify.test.ts
+ * ├── src/push/pushWiring.ts
  * ├── src/screens/machines/RemoveMachineDialog.tsx
  * ├── src/screens/orgs/SignOutOrgDialog.tsx
  * ├── src/screens/settings/Diagnostics.tsx

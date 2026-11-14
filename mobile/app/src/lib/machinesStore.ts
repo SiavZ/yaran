@@ -23,10 +23,13 @@
  * ├── src/lib/openMachine.ts
  * ├── src/lib/orgStore.test.ts
  * ├── src/lib/orgStore.ts
+ * ├── src/push/pushWiring.test.ts
+ * ├── src/push/pushWiring.ts
  * ├── src/screens/machines/MachineList.tsx
  * ├── src/screens/machines/RemoveMachineDialog.tsx
  * ├── src/screens/machines/machines.test.tsx
- * └── src/screens/onboarding/ConfirmOrg.tsx
+ * ├── src/screens/onboarding/ConfirmOrg.tsx
+ * └── src/screens/settings/NotificationSettings.tsx
  * <module-headers:end>
  */
 import type { MachineSummary } from '@yaran/protocol';

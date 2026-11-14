@@ -8,7 +8,7 @@
  * the tests install a fake.
  *
  * - `OrgApiResult` mirrors 15's `ApiResult` one for one.
- * - Set once from the app's `MainActivity.onCreate`, before the bridge loads plugins.
+ * - Set once from the app's `YaranApplication.onCreate`, before any service or plugin runs.
  *
  * <module-headers:begin>
  * Uses: none
@@ -16,6 +16,9 @@
  *
  * Used by:
  * io.github.siavz.yaran.push.PushBindings
+ * ├── io.github.siavz.yaran.app.PushGateway
+ * ├── io.github.siavz.yaran.app.PushGatewayTest
+ * ├── io.github.siavz.yaran.app.YaranApplication
  * ├── io.github.siavz.yaran.push.DeviceRegistrar (inferred)
  * ├── io.github.siavz.yaran.push.DeviceRegistrarTest (inferred)
  * ├── io.github.siavz.yaran.push.PushPlugin (inferred)

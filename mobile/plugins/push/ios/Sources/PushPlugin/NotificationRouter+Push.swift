@@ -2,13 +2,13 @@
 ///
 /// The plugin registers with Capacitor's `NotificationRouter` as its push handler instead of
 /// replacing the `UNUserNotificationCenter` delegate, so it cannot fight other plugins (the
-/// router API in Capacitor 8 is UNVERIFIED until compiled; the fallback is a delegate proxy).
+/// router API type-checks against Capacitor 8.6.2; runtime delivery is still unverified on a device).
 /// `didReceive` emits `notificationTapped` with ids only, retained until JS consumes it.
 ///
 /// - `handleBackgroundPush` is called from the app delegate's
 ///   `didReceiveRemoteNotification`: it decrypts a cleared event with the shared core and
 ///   removes the matching deliveries (best effort; iOS throttles background pushes).
-/// - Not compiled here (Capacitor).
+/// - Type-checked against Mac Catalyst by typecheck-catalyst.sh, not built for iOS.
 ///
 /// <module-headers:begin>
 /// Uses:

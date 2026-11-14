@@ -14,35 +14,32 @@
  *
  * <module-headers:begin>
  * Uses:
- * mobile/app/src/push/pushRegistration.ts
- * └── mobile/app/src/push/pushPermission.ts
- * External: @yaran/protocol, @yaran/push
+ * src/push/pushRegistration.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── @yaran/push:src/index.ts
+ * ├── src/lib/native/machineView.ts
+ * └── src/push/pushPermission.ts
+ * External: none
  *
  * Used by:
- * mobile/app/src/push/pushRegistration.ts
- * ├── mobile/app/src/push/pushRegistration.test.ts
- * └── mobile/app/src/push/pushTestKit.ts
+ * src/push/pushRegistration.ts
+ * ├── src/push/pushDeps.ts
+ * ├── src/push/pushRegistration.test.ts
+ * ├── src/push/pushTestKit.ts
+ * └── src/push/pushWiring.ts
  * <module-headers:end>
  */
-import type { Device, DevicePage, DevicePatch, ErrorEnvelope, Meta } from "@yaran/protocol";
+import type { Device, DevicePage, DevicePatch, Meta } from "@yaran/protocol";
 import { findForbiddenField, type PushMutes, type PushPlugin, type RegisterDeviceResult } from "@yaran/push";
+import type { ApiResult, SessionPlugin } from "../lib/native/machineView.ts";
 import { assertNever, type OrgRowState } from "./pushPermission.ts";
 
-/** Phase 15's `ApiResult` (D22): every Worker answer, as its native client reports it. */
-export type ApiResult =
-  | { kind: "ok"; status: number; body: unknown }
-  | { kind: "api_error"; status: number; error: ErrorEnvelope }
-  | { kind: "session_expired" }
-  | { kind: "device_revoked" }
-  | { kind: "offline" }
-  | { kind: "tls_error" }
-  | { kind: "refused" }
-  | { kind: "protocol_unsupported" };
+export type { ApiResult };
 
-/** The slice of Phase 15's `Session` plugin push orchestration uses. */
+/** Phase 15's `Session.request`, plus `/v1/meta` already validated as a `Meta` (rejects otherwise). */
 export interface SessionApi {
   meta(options: { orgUrl: string }): Promise<Meta>;
-  request(options: { orgId: string; method: "GET" | "POST" | "PATCH" | "DELETE"; path: string; body?: unknown }): Promise<ApiResult>;
+  request: SessionPlugin["request"];
 }
 
 export interface PushDeps {

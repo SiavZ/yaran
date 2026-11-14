@@ -7,7 +7,7 @@
 ///
 /// - The token is hex, lowercase (02 `ApnsMintRequest.apns_token`); it is not a secret but
 ///   still never goes to JS.
-/// - Not compiled here (UIKit and Capacitor).
+/// - Type-checked against Mac Catalyst by machine-view's typecheck-catalyst.sh, not built for iOS.
 ///
 /// <module-headers:begin>
 /// Uses: none

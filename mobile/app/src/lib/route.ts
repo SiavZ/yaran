@@ -20,6 +20,7 @@
  * ├── src/lib/deepLinks.test.ts
  * ├── src/lib/deepLinks.ts
  * ├── src/lib/route.test.ts
+ * ├── src/push/pushWiring.ts
  * ├── src/screens/Nav.tsx
  * ├── src/screens/machines/MachineList.tsx
  * ├── src/screens/machines/machines.test.tsx

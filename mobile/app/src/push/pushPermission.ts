@@ -10,16 +10,18 @@
  *
  * <module-headers:begin>
  * Uses:
- * mobile/app/src/push/pushPermission.ts
- * └── mobile/app/src/push/pushStrings.ts
- * External: @yaran/push
+ * src/push/pushPermission.ts
+ * ├── @yaran/push:src/index.ts
+ * └── src/push/pushStrings.ts
+ * External: none
  *
  * Used by:
- * mobile/app/src/push/pushPermission.ts
- * ├── mobile/app/src/push/NotificationSettingsSection.tsx
- * ├── mobile/app/src/push/pushPermission.test.ts
- * ├── mobile/app/src/push/pushRegistration.ts
- * └── mobile/app/src/push/pushTestKit.ts
+ * src/push/pushPermission.ts
+ * ├── src/push/NotificationSettingsSection.tsx
+ * ├── src/push/pushPermission.test.ts
+ * ├── src/push/pushRegistration.ts
+ * ├── src/push/pushTestKit.ts
+ * └── src/push/pushWiring.ts
  * <module-headers:end>
  */
 import type { NotificationPermission, PushPlugin } from "@yaran/push";
@@ -53,6 +55,8 @@ export function assertNever(value: never): never {
 
 /** Strips control and bidi characters and caps a reason for display. */
 export function sanitizeReason(text: string): string {
+  // Stripping control characters is the point of this pattern.
+  // eslint-disable-next-line no-control-regex
   const cleaned = text.replace(/[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/g, "").trim();
   return [...cleaned].slice(0, 200).join("");
 }

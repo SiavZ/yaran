@@ -14,7 +14,7 @@
  * └── io.github.siavz.yaran.push.relay.RelayFcmTransport (inferred)
  * External: android.content, com.google.crypto.tink.apps.fixed_webpush, javax.crypto, org.junit, org.junit.Assert, org.junit.runner, org.robolectric
  *
- * Used by: entry point (JUnit/Robolectric, via ./gradlew testDebugUnitTest in mobile/plugins/push/android)
+ * Used by: entry point (JUnit/Robolectric, via ./gradlew test in mobile/android)
  * io.github.siavz.yaran.push.relay.RelayFcmTest
  * └── io.github.siavz.yaran.push.relay.RelayEndpointClient (inferred)
  * <module-headers:end>

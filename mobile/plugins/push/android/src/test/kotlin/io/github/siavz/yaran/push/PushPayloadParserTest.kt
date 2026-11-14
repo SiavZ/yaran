@@ -9,7 +9,7 @@
  * └── io.github.siavz.yaran.push.PushPayloadParser (inferred)
  * External: org.junit, org.junit.Assert, org.junit.runner, org.robolectric
  *
- * Used by: entry point (JUnit/Robolectric, via ./gradlew testDebugUnitTest in mobile/plugins/push/android)
+ * Used by: entry point (JUnit/Robolectric, via ./gradlew test in mobile/android)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.push

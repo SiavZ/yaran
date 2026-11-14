@@ -9,7 +9,7 @@
  * Uses: none
  * External: node:fs, node:path, node:url, vitest
  *
- * Used by: entry point (vitest, via npm test in mobile/plugins/push until Phase 14's mobile/app runs them)
+ * Used by: entry point (vitest, via npm test in mobile/app)
  * <module-headers:end>
  */
 import { readdirSync, readFileSync } from "node:fs";

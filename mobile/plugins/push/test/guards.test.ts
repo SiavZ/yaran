@@ -11,7 +11,7 @@
  * └── src/web.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in mobile/plugins/push)
+ * Used by: entry point (vitest, via npm test in the plugin package)
  * <module-headers:end>
  */
 import type { Device } from "@yaran/protocol";

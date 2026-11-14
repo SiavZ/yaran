@@ -24,6 +24,13 @@
 		5A4E0C0D000000000000001F /* YaranCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0D0000000000000020 /* YaranCore */; };
 		5A4E0C0D0000000000000021 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0D0000000000000022 /* CapApp-SPM */; };
 		5A4E0C0F0000000000000001 /* MachineViewCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0F0000000000000002 /* MachineViewCore */; };
+		5A4E0C0F0000000000000003 /* YaranMachineView in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0F0000000000000004 /* YaranMachineView */; };
+		5A4E0C0F0000000000000005 /* YaranPush in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0F0000000000000006 /* YaranPush */; };
+		5A4E0C0F0000000000000007 /* YaranPushRegistration in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0F0000000000000008 /* YaranPushRegistration */; };
+		5A4E0C0F0000000000000009 /* YaranPushCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0F000000000000000A /* YaranPushCore */; };
+		5A4E0C0F000000000000000B /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A4E0C0F000000000000000C /* NotificationService.swift */; };
+		5A4E0C0F000000000000000D /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 5A4E0C0F000000000000000E /* Localizable.strings */; };
+		5A4E0C0F000000000000000F /* NotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5A4E0C0F0000000000000010 /* NotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -34,7 +41,28 @@
 			remoteGlobalIDString = 5A4E0C0D0000000000000025;
 			remoteInfo = App;
 		};
+		5A4E0C0F0000000000000011 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5A4E0C0D0000000000000024 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5A4E0C0F0000000000000012;
+			remoteInfo = NotificationService;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		5A4E0C0F0000000000000013 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				5A4E0C0F000000000000000F /* NotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		5A4E0C0D0000000000000026 /* App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -58,6 +86,11 @@
 		5A4E0C0D000000000000002C /* E2E.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "E2E.xcconfig"; sourceTree = "<group>"; };
 		5A4E0C0D000000000000002D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		5A4E0C0D000000000000002E /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		5A4E0C0F0000000000000010 /* NotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		5A4E0C0F000000000000000C /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NotificationService.swift"; sourceTree = "<group>"; };
+		5A4E0C0F0000000000000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info.plist"; sourceTree = "<group>"; };
+		5A4E0C0F0000000000000015 /* NotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "NotificationService.entitlements"; sourceTree = "<group>"; };
+		5A4E0C0F0000000000000016 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -68,6 +101,17 @@
 				5A4E0C0D0000000000000021 /* CapApp-SPM in Frameworks */,
 				5A4E0C0D000000000000001D /* YaranCore in Frameworks */,
 				5A4E0C0F0000000000000001 /* MachineViewCore in Frameworks */,
+				5A4E0C0F0000000000000003 /* YaranMachineView in Frameworks */,
+				5A4E0C0F0000000000000005 /* YaranPush in Frameworks */,
+				5A4E0C0F0000000000000007 /* YaranPushRegistration in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A4E0C0F0000000000000017 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5A4E0C0F0000000000000009 /* YaranPushCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -87,6 +131,7 @@
 			children = (
 				5A4E0C0D0000000000000031 /* App */,
 				5A4E0C0D0000000000000032 /* AppTests */,
+				5A4E0C0F0000000000000018 /* NotificationService */,
 				5A4E0C0D0000000000000033 /* Config */,
 				5A4E0C0D0000000000000034 /* Products */,
 			);
@@ -137,8 +182,20 @@
 			children = (
 				5A4E0C0D0000000000000026 /* App.app */,
 				5A4E0C0D0000000000000027 /* AppTests.xctest */,
+				5A4E0C0F0000000000000010 /* NotificationService.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		5A4E0C0F0000000000000018 /* NotificationService */ = {
+			isa = PBXGroup;
+			children = (
+				5A4E0C0F000000000000000C /* NotificationService.swift */,
+				5A4E0C0F0000000000000014 /* Info.plist */,
+				5A4E0C0F0000000000000015 /* NotificationService.entitlements */,
+				5A4E0C0F000000000000000E /* Localizable.strings */,
+			);
+			path = NotificationService;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -152,16 +209,21 @@
 				5A4E0C0D0000000000000038 /* Sources */,
 				5A4E0C0D000000000000002F /* Frameworks */,
 				5A4E0C0D0000000000000039 /* Resources */,
+				5A4E0C0F0000000000000013 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				5A4E0C0F0000000000000019 /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (
 				5A4E0C0D0000000000000022 /* CapApp-SPM */,
 				5A4E0C0D000000000000001E /* YaranCore */,
 				5A4E0C0F0000000000000002 /* MachineViewCore */,
+				5A4E0C0F0000000000000004 /* YaranMachineView */,
+				5A4E0C0F0000000000000006 /* YaranPush */,
+				5A4E0C0F0000000000000008 /* YaranPushRegistration */,
 			);
 			productName = App;
 			productReference = 5A4E0C0D0000000000000026 /* App.app */;
@@ -187,6 +249,26 @@
 			productReference = 5A4E0C0D0000000000000027 /* AppTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		5A4E0C0F0000000000000012 /* NotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5A4E0C0F000000000000001A /* Build configuration list for PBXNativeTarget "NotificationService" */;
+			buildPhases = (
+				5A4E0C0F000000000000001B /* Sources */,
+				5A4E0C0F0000000000000017 /* Frameworks */,
+				5A4E0C0F000000000000001C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NotificationService;
+			packageProductDependencies = (
+				5A4E0C0F000000000000000A /* YaranPushCore */,
+			);
+			productName = NotificationService;
+			productReference = 5A4E0C0F0000000000000010 /* NotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -204,6 +286,9 @@
 						CreatedOnToolsVersion = 26.0;
 						TestTargetID = 5A4E0C0D0000000000000025;
 					};
+					5A4E0C0F0000000000000012 = {
+						CreatedOnToolsVersion = 26.0;
+					};
 				};
 			};
 			buildConfigurationList = 5A4E0C0D000000000000003E /* Build configuration list for PBXProject "App" */;
@@ -218,7 +303,10 @@
 			packageReferences = (
 				5A4E0C0D000000000000003F /* XCLocalSwiftPackageReference "CapApp-SPM" */,
 				5A4E0C0D0000000000000040 /* XCLocalSwiftPackageReference "../../plugins/core/ios" */,
-				5A4E0C0F0000000000000003 /* XCLocalSwiftPackageReference "../../plugins/machine-view/ios/MachineViewCore" */,
+				5A4E0C0F000000000000001D /* XCLocalSwiftPackageReference "../../plugins/machine-view/ios/MachineViewCore" */,
+				5A4E0C0F000000000000001E /* XCLocalSwiftPackageReference "../../plugins/machine-view" */,
+				5A4E0C0F000000000000001F /* XCLocalSwiftPackageReference "../../plugins/push" */,
+				5A4E0C0F0000000000000020 /* XCLocalSwiftPackageReference "../Shared/YaranPushCore" */,
 			);
 			productRefGroup = 5A4E0C0D0000000000000034 /* Products */;
 			projectDirPath = "";
@@ -226,6 +314,7 @@
 			targets = (
 				5A4E0C0D0000000000000025 /* App */,
 				5A4E0C0D000000000000003A /* AppTests */,
+				5A4E0C0F0000000000000012 /* NotificationService */,
 			);
 		};
 /* End PBXProject section */
@@ -245,6 +334,14 @@
 				5A4E0C0D0000000000000014 /* PrivacyInfo.xcprivacy in Resources */,
 				5A4E0C0D0000000000000016 /* Localizable.xcstrings in Resources */,
 				5A4E0C0D0000000000000018 /* InfoPlist.xcstrings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A4E0C0F000000000000001C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5A4E0C0F000000000000000D /* Localizable.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -293,6 +390,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5A4E0C0F000000000000001B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5A4E0C0F000000000000000B /* NotificationService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -300,6 +405,11 @@
 			isa = PBXTargetDependency;
 			target = 5A4E0C0D0000000000000025 /* App */;
 			targetProxy = 5A4E0C0D0000000000000023 /* PBXContainerItemProxy */;
+		};
+		5A4E0C0F0000000000000019 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5A4E0C0F0000000000000012 /* NotificationService */;
+			targetProxy = 5A4E0C0F0000000000000011 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -318,6 +428,14 @@
 				5A4E0C0D000000000000002E /* Base */,
 			);
 			name = LaunchScreen.storyboard;
+			sourceTree = "<group>";
+		};
+		5A4E0C0F000000000000000E /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				5A4E0C0F0000000000000016 /* en */,
+			);
+			name = Localizable.strings;
 			sourceTree = "<group>";
 		};
 /* End PBXVariantGroup section */
@@ -572,6 +690,72 @@
 			};
 			name = E2E;
 		};
+		5A4E0C0F0000000000000021 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5A4E0C0D000000000000002B /* Publisher.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1000;
+				INFOPLIST_FILE = NotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_ID).NotificationService";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5A4E0C0F0000000000000022 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5A4E0C0D000000000000002B /* Publisher.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1000;
+				INFOPLIST_FILE = NotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_ID).NotificationService";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5A4E0C0F0000000000000023 /* E2E */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 5A4E0C0D000000000000002C /* E2E.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1000;
+				INFOPLIST_FILE = NotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_ID).NotificationService";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = E2E;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -605,6 +789,16 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		5A4E0C0F000000000000001A /* Build configuration list for PBXNativeTarget "NotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5A4E0C0F0000000000000021 /* Debug */,
+				5A4E0C0F0000000000000022 /* Release */,
+				5A4E0C0F0000000000000023 /* E2E */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -616,9 +810,21 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../../plugins/core/ios;
 		};
-		5A4E0C0F0000000000000003 /* XCLocalSwiftPackageReference "../../plugins/machine-view/ios/MachineViewCore" */ = {
+		5A4E0C0F000000000000001D /* XCLocalSwiftPackageReference "../../plugins/machine-view/ios/MachineViewCore" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../../plugins/machine-view/ios/MachineViewCore;
+		};
+		5A4E0C0F000000000000001E /* XCLocalSwiftPackageReference "../../plugins/machine-view" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../plugins/machine-view;
+		};
+		5A4E0C0F000000000000001F /* XCLocalSwiftPackageReference "../../plugins/push" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../plugins/push;
+		};
+		5A4E0C0F0000000000000020 /* XCLocalSwiftPackageReference "../Shared/YaranPushCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Shared/YaranPushCore;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -640,8 +846,28 @@
 		};
 		5A4E0C0F0000000000000002 /* MachineViewCore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 5A4E0C0F0000000000000003 /* XCLocalSwiftPackageReference "../../plugins/machine-view/ios/MachineViewCore" */;
+			package = 5A4E0C0F000000000000001D /* XCLocalSwiftPackageReference "../../plugins/machine-view/ios/MachineViewCore" */;
 			productName = MachineViewCore;
+		};
+		5A4E0C0F0000000000000004 /* YaranMachineView */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5A4E0C0F000000000000001E /* XCLocalSwiftPackageReference "../../plugins/machine-view" */;
+			productName = YaranMachineView;
+		};
+		5A4E0C0F0000000000000006 /* YaranPush */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5A4E0C0F000000000000001F /* XCLocalSwiftPackageReference "../../plugins/push" */;
+			productName = YaranPush;
+		};
+		5A4E0C0F0000000000000008 /* YaranPushRegistration */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5A4E0C0F0000000000000020 /* XCLocalSwiftPackageReference "../Shared/YaranPushCore" */;
+			productName = YaranPushRegistration;
+		};
+		5A4E0C0F000000000000000A /* YaranPushCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5A4E0C0F0000000000000020 /* XCLocalSwiftPackageReference "../Shared/YaranPushCore" */;
+			productName = YaranPushCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
