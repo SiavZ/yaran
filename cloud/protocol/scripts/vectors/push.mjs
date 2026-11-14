@@ -73,9 +73,19 @@ function events() {
   const longId = "x".repeat(128);
   const big = att({ agent_id: longId, tab_id: longId, project: "p".repeat(64), label: "l".repeat(64) });
   const bigSerialized = JSON.stringify(toPayload(big));
+  // Phase 08 fit rule: over the cap, the sender drops p and l (the detail = minimal shape)
+  // and sends that when it fits; otherwise the push is refused, as `refused` shows.
+  const fit = (name, event) => {
+    const full = JSON.stringify(toPayload(event));
+    const { p: _p, l: _l, ...stripped } = toPayload(event);
+    const sent = JSON.stringify(stripped);
+    if (bytes(full) <= 320 || bytes(sent) > 320) throw new Error(`${name} must need and survive the strip`);
+    return { name, machine_id: M, event, full_bytes: bytes(full), sent: stripped, sent_serialized: sent, sent_bytes: bytes(sent) };
+  };
   return {
-    description: "Machine Event -> PushPayload v1. serialized is the exact UTF-8 JSON (key order v,k,m,a,t,s,p,l,ts); exit_status never reaches the payload.",
+    description: "Machine Event -> PushPayload v1. serialized is the exact UTF-8 JSON (key order v,k,m,a,t,s,p,l,ts); exit_status never reaches the payload. fitted: over 320 bytes the sender drops p and l and sends the rest when it fits; refused: still over 320 bytes without p and l, so nothing is sent.",
     cases: out,
+    fitted: [fit("128-character agent id fits once p and l are dropped", att({ agent_id: longId, tab_id: T, project: "p".repeat(64), label: "l".repeat(64) }))],
     refused: [{ name: "128-character ids exceed the 320-byte cap", machine_id: M, event: big, serialized_bytes: bytes(bigSerialized), expect: "too_large" }],
   };
 }

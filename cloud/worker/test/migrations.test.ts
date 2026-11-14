@@ -36,6 +36,7 @@ const VALID: Record<string, () => Record<string, Param>> = {
   cf_orphans: () => ({ resource_kind: "tunnel", resource_id: uid(), marker: "m", first_seen_at: NOW, last_seen_at: NOW }),
   cf_api_budget: () => ({ id: 1, observed_at: NOW }),
   scheduled_tasks: () => ({ task: `t${++n}`, next_run_at: NOW }),
+  push_stats: () => ({ day: `2026-11-${String(++n % 28 + 1).padStart(2, "0")}` }),
   handoff_csrf: () => ({ token_hash: crypto.getRandomValues(new Uint8Array(32)), state_hash: bytes(32), pk_thumbprint: "t".repeat(43), dk_fingerprint: "A".repeat(29), verified: 0, user_id: userId, expires_at: NOW }),
 };
 
@@ -105,6 +106,8 @@ const CHECKS: [string, string, Record<string, Param>][] = [
   ["handoff_csrf", "pk thumbprint length", { pk_thumbprint: "t".repeat(42) }],
   ["handoff_csrf", "dk fingerprint length", { dk_fingerprint: "A".repeat(28) }],
   ["handoff_csrf", "verified is boolean", { verified: 2 }],
+  // 0008_push.sql
+  ["push_stats", "day length", { day: "2026-11-1" }],
 ];
 
 beforeAll(async () => {

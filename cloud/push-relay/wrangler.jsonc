@@ -1,0 +1,63 @@
+// The publisher push relay (Phase 08). One deployment serves every org; it stores nothing.
+// Deployed by the publisher (Phase 19/21), never by an org's Deploy button.
+{
+  "name": "yaran-push-relay",
+  "main": "src/runtime/worker.ts",
+  // Bumped deliberately, never "today" in CI.
+  "compatibility_date": "2026-11-01",
+  // The relay is the publisher's own Worker on its own domain: no workers.dev, no previews.
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    // This relay's own https origin; VAPID aud must equal it and minted endpoints start with it.
+    "PUBLIC_ORIGIN": "https://push-relay.invalid",
+    // Apple Developer Team ID (the provider JWT's iss).
+    "APNS_TEAM_ID": "",
+    // Key ID of the APNs auth key in APNS_P8 (the provider JWT's kid).
+    "APNS_KEY_ID": "",
+    // Comma-separated bundle ids served (apns-topic); a mint for any other app is relay_app_unknown.
+    "APNS_TOPICS": "",
+    // Comma-separated APNs environments this deployment serves: production and/or sandbox.
+    // Apple's 2025 keys can be bound to one environment, so a production key serves production only.
+    "ALLOWED_ENVIRONMENTS": "production",
+    // G5 fallback only: the Firebase project id; leave empty to offer the apns channel alone.
+    "FCM_PROJECT_ID": "",
+    // G5 fallback only: comma-separated Android application ids served on the fcm channel.
+    "FCM_APP_IDS": ""
+  },
+  // Secrets (wrangler secret put): APNS_P8 (the .p8 PEM), ENDPOINT_KEYS
+  // ({"current": "<kid>", "keys": {"<kid>": "<base64url of 32 random bytes>"}}, keep retired
+  // kids until every app version has re-minted) and, G5 only, FCM_SERVICE_ACCOUNT (the JSON key).
+  "ratelimits": [
+    // Endpoint mints per client IP per minute (the only key an anonymous call has).
+    { "name": "MINT_RL", "namespace_id": "8801", "simple": { "limit": 10, "period": 60 } },
+    // Pushes per org VAPID key (SHA-256) per minute.
+    { "name": "KEY_RL", "namespace_id": "8802", "simple": { "limit": 600, "period": 60 } },
+    // Pushes per device token (SHA-256) per minute.
+    { "name": "DEVICE_RL", "namespace_id": "8803", "simple": { "limit": 60, "period": 60 } }
+  ],
+  // Logs never carry a token, endpoint, JWT or body; head sampling keeps volume configurable.
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "env": {
+    // What Phase 19 deploys and points test builds at (hook H6): its own origin, sandbox APNs.
+    "staging": {
+      "name": "yaran-push-relay-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "vars": {
+        "PUBLIC_ORIGIN": "https://push-relay-staging.invalid",
+        "APNS_TEAM_ID": "",
+        "APNS_KEY_ID": "",
+        "APNS_TOPICS": "",
+        "ALLOWED_ENVIRONMENTS": "sandbox",
+        "FCM_PROJECT_ID": "",
+        "FCM_APP_IDS": ""
+      },
+      "ratelimits": [
+        { "name": "MINT_RL", "namespace_id": "8811", "simple": { "limit": 10, "period": 60 } },
+        { "name": "KEY_RL", "namespace_id": "8812", "simple": { "limit": 600, "period": 60 } },
+        { "name": "DEVICE_RL", "namespace_id": "8813", "simple": { "limit": 60, "period": 60 } }
+      ]
+    }
+  }
+}

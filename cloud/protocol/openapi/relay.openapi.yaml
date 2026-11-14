@@ -106,7 +106,7 @@ paths:
           required: true
           description: Must be aes128gcm.
           schema: { const: aes128gcm }
-      x-error-codes: [relay_vapid_invalid, relay_vapid_mismatch, relay_endpoint_invalid, push_endpoint_gone, relay_upstream_failed, payload_too_large, rate_limited, unavailable, internal]
+      x-error-codes: [bad_request, relay_vapid_invalid, relay_vapid_mismatch, relay_endpoint_invalid, push_endpoint_gone, relay_upstream_failed, payload_too_large, rate_limited, unavailable, internal]
       requestBody:
         required: true
         content:
@@ -114,6 +114,7 @@ paths:
             schema: { type: string, contentMediaType: application/octet-stream, maxLength: 2900 }
       responses:
         "201": { description: Accepted for delivery (RFC 8030). }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }

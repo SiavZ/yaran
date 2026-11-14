@@ -105,7 +105,7 @@ describe("W12 POST /v1/me/devices", () => {
 
   it("applies the relay rules", async () => {
     const { w, ada } = await setup();
-    const relay = (reg: Awaited<ReturnType<typeof registration>>) => ({ ...reg.push, channel: "apns_relay" as const, endpoint: "https://relay.example.net/w/abc" });
+    const relay = (reg: Awaited<ReturnType<typeof registration>>) => ({ ...reg.push, channel: "apns_relay" as const, endpoint: "https://relay.example.net/w/v1.k1.abcdefghijklmnopqrstuvwxyz" }); // 08's relay endpoint shape
     w.settings.push.relay_allowed = false;
     let reg = await registration();
     let res = await call(w, req(ada, "POST", "/v1/me/devices", { body: { ...reg, push: relay(reg) }, installId: reg.install_id }));

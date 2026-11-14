@@ -22,6 +22,12 @@
   // One dispatcher a minute runs every periodic job.
   "triggers": { "crons": ["* * * * *"] },
   "assets": { "directory": "assets" },
+  // Web Push delivery: the Worker queues one message per phone and delivers from the
+  // consumer. max_retries must stay 8 (the Worker counts an exhausted push, then drops it).
+  "queues": {
+    "producers": [{ "binding": "PUSH_QUEUE", "queue": "yaran-push" }],
+    "consumers": [{ "queue": "yaran-push", "max_batch_size": 10, "max_retries": 8, "max_batch_timeout": 5 }]
+  },
   "observability": { "enabled": true },
   "keep_vars": false,
   "vars": {

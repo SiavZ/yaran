@@ -1,0 +1,25 @@
+{
+  "name": "yaran-push-relay",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The publisher's open-source push relay: org Web Push (RFC 8291/8292) in, APNs (and FCM under gate G5) out. Stores nothing and never decrypts.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:node": "RELAY_RUNTIMES=node vitest run test/relay.test.ts",
+    "start:node": "node src/runtime/node.ts"
+  },
+  "dependencies": {
+    "@yaran/protocol": "file:../protocol"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  }
+}

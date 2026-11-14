@@ -42,7 +42,9 @@
     // Per client IP, setup, authorize and handoff routes.
     { "name": "RL_AUTH", "namespace_id": "7702", "simple": { "limit": 20, "period": 60 } },
     // Per machine id, the signed machine API.
-    { "name": "RL_MACHINE", "namespace_id": "7703", "simple": { "limit": 120, "period": 60 } }
+    { "name": "RL_MACHINE", "namespace_id": "7703", "simple": { "limit": 120, "period": 60 } },
+    // Per machine id, W6 event batches (08).
+    { "name": "MACHINE_EVENTS", "namespace_id": "7708", "simple": { "limit": 60, "period": 60 } }
   ],
   // Static console assets (stylesheet, fonts, enhance.js), served before the Worker runs.
   "assets": { "directory": "assets" },
@@ -52,6 +54,13 @@
     // separated, compared byte for byte (02 §8). Phase 07's deploy template sets the
     // publisher's real value; this placeholder only satisfies local runs.
     "APP_CALLBACK_URLS": "https://yaran.example/auth/callback"
+  },
+  // Web Push delivery (08). max_batch_size 10 keeps a Free-plan consumer under 50
+  // subrequests; max_retries must equal MAX_RETRIES in src/push/consumer.ts; there is no
+  // dead-letter queue (an exhausted push is counted, then acked).
+  "queues": {
+    "producers": [{ "binding": "PUSH_QUEUE", "queue": "yaran-push" }],
+    "consumers": [{ "queue": "yaran-push", "max_batch_size": 10, "max_retries": 8, "max_batch_timeout": 5 }]
   },
   // Workers Logs: the structured JSON log lines are indexed by field.
   "observability": { "enabled": true },

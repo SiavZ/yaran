@@ -247,37 +247,3 @@ export async function revokeDevice(
   await ctx.audit.record({ action: "device.revoked", actor: o.actor, target: { kind: "device", id }, outcome: "ok", detail: { sign_out_everywhere: o.signOutEverywhere } });
   return true;
 }
-
-/** 02 §9 delivery outcomes, as Phase 08 classifies a push service answer. */
-export type PushOutcome =
-  | { kind: "delivered" }
-  | { kind: "gone"; errorCode: string }
-  | { kind: "auth_failed"; errorCode: string }
-  | { kind: "failing"; errorCode: string };
-
-/** Records a delivery outcome (Phase 08's entry point); never deletes or revokes the row. */
-export async function setPushOutcome(ctx: FoundationCtx, deviceId: string, outcome: PushOutcome): Promise<void> {
-  const k = outcome.kind;
-  let sql: string;
-  let binds: unknown[];
-  switch (k) {
-    case "delivered":
-      sql = "UPDATE devices SET push_state = 'active', last_push_ok_at = ? WHERE id = ? AND revoked_at IS NULL AND push_kind <> 'none'";
-      binds = [ctx.now(), deviceId];
-      break;
-    case "gone":
-      sql = `UPDATE devices SET ${CLEAR_PUSH}, push_state = 'gone' WHERE id = ? AND revoked_at IS NULL`;
-      binds = [deviceId];
-      break;
-    case "auth_failed":
-    case "failing":
-      sql = "UPDATE devices SET push_state = ? WHERE id = ? AND revoked_at IS NULL";
-      binds = [k, deviceId];
-      break;
-    default: {
-      const never: never = k;
-      throw new Error(`unhandled push outcome ${String(never)}`);
-    }
-  }
-  await ctx.db.prepare(sql).bind(...binds).run();
-}

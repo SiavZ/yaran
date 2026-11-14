@@ -1,5 +1,5 @@
 {
-  "description": "Machine Event -> PushPayload v1. serialized is the exact UTF-8 JSON (key order v,k,m,a,t,s,p,l,ts); exit_status never reaches the payload.",
+  "description": "Machine Event -> PushPayload v1. serialized is the exact UTF-8 JSON (key order v,k,m,a,t,s,p,l,ts); exit_status never reaches the payload. fitted: over 320 bytes the sender drops p and l and sends the rest when it fits; refused: still over 320 bytes without p and l, so nothing is sent.",
   "cases": [
     {
       "name": "raised on the slot tab with names",
@@ -432,6 +432,34 @@
       },
       "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"ts\":1731571200}",
       "bytes": 154
+    }
+  ],
+  "fitted": [
+    {
+      "name": "128-character agent id fits once p and l are dropped",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000014",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "state": "needs_attention",
+        "tab_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "project": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+        "label": "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll"
+      },
+      "full_bytes": 351,
+      "sent": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "t": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "s": "needs_attention",
+        "ts": 1731571200
+      },
+      "sent_serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"t\":\"9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d\",\"s\":\"needs_attention\",\"ts\":1731571200}",
+      "sent_bytes": 289
     }
   ],
   "refused": [

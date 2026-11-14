@@ -34,6 +34,8 @@ core
 core.*
 # The phone app's native core library is a directory, not a crash dump.
 !mobile/plugins/core/
+# The push relay's runtime-agnostic source directory is code, not a crash dump.
+!cloud/push-relay/src/core/
 .DS_Store
 
 # Local-only branch catch-up notes (not for version control)

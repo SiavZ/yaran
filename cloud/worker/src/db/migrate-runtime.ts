@@ -27,6 +27,7 @@
  */
 import init from "../../migrations/0001_init.sql";
 import pairing from "../../migrations/0006_pairing.sql";
+import push from "../../migrations/0008_push.sql";
 import { all, run, stmt } from "./client.ts";
 import type { Logger } from "../log/logger.ts";
 
@@ -39,6 +40,7 @@ export interface Migration {
 export const MIGRATIONS: readonly Migration[] = [
   { name: "0001_init.sql", sql: init },
   { name: "0006_pairing.sql", sql: pairing },
+  { name: "0008_push.sql", sql: push },
 ];
 
 const LEASE = "~lease";

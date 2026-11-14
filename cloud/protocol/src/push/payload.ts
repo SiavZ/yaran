@@ -57,6 +57,24 @@ export function serializePushPayload(payload: PushPayload): Uint8Array {
   return bytes;
 }
 
+/**
+ * Serializes a payload for sending. Over the cap (only reachable with ids far longer than
+ * today's UUIDs) it drops `p` and `l`, the shape the device already words for
+ * `detail = minimal`, and sends that; null when even that is over, and the sender logs and
+ * drops the push. Ids are never cut: `a` and `t` are where a tap lands.
+ */
+export function fitPushPayload(payload: PushPayload): Uint8Array | null {
+  const { p: _p, l: _l, ...minimal } = payload;
+  for (const candidate of [payload, minimal as PushPayload]) {
+    try {
+      return serializePushPayload(candidate);
+    } catch {
+      // over the cap: try the next, smaller candidate
+    }
+  }
+  return null;
+}
+
 /** The payload for one accepted machine event. */
 export function eventToPayload(event: Event, machineId: string): PushPayload {
   const payload: PushPayload = {
