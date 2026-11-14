@@ -20,6 +20,8 @@
  * ├── src/index.ts
  * ├── src/jwe/handoff.ts
  * ├── src/sig/device.ts
+ * ├── src/webpush/ece.ts
+ * ├── src/webpush/vapid.ts
  * └── test/jwe.test.ts
  * <module-headers:end>
  */

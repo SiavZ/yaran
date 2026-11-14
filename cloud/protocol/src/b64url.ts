@@ -26,10 +26,13 @@
  * ├── src/sig/fingerprint.ts
  * ├── src/sig/sign.ts
  * ├── src/sig/verify.ts
+ * ├── src/webpush/ece.ts
+ * ├── src/webpush/vapid.ts
  * ├── test/consent.test.ts
  * ├── test/device.test.ts
  * ├── test/jwe.test.ts
- * └── test/sig.test.ts
+ * ├── test/sig.test.ts
+ * └── test/webpush.test.ts
  * <module-headers:end>
  */
 

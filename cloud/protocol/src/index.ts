@@ -32,7 +32,9 @@
  * ├── src/ua.ts
  * ├── src/uri.ts
  * ├── src/validate.ts
- * └── src/version.ts
+ * ├── src/version.ts
+ * ├── src/webpush/ece.ts
+ * └── src/webpush/vapid.ts
  * External: none
  *
  * Used by: entry point (package entry of @yaran/protocol, the "." export in cloud/protocol/package.json)
@@ -179,3 +181,5 @@ export * from "./ua.ts";
 export * from "./uri.ts";
 export * from "./validate.ts";
 export * from "./version.ts";
+export * from "./webpush/ece.ts";
+export * from "./webpush/vapid.ts";

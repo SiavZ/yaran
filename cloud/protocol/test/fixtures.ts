@@ -20,7 +20,8 @@
  * ├── test/sig.test.ts
  * ├── test/ua.test.ts
  * ├── test/uri.test.ts
- * └── test/version.test.ts
+ * ├── test/version.test.ts
+ * └── test/webpush.test.ts
  * <module-headers:end>
  */
 import { readdirSync, readFileSync } from "node:fs";

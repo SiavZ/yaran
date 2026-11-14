@@ -18,7 +18,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { buildRelayApns, buildRelayFcm } from "../src/push/apns.ts";
-import { eventToPayload, parsePushPayload, serializePushPayload, testPayload, truncateUtf8 } from "../src/push/payload.ts";
+import { eventToPayload, fitPushPayload, parsePushPayload, serializePushPayload, testPayload, truncateUtf8 } from "../src/push/payload.ts";
 import { pushDelivery, pushTopic } from "../src/push/topic.ts";
 import { validate } from "../src/validate.ts";
 import { fixture, utf8 } from "./fixtures.ts";
@@ -38,8 +38,23 @@ describe("event to payload", () => {
   for (const c of f.refused) {
     it(c.name, () => {
       expect(() => serializePushPayload(eventToPayload(c.event, c.machine_id))).toThrow(/320-byte cap/);
+      expect(fitPushPayload(eventToPayload(c.event, c.machine_id))).toBeNull();
     });
   }
+  for (const c of f.fitted) {
+    it(`fit: ${c.name}`, () => {
+      const payload = eventToPayload(c.event, c.machine_id);
+      expect(() => serializePushPayload(payload)).toThrow(/320-byte cap/);
+      const bytes = fitPushPayload(payload);
+      expect(new TextDecoder().decode(bytes!)).toBe(c.sent_serialized);
+      expect(bytes!.length).toBe(c.sent_bytes);
+      expect(validate("PushPayload", c.sent).valid).toBe(true);
+    });
+  }
+  it("fit leaves a payload under the cap untouched", () => {
+    const c = f.cases[0];
+    expect(new TextDecoder().decode(fitPushPayload(eventToPayload(c.event, c.machine_id))!)).toBe(c.serialized);
+  });
   it("builds the test payload", () => {
     expect(serializePushPayload(testPayload(1731571200))).toEqual(utf8('{"v":1,"k":"test","ts":1731571200}'));
   });
