@@ -4,7 +4,7 @@
  * <module-headers:begin>
  * Uses:
  * src/lib/store.ts
- * ├── src/hooks/use-mobile.ts
+ * ├── @yaran/ui-kit:src/use-mobile.ts
  * ├── src/lib/agentName.ts
  * ├── src/lib/agentTabs.ts
  * ├── src/lib/agentWorkspace.ts

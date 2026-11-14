@@ -7,13 +7,14 @@
  * <module-headers:begin>
  * Uses:
  * src/components/CustomizeWebappDialog.tsx
+ * ├── @yaran/ui-kit:src/button.tsx
+ * ├── @yaran/ui-kit:src/cn.ts
+ * ├── @yaran/ui-kit:src/dialog.tsx
+ * ├── @yaran/ui-kit:src/input.tsx
+ * ├── @yaran/ui-kit:src/scroll-area.tsx
+ * ├── @yaran/ui-kit:src/select.tsx
+ * ├── @yaran/ui-kit:src/switch.tsx
  * ├── src/components/SimpleTooltip.tsx
- * ├── src/components/ui/button.tsx
- * ├── src/components/ui/dialog.tsx
- * ├── src/components/ui/input.tsx
- * ├── src/components/ui/scroll-area.tsx
- * ├── src/components/ui/select.tsx
- * ├── src/components/ui/switch.tsx
  * ├── src/lib/cloudApi.ts
  * ├── src/lib/configApi.ts
  * ├── src/lib/favicon.ts
@@ -21,8 +22,7 @@
  * ├── src/lib/notify.ts
  * ├── src/lib/prose.tsx
  * ├── src/lib/settingsDescriptors.ts
- * ├── src/lib/store.ts
- * └── src/lib/utils.ts
+ * └── src/lib/store.ts
  * External: lucide-react, react
  *
  * Used by:

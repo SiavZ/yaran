@@ -49,6 +49,9 @@
  * ├── web:src/components/SaveConflictDialog.tsx
  * ├── web:src/components/StandaloneAgentDialog.tsx
  * ├── web:src/components/WorktreesDialog.tsx
+ * ├── web:src/components/cloud/CloudDialog.tsx
+ * ├── web:src/components/cloud/CloudLogoutDialog.tsx
+ * ├── web:src/components/cloud/CloudRotateDialog.tsx
  * ├── web:src/lib/inlineMarkdown.test.tsx
  * ├── web:src/lib/inlineMarkdown.tsx
  * └── web:src/lib/prose.tsx

@@ -100,6 +100,9 @@
  * ├── web:src/components/TheaterPill.tsx
  * ├── web:src/components/TheaterToggle.tsx
  * ├── web:src/components/WorktreesDialog.tsx
+ * ├── web:src/components/cloud/CloudDialog.tsx
+ * ├── web:src/components/cloud/CloudLogoutDialog.tsx
+ * ├── web:src/components/cloud/CloudRotateDialog.tsx
  * ├── web:src/components/ui/input-group.tsx
  * ├── web:src/components/ui/sidebar.tsx
  * └── web:src/lib/uiKitSingleReact.test.tsx

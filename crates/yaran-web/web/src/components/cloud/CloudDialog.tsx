@@ -17,12 +17,12 @@
  * <module-headers:begin>
  * Uses:
  * src/components/cloud/CloudDialog.tsx
+ * ├── @yaran/ui-kit:src/button.tsx
+ * ├── @yaran/ui-kit:src/dialog.tsx
+ * ├── @yaran/ui-kit:src/inline-code.tsx
+ * ├── @yaran/ui-kit:src/input.tsx
  * ├── src/components/cloud/CloudLogoutDialog.tsx
  * ├── src/components/cloud/CloudRotateDialog.tsx
- * ├── src/components/ui/button.tsx
- * ├── src/components/ui/dialog.tsx
- * ├── src/components/ui/inline-code.tsx
- * ├── src/components/ui/input.tsx
  * ├── src/lib/cloudApi.ts
  * ├── src/lib/notify.ts
  * └── src/lib/store.ts

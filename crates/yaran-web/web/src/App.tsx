@@ -4,6 +4,8 @@
  * <module-headers:begin>
  * Uses:
  * src/App.tsx
+ * ├── @yaran/ui-kit:src/sonner.tsx
+ * ├── @yaran/ui-kit:src/use-mobile.ts
  * ├── src/components/AddProjectDialog.tsx
  * ├── src/components/AgentEnvDialog.tsx
  * ├── src/components/AgentInfoDialog.tsx
@@ -53,9 +55,7 @@
  * ├── src/components/terminalAreaModel.ts
  * ├── src/components/ui/resizable.tsx
  * ├── src/components/ui/sidebar.tsx
- * ├── src/components/ui/sonner.tsx
  * ├── src/hooks/use-changes-pane-controller.ts
- * ├── src/hooks/use-mobile.ts
  * ├── src/hooks/use-theater.ts
  * ├── src/hooks/use-visual-viewport.ts
  * ├── src/lib/paneCover.ts

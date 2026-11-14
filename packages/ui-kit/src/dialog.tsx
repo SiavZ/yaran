@@ -40,6 +40,7 @@
  * ├── web:src/components/ConfirmReloadFileDialog.tsx
  * ├── web:src/components/ConfirmUseExistingBranchDialog.tsx
  * ├── web:src/components/ConfirmVanishedEditorDialog.tsx
+ * ├── web:src/components/ConnectPhoneDialog.tsx
  * ├── web:src/components/CreateAgentDialog.tsx
  * ├── web:src/components/CustomizeWebappDialog.tsx
  * ├── web:src/components/DeleteEntryDialog.tsx
@@ -63,6 +64,9 @@
  * ├── web:src/components/StartupLogsDialog.tsx
  * ├── web:src/components/TaskManagerDialog.tsx
  * ├── web:src/components/WorktreesDialog.tsx
+ * ├── web:src/components/cloud/CloudDialog.tsx
+ * ├── web:src/components/cloud/CloudLogoutDialog.tsx
+ * ├── web:src/components/cloud/CloudRotateDialog.tsx
  * ├── web:src/components/ui/command.tsx
  * └── web:src/lib/uiKitSingleReact.test.tsx
  * <module-headers:end>

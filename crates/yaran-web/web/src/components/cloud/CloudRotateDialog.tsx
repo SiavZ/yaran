@@ -10,9 +10,9 @@
  * <module-headers:begin>
  * Uses:
  * src/components/cloud/CloudRotateDialog.tsx
- * ├── src/components/ui/button.tsx
- * ├── src/components/ui/dialog.tsx
- * └── src/components/ui/inline-code.tsx
+ * ├── @yaran/ui-kit:src/button.tsx
+ * ├── @yaran/ui-kit:src/dialog.tsx
+ * └── @yaran/ui-kit:src/inline-code.tsx
  * External: react
  *
  * Used by:

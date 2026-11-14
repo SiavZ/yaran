@@ -26,6 +26,7 @@
  * ├── web:src/components/RenameSessionDialog.tsx
  * ├── web:src/components/StandaloneAgentDialog.tsx
  * ├── web:src/components/WorktreesDialog.tsx
+ * ├── web:src/components/cloud/CloudDialog.tsx
  * ├── web:src/components/ui/input-group.tsx
  * └── web:src/components/ui/sidebar.tsx
  * <module-headers:end>
