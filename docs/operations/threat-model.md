@@ -1417,26 +1417,33 @@ or a second admin races the first, and claims the control plane.
 verified against live Cloudflare. `SETUP_CODE` is a deploy-time Worker
 secret; `src/security/secrets.ts` refuses to run setup when it is shorter
 than 24 characters. `src/setup/setup-gate.ts` compares it in constant time
-(HMACs under a fresh random key), limits attempts to five per address per
-15 minutes and 30 a day, and locks the wizard after 20 wrong codes
-(`LOCKOUT_AFTER`) until `SETUP_CODE` changes. A correct code issues a
+(HMACs under a fresh random key). Every limit is per client address
+(`src/security/rate-limit.ts`): five tries per 15 minutes and 30 a day,
+right or wrong, are temporary; 20 wrong codes lock that address until
+`SETUP_CODE` changes; and past 100 wrong codes a day from all addresses
+one wrong code locks its address, while an address that has not failed can
+still enter the right code. The lock page says which limit applied. A
+correct code issues a
 30-minute `__Host-yaran-setup` cookie. Only `/v1/meta` and the wizard
 answer on `workers.dev` in that window; everything else is
 `503 setup_incomplete` (`src/http/host-guard.ts`). Setup closes through
 the admin claim (`src/setup/steps/claim.ts`): a single-use, hashed,
 30-minute link on the new control-plane hostname, behind Access, that the
 email typed at the token step must open. One D1 batch then inserts the
-admin, closes setup and deletes the claim and lockout keys; afterwards
+admin, closes setup and deletes the claim and the setup-code counters; afterwards
 `/setup*` answers `410 setup_closed` forever and `workers.dev` is
 disabled.
 
 **Residual risk.** A setup code shared over a leaky channel is a valid
-credential until setup closes. The lockout counts per code, not per
-address, so a stranger can lock the wizard and force the deployer to set
-a new `SETUP_CODE`.
+credential until setup closes. A stranger with many addresses gets a
+bounded number of guesses per address (one each once the backstop trips)
+but no cap on addresses; the 24-character code is what makes that
+harmless. A deployer who shares an address with the guesser (one NAT, one
+VPN exit) can be locked with it and has to set a new `SETUP_CODE` or use
+another network.
 
-**Detection.** Worker audit event `setup.completed`; a locked wizard
-answers `setup_locked` on the setup page, and each attempt appears as a
+**Detection.** Worker audit event `setup.completed`; a locked address
+gets `setup_locked` on the setup page, and each attempt appears as a
 `request` line in Workers Logs.
 
 ---
@@ -1685,27 +1692,29 @@ status, rate-limit refusals); no alerting is built.
 **Attack scenario.** An attacker who gets the org's VAPID private key sends
 pushes that the push services accept as coming from the org.
 
-**Mitigation in code.** Partly implemented in phoneapp 07 and 08: key
-generation and sealing; the rest is design. Setup step 8
+**Mitigation in code.** Implemented in phoneapp 07 and 08. Setup step 8
 (`cloud/worker/src/setup/steps/keys.ts`) generates a P-256 pair and stores
 the private JWK sealed with AES-256-GCM under an HKDF key derived from
 `DATA_KEY` for purpose `vapid`, bound to its row
 (`src/security/data-key.ts`); it is never shown or exported again.
 Payloads are end-to-end encrypted to each phone's keys (T39), so the
 VAPID key alone cannot produce a notification the phone shows with real
-content. **No VAPID rotation exists:** nothing in the Worker regenerates
-the pair or makes phones register again, although the deploy template's
-README tells admins that a lost `DATA_KEY` means generating new push keys.
-That rotation is still design work.
+content. An admin rotates the pair from the console (Health, **Rotate push
+keys…**, `src/admin/vapid-rotate.ts`, behind a confirm): a new pair
+overwrites the old without opening it, so it also works after a lost
+`DATA_KEY`, and every phone that was receiving pushes is marked
+`auth_failed`, so the fan-out stops sending to it and the app registers
+again with the new `Meta.push.vapid_public_key`.
 
 **Residual risk.** A spoofed push still wakes the phone and can show the
-generic fallback text. Until rotation exists, a leaked key stays valid
-for the life of the deployment, and a lost `DATA_KEY` stops push for the
-whole org with no way back short of a new deployment.
+generic fallback text. A leaked key stays valid until an admin notices and
+rotates it, and a rotation leaves every phone without notifications until
+its app next opens.
 
 **Detection.** None specific; the push services report 401 or 403 when
 they stop accepting the org's authorization, which marks devices
-`auth_failed` and is audited as `device.push_auth_failed`.
+`auth_failed` and is audited as `device.push_auth_failed`. A rotation is
+audited as `settings.updated` naming `vapid_public_key`.
 
 ---
 
@@ -1858,7 +1867,7 @@ and a sealed push endpoint, and fails if any appears in a log line,
 response body or header. A `DATA_KEY` rotation re-encrypts in the
 background through `DATA_KEY_PREVIOUS` and forgets every remembered
 consent; the API token is replaced on the Health page; a new `SETUP_CODE`
-lifts a lockout.
+lifts every address's lockout.
 
 **Residual risk.** A secret pasted into a chat or ticket is outside the
 code's reach. What the Deploy button and Workers Builds do with the
@@ -2140,7 +2149,8 @@ it, and a refusal carries `Retry-After`.
 **Residual risk.** The owner's own misbehaving client.
 
 **Detection.** The refusal reaches the phone as `rate_limited`, and the
-app says so. yaran writes no log line for it.
+app says so. yaran logs it as a warning under `yaran::cloud::handoff`
+with the code and the retry delay.
 
 ---
 

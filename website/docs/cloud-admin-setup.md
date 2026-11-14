@@ -65,8 +65,9 @@ is missing or not base64 of at least 32 bytes, and says which.
 > **Keep a copy of the data key somewhere safe.** If it is lost, the secrets it
 > protects cannot be read again: you have to paste the API token again on **Health**,
 > push notifications stop for the whole org, and every phone sees the sign-in
-> confirmation page once more on its next sign-in. The console has no way yet to
-> generate a new push key, so a lost data key means push stays off.
+> confirmation page once more on its next sign-in. To get push back, press
+> **Rotate push keys…** on **Health**: every phone then registers again by itself the
+> next time its app opens.
 
 ### Rotating the data key
 
@@ -85,8 +86,10 @@ nothing without the setup code.
 The page walks you through these steps, and you can reload and resume at any point:
 
 1. **Setup code.** Type the setup code. Each network address gets five tries every 15
-   minutes, and 20 wrong codes, or 30 tries in one day, lock setup until you change the
-   `SETUP_CODE` secret in the dashboard.
+   minutes and 30 a day, right or wrong. Twenty wrong codes lock setup for that address
+   only, until you change the `SETUP_CODE` secret in the dashboard; nobody else is locked
+   out. If wrong codes pour in from many addresses at once, each further address is locked
+   on its first wrong code, while an address that types the right one still gets in.
 2. **API token.** Paste the token, or leave the field empty to use the one you gave at
    deploy time, and type **Your email**: the address you sign in with, which becomes the
    first admin. The page checks every permission the token needs and lists any that is
@@ -152,7 +155,9 @@ get:
 - **Health**: each check with "ok" or "needs attention", the wiring self-test,
   **Re-run checks**, **Disable workers.dev** while that address is still on, and
   **Replace the API token**, which checks every permission before the old token is
-  overwritten.
+  overwritten, and **Rotate push keys…**, for a push key that may have leaked or a lost
+  data key: every phone stops getting notifications until its app registers again with
+  the new key, which it does by itself the next time it opens.
 - **Updates**: the running version against the latest release, and **Check now**.
 
 Every destructive action asks first, with Cancel focused.

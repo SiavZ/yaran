@@ -63,8 +63,8 @@ Run `yaran cloud login` to pair again, if your admin allows it.
 ### Pairing is refused
 
 When the browser refuses, the terminal says "The control plane refused to pair this
-machine: the pairing was not approved in the browser" followed by a code in brackets.
-The code tells you why:
+machine:", then what happened and what to do next, with a code in brackets. The most
+common codes:
 
 - `machine_cap_reached`: **you have reached your machine limit** (10 by default).
   Remove a machine you no longer use, or ask an admin to raise **Machines per user**.
@@ -115,6 +115,18 @@ sign in again.
 That is intended. Once setup finishes, the control plane answers only on
 `<org-control-plane>`, and any other address gets "This hostname does not serve the
 control plane." Use `<org-control-plane>`.
+
+### "Setup is locked for your address"
+
+The setup page locks the network address you are on, and only that one, after 20 wrong
+setup codes from it. It also locks an address on its first wrong code while wrong codes
+are pouring in from many addresses, which looks like someone guessing. Another address
+can still start setup with the right code. To unlock this one, change the `SETUP_CODE`
+secret in the dashboard and reload the page.
+
+"Too many tries from your address" and "Your address has used its 30 setup-code tries
+for today" are pauses, not locks: each address gets five codes every 15 minutes and 30 a
+day, right or wrong. The page says how long to wait.
 
 ### "Setup is closed."
 
@@ -194,7 +206,8 @@ persists, check the machine's network.
   organization" are each fixed right there. "This organization has turned notifications
   off" means your admin switched **Push notifications** off for everyone.
 - **Check the machine**: `push_notifications` under `[cloud]` is `true`.
-- **"push stopped" in the console**: open the app once and it registers again.
+- **"push stopped" in the console**: open the app once and it registers again. Every
+  phone shows this after an admin rotates the org's push keys.
 - **UnifiedPush builds** (F-Droid, GitHub `foss`): a distributor must be installed and
   picked in the app, and the distributor itself must be allowed to run in the
   background. With none installed the app says "No UnifiedPush distributor installed" and offers
