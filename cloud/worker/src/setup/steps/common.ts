@@ -1,0 +1,42 @@
+/**
+ * Shared plumbing for the wizard steps: load and persist the setup record.
+ *
+ * The record lives under the internal settings key `setup_wizard`; each advance also
+ * writes the facts other phases read by their own names (04's `account_id`, `zone_id`,
+ * `control_plane_host`, `team_domain`, `control_plane_app_id`, `control_plane_aud`, …).
+ *
+ * - A refused transition is returned, never thrown, so the page can say why.
+ */
+import type { D1Like } from "../../admin/ports.ts";
+import { readKey, writeStatements } from "../../admin/settings-store.ts";
+import { INITIAL_SETUP, reduce, type SetupEvent, type SetupRecord } from "../wizard-state.ts";
+
+export const RECORD_KEY = "setup_wizard";
+
+export async function loadRecord(db: D1Like): Promise<SetupRecord> {
+  return (await readKey<SetupRecord>(db, RECORD_KEY)) ?? INITIAL_SETUP;
+}
+
+/** The 04-named settings keys mirrored from the record. */
+export function mirroredKeys(r: SetupRecord): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const map: [string, unknown][] = [
+    ["account_id", r.account_id],
+    ["zone_id", r.zone_id],
+    ["zone_name", r.zone_name],
+    ["control_plane_host", r.cp_host],
+    ["team_domain", r.team_domain],
+    ["control_plane_app_id", r.access_app_id],
+    ["control_plane_aud", r.access_aud],
+    ["worker_script_name", r.script_name],
+  ];
+  for (const [k, v] of map) if (v !== undefined) out[k] = v;
+  return out;
+}
+
+export async function advance(db: D1Like, record: SetupRecord, event: SetupEvent, now: Date): Promise<{ ok: true; record: SetupRecord } | { ok: false; reason: string }> {
+  const t = reduce(record, event);
+  if (!t.ok) return t;
+  await db.batch(writeStatements(db, { [RECORD_KEY]: t.record, ...mirroredKeys(t.record) }, "setup", now));
+  return t;
+}

@@ -1,0 +1,32 @@
+/**
+ * Wizard step 8: the org's VAPID key pair for Web Push.
+ *
+ * Generates an extractable ECDSA P-256 pair, seals the private JWK with 04's DATA_KEY
+ * helper (it is never shown or exported again), and stores the 65-byte raw public key,
+ * base64url, as `vapid_public_key`, which 06 serves as `Meta.push.vapid_public_key` and 08
+ * signs with. Re-running reuses an existing pair.
+ */
+import { b64urlEncode } from "@yaran/protocol";
+import type { DataKeySealer, D1Like } from "../../admin/ports.ts";
+import { readKey, writeKeys } from "../../admin/settings-store.ts";
+import type { SetupEvent } from "../wizard-state.ts";
+
+export const VAPID_PUBLIC_KEY = "vapid_public_key";
+export const VAPID_PRIVATE_KEY = "vapid_private_key_enc";
+export const VAPID_AAD = "settings.vapid_private_key_enc:org";
+
+export async function ensureVapidKey(db: D1Like, sealer: DataKeySealer, now: Date): Promise<SetupEvent> {
+  const existing = await readKey<string>(db, VAPID_PUBLIC_KEY);
+  if (existing && (await readKey<string>(db, VAPID_PRIVATE_KEY))) return { kind: "keys_ready", vapid_public_key: existing };
+  const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
+  const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+  const publicKey = b64urlEncode(raw);
+  await writeKeys(db, { [VAPID_PUBLIC_KEY]: publicKey, [VAPID_PRIVATE_KEY]: await sealer.seal("vapid", VAPID_AAD, JSON.stringify(jwk)) }, "setup", now);
+  return { kind: "keys_ready", vapid_public_key: publicKey };
+}
+
+/** The VAPID `sub` claim: the control plane's own origin. */
+export function vapidSubject(cpHost: string): string {
+  return `https://${cpHost}`;
+}
