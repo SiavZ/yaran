@@ -31,6 +31,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import * as accessJwt from "./vectors/access-jwt.mjs";
 import * as api from "./vectors/api.mjs";
 import * as consent from "./vectors/consent.mjs";
 import * as jwe from "./vectors/jwe.mjs";
@@ -50,7 +51,7 @@ const ctx = {
 };
 
 const files = {};
-for (const gen of [api, jwe, sig, consent, push, webpush, misc]) {
+for (const gen of [api, jwe, sig, consent, push, webpush, misc, accessJwt]) {
   for (const [path, value] of Object.entries(await gen.generate(ctx))) {
     if (files[path]) throw new Error(`two generators write ${path}`);
     files[path] = `${JSON.stringify(value, null, 2)}\n`;

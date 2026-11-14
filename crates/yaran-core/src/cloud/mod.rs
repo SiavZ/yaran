@@ -74,6 +74,8 @@ pub mod pair_refusal;
 pub mod paths;
 pub mod pkce;
 pub mod planner;
+pub mod access_jwks;
+pub mod access_jwt;
 pub mod protocol;
 pub mod qr;
 pub mod revocation;
