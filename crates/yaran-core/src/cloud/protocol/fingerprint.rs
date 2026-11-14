@@ -10,6 +10,7 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/protocol/fingerprint.rs
+//! └── cloud::protocol::test_fixtures
 //! External: ring
 //!
 //! Used by:

@@ -13,7 +13,7 @@
  * Uses:
  * src/sig/canonical.ts
  * └── src/b64url.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/sig/canonical.ts

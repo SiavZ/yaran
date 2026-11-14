@@ -8,6 +8,7 @@
 //! cloud/protocol/handoff_tests.rs
 //! ├── cloud::protocol::concat_kdf
 //! ├── cloud::protocol::handoff
+//! ├── cloud::protocol::rules
 //! └── cloud::protocol::test_fixtures
 //! External: aes_gcm, p256, serde_json
 //!

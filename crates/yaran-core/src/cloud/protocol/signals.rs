@@ -11,7 +11,8 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/protocol/signals.rs
-//! External: (none)
+//! └── cloud::protocol::test_fixtures
+//! External: none
 //!
 //! Used by:
 //! cloud/protocol/signals.rs

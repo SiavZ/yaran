@@ -8,8 +8,7 @@
  * implementation against another.
  *
  * <module-headers:begin>
- * Uses:
- * scripts/vectors/push.mjs
+ * Uses: none
  * External: node:crypto
  *
  * Used by:

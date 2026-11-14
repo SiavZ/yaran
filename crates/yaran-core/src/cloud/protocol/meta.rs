@@ -10,7 +10,8 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/protocol/meta.rs
-//! └── cloud::protocol::rules
+//! ├── cloud::protocol::rules
+//! └── cloud::protocol::test_fixtures
 //! External: serde
 //!
 //! Used by:

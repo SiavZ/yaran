@@ -16,7 +16,7 @@
  * Uses:
  * src/consent.ts
  * └── src/b64url.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/consent.ts

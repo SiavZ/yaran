@@ -6,9 +6,8 @@
  * - Pure. Rust twin: `yaran_core::cloud::protocol::ua`; pinned by `fixtures/ua/`.
  *
  * <module-headers:begin>
- * Uses:
- * src/ua.ts
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * src/ua.ts

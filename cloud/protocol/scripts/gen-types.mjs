@@ -10,11 +10,10 @@
  * - Writes one file; never touches schemas.
  *
  * <module-headers:begin>
- * Uses:
- * scripts/gen-types.mjs
+ * Uses: none
  * External: json-schema-to-typescript, node:fs, node:path, node:url
  *
- * Used by: entry point (npm run gen / npm run gen:check)
+ * Used by: entry point (CLI: npm run gen / gen:check in cloud/protocol, and cloud-protocol.yml)
  * <module-headers:end>
  */
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";

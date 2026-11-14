@@ -12,8 +12,9 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/protocol/signing.rs
-//! └── cloud::protocol::rules
-//! External: ring, std::time
+//! ├── cloud::protocol::rules
+//! └── cloud::protocol::test_fixtures
+//! External: ring, std
 //!
 //! Used by:
 //! cloud/protocol/signing.rs

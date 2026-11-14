@@ -12,7 +12,7 @@
  * Uses:
  * src/jwe/kdf.ts
  * └── src/b64url.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/jwe/kdf.ts

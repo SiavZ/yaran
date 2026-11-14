@@ -25,7 +25,7 @@
  * └── scripts/vectors/webpush.mjs
  * External: node:fs, node:path, node:url
  *
- * Used by: entry point (npm run gen / node scripts/gen-vectors.mjs --check)
+ * Used by: entry point (CLI: npm run gen / gen:vectors:check in cloud/protocol, and cloud-protocol.yml)
  * <module-headers:end>
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";

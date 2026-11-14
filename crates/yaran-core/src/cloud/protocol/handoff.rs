@@ -15,12 +15,16 @@
 //! Uses:
 //! cloud/protocol/handoff.rs
 //! ├── cloud::protocol::concat_kdf
+//! ├── cloud::protocol::handoff::tests
 //! └── cloud::protocol::rules
-//! External: ring, serde, serde_json
+//! External: ring, serde, serde_json, std
 //!
 //! Used by:
 //! cloud/protocol/handoff.rs
-//! └── cloud::protocol
+//! ├── cloud::protocol
+//! ├── cloud::protocol::handoff::tests
+//! ├── cloud::protocol::handoff_consent
+//! └── cloud::protocol::uri
 //! <module-headers:end>
 
 use std::fmt;

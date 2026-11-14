@@ -8,8 +8,7 @@
  * - Also a node:crypto Concat KDF, independent of src/jwe/kdf.ts.
  *
  * <module-headers:begin>
- * Uses:
- * scripts/vectors/keys.mjs
+ * Uses: none
  * External: node:crypto
  *
  * Used by:

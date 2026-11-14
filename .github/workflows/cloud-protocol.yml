@@ -4,7 +4,7 @@ name: Cloud protocol
 # phase codes against. Reusable: Phase 01's gates.yml calls it as its `protocol` job when
 # cloud/protocol/** or crates/yaran-core/src/cloud/** change. The Rust half of the contract
 # (yaran_core::cloud::protocol) is tested by pr.yml's unfiltered Test jobs, which read the
-# same fixtures. workflow_dispatch allows a manual run before gates.yml exists.
+# same fixtures. workflow_dispatch allows a manual run.
 on:
   workflow_call:
   workflow_dispatch:

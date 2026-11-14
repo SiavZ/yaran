@@ -16,7 +16,7 @@
  * ├── src/b64url.ts
  * ├── src/jwe/ec.ts
  * └── src/sig/fingerprint.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/sig/device.ts

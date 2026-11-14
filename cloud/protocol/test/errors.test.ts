@@ -10,7 +10,7 @@
  * └── src/validate.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test)
+ * Used by: entry point (vitest, via npm test in cloud/protocol and cloud-protocol.yml)
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";

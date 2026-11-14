@@ -12,18 +12,22 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/protocol/rules.rs
-//! External: base64, chrono, regex, ring, serde, std::sync::LazyLock
+//! └── cloud::protocol::test_fixtures
+//! External: base64, chrono, regex, ring, serde, serde_json, std
 //!
 //! Used by:
 //! cloud/protocol/rules.rs
+//! ├── cloud::protocol
+//! ├── cloud::protocol::errors
 //! ├── cloud::protocol::handoff
+//! ├── cloud::protocol::handoff::tests
 //! ├── cloud::protocol::handoff_consent
 //! ├── cloud::protocol::machine
 //! ├── cloud::protocol::meta
 //! ├── cloud::protocol::pairing
-//! ├── cloud::protocol::errors
-//! ├── cloud::protocol::uri
-//! └── cloud::protocol::test_fixtures
+//! ├── cloud::protocol::signing
+//! ├── cloud::protocol::test_fixtures
+//! └── cloud::protocol::uri
 //! <module-headers:end>
 
 use std::fmt;

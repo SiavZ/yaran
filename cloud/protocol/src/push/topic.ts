@@ -13,7 +13,7 @@
  * src/push/topic.ts
  * ├── src/b64url.ts
  * └── src/generated/types.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/push/topic.ts

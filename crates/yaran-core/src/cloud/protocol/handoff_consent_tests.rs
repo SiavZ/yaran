@@ -8,7 +8,7 @@
 //! cloud/protocol/handoff_consent_tests.rs
 //! ├── cloud::protocol::handoff_consent
 //! └── cloud::protocol::test_fixtures
-//! External: serde_json
+//! External: none
 //!
 //! Used by:
 //! cloud/protocol/handoff_consent_tests.rs

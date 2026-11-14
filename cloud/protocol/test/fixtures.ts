@@ -6,8 +6,7 @@
  * prose.test.tsx pattern).
  *
  * <module-headers:begin>
- * Uses:
- * test/fixtures.ts
+ * Uses: none
  * External: node:fs, node:path, node:url
  *
  * Used by:

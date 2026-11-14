@@ -13,10 +13,10 @@
  * <module-headers:begin>
  * Uses:
  * src/errors.ts
- * ├── registry/errors.json
+ * ├── cloud/protocol/registry/errors.json
  * ├── src/generated/types.ts
  * └── src/validate.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/errors.ts

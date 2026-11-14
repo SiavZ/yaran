@@ -10,8 +10,7 @@
  * - Keys are derived with node:crypto only (independent of src/).
  *
  * <module-headers:begin>
- * Uses:
- * scripts/vectors/api-values.mjs
+ * Uses: none
  * External: node:crypto
  *
  * Used by:

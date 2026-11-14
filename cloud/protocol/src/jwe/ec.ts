@@ -13,7 +13,7 @@
  * Uses:
  * src/jwe/ec.ts
  * └── src/b64url.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/jwe/ec.ts

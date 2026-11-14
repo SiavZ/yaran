@@ -31,9 +31,9 @@
  * ├── src/uri.ts
  * ├── src/validate.ts
  * └── src/version.ts
- * External: (none)
+ * External: none
  *
- * Used by: entry point (package export "@yaran/protocol")
+ * Used by: entry point (package entry of @yaran/protocol, the "." export in cloud/protocol/package.json)
  * <module-headers:end>
  */
 export type * from "./generated/types.ts";

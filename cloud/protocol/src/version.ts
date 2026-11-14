@@ -13,7 +13,7 @@
  * Uses:
  * src/version.ts
  * └── src/generated/types.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/version.ts

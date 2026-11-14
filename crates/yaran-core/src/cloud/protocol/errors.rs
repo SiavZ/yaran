@@ -11,12 +11,14 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/protocol/errors.rs
-//! └── cloud::protocol::rules
+//! ├── cloud::protocol::rules
+//! └── cloud::protocol::test_fixtures
 //! External: serde, serde_json
 //!
 //! Used by:
 //! cloud/protocol/errors.rs
-//! └── cloud::protocol
+//! ├── cloud::protocol
+//! └── cloud::protocol::handoff_consent
 //! <module-headers:end>
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

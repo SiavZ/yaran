@@ -10,14 +10,16 @@
 //! Uses:
 //! cloud/protocol/test_fixtures.rs
 //! └── cloud::protocol::rules
-//! External: serde, serde_json, std::fs, std::path
+//! External: serde, serde_json, std
 //!
 //! Used by:
 //! cloud/protocol/test_fixtures.rs
 //! ├── cloud::protocol
+//! ├── cloud::protocol::concat_kdf
 //! ├── cloud::protocol::errors
-//! ├── cloud::protocol::handoff
-//! ├── cloud::protocol::handoff_consent
+//! ├── cloud::protocol::fingerprint
+//! ├── cloud::protocol::handoff::tests
+//! ├── cloud::protocol::handoff_consent::tests
 //! ├── cloud::protocol::machine
 //! ├── cloud::protocol::meta
 //! ├── cloud::protocol::pairing

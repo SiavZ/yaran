@@ -16,6 +16,11 @@
     "tools/module-headers/bin/module-headers.mjs": "CLI: node tools/module-headers/bin/module-headers.mjs, via npm run check / write / lines, make headers-check and gates.yml",
     "tools/module-headers/test/*.test.mjs": "node --test, via npm test in tools/module-headers",
     "tools/module-headers/pre-commit.sh": "opt-in git hook, run by tools/module-headers/hooks/pre-commit",
-    "tools/module-headers/hooks/pre-commit": "git pre-commit hook, enabled with git config core.hooksPath tools/module-headers/hooks"
+    "tools/module-headers/hooks/pre-commit": "git pre-commit hook, enabled with git config core.hooksPath tools/module-headers/hooks",
+    "cloud/protocol/src/index.ts": "package entry of @yaran/protocol, the \".\" export in cloud/protocol/package.json",
+    "cloud/protocol/test/*.test.ts": "vitest, via npm test in cloud/protocol and cloud-protocol.yml",
+    "cloud/protocol/vitest.config.ts": "loaded by vitest, via npm test in cloud/protocol",
+    "cloud/protocol/scripts/gen-types.mjs": "CLI: npm run gen / gen:check in cloud/protocol, and cloud-protocol.yml",
+    "cloud/protocol/scripts/gen-vectors.mjs": "CLI: npm run gen / gen:vectors:check in cloud/protocol, and cloud-protocol.yml"
   }
 }

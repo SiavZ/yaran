@@ -11,9 +11,8 @@
  * - Pure. Rust twin (builders only): `yaran_core::cloud::protocol::uri`.
  *
  * <module-headers:begin>
- * Uses:
- * src/uri.ts
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * src/uri.ts

@@ -11,7 +11,7 @@
  * Uses:
  * scripts/vectors/api-cases-handoff.mjs
  * └── scripts/vectors/api-values.mjs
- * External: (none)
+ * External: none
  *
  * Used by:
  * scripts/vectors/api-cases-handoff.mjs

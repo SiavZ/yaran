@@ -12,7 +12,7 @@
  * scripts/vectors/api-cases-admin.mjs
  * ├── scripts/vectors/api-cases-machine.mjs
  * └── scripts/vectors/api-values.mjs
- * External: (none)
+ * External: none
  *
  * Used by:
  * scripts/vectors/api-cases-admin.mjs

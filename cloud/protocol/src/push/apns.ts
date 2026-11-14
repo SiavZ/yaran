@@ -12,7 +12,7 @@
  * src/push/apns.ts
  * ├── src/generated/types.ts
  * └── src/push/topic.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/push/apns.ts

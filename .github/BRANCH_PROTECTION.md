@@ -30,8 +30,10 @@ GitHub UI (Settings → Branches → Protection rules → main).
     CONTRACT` comment, runs on every PR (docs-only ones included) and on
     pushes to `main`, and fails when any job it gathers fails: today
     `Module headers` (`tools/module-headers --check`, skipped when no code
-    file changed) and `File length` (the 500-line gate against
-    `tools/module-headers/baseline-oversize.json`)
+    file changed), `File length` (the 500-line gate against
+    `tools/module-headers/baseline-oversize.json`) and `Protocol`
+    (`.github/workflows/cloud-protocol.yml`, skipped unless `cloud/protocol/**`
+    or `crates/yaran-core/src/cloud/**` changed)
   - `Strict mode (require branches up to date before merging)`: yes
 - **Path-filtered suites are never required directly.** A workflow skipped
   by a `paths:` filter leaves its check "Pending" forever, which blocks the

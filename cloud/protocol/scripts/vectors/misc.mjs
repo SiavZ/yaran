@@ -8,9 +8,8 @@
  * canonical form.
  *
  * <module-headers:begin>
- * Uses:
- * scripts/vectors/misc.mjs
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * scripts/vectors/misc.mjs

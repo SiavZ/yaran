@@ -7,14 +7,14 @@
  * <module-headers:begin>
  * Uses:
  * test/registry.test.ts
- * ├── registry/audit-actions.json
- * ├── registry/capabilities.json
- * ├── registry/close-codes.json
- * ├── registry/errors.json
- * └── registry/refusals.json
+ * ├── cloud/protocol/registry/audit-actions.json
+ * ├── cloud/protocol/registry/capabilities.json
+ * ├── cloud/protocol/registry/close-codes.json
+ * ├── cloud/protocol/registry/errors.json
+ * └── cloud/protocol/registry/refusals.json
  * External: node:fs, node:path, node:url, vitest
  *
- * Used by: entry point (vitest, via npm test)
+ * Used by: entry point (vitest, via npm test in cloud/protocol and cloud-protocol.yml)
  * <module-headers:end>
  */
 import { readFileSync } from "node:fs";

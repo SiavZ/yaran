@@ -18,12 +18,14 @@
 //! ├── cloud::protocol::errors
 //! ├── cloud::protocol::fingerprint
 //! ├── cloud::protocol::handoff
+//! ├── cloud::protocol::handoff_consent::tests
 //! └── cloud::protocol::rules
 //! External: ring
 //!
 //! Used by:
 //! cloud/protocol/handoff_consent.rs
-//! └── cloud::protocol
+//! ├── cloud::protocol
+//! └── cloud::protocol::handoff_consent::tests
 //! <module-headers:end>
 
 use ring::{hkdf, hmac, signature};

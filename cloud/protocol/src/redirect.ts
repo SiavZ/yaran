@@ -8,9 +8,8 @@
  * - Pure. Rust twin: `yaran_core::cloud::protocol::uri::redirect_allowed`.
  *
  * <module-headers:begin>
- * Uses:
- * src/redirect.ts
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * src/redirect.ts

@@ -9,7 +9,8 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/protocol/ua.rs
-//! External: regex, std::sync::LazyLock
+//! └── cloud::protocol::test_fixtures
+//! External: regex, serde_json, std
 //!
 //! Used by:
 //! cloud/protocol/ua.rs

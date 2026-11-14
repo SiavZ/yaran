@@ -13,7 +13,7 @@
  * Uses:
  * src/sig/fingerprint.ts
  * └── src/b64url.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/sig/fingerprint.ts

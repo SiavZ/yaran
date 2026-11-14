@@ -7,11 +7,10 @@
  * - No browser environment: the codecs under test use only WebCrypto and TextEncoder.
  *
  * <module-headers:begin>
- * Uses:
- * vitest.config.ts
- * External: vitest/config
+ * Uses: none
+ * External: vitest
  *
- * Used by: entry point (vitest, via npm test)
+ * Used by: entry point (loaded by vitest, via npm test in cloud/protocol)
  * <module-headers:end>
  */
 import { defineConfig } from "vitest/config";

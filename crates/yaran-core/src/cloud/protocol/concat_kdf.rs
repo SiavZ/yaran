@@ -9,11 +9,14 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/protocol/concat_kdf.rs
+//! └── cloud::protocol::test_fixtures
 //! External: ring
 //!
 //! Used by:
 //! cloud/protocol/concat_kdf.rs
-//! └── cloud::protocol::handoff
+//! ├── cloud::protocol
+//! ├── cloud::protocol::handoff
+//! └── cloud::protocol::handoff::tests
 //! <module-headers:end>
 
 use ring::digest::{Context, SHA256};

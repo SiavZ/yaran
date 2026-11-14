@@ -18,7 +18,7 @@
  * src/sig/verify.ts
  * ├── src/b64url.ts
  * └── src/sig/canonical.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/sig/verify.ts

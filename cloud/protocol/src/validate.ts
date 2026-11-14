@@ -14,18 +14,18 @@
  * <module-headers:begin>
  * Uses:
  * src/validate.ts
- * ├── schemas/admin.schema.json
- * ├── schemas/common.schema.json
- * ├── schemas/devices.schema.json
- * ├── schemas/error.schema.json
- * ├── schemas/handoff.schema.json
- * ├── schemas/machine.schema.json
- * ├── schemas/me.schema.json
- * ├── schemas/meta.schema.json
- * ├── schemas/pairing.schema.json
- * ├── schemas/push.schema.json
- * ├── schemas/relay.schema.json
- * └── schemas/release-manifest.schema.json
+ * ├── cloud/protocol/schemas/admin.schema.json
+ * ├── cloud/protocol/schemas/common.schema.json
+ * ├── cloud/protocol/schemas/devices.schema.json
+ * ├── cloud/protocol/schemas/error.schema.json
+ * ├── cloud/protocol/schemas/handoff.schema.json
+ * ├── cloud/protocol/schemas/machine.schema.json
+ * ├── cloud/protocol/schemas/me.schema.json
+ * ├── cloud/protocol/schemas/meta.schema.json
+ * ├── cloud/protocol/schemas/pairing.schema.json
+ * ├── cloud/protocol/schemas/push.schema.json
+ * ├── cloud/protocol/schemas/relay.schema.json
+ * └── cloud/protocol/schemas/release-manifest.schema.json
  * External: @cfworker/json-schema
  *
  * Used by:

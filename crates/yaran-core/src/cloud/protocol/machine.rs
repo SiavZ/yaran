@@ -12,8 +12,9 @@
 //! Uses:
 //! cloud/protocol/machine.rs
 //! ├── cloud::protocol::meta
-//! └── cloud::protocol::rules
-//! External: serde
+//! ├── cloud::protocol::rules
+//! └── cloud::protocol::test_fixtures
+//! External: serde, std
 //!
 //! Used by:
 //! cloud/protocol/machine.rs

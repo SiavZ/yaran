@@ -11,7 +11,7 @@
  * src/sig/sign.ts
  * ├── src/b64url.ts
  * └── src/sig/canonical.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/sig/sign.ts

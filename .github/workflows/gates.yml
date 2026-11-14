@@ -124,18 +124,18 @@ jobs:
         run: node tools/module-headers/bin/module-headers.mjs --lines --check
 
   # ── Seam for path-filtered suites ────────────────────────────────────────────
-  # Phase 02 fills in `protocol`; Phase 18 fills in `cloud`, `mobile` and `ui-kit`.
+  # Phase 02 filled in `protocol`; Phase 18 fills in `cloud`, `mobile` and `ui-kit`.
   # Each is a reusable workflow (`on: workflow_call`) gated on its filter output. When
   # one is uncommented, add its job id to `required.needs` AND to `allowed-skips`, or a
   # PR that does not touch it turns `Required gates` red (or, if only in `needs`, a
   # failure in it is ignored).
   #
-  # protocol:
-  #   name: Protocol
-  #   needs: changes
-  #   if: needs.changes.outputs.protocol == 'true'
-  #   uses: ./.github/workflows/cloud-protocol.yml
-  #
+  protocol:
+    name: Protocol
+    needs: changes
+    if: needs.changes.outputs.protocol == 'true'
+    uses: ./.github/workflows/cloud-protocol.yml
+
   # cloud:
   #   name: Cloud
   #   needs: changes
@@ -162,10 +162,10 @@ jobs:
     # `if: always()` so it reports even when a job it needs failed or was skipped.
     name: Required gates
     if: always()
-    needs: [changes, headers, lines]
+    needs: [changes, headers, lines, protocol]
     runs-on: ubuntu-24.04
     steps:
       - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
-          allowed-skips: headers
+          allowed-skips: headers, protocol
           jobs: ${{ toJSON(needs) }}

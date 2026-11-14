@@ -25,7 +25,7 @@
 //! ├── cloud::protocol::test_fixtures
 //! ├── cloud::protocol::ua
 //! └── cloud::protocol::uri
-//! External: (none)
+//! External: serde_json
 //!
 //! Used by:
 //! cloud/protocol/mod.rs

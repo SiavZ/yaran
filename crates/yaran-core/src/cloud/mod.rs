@@ -9,11 +9,11 @@
 //! Uses:
 //! cloud/mod.rs
 //! └── cloud::protocol
-//! External: (none)
+//! External: none
 //!
 //! Used by:
 //! cloud/mod.rs
-//! └── lib.rs
+//! └── crate
 //! <module-headers:end>
 
 pub mod protocol;

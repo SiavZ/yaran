@@ -9,9 +9,8 @@
  * - Pure functions, no I/O; usable in Node, Workers and the WebView shell.
  *
  * <module-headers:begin>
- * Uses:
- * src/b64url.ts
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * src/b64url.ts

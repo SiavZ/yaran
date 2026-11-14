@@ -16,7 +16,7 @@
  * ├── src/b64url.ts
  * ├── src/generated/types.ts
  * └── src/validate.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/push/payload.ts

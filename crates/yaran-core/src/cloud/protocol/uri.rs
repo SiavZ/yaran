@@ -11,7 +11,8 @@
 //! Uses:
 //! cloud/protocol/uri.rs
 //! ├── cloud::protocol::handoff
-//! └── cloud::protocol::rules
+//! ├── cloud::protocol::rules
+//! └── cloud::protocol::test_fixtures
 //! External: percent_encoding
 //!
 //! Used by:

@@ -15,7 +15,7 @@
  * └── src/validate.ts
  * External: node:fs, node:path, node:url, vitest
  *
- * Used by: entry point (vitest, via npm test)
+ * Used by: entry point (vitest, via npm test in cloud/protocol and cloud-protocol.yml)
  * <module-headers:end>
  */
 import { readdirSync, readFileSync } from "node:fs";
