@@ -3,12 +3,15 @@
  * constant-time setup-code comparison.
  *
  * | Secret         | Purpose                       | Valid when                              |
- * | `CF_API_TOKEN` | Cloudflare API calls (05)     | non-empty (07 verifies it live)         |
+ * | `CF_API_TOKEN` | Cloudflare API calls (05)     | optional; non-blank when set            |
  * | `SETUP_CODE`   | first-run gate (07)           | at least 24 characters                  |
  * | `DATA_KEY`     | root of encryption at rest    | base64 decoding to at least 32 bytes    |
  *
- * When one is missing or malformed the pipeline refuses every route but `/v1/meta` with
- * `503 unavailable`, and logs the secret's NAME (never its value) once per isolate.
+ * When one is missing or malformed the pipeline refuses every route but `/v1/meta` and the
+ * setup wizard (which explains the problem itself) with `503 unavailable`, and logs the
+ * secret's NAME (never its value) once per isolate. `CF_API_TOKEN` may be absent: setup
+ * stores the token sealed in D1, its one home from then on (07), and the deployer may
+ * delete the secret.
  *
  * <module-headers:begin>
  * Uses:
@@ -20,7 +23,9 @@
  * Used by:
  * src/security/secrets.ts
  * ├── src/http/pipeline.ts
+ * ├── src/routes/phase07-context.ts
  * ├── src/security/data-key.ts
+ * ├── src/setup/setup-gate.ts
  * └── test/secrets.test.ts
  * <module-headers:end>
  */
@@ -55,7 +60,7 @@ export function secretProblems(env: Env): SecretProblem[] {
     if (value === undefined || value === "") out.push({ name, problem: "missing" });
     else if (!valid(value)) out.push({ name, problem: "malformed" });
   };
-  check("CF_API_TOKEN", env.CF_API_TOKEN, (v) => v.trim().length > 0);
+  if (env.CF_API_TOKEN !== undefined && env.CF_API_TOKEN !== "") check("CF_API_TOKEN", env.CF_API_TOKEN, (v) => v.trim().length > 0);
   check("SETUP_CODE", env.SETUP_CODE, (v) => v.length >= SETUP_CODE_MIN_LENGTH);
   check("DATA_KEY", env.DATA_KEY, (v) => decodeDataKey(v) !== null);
   return out;

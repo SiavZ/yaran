@@ -7,6 +7,7 @@
  * test/audit.test.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── cloud/protocol/registry/audit-actions.json
+ * ├── src/admin/audit-query.ts
  * ├── src/audit/actions.ts
  * ├── src/audit/audit.ts
  * ├── src/db/client.ts
@@ -23,7 +24,8 @@ import registry from "@yaran/protocol/registry/audit-actions.json";
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { AUDIT_ACTIONS, type AuditAction } from "../src/audit/actions.ts";
-import { auditStatement, purgeAudit, record, toAuditEntry, type AuditRow } from "../src/audit/audit.ts";
+import { sweepAudit } from "../src/admin/audit-query.ts";
+import { auditStatement, record, toAuditEntry, type AuditRow } from "../src/audit/audit.ts";
 import { all } from "../src/db/client.ts";
 import type { Actor } from "../src/http/context.ts";
 import { appCtx } from "./helpers/app.ts";
@@ -70,7 +72,7 @@ describe("retention", () => {
   it("purges only rows older than the window", async () => {
     await record(as({ kind: "system" }, NOW - 400 * 86_400), { action: "drift.repaired", outcome: "ok" });
     await record(as({ kind: "system" }, NOW - 10 * 86_400), { action: "drift.repaired", outcome: "ok" });
-    expect(await purgeAudit(env.DB, NOW, 365, 100)).toBe(1);
+    expect(await sweepAudit(env.DB, 365, new Date(NOW * 1000), 100)).toBe(1);
     expect(await rows("drift.repaired")).toHaveLength(1);
   });
 });

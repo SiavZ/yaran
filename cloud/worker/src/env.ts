@@ -14,6 +14,7 @@
  *
  * Used by:
  * src/env.ts
+ * ├── src/console/route-types.ts
  * ├── src/http/context.ts
  * ├── src/http/pipeline.ts
  * ├── src/index.ts
@@ -39,10 +40,8 @@ declare global {
       DATA_KEY_PREVIOUS?: string | undefined;
       /** Cloudflare API base URL override (05; Phase 19 staging chaos proxy). Must be https. */
       CF_API_BASE_URL?: string | undefined;
-      /** Space-separated https app callback URLs (02 §8; 06 handoff, 05 G1 fallback L2). */
+      /** Space- or comma-separated https app callback URLs (02 §8; 06 handoff, 05 G1 fallback L2). */
       APP_CALLBACK_URLS?: string | undefined;
-      /** The Worker's own version, served as `Meta.worker.version` (06). */
-      WORKER_VERSION?: string | undefined;
       /** "off" disables the runtime migrator (G11 fallback); anything else leaves it on. */
       RUNTIME_MIGRATIONS?: string | undefined;
     }

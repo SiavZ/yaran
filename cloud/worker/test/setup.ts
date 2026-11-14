@@ -11,6 +11,7 @@
  * test/setup.ts
  * ├── test/access-jwt.test.ts
  * ├── test/helpers/access.ts
+ * ├── test/helpers/deps.ts
  * ├── test/helpers/matrix.ts
  * └── test/phase06/fakes.ts
  * <module-headers:end>

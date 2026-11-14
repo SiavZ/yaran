@@ -13,6 +13,7 @@
  *
  * Used by:
  * src/me/cursor.ts
+ * ├── src/admin/pairing-service.ts
  * ├── src/me/devices-route.ts
  * └── src/me/machines-route.ts
  * <module-headers:end>
@@ -39,11 +40,15 @@ export function pageQuery(url: URL): { limit: number; after: PagePosition | null
     throw new HttpError("validation_failed", "limit must be an integer from 1 to 100.", { details: { errors: [{ path: "/limit", message: "1-100" }] } });
   }
   const cursor = url.searchParams.get("cursor");
-  if (cursor === null) return { limit, after: null };
+  return { limit, after: cursor === null ? null : decodeCursor(cursor) };
+}
+
+/** A cursor this server issued, or `validation_failed`. */
+export function decodeCursor(cursor: string): PagePosition {
   const bytes = cursor.length <= 256 ? b64urlDecode(cursor) : null;
   const m = bytes ? POS_RE.exec(utf8Decode(bytes) ?? "") : null;
   if (!m) throw new HttpError("validation_failed", "cursor is not one this server issued.", { details: { errors: [{ path: "/cursor", message: "unknown cursor" }] } });
-  return { limit, after: { createdAt: Number(m[1]), id: m[2]! } };
+  return { createdAt: Number(m[1]), id: m[2]! };
 }
 
 /** The next cursor when the page came back full, else null. */

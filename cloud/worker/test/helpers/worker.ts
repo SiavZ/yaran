@@ -17,6 +17,7 @@
  * ├── test/access-jwt.test.ts
  * ├── test/authz-matrix.test.ts
  * ├── test/body.test.ts
+ * ├── test/helpers/deps.ts
  * ├── test/helpers/matrix.ts
  * ├── test/host-guard.test.ts
  * ├── test/identity.test.ts

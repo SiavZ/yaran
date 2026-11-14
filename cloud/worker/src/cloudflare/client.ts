@@ -26,6 +26,7 @@
  * ├── src/cloudflare/tunnels.ts
  * ├── src/provisioning/context.ts
  * ├── src/provisioning/ports.ts
+ * ├── src/routes/phase07-context.ts
  * ├── test/provisioning/budget.test.ts
  * ├── test/provisioning/client.test.ts
  * ├── test/provisioning/helpers/world.ts
@@ -75,7 +76,8 @@ export function resolveCfBaseUrl(raw: string | undefined): string {
 
 export interface CfClientOptions {
   fetch: typeof fetch;
-  token: string;
+  /** The API token, or a resolver for it (the sealed copy in D1, read on first use). */
+  token: string | (() => Promise<string>);
   baseUrl: string;
   budget: ApiBudget;
   userAgent: string;
@@ -117,8 +119,9 @@ export class CfClient {
     await this.budget.gate(o.priority, endpoint);
     const url = new URL(this.opts.baseUrl + path);
     for (const [k, v] of Object.entries(o.query ?? {})) if (v !== undefined) url.searchParams.set(k, String(v));
+    const token = typeof this.opts.token === "string" ? this.opts.token : await this.opts.token();
     const headers: Record<string, string> = {
-      authorization: `Bearer ${this.opts.token}`,
+      authorization: `Bearer ${token}`,
       "user-agent": this.opts.userAgent,
       accept: "application/json",
     };

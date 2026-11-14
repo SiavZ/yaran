@@ -14,6 +14,7 @@
  *
  * Used by:
  * src/machines/machine-rows.ts
+ * ├── src/admin/pairing-service.ts
  * ├── src/machine-api/claim.ts
  * ├── src/machine-api/config.ts
  * ├── src/machine-api/origin.ts

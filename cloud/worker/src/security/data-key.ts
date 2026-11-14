@@ -28,8 +28,11 @@
  *
  * Used by:
  * src/security/data-key.ts
+ * ├── src/admin/ports.ts
+ * ├── src/provisioning/context.ts
  * ├── src/routes/call.ts
  * ├── src/routes/phase06-context.ts
+ * ├── src/routes/phase07-context.ts
  * ├── src/scheduled/purge.ts
  * ├── test/data-key.test.ts
  * ├── test/no-secret-leak.test.ts
@@ -42,7 +45,7 @@ import type { AppContext } from "../http/context.ts";
 import { HttpError } from "../http/responses.ts";
 import { decodeDataKey } from "./secrets.ts";
 
-export type SealPurpose = "vapid" | "device_endpoint" | "device_auth" | "pair_state";
+export type SealPurpose = "vapid" | "device_endpoint" | "device_auth" | "pair_state" | "cf_api_token";
 export type MacPurpose = "handoff_consent";
 type Purpose = SealPurpose | MacPurpose | "key_check";
 

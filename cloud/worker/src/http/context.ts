@@ -32,6 +32,7 @@
  * ├── src/http/routes.ts
  * ├── src/provisioning/context.ts
  * ├── src/routes/phase06-context.ts
+ * ├── src/routes/phase07-context.ts
  * ├── src/scheduled/purge.ts
  * ├── src/scheduled/tasks.ts
  * ├── src/security/data-key.ts
@@ -39,6 +40,7 @@
  * ├── test/audit.test.ts
  * ├── test/body.test.ts
  * ├── test/helpers/app.ts
+ * ├── test/helpers/deps.ts
  * ├── test/machine-signature.test.ts
  * └── test/phase06/fakes.ts
  * <module-headers:end>

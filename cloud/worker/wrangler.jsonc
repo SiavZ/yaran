@@ -44,6 +44,8 @@
     // Per machine id, the signed machine API.
     { "name": "RL_MACHINE", "namespace_id": "7703", "simple": { "limit": 120, "period": 60 } }
   ],
+  // Static console assets (stylesheet, fonts, enhance.js), served before the Worker runs.
+  "assets": { "directory": "assets" },
   // Deploy variables (plain, not secret).
   "vars": {
     // The https app-callback URLs a release build may receive a sealed handoff on, space

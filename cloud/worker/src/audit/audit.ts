@@ -26,12 +26,12 @@
  * ├── src/provisioning/context.ts
  * ├── src/routes/call.ts
  * ├── src/routes/phase06-context.ts
- * ├── src/scheduled/purge.ts
+ * ├── src/routes/phase07-context.ts
  * └── test/audit.test.ts
  * <module-headers:end>
  */
 import { toHex, type AuditEntry, type ErrorCode } from "@yaran/protocol";
-import { run, stmt } from "../db/client.ts";
+import { stmt } from "../db/client.ts";
 import type { Actor, AppContext } from "../http/context.ts";
 import { scrub } from "../log/logger.ts";
 import type { AuditAction } from "./actions.ts";
@@ -120,9 +120,4 @@ export function toAuditEntry(row: AuditRow, email?: string): AuditEntry {
   if (row.outcome !== "ok" && row.error_code) entry.error_code = row.error_code;
   if (row.country) entry.country = row.country;
   return entry;
-}
-
-/** Deletes up to `limit` rows older than the retention window. */
-export async function purgeAudit(db: D1Database, now: number, retentionDays: number, limit: number): Promise<number> {
-  return run(db, "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE at < ? LIMIT ?)", now - retentionDays * 86_400, limit);
 }

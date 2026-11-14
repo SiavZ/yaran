@@ -99,7 +99,7 @@ describe("consent page", () => {
     const html = await res.text();
     for (const name of ["Ada&#39;s Pixel", "Android", CP_HOST, s.user.email]) expect(html).toContain(`>${name}</code>`);
     expect(html).toMatch(/<button[^>]*value="continue"[^>]* autofocus>Continue<\/button>/);
-    expect(html).toContain('<html lang="en">');
+    expect(html).toContain('<html lang="en" class="dark">');
     expect(html).not.toContain("<script");
     expect(html).not.toContain("development build");
     expect(html).not.toContain('name="dsig"');

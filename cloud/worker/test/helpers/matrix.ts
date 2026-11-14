@@ -57,7 +57,12 @@ const JWT_REFUSAL: Record<IdentityKind, Expected> = {
 /** The outcome a route's declared auth class implies for one identity, host and setup state. */
 export function expected(route: Route, id: IdentityKind, host: HostKind, setup: SetupKind): Expected {
   const auth = route.auth;
-  if (setup === "open") return auth.kind === "public" || auth.kind === "setup" ? "ok" : "setup_incomplete";
+  if (setup === "open") {
+    // The wizard is served on workers.dev only; the admin claim arrives on the control plane.
+    if (auth.kind === "public") return "ok";
+    if (auth.kind === "setup") return host === "workers_dev" || route.path === "/setup/claim" ? "ok" : "setup_incomplete";
+    return "setup_incomplete";
+  }
   if (host !== "control_plane") return "misdirected_host";
   switch (auth.kind) {
     case "public":

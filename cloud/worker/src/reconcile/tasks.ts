@@ -98,8 +98,8 @@ export const RECONCILE_TASKS: readonly ReconcileTaskRow[] = [
 ];
 
 /**
- * The rows as 04 dispatcher tasks. Before setup has stored the Cloudflare identifiers, or
- * without an API token, a run is a logged skip rather than a recorded failure every minute.
+ * The rows as 04 dispatcher tasks. Before setup has stored the Cloudflare identifiers and
+ * the API token, a run is a logged skip rather than a recorded failure every minute.
  */
 export const RECONCILE_TASK_DEFS: readonly TaskDef[] = RECONCILE_TASKS.map((row) => ({
   name: row.task,
@@ -107,10 +107,6 @@ export const RECONCILE_TASK_DEFS: readonly TaskDef[] = RECONCILE_TASKS.map((row)
   priority: row.priority,
   cost: { queries: row.cost.queries, subrequests: row.cost.subrequests },
   run: async (ctx) => {
-    if (!ctx.env.CF_API_TOKEN) {
-      ctx.log.warn("task_skipped", { reason: "CF_API_TOKEN is not set" });
-      return;
-    }
     try {
       const outcome = await row.run(provCtx(ctx), row.cost);
       if (!outcome.ok) ctx.log.info("task_yielded", { note: outcome.note });

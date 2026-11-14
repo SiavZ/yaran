@@ -34,6 +34,7 @@
  * src/routes/phase06-context.ts
  * ├── src/pairing/sweep.ts
  * ├── src/routes/pairing-and-sessions.ts
+ * ├── src/routes/phase07-context.ts
  * └── test/phase06/fakes.ts
  * <module-headers:end>
  */

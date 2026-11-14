@@ -14,7 +14,7 @@
  * <module-headers:begin>
  * Uses:
  * src/scheduled/purge.ts
- * ├── src/audit/audit.ts
+ * ├── src/admin/audit-query.ts
  * ├── src/auth/nonce-store.ts
  * ├── src/db/client.ts
  * ├── src/db/settings.ts
@@ -31,7 +31,7 @@
  * └── test/purge.test.ts
  * <module-headers:end>
  */
-import { purgeAudit } from "../audit/audit.ts";
+import { sweepAudit } from "../admin/audit-query.ts";
 import { purgeExpiredNonces } from "../auth/nonce-store.ts";
 import { all, batch, run, stmt } from "../db/client.ts";
 import { compareAndSetSetting, getSetting } from "../db/settings.ts";
@@ -51,8 +51,9 @@ export const SEALED_COLUMNS: readonly { table: string; column: string; purpose: 
   { table: "pair_requests", column: "state_enc", purpose: "pair_state" },
 ];
 /** Settings rows holding a sealed string. */
-export const SEALED_SETTINGS: readonly { key: "vapid_private_key_enc"; purpose: SealPurpose }[] = [
+export const SEALED_SETTINGS: readonly { key: "vapid_private_key_enc" | "cf_api_token_enc"; purpose: SealPurpose }[] = [
   { key: "vapid_private_key_enc", purpose: "vapid" },
+  { key: "cf_api_token_enc", purpose: "cf_api_token" },
 ];
 
 const more = (n: number) => ({ more: n >= PURGE_CHUNK });
@@ -121,7 +122,7 @@ export const PURGE_TASKS: readonly TaskDef[] = [
     name: "purge_audit", intervalS: 86_400, priority: 60, cost: { queries: 2, subrequests: 0 },
     run: async (ctx) => {
       const days = (await getSetting(ctx.db, "audit_retention_days")) ?? 365;
-      return more(await purgeAudit(ctx.db, ctx.now(), days, PURGE_CHUNK));
+      return more(await sweepAudit(ctx.db, days, new Date(ctx.now() * 1000), PURGE_CHUNK));
     },
   },
   {

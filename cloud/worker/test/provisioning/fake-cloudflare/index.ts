@@ -18,6 +18,7 @@
  *
  * Used by:
  * test/provisioning/fake-cloudflare/index.ts
+ * ├── test/helpers/deps.ts
  * ├── test/phase06/fakes.ts
  * ├── test/provisioning/fixture-contract.test.ts
  * └── test/provisioning/helpers/world.ts

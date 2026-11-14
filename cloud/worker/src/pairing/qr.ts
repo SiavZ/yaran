@@ -15,6 +15,7 @@
  *
  * Used by:
  * src/pairing/qr.ts
+ * ├── src/admin/pairing-service.ts
  * └── test/pairing/qr.test.ts
  * <module-headers:end>
  */

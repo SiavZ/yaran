@@ -23,6 +23,7 @@
  *
  * Used by:
  * src/machines/machine-view-model.ts
+ * ├── src/admin/pairing-service.ts
  * ├── src/me/machines-route.ts
  * └── test/machines/machine-view-model.test.ts
  * <module-headers:end>

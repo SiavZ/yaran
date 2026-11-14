@@ -119,7 +119,7 @@ export function createFetchHandler(routes: readonly Route[], overrides: Partial<
     async function run(): Promise<Response> {
       const settings = await getSettings(ctx.db, ["setup_state", "control_plane_host", "team_domain", "control_plane_aud", "jwt_clock_tolerance_s"]);
       const host = { setup: settings.setup_state ?? "open", controlPlaneHost: settings.control_plane_host };
-      checkHost(host, url.hostname);
+      checkHost(host, url.hostname, url.pathname);
 
       const path = url.pathname;
       if (!isCanonicalPath(path)) throw new HttpError("not_found");
@@ -133,7 +133,8 @@ export function createFetchHandler(routes: readonly Route[], overrides: Partial<
       if (route.auth.kind === "public") cacheControl = "public, max-age=60";
 
       gateRoute(host, route.auth);
-      if (route.auth.kind !== "public" && !secretsUsable(env, ctx.log)) {
+      // The setup wizard explains a missing or weak SETUP_CODE or DATA_KEY itself (07).
+      if (route.auth.kind !== "public" && route.auth.kind !== "setup" && !secretsUsable(env, ctx.log)) {
         throw new HttpError("unavailable", "The Worker is missing a required secret; an administrator must check its logs.");
       }
 
@@ -155,7 +156,10 @@ export function createFetchHandler(routes: readonly Route[], overrides: Partial<
       }
       if (MUTATING.has(request.method) && (consoleApi || route.kind === "html")) {
         const origin = request.headers.get("Origin");
-        if (origin !== null && origin !== `https://${settings.control_plane_host ?? url.host}`) {
+        // While setup is open the wizard runs on the workers.dev host even after it has
+        // recorded the control-plane host, so a form must come from the request's own origin.
+        const expected = host.setup === "closed" && settings.control_plane_host ? `https://${settings.control_plane_host}` : url.origin;
+        if (origin !== null && origin !== expected) {
           throw new HttpError("origin_mismatch", "This request came from another site and was refused.");
         }
       }

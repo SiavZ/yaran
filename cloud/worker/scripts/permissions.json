@@ -1,0 +1,72 @@
+{
+  "description": "Every Cloudflare API permission the yaran control-plane Worker needs, and why. The one home: token-template.ts builds the account-owned token template URL from it, the setup wizard's capability probe walks it, and a test checks the deploy README link against it. IDs marked source=datamine are unverified until gate G9 resolves them through GET /accounts/{id}/tokens/permission_groups; G9's evidence replaces them and drops the marker.",
+  "token_name": "yaran control plane",
+  "permissions": [
+    {
+      "id": "c07321b023e944ff818fec44d8203567",
+      "name": "Cloudflare Tunnel Edit",
+      "scope": "account",
+      "short_key": null,
+      "source": "datamine",
+      "endpoints": ["accounts/{id}/cfd_tunnel/*"],
+      "probe": "tunnels",
+      "purpose": "Create, configure, rotate and delete one tunnel per paired machine, and read each tunnel's status."
+    },
+    {
+      "id": "1e13c5124ca64b72b1969a67e8829049",
+      "name": "Access: Apps and Policies Edit",
+      "scope": "account",
+      "short_key": "access",
+      "source": "datamine",
+      "endpoints": ["accounts/{id}/access/apps", "accounts/{id}/access/policies"],
+      "probe": "access_apps",
+      "purpose": "Create the control-plane Access application and one per machine, and keep the reusable yaran users policy in step with your pairing policy."
+    },
+    {
+      "id": "bfe0d8686a584fa680f4c53b5eb0de6d",
+      "name": "Access: Organizations, Identity Providers, and Groups Edit",
+      "scope": "account",
+      "short_key": "access_acct",
+      "source": "datamine",
+      "endpoints": ["accounts/{id}/access/organizations", "accounts/{id}/access/identity_providers", "accounts/{id}/access/groups"],
+      "probe": "access_org",
+      "purpose": "Read your Zero Trust team domain, add a One-time PIN, GitHub or Google sign-in, list Access groups for the pairing policy, and sign a user out everywhere."
+    },
+    {
+      "id": "e086da7e2179491d91ee5f35b3ca210a",
+      "name": "Workers Scripts Edit",
+      "scope": "account",
+      "short_key": "workers_scripts",
+      "source": "official",
+      "endpoints": ["accounts/{id}/workers/domains", "accounts/{id}/workers/scripts/{name}/subdomain", "accounts/{id}/workers/scripts/{name}/settings"],
+      "probe": "worker_script",
+      "purpose": "Attach the control plane's custom domain, turn the workers.dev address off once setup closes, and confirm this Worker's script name."
+    },
+    {
+      "id": "4755a26eedb94da69e1066d98aa820be",
+      "name": "DNS Edit",
+      "scope": "zone",
+      "short_key": "dns",
+      "source": "datamine",
+      "endpoints": ["zones/{id}/dns_records"],
+      "probe": "dns",
+      "purpose": "Create one proxied CNAME per paired machine in the zone you choose. Limit it to that zone in the token form."
+    },
+    {
+      "id": "c8fed203ed3043cba015a93ad1616f1f",
+      "name": "Zone Read",
+      "scope": "zone",
+      "short_key": "zone",
+      "source": "official",
+      "endpoints": ["zones"],
+      "probe": "zones",
+      "purpose": "List your zones so you can pick one, and resolve its zone id. Limit it to that zone in the token form."
+    }
+  ],
+  "excluded": [
+    { "name": "Access: Service Tokens", "reason": "Machines sign their calls with Ed25519 keys (D6), so no service token is ever created." },
+    { "name": "D1 and Workers Builds", "reason": "The Deploy to Cloudflare button uses its own credentials for those." },
+    { "name": "Account API Tokens", "reason": "The Worker must never be able to mint tokens." },
+    { "name": "Account Settings Read", "reason": "Added only if gate G9 shows GET /accounts needs it for account-owned tokens." }
+  ]
+}

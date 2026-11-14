@@ -17,6 +17,7 @@
  *
  * Used by:
  * src/cloudflare/access-sessions.ts
+ * ├── src/admin/pairing-service.ts
  * └── src/sessions/revoke-sessions.ts
  * <module-headers:end>
  */

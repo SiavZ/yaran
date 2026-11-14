@@ -29,7 +29,9 @@
  *
  * Used by:
  * src/provisioning/index.ts
+ * ├── src/admin/pairing-service.ts
  * ├── src/routes/phase06-context.ts
+ * ├── src/routes/phase07-context.ts
  * ├── test/provisioning/crash-matrix.test.ts
  * ├── test/provisioning/drift.test.ts
  * ├── test/provisioning/origin-port.test.ts
