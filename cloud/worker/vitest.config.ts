@@ -20,7 +20,7 @@ import { defineConfig } from "vitest/config";
 
 export const TEST_SECRETS = {
   CF_API_TOKEN: "test-cf-api-token-0000",
-  SETUP_CODE: "test-setup-code-0000",
+  SETUP_CODE: "test-setup-code-0000-0000-0000",
   // base64 of 32 bytes: the Phase 02 consent-cookie fixture's DATA_KEY.
   DATA_KEY: "zqRjVcBnSVWV7LfSGmWagKnIeDIIJRGDYvd/VUbBWsU=",
 };

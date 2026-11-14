@@ -4,7 +4,7 @@
  *
  * | Secret         | Purpose                       | Valid when                              |
  * | `CF_API_TOKEN` | Cloudflare API calls (05)     | non-empty (07 verifies it live)         |
- * | `SETUP_CODE`   | first-run gate (07)           | at least 12 characters                  |
+ * | `SETUP_CODE`   | first-run gate (07)           | at least 24 characters                  |
  * | `DATA_KEY`     | root of encryption at rest    | base64 decoding to at least 32 bytes    |
  *
  * When one is missing or malformed the pipeline refuses every route but `/v1/meta` with
@@ -33,7 +33,7 @@ export interface SecretProblem {
   problem: "missing" | "malformed";
 }
 
-export const SETUP_CODE_MIN_LENGTH = 12;
+export const SETUP_CODE_MIN_LENGTH = 24;
 export const DATA_KEY_MIN_BYTES = 32;
 
 /** Decodes a DATA_KEY-style value (standard base64), or null when it is not one. */
