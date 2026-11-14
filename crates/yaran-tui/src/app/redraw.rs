@@ -7,6 +7,24 @@
 //! from scratch, so it runs only when something could have changed since the
 //! last frame: a mutation marked dirty, an animation frame that advanced, the
 //! status line, or the once-a-second backstop.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/redraw.rs
+//! ├── app
+//! ├── app::background_server
+//! ├── app::pty_ownership
+//! ├── app::test_support
+//! ├── crate
+//! ├── theme
+//! ├── yaran-core::statusline
+//! └── yaran-core::working_cue
+//! External: crossterm, ratatui, std
+//!
+//! Used by:
+//! app/redraw.rs
+//! └── app
+//! <module-headers:end>
 
 use super::*;
 use crate::app::pty_ownership::PtyTakeoverCard;

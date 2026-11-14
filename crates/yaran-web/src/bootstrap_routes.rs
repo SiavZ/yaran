@@ -6,6 +6,18 @@
 //! - 200 with the [`yaran_core::viewmodel::BootstrapView`] JSON.
 //! - 503 if the engine actor is gone, so a dead engine is distinguishable from a
 //!   real (always non-empty) payload.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! bootstrap_routes.rs
+//! └── server
+//! External: axum
+//!
+//! Used by:
+//! bootstrap_routes.rs
+//! ├── crate
+//! └── server
+//! <module-headers:end>
 
 use axum::{
     Json, Router,

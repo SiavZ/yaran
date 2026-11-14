@@ -14,6 +14,37 @@
 //! Accepted hazard: the TUI thread services the web layer's engine turns, so a
 //! panic in either surface unwinds the shared process. Background serving is
 //! opt-in.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! background_serve.rs
+//! ├── cloud::leg_seam
+//! ├── cloud::view
+//! ├── config
+//! ├── engine
+//! ├── engine::test_support
+//! ├── ids
+//! ├── logger
+//! ├── pty
+//! └── pty_owners
+//! External: std
+//!
+//! Used by:
+//! background_serve.rs
+//! ├── crate
+//! ├── device_label
+//! ├── yaran-tui
+//! ├── yaran-tui::app
+//! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::pty_ownership
+//! ├── yaran-tui::app::workers
+//! ├── yaran-web::background
+//! ├── yaran-web::engine_actor
+//! ├── yaran-web::ownership_publish
+//! ├── yaran-web::server
+//! ├── yaran-web[test background_serve_claims]
+//! └── yaran[bin yaran]::companion
+//! <module-headers:end>
 
 use std::sync::Arc;
 

@@ -21,7 +21,14 @@
 //! Used by:
 //! cloud/leg_outcome.rs
 //! ├── cloud
-//! └── cloud::leg_outcome::tests
+//! ├── cloud::leg_outcome::tests
+//! ├── engine::events
+//! ├── worker
+//! ├── yaran-tui::app
+//! ├── yaran-tui::app::cloud_mode
+//! ├── yaran-web::cloud_loop
+//! ├── yaran-web::cloud_mode
+//! └── yaran-web::cloud_mode_routes
 //! <module-headers:end>
 
 use super::leg::{CloudLegEvent, LegStop};

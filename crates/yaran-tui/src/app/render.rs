@@ -1,4 +1,8 @@
 //! Rendering for the terminal UI: every pane, header and overlay, plus shared render helpers.
+//! Terminal UI rendering: every `App` render method and its UI helpers.
+//!
+//! Draws the header, panes, modals and status line from the theme engine's tokens, and
+//! publishes the mouse layout the input handlers read.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -52,6 +56,7 @@
 //! app/render.rs
 //! ├── app
 //! ├── app::cloud_render
+//! ├── app::cloud_mode
 //! ├── app::first_load
 //! ├── app::human_board_dialog
 //! ├── app::input

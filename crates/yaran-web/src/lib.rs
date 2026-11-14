@@ -27,6 +27,9 @@
 //! ├── changes
 //! ├── changes_routes
 //! ├── cloud_routes
+//! ├── cloud_loop
+//! ├── cloud_mode
+//! ├── cloud_mode_routes
 //! ├── compressible_exts
 //! ├── config_routes
 //! ├── console
@@ -54,6 +57,7 @@
 //! ├── web_assets
 //! ├── workspace_routes
 //! ├── yaran-core::activity
+//! ├── yaran-core::cloud::cloudflared::child_registry
 //! ├── yaran-core::config
 //! ├── yaran-core::config_write
 //! ├── yaran-core::engine

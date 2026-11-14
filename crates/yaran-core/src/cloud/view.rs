@@ -14,7 +14,15 @@
 //!
 //! Used by:
 //! cloud/view.rs
-//! └── cloud
+//! ├── background_serve
+//! ├── cloud
+//! ├── viewmodel
+//! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::cloud_crumb
+//! ├── yaran-web::cloud_loop
+//! ├── yaran-web::cloud_mode
+//! ├── yaran-web::cloud_mode_routes
+//! └── yaran[bin yaran]::companion
 //! <module-headers:end>
 
 use std::sync::{Arc, Mutex};

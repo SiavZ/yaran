@@ -28,7 +28,8 @@
 //! └── yaran-core[test cloud_machine_api]
 //! ├── cloud::leg::tests
 //! ├── cloud::leg_seam
-//! └── cloud::protocol
+//! ├── cloud::protocol
+//! └── yaran-web::cloud_loop::live_cloud_mode_tests
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};

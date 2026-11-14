@@ -12,8 +12,14 @@
 //! <module-headers:begin>
 //! Uses:
 //! app/cloud_mode.rs
-//! └── app
-//! External: ratatui, yaran_core
+//! ├── app
+//! ├── app::render
+//! ├── app::test_support
+//! ├── yaran-core::cloud::leg_outcome
+//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::engine
+//! └── yaran-core::engine::status_op
+//! External: none
 //!
 //! Used by:
 //! app/cloud_mode.rs

@@ -19,7 +19,10 @@
 //! ├── cloud::cloudflared
 //! ├── cloud::cloudflared::supervisor
 //! ├── cloud::leg_run
-//! └── cloud::leg_start
+//! ├── cloud::leg_start
+//! ├── yaran-tui::app::hangup
+//! ├── yaran-web
+//! └── yaran-web::cloud_loop
 //! <module-headers:end>
 
 use std::path::Path;

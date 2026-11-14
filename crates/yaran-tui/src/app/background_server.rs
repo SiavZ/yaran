@@ -8,6 +8,36 @@
 //!
 //! The `start-web-server` flip is a different thing: it swaps the terminal UI
 //! out for the server. These commands keep both up at once.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/background_server.rs
+//! ├── app
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── crate
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::view
+//! ├── yaran-core::config
+//! ├── yaran-core::engine
+//! ├── yaran-core::engine::status_op
+//! ├── yaran-core::model
+//! ├── yaran-core::pty_owners
+//! ├── yaran-core::statusline
+//! ├── yaran-core::tailscale
+//! └── yaran-core::worker
+//! External: chrono, std
+//!
+//! Used by:
+//! app/background_server.rs
+//! ├── app
+//! ├── app::presize
+//! ├── app::pty_ownership
+//! ├── app::redraw
+//! ├── app::render
+//! └── app::workers
+//! <module-headers:end>
 
 use yaran_core::engine::EventReaction;
 

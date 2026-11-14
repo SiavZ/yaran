@@ -1,4 +1,8 @@
 //! Keyboard and mouse handling for the terminal UI (`handle_key`, `handle_left_key`, ...).
+//! Terminal UI input: every keyboard and mouse event handler of `App`.
+//!
+//! Routes keys through the runtime bindings to the focused pane, the open modal or the
+//! PTY, and turns clicks into the targets the renderer published.
 //!
 //! <module-headers:begin>
 //! Uses:

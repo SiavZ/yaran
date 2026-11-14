@@ -2,6 +2,44 @@
 //! and scroll position are intentionally excluded: those are client-side state
 //! under the independent-navigation model. This is a one-way `core -> client`
 //! view; it never deserializes.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! viewmodel.rs
+//! ├── cloud::leg_seam
+//! ├── cloud::view
+//! ├── config
+//! ├── crate
+//! ├── engine
+//! ├── engine::test_support
+//! ├── git
+//! ├── home_path
+//! ├── ids
+//! ├── logger
+//! ├── model
+//! ├── pty
+//! ├── release_notes
+//! ├── sidebar
+//! ├── storage
+//! ├── tab_verdict
+//! ├── test_scratch
+//! ├── urls
+//! ├── welcome
+//! ├── welcome_screen
+//! ├── worker
+//! └── working_copy
+//! External: chrono, serde, serde_json, std, tempfile
+//!
+//! Used by:
+//! viewmodel.rs
+//! ├── crate
+//! ├── yaran-web::changes
+//! ├── yaran-web::changes_routes
+//! ├── yaran-web::engine_actor
+//! ├── yaran-web::first_load_routes
+//! ├── yaran-web::resource_routes
+//! └── yaran-web::workspace_routes
+//! <module-headers:end>
 
 use serde::Serialize;
 

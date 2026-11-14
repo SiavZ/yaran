@@ -13,11 +13,22 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud_mode.rs
-//! External: tokio, yaran_core
+//! ├── yaran-core::cloud::ingress_cell
+//! ├── yaran-core::cloud::leg
+//! ├── yaran-core::cloud::leg_outcome
+//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::view
+//! └── yaran-core::engine
+//! External: std, tokio
 //!
 //! Used by:
 //! cloud_mode.rs
-//! └── crate
+//! ├── background
+//! ├── cloud_loop
+//! ├── cloud_mode_routes
+//! ├── crate
+//! ├── engine_actor
+//! └── server
 //! <module-headers:end>
 
 use std::time::Duration;

@@ -6,6 +6,52 @@
 //! caches like `left_items_cache` or `files_index`). Anything view-side is
 //! described by an `EventReaction` variant; the App's `apply_reaction`
 //! translates each variant back into concrete view mutations.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! engine/events.rs
+//! ├── agent_job
+//! ├── changes_status
+//! ├── cloud::leg_outcome
+//! ├── cloud::leg_seam
+//! ├── config
+//! ├── engine
+//! ├── engine::spawn_worker
+//! ├── engine::status_op
+//! ├── engine::test_support
+//! ├── gh
+//! ├── git
+//! ├── home_path
+//! ├── ids
+//! ├── logger
+//! ├── model
+//! ├── peer
+//! ├── peer::session_store
+//! ├── poller_status
+//! ├── project_browser
+//! ├── prose
+//! ├── pty
+//! ├── startup
+//! ├── status_text
+//! ├── statusline
+//! ├── storage
+//! ├── tab_verdict
+//! ├── test_git
+//! ├── wire
+//! ├── worker
+//! ├── working_copy
+//! └── worktree_manager
+//! External: anyhow, chrono, rusqlite, serde_json, std, tempfile, tracing
+//!
+//! Used by:
+//! engine/events.rs
+//! ├── engine
+//! ├── engine::command
+//! ├── engine::limits
+//! ├── engine::provider_sessions
+//! ├── engine::resume_fallback
+//! └── engine::spawn_worker
+//! <module-headers:end>
 
 use std::path::Path;
 use std::time::Instant;

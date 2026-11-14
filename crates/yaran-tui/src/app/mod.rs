@@ -1,4 +1,8 @@
 //! The terminal UI's `App`: its data model, types, bootstrap, run loop and state helpers.
+//! The terminal UI's `App`: its state, types, bootstrap and run loop.
+//!
+//! Each concern (input, rendering, sessions, workers, modals) lives in a sibling
+//! submodule as its own `impl App` block; this file holds the data model they share.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -9,6 +13,8 @@
 //! ├── app::cloud_input
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
+//! ├── app::cloud_crumb
+//! ├── app::cloud_mode
 //! ├── app::components
 //! ├── app::components::focus_ring
 //! ├── app::first_load
@@ -47,6 +53,8 @@
 //! ├── yaran-core::agent_tabs
 //! ├── yaran-core::background_serve
 //! ├── yaran-core::browser
+//! ├── yaran-core::cloud::leg_outcome
+//! ├── yaran-core::cloud::leg_seam
 //! ├── yaran-core::config
 //! ├── yaran-core::config_queue
 //! ├── yaran-core::config_sync
@@ -90,6 +98,8 @@
 //! ├── app::cloud_input
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
+//! ├── app::cloud_crumb
+//! ├── app::cloud_mode
 //! ├── app::first_load
 //! ├── app::grouped_sidebar_tests
 //! ├── app::human_board

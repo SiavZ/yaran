@@ -9,6 +9,23 @@
 //! The whole implementation is bookkeeping around an `Option`. The TUI decides
 //! WHEN to serve (its palette commands, its config, its quit path) and binds the
 //! listeners; this decides nothing and only relays.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! companion.rs
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::view
+//! ├── yaran-core::config
+//! ├── yaran-core::engine
+//! ├── yaran-core::logger
+//! └── yaran-web::background
+//! External: std
+//!
+//! Used by:
+//! companion.rs
+//! └── crate
+//! <module-headers:end>
 
 use yaran_core::background_serve::{
     BackgroundServeCompanion, DrainedMaintenance, PtyOwnershipEvent, ServiceOutcome, TuiOwnership,

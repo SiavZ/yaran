@@ -7,9 +7,11 @@
 //! Uses:
 //! cloud_loop_tests.rs
 //! ├── cloud_loop
-//! ├── cloud_mode
-//! └── console
-//! External: tempfile, tokio, yaran_core
+//! ├── yaran-core::cloud::cloudflared::ready
+//! ├── yaran-core::cloud::ingress_cell
+//! ├── yaran-core::cloud::leg_seam
+//! └── yaran-core::cloud::protocol::machine
+//! External: std, tempfile, tokio
 //!
 //! Used by:
 //! cloud_loop_tests.rs

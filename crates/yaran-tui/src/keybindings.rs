@@ -1,4 +1,8 @@
 //! Keybinding definitions, parsing and the runtime binding table the terminal UI resolves keys through.
+//! Keybindings: the default binding table, config parsing and runtime lookup.
+//!
+//! Every action's default keys and scopes, the case-insensitive parser for user
+//! overrides, and the labels the help overlay and hint bars print.
 //!
 //! <module-headers:begin>
 //! Uses:

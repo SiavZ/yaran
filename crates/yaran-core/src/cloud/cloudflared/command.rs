@@ -24,7 +24,8 @@
 //! ├── cloud::cloudflared
 //! ├── cloud::cloudflared::supervisor
 //! ├── cloud::cloudflared::supervisor::tests
-//! └── cloud::leg_run
+//! ├── cloud::leg_run
+//! └── yaran-web::cloud_loop
 //! <module-headers:end>
 
 use std::ffi::OsString;

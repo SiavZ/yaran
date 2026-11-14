@@ -4,6 +4,55 @@
 //! through the same `Engine::apply` the TUI uses. The result is downsampled to a
 //! wire-safe `WireCommandOutcome` (the full `EventReaction` is engine-internal
 //! and view-coupled; web clients re-fetch `view_model()` for fresh state).
+//!
+//! <module-headers:begin>
+//! Uses:
+//! wire.rs
+//! ├── add_project_plan
+//! ├── config
+//! ├── config_queue
+//! ├── engine
+//! ├── engine::status_op
+//! ├── engine::test_support
+//! ├── gh
+//! ├── git
+//! ├── ids
+//! ├── logger
+//! ├── model
+//! ├── project_browser
+//! ├── prose
+//! ├── pty
+//! ├── sanitize
+//! ├── session_settings
+//! ├── sidebar
+//! ├── startup
+//! ├── status_text
+//! ├── statusline
+//! └── worker
+//! External: anyhow, chrono, serde, serde_json, std, tempfile, toml, uuid
+//!
+//! Used by:
+//! wire.rs
+//! ├── config_reload_status
+//! ├── crate
+//! ├── engine
+//! ├── engine::events
+//! ├── engine::shared_workspace
+//! ├── statusline
+//! ├── yaran-tui::app::sessions
+//! ├── yaran-web::cloud_mode_routes
+//! ├── yaran-web::config_routes
+//! ├── yaran-web::engine_actor
+//! ├── yaran-web::first_load_routes
+//! ├── yaran-web::git_routes
+//! ├── yaran-web::project_actions
+//! ├── yaran-web::rest_common
+//! ├── yaran-web::server
+//! ├── yaran-web::session_actions
+//! ├── yaran-web::tab_actions
+//! ├── yaran-web::terminal_actions
+//! └── yaran-web[test changes_events]
+//! <module-headers:end>
 
 /// Stable string keys for correlated status pairs (busy → final). The TUI and
 /// the web actor MUST use the SAME string so a final status replaces the busy

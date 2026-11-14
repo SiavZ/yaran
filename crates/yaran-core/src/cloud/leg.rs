@@ -28,7 +28,9 @@
 //! ├── cloud::leg::tests
 //! ├── cloud::leg_outcome
 //! ├── cloud::leg_run
-//! └── cloud::leg_start
+//! ├── cloud::leg_start
+//! ├── yaran-web::cloud_loop
+//! └── yaran-web::cloud_mode
 //! <module-headers:end>
 
 use std::sync::Arc;

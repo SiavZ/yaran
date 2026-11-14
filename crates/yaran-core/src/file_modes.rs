@@ -16,6 +16,25 @@
 //!
 //! Unix-only, deliberately: yaran targets macOS and Linux, so there is no
 //! `cfg(windows)` branch here.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! file_modes.rs
+//! └── logger
+//! External: std, tempfile
+//!
+//! Used by:
+//! file_modes.rs
+//! ├── cloud::cloudflared::acquire
+//! ├── cloud::cloudflared::command
+//! ├── cloud::leg_seam
+//! ├── config
+//! ├── config_write
+//! ├── crate
+//! ├── logger
+//! ├── purge
+//! └── storage
+//! <module-headers:end>
 
 use std::fs;
 use std::io;

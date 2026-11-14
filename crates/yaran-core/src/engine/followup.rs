@@ -22,6 +22,21 @@
 //! concurrent drainer takes a [`WebFollowupOps`] snapshot before lending the
 //! reaction out; the live-map form ([`Engine::followup_owner`]) stays correct
 //! for `yaran server` and the flip, which ask before they drive.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! engine/followup.rs
+//! ├── engine
+//! ├── engine::status_op
+//! ├── engine::test_support
+//! ├── test_scratch
+//! └── worker
+//! External: std
+//!
+//! Used by:
+//! engine/followup.rs
+//! └── engine
+//! <module-headers:end>
 
 use std::collections::HashSet;
 

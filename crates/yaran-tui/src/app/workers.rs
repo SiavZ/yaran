@@ -1,4 +1,8 @@
 //! Background worker management for the terminal UI: draining events and spawning jobs.
+//! Terminal UI background work: draining worker events and spawning workers.
+//!
+//! Applies every engine reaction the run loop drains and starts the background jobs
+//! that keep blocking work off the UI thread.
 //!
 //! <module-headers:begin>
 //! Uses:

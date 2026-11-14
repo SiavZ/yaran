@@ -14,12 +14,25 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud_loop.rs
+//! ├── cloud_loop::live_cloud_mode_tests
 //! ├── cloud_mode
-//! └── console
-//! External: tokio, yaran_core
+//! ├── console
+//! ├── engine_actor
+//! ├── yaran-core::cloud::cloudflared::child_registry
+//! ├── yaran-core::cloud::cloudflared::command
+//! ├── yaran-core::cloud::ingress_cell
+//! ├── yaran-core::cloud::leg
+//! ├── yaran-core::cloud::leg_outcome
+//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::planner
+//! ├── yaran-core::cloud::view
+//! ├── yaran-core::config
+//! └── yaran-core::engine
+//! External: chrono, std, tokio
 //!
 //! Used by:
 //! cloud_loop.rs
+//! ├── cloud_loop::live_cloud_mode_tests
 //! └── crate
 //! <module-headers:end>
 

@@ -9,11 +9,13 @@
 //! Uses:
 //! engine_actor.rs
 //! ├── cloud_routes
+//! ├── cloud_mode
 //! ├── crate
 //! ├── serve_legs
 //! ├── test_support
 //! ├── yaran-core
 //! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::leg_seam
 //! ├── yaran-core::config
 //! ├── yaran-core::config_reload_status
 //! ├── yaran-core::config_write
@@ -45,6 +47,7 @@
 //! ├── browse_routes
 //! ├── changes
 //! ├── cloud_routes
+//! ├── cloud_loop
 //! ├── crate
 //! ├── file_drop_routes
 //! ├── file_routes

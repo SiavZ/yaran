@@ -10,8 +10,11 @@
 //! <module-headers:begin>
 //! Uses:
 //! app/cloud_crumb.rs
-//! └── app
-//! External: ratatui, yaran_core
+//! ├── app
+//! ├── app::test_support
+//! ├── yaran-core::cloud::leg_seam
+//! └── yaran-core::cloud::view
+//! External: none
 //!
 //! Used by:
 //! app/cloud_crumb.rs

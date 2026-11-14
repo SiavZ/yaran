@@ -12,12 +12,19 @@
 //! ├── cloud_mode
 //! ├── event_bus
 //! ├── rest_common
-//! └── server
-//! External: axum, serde, tokio, yaran_core
+//! ├── server
+//! ├── test_support
+//! ├── yaran-core::cloud::leg_outcome
+//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::view
+//! ├── yaran-core::prose
+//! └── yaran-core::wire
+//! External: axum, serde, serde_json, std, tokio, tower
 //!
 //! Used by:
 //! cloud_mode_routes.rs
-//! └── crate
+//! ├── crate
+//! └── server
 //! <module-headers:end>
 
 use std::sync::Arc;

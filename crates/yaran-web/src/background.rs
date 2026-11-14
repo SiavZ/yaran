@@ -14,6 +14,31 @@
 //! A status the terminal UI sets by hand stays on its own status line; a status
 //! carried by a drained worker event crosses the seam and reaches browsers too.
 //! Web-originated statuses stay scoped per connection, decided in `handle_request`.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! background.rs
+//! ├── cloud_mode
+//! ├── console
+//! ├── crate
+//! ├── engine_actor
+//! ├── ownership_publish
+//! ├── serve_legs
+//! ├── test_support
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::config
+//! ├── yaran-core::engine
+//! ├── yaran-core::logger
+//! └── yaran-core::worker
+//! External: anyhow, std, tempfile
+//!
+//! Used by:
+//! background.rs
+//! ├── crate
+//! ├── yaran-web[test background_serve_claims]
+//! └── yaran[bin yaran]::companion
+//! <module-headers:end>
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};

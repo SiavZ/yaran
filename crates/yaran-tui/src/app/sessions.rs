@@ -1,4 +1,8 @@
 //! Project and session CRUD for the terminal UI: create, delete, reconnect, refresh, project browser.
+//! Terminal UI project and agent-session CRUD: create, delete, reconnect, refresh.
+//!
+//! The `impl App` block for session lifecycle; blocking git and provider work is handed
+//! to background workers.
 //!
 //! <module-headers:begin>
 //! Uses:

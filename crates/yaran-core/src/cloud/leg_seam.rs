@@ -21,6 +21,7 @@
 //!
 //! Used by:
 //! cloud/leg_seam.rs
+//! ├── background_serve
 //! ├── cloud
 //! ├── cloud::leg
 //! ├── cloud::leg::tests
@@ -28,7 +29,22 @@
 //! ├── cloud::leg_run
 //! ├── cloud::leg_start
 //! ├── cloud::planner
-//! └── cloud::view
+//! ├── cloud::view
+//! ├── engine::cloud_mode
+//! ├── engine::events
+//! ├── viewmodel
+//! ├── worker
+//! ├── yaran-tui::app
+//! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::cloud_crumb
+//! ├── yaran-tui::app::cloud_mode
+//! ├── yaran-web::background
+//! ├── yaran-web::cloud_loop
+//! ├── yaran-web::cloud_loop::live_cloud_mode_tests
+//! ├── yaran-web::cloud_mode
+//! ├── yaran-web::cloud_mode_routes
+//! ├── yaran-web::engine_actor
+//! └── yaran[bin yaran]::companion
 //! <module-headers:end>
 
 use std::path::{Path, PathBuf};
