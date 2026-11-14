@@ -3,8 +3,8 @@ import { Ellipsis, FileWarning, FolderGit2, Trash2 } from "lucide-react"
 
 import { GlyphSpinner } from "@/components/GlyphSpinner"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
-import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Button } from "@yaran/ui-kit/button"
+import { Checkbox } from "@yaran/ui-kit/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -12,16 +12,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { InlineCode } from "@/components/ui/inline-code"
+} from "@yaran/ui-kit/dialog"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
+} from "@yaran/ui-kit/dropdown-menu"
+import { Input } from "@yaran/ui-kit/input"
+import { ScrollArea } from "@yaran/ui-kit/scroll-area"
 import { useVanishedTargetGuard } from "@/hooks/use-vanished-target"
 import { isValidAgentName, sanitizeAgentName } from "@/lib/agentName"
 import {

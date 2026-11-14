@@ -56,7 +56,7 @@ const {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
-} = await import("./ui/dropdown-menu")
+} = await import("@yaran/ui-kit/dropdown-menu")
 const { registerPaneInputGroup, resetPaneInputGroups } = await import(
   "@/lib/paneInputGroup"
 )

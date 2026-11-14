@@ -7,7 +7,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
+} from "@yaran/ui-kit/dialog"
 import { useVanishedTargetGuard } from "@/hooks/use-vanished-target"
 import { cloudApi, type PhoneQr } from "@/lib/cloudApi"
 import { notifyInfo } from "@/lib/notify"

@@ -1,7 +1,7 @@
 import type * as React from "react"
 
 import { SimpleTooltip } from "@/components/SimpleTooltip"
-import type { TooltipContent } from "@/components/ui/tooltip"
+import type { TooltipContent } from "@yaran/ui-kit/tooltip"
 
 // The single "needs attention" marker for every surface, so the markup and the
 // color live in one place; it holds still under reduced motion. The fill must stay

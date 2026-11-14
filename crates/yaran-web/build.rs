@@ -187,6 +187,9 @@ fn main() {
     println!("cargo:rerun-if-changed=web/tsconfig.node.json");
     println!("cargo:rerun-if-changed=web/eslint.config.js");
     println!("cargo:rerun-if-changed=web/scripts");
+    // The shared primitives and tokens the web compiles from source (@yaran/ui-kit).
+    println!("cargo:rerun-if-changed=../../packages/ui-kit/src");
+    println!("cargo:rerun-if-changed=../../packages/ui-kit/package.json");
     // WHY THE EMBED READS $OUT_DIR/ui AND NOT web/dist, and what that does and
     // does not buy.
     //

@@ -2,7 +2,7 @@ import { Maximize2, Minimize2 } from "lucide-react"
 import { useRef } from "react"
 
 import { SimpleTooltip } from "@/components/SimpleTooltip"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { useTheaterToggleFocus } from "@/hooks/use-theater"
 import { toggleTheater, useYaran } from "@/lib/store"
 

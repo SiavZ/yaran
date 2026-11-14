@@ -131,8 +131,8 @@ import {
   SidebarInset,
   SidebarProvider,
 } from "@/components/ui/sidebar"
-import { Toaster } from "@/components/ui/sonner"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { Toaster } from "@yaran/ui-kit/sonner"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import {
   useChromeGesture,
   useTheaterEscape,

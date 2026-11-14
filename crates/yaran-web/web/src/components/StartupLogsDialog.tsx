@@ -1,5 +1,5 @@
 import { GlyphSpinner } from "@/components/GlyphSpinner"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -7,15 +7,15 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { ScrollArea } from "@/components/ui/scroll-area"
+} from "@yaran/ui-kit/dialog"
+import { ScrollArea } from "@yaran/ui-kit/scroll-area"
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
+} from "@yaran/ui-kit/select"
 import { useVanishedTargetGuard } from "@/hooks/use-vanished-target"
 import type { StartupLogsScope } from "@/lib/store"
 import {

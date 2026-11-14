@@ -62,7 +62,7 @@ function installStubs() {
 installStubs()
 const { AgentActionsMenu } = await import("./AgentActionsMenu")
 const { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } = await import(
-  "@/components/ui/dropdown-menu"
+  "@yaran/ui-kit/dropdown-menu"
 )
 const store = await import("@/lib/store")
 const openAttachPullRequest = vi.mocked(store.openAttachPullRequest)

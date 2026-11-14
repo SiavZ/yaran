@@ -12,7 +12,7 @@ import {
   openEditorCloseTab,
   useYaran,
 } from "@/lib/store"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 import { rootKey, type EditorRoot } from "@/lib/editorRoot"
 
 // The code-editor tab strip (pills), rhymes with `AgentTabsStrip` but is its

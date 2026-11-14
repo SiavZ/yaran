@@ -3,7 +3,7 @@ import { Fragment } from "react"
 
 import { buildAgentVitals } from "@/lib/agentVitals"
 import type { SessionView } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // The full-vitals tooltip content, shared by the collapsed icon rail and the
 // expanded sidebar rows so the two cannot drift. Purely presentational: the row

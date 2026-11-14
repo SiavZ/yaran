@@ -1,6 +1,6 @@
 import { Component, type ReactNode } from "react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { readBrandedStorage } from "@/lib/brandedStorage"
 
 // yaran embeds a content-hashed JS bundle in its Rust binary, so a tab left open

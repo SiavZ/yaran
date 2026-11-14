@@ -10,12 +10,12 @@ import { AgentVitalsTooltip } from "@/components/AgentVitalsTooltip"
 import { ConnDot } from "@/components/ConnDot"
 import { FlatAgentList } from "@/components/FlatAgentList"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import {
   Sidebar,
   SidebarContent,
@@ -57,7 +57,7 @@ import {
   useYaran,
 } from "@/lib/store"
 import type { ChangesSlice, SelectedTarget } from "@/lib/store"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 import type { SessionView } from "@/lib/types"
 import { sessionLabel } from "@/lib/agentWorkspace"
 

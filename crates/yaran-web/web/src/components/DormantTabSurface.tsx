@@ -1,4 +1,4 @@
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { DormantTabCard } from "@/components/DormantTabCard"
 import { Welcome } from "@/components/Welcome"
 import { DOCS_AGENT_TABS_RESUME } from "@/lib/docs"

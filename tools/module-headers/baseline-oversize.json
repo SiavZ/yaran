@@ -404,8 +404,8 @@
     "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-web/build.rs": {
-    "lines": 545,
-    "reason": "baseline 2026-11-14; phase 13: rebuild the UI when the @yaran/protocol sources it imports change"
+    "lines": 546,
+    "reason": "baseline 2026-11-14; phase 13: rebuild the UI when the @yaran/protocol sources it imports change; phase 14: rerun-if-changed lines for packages/ui-kit, which the web UI now builds from"
   },
   "crates/yaran-web/src/background.rs": {
     "lines": 597,

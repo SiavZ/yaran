@@ -32,16 +32,16 @@ import {
   peekTerminalFocusTarget,
   setTerminalFocusTarget,
 } from "@/lib/terminalFocus"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card"
+} from "@yaran/ui-kit/card"
 import { exitEjectsToWelcome, isFirstTab } from "@/lib/agentTabs"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import { useIsCoarsePointer } from "@/hooks/use-coarse-pointer"
 import { useTypingSurface } from "@/hooks/use-typing-surface"
 import { useFilePicker } from "@/hooks/use-file-picker"

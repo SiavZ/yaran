@@ -23,6 +23,7 @@
     "@xterm/addon-webgl": "0.19.0",
     "@xterm/xterm": "^6.0.0",
     "@yaran/protocol": "file:../../../cloud/protocol",
+    "@yaran/ui-kit": "file:../../../packages/ui-kit",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

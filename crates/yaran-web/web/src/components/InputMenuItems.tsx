@@ -7,7 +7,7 @@ import {
   SquareTerminal,
 } from "lucide-react"
 
-import { DropdownMenuItem } from "@/components/ui/dropdown-menu"
+import { DropdownMenuItem } from "@yaran/ui-kit/dropdown-menu"
 import {
   exitTheater,
   mobileAccessoryBarVisible,

@@ -1,7 +1,7 @@
 import {
   DropdownMenuItem,
   DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import {
   createProjectTerminal,
   openAttachWorktree,

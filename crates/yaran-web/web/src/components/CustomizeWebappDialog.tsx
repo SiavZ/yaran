@@ -42,7 +42,7 @@ import {
 } from "@/lib/notify";
 
 import { SimpleTooltip } from "@/components/SimpleTooltip";
-import { Button } from "@/components/ui/button";
+import { Button } from "@yaran/ui-kit/button";
 import {
   Dialog,
   DialogContent,
@@ -50,17 +50,17 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
+} from "@yaran/ui-kit/dialog";
+import { Input } from "@yaran/ui-kit/input";
+import { ScrollArea } from "@yaran/ui-kit/scroll-area";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+} from "@yaran/ui-kit/select";
+import { Switch } from "@yaran/ui-kit/switch";
 import {
   DEFAULT_FAVICON_HREF,
   FAVICON_COLORS,
@@ -85,7 +85,7 @@ import {
   setInstanceIdentity,
   useYaran,
 } from "@/lib/store";
-import { cn } from "@/lib/utils";
+import { cn } from "@yaran/ui-kit/cn";
 
 // The favicon swatch grid. "Original" (favicon "") previews the bundled
 // full-colour duck; each curated colour previews the tinted duck silhouette.

@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest"
-import { render } from "@testing-library/react"
+import { afterEach, describe, expect, it } from "vitest"
+import { cleanup, render, screen } from "@testing-library/react"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
 
 import { renderInlineCode } from "@/lib/inlineMarkdown"
+
+afterEach(cleanup)
 
 describe("renderInlineCode", () => {
   it("returns a plain string as-is when there are no backticks", () => {
@@ -52,5 +55,14 @@ describe("renderInlineCode", () => {
     expect(() =>
       render(<>{renderInlineCode("`a` `b` `c` `d`")}</>),
     ).not.toThrow()
+  })
+
+  // Moved from the kit's inline-code test, which cannot import app code: the
+  // backtick renderer must draw the very chip the kit exports.
+  it("draws the same chip as the kit's InlineCode", () => {
+    const { container } = render(<>{renderInlineCode("Run `gh` first.")}</>)
+    render(<InlineCode>gh-direct</InlineCode>)
+    const fromMarkdown = container.querySelector("code")
+    expect(fromMarkdown?.className).toBe(screen.getByText("gh-direct").className)
   })
 })

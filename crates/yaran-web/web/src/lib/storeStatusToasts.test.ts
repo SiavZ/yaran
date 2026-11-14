@@ -324,7 +324,7 @@ describe("engine status → sonner toast routing", () => {
 
   // sonner never auto-closes a `loading` toast: its close timer bails on
   // `toast.type === 'loading'`, so the duration handed to `toast.loading` is
-  // inert (pinned in components/ui/sonner.test.tsx). The store therefore owns
+  // inert (pinned in the ui-kit's sonner.test.tsx). The store therefore owns
   // the busy dismissal itself, and these are the tests for that timer.
   describe("busy toast leak guard", () => {
     afterEach(() => {

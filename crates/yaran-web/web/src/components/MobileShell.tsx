@@ -17,7 +17,7 @@ import type { PaneMenuSubject } from "@/components/PaneMenu"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { TheaterChrome } from "@/components/TheaterChrome"
 import { TheaterPill } from "@/components/TheaterPill"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { useTheaterFlight } from "@/hooks/use-theater-flight"
 import { useChromeGesture } from "@/hooks/use-theater"
 import { usePaneCoverKnown, usePaneCoverOwned } from "@/lib/paneCover"
@@ -46,7 +46,7 @@ import type { SelectedTarget, TerminalOwnerRef } from "@/lib/store"
 import type { AgentTabView, SessionView } from "@/lib/types"
 import { matchOwner } from "@/lib/terminalOwner"
 import { terminalsForOwner, terminalTitle } from "@/lib/terminals"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 import {
   folderWorkspace,
   sessionLabel,

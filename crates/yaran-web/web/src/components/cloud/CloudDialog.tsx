@@ -38,7 +38,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react"
 import { ExternalLink, Loader2 } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -46,9 +46,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { InlineCode } from "@/components/ui/inline-code"
-import { Input } from "@/components/ui/input"
+} from "@yaran/ui-kit/dialog"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
+import { Input } from "@yaran/ui-kit/input"
 import { cloudApi, type CloudLogin, type CloudStatus } from "@/lib/cloudApi"
 import { notifyError } from "@/lib/notify"
 import { closeCloudDialog, useYaran } from "@/lib/store"
