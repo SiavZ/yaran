@@ -4911,6 +4911,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "reqwest",
+ "ring",
  "rust-embed",
  "serde",
  "serde_json",
@@ -4918,6 +4919,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tower",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
  "yaran-core",
 ]

@@ -189,7 +189,7 @@ pub fn verify(
             .collect(),
         _ => Vec::new(),
     };
-    if !aud.iter().any(|a| *a == expect.aud) {
+    if !aud.contains(&expect.aud) {
         return Err(AccessRejection::WrongAudience);
     }
     let exp = claims

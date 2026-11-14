@@ -88,6 +88,13 @@ pub(crate) mod cloud_loop;
 pub mod cloud_mode;
 pub mod cloud_mode_routes;
 pub mod cloud_routes;
+pub(crate) mod cloud_handoff;
+#[cfg(test)]
+mod cloud_handoff_tests;
+pub mod cloud_ingress;
+#[cfg(test)]
+mod cloud_ingress_tests;
+pub(crate) mod cloud_jwks_cache;
 pub mod compressible_exts;
 pub mod config_routes;
 pub mod console;
@@ -97,11 +104,15 @@ pub mod file_drop_routes;
 pub mod file_routes;
 pub mod first_load_routes;
 pub mod git_routes;
+pub(crate) mod handoff_consent_page;
+pub(crate) mod handoff_csrf;
 pub mod host_guard;
+pub(crate) mod origin_match;
 pub(crate) mod ownership_publish;
 pub mod project_actions;
 pub mod project_reads;
 pub mod pty_log;
+pub(crate) mod rate_window;
 /// The PTY input-ownership registry, re-exported from `yaran-core`: a rule two
 /// surfaces obey belongs in the crate both can see. A glob rather than a named
 /// list, because some names are used only by this crate's test modules and naming
@@ -567,6 +578,8 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             console.clone(),
         );
         handle.set_cloud_mode_control(cloud_control.clone());
+        // The cloud leg's ingress, unbound until Phase 10's leg binds it.
+        let cloud_ingress = cloud_ingress::CloudIngress::default();
         let shutdown = ServeShutdown::new(mode_control.watched());
         // Collect the IPs the server actually bound to (for the host allowlist).
         // Uses the bound addresses captured above, BEFORE the listeners move into
@@ -597,7 +610,8 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             .with_tailscale_host_literals(tailscale.wants_tailscale())
             .with_live_tailscale_host_literals(mode_control.host_literals())
             .with_tailscale_mode_control(mode_control.clone(), forced_no)
-            .with_cloud_mode_control(cloud_control),
+            .with_cloud_mode_control(cloud_control)
+            .with_cloud_ingress(cloud_ingress.clone()),
         );
 
         // Translate a SIGINT/SIGTERM into a watch trip so every listener winds
@@ -1666,6 +1680,8 @@ impl ServeCore {
             )
         };
         handle.set_cloud_mode_control(cloud_control.clone());
+        // The cloud leg's ingress, unbound until Phase 10's leg binds it.
+        let cloud_ingress = cloud_ingress::CloudIngress::default();
 
         // The shared shutdown primitive: the SAME [`ServeShutdown`] the CLI serve
         // path uses. Its watch is the graceful-shutdown lane every serve task and
@@ -1684,7 +1700,8 @@ impl ServeCore {
                 router_params(config, console.clone(), access_log, bound_ips, hooks)
                     .with_live_tailscale_host_literals(mode_control.host_literals())
                     .with_tailscale_mode_control(mode_control.clone(), false)
-                    .with_cloud_mode_control(cloud_control.clone()),
+                    .with_cloud_mode_control(cloud_control.clone())
+                    .with_cloud_ingress(cloud_ingress.clone()),
             )
         };
 
