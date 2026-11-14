@@ -9,7 +9,7 @@
  * └── src/http/responses.ts
  * External: vitest
  *
- * Used by: entry point (vitest inside workerd, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { errorEntry, type ErrorCode } from "@yaran/protocol";

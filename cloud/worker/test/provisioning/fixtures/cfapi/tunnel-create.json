@@ -1,0 +1,31 @@
+{
+  "source": "derived",
+  "from": "derived from cloudflare/api-schemas openapi.json examples (commit 2026-11-13), trimmed",
+  "request": {
+    "method": "POST",
+    "path": "/accounts/{account}/cfd_tunnel",
+    "body": {
+      "name": "yaran-a1b2c3d4-x",
+      "config_src": "cloudflare"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "name": "yaran-a1b2c3d4-x",
+        "status": "inactive",
+        "created_at": "2026-11-14T00:00:00Z",
+        "deleted_at": null,
+        "conns_active_at": null,
+        "conns_inactive_at": null,
+        "tun_type": "cfd_tunnel",
+        "config_src": "cloudflare"
+      }
+    }
+  }
+}

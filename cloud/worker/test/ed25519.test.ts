@@ -10,7 +10,7 @@
  * └── cloud/protocol/fixtures/sig/machine-request.json
  * External: vitest
  *
- * Used by: entry point (vitest inside workerd, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { b64urlDecode } from "@yaran/protocol";

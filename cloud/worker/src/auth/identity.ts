@@ -9,11 +9,11 @@
  * <module-headers:begin>
  * Uses:
  * src/auth/identity.ts
- * ├── src/auth/user-slug.ts
  * ├── src/db/client.ts
  * ├── src/db/users.ts
  * ├── src/http/context.ts
- * └── src/http/responses.ts
+ * ├── src/http/responses.ts
+ * └── src/provisioning/naming.ts
  * External: none
  *
  * Used by:
@@ -26,14 +26,16 @@ import { all } from "../db/client.ts";
 import { getUserByEmail, insertUser, LAST_SEEN_THROTTLE_S, normalizeEmail, touchUserSeen, type UserRow } from "../db/users.ts";
 import type { AccessClaims } from "../http/context.ts";
 import { HttpError } from "../http/responses.ts";
-import { deriveUserSlug } from "./user-slug.ts";
+import { deriveUserSlug, userSlugCandidate } from "../provisioning/naming.ts";
 
-/** Picks the first free slug among base, base-2 … base-99, else base-<4 hex>. */
+/** Picks the first free slug among base, base-2 … base-99, else base-<4 hex> (05's candidates). */
 export function pickSlug(base: string, taken: ReadonlySet<string>): string {
-  if (!taken.has(base)) return base;
-  for (let n = 2; n <= 99; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
-  const hex = Array.from(crypto.getRandomValues(new Uint8Array(2)), (b) => b.toString(16).padStart(2, "0")).join("");
-  return `${base}-${hex}`;
+  const random = () => crypto.getRandomValues(new Uint16Array(1))[0]! / 0x10000;
+  for (let n = 1; n <= 99; n++) {
+    const candidate = userSlugCandidate(base, n);
+    if (!taken.has(candidate)) return candidate;
+  }
+  return userSlugCandidate(base, 100, random);
 }
 
 async function createUser(db: D1Database, claims: AccessClaims, now: number): Promise<UserRow> {

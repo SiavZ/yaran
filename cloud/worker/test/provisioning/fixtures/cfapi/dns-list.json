@@ -1,0 +1,40 @@
+{
+  "source": "derived",
+  "from": "derived from cloudflare/api-schemas openapi.json examples (commit 2026-11-13), trimmed",
+  "request": {
+    "method": "GET",
+    "path": "/zones/{zone}/dns_records",
+    "query": {
+      "name": "laptop-alice.example.com",
+      "type": "CNAME",
+      "per_page": "100",
+      "page": "1"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": [
+        {
+          "id": "023e105f4ecef8ad9ca31a8372d0c353",
+          "type": "CNAME",
+          "name": "laptop-alice.example.com",
+          "content": "00000000-0000-4000-8000-000000000001.cfargotunnel.com",
+          "proxied": true,
+          "ttl": 1,
+          "comment": "yaran:a1b2c3d4:m:00000000-0000-4000-8000-000000000001"
+        }
+      ],
+      "result_info": {
+        "page": 1,
+        "per_page": 100,
+        "count": 1,
+        "total_count": 1,
+        "total_pages": 1
+      }
+    }
+  }
+}

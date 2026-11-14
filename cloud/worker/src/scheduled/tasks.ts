@@ -13,12 +13,14 @@
  * Uses:
  * src/scheduled/tasks.ts
  * ├── src/http/context.ts
+ * ├── src/reconcile/tasks.ts
  * └── src/scheduled/purge.ts
  * External: none
  *
  * Used by:
  * src/scheduled/tasks.ts
  * ├── src/index.ts
+ * ├── src/reconcile/tasks.ts
  * ├── src/scheduled/dispatcher.ts
  * ├── src/scheduled/purge.ts
  * ├── test/dispatcher.test.ts
@@ -26,6 +28,7 @@
  * <module-headers:end>
  */
 import type { AppContext } from "../http/context.ts";
+import { RECONCILE_TASK_DEFS } from "../reconcile/tasks.ts";
 import { PURGE_TASKS } from "./purge.ts";
 
 export interface TaskContext extends AppContext {
@@ -53,4 +56,4 @@ export interface TaskDef {
 }
 
 /** Every registered task. Phases 05 and 08 append one spread line each. */
-export const TASKS: readonly TaskDef[] = [...PURGE_TASKS];
+export const TASKS: readonly TaskDef[] = [...PURGE_TASKS, ...RECONCILE_TASK_DEFS];

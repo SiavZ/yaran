@@ -36,6 +36,10 @@ declare global {
       DATA_KEY?: string | undefined;
       /** The previous DATA_KEY during a rotation; opens old rows only. */
       DATA_KEY_PREVIOUS?: string | undefined;
+      /** Cloudflare API base URL override (05; Phase 19 staging chaos proxy). Must be https. */
+      CF_API_BASE_URL?: string | undefined;
+      /** Space-separated https app callback URLs (02 §8; 06 handoff, 05 G1 fallback L2). */
+      APP_CALLBACK_URLS?: string | undefined;
       /** "off" disables the runtime migrator (G11 fallback); anything else leaves it on. */
       RUNTIME_MIGRATIONS?: string | undefined;
     }
