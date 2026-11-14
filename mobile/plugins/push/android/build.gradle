@@ -1,0 +1,59 @@
+// @yaran/push Android library (Phase 16): UnifiedPush registration, notification presentation and
+// the relay-held FCM fallback's crypto. The Capacitor CLI includes it in the app; `./gradlew test`
+// here runs its JUnit/Robolectric suite against 02's shared fixtures.
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.13.0'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.21'
+    }
+}
+
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+android {
+    namespace = "io.github.siavz.yaran.push"
+    compileSdk = project.hasProperty('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 36
+    defaultConfig {
+        minSdkVersion project.hasProperty('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
+        targetSdkVersion project.hasProperty('targetSdkVersion') ? rootProject.ext.targetSdkVersion : 36
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            all {
+                // 02's shared vectors, read by every suite (00-CONVENTIONS §3).
+                systemProperty 'yaran.protocol', file('../../../../cloud/protocol').absolutePath
+            }
+        }
+    }
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation "androidx.core:core:1.17.0"
+    implementation "androidx.appcompat:appcompat:1.7.1"
+    // The connector also bundles Tink's fixed_webpush decryptor, which the relay-fcm fallback reuses.
+    implementation "org.unifiedpush.android:connector:3.3.5"
+    // Already the connector's runtime dependency (same version); declared for compile access only.
+    implementation "com.google.crypto.tink:tink:1.23.0"
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.16"
+}

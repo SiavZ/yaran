@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- play flavor, relay-fcm transport only (G5 fallback, Phase 16): the FCM receiver and the
+     token-source installer. Selected by mobile/plugins/push/android/app-push.gradle. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <service
+            android:name="io.github.siavz.yaran.push.fcmrelay.FcmRelayMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <provider
+            android:name="io.github.siavz.yaran.push.fcmrelay.FcmRelayInstaller"
+            android:authorities="${applicationId}.yaran-fcm-relay"
+            android:exported="false" />
+    </application>
+</manifest>

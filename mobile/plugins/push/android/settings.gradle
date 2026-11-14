@@ -1,0 +1,4 @@
+// Standalone build of the @yaran/push Android library, for its unit tests (Capacitor plugin layout).
+// Inside the app, the Capacitor CLI includes this module next to its own :capacitor-android.
+include ':capacitor-android'
+project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/android/capacitor')
