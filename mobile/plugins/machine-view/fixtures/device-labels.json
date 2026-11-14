@@ -1,0 +1,108 @@
+{
+  "description": "DeviceLabel for HandoffQuery.device and DeviceRegistration.label: remove C0/C1 controls (U+0000-U+001F, U+007F-U+009F) and bidi controls (U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069), trim U+0020 at both ends, cut to 64 code points, trim U+0020 again; empty -> the model cleaned the same way; still empty -> \"Phone\".",
+  "fallback": "Phone",
+  "cases": [
+    {
+      "name": "plain name",
+      "name_in": "Ada's Pixel",
+      "model": "Pixel 9",
+      "expect": "Ada's Pixel"
+    },
+    {
+      "name": "null name uses model",
+      "name_in": null,
+      "model": "Pixel 9",
+      "expect": "Pixel 9"
+    },
+    {
+      "name": "blank name uses model",
+      "name_in": "   ",
+      "model": "Pixel 9",
+      "expect": "Pixel 9"
+    },
+    {
+      "name": "trimmed",
+      "name_in": "  Ada  ",
+      "model": "Pixel 9",
+      "expect": "Ada"
+    },
+    {
+      "name": "control chars removed",
+      "name_in": "Ada\u0000\u0007\n\tPhone",
+      "model": "Pixel 9",
+      "expect": "AdaPhone"
+    },
+    {
+      "name": "c1 controls removed",
+      "name_in": "AdaX",
+      "model": "Pixel 9",
+      "expect": "AdaX"
+    },
+    {
+      "name": "del removed",
+      "name_in": "Ada",
+      "model": "Pixel 9",
+      "expect": "Ada"
+    },
+    {
+      "name": "bidi removed",
+      "name_in": "‮enohP s'adA‬",
+      "model": "Pixel 9",
+      "expect": "enohP s'adA"
+    },
+    {
+      "name": "isolates removed",
+      "name_in": "⁦Ada⁩ ‎X‏؜",
+      "model": "Pixel 9",
+      "expect": "Ada X"
+    },
+    {
+      "name": "only bidi falls back",
+      "name_in": "‮‬",
+      "model": "iPhone",
+      "expect": "iPhone"
+    },
+    {
+      "name": "cut to 64 code points",
+      "name_in": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "model": "Pixel 9",
+      "expect": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "name": "cut counts code points",
+      "name_in": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+      "model": "Pixel 9",
+      "expect": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+    },
+    {
+      "name": "cut then trim",
+      "name_in": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa b",
+      "model": "Pixel 9",
+      "expect": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "unicode kept",
+      "name_in": "Пиксель Ады",
+      "model": "Pixel 9",
+      "expect": "Пиксель Ады"
+    },
+    {
+      "name": "model cleaned",
+      "name_in": null,
+      "model": "‮Pixel\u0000 9 ",
+      "expect": "Pixel 9"
+    },
+    {
+      "name": "both empty",
+      "name_in": null,
+      "model": "",
+      "expect": "Phone"
+    },
+    {
+      "name": "both blank",
+      "name_in": " ",
+      "model": "\u0000",
+      "expect": "Phone"
+    }
+  ]
+}

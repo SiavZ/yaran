@@ -1,0 +1,100 @@
+{
+  "description": "HandoffUrl: base (control plane <org_url>/v1/handoff, machine https://<host>/__yaran/handoff), then v, pk, state, redirect, device, dk, dts, dsig, build=dev (dev only), mode=fragment (only when asked), each value percent-encoded keeping only RFC 3986 unreserved characters (UTF-8, upper-case hex). signed_host is the <host> line of the device signature (02 §8.1).",
+  "cases": [
+    {
+      "name": "machine release",
+      "target": "machine",
+      "host": "laptop-ada.example.com",
+      "org_url": null,
+      "mode": "https",
+      "domain": "app.example.com",
+      "fragment": false,
+      "device": "Ada's Pixel",
+      "params": {
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dts": "1731571200",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "expect_url": "https://laptop-ada.example.com/__yaran/handoff?v=1&pk=BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM&state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&redirect=https%3A%2F%2Fapp.example.com%2Fauth%2Fcallback&device=Ada%27s%20Pixel&dk=BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ&dts=1731571200&dsig=zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g",
+      "signed_host": "laptop-ada.example.com"
+    },
+    {
+      "name": "machine dev",
+      "target": "machine",
+      "host": "laptop-ada.example.com",
+      "org_url": null,
+      "mode": "dev",
+      "domain": null,
+      "fragment": false,
+      "device": "Ada's Pixel",
+      "params": {
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dts": "1731571200",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "expect_url": "https://laptop-ada.example.com/__yaran/handoff?v=1&pk=BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM&state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&redirect=yaranapp%3A%2F%2Fauth%2Fcallback&device=Ada%27s%20Pixel&dk=BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ&dts=1731571200&dsig=zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g&build=dev",
+      "signed_host": "laptop-ada.example.com"
+    },
+    {
+      "name": "machine release fragment",
+      "target": "machine",
+      "host": "laptop-ada.example.com",
+      "org_url": null,
+      "mode": "https",
+      "domain": "app.example.com",
+      "fragment": true,
+      "device": "Pixel 9",
+      "params": {
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dts": "1731571200",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "expect_url": "https://laptop-ada.example.com/__yaran/handoff?v=1&pk=BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM&state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&redirect=https%3A%2F%2Fapp.example.com%2Fauth%2Fcallback&device=Pixel%209&dk=BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ&dts=1731571200&dsig=zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g&mode=fragment",
+      "signed_host": "laptop-ada.example.com"
+    },
+    {
+      "name": "control plane release",
+      "target": "control_plane",
+      "host": "cp.example.com",
+      "org_url": "https://cp.example.com",
+      "mode": "https",
+      "domain": "app.example.com",
+      "fragment": false,
+      "device": "Пиксель Ады",
+      "params": {
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dts": "1731571200",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "expect_url": "https://cp.example.com/v1/handoff?v=1&pk=BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM&state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&redirect=https%3A%2F%2Fapp.example.com%2Fauth%2Fcallback&device=%D0%9F%D0%B8%D0%BA%D1%81%D0%B5%D0%BB%D1%8C%20%D0%90%D0%B4%D1%8B&dk=BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ&dts=1731571200&dsig=zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g",
+      "signed_host": "cp.example.com"
+    },
+    {
+      "name": "control plane dev fragment",
+      "target": "control_plane",
+      "host": "cp.example.com",
+      "org_url": "https://cp.example.com",
+      "mode": "dev",
+      "domain": null,
+      "fragment": true,
+      "device": "a&b=c #?/",
+      "params": {
+        "pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+        "state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+        "dk": "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
+        "dts": "1731571200",
+        "dsig": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+      },
+      "expect_url": "https://cp.example.com/v1/handoff?v=1&pk=BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM&state=aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU&redirect=yaranapp%3A%2F%2Fauth%2Fcallback&device=a%26b%3Dc%20%23%3F%2F&dk=BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ&dts=1731571200&dsig=zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g&build=dev&mode=fragment",
+      "signed_host": "cp.example.com"
+    }
+  ]
+}
