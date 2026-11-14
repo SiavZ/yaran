@@ -186,6 +186,30 @@ describe("CloudDialog", () => {
       expect(call).not.toHaveBeenCalled()
     })
 
+    // The Cloud dialog queues its own first focus for the next animation frame.
+    // A confirm that opens before that frame runs must still end on Cancel.
+    it(`keeps Cancel focused when ${confirmName} opens before the dialog's first focus frame`, async () => {
+      const frames = new Map<number, FrameRequestCallback>()
+      let next = 0
+      vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+        frames.set(++next, cb)
+        return next
+      })
+      vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id))
+      api.status.mockResolvedValue(PAIRED)
+      render(<CloudDialog />)
+      fireEvent.click(await screen.findByRole("button", { name: opener }))
+      const cancel = await screen.findByRole("button", { name: "Cancel" })
+      act(() => {
+        for (let i = 0; i < 20 && frames.size > 0; i++) {
+          const batch = [...frames.values()]
+          frames.clear()
+          for (const cb of batch) cb(0)
+        }
+      })
+      expect(document.activeElement).toBe(cancel)
+    })
+
     it(`sends ${confirmName} only once confirmed`, async () => {
       api.status.mockResolvedValue(PAIRED)
       render(<CloudDialog />)

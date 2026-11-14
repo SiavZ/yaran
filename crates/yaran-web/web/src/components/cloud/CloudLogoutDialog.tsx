@@ -12,13 +12,15 @@
  * ├── src/components/ui/button.tsx
  * ├── src/components/ui/dialog.tsx
  * └── src/components/ui/inline-code.tsx
- * External: none
+ * External: react
  *
  * Used by:
  * src/components/cloud/CloudLogoutDialog.tsx
  * └── src/components/cloud/CloudDialog.tsx
  * <module-headers:end>
  */
+
+import { useRef } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -42,9 +44,13 @@ export function CloudLogoutDialog({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const cancel = useRef<HTMLButtonElement>(null)
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onCancel()}>
-      <DialogContent showCloseButton={false} destructive>
+      {/* Cancel is focused through Base UI's focus queue, not autoFocus: an
+          autoFocused element makes the confirm queue nothing, so the parent Cloud
+          dialog's still-pending first-focus frame would move focus off Cancel. */}
+      <DialogContent showCloseButton={false} destructive initialFocus={cancel}>
         <DialogHeader>
           <DialogTitle>Disconnect from Yaran Cloud?</DialogTitle>
           <DialogDescription>
@@ -56,7 +62,7 @@ export function CloudLogoutDialog({
         {/* Misclick-safe spacing between the body and the buttons. */}
         <div className="h-2" />
         <DialogFooter>
-          <Button variant="outline" autoFocus onClick={onCancel}>
+          <Button ref={cancel} variant="outline" onClick={onCancel}>
             Cancel
           </Button>
           <Button variant="destructive" onClick={onConfirm}>
