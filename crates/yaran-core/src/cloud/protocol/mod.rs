@@ -32,6 +32,11 @@
 //! ├── cloud
 //! ├── cloud::login
 //! └── cloud::machine_api
+//! ├── yaran-web::cloud_handoff
+//! ├── yaran-web::cloud_handoff_request
+//! ├── yaran-web::cloud_ingress
+//! ├── yaran-web::cloud_ingress_tests
+//! └── yaran-web::host_guard
 //! <module-headers:end>
 
 pub mod concat_kdf;

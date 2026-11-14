@@ -15,13 +15,17 @@
 //! <module-headers:begin>
 //! Uses:
 //! handoff_consent_page.rs
-//! ├── yaran_core::cloud::protocol
-//! └── yaran_core::device_label
+//! ├── yaran-core::cloud::protocol::rules
+//! ├── yaran-core::cloud::protocol::ua
+//! └── yaran-core::device_label
 //! External: axum, ring, std
 //!
 //! Used by:
 //! handoff_consent_page.rs
-//! └── cloud_handoff
+//! ├── cloud_handoff
+//! ├── cloud_handoff_request
+//! ├── cloud_handoff_tests
+//! └── crate
 //! <module-headers:end>
 
 use std::sync::OnceLock;

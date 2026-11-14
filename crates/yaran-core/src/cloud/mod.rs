@@ -42,6 +42,9 @@
 //! ├── cloud::status
 //! ├── cloud::test_support
 //! └── cloud::view
+//! ├── cloud::access_jwks
+//! ├── cloud::access_jwt
+//! └── cloud::protocol
 //! External: none
 //!
 //! Used by:

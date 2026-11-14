@@ -16,6 +16,7 @@
  * <module-headers:begin>
  * Uses:
  * scripts/gen-vectors.mjs
+ * ├── scripts/vectors/access-jwt.mjs
  * ├── scripts/vectors/api.mjs
  * ├── scripts/vectors/consent.mjs
  * ├── scripts/vectors/jwe.mjs

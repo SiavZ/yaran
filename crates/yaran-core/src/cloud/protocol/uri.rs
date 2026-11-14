@@ -19,6 +19,7 @@
 //! cloud/protocol/uri.rs
 //! ├── cloud::protocol
 //! └── cloud::qr
+//! └── yaran-web::cloud_handoff_request
 //! <module-headers:end>
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};

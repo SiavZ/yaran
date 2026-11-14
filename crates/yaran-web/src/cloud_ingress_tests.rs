@@ -1,5 +1,5 @@
 //! Integration tests for the cloud ingress (Phase 11 §2, §3, §5, §6), driven through
-//! `build_app` with a fixture JWKS source, plus the harness the handoff tests share.
+//! `build_app` with a fixture JWKS source.
 //!
 //! - Test-only (`#[cfg(test)]`); never touches the network beyond loopback.
 //!
@@ -7,162 +7,27 @@
 //! Uses:
 //! cloud_ingress_tests.rs
 //! ├── cloud_ingress
-//! ├── cloud_jwks_cache
-//! ├── server
-//! ├── test_support
-//! └── yaran_core::cloud::protocol
-//! External: axum, futures_util, serde_json, std, tokio, tokio_tungstenite, tower, tracing, tracing_subscriber
+//! ├── cloud_test_support
+//! ├── yaran-core::cloud::access_jwt
+//! └── yaran-core::cloud::protocol
+//! External: axum, futures_util, std, tokio, tokio_tungstenite
 //!
 //! Used by:
 //! cloud_ingress_tests.rs
-//! ├── cloud_handoff_tests
-//! └── lib
+//! └── crate
 //! <module-headers:end>
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
-use serde_json::Value;
-use tower::ServiceExt;
-use yaran_core::cloud::access_jwks::Jwks;
 use yaran_core::cloud::access_jwt::AccessRejection;
 use yaran_core::cloud::protocol::RefusalCode;
-use yaran_core::test_scratch::ScratchDir;
 
-use crate::cloud_ingress::{
-    BindRefusal, CloudBindingInput, CloudIngress, ConsentKey, ConsentKeySource, IngressSettings,
-};
-use crate::cloud_jwks_cache::tests::{FakeSource, fixture_jwks};
-use crate::server::{RouterParams, build_app};
-
-pub(crate) const HOST: &str = "laptop-ada.example.com";
-pub(crate) const CALLBACK: &str = "https://app.example.com/auth/callback";
-
-pub(crate) fn fx(path: &str) -> Value {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../cloud/protocol/");
-    serde_json::from_str(&std::fs::read_to_string(format!("{root}{path}")).unwrap()).unwrap()
-}
-
-pub(crate) fn token(name: &str) -> String {
-    let t = fx("fixtures/access-jwt/tokens.json");
-    let case = t["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == name);
-    case.unwrap()["token"].as_str().unwrap().to_string()
-}
-
-pub(crate) fn fixture_now() -> i64 {
-    fx("fixtures/access-jwt/tokens.json")["now"]
-        .as_i64()
-        .unwrap()
-}
-
-#[derive(Default)]
-pub(crate) struct FakeConsent(pub Mutex<Option<ConsentKey>>);
-
-impl ConsentKeySource for FakeConsent {
-    fn read_handoff_consent_key(&self) -> Result<Option<ConsentKey>, String> {
-        Ok(self.0.lock().unwrap().clone())
-    }
-}
-
-pub(crate) struct Harness {
-    _tmp: ScratchDir,
-    pub app: Router,
-    pub ingress: CloudIngress,
-    pub clock: Arc<AtomicI64>,
-    pub consent: Arc<FakeConsent>,
-}
-
-pub(crate) fn binding_input(host: &str) -> CloudBindingInput {
-    let t = fx("fixtures/access-jwt/tokens.json");
-    CloudBindingInput {
-        hostname: host.to_string(),
-        team_domain: t["team_domain"].as_str().unwrap().to_string(),
-        aud: t["aud"].as_str().unwrap().to_string(),
-        owner_email: t["owner_email"].as_str().unwrap().to_string(),
-    }
-}
-
-/// An app bound to `host` (unless `None`), the clock at the fixture's `now`.
-pub(crate) fn harness_with(host: Option<&str>, jwks: Result<Jwks, String>) -> Harness {
-    let tmp = ScratchDir::new();
-    let clock = Arc::new(AtomicI64::new(fixture_now()));
-    let consent = Arc::new(FakeConsent::default());
-    let c = Arc::clone(&clock);
-    let ingress = CloudIngress::with_parts(
-        FakeSource::new(vec![jwks.map(|j| (j, None))]),
-        consent.clone(),
-        Arc::new(move || UNIX_EPOCH + Duration::from_secs(c.load(Ordering::SeqCst) as u64)),
-    );
-    ingress.update_settings(IngressSettings {
-        app_callback_urls: vec![CALLBACK.to_string()],
-        ..IngressSettings::default()
-    });
-    if let Some(host) = host {
-        ingress.bind(binding_input(host), Box::new(|_| {})).unwrap();
-    }
-    let probe = Router::new().route("/probe", axum::routing::post(|| async { "ok" }));
-    let app = build_app(
-        crate::test_support::test_engine_handle(tmp.path()),
-        probe,
-        RouterParams::plain_http()
-            .with_host_allowlist(vec!["127.0.0.1".parse().unwrap()], vec![], false)
-            .with_cloud_ingress(ingress.clone()),
-    );
-    Harness {
-        _tmp: tmp,
-        app,
-        ingress,
-        clock,
-        consent,
-    }
-}
-
-pub(crate) fn harness() -> Harness {
-    harness_with(Some(HOST), Ok(fixture_jwks("jwks.json")))
-}
-
-pub(crate) async fn send(app: &Router, request: Request<Body>) -> Response<Body> {
-    app.clone().oneshot(request).await.unwrap()
-}
-
-pub(crate) fn request(
-    method: &str,
-    uri: &str,
-    host: &str,
-    jwt: Option<&str>,
-) -> axum::http::request::Builder {
-    let b = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("Host", host);
-    match jwt {
-        Some(jwt) => b.header("Cf-Access-Jwt-Assertion", jwt),
-        None => b,
-    }
-}
-
-pub(crate) async fn text(response: Response<Body>) -> String {
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-pub(crate) fn refusal(response: &Response<Body>) -> Option<&str> {
-    response
-        .headers()
-        .get("Yaran-Refusal")
-        .and_then(|v| v.to_str().ok())
-}
+use crate::cloud_ingress::{BindRefusal, CloudBindingInput, CloudIngress, IngressSettings};
+use crate::cloud_test_support::*;
 
 async fn get(h: &Harness, uri: &str, host: &str, jwt: Option<&str>) -> Response<Body> {
     send(
@@ -475,45 +340,6 @@ async fn a_websocket_upgrade_without_a_token_is_refused_before_the_origin_check(
         let n = stream.read(&mut buf).await.unwrap();
         let response = String::from_utf8_lossy(&buf[..n]);
         assert!(response.starts_with(want), "{host} {origin}: {response}");
-    }
-}
-
-/// Collects every tracing field the code under test logs, on this thread.
-#[derive(Clone, Default)]
-pub(crate) struct Captured(pub Arc<Mutex<Vec<String>>>);
-
-struct Visitor<'a>(&'a mut Vec<String>);
-
-impl tracing::field::Visit for Visitor<'_> {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.push(format!("{}={value:?}", field.name()));
-    }
-}
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Captured {
-    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        let mut lines = self.0.lock().unwrap();
-        event.record(&mut Visitor(&mut lines));
-    }
-}
-
-impl Captured {
-    pub(crate) fn install(&self) -> tracing::subscriber::DefaultGuard {
-        use tracing_subscriber::layer::SubscriberExt;
-        // With a single live dispatcher, tracing rebuilds callsite interest from
-        // whichever thread rebuilds it, so a parallel test with no subscriber can
-        // mark our callsites `never`. A second, permanent dispatcher forces the
-        // rebuild to ask every live one.
-        static KEEP: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
-        KEEP.get_or_init(|| tracing::Dispatch::new(tracing_subscriber::registry()));
-        let guard =
-            tracing::subscriber::set_default(tracing_subscriber::registry().with(self.clone()));
-        tracing::callsite::rebuild_interest_cache();
-        guard
-    }
-
-    pub(crate) fn joined(&self) -> String {
-        self.0.lock().unwrap().join("\n")
     }
 }
 

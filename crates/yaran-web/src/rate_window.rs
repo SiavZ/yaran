@@ -14,7 +14,8 @@
 //!
 //! Used by:
 //! rate_window.rs
-//! └── cloud_ingress
+//! ├── cloud_ingress
+//! └── crate
 //! <module-headers:end>
 
 use std::sync::Mutex;

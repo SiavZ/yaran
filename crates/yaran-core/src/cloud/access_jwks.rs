@@ -13,14 +13,20 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/access_jwks.rs
+//! ├── cloud::access_jwks::tests
 //! ├── cloud::protocol::rules
 //! └── sanitize
-//! External: serde_json, std, ureq
+//! External: serde_json, std, tracing, ureq
 //!
 //! Used by:
 //! cloud/access_jwks.rs
 //! ├── cloud
-//! └── cloud::access_jwt
+//! ├── cloud::access_jwks::tests
+//! ├── cloud::access_jwt
+//! ├── cloud::access_jwt::tests
+//! ├── yaran-web::cloud_ingress
+//! ├── yaran-web::cloud_jwks_cache
+//! └── yaran-web::cloud_test_support
 //! <module-headers:end>
 
 use std::time::Duration;

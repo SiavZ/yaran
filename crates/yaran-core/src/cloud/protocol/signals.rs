@@ -16,7 +16,9 @@
 //!
 //! Used by:
 //! cloud/protocol/signals.rs
-//! └── cloud::protocol
+//! ├── cloud::access_jwt
+//! ├── cloud::protocol
+//! └── yaran-web::cloud_ingress
 //! <module-headers:end>
 
 /// Sent on PTY and events sockets of a cloud-hostname connection at the Access JWT's

@@ -30,6 +30,14 @@
 //! ├── cloud_mode
 //! ├── cloud_mode_routes
 //! ├── cloud_routes
+//! ├── cloud_consent_tests
+//! ├── cloud_handoff
+//! ├── cloud_handoff_request
+//! ├── cloud_handoff_tests
+//! ├── cloud_ingress
+//! ├── cloud_ingress_tests
+//! ├── cloud_jwks_cache
+//! ├── cloud_test_support
 //! ├── compressible_exts
 //! ├── config_routes
 //! ├── console
@@ -40,11 +48,15 @@
 //! ├── first_load_routes
 //! ├── git_routes
 //! ├── host_guard
+//! ├── handoff_consent_page
+//! ├── handoff_csrf
+//! ├── origin_match
 //! ├── ownership_publish
 //! ├── project_actions
 //! ├── project_reads
 //! ├── pty_log
 //! ├── pty_sizes
+//! ├── rate_window
 //! ├── resource_routes
 //! ├── rest_common
 //! ├── serve_legs
@@ -88,13 +100,18 @@ pub(crate) mod cloud_loop;
 pub mod cloud_mode;
 pub mod cloud_mode_routes;
 pub mod cloud_routes;
+#[cfg(test)]
+mod cloud_consent_tests;
 pub(crate) mod cloud_handoff;
+pub(crate) mod cloud_handoff_request;
 #[cfg(test)]
 mod cloud_handoff_tests;
 pub mod cloud_ingress;
 #[cfg(test)]
 mod cloud_ingress_tests;
 pub(crate) mod cloud_jwks_cache;
+#[cfg(test)]
+mod cloud_test_support;
 pub mod compressible_exts;
 pub mod config_routes;
 pub mod console;

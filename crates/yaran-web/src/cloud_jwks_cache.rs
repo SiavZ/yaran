@@ -14,12 +14,14 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud_jwks_cache.rs
-//! └── yaran_core::cloud::access_jwks
-//! External: tokio, std
+//! └── yaran-core::cloud::access_jwks
+//! External: std, tokio, tracing
 //!
 //! Used by:
 //! cloud_jwks_cache.rs
-//! └── cloud_ingress
+//! ├── cloud_ingress
+//! ├── cloud_test_support
+//! └── crate
 //! <module-headers:end>
 
 use std::sync::Arc;

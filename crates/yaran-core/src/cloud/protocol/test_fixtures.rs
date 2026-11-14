@@ -16,6 +16,8 @@
 //! cloud/protocol/test_fixtures.rs
 //! ├── cloud::leg::tests
 //! ├── cloud::machine_api_error
+//! ├── cloud::access_jwks::tests
+//! ├── cloud::access_jwt::tests
 //! ├── cloud::protocol
 //! ├── cloud::protocol::concat_kdf
 //! ├── cloud::protocol::errors

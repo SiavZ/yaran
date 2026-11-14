@@ -32,6 +32,21 @@
 //! browser can be made to send an IP-literal Host for a name the attacker owns. A
 //! local reverse proxy forwarding a spoofed Host is the operator's own
 //! configuration, here as for rule 2.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! host_guard.rs
+//! ├── cloud_ingress
+//! ├── yaran-core::cloud::protocol
+//! └── yaran-core::tailscale
+//! External: axum, std
+//!
+//! Used by:
+//! host_guard.rs
+//! ├── cloud_ingress
+//! ├── crate
+//! └── server
+//! <module-headers:end>
 
 use std::net::IpAddr;
 use std::sync::Arc;

@@ -14,7 +14,8 @@
 //!
 //! Used by:
 //! cloud/protocol/ua.rs
-//! └── cloud::protocol
+//! ├── cloud::protocol
+//! └── yaran-web::handoff_consent_page
 //! <module-headers:end>
 
 use std::sync::LazyLock;

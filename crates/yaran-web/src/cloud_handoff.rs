@@ -15,39 +15,43 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud_handoff.rs
+//! ├── cloud_handoff_request
 //! ├── cloud_ingress
 //! ├── handoff_consent_page
 //! ├── handoff_csrf
-//! ├── yaran_core::cloud::access_jwt
-//! └── yaran_core::cloud::protocol
-//! External: axum, std, uuid
+//! ├── yaran-core::cloud::access_jwt
+//! ├── yaran-core::cloud::protocol
+//! ├── yaran-core::cloud::protocol::handoff
+//! ├── yaran-core::cloud::protocol::handoff_consent
+//! └── yaran-core::cloud::protocol::rules
+//! External: axum, std, tracing
 //!
 //! Used by:
 //! cloud_handoff.rs
+//! ├── crate
 //! └── server
 //! <module-headers:end>
 
-use std::collections::HashMap;
 use std::time::UNIX_EPOCH;
 
+use axum::Router;
 use axum::extract::rejection::FormRejection;
 use axum::extract::{Extension, Form, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
 use yaran_core::cloud::access_jwt::VerifiedAccess;
-use yaran_core::cloud::protocol::errors::{ErrorBody, ErrorEnvelope};
-use yaran_core::cloud::protocol::handoff::{
-    HandoffBuild, HandoffKind, HandoffMode, HandoffPayload, parse_recipient_point, seal,
-};
+use yaran_core::cloud::protocol::ErrorCode;
+use yaran_core::cloud::protocol::handoff::{HandoffBuild, HandoffKind, HandoffPayload, seal};
 use yaran_core::cloud::protocol::handoff_consent::{
     self as consent, ConsentDecision, ConsentSide, DeviceFieldError, RememberedInput,
 };
 use yaran_core::cloud::protocol::rules::{self, decode_p256_point};
-use yaran_core::cloud::protocol::uri::redirect_allowed;
-use yaran_core::cloud::protocol::{ErrorCode, PROTOCOL_MAX, PROTOCOL_MIN};
 
+use crate::cloud_handoff_request::{
+    Target, bad_request, callback_origin, common, cookie, fail, invalid, target, to_callback,
+    unique,
+};
 use crate::cloud_ingress::{CloudBinding, CloudIngress};
 use crate::handoff_consent_page::{self as pages, ConsentView};
 use crate::handoff_csrf::CsrfBinding;
@@ -65,172 +69,10 @@ pub(crate) fn cloud_routes<S: Clone + Send + Sync + 'static>(ingress: CloudIngre
         .with_state(ingress)
 }
 
-type Params = HashMap<String, String>;
 type Access = Option<Extension<VerifiedAccess>>;
 
 fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "not found").into_response()
-}
-
-/// Query or form pairs as a map; a repeated field makes the request ambiguous.
-fn unique(pairs: Vec<(String, String)>) -> Option<Params> {
-    let mut map = Params::new();
-    for (k, v) in pairs {
-        if map.insert(k, v).is_some() {
-            return None;
-        }
-    }
-    Some(map)
-}
-
-/// A 400 `handoff_request_invalid`: the §4 envelope, or a page when a browser asks.
-fn bad_request(headers: &HeaderMap, message: &str) -> Response {
-    let code = ErrorCode::HandoffRequestInvalid.as_str();
-    let wants_html = headers
-        .get(header::ACCEPT)
-        .and_then(|a| a.to_str().ok())
-        .is_some_and(|a| a.contains("text/html"));
-    if wants_html {
-        return pages::refused_page(code, message);
-    }
-    let envelope = ErrorEnvelope {
-        error: ErrorBody {
-            code: code.to_string(),
-            message: message.to_string(),
-            retryable: false,
-            details: None,
-        },
-        request_id: uuid::Uuid::new_v4().simple().to_string(),
-    };
-    let mut response = (StatusCode::BAD_REQUEST, Json(envelope)).into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-}
-
-/// The validated target of every later answer.
-struct Target {
-    redirect: String,
-    state: String,
-    build: Option<HandoffBuild>,
-    mode: Option<HandoffMode>,
-    mode_ok: bool,
-}
-
-/// `build`, `redirect` and `state`: until these pass nothing may be redirected to.
-fn target(p: &Params, callbacks: &[String]) -> Result<Target, &'static str> {
-    let build = match p.get("build").map(String::as_str) {
-        None => None,
-        Some("release") => Some(HandoffBuild::Release),
-        Some("dev") => Some(HandoffBuild::Dev),
-        Some(_) => return Err("the build parameter must be release or dev"),
-    };
-    let redirect = p.get("redirect").cloned().unwrap_or_default();
-    if !redirect_allowed(&redirect, build, callbacks) {
-        return Err("the redirect is not a callback this machine may send a sign-in to");
-    }
-    let state = p.get("state").cloned().unwrap_or_default();
-    if !rules::is_state(&state) {
-        return Err("the state parameter is malformed");
-    }
-    let (mode, mode_ok) = match p.get("mode").map(String::as_str) {
-        None => (None, true),
-        Some("query") => (Some(HandoffMode::Query), true),
-        Some("fragment") => (Some(HandoffMode::Fragment), true),
-        Some(_) => (None, false),
-    };
-    Ok(Target {
-        redirect,
-        state,
-        build,
-        mode,
-        mode_ok,
-    })
-}
-
-/// A redirect failure: the §4 code plus extra query pairs.
-type Failure = (ErrorCode, Vec<(&'static str, String)>);
-
-fn invalid() -> Failure {
-    (ErrorCode::HandoffRequestInvalid, Vec::new())
-}
-
-fn is_bidi(c: char) -> bool {
-    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-}
-
-/// `v`, `mode`, `device` and `pk`, shared by both methods.
-fn common(p: &Params, t: &Target) -> Result<(), Failure> {
-    let v: i64 = p
-        .get("v")
-        .and_then(|v| v.parse().ok())
-        .ok_or_else(invalid)?;
-    if !(PROTOCOL_MIN..=PROTOCOL_MAX).contains(&v) {
-        let range = vec![
-            ("min", PROTOCOL_MIN.to_string()),
-            ("max", PROTOCOL_MAX.to_string()),
-        ];
-        return Err((ErrorCode::ProtocolUnsupported, range));
-    }
-    let device = p.get("device").map(String::as_str).unwrap_or("");
-    let device_ok = rules::chars_between(device, 1, 64)
-        && !device.chars().any(|c| c.is_control() || is_bidi(c));
-    if !t.mode_ok || !device_ok {
-        return Err(invalid());
-    }
-    parse_recipient_point(p.get("pk").map(String::as_str).unwrap_or("")).map_err(|_| invalid())?;
-    Ok(())
-}
-
-/// A 302/303 to the callback carrying `pairs` after `?` (or `#` with `mode=fragment`).
-fn to_callback(status: StatusCode, t: &Target, pairs: &[(&str, String)]) -> Response {
-    let sep = match t.mode {
-        Some(HandoffMode::Fragment) => '#',
-        _ if t.redirect.contains('?') => '&',
-        _ => '?',
-    };
-    let query: Vec<String> = std::iter::once(("state", t.state.clone()))
-        .chain(pairs.iter().map(|(k, v)| (*k, v.clone())))
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
-    let location = format!("{}{sep}{}", t.redirect, query.join("&"));
-    let body = format!("<a href=\"{0}\">{0}</a>", pages::escape(&location));
-    let mut response = (status, body).into_response();
-    let h = response.headers_mut();
-    if let Ok(v) = HeaderValue::from_str(&location) {
-        h.insert(header::LOCATION, v);
-    }
-    h.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    h.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
-    h.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    h.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    response
-}
-
-fn fail(status: StatusCode, t: &Target, (code, mut extra): Failure) -> Response {
-    extra.insert(0, ("error", code.as_str().to_string()));
-    to_callback(status, t, &extra)
-}
-
-/// The value of the first cookie called `name`.
-fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .find_map(|pair| pair.trim().strip_prefix(name)?.strip_prefix('='))
 }
 
 /// The seal-and-redirect step shared by Continue and the remembered-consent skip.
@@ -423,15 +265,6 @@ async fn handoff_get(
         hidden,
         form_action,
     })
-}
-
-/// `https://host[:port]` of an allowlisted https callback.
-fn callback_origin(redirect: &str) -> String {
-    let rest = redirect.strip_prefix("https://").unwrap_or(redirect);
-    format!(
-        "https://{}",
-        rest.split(['/', '?', '#']).next().unwrap_or(rest)
-    )
 }
 
 async fn handoff_post(

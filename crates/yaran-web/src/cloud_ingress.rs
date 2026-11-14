@@ -26,16 +26,22 @@
 //! ├── handoff_csrf
 //! ├── host_guard
 //! ├── rate_window
-//! ├── yaran_core::cloud::access_jwks
-//! ├── yaran_core::cloud::access_jwt
-//! └── yaran_core::cloud::protocol
-//! External: axum, tokio, std
+//! ├── yaran-core::cloud::access_jwks
+//! ├── yaran-core::cloud::access_jwt
+//! ├── yaran-core::cloud::protocol
+//! ├── yaran-core::cloud::protocol::rules
+//! ├── yaran-core::cloud::protocol::signals
+//! └── yaran-core::sanitize
+//! External: axum, std, tokio, tracing
 //!
 //! Used by:
 //! cloud_ingress.rs
+//! ├── cloud_consent_tests
 //! ├── cloud_handoff
+//! ├── cloud_ingress_tests
+//! ├── cloud_test_support
+//! ├── crate
 //! ├── host_guard
-//! ├── lib
 //! └── server
 //! <module-headers:end>
 
