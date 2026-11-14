@@ -13,7 +13,7 @@
 # Uses: none
 # External: none
 #
-# Used by: none
+# Used by: entry point (Run Script build phase Check release config in mobile/ios/App/App.xcodeproj)
 # <module-headers:end>
 set -euo pipefail
 

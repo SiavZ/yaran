@@ -14,7 +14,7 @@
 /// Uses: none
 /// External: PackageDescription
 ///
-/// Used by: none
+/// Used by: entry point (read by SwiftPM through CapApp-SPM, which the Capacitor CLI sync writes)
 /// <module-headers:end>
 import PackageDescription
 

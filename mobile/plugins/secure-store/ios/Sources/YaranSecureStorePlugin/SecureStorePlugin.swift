@@ -15,7 +15,7 @@
 /// └── YaranCore/Vault (inferred)
 /// External: Capacitor, Foundation
 ///
-/// Used by: none
+/// Used by: entry point (Capacitor bridge class, listed in packageClassList by the Capacitor CLI sync)
 /// <module-headers:end>
 
 import Capacitor

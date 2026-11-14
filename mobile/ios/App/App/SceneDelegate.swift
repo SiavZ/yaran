@@ -10,16 +10,13 @@
 /// <module-headers:begin>
 /// Uses:
 /// App/SceneDelegate
-/// ├── App/SceneDelegate (inferred)
 /// ├── YaranCore/AppLock (inferred)
 /// └── YaranCore/ScreenPrivacy (inferred)
 /// External: Capacitor, UIKit
 ///
 /// Used by:
 /// App/SceneDelegate
-/// ├── App/AppDelegate (inferred)
-/// ├── App/AppDelegate (inferred)
-/// └── App/SceneDelegate (inferred)
+/// └── App/AppDelegate (inferred)
 /// <module-headers:end>
 
 import Capacitor

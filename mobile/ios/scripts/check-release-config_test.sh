@@ -12,7 +12,7 @@
 # Uses: none
 # External: none
 #
-# Used by: none
+# Used by: entry point (run by hand or CI: bash mobile/ios/scripts/check-release-config_test.sh)
 # <module-headers:end>
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"

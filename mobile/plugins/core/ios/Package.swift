@@ -15,7 +15,7 @@
 /// Uses: none
 /// External: PackageDescription
 ///
-/// Used by: none
+/// Used by: entry point (read by SwiftPM and by Xcode's local package reference)
 /// <module-headers:end>
 import PackageDescription
 

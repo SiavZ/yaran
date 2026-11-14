@@ -11,7 +11,7 @@
 # Uses: none
 # External: none
 #
-# Used by: none
+# Used by: entry point (run by hand or CI: bash mobile/plugins/core/ios/test.sh)
 # <module-headers:end>
 set -euo pipefail
 cd "$(dirname "$0")"

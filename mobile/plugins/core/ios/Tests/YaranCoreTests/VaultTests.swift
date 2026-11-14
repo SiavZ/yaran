@@ -15,7 +15,7 @@
 /// └── YaranCoreTests/FixtureTests (inferred)
 /// External: Foundation, Testing
 ///
-/// Used by: none
+/// Used by: entry point (Swift Testing, via bash mobile/plugins/core/ios/test.sh)
 /// <module-headers:end>
 
 import Foundation

@@ -12,7 +12,7 @@
 /// └── YaranCore/Sanitizer (inferred)
 /// External: Foundation, Testing
 ///
-/// Used by:
+/// Used by: entry point (Swift Testing, via bash mobile/plugins/core/ios/test.sh)
 /// YaranCoreTests/FixtureTests
 /// └── YaranCoreTests/VaultTests (inferred)
 /// <module-headers:end>

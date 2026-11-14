@@ -11,7 +11,7 @@
 /// └── YaranCore/PluginArguments (inferred)
 /// External: Capacitor, Foundation
 ///
-/// Used by: none
+/// Used by: entry point (CAPPluginCall extension used by the *Plugin.swift adapters in the same module)
 /// <module-headers:end>
 
 import Capacitor

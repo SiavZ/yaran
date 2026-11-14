@@ -10,7 +10,7 @@
 /// Uses: none
 /// External: XCTest
 ///
-/// Used by: none
+/// Used by: entry point (XCTest, hosted AppTests target of mobile/ios/App/App.xcodeproj)
 /// <module-headers:end>
 
 import XCTest

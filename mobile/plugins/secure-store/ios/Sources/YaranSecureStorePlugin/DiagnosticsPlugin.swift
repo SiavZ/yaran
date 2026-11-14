@@ -13,7 +13,7 @@
 /// └── YaranCore/PluginArguments (inferred)
 /// External: Capacitor, Foundation, UIKit
 ///
-/// Used by: none
+/// Used by: entry point (Capacitor bridge class, listed in packageClassList by the Capacitor CLI sync)
 /// <module-headers:end>
 
 import Capacitor

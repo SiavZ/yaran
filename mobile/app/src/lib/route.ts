@@ -108,9 +108,13 @@ export function parseRoute(hash: string): Route | null {
 /** Moves to a route: a new position pushes, so Back always visibly moves. */
 export function navigate(route: Route, { replace = false } = {}): void {
   const hash = buildRoute(route);
-  if (replace) window.history.replaceState(null, '', hash);
-  else window.location.hash = hash;
-  if (replace) window.dispatchEvent(new HashChangeEvent('hashchange'));
+  if (!replace) {
+    window.location.hash = hash;
+    return;
+  }
+  // replaceState fires no hashchange, so announce the move to useRoute ourselves.
+  window.history.replaceState(null, '', hash);
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
 }
 
 function subscribe(listener: () => void): () => void {

@@ -9,14 +9,10 @@
 /// <module-headers:begin>
 /// Uses:
 /// App/AppDelegate
-/// ├── App/AppDelegate (inferred)
-/// ├── App/SceneDelegate (inferred)
 /// └── App/SceneDelegate (inferred)
 /// External: UIKit
 ///
-/// Used by:
-/// App/AppDelegate
-/// └── App/AppDelegate (inferred)
+/// Used by: entry point (@main, the iOS app entry of mobile/ios/App/App.xcodeproj)
 /// <module-headers:end>
 
 import UIKit
