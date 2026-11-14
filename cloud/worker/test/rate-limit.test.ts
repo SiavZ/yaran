@@ -1,6 +1,7 @@
 /**
  * Rate limiting: the binding tier (Miniflare simulates `ratelimits`), the D1 fallback when
- * a binding is absent, fixed-window rollover, the setup lockout and Retry-After.
+ * a binding is absent, fixed-window rollover, the per-address setup limits and lockout,
+ * and Retry-After.
  *
  * <module-headers:begin>
  * Uses:
@@ -20,7 +21,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { one } from "../src/db/client.ts";
 import { HttpError } from "../src/http/responses.ts";
-import { hitBucket, purgeRateCounters, setupAttempt, SETUP_LIMITS, strictHit } from "../src/security/rate-limit.ts";
+import { hitBucket, purgeRateCounters, setupAttempt, setupFailure, SETUP_LIMITS, strictHit } from "../src/security/rate-limit.ts";
 import { appCtx } from "./helpers/app.ts";
 import { closeSetup, CP_HOST, NOW } from "./helpers/seed.ts";
 import { handler } from "./helpers/worker.ts";
@@ -64,16 +65,49 @@ describe("D1 fallback", () => {
 });
 
 describe("setup attempts", () => {
-  it("limits per IP, then locks setup past the daily cap until the code changes", async () => {
+  const WINDOW = SETUP_LIMITS.perIpWindowS;
+
+  it("limits each address to 5 tries per 15 minutes and 30 a day, without locking", async () => {
     for (let i = 0; i < SETUP_LIMITS.perIp; i++) expect(await setupAttempt(env.DB, "ip-a", "code1", NOW)).toEqual({ kind: "ok" });
-    expect(await setupAttempt(env.DB, "ip-a", "code1", NOW)).toMatchObject({ kind: "limited" });
-    let ips = 0;
-    let outcome = { kind: "ok" } as Awaited<ReturnType<typeof setupAttempt>>;
-    while (outcome.kind === "ok") outcome = await setupAttempt(env.DB, `ip-${ips++}`, "code1", NOW);
-    expect(outcome).toEqual({ kind: "locked" });
-    expect(await setupAttempt(env.DB, "fresh-ip", "code1", NOW + 2 * 86_400)).toEqual({ kind: "locked" });
+    expect(await setupAttempt(env.DB, "ip-a", "code1", NOW)).toMatchObject({ kind: "limited", reason: "window" });
+    expect(await setupAttempt(env.DB, "ip-b", "code1", NOW)).toEqual({ kind: "ok" });
+    let t = NOW;
+    let tries = SETUP_LIMITS.perIp;
+    while (tries < SETUP_LIMITS.perIpDay) {
+      t += WINDOW;
+      for (let i = 0; i < SETUP_LIMITS.perIp && tries < SETUP_LIMITS.perIpDay; i++, tries++) {
+        expect(await setupAttempt(env.DB, "ip-a", "code1", t)).toEqual({ kind: "ok" });
+      }
+    }
+    const dayStart = NOW - (NOW % 86_400);
+    // A whole day's tries can straddle midnight; stay inside the day the test started in.
+    if (t < dayStart + 86_400) {
+      expect(await setupAttempt(env.DB, "ip-a", "code1", t + WINDOW)).toMatchObject({ kind: "limited", reason: "day" });
+    }
+    expect(await setupAttempt(env.DB, "ip-a", "code1", dayStart + 86_400 + 1)).toEqual({ kind: "ok" });
+  });
+
+  it("locks only the address that entered 20 wrong codes, until the code changes", async () => {
+    for (let i = 1; i < SETUP_LIMITS.lockAfterFailures; i++) expect(await setupFailure(env.DB, "ip-a", "code1", NOW)).toEqual({ kind: "counted" });
+    expect(await setupFailure(env.DB, "ip-a", "code1", NOW)).toEqual({ kind: "locked", reason: "failures" });
+    expect(await setupAttempt(env.DB, "ip-a", "code1", NOW + WINDOW)).toEqual({ kind: "locked", reason: "failures" });
+    expect(await setupAttempt(env.DB, "ip-b", "code1", NOW + WINDOW)).toEqual({ kind: "ok" });
     await purgeRateCounters(env.DB, NOW + 10 * 86_400);
-    expect(await setupAttempt(env.DB, "fresh-ip", "code1", NOW + 10 * 86_400)).toEqual({ kind: "locked" });
-    expect(await setupAttempt(env.DB, "fresh-ip", "code2", NOW + 10 * 86_400)).toEqual({ kind: "ok" });
+    expect(await setupAttempt(env.DB, "ip-a", "code1", NOW + 10 * 86_400)).toEqual({ kind: "locked", reason: "failures" });
+    expect(await setupAttempt(env.DB, "ip-a", "code2", NOW + 10 * 86_400)).toEqual({ kind: "ok" });
+  });
+
+  it("a stranger spreading wrong codes over many addresses cannot lock out the admin", async () => {
+    let ip = 0;
+    for (let n = 0; n < SETUP_LIMITS.globalFailureBackstop; n++) {
+      expect(await setupAttempt(env.DB, `stranger-${ip}`, "code1", NOW)).toEqual({ kind: "ok" });
+      await setupFailure(env.DB, `stranger-${ip}`, "code1", NOW);
+      if (n % SETUP_LIMITS.perIp === SETUP_LIMITS.perIp - 1) ip++;
+    }
+    // Past the backstop a wrong code locks its address at once...
+    expect(await setupFailure(env.DB, "late-stranger", "code1", NOW)).toEqual({ kind: "locked", reason: "backstop" });
+    expect(await setupAttempt(env.DB, "late-stranger", "code1", NOW)).toEqual({ kind: "locked", reason: "backstop" });
+    // ...while an address that has not failed can still try its code.
+    expect(await setupAttempt(env.DB, "admin", "code1", NOW)).toEqual({ kind: "ok" });
   });
 });
