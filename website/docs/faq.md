@@ -23,7 +23,9 @@ whatever accounts they need.
 ### Does yaran phone home?
 
 yaran itself sends no telemetry. It launches local CLIs in local terminals: no
-analytics, no JSON-RPC, no background uploads.
+analytics, no JSON-RPC, no background uploads. The one exception is opt-in: a machine you
+pair with [Cloud Connect](/docs/cloud-connect) talks to your own org's control plane, in
+your org's Cloudflare account, and tells it when an agent needs you.
 
 ## Agents & providers
 
@@ -118,12 +120,16 @@ No, and that is deliberate: yaran is a single-tenant, trusted-access tool.
 > `127.0.0.1` by default. See
 > [the trust model](/docs/server-mode#the-trust-model-stated-plainly).
 
+yaran has no login of its own. If you use [Cloud Connect](/docs/cloud-connect),
+Cloudflare Access is the login for that one machine address, and yaran double-checks it.
+
 ### Is server mode a hosted service? Does my code leave my machine?
 
-Neither. There is no yaran cloud and no account to make. `yaran server` is the same binary
-serving a web UI from your own machine, over your own network, and your repos never
-leave it. Your agents' own CLIs talk to whatever AI providers they always talk to; yaran
-adds no traffic of its own.
+Neither. There is no yaran-run service and no yaran account to make. `yaran server` is the
+same binary serving a web UI from your own machine, over your own network, and your repos
+never leave it. Your agents' own CLIs talk to whatever AI providers they always talk to;
+yaran adds no traffic of its own. [Cloud Connect](/docs/cloud-connect) is optional, and
+runs in your own organization's Cloudflare account, not in one yaran operates.
 
 ### Can I run the terminal UI and the browser at the same time?
 
@@ -145,7 +151,33 @@ hands it back. Your agents keep running through every one of these transitions. 
 
 Yes. yaran binds your Tailscale address by default, so any device on your tailnet can
 open it, and you can turn that leg on or off while yaran is serving. Read [Reaching yaran over Tailscale](/docs/tailscale) first, because there is no
-login in front of it.
+login in front of the tailnet address.
+
+There is also [a phone app](/docs/mobile-apps), with push notifications, for machines
+paired through Cloud Connect.
+
+### Do I need Cloudflare to use the phone app?
+
+Yes. The app reaches machines only through [Cloud Connect](/docs/cloud-connect), which
+runs on your organization's Cloudflare account. Without it, your phone's browser over
+Tailscale gets you the same web UI, minus push notifications.
+
+### Does Cloudflare see my code?
+
+Yes, for anything that crosses a Cloud Connect address. Cloudflare terminates TLS at its
+edge, so terminal sessions, file contents and diffs are readable there. Over Tailscale
+or loopback, nothing passes through Cloudflare. See
+[Security and privacy](/docs/cloud-security-privacy).
+
+### Can I self-host the push relay?
+
+Android normally needs no relay: Play builds use Google's push service through Google
+Play services, and F-Droid and GitHub `foss` builds use whatever UnifiedPush distributor
+you install. (A Play build made with the publisher's fallback push setup sends through
+the publisher relay too.) iPhones get push
+through the publisher relay, because only the app's publisher can send to Apple's push
+service for this app. The relay is open source, and it only ever sees encrypted
+notifications. See [Push notifications](/docs/push-notifications).
 
 ## Configuration
 

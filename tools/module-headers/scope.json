@@ -90,7 +90,8 @@
     "crates/yaran-web/web/src/lib/settingsDescriptorsCloud.ts",
     "crates/yaran-web/web/src/lib/store.ts",
     "crates/yaran/src/companion.rs",
-    "crates/yaran/src/main.rs"
+    "crates/yaran/src/main.rs",
+    "website/src/lib/cloud-docs-domains.test.ts"
   ],
   "exclude": [
     "**/generated/**",
@@ -214,6 +215,7 @@
     "cloud/worker/scripts/token-url.ts": "CLI: npm run token-url in cloud/worker and in the deploy tree",
     "cloud/worker/scripts/assemble-deploy-tree.ts": "CLI: npm run assemble-deploy-tree, run by Phase 18's release-cloud workflow",
     "cloud/worker/scripts/update/update.ts": "CLI: npm run update in the deploy tree, and its yaran-cloud-update workflow",
-    "cloud/worker/test/**/*.test.tsx": "vitest, via npm test in cloud/worker"
+    "cloud/worker/test/**/*.test.tsx": "vitest, via npm test in cloud/worker",
+    "website/src/lib/cloud-docs-domains.test.ts": "vitest, via npm test in website and website-ci.yml"
   }
 }
