@@ -404,8 +404,8 @@
     "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-web/build.rs": {
-    "lines": 543,
-    "reason": "baseline 2026-11-14"
+    "lines": 545,
+    "reason": "baseline 2026-11-14; phase 13: rebuild the UI when the @yaran/protocol sources it imports change"
   },
   "crates/yaran-web/src/background.rs": {
     "lines": 597,
@@ -449,7 +449,7 @@
   },
   "crates/yaran-web/src/lib.rs": {
     "lines": 3689,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: cloud lane construction, the serve loop's cloud arm and the wind-down waits; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 11: cloud module lines, CloudIngress creation in both serve constructors, and the opt-in header block; phase 11: ingress wiring stacked on the phase 09 and 10 wiring"
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: cloud lane construction, the serve loop's cloud arm and the wind-down waits; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 11: cloud module lines, CloudIngress creation in both serve constructors, and the opt-in header block; phase 11: ingress wiring stacked on the phase 09 and 10 wiring; phase 13: two mod lines for events_beat and cloud_phone_routes"
   },
   "crates/yaran-web/src/project_actions.rs": {
     "lines": 1006,
@@ -469,7 +469,7 @@
   },
   "crates/yaran-web/src/server.rs": {
     "lines": 6749,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: the cloud control in AppState and RouterParams, the route merge and the cloud.changed topic; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 11: cloud ingress layer, handoff route merge, 4401 select arms, and the opt-in header block; phase 11: ingress wiring stacked on the phase 09 and 10 wiring"
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: the cloud control in AppState and RouterParams, the route merge and the cloud.changed topic; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 11: cloud ingress layer, handoff route merge, 4401 select arms, and the opt-in header block; phase 11: ingress wiring stacked on the phase 09 and 10 wiring; phase 13: one route merge and the events beat match arm; logic lives in events_beat.rs and cloud_phone_routes.rs"
   },
   "crates/yaran-web/src/session_actions.rs": {
     "lines": 1726,
@@ -508,8 +508,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/tests/ws_transport.rs": {
-    "lines": 3815,
-    "reason": "baseline 2026-11-14"
+    "lines": 3857,
+    "reason": "baseline 2026-11-14; phase 13: events beat and phone-qr integration tests need this file's boot and connect_events helpers"
   },
   "crates/yaran-web/web/src/App.test.tsx": {
     "lines": 716,
@@ -620,8 +620,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/web/src/components/TheaterPill.test.tsx": {
-    "lines": 1327,
-    "reason": "baseline 2026-11-14"
+    "lines": 1329,
+    "reason": "baseline 2026-11-14; phase 13: the app-menu context gained two fields the order test must pass"
   },
   "crates/yaran-web/web/src/components/TheaterPill.tsx": {
     "lines": 860,
@@ -680,8 +680,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/web/src/lib/ptySocket.test.ts": {
-    "lines": 941,
-    "reason": "baseline 2026-11-14"
+    "lines": 967,
+    "reason": "baseline 2026-11-14; phase 13: the 4401 retry test needs this file's FakeWS and serverValidated gate setup"
   },
   "crates/yaran-web/web/src/lib/reconnectingSocket.test.ts": {
     "lines": 1082,
@@ -697,7 +697,7 @@
   },
   "crates/yaran-web/web/src/lib/store.ts": {
     "lines": 6597,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 13: wiring only (connectPhoneOpen flag and open/close, access-session configure and trigger)"
   },
   "crates/yaran-web/web/src/lib/storePrReference.test.ts": {
     "lines": 571,

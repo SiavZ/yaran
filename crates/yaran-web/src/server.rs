@@ -937,6 +937,7 @@ pub fn build_app(
         .merge(crate::config_routes::routes())
         .merge(crate::first_load_routes::routes())
         .merge(crate::cloud_handoff::cloud_routes(cloud.clone()))
+        .merge(crate::cloud_phone_routes::routes())
         .merge(extra_gated)
         .route("/healthz", get(|| async { "ok" }))
         .fallback(crate::web_assets::static_handler)
@@ -3102,6 +3103,10 @@ impl EventsSocketLoop {
     ) -> Result<(), ()> {
         match next {
             Some(Ok(Message::Text(text))) => {
+                if let Some(echo) = crate::events_beat::echo(text.as_str()) {
+                    let send = send_text(&self.sink, echo);
+                    return with_send_deadline(crate::events_beat::ECHO_TIMEOUT, send).await;
+                }
                 let Ok(frame) = serde_json::from_str::<EventsClientFrame>(text.as_str()) else {
                     return Ok(());
                 };

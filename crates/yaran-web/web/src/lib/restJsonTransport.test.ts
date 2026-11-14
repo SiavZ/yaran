@@ -14,6 +14,7 @@ function stubResponse(status: number, body: string | Error) {
   const fetchMock = vi.fn(async () => ({
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers(),
     text,
   })) as unknown as typeof fetch
   vi.stubGlobal("fetch", fetchMock)
@@ -85,7 +86,10 @@ describe.each(clients)("$name JSON transport", (client) => {
     const { init } = lastRequest(fetchMock)
     expect(init.credentials).toBe("same-origin")
     expect(init.body).toBeUndefined()
-    expect(init.headers).toEqual({ "x-connection-id": "connection-1" })
+    expect(init.headers).toEqual({
+      "X-Requested-With": "XMLHttpRequest",
+      "x-connection-id": "connection-1",
+    })
   })
 
   it("serializes a body and labels it as JSON", async () => {
@@ -137,12 +141,20 @@ describe.each(clients)("$name JSON transport", (client) => {
 
   it.each([
     ["an empty body", ""],
-    ["malformed JSON", "{"],
     ["an unreadable body", new Error("read failed")],
   ])("resolves undefined for %s on a successful response", async (_label, body) => {
     stubResponse(200, body)
 
     await expect(client.requestWithoutBody()).resolves.toBeUndefined()
+  })
+
+  // A non-JSON success is a login page or a proxy, never yaran (Phase 13).
+  it("rejects malformed JSON on a successful response", async () => {
+    stubResponse(200, "{")
+
+    await expect(client.requestWithoutBody()).rejects.toBeInstanceOf(
+      client.ErrorType,
+    )
   })
 
   it("does not read a 204 response body", async () => {

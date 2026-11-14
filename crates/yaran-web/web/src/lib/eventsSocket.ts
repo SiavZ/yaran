@@ -1,3 +1,8 @@
+import { createHeartbeat, type Heartbeat } from "./heartbeat"
+import {
+  ACCESS_SESSION_EXPIRED_CLOSE,
+  accessSession,
+} from "./native/accessSession"
 import { ReconnectingSocket } from "./reconnectingSocket"
 import type { EventsClientMessage, EventsServerMessage } from "./types"
 
@@ -17,6 +22,13 @@ export class EventsSocket extends ReconnectingSocket {
   // Consumer callback. Default is a no-op so the store only wires what it needs.
   onEvent: (ev: EventsServerMessage) => void = () => {}
 
+  // The one periodic client frame, `{"beat":N}`, answered `{"event":"beat","n":N}`.
+  // The server's own ping is a control frame JS never sees, so this is the only
+  // way to notice a half-open socket; a missed answer drops it for the ordinary
+  // retry. Visible time only, and nothing is sent while hidden. Built at the
+  // first open rather than at construction, which runs at import.
+  private heartbeat: Heartbeat | null = null
+
   // The current interest set (sorted for deterministic test assertions). Read
   // only. Mutate via subscribe/unsubscribe.
   get topics(): string[] {
@@ -27,6 +39,14 @@ export class EventsSocket extends ReconnectingSocket {
   // per-connection and a dropped connection discards it. Chunked so a large set
   // never exceeds the server's per-frame topic cap (which it would silently drop).
   protected onSocketOpen(): void {
+    this.heartbeat ??= createHeartbeat({
+      send: (n) => this.sendRaw({ beat: n }),
+      isOwner: () => false,
+      viewed: () => false,
+      onStalled: () => this.dropForRetry(),
+    })
+    this.heartbeat.reset()
+    this.heartbeat.start()
     if (this.subscriptions.size > 0) {
       const topics = [...this.subscriptions]
       for (let i = 0; i < topics.length; i += MAX_EVENT_TOPICS_PER_FRAME) {
@@ -53,6 +73,10 @@ export class EventsSocket extends ReconnectingSocket {
         `[yaran] events socket dropped an unparseable frame (${raw.length} chars)`,
         err,
       )
+      return
+    }
+    if (message.event === "beat") {
+      if (typeof message.n === "number") this.heartbeat?.noteAnswer(message.n)
       return
     }
     // Forward resource and control frames as-is; the store dispatches on
@@ -86,9 +110,25 @@ export class EventsSocket extends ReconnectingSocket {
     if (removed.length > 0) this.sendRaw({ unsubscribe: removed })
   }
 
-  private sendRaw(message: EventsClientMessage): void {
+  // An expired Access session (Phase 11 closes with 4401) is an ordinary retry,
+  // and it asks the access-session probe whether a sign-in is what is needed.
+  protected shouldReconnect(closeCode: number): boolean {
+    if (closeCode === ACCESS_SESSION_EXPIRED_CLOSE) accessSession.noteSessionExpired()
+    return true
+  }
+
+  dispose(): void {
+    this.heartbeat?.stop()
+    super.dispose()
+  }
+
+  // Whether the frame went on the wire, so the heartbeat starts no deadline for
+  // a beat it never sent.
+  private sendRaw(message: EventsClientMessage): boolean {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message))
+      return true
     }
+    return false
   }
 }

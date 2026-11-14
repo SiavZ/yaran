@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { appMenuModel, type AppMenuEntry } from "@/lib/appMenu"
-import { useYaran } from "@/lib/store"
+import { useAppMenuContext } from "@/lib/useAppMenuContext"
 
 // The desktop app menu renders `appMenuModel()` and hand-authors no items, so it
 // cannot drift from the mobile bottom sheet. The BODY is exported separately from
@@ -60,16 +60,7 @@ export function AppMenuEntries({ entries }: { entries: AppMenuEntry[] }) {
 
 // Every item of the app menu, ready to drop into any `DropdownMenuContent`.
 export function AppMenuBody() {
-  // The model's one context input: gh availability gates the from-PR agent
-  // variant, exactly as the launcher corner's ⋯ menu gates its copy.
-  const { bootstrap } = useYaran()
-  const ghAvailable = bootstrap?.gh_available ?? false
-  const githubIntegrationEnabled = bootstrap?.github_integration ?? false
-  return (
-    <AppMenuEntries
-      entries={appMenuModel({ ghAvailable, githubIntegrationEnabled })}
-    />
-  )
+  return <AppMenuEntries entries={appMenuModel(useAppMenuContext())} />
 }
 
 export function AppMenu() {

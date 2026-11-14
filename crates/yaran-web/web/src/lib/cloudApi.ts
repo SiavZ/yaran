@@ -13,6 +13,8 @@
  * - `setCloudMode` saves `[cloud] mode` and, while yaran serves, moves the tunnel; the
  *   reply is the sentence the server composed (the terminal UI shows the same one).
  *   `cloudApi.leg` reads the leg snapshot, which costs no remote call.
+ * - `cloudApi.phoneQr` answers the phone QR code a paired machine shows in "Connect a
+ *   phone…"; it throws a `CloudApiError` whose `status` is 409 when not paired.
  *
  * <module-headers:begin>
  * Uses:
@@ -31,6 +33,7 @@
  */
 
 import { getConnectionId } from "./connection"
+import { createJsonRequest } from "./jsonRequest"
 
 /** The authorize step of a running login. */
 export interface CloudLogin {
@@ -78,6 +81,8 @@ export type CloudLegState =
 export interface CloudLegView {
   mode: "auto" | "yes" | "no"
   state: CloudLegState
+  /** Whether this machine holds an unrevoked pairing. An older server omits it. */
+  paired?: boolean
   /** Download progress while `state` is `"acquiring"`. */
   pct?: number | null
   hostname: string | null
@@ -94,6 +99,29 @@ export interface CloudModeReply {
   message: string
   segments?: unknown
 }
+
+/** `GET /api/v1/cloud/phone-qr`: the org URL a person can type, the
+ *  `yaranapp://add-org?u=…` payload, and that payload as an SVG QR code (white quiet
+ *  zone drawn by the encoder, so it scans on a dark page). */
+export interface PhoneQr {
+  url: string
+  uri: string
+  svg: string
+}
+
+/** A failed phone-QR call; `status` is 0 for a transport failure, 409 when the machine
+ *  is not paired. */
+export class CloudApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = "CloudApiError"
+    this.status = status
+  }
+}
+
+const statusRequest = createJsonRequest((message, status) => new CloudApiError(message, status))
 
 /** What disconnect and rotate answer; the toast carries the same sentence. */
 export interface CloudActionReply {
@@ -151,6 +179,7 @@ export const cloudApi = {
   logout: () => request<CloudActionReply>("POST", "/api/v1/cloud/logout", {}),
   rotate: () => request<CloudActionReply>("POST", "/api/v1/cloud/rotate", {}),
   leg: () => request<CloudLegView>("GET", "/api/v1/cloud/leg", undefined, 15_000),
+  phoneQr: () => statusRequest<PhoneQr>("GET", "/api/v1/cloud/phone-qr"),
 }
 
 /** Save `[cloud] mode`; 15 s is above the server's own 7 s bound on a mode change. */

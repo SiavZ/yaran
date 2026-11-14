@@ -174,6 +174,8 @@ fn main() {
     println!("cargo:rerun-if-changed=web/package.json");
     println!("cargo:rerun-if-changed=web/package-lock.json");
     println!("cargo:rerun-if-changed=web/vite.config.ts");
+    // The web imports `@yaran/protocol/ua` and `/uri` from the repo (a `file:` dependency).
+    println!("cargo:rerun-if-changed=../../cloud/protocol/src");
     // The rest of the build's inputs. `npm run build` runs tsc before Vite, so a
     // tsconfig edit (a compiler target, a path alias, strictness) changes the
     // output; the lint config is part of what `npm run build` can fail on; and

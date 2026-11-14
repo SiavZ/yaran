@@ -112,11 +112,13 @@ pub mod cloud_mode_routes;
 pub mod cloud_routes;
 #[cfg(test)]
 mod cloud_test_support;
+pub mod cloud_phone_routes;
 pub mod compressible_exts;
 pub mod config_routes;
 pub mod console;
 pub mod engine_actor;
 pub mod event_bus;
+pub(crate) mod events_beat;
 pub mod file_drop_routes;
 pub mod file_routes;
 pub mod first_load_routes;

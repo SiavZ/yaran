@@ -8,7 +8,10 @@
 //! The terminal UI's twin of the web's `deviceLabel.ts`, kept in step with it:
 //! the same UA shapes must produce the same label on both surfaces, or one
 //! device is called two different things depending on which screen is looking at
-//! it. The tests below mirror the web's fixtures literally.
+//! it. Both suites read one fixture, `tests/fixtures/device_label_cross_language.json`.
+//!
+//! The phone app's `YaranApp/…` token (Phase 02 §11) is read FIRST, before any OS
+//! check, because an iPad's WKWebView sends a Mac User-Agent.
 //!
 //! The two deliberately differ on an unparseable string: `deviceLabel.ts`
 //! returns `null` because it renders into HTML, where echoing an
@@ -18,6 +21,7 @@
 //! which of their machines holds a terminal.
 
 use crate::background_serve::TUI_DEVICE_LABEL;
+use crate::cloud::protocol::ua::{AppForm, AppOs, parse_yaran_app_ua};
 
 /// How long an UNRECOGNIZED label may be before it is cut, ellipsis included.
 ///
@@ -74,6 +78,17 @@ fn detect_browser(ua: &str) -> Option<&'static str> {
     None
 }
 
+/// The phone app's own label, from its User-Agent token, or `None` for a browser.
+fn app_label(ua: &str) -> Option<&'static str> {
+    let app = parse_yaran_app_ua(ua)?;
+    Some(match (app.os, app.form) {
+        (AppOs::Ios, AppForm::Phone) => "yaran on iPhone",
+        (AppOs::Ios, AppForm::Tablet) => "yaran on iPad",
+        (AppOs::Android, AppForm::Phone) => "yaran on Android phone",
+        (AppOs::Android, AppForm::Tablet) => "yaran on Android tablet",
+    })
+}
+
 /// Cut `text` to at most `max` DISPLAY characters, marking the cut.
 ///
 /// Char based, never byte based: a `User-Agent` is attacker-supplied and can
@@ -118,6 +133,9 @@ pub fn short_device_label(raw: &str) -> Option<String> {
     if ua == TUI_DEVICE_LABEL {
         return Some(ua.to_string());
     }
+    if let Some(label) = app_label(ua) {
+        return Some(label.to_string());
+    }
     match detect_os(ua) {
         Some(os) => Some(match detect_browser(ua) {
             Some(browser) => format!("{browser} on {os}"),
@@ -131,64 +149,33 @@ pub fn short_device_label(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The web's own fixtures, mirrored LITERALLY from
-    /// `crates/yaran-web/web/src/lib/deviceLabel.test.ts`. Copied rather than
-    /// referenced because the two parsers are in two languages: the point of the
-    /// duplication is that a change to either parser that the other did not
-    /// follow shows up as a failing assertion here.
-    mod ua {
-        pub const CHROME_MAC: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-             AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-        pub const CHROME_LINUX: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-        pub const CHROME_WINDOWS: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
-             AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-        pub const SAFARI_MAC: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-             AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15";
-        pub const FIREFOX_LINUX: &str =
-            "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0";
-        pub const EDGE_WINDOWS: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
-             AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 \
-             Edg/120.0.0.0";
-        pub const CHROME_ANDROID: &str = "Mozilla/5.0 (Linux; Android 13; Pixel 7) \
-             AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
-        pub const SAFARI_IPHONE: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) \
-             AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1";
-        pub const EDGE_ANDROID: &str = "Mozilla/5.0 (Linux; Android 13; Pixel 7) \
-             AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 \
-             EdgA/120.0.0.0";
-        pub const EDGE_IPHONE: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) \
-             AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 EdgiOS/120.0.0.0 \
-             Mobile/15E148 Safari/605.1.15";
-        pub const UNKNOWN_BROWSER_WINDOWS: &str = "SomeCrawler/2.0 (Windows NT 10.0; Win64; x64)";
+    /// The fixture both suites read; a change to either parser the other did not
+    /// follow fails here or in `deviceLabel.test.ts`.
+    fn shared_cases() -> Vec<(String, String)> {
+        let doc: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/device_label_cross_language.json"
+        ))
+        .expect("the shared fixture is JSON");
+        doc["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .map(|c| {
+                (
+                    c["ua"].as_str().expect("ua").to_string(),
+                    c["label"].as_str().expect("label").to_string(),
+                )
+            })
+            .collect()
     }
 
-    /// The shared vector: every pair the web's own test asserts must produce the
-    /// SAME label here. This is the anti-drift test.
     #[test]
-    fn the_web_fixtures_produce_the_same_labels_here() {
-        let cases = [
-            (ua::CHROME_MAC, "Chrome on macOS"),
-            (ua::CHROME_LINUX, "Chrome on Linux"),
-            (ua::CHROME_WINDOWS, "Chrome on Windows"),
-            (ua::SAFARI_MAC, "Safari on macOS"),
-            (ua::FIREFOX_LINUX, "Firefox on Linux"),
-            (ua::EDGE_WINDOWS, "Edge on Windows"),
-            (ua::CHROME_ANDROID, "Chrome on Android"),
-            (ua::SAFARI_IPHONE, "Safari on iOS"),
-            // Mobile Edge: the bare desktop "Edg/" would miss both of these and
-            // they would come back as Chrome, which is the same bug the web side
-            // fixed by broadening its pattern.
-            (ua::EDGE_ANDROID, "Edge on Android"),
-            (ua::EDGE_IPHONE, "Edge on iOS"),
-            // A known OS whose browser token this parser does not know.
-            (ua::UNKNOWN_BROWSER_WINDOWS, "Windows"),
-        ];
-        for (raw, expected) in cases {
+    fn the_shared_fixture_produces_the_same_labels_here() {
+        for (raw, expected) in shared_cases() {
             assert_eq!(
-                short_device_label(raw).as_deref(),
-                Some(expected),
-                "the web's fixture for {expected} must produce the same label here"
+                short_device_label(&raw).as_deref(),
+                Some(expected.as_str()),
+                "{raw}"
             );
         }
     }
@@ -217,17 +204,12 @@ mod tests {
     /// Every recognized user-agent shape fits the device-label line.
     #[test]
     fn every_recognized_shape_fits_the_line_it_is_rendered_on() {
-        for raw in [
-            ua::CHROME_MAC,
-            ua::EDGE_IPHONE,
-            ua::SAFARI_IPHONE,
-            ua::CHROME_ANDROID,
-        ] {
-            let label = short_device_label(raw).expect("a real UA names a device");
-            assert!(
-                raw.chars().count() > SHORT_LABEL_MAX_CHARS,
-                "the fixture has to be longer than the budget or it proves nothing"
-            );
+        for (raw, _) in shared_cases() {
+            if raw.chars().count() <= SHORT_LABEL_MAX_CHARS {
+                continue;
+            }
+            // Only a UA longer than the budget proves the label was not a cut.
+            let label = short_device_label(&raw).expect("a real UA names a device");
             assert!(
                 label.chars().count() <= SHORT_LABEL_MAX_CHARS,
                 "{label:?} is {} characters, over the {SHORT_LABEL_MAX_CHARS} the pane has",

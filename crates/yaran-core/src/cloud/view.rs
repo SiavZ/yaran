@@ -71,6 +71,9 @@ pub struct CloudLegView {
     pub mode: CloudMode,
     #[serde(flatten)]
     pub state: CloudLegState,
+    /// Whether the credentials name an unrevoked pairing (gates "Connect a phone…").
+    #[serde(default)]
+    pub paired: bool,
     pub hostname: Option<String>,
     pub org_url: Option<String>,
     pub org_name: Option<String>,

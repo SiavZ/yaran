@@ -28,6 +28,7 @@ vi.mock("@/lib/store", () => ({
   openAddProjectForInit: vi.fn(),
   openCreateAgentFromPr: vi.fn(),
   openNewAgentPicker: vi.fn(),
+  openConnectPhone: vi.fn(),
   useYaran: () => ({ bootstrap: { gh_available: true } }),
 }))
 vi.mock("@/lib/configApi", () => ({

@@ -16,6 +16,7 @@
 //! cloud/protocol/ua.rs
 //! ├── cloud::protocol
 //! └── yaran-web::handoff_consent_page
+//! └── device_label
 //! <module-headers:end>
 
 use std::sync::LazyLock;

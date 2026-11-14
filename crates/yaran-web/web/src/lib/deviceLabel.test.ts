@@ -1,34 +1,25 @@
+import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 
 import { deviceLabel } from "./deviceLabel"
 
-// Representative real-world UA strings for each browser/OS pair the label names.
+// The fixture `device_label.rs` reads too, so the two surfaces cannot drift.
+const fixture = JSON.parse(
+  readFileSync(
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../../../yaran-core/tests/fixtures/device_label_cross_language.json",
+    ),
+    "utf8",
+  ),
+) as { cases: { ua: string; label: string }[] }
+const byLabel = (label: string) => fixture.cases.find((c) => c.label === label)!.ua
 const UA = {
-  chromeMac:
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  chromeLinux:
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  chromeWindows:
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  safariMac:
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
-  firefoxLinux:
-    "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
-  edgeWindows:
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-  chromeAndroid:
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-  safariIphone:
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
-  // Mobile Edge uses platform-specific tokens ("EdgA/" on Android, "EdgiOS/" on
-  // iOS) that do NOT contain the bare desktop "Edg/", so they must be matched
-  // explicitly or they fall through to Chrome.
-  edgeAndroid:
-    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 EdgA/120.0.0.0",
-  edgeIphone:
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 EdgiOS/120.0.0.0 Mobile/15E148 Safari/605.1.15",
-  // A Windows UA whose browser token is not one we recognize.
-  unknownBrowserWindows: "SomeCrawler/2.0 (Windows NT 10.0; Win64; x64)",
+  chromeAndroid: byLabel("Chrome on Android"),
+  safariIphone: byLabel("Safari on iOS"),
+  unknownBrowserWindows: byLabel("Windows"),
 }
 
 describe("deviceLabel", () => {
@@ -48,22 +39,14 @@ describe("deviceLabel", () => {
     expect(deviceLabel("<script>alert(1)</script>")).toBeNull()
   })
 
-  it("names browser + OS for the common pairs", () => {
-    expect(deviceLabel(UA.chromeMac)).toBe("Chrome on macOS")
-    expect(deviceLabel(UA.chromeLinux)).toBe("Chrome on Linux")
-    expect(deviceLabel(UA.chromeWindows)).toBe("Chrome on Windows")
-    expect(deviceLabel(UA.safariMac)).toBe("Safari on macOS")
-    expect(deviceLabel(UA.firefoxLinux)).toBe("Firefox on Linux")
-    expect(deviceLabel(UA.edgeWindows)).toBe("Edge on Windows")
-    expect(deviceLabel(UA.chromeAndroid)).toBe("Chrome on Android")
-    expect(deviceLabel(UA.safariIphone)).toBe("Safari on iOS")
+  it.each(fixture.cases)("labels $ua as $label", ({ ua, label }) => {
+    expect(deviceLabel(ua)).toBe(label)
   })
 
-  it("names mobile Edge (Android/iOS) as Edge, not Chrome", () => {
-    // The bare "Edg/" desktop check would miss these; the broadened pattern must
-    // match "EdgA/" and "EdgiOS/" and win over the Chrome fallback.
-    expect(deviceLabel(UA.edgeAndroid)).toBe("Edge on Android")
-    expect(deviceLabel(UA.edgeIphone)).toBe("Edge on iOS")
+  it("fits every fixture label in the 24 characters the card has", () => {
+    for (const { label } of fixture.cases) {
+      expect(Array.from(label).length).toBeLessThanOrEqual(24)
+    }
   })
 
   it("returns null for unknown, empty, or missing input", () => {

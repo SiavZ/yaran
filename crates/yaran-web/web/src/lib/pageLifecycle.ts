@@ -53,6 +53,18 @@ export type LifecycleParticipant = {
   park: () => void
 }
 
+/// Where each event is dispatched. `freeze` and `resume` fire at the Document and
+/// do not bubble (Page Lifecycle: "Fire an event named freeze at doc"), so a
+/// window listener never hears them; the other two fire at window.
+function lifecycleTarget(event: (typeof LIFECYCLE_EVENTS)[number]): EventTarget {
+  // Guarded on the method: some harnesses stub a partial `document`.
+  return (event === "freeze" || event === "resume") &&
+    typeof document !== "undefined" &&
+    typeof document.addEventListener === "function"
+    ? document
+    : window
+}
+
 const participants = new Set<LifecycleParticipant>()
 let attached = false
 
@@ -100,7 +112,7 @@ export function registerPageLifecycle(
   ) {
     attached = true
     for (const event of LIFECYCLE_EVENTS) {
-      window.addEventListener(event, onLifecycleEvent)
+      lifecycleTarget(event).addEventListener(event, onLifecycleEvent)
     }
   }
   return () => {
