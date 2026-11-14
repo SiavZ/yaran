@@ -7,6 +7,24 @@
 //! from scratch, so it runs only when something could have changed since the
 //! last frame: a mutation marked dirty, an animation frame that advanced, the
 //! status line, or the once-a-second backstop.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/redraw.rs
+//! ├── app
+//! ├── app::background_server
+//! ├── app::pty_ownership
+//! ├── app::test_support
+//! ├── crate
+//! ├── theme
+//! ├── yaran-core::statusline
+//! └── yaran-core::working_cue
+//! External: crossterm, ratatui, std
+//!
+//! Used by:
+//! app/redraw.rs
+//! └── app
+//! <module-headers:end>
 
 use super::*;
 use crate::app::pty_ownership::PtyTakeoverCard;
@@ -50,6 +68,9 @@ pub(crate) struct RedrawGate {
     /// The card over the shown pane. Ownership moves on the socket thread while
     /// nothing on this surface happens, so there is no mutation point to mark.
     takeover_card: Option<PtyTakeoverCard>,
+    /// The header's cloud crumb: the leg moves on the serve's threads, so it is
+    /// compared rather than marked, like the takeover card.
+    cloud_crumb: Option<(String, bool)>,
     rows: HashMap<String, u8>,
     /// Frames actually drawn. Tests assert cadence against it.
     pub(crate) renders: u64,
@@ -235,7 +256,9 @@ impl App {
         // Compared rather than marked: a browser claims or releases a pty on the
         // socket thread, so no path on this surface runs at all.
         let takeover_card = self.focused_pty_takeover_card();
+        let cloud_crumb = self.cloud_crumb();
         let needed = self.redraw.dirty
+            || cloud_crumb != self.redraw.cloud_crumb
             || self.redraw.last_frame.is_none()
             || phase != self.redraw.phase
             || status_line != self.redraw.status_line
@@ -249,6 +272,7 @@ impl App {
             self.redraw.phase = phase;
             self.redraw.status_line = status_line;
             self.redraw.takeover_card = takeover_card;
+            self.redraw.cloud_crumb = cloud_crumb;
             self.redraw.last_frame = Some(now);
         }
         needed

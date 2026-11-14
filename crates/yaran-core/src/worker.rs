@@ -1,6 +1,76 @@
 //! Background-worker events and their domain payloads. `WorkerEvent` is the
 //! channel message a worker sends back to the owner (the TUI today, the Engine
 //! in E2+); the payload types are plain data describing worker results.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! worker.rs
+//! ├── cloud::leg_identity
+//! ├── cloud::leg_outcome
+//! ├── config
+//! ├── engine
+//! ├── gh
+//! ├── git
+//! ├── ids
+//! ├── model
+//! ├── pr_reference
+//! ├── pty
+//! ├── resume_recovery
+//! ├── startup
+//! ├── status_text
+//! ├── statusline
+//! ├── storage
+//! ├── term_identity
+//! ├── watch::builtin
+//! ├── working_copy
+//! └── worktree_manager
+//! External: std
+//!
+//! Used by:
+//! worker.rs
+//! ├── add_project_plan
+//! ├── agent_env
+//! ├── agent_job
+//! ├── config_queue
+//! ├── crate
+//! ├── engine
+//! ├── engine::amq
+//! ├── engine::command
+//! ├── engine::config_saver
+//! ├── engine::events
+//! ├── engine::followup
+//! ├── engine::lifecycle
+//! ├── engine::limits
+//! ├── engine::provider_sessions
+//! ├── engine::resume_fallback
+//! ├── engine::shared_workspace
+//! ├── engine::spawn_worker
+//! ├── engine::test_support
+//! ├── engine::watch_tick
+//! ├── gh
+//! ├── git
+//! ├── pr_reference
+//! ├── project_browser
+//! ├── resource_stats
+//! ├── viewmodel
+//! ├── wire
+//! ├── worktree_manager
+//! ├── yaran-tui::app
+//! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::input
+//! ├── yaran-tui::app::modal
+//! ├── yaran-tui::app::name_chip_dialogs
+//! ├── yaran-tui::app::new_agent_settings
+//! ├── yaran-tui::app::pty_ownership
+//! ├── yaran-tui::app::render
+//! ├── yaran-tui::app::sessions
+//! ├── yaran-tui::app::workers
+//! ├── yaran-tui::config_saver
+//! ├── yaran-web
+//! ├── yaran-web::background
+//! ├── yaran-web::bootstrap
+//! └── yaran-web::engine_actor
+//! <module-headers:end>
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -721,6 +791,12 @@ pub enum WorkerEvent {
     TailscaleModeApplied {
         mode: crate::config::TailscaleMode,
         outcome: crate::config::TailscaleModeOutcome,
+    },
+    /// A live `[cloud] mode` change the BACKGROUND web server carried out, on this
+    /// lane for the same reason as `TailscaleModeApplied`.
+    CloudModeApplied {
+        mode: crate::cloud::leg_identity::CloudMode,
+        outcome: crate::cloud::leg_outcome::CloudModeOutcome,
     },
     /// A provider conversation id was captured for an agent (the UUID a fresh
     /// Claude launch was given, or the rollout a fresh Codex launch wrote), or

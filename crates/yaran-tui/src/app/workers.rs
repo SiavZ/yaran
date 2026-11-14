@@ -1,4 +1,8 @@
 //! Background worker management for the terminal UI: draining events and spawning jobs.
+//! Terminal UI background work: draining worker events and spawning workers.
+//!
+//! Applies every engine reaction the run loop drains and starts the background jobs
+//! that keep blocking work off the UI thread.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -741,6 +745,9 @@ impl App {
 
             EventReaction::TailscaleModeApplied { mode, outcome } => {
                 self.apply_tailscale_mode_outcome(mode, outcome);
+            }
+            EventReaction::CloudModeApplied { mode, outcome } => {
+                self.apply_cloud_mode_outcome(mode, outcome);
             }
             EventReaction::ApplyReloadedConfig(boxed) => {
                 self.apply_reloaded_config_reaction(*boxed);

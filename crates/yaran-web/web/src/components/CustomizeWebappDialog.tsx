@@ -1,14 +1,48 @@
-import { Fragment, useMemo, useRef, useState } from "react"
-import { Check } from "lucide-react"
+/**
+ * The Preferences dialog: every settings row, rendered from `SETTING_GROUPS`.
+ *
+ * Holds the rows a person touched, then saves each through its write target (the
+ * settings patch, or a bespoke endpoint for rows whose save is also a live act).
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/components/CustomizeWebappDialog.tsx
+ * ├── src/components/SimpleTooltip.tsx
+ * ├── src/components/ui/button.tsx
+ * ├── src/components/ui/dialog.tsx
+ * ├── src/components/ui/input.tsx
+ * ├── src/components/ui/scroll-area.tsx
+ * ├── src/components/ui/select.tsx
+ * ├── src/components/ui/switch.tsx
+ * ├── src/lib/cloudApi.ts
+ * ├── src/lib/configApi.ts
+ * ├── src/lib/favicon.ts
+ * ├── src/lib/inlineMarkdown.tsx
+ * ├── src/lib/notify.ts
+ * ├── src/lib/prose.tsx
+ * ├── src/lib/settingsDescriptors.ts
+ * ├── src/lib/store.ts
+ * └── src/lib/utils.ts
+ * External: lucide-react, react
+ *
+ * Used by:
+ * src/components/CustomizeWebappDialog.tsx
+ * ├── src/App.tsx
+ * └── src/components/CustomizeWebappDialog.test.tsx
+ * <module-headers:end>
+ */
+
+import { Fragment, useMemo, useRef, useState } from "react";
+import { Check } from "lucide-react";
 import {
   notifyError,
   notifyInfo,
   notifySuccess,
   notifyWarning,
-} from "@/lib/notify"
+} from "@/lib/notify";
 
-import { SimpleTooltip } from "@/components/SimpleTooltip"
-import { Button } from "@/components/ui/button"
+import { SimpleTooltip } from "@/components/SimpleTooltip";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -16,31 +50,32 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   DEFAULT_FAVICON_HREF,
   FAVICON_COLORS,
   brandFaviconDataUri,
-} from "@/lib/favicon"
+} from "@/lib/favicon";
 import {
   SETTING_GROUPS,
   allSettingDescriptors,
   type SettingDescriptor,
   type SettingValue,
-} from "@/lib/settingsDescriptors"
-import { configApi } from "@/lib/configApi"
-import { renderInlineCode } from "@/lib/inlineMarkdown"
-import { wireProse } from "@/lib/prose"
+} from "@/lib/settingsDescriptors";
+import { setCloudMode } from "@/lib/cloudApi";
+import { configApi } from "@/lib/configApi";
+import { renderInlineCode } from "@/lib/inlineMarkdown";
+import { wireProse } from "@/lib/prose";
 import {
   changesPaneVisible,
   closeCustomizeWebapp,
@@ -49,8 +84,8 @@ import {
   setChangesPaneVisibility,
   setInstanceIdentity,
   useYaran,
-} from "@/lib/store"
-import { cn } from "@/lib/utils"
+} from "@/lib/store";
+import { cn } from "@/lib/utils";
 
 // The favicon swatch grid. "Original" (favicon "") previews the bundled
 // full-colour duck; each curated colour previews the tinted duck silhouette.
@@ -61,10 +96,10 @@ const SWATCHES: { value: string; label: string; href: string }[] = [
     label: name.charAt(0).toUpperCase() + name.slice(1),
     href: brandFaviconDataUri(hex),
   })),
-]
+];
 
 function rowId(d: SettingDescriptor): string {
-  return `setting-${d.key.replace(/\./g, "-")}`
+  return `setting-${d.key.replace(/\./g, "-")}`;
 }
 
 // Human copy for a descriptor's documented default, shown muted under the
@@ -72,21 +107,21 @@ function rowId(d: SettingDescriptor): string {
 function defaultLabel(d: SettingDescriptor): string {
   switch (d.control.kind) {
     case "bool":
-      return `Default: ${d.default ? "On" : "Off"}`
+      return `Default: ${d.default ? "On" : "Off"}`;
     case "number": {
-      const unit = d.control.unit ? ` ${d.control.unit}` : ""
-      return `Default: ${d.default}${unit}`
+      const unit = d.control.unit ? ` ${d.control.unit}` : "";
+      return `Default: ${d.default}${unit}`;
     }
     case "enum": {
-      const opt = d.control.options.find((o) => o.value === d.default)
-      return `Default: ${opt?.label ?? String(d.default)}`
+      const opt = d.control.options.find((o) => o.value === d.default);
+      return `Default: ${opt?.label ?? String(d.default)}`;
     }
     case "enum-dynamic":
-      return `Default: ${d.default}`
+      return `Default: ${d.default}`;
     case "text":
-      return d.default ? `Default: ${d.default}` : "Default: empty"
+      return d.default ? `Default: ${d.default}` : "Default: empty";
     case "favicon":
-      return "Default: Original"
+      return "Default: Original";
   }
 }
 
@@ -95,16 +130,19 @@ function FaviconControl({
   onChange,
   disabled,
 }: {
-  value: string
-  onChange: (v: string) => void
-  disabled: boolean
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
 }) {
   return (
     <div className="flex max-w-[15.5rem] flex-wrap gap-2">
       {SWATCHES.map((swatch) => {
-        const selected = swatch.value === value
+        const selected = swatch.value === value;
         return (
-          <SimpleTooltip key={swatch.value || "original"} content={swatch.label}>
+          <SimpleTooltip
+            key={swatch.value || "original"}
+            content={swatch.label}
+          >
             <button
               type="button"
               aria-label={swatch.label}
@@ -116,7 +154,11 @@ function FaviconControl({
                 selected ? "border-ring ring-3 ring-ring/50" : "border-input",
               )}
             >
-              <img src={swatch.href} alt="" className="size-full object-contain" />
+              <img
+                src={swatch.href}
+                alt=""
+                className="size-full object-contain"
+              />
               {selected && (
                 <span className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-primary text-primary-foreground">
                   <Check className="size-3" />
@@ -124,15 +166,15 @@ function FaviconControl({
               )}
             </button>
           </SimpleTooltip>
-        )
+        );
       })}
     </div>
-  )
+  );
 }
 
 // Clamp a completed edit, while leaving incomplete numeric prefixes typeable.
 function clampToControl(n: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, n))
+  return Math.min(max, Math.max(min, n));
 }
 
 // Local text preserves an empty in-progress field without committing it as zero.
@@ -146,19 +188,19 @@ function NumberControl({
   onChange,
   disabled,
 }: {
-  id: string
-  label: string
-  min: number
-  max: number
-  value: number
-  onChange: (v: number) => void
-  disabled: boolean
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+  value: number;
+  onChange: (v: number) => void;
+  disabled: boolean;
 }) {
-  const [text, setText] = useState(String(value))
-  const [prevValue, setPrevValue] = useState(value)
+  const [text, setText] = useState(String(value));
+  const [prevValue, setPrevValue] = useState(value);
   if (value !== prevValue) {
-    setPrevValue(value)
-    setText(String(value))
+    setPrevValue(value);
+    setText(String(value));
   }
 
   return (
@@ -172,22 +214,24 @@ function NumberControl({
       disabled={disabled}
       className="max-md:min-h-10 w-24"
       onChange={(e) => {
-        const raw = e.target.value
-        setText(raw)
-        if (raw.trim() === "") return
-        const parsed = Number(raw)
-        if (Number.isFinite(parsed) && parsed >= min && parsed <= max) onChange(parsed)
+        const raw = e.target.value;
+        setText(raw);
+        if (raw.trim() === "") return;
+        const parsed = Number(raw);
+        if (Number.isFinite(parsed) && parsed >= min && parsed <= max)
+          onChange(parsed);
       }}
       onBlur={() => {
-        const parsed = Number(text)
-        const next = text.trim() !== "" && Number.isFinite(parsed)
-          ? clampToControl(parsed, min, max)
-          : value
-        setText(String(next))
-        onChange(next)
+        const parsed = Number(text);
+        const next =
+          text.trim() !== "" && Number.isFinite(parsed)
+            ? clampToControl(parsed, min, max)
+            : value;
+        setText(String(next));
+        onChange(next);
       }}
     />
-  )
+  );
 }
 
 function SettingControl({
@@ -197,13 +241,13 @@ function SettingControl({
   disabled,
   availableProviders,
 }: {
-  d: SettingDescriptor
-  value: SettingValue
-  onChange: (v: SettingValue) => void
-  disabled: boolean
-  availableProviders: string[]
+  d: SettingDescriptor;
+  value: SettingValue;
+  onChange: (v: SettingValue) => void;
+  disabled: boolean;
+  availableProviders: string[];
 }) {
-  const id = rowId(d)
+  const id = rowId(d);
   switch (d.control.kind) {
     case "bool":
       return (
@@ -214,7 +258,7 @@ function SettingControl({
           onCheckedChange={onChange}
           disabled={disabled}
         />
-      )
+      );
     case "number":
       return (
         <NumberControl
@@ -226,7 +270,7 @@ function SettingControl({
           disabled={disabled}
           onChange={(v) => onChange(v)}
         />
-      )
+      );
     case "enum":
       return (
         <Select
@@ -234,7 +278,11 @@ function SettingControl({
           onValueChange={(v) => onChange(v as string)}
           disabled={disabled}
         >
-          <SelectTrigger id={id} aria-label={d.label} className="max-md:min-h-10">
+          <SelectTrigger
+            id={id}
+            aria-label={d.label}
+            className="max-md:min-h-10"
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -245,18 +293,22 @@ function SettingControl({
             ))}
           </SelectContent>
         </Select>
-      )
+      );
     case "enum-dynamic": {
       // Only "available_providers" exists today; the source tag is kept for
       // forward-compatibility with a future dynamic-option field.
-      const options = availableProviders
+      const options = availableProviders;
       return (
         <Select
           value={value as string}
           onValueChange={(v) => onChange(v as string)}
           disabled={disabled}
         >
-          <SelectTrigger id={id} aria-label={d.label} className="max-md:min-h-10">
+          <SelectTrigger
+            id={id}
+            aria-label={d.label}
+            className="max-md:min-h-10"
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -267,7 +319,7 @@ function SettingControl({
             ))}
           </SelectContent>
         </Select>
-      )
+      );
     }
     case "text":
       return (
@@ -281,7 +333,7 @@ function SettingControl({
           className="max-md:min-h-10 w-full md:w-56"
           onChange={(e) => onChange(e.target.value)}
         />
-      )
+      );
     case "favicon":
       return (
         <FaviconControl
@@ -289,43 +341,48 @@ function SettingControl({
           onChange={onChange}
           disabled={disabled}
         />
-      )
+      );
   }
 }
 
 // Browser-notification permission, not a SettingDescriptor: it writes no config
 // and asks the browser, per visitor. yaran never auto-prompts, so this is the only
 // way to grant it, and it shows only while permission is still "default".
-function NotificationPermissionRow({ enabledInConfig }: { enabledInConfig: boolean }) {
-  const apiAvailable = typeof Notification !== "undefined"
+function NotificationPermissionRow({
+  enabledInConfig,
+}: {
+  enabledInConfig: boolean;
+}) {
+  const apiAvailable = typeof Notification !== "undefined";
   const [permission, setPermission] = useState<NotificationPermission>(
     apiAvailable ? Notification.permission : "denied",
-  )
+  );
 
-  if (!enabledInConfig || !apiAvailable || permission !== "default") return null
+  if (!enabledInConfig || !apiAvailable || permission !== "default")
+    return null;
 
   const request = async () => {
     try {
-      const result = await Notification.requestPermission()
-      setPermission(result)
+      const result = await Notification.requestPermission();
+      setPermission(result);
       if (result === "granted") {
-        notifySuccess("Browser notifications enabled for yaran.")
+        notifySuccess("Browser notifications enabled for yaran.");
       } else {
-        notifyInfo("Browser notifications were not granted.")
+        notifyInfo("Browser notifications were not granted.");
       }
     } catch {
-      notifyError("Could not request notification permission.")
+      notifyError("Could not request notification permission.");
     }
-  }
+  };
 
   return (
     <div className="flex flex-col gap-2 py-3 first:pt-0 md:flex-row md:items-start md:justify-between md:gap-6">
       <div className="flex flex-col gap-1">
         <span className="text-sm font-medium">Browser permission</span>
         <p className="text-xs text-muted-foreground">
-          This browser hasn&rsquo;t granted yaran permission to show notifications
-          yet, so the setting above can&rsquo;t do anything. yaran never asks on its
-          own, so grant it here when you want it.
+          This browser hasn&rsquo;t granted yaran permission to show
+          notifications yet, so the setting above can&rsquo;t do anything. yaran
+          never asks on its own, so grant it here when you want it.
         </p>
       </div>
       <div className="shrink-0 md:pt-0.5">
@@ -340,7 +397,7 @@ function NotificationPermissionRow({ enabledInConfig }: { enabledInConfig: boole
         </Button>
       </div>
     </div>
-  )
+  );
 }
 
 function SettingRow({
@@ -351,15 +408,15 @@ function SettingRow({
   lock,
   availableProviders,
 }: {
-  d: SettingDescriptor
-  value: SettingValue
-  onChange: (v: SettingValue) => void
-  disabled: boolean
+  d: SettingDescriptor;
+  value: SettingValue;
+  onChange: (v: SettingValue) => void;
+  disabled: boolean;
   /** The sentence saying why this run cannot change the row, or null. */
-  lock: string | null
-  availableProviders: string[]
+  lock: string | null;
+  availableProviders: string[];
 }) {
-  const id = rowId(d)
+  const id = rowId(d);
   const labelEl =
     d.control.kind === "text" || d.control.kind === "favicon" ? (
       <label htmlFor={id} className="text-sm font-medium">
@@ -369,7 +426,7 @@ function SettingRow({
       <span id={`${id}-label`} className="text-sm font-medium">
         {d.label}
       </span>
-    )
+    );
   return (
     <div className="flex flex-col gap-2 py-3 first:pt-0 md:flex-row md:items-start md:justify-between md:gap-6">
       <div className="flex flex-col gap-1">
@@ -394,29 +451,29 @@ function SettingRow({
         />
       </div>
     </div>
-  )
+  );
 }
 
-type SettingsGroup = Record<string, SettingValue>
+type SettingsGroup = Record<string, SettingValue>;
 
 interface SettingsBody {
-  ui?: SettingsGroup
-  capabilities?: SettingsGroup
-  defaults?: SettingsGroup
+  ui?: SettingsGroup;
+  capabilities?: SettingsGroup;
+  defaults?: SettingsGroup;
 }
 
 // The settings patch, or null when no group changed. An untouched group is
 // omitted rather than sent empty, so the server writes only what the user moved.
 function settingsBody(groups: Required<SettingsBody>): SettingsBody | null {
   const changed = (rows: SettingsGroup) =>
-    Object.keys(rows).length ? rows : undefined
+    Object.keys(rows).length ? rows : undefined;
   const body: SettingsBody = {
     ui: changed(groups.ui),
     capabilities: changed(groups.capabilities),
     defaults: changed(groups.defaults),
-  }
-  if (!body.ui && !body.capabilities && !body.defaults) return null
-  return body
+  };
+  if (!body.ui && !body.capabilities && !body.defaults) return null;
+  return body;
 }
 
 // Build the write bodies for [descriptor, value] pairs, sending only entries that
@@ -428,40 +485,44 @@ function buildWrites(
   entries: [SettingDescriptor, SettingValue][],
   originalOf: (d: SettingDescriptor) => SettingValue,
 ): {
-  identity: { title?: string; favicon?: string } | null
-  settings: SettingsBody | null
-  changesPane: boolean | null
-  github: boolean | null
-  tailscale: string | null
+  identity: { title?: string; favicon?: string } | null;
+  settings: SettingsBody | null;
+  changesPane: boolean | null;
+  github: boolean | null;
+  tailscale: string | null;
+  cloudMode: string | null;
 } {
-  const identity: { title?: string; favicon?: string } = {}
-  const ui: SettingsGroup = {}
-  const capabilities: SettingsGroup = {}
-  const defaults: SettingsGroup = {}
-  let changesPane: boolean | null = null
-  let tailscale: string | null = null
-  let github: boolean | null = null
+  const identity: { title?: string; favicon?: string } = {};
+  const ui: SettingsGroup = {};
+  const capabilities: SettingsGroup = {};
+  const defaults: SettingsGroup = {};
+  let changesPane: boolean | null = null;
+  let tailscale: string | null = null;
+  let cloudMode: string | null = null;
+  let github: boolean | null = null;
   for (const [d, value] of entries) {
     // The unchanged-row skip. The `github` target posts to a blind read-and-FLIP
     // endpoint, so emitting an unchanged row would invert the setting.
-    if (value === originalOf(d)) continue
+    if (value === originalOf(d)) continue;
     if (d.writeTarget === "identity") {
-      const field = d.key.split(".")[1] as "title" | "favicon"
-      identity[field] = value as string
+      const field = d.key.split(".")[1] as "title" | "favicon";
+      identity[field] = value as string;
     } else if (d.writeTarget === "changesPane") {
-      changesPane = value as boolean
+      changesPane = value as boolean;
     } else if (d.writeTarget === "github") {
-      github = value as boolean
+      github = value as boolean;
     } else if (d.writeTarget === "tailscale") {
-      tailscale = value as string
+      tailscale = value as string;
+    } else if (d.writeTarget === "cloudMode") {
+      cloudMode = value as string;
     } else {
-      const [group, field] = d.key.split(".")
+      const [group, field] = d.key.split(".");
       // The single flip point for an `inverted` row: everything upstream, the seed,
       // the switch and the unchanged-row skip, works in shown values only.
-      const wire = d.inverted ? !(value as boolean) : value
-      if (group === "capabilities") capabilities[field] = wire
-      else if (group === "defaults") defaults[field] = wire
-      else ui[field] = wire
+      const wire = d.inverted ? !(value as boolean) : value;
+      if (group === "capabilities") capabilities[field] = wire;
+      else if (group === "defaults") defaults[field] = wire;
+      else ui[field] = wire;
     }
   }
   return {
@@ -470,21 +531,39 @@ function buildWrites(
     changesPane,
     github,
     tailscale,
-  }
+    cloudMode,
+  };
+}
+
+// Same shape as the Tailscale row: the reply is the server's sentence, raised even on
+// success, and a sticky reply (`yes` while unpaired) stays until dismissed.
+function persistCloudMode(mode: string): Promise<boolean> {
+  return setCloudMode(mode)
+    .then((reply) => {
+      const said = wireProse(reply.message, reply.segments);
+      if (reply.warning)
+        notifyWarning(said, reply.sticky ? { sticky: true } : undefined);
+      else notifyInfo(said);
+      return true;
+    })
+    .catch((e) => {
+      notifyError(
+        e instanceof Error ? e.message : "Could not change the cloud mode.",
+      );
+      return false;
+    });
 }
 
 async function persist(
   entries: [SettingDescriptor, SettingValue][],
   originalOf: (d: SettingDescriptor) => SettingValue,
 ): Promise<boolean> {
-  const { identity, settings, changesPane, github, tailscale } = buildWrites(
-    entries,
-    originalOf,
-  )
-  const writes: Promise<boolean>[] = []
-  if (identity) writes.push(setInstanceIdentity(identity))
-  if (settings) writes.push(saveSettings(settings))
-  if (changesPane !== null) writes.push(setChangesPaneVisibility(changesPane))
+  const { identity, settings, changesPane, github, tailscale, cloudMode } =
+    buildWrites(entries, originalOf);
+  const writes: Promise<boolean>[] = [];
+  if (identity) writes.push(setInstanceIdentity(identity));
+  if (settings) writes.push(saveSettings(settings));
+  if (changesPane !== null) writes.push(setChangesPaneVisibility(changesPane));
   // `github` is non-null ONLY when the row changed, which is what makes it safe
   // to drive a read-and-flip endpoint from an explicit-value UI.
   if (github !== null) {
@@ -494,37 +573,40 @@ async function persist(
         .then(() => true)
         .catch((e) => {
           notifyError(
-            e instanceof Error ? e.message : "Could not toggle GitHub integration.",
-          )
-          return false
+            e instanceof Error
+              ? e.message
+              : "Could not toggle GitHub integration.",
+          );
+          return false;
         }),
-    )
+    );
   }
   // The one row whose reply is a sentence rather than a status code, raised even
   // on success: saved and "the listener went away" are different outcomes.
   if (tailscale !== null) {
-    const mode = tailscale
+    const mode = tailscale;
     writes.push(
       configApi
         .setTailscaleMode(mode)
         .then((reply) => {
-          const said = wireProse(reply.message, reply.segments)
-          if (reply.warning) notifyWarning(said)
-          else notifyInfo(said)
-          return true
+          const said = wireProse(reply.message, reply.segments);
+          if (reply.warning) notifyWarning(said);
+          else notifyInfo(said);
+          return true;
         })
         .catch((e) => {
           notifyError(
             e instanceof Error
               ? e.message
               : "Could not change the Tailscale mode.",
-          )
-          return false
+          );
+          return false;
         }),
-    )
+    );
   }
-  if (writes.length === 0) return true
-  return (await Promise.all(writes)).every(Boolean)
+  if (cloudMode !== null) writes.push(persistCloudMode(cloudMode));
+  if (writes.length === 0) return true;
+  return (await Promise.all(writes)).every(Boolean);
 }
 
 function CustomizeWebappForm({
@@ -532,102 +614,105 @@ function CustomizeWebappForm({
   setSaving,
   savingRef,
 }: {
-  saving: boolean
-  setSaving: (v: boolean) => void
-  savingRef: React.RefObject<boolean>
+  saving: boolean;
+  setSaving: (v: boolean) => void;
+  savingRef: React.RefObject<boolean>;
 }) {
-  const yaran = useYaran()
-  const { bootstrap } = yaran
+  const yaran = useYaran();
+  const { bootstrap } = yaran;
   // `overrides` holds only the fields touched in this dialog session; every other
   // row renders live bootstrap, so another client's change is not reverted on Save.
-  const [overrides, setOverrides] = useState<Record<string, SettingValue>>({})
-  const [search, setSearch] = useState("")
-  const query = search.toLocaleLowerCase().trim()
+  const [overrides, setOverrides] = useState<Record<string, SettingValue>>({});
+  const [search, setSearch] = useState("");
+  const query = search.toLocaleLowerCase().trim();
   const groups = useMemo(() => {
-    if (!query) return SETTING_GROUPS
-    const terms = query.split(/\s+/)
+    if (!query) return SETTING_GROUPS;
+    const terms = query.split(/\s+/);
     return SETTING_GROUPS.map((group) => ({
       ...group,
       settings: group.settings.filter((d) => {
-        const text = `${group.caption} ${d.label} ${d.description} ${d.key}`.toLocaleLowerCase()
-        return terms.every((term) => text.includes(term))
+        const text =
+          `${group.caption} ${d.label} ${d.description} ${d.key}`.toLocaleLowerCase();
+        return terms.every((term) => text.includes(term));
       }),
-    })).filter((group) => group.settings.length > 0)
-  }, [query])
+    })).filter((group) => group.settings.length > 0);
+  }, [query]);
 
   // The pre-touch baseline for a row. Any field the store tracks an optimistic
   // override for must read the override-aware selector rather than raw bootstrap:
   // the rule is override-awareness, not `writeTarget`.
   const originalOf = (d: SettingDescriptor): SettingValue => {
-    if (d.writeTarget === "changesPane") return changesPaneVisible(yaran)
-    if (d.key === "ui.mobile_accessory_bar") return mobileAccessoryBarVisible(yaran)
-    return bootstrap ? d.read(bootstrap) : d.default
-  }
+    if (d.writeTarget === "changesPane") return changesPaneVisible(yaran);
+    if (d.key === "ui.mobile_accessory_bar")
+      return mobileAccessoryBarVisible(yaran);
+    return bootstrap ? d.read(bootstrap) : d.default;
+  };
 
   const effective = (d: SettingDescriptor): SettingValue => {
-    if (d.key in overrides) return overrides[d.key]
-    return originalOf(d)
-  }
+    if (d.key in overrides) return overrides[d.key];
+    return originalOf(d);
+  };
   const setOverride = (key: string, value: SettingValue) =>
-    setOverrides((o) => ({ ...o, [key]: value }))
+    setOverrides((o) => ({ ...o, [key]: value }));
 
   // What this RUN of the server refuses to let the row change, if anything.
   const lockOn = (d: SettingDescriptor): string | null =>
-    bootstrap ? (d.lockedBy?.(bootstrap) ?? null) : null
+    bootstrap ? (d.lockedBy?.(bootstrap) ?? null) : null;
 
   // Refuse to write before the config is loaded: the form seeds from `bootstrap`,
   // so a null one would persist fallback defaults over the real configuration.
   const requireBootstrap = (): boolean => {
-    if (bootstrap) return true
-    notifyError("Instance settings aren't loaded yet, try again in a moment.")
-    return false
-  }
+    if (bootstrap) return true;
+    notifyError("Instance settings aren't loaded yet, try again in a moment.");
+    return false;
+  };
 
   const save = async () => {
-    if (savingRef.current) return
-    if (!requireBootstrap() || !bootstrap) return
-    savingRef.current = true
-    setSaving(true)
+    if (savingRef.current) return;
+    if (!requireBootstrap() || !bootstrap) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
-      const touched: [SettingDescriptor, SettingValue][] = allSettingDescriptors()
-        .filter((d) => d.key in overrides)
-        .map((d) => [d, overrides[d.key]])
-      if (await persist(touched, originalOf)) closeCustomizeWebapp()
+      const touched: [SettingDescriptor, SettingValue][] =
+        allSettingDescriptors()
+          .filter((d) => d.key in overrides)
+          .map((d) => [d, overrides[d.key]]);
+      if (await persist(touched, originalOf)) closeCustomizeWebapp();
     } finally {
-      savingRef.current = false
-      setSaving(false)
+      savingRef.current = false;
+      setSaving(false);
     }
-  }
+  };
 
   const resetSection = async (settings: SettingDescriptor[]) => {
-    if (savingRef.current) return
-    if (!requireBootstrap() || !bootstrap) return
-    savingRef.current = true
-    setSaving(true)
+    if (savingRef.current) return;
+    if (!requireBootstrap() || !bootstrap) return;
+    savingRef.current = true;
+    setSaving(true);
     try {
       // Identity fields reset to an EMPTY string, not the literal default text:
       // the server's normalizer resolves empty to the shipped title and favicon.
       const resetValue = (d: SettingDescriptor): SettingValue =>
-        d.writeTarget === "identity" ? "" : d.default
+        d.writeTarget === "identity" ? "" : d.default;
       // A locked row's control is unreachable, and a reset must not write past it:
       // the run would refuse the value and the toast would contradict the dialog.
       const entries: [SettingDescriptor, SettingValue][] = settings
         .filter((d) => lockOn(d) === null)
-        .map((d) => [d, resetValue(d)])
+        .map((d) => [d, resetValue(d)]);
       // Reflect the reset defaults only AFTER the write lands: an optimistic
       // override would show a failed reset as saved. The dialog stays open either way.
       if (await persist(entries, originalOf)) {
         setOverrides((o) => {
-          const next = { ...o }
-          for (const [d, value] of entries) next[d.key] = value
-          return next
-        })
+          const next = { ...o };
+          for (const [d, value] of entries) next[d.key] = value;
+          return next;
+        });
       }
     } finally {
-      savingRef.current = false
-      setSaving(false)
+      savingRef.current = false;
+      setSaving(false);
     }
-  }
+  };
 
   return (
     <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-2xl">
@@ -652,7 +737,10 @@ function CustomizeWebappForm({
       <ScrollArea className="min-h-0 max-h-[60dvh] flex-1 pr-3">
         <div className="flex flex-col gap-6">
           {groups.length === 0 && (
-            <p role="status" className="py-6 text-center text-sm text-muted-foreground">
+            <p
+              role="status"
+              className="py-6 text-center text-sm text-muted-foreground"
+            >
               No settings match. Try a different search.
             </p>
           )}
@@ -662,16 +750,18 @@ function CustomizeWebappForm({
                 <p className="text-xs font-medium text-muted-foreground">
                   {group.caption}
                 </p>
-                {!query && <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={saving}
-                  className="max-md:min-h-10 max-md:self-end shrink-0 text-xs"
-                  onClick={() => resetSection(group.settings)}
-                >
-                  Reset section to defaults…
-                </Button>}
+                {!query && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={saving}
+                    className="max-md:min-h-10 max-md:self-end shrink-0 text-xs"
+                    onClick={() => resetSection(group.settings)}
+                  >
+                    Reset section to defaults…
+                  </Button>
+                )}
               </div>
               <div className="divide-y divide-border">
                 {group.settings.map((d) => (
@@ -720,22 +810,22 @@ function CustomizeWebappForm({
         </div>
       </DialogFooter>
     </DialogContent>
-  )
+  );
 }
 
 export function CustomizeWebappDialog() {
-  const { customizeWebappOpen } = useYaran()
+  const { customizeWebappOpen } = useYaran();
 
   // One persist at a time: the ref gates re-entry synchronously, the state disables
   // the footer, and both gate `onOpenChange` too, so no dismissal orphans a write.
-  const savingRef = useRef(false)
-  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
 
   return (
     <Dialog
       open={customizeWebappOpen}
       onOpenChange={(o) => {
-        if (!o && !savingRef.current) closeCustomizeWebapp()
+        if (!o && !savingRef.current) closeCustomizeWebapp();
       }}
     >
       {customizeWebappOpen && (
@@ -746,5 +836,5 @@ export function CustomizeWebappDialog() {
         />
       )}
     </Dialog>
-  )
+  );
 }

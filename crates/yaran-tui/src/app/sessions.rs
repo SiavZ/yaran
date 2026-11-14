@@ -1,4 +1,8 @@
 //! Project and session CRUD for the terminal UI: create, delete, reconnect, refresh, project browser.
+//! Terminal UI project and agent-session CRUD: create, delete, reconnect, refresh.
+//!
+//! The `impl App` block for session lifecycle; blocking git and provider work is handed
+//! to background workers.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -4863,6 +4867,7 @@ mod tests {
             companion_followup_ran: false,
             pending_background_server_start: None,
             pending_tailscale_mode_op: None,
+            pending_cloud_mode_op: None,
             server_flip_preflight_pending: false,
             pending_persist_ops: std::collections::HashMap::new(),
             configure_save_op: None,

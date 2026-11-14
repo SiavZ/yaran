@@ -1,4 +1,8 @@
 //! Keyboard and mouse handling for the terminal UI (`handle_key`, `handle_left_key`, ...).
+//! Terminal UI input: every keyboard and mouse event handler of `App`.
+//!
+//! Routes keys through the runtime bindings to the focused pane, the open modal or the
+//! PTY, and turns clicks into the targets the renderer published.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -292,6 +296,7 @@ enum PromptMouseTarget {
     ChangeDefaultProviderItem(usize),
     ChangeProjectDefaultProviderItem(usize),
     SetTailscaleModeItem(usize),
+    SetCloudModeItem(usize),
     /// A person in the human board's Assign picker.
     AssignBoardCardItem(usize),
     RuntimeKillInput,
@@ -543,6 +548,7 @@ impl ButtonPressedTarget {
             | PromptMouseTarget::ChangeDefaultProviderItem(_)
             | PromptMouseTarget::ChangeProjectDefaultProviderItem(_)
             | PromptMouseTarget::SetTailscaleModeItem(_)
+            | PromptMouseTarget::SetCloudModeItem(_)
             | PromptMouseTarget::AssignBoardCardItem(_)
             | PromptMouseTarget::RuntimeKillInput
             | PromptMouseTarget::RuntimeKillItem(_)
@@ -2125,6 +2131,7 @@ impl App {
             | PromptState::ChangeDefaultProvider(_)
             | PromptState::ChangeProjectDefaultProvider(_)
             | PromptState::SetTailscaleMode(_)
+            | PromptState::SetCloudMode(_)
             | PromptState::AssignBoardCard(_)
             | PromptState::WatchRules(_) => {}
         }
@@ -5885,6 +5892,9 @@ impl App {
         if let Some(exit) = self.handle_set_tailscale_mode_prompt_key(key) {
             return Ok(Some(exit));
         }
+        if let Some(exit) = self.handle_set_cloud_mode_prompt_key(key) {
+            return Ok(Some(exit));
+        }
         if let Some(exit) = self.handle_assign_board_card_prompt_key(key) {
             return Ok(Some(exit));
         }
@@ -6990,6 +7000,12 @@ impl App {
                 offset,
             } => Self::overlay_row_at(list, offset, items, column, row)
                 .map(PromptMouseTarget::SetTailscaleModeItem),
+            OverlayMouseLayout::SetCloudMode {
+                list,
+                items,
+                offset,
+            } => Self::overlay_row_at(list, offset, items, column, row)
+                .map(PromptMouseTarget::SetCloudModeItem),
             OverlayMouseLayout::AssignBoardCard {
                 list,
                 items,
@@ -9782,6 +9798,11 @@ impl App {
             }
             PromptMouseTarget::SetTailscaleModeItem(index) => {
                 self.click_tailscale_mode_item(index);
+            }
+            PromptMouseTarget::SetCloudModeItem(index) => {
+                let double_click =
+                    self.register_mouse_click(MouseClickTarget::CommandPalette, Some(index));
+                self.click_cloud_mode_item(index, double_click);
             }
             PromptMouseTarget::AssignBoardCardItem(index) => {
                 self.click_board_assign_item(index);

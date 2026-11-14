@@ -37,6 +37,7 @@
 //! ├── cloud::actions
 //! ├── cloud::cli
 //! ├── cloud::cli::tests
+//! ├── cloud::leg_identity
 //! ├── cloud::login
 //! ├── cloud::login_session
 //! ├── cloud::machine_api::tests

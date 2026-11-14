@@ -209,6 +209,9 @@ pub enum Action {
     /// Palette-only: open the `[server] tailscale` picker. The web counterpart is
     /// the Preferences dialog's Tailscale row.
     SetTailscaleMode,
+    /// Palette-only: open the `[cloud] mode` picker. The web counterpart is the
+    /// Preferences dialog's cloud row.
+    SetCloudMode,
     ToggleAlwaysShowTabs,
     /// Flip `ui.tab_reaches_agent`: whether the typeable center pane sends Tab
     /// and Shift-Tab to the agent instead of cycling panes with them.
@@ -392,6 +395,7 @@ impl Action {
             Action::StartBackgroundServer => "start_background_server",
             Action::StopBackgroundServer => "stop_background_server",
             Action::SetTailscaleMode => "set_tailscale_mode",
+            Action::SetCloudMode => "set_cloud_mode",
             Action::ToggleAlwaysShowTabs => "toggle_always_show_tabs",
             Action::ToggleTabReachesAgent => "toggle_tab_reaches_agent",
             Action::ToggleHumanBoard => "toggle_human_board",
@@ -663,6 +667,9 @@ impl Action {
             Action::SetTailscaleMode => {
                 "Choose whether yaran binds your Tailscale address: auto, yes, or no."
             }
+            Action::SetCloudMode => {
+                "Choose whether yaran runs its Cloudflare tunnel for remote access: auto, yes, or no."
+            }
             Action::ToggleAlwaysShowTabs => {
                 "Toggle always showing the agent tab strip, even with a single tab."
             }
@@ -848,6 +855,7 @@ impl Action {
             | Action::StartBackgroundServer
             | Action::StopBackgroundServer
             | Action::SetTailscaleMode
+            | Action::SetCloudMode
             | Action::ToggleAlwaysShowTabs
             | Action::ToggleTabReachesAgent
             | Action::ToggleHumanBoard

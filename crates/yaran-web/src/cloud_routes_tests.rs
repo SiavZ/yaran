@@ -219,7 +219,8 @@ async fn start_then_a_local_browser_pairs_through_the_loopback() {
     );
 
     browser_hits_loopback(url).await;
-    let s = wait_for(&app, |s| s["paired"] == true).await;
+    // The credentials land a moment before the login is retired; wait for both.
+    let s = wait_for(&app, |s| s["paired"] == true && s["active_login"].is_null()).await;
     assert_eq!(s["hostname"], SAMPLE_HOSTNAME);
     assert!(s["active_login"].is_null());
     assert!(credentials::read(&paths).unwrap().is_some());

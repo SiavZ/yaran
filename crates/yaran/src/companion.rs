@@ -9,6 +9,23 @@
 //! The whole implementation is bookkeeping around an `Option`. The TUI decides
 //! WHEN to serve (its palette commands, its config, its quit path) and binds the
 //! listeners; this decides nothing and only relays.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! companion.rs
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::leg_identity
+//! ├── yaran-core::cloud::view
+//! ├── yaran-core::config
+//! ├── yaran-core::engine
+//! ├── yaran-core::logger
+//! └── yaran-web::background
+//! External: std
+//!
+//! Used by:
+//! companion.rs
+//! └── crate
+//! <module-headers:end>
 
 use yaran_core::background_serve::{
     BackgroundServeCompanion, DrainedMaintenance, PtyOwnershipEvent, ServiceOutcome, TuiOwnership,
@@ -116,6 +133,31 @@ impl BackgroundServeCompanion for WebCompanion {
         if let Some(server) = self.server.as_ref() {
             server.set_tailscale_mode(mode, engine.worker_tx.clone());
         }
+    }
+
+    fn set_cloud_mode(
+        &mut self,
+        engine: &Engine,
+        mode: yaran_core::cloud::leg_identity::CloudMode,
+    ) {
+        if let Some(server) = self.server.as_ref() {
+            server.set_cloud_mode(mode, engine.worker_tx.clone());
+        }
+    }
+
+    fn cloud_settings_changed(
+        &mut self,
+        settings: yaran_core::cloud::leg_identity::CloudLegSettings,
+    ) {
+        if let Some(server) = self.server.as_ref() {
+            server.cloud_mode().settings_changed(settings);
+        }
+    }
+
+    fn cloud_view(&self) -> Option<yaran_core::cloud::view::CloudLegView> {
+        self.server
+            .as_ref()
+            .map(|server| server.cloud_mode().view())
     }
 
     fn is_serving(&self) -> bool {

@@ -6,6 +6,18 @@
 //! - 200 with the [`yaran_core::viewmodel::BootstrapView`] JSON.
 //! - 503 if the engine actor is gone, so a dead engine is distinguishable from a
 //!   real (always non-empty) payload.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! bootstrap_routes.rs
+//! └── server
+//! External: axum
+//!
+//! Used by:
+//! bootstrap_routes.rs
+//! ├── crate
+//! └── server
+//! <module-headers:end>
 
 use axum::{
     Json, Router,
@@ -33,6 +45,10 @@ async fn get_bootstrap(State(state): State<AppState>) -> Response {
             // line, not to the engine's config, so it is injected here for the
             // same reason the first-load screen is.
             view.tailscale_forced_no = state.tailscale_forced_no;
+            // The live cloud leg belongs to the serve, not the engine.
+            if let Some(cloud) = state.cloud.as_ref() {
+                view.cloud = Some(cloud.view());
+            }
             Json(view).into_response()
         }
         None => (

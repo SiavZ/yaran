@@ -21,6 +21,7 @@
 //! ├── cloud
 //! ├── cloud::cli
 //! ├── cloud::config_patch
+//! ├── cloud::leg_identity
 //! ├── cloud::status
 //! ├── config
 //! └── yaran-web::cloud_routes
@@ -29,7 +30,8 @@
 use serde::{Deserialize, Serialize};
 
 /// Whether yaran runs the cloud tunnel leg.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CloudMode {
     /// Run it whenever the machine is paired and yaran is serving; quiet when unpaired.
     #[default]
@@ -41,6 +43,8 @@ pub enum CloudMode {
 }
 
 impl CloudMode {
+    pub const ALL: [CloudMode; 3] = [Self::Auto, Self::Yes, Self::No];
+
     /// Parse a config string (case and surrounding whitespace ignored).
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {

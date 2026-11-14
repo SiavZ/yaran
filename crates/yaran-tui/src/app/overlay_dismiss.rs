@@ -123,6 +123,7 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::ChangeDefaultProvider(_)
         | PromptState::ChangeProjectDefaultProvider(_)
         | PromptState::SetTailscaleMode(_)
+        | PromptState::SetCloudMode(_)
         | PromptState::AssignBoardCard(_)
         | PromptState::WatchRules(_)
         | PromptState::ChangeTheme(_)
@@ -285,6 +286,7 @@ impl App {
             | PromptState::ChangeDefaultProvider(_)
             | PromptState::ChangeProjectDefaultProvider(_)
             | PromptState::SetTailscaleMode(_)
+            | PromptState::SetCloudMode(_)
             | PromptState::WatchRules(_)
             | PromptState::Command { .. }
             | PromptState::ConfirmNonDefaultBranch { .. } => {

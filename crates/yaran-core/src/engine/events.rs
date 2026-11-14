@@ -6,6 +6,52 @@
 //! caches like `left_items_cache` or `files_index`). Anything view-side is
 //! described by an `EventReaction` variant; the App's `apply_reaction`
 //! translates each variant back into concrete view mutations.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! engine/events.rs
+//! ├── agent_job
+//! ├── changes_status
+//! ├── cloud::leg_identity
+//! ├── cloud::leg_outcome
+//! ├── config
+//! ├── engine
+//! ├── engine::spawn_worker
+//! ├── engine::status_op
+//! ├── engine::test_support
+//! ├── gh
+//! ├── git
+//! ├── home_path
+//! ├── ids
+//! ├── logger
+//! ├── model
+//! ├── peer
+//! ├── peer::session_store
+//! ├── poller_status
+//! ├── project_browser
+//! ├── prose
+//! ├── pty
+//! ├── startup
+//! ├── status_text
+//! ├── statusline
+//! ├── storage
+//! ├── tab_verdict
+//! ├── test_git
+//! ├── wire
+//! ├── worker
+//! ├── working_copy
+//! └── worktree_manager
+//! External: anyhow, chrono, rusqlite, serde_json, std, tempfile, tracing
+//!
+//! Used by:
+//! engine/events.rs
+//! ├── engine
+//! ├── engine::command
+//! ├── engine::limits
+//! ├── engine::provider_sessions
+//! ├── engine::resume_fallback
+//! └── engine::spawn_worker
+//! <module-headers:end>
 
 use std::path::Path;
 use std::time::Instant;
@@ -389,6 +435,11 @@ pub enum EventReaction {
     TailscaleModeApplied {
         mode: crate::config::TailscaleMode,
         outcome: crate::config::TailscaleModeOutcome,
+    },
+    /// The background web server finished applying a live `[cloud] mode` change.
+    CloudModeApplied {
+        mode: crate::cloud::leg_identity::CloudMode,
+        outcome: crate::cloud::leg_outcome::CloudModeOutcome,
     },
     /// Whether GitHub features work has CHANGED (a probe answered differently
     /// from the state yaran held). Emitted only on the transition, never once per
@@ -3934,6 +3985,9 @@ impl Engine {
             WorkerEvent::TailscaleModeApplied { mode, outcome } => {
                 EventReaction::TailscaleModeApplied { mode, outcome }
             }
+            WorkerEvent::CloudModeApplied { mode, outcome } => {
+                EventReaction::CloudModeApplied { mode, outcome }
+            }
             WorkerEvent::ProviderSessionCaptured {
                 session_id,
                 provider,
@@ -5174,6 +5228,7 @@ mod tests {
             EventReaction::Status(_) => "Status",
             EventReaction::ClearStatus(_) => "ClearStatus",
             EventReaction::TailscaleModeApplied { .. } => "TailscaleModeApplied",
+            EventReaction::CloudModeApplied { .. } => "CloudModeApplied",
             EventReaction::GhAvailabilityChanged { .. } => "GhAvailabilityChanged",
             EventReaction::Multi(_) => "Multi",
             EventReaction::RebuildLeftItems => "RebuildLeftItems",

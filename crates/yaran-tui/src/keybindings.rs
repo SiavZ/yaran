@@ -1,4 +1,8 @@
 //! Keybinding definitions, parsing and the runtime binding table the terminal UI resolves keys through.
+//! Keybindings: the default binding table, config parsing and runtime lookup.
+//!
+//! Every action's default keys and scopes, the case-insensitive parser for user
+//! overrides, and the labels the help overlay and hint bars print.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -366,6 +370,14 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         // No default key: a tri-state a user changes when they move between
         // networks does not earn a chord, and the palette is where it lives.
         action: Action::SetTailscaleMode,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        // No default key, for the same reason as the Tailscale mode.
+        action: Action::SetCloudMode,
         default_keys: &[],
         scopes: &[],
         help: None,
@@ -3515,6 +3527,7 @@ mod tests {
             "resource-monitor",
             "resume-pull-request-autodetection",
             "session-settings",
+            "set-cloud-mode",
             "set-tailscale-mode",
             "show-agent",
             "show-release-notes",

@@ -16,6 +16,27 @@
 //!
 //! Unix-only, deliberately: yaran targets macOS and Linux, so there is no
 //! `cfg(windows)` branch here.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! file_modes.rs
+//! └── logger
+//! External: std, tempfile
+//!
+//! Used by:
+//! file_modes.rs
+//! ├── cloud::cloudflared::acquire
+//! ├── cloud::cloudflared::command
+//! ├── cloud::credentials
+//! ├── cloud::paths
+//! ├── config
+//! ├── config_write
+//! ├── crate
+//! ├── logger
+//! ├── private_file
+//! ├── purge
+//! └── storage
+//! <module-headers:end>
 
 use std::fs;
 use std::io;
@@ -29,6 +50,10 @@ pub const PRIVATE_FILE_MODE: u32 = 0o600;
 /// the load-bearing bit, since it is what another user needs to reach anything
 /// inside.
 pub const PRIVATE_DIR_MODE: u32 = 0o700;
+
+/// An executable yaran keeps for itself (the managed cloudflared): owner
+/// read/write/execute, `0700`.
+pub const PRIVATE_EXEC_MODE: u32 = 0o700;
 
 /// The group and other bits, the ones yaran always clears from its own files.
 const GROUP_AND_OTHER: u32 = 0o077;

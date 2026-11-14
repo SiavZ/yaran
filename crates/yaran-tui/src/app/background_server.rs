@@ -8,6 +8,36 @@
 //!
 //! The `start-web-server` flip is a different thing: it swaps the terminal UI
 //! out for the server. These commands keep both up at once.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/background_server.rs
+//! ├── app
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── crate
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::leg_identity
+//! ├── yaran-core::cloud::view
+//! ├── yaran-core::config
+//! ├── yaran-core::engine
+//! ├── yaran-core::engine::status_op
+//! ├── yaran-core::model
+//! ├── yaran-core::pty_owners
+//! ├── yaran-core::statusline
+//! ├── yaran-core::tailscale
+//! └── yaran-core::worker
+//! External: chrono, std
+//!
+//! Used by:
+//! app/background_server.rs
+//! ├── app
+//! ├── app::presize
+//! ├── app::pty_ownership
+//! ├── app::redraw
+//! ├── app::render
+//! └── app::workers
+//! <module-headers:end>
 
 use yaran_core::engine::EventReaction;
 
@@ -884,6 +914,8 @@ pub(crate) mod tests {
         pub(crate) published: Vec<PtyOwnershipEvent>,
         /// Every live Tailscale mode the seam was asked for, in order.
         pub(crate) tailscale_modes: Vec<yaran_core::config::TailscaleMode>,
+        pub(crate) cloud_modes: Vec<yaran_core::cloud::leg_identity::CloudMode>,
+        pub(crate) cloud_view: yaran_core::cloud::view::CloudLegView,
         /// How many browser tabs the serve says are connected, standing in for the
         /// connection registry's own count.
         pub(crate) connections: usize,
@@ -1035,6 +1067,25 @@ pub(crate) mod tests {
             mode: yaran_core::config::TailscaleMode,
         ) {
             self.recorded.lock().unwrap().tailscale_modes.push(mode);
+        }
+
+        fn set_cloud_mode(
+            &mut self,
+            _engine: &Engine,
+            mode: yaran_core::cloud::leg_identity::CloudMode,
+        ) {
+            self.recorded.lock().unwrap().cloud_modes.push(mode);
+        }
+
+        fn cloud_settings_changed(
+            &mut self,
+            _settings: yaran_core::cloud::leg_identity::CloudLegSettings,
+        ) {
+        }
+
+        fn cloud_view(&self) -> Option<yaran_core::cloud::view::CloudLegView> {
+            self.serving
+                .then(|| self.recorded.lock().unwrap().cloud_view.clone())
         }
 
         fn stop(&mut self, _engine: &mut Engine) {

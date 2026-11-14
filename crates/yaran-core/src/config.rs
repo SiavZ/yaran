@@ -34,6 +34,7 @@
 //! ├── auto_resume
 //! ├── background_serve
 //! ├── cloud::cli
+//! ├── cloud::leg_identity
 //! ├── cloud::paths
 //! ├── config_migrate
 //! ├── config_queue
@@ -105,6 +106,7 @@
 //! ├── yaran-web::bootstrap
 //! ├── yaran-web::browse_routes
 //! ├── yaran-web::changes
+//! ├── yaran-web::cloud_loop
 //! ├── yaran-web::config_routes
 //! ├── yaran-web::engine_actor
 //! ├── yaran-web::file_drop_routes

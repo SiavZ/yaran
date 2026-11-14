@@ -11,37 +11,59 @@
 //   directory picker this dialog does not have.
 // - A user preference is a row here, never an app-menu item; the menu carries
 //   actions and dialogs.
+//
+// <module-headers:begin>
+// Uses:
+// src/lib/settingsDescriptors.ts
+// ├── src/lib/bootstrapApi.ts
+// ├── src/lib/settingsDescriptorsCloud.ts
+// └── src/lib/terminalFont.ts
+// External: none
+//
+// Used by:
+// src/lib/settingsDescriptors.ts
+// ├── src/components/CustomizeWebappDialog.test.tsx
+// ├── src/components/CustomizeWebappDialog.tsx
+// ├── src/lib/configApi.ts
+// ├── src/lib/settingsDescriptors.test.ts
+// ├── src/lib/settingsDescriptorsCloud.test.ts
+// └── src/lib/settingsDescriptorsCloud.ts
+// <module-headers:end>
 
-import type { Bootstrap } from "./bootstrapApi"
-import {
-  MAX_TERMINAL_FONT_SIZE,
-  MIN_TERMINAL_FONT_SIZE,
-} from "./terminalFont"
+import type { Bootstrap } from "./bootstrapApi";
+import { CLOUD_MODE_SETTING } from "./settingsDescriptorsCloud";
+import { MAX_TERMINAL_FONT_SIZE, MIN_TERMINAL_FONT_SIZE } from "./terminalFont";
 
-export type SettingSurface = "web" | "both" | "tui"
+export type SettingSurface = "web" | "both" | "tui";
 
 export type SettingControl =
   | { kind: "bool" }
-  | { kind: "number"; min: number; max: number; zeroMeaning?: string; unit?: string }
+  | {
+      kind: "number";
+      min: number;
+      max: number;
+      zeroMeaning?: string;
+      unit?: string;
+    }
   | { kind: "enum"; options: { value: string; label: string }[] }
   /** Like "enum", but the options resolve at render time from a live `Bootstrap`
    * field, so the client cannot offer a provider the server has not configured. */
   | { kind: "enum-dynamic"; source: "available_providers" }
   | { kind: "favicon" }
-  | { kind: "text"; maxLen: number }
+  | { kind: "text"; maxLen: number };
 
-export type SettingValue = boolean | number | string
+export type SettingValue = boolean | number | string;
 
 export interface SettingDescriptor {
   /** Dotted config key, e.g. "ui.status_clear_seconds" or "server.title". */
-  key: string
+  key: string;
   /** Short human label shown as the row's primary text. */
-  label: string
+  label: string;
   /** One or two sentences of prose, shown muted under the label. */
-  description: string
-  surface: SettingSurface
-  control: SettingControl
-  default: SettingValue
+  description: string;
+  surface: SettingSurface;
+  control: SettingControl;
+  default: SettingValue;
   /** Which write path Save uses for this row. Three targets are bespoke because
    * their fields are not plain config writes:
    * - `"changesPane"`: the store keeps an optimistic override for it (the
@@ -53,41 +75,49 @@ export interface SettingDescriptor {
    *   changed; writing unconditionally inverts the setting.
    * - `"tailscale"`: the endpoint also moves the running listener, which only
    *   the serve loop can do. It carries an explicit value, so skipping an
-   *   unchanged row is an optimization here rather than correctness. */
-  writeTarget: "settings" | "identity" | "changesPane" | "github" | "tailscale"
+   *   unchanged row is an optimization here rather than correctness.
+   * - `"cloudMode"`: the same shape for `[cloud] mode`, whose second half starts or
+   *   stops the Cloudflare tunnel (`settingsDescriptorsCloud.ts`). */
+  writeTarget:
+    | "settings"
+    | "identity"
+    | "changesPane"
+    | "github"
+    | "tailscale"
+    | "cloudMode";
   /** True when the config field is the negative of what this row shows, so that
    * every row can be phrased positively. `read` returns the value as shown and
    * `buildWrites` flips it back once, immediately before the wire, so the
    * unchanged-row skip compares shown value to shown value. Bool rows only. */
-  inverted?: boolean
+  inverted?: boolean;
   /** Why this run of the server cannot honour the value until it restarts, or
    * `null` when it can. A locked row renders disabled and shows this sentence
    * instead of `description`. */
-  lockedBy?: (b: Bootstrap) => string | null
+  lockedBy?: (b: Bootstrap) => string | null;
   /** Reads the current value out of the live Bootstrap document, falling back
    * to `default` when an older server omits the field. For the `"changesPane"`
    * row this is not the effective value the dialog shows; the override-aware
    * `changesPaneVisible()` in `store.ts` is. */
-  read: (b: Bootstrap) => SettingValue
+  read: (b: Bootstrap) => SettingValue;
 }
 
 export interface SettingGroup {
-  surface: SettingSurface
+  surface: SettingSurface;
   /** Shown once above the group's rows, so the surface caveat is stated per
    * group rather than repeated on every row. */
-  caption: string
-  settings: SettingDescriptor[]
+  caption: string;
+  settings: SettingDescriptor[];
 }
 
 // Mirror the server-side clamp ceilings in `crates/yaran-core/src/config.rs`;
 // they bound the number inputs for UX only and the server re-clamps.
-const MAX_STATUS_CLEAR_SECONDS = 3_600
-const MAX_ATTENTION_GRACE_SECONDS = 300
+const MAX_STATUS_CLEAR_SECONDS = 3_600;
+const MAX_ATTENTION_GRACE_SECONDS = 300;
 // The floor is deliberately not the input's `min`: 0 switches the behaviour
 // off, and the server raises anything between 1 and the floor.
-const MAX_UPLOAD_PASTED_TEXT_CHARS = 100_000
-const MIN_UPLOAD_PASTED_TEXT_CHARS = 200
-const DEFAULT_UPLOAD_PASTED_TEXT_CHARS = 4_000
+const MAX_UPLOAD_PASTED_TEXT_CHARS = 100_000;
+const MIN_UPLOAD_PASTED_TEXT_CHARS = 200;
+const DEFAULT_UPLOAD_PASTED_TEXT_CHARS = 4_000;
 
 export const SETTING_GROUPS: SettingGroup[] = [
   {
@@ -98,7 +128,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
         key: "server.title",
         label: "Instance name",
         description:
-          "The display name for this yaran instance. Shown as the browser tab title and the sidebar wordmark. Set a distinct value per instance (e.g. \"yaran #1\" or \"yaran (prod)\") to tell several yaran tabs apart at a glance.",
+          'The display name for this yaran instance. Shown as the browser tab title and the sidebar wordmark. Set a distinct value per instance (e.g. "yaran #1" or "yaran (prod)") to tell several yaran tabs apart at a glance.',
         surface: "web",
         control: { kind: "text", maxLen: 200 },
         default: "yaran",
@@ -142,7 +172,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
         key: "ui.terminal_font_family",
         label: "Terminal font",
         description:
-          "Name a font installed on THIS device (e.g. \"Fira Code\" or \"Cascadia Code\") to use in the web terminal. It is placed ahead of yaran's bundled terminal font, so the bundled font still fills in any glyph (box drawing, blocks, braille, arrows) your chosen font lacks. Leave blank to use only the bundled font.",
+          'Name a font installed on THIS device (e.g. "Fira Code" or "Cascadia Code") to use in the web terminal. It is placed ahead of yaran\'s bundled terminal font, so the bundled font still fills in any glyph (box drawing, blocks, braille, arrows) your chosen font lacks. Leave blank to use only the bundled font.',
         surface: "web",
         control: { kind: "text", maxLen: 200 },
         default: "",
@@ -209,8 +239,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
       {
         key: "ui.upload_pasted_text_chars",
         label: "Save long pastes as a file",
-        description:
-          `Paste more than this many characters into an agent and yaran saves the text as a .txt file in the upload folder and pastes that file's path instead, into the message box on a phone or straight at the prompt otherwise. An agent's context window is finite, but it can read a document when it needs to, so a path costs it almost nothing while a wall of text costs the window either way. Press Ctrl+Shift+v (Cmd+Shift+v on a Mac) to paste text as text just this once. Never applies to a terminal, where a long paste is usually a command. Anything between 1 and ${MIN_UPLOAD_PASTED_TEXT_CHARS} is raised to ${MIN_UPLOAD_PASTED_TEXT_CHARS}; use 0 to switch it off.`,
+        description: `Paste more than this many characters into an agent and yaran saves the text as a .txt file in the upload folder and pastes that file's path instead, into the message box on a phone or straight at the prompt otherwise. An agent's context window is finite, but it can read a document when it needs to, so a path costs it almost nothing while a wall of text costs the window either way. Press Ctrl+Shift+v (Cmd+Shift+v on a Mac) to paste text as text just this once. Never applies to a terminal, where a long paste is usually a command. Anything between 1 and ${MIN_UPLOAD_PASTED_TEXT_CHARS} is raised to ${MIN_UPLOAD_PASTED_TEXT_CHARS}; use 0 to switch it off.`,
         surface: "web",
         control: {
           kind: "number",
@@ -293,7 +322,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
         key: "ui.attention_on_bell",
         label: "Attention on terminal bell",
         description:
-          "Also treats a plain terminal bell as an attention request. Has no effect when \"Show attention indicator\" is off.",
+          'Also treats a plain terminal bell as an attention request. Has no effect when "Show attention indicator" is off.',
         surface: "both",
         control: { kind: "bool" },
         default: true,
@@ -342,7 +371,8 @@ export const SETTING_GROUPS: SettingGroup[] = [
       {
         key: "capabilities.hyperlinks",
         label: "Clickable hyperlinks",
-        description: "Renders OSC 8 hyperlinks an agent prints as clickable (http/https only).",
+        description:
+          "Renders OSC 8 hyperlinks an agent prints as clickable (http/https only).",
         surface: "both",
         control: { kind: "bool" },
         default: true,
@@ -366,7 +396,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
         key: "server.tailscale",
         label: "Bind your Tailscale address",
         description:
-          "Whether yaran also serves on this machine's Tailscale address. \"Auto\" binds it whenever the interface appears and drops it when it goes, so a laptop that roams keeps working. \"Yes\" looks once and keeps whatever it finds. \"No\" never binds it. Changing this applies to the listener that is serving right now, so choosing \"No\" from a browser on your tailnet will close this tab's connection; reopen yaran on its other address.",
+          'Whether yaran also serves on this machine\'s Tailscale address. "Auto" binds it whenever the interface appears and drops it when it goes, so a laptop that roams keeps working. "Yes" looks once and keeps whatever it finds. "No" never binds it. Changing this applies to the listener that is serving right now, so choosing "No" from a browser on your tailnet will close this tab\'s connection; reopen yaran on its other address.',
         surface: "both",
         control: {
           kind: "enum",
@@ -388,6 +418,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
             : null,
         read: (b) => b.tailscale_mode ?? "auto",
       },
+      CLOUD_MODE_SETTING,
       {
         key: "defaults.enable_randomized_pet_name_by_default",
         label: "Random pet-name default for new agents",
@@ -404,7 +435,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
         key: "ui.disable_automated_welcome_screen",
         label: "Show the welcome screen on a new install",
         description:
-          "Shows a one-time welcome screen the first time yaran runs, explaining projects, agents, and worktrees. Turning this off skips it automatically; the app menu's \"Welcome screen…\" still opens it any time.",
+          'Shows a one-time welcome screen the first time yaran runs, explaining projects, agents, and worktrees. Turning this off skips it automatically; the app menu\'s "Welcome screen…" still opens it any time.',
         surface: "both",
         control: { kind: "bool" },
         // Shown as "show it" while the config field says "disable it".
@@ -457,9 +488,9 @@ export const SETTING_GROUPS: SettingGroup[] = [
       },
     ],
   },
-]
+];
 
 /** Flatten every group's descriptors into a single list, in group order. */
 export function allSettingDescriptors(): SettingDescriptor[] {
-  return SETTING_GROUPS.flatMap((g) => g.settings)
+  return SETTING_GROUPS.flatMap((g) => g.settings);
 }

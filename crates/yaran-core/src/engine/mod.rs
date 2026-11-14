@@ -3,9 +3,136 @@
 //! the same engine, so neither owns a rule the other has to re-derive: the TUI
 //! embeds it and calls it directly, and the web server reaches it through its
 //! engine actor.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! engine/mod.rs
+//! ├── agent_job
+//! ├── agent_tabs
+//! ├── attention
+//! ├── auto_resume
+//! ├── changes_status
+//! ├── config
+//! ├── config_queue
+//! ├── config_write
+//! ├── engine::amq
+//! ├── engine::backup
+//! ├── engine::cloud_mode
+//! ├── engine::command
+//! ├── engine::companion
+//! ├── engine::config_saver
+//! ├── engine::events
+//! ├── engine::followup
+//! ├── engine::in_flight
+//! ├── engine::lifecycle
+//! ├── engine::limits
+//! ├── engine::pr_sync_control
+//! ├── engine::provider_sessions
+//! ├── engine::resume_fallback
+//! ├── engine::shared_workspace
+//! ├── engine::spawn_worker
+//! ├── engine::status_op
+//! ├── engine::test_support
+//! ├── engine::watch_tick
+//! ├── engine::worktree_link
+//! ├── flat_list
+//! ├── gh
+//! ├── git
+//! ├── ids
+//! ├── lockfile
+//! ├── logger
+//! ├── model
+//! ├── poller_status
+//! ├── project_browser
+//! ├── prose
+//! ├── pty
+//! ├── resource_stats
+//! ├── resume_recovery
+//! ├── status_text
+//! ├── statusline
+//! ├── storage
+//! ├── tab_verdict
+//! ├── term_identity
+//! ├── test_scratch
+//! ├── watch::runtime
+//! ├── wire
+//! ├── worker
+//! ├── working_copy
+//! └── worktree_manager
+//! External: anyhow, chrono, home, notify, std, tempfile, toml, uuid
+//!
+//! Used by:
+//! engine/mod.rs
+//! ├── background_serve
+//! ├── changes_status
+//! ├── cloud::leg_outcome
+//! ├── cloud::outcome
+//! ├── config_reload_status
+//! ├── crate
+//! ├── engine::amq
+//! ├── engine::backup
+//! ├── engine::cloud_mode
+//! ├── engine::command
+//! ├── engine::companion
+//! ├── engine::events
+//! ├── engine::followup
+//! ├── engine::lifecycle
+//! ├── engine::limits
+//! ├── engine::provider_sessions
+//! ├── engine::resume_fallback
+//! ├── engine::shared_workspace
+//! ├── engine::spawn_worker
+//! ├── engine::status_op
+//! ├── engine::test_support
+//! ├── engine::watch_tick
+//! ├── engine::worktree_link
+//! ├── poller_status
+//! ├── project_browser
+//! ├── prose
+//! ├── tab_verdict
+//! ├── viewmodel
+//! ├── wire
+//! ├── worker
+//! ├── yaran-tui
+//! ├── yaran-tui::app
+//! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::cloud_commands
+//! ├── yaran-tui::app::cloud_mode
+//! ├── yaran-tui::app::first_load
+//! ├── yaran-tui::app::input
+//! ├── yaran-tui::app::new_agent_settings
+//! ├── yaran-tui::app::pty_ownership
+//! ├── yaran-tui::app::render
+//! ├── yaran-tui::app::reorder
+//! ├── yaran-tui::app::session_settings
+//! ├── yaran-tui::app::sessions
+//! ├── yaran-tui::app::test_support
+//! ├── yaran-tui::app::workers
+//! ├── yaran-tui::app::worktree_manager
+//! ├── yaran-tui::clipboard
+//! ├── yaran-tui::config_saver
+//! ├── yaran-web
+//! ├── yaran-web::background
+//! ├── yaran-web::bootstrap
+//! ├── yaran-web::cloud_loop
+//! ├── yaran-web::cloud_mode
+//! ├── yaran-web::cloud_routes
+//! ├── yaran-web::cloud_routes::actions_routes
+//! ├── yaran-web::engine_actor
+//! ├── yaran-web::project_actions
+//! ├── yaran-web::serve_legs
+//! ├── yaran-web::session_actions
+//! ├── yaran-web::test_support
+//! ├── yaran-web[test background_serve_claims]
+//! ├── yaran-web[test serve_with_engine]
+//! ├── yaran-web[test ws_transport]
+//! ├── yaran[bin yaran]
+//! └── yaran[bin yaran]::companion
+//! <module-headers:end>
 
 pub mod amq;
 pub mod backup;
+mod cloud_mode;
 pub mod command;
 mod companion;
 pub mod config_saver;

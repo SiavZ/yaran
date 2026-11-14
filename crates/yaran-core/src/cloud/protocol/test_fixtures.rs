@@ -14,6 +14,7 @@
 //!
 //! Used by:
 //! cloud/protocol/test_fixtures.rs
+//! ├── cloud::leg::tests
 //! ├── cloud::machine_api_error
 //! ├── cloud::protocol
 //! ├── cloud::protocol::concat_kdf

@@ -22,6 +22,21 @@
 //! concurrent drainer takes a [`WebFollowupOps`] snapshot before lending the
 //! reaction out; the live-map form ([`Engine::followup_owner`]) stays correct
 //! for `yaran server` and the flip, which ask before they drive.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! engine/followup.rs
+//! ├── engine
+//! ├── engine::status_op
+//! ├── engine::test_support
+//! ├── test_scratch
+//! └── worker
+//! External: std
+//!
+//! Used by:
+//! engine/followup.rs
+//! └── engine
+//! <module-headers:end>
 
 use std::collections::HashSet;
 
@@ -212,6 +227,7 @@ pub fn owner_of_reaction(ops: &impl WebFollowupOpsView, reaction: &EventReaction
             // op waiting on it; the browsers on that serve learn about the mode
             // from the `config.changed` refetch the write already fired.
             | EventReaction::TailscaleModeApplied { .. }
+            | EventReaction::CloudModeApplied { .. }
             // GitHub availability flipping. The web half is a peek in
             // `fanout_reaction` that only nudges browsers to refetch the
             // bootstrap document carrying `gh_available`; the terminal UI reads

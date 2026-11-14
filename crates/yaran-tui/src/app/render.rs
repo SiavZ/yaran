@@ -1,4 +1,8 @@
 //! Rendering for the terminal UI: every pane, header and overlay, plus shared render helpers.
+//! Terminal UI rendering: every `App` render method and its UI helpers.
+//!
+//! Draws the header, panes, modals and status line from the theme engine's tokens, and
+//! publishes the mouse layout the input handlers read.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -51,6 +55,7 @@
 //! Used by:
 //! app/render.rs
 //! ├── app
+//! ├── app::cloud_mode
 //! ├── app::cloud_render
 //! ├── app::first_load
 //! ├── app::human_board_dialog
@@ -1769,6 +1774,7 @@ impl App {
         // rather than ellipsizing, and a running network listener is not visible
         // anywhere else, while its siblings are recoverable from the panes.
         self.push_live_header_chip(&mut spans, self.serving_chip());
+        self.push_cloud_crumb(&mut spans);
         // Shared main-workspace mode (fork d0ce0afc): a persistent warning while
         // more than one agent writes in one checkout. Derived from live state
         // every frame, so it cannot be overwritten by an unrelated status, and
@@ -12516,6 +12522,7 @@ impl App {
                 self.render_change_project_default_provider_prompt(frame)
             }
             PromptState::SetTailscaleMode(_) => self.render_set_tailscale_mode_prompt(frame),
+            PromptState::SetCloudMode(_) => self.render_set_cloud_mode_prompt(frame),
             PromptState::WatchRules(_) => self.render_watch_rules_prompt(frame),
             PromptState::ChangeTheme(_) => self.render_change_theme_prompt(frame),
             PromptState::StartupCommandLogs(_) => self.render_startup_command_logs_prompt(frame),
@@ -14554,7 +14561,7 @@ impl App {
 /// The leading marker column every provider row carries: the marker itself on
 /// the row that is already in effect, and blanks of the SAME WIDTH on the rest
 /// so the provider names still line up.
-fn active_provider_marker_span(is_active: bool, theme: &Theme) -> Span<'static> {
+pub(crate) fn active_provider_marker_span(is_active: bool, theme: &Theme) -> Span<'static> {
     let marker = if is_active {
         format!(" {ACTIVE_PROVIDER_MARKER} ")
     } else {
@@ -26125,7 +26132,8 @@ mod tests {
                 OverlayMouseLayout::ChangeAgentProvider { list, .. }
                 | OverlayMouseLayout::ChangeDefaultProvider { list, .. }
                 | OverlayMouseLayout::ChangeProjectDefaultProvider { list, .. }
-                | OverlayMouseLayout::SetTailscaleMode { list, .. } => list,
+                | OverlayMouseLayout::SetTailscaleMode { list, .. }
+                | OverlayMouseLayout::SetCloudMode { list, .. } => list,
                 ref other => panic!("{name}: expected a provider picker layout, got {other:?}"),
             };
             let active = row_text(&buf, list, 0);

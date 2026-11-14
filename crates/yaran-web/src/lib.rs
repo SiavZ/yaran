@@ -26,6 +26,9 @@
 //! ├── build_routes
 //! ├── changes
 //! ├── changes_routes
+//! ├── cloud_loop
+//! ├── cloud_mode
+//! ├── cloud_mode_routes
 //! ├── cloud_routes
 //! ├── compressible_exts
 //! ├── config_routes
@@ -54,6 +57,7 @@
 //! ├── web_assets
 //! ├── workspace_routes
 //! ├── yaran-core::activity
+//! ├── yaran-core::cloud::cloudflared::child_registry
 //! ├── yaran-core::config
 //! ├── yaran-core::config_write
 //! ├── yaran-core::engine
@@ -80,6 +84,9 @@ pub mod browse_routes;
 pub mod build_routes;
 pub mod changes;
 pub mod changes_routes;
+pub(crate) mod cloud_loop;
+pub mod cloud_mode;
+pub mod cloud_mode_routes;
 pub mod cloud_routes;
 pub mod compressible_exts;
 pub mod config_routes;
@@ -472,10 +479,11 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
     // this path and the two in-app ones derive their router from the same
     // `router_params` recipe and a new limit cannot reach two of the three.
     let router_config = engine.config.clone();
+    let cloud_config = engine.config.clone();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(async move {
+    let result = runtime.block_on(async move {
         // Bind every address first, honoring the required/best-effort tags. A
         // failed REQUIRED bind aborts here (with the address logged + in the
         // error); a failed BEST-EFFORT (Tailscale) bind is dropped with a warning
@@ -550,6 +558,15 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             Arc::new(AtomicBool::new(tailscale.wants_tailscale())),
         );
         handle.set_tailscale_mode_control(mode_control.clone());
+        let (cloud_control, cloud_loop) = crate::cloud_loop::build(
+            tokio::runtime::Handle::current(),
+            &paths.root,
+            &router_config,
+            Some(primary.port()),
+            Some(handle.clone()),
+            console.clone(),
+        );
+        handle.set_cloud_mode_control(cloud_control.clone());
         let shutdown = ServeShutdown::new(mode_control.watched());
         // Collect the IPs the server actually bound to (for the host allowlist).
         // Uses the bound addresses captured above, BEFORE the listeners move into
@@ -579,7 +596,8 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             // the guard actually reads, and it starts from the effective mode.
             .with_tailscale_host_literals(tailscale.wants_tailscale())
             .with_live_tailscale_host_literals(mode_control.host_literals())
-            .with_tailscale_mode_control(mode_control.clone(), forced_no),
+            .with_tailscale_mode_control(mode_control.clone(), forced_no)
+            .with_cloud_mode_control(cloud_control),
         );
 
         // Translate a SIGINT/SIGTERM into a watch trip so every listener winds
@@ -640,6 +658,7 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             console.clone(),
             leg_status,
             tailscale_loop,
+            Some(cloud_loop),
         )
         .await;
         // SIGTERM the agents (they save state for a later resume), mark their
@@ -650,7 +669,10 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             Some(e) => Err(e),
             None => Ok::<(), anyhow::Error>(()),
         }
-    })
+    });
+    // The cloud loop SIGTERMed its cloudflared; wait for the reap, then SIGKILL.
+    crate::cloud_loop::wait_for_children(&cloud_config);
+    result
 }
 
 /// What the status-screen tick asks `serve_with_engine` to do after the current
@@ -949,6 +971,7 @@ async fn run_serve_loop(
     console: Console,
     status: LegStatus,
     mut ts: TailscaleLoop,
+    mut cloud: Option<crate::cloud_loop::CloudLoop>,
 ) {
     let mut parent = shutdown.subscribe();
     // The address whose bind failed on the previous attempt, so a permanently
@@ -1027,6 +1050,15 @@ async fn run_serve_loop(
                 // this arm re-arming on a deadline already past.
                 status.flush_due(due);
             }
+            // The cloud leg's one input arm (mode requests, leg events, credentials
+            // and `[cloud]` key changes). The loop owns a sender, so it never closes.
+            Some(input) = async {
+                cloud.as_mut().expect("guarded by the arm's condition").recv().await
+            }, if cloud.is_some() => {
+                if let Some(cloud) = cloud.as_mut() {
+                    cloud.apply(input);
+                }
+            }
             command = commands.recv() => {
                 apply_current_generation_command(
                     command,
@@ -1049,6 +1081,9 @@ async fn run_serve_loop(
         let _ = pending.reply.send(TailscaleModeOutcome::NotServing);
     }
     ts.shutdown();
+    if let Some(cloud) = cloud.as_mut() {
+        cloud.shutdown();
+    }
     // The lane is tripped and `trigger` has fanned out to every leg, so each task
     // is winding down. Reap them; the CALLER bounds how long it waits for this.
     while tasks.join_next().await.is_some() {}
@@ -1513,6 +1548,10 @@ pub(crate) struct ServeCore {
     /// to a surface that changes the mode from outside the router (the terminal
     /// UI's companion in background mode).
     tailscale_mode: TailscaleModeControl,
+    /// The live `[cloud] mode` lane this serve built, for the terminal UI's companion.
+    cloud_mode: crate::cloud_mode::CloudModeControl,
+    /// How long `finish` waits for cloudflared to be reaped before SIGKILL.
+    cloud_config: yaran_core::config::Config,
     /// Taken by [`Self::wind_down`], which joins it. `None` afterwards.
     supervisor: Option<tokio::task::JoinHandle<()>>,
     /// Which branch of [`SignalPolicy`] this serve actually took. Recorded so
@@ -1533,10 +1572,12 @@ impl ServeCore {
     /// `handle` is consumed: the router keeps its own clones, so holding one here
     /// would keep the request channel alive past the point where the serve is
     /// meant to be over.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         handle: engine_actor::EngineHandle,
         listeners: Vec<std::net::TcpListener>,
         config: &yaran_core::config::Config,
+        cloud_root: &std::path::Path,
         console: Console,
         access_log: bool,
         signals: SignalPolicy,
@@ -1613,6 +1654,18 @@ impl ServeCore {
             Arc::new(AtomicBool::new(tailscale.wants_tailscale())),
         );
         handle.set_tailscale_mode_control(mode_control.clone());
+        let (cloud_control, cloud_loop) = {
+            let _guard = runtime.enter();
+            crate::cloud_loop::build(
+                runtime.handle().clone(),
+                cloud_root,
+                config,
+                primary.map(|p| p.port()),
+                Some(handle.clone()),
+                console.clone(),
+            )
+        };
+        handle.set_cloud_mode_control(cloud_control.clone());
 
         // The shared shutdown primitive: the SAME [`ServeShutdown`] the CLI serve
         // path uses. Its watch is the graceful-shutdown lane every serve task and
@@ -1630,7 +1683,8 @@ impl ServeCore {
                 axum::Router::new(),
                 router_params(config, console.clone(), access_log, bound_ips, hooks)
                     .with_live_tailscale_host_literals(mode_control.host_literals())
-                    .with_tailscale_mode_control(mode_control.clone(), false),
+                    .with_tailscale_mode_control(mode_control.clone(), false)
+                    .with_cloud_mode_control(cloud_control.clone()),
             )
         };
 
@@ -1706,6 +1760,7 @@ impl ServeCore {
                 console,
                 leg_status,
                 tailscale_loop,
+                Some(cloud_loop),
             ))
         };
         // The router holds its own cloned handle(s); drop ours so only the serve
@@ -1728,6 +1783,8 @@ impl ServeCore {
             runtime,
             shutdown,
             tailscale_mode: mode_control,
+            cloud_mode: cloud_control,
+            cloud_config: config.clone(),
             supervisor: Some(supervisor),
             installed_signal_handlers,
         })
@@ -1764,6 +1821,11 @@ impl ServeCore {
     /// mode from outside the router.
     pub(crate) fn tailscale_mode(&self) -> TailscaleModeControl {
         self.tailscale_mode.clone()
+    }
+
+    /// This serve's live `[cloud] mode` lane.
+    pub(crate) fn cloud_mode(&self) -> &crate::cloud_mode::CloudModeControl {
+        &self.cloud_mode
     }
 
     /// Stop the listeners and reap the supervisor, bounded, WITHOUT tearing the
@@ -1805,6 +1867,9 @@ impl ServeCore {
     /// next serve's registries genuinely fresh.
     pub(crate) fn finish(self) -> Option<anyhow::Error> {
         self.runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+        // Covers the flip and background mode (a reload exec included): no cloudflared
+        // outlives the serve that started it.
+        crate::cloud_loop::wait_for_children(&self.cloud_config);
         self.shutdown.take_error()
     }
 
@@ -1878,6 +1943,7 @@ pub fn serve_with_engine(
         handle,
         listeners,
         &engine.config,
+        &engine.paths.root,
         console,
         // The capture console keeps the access log OFF (it is never wanted in the
         // panel, and access() never reaches emit() to be captured anyway) while
@@ -2029,6 +2095,7 @@ async fn shutdown_signal() {
         let msg = "[server] second interrupt received during shutdown. Forcing immediate exit.";
         yaran_core::logger::error(msg);
         eprintln!("{msg}");
+        yaran_core::cloud::cloudflared::child_registry::kill_all_now();
         std::process::exit(130);
     });
 }
@@ -2501,6 +2568,7 @@ mod tests {
             console,
             crate::serve_legs::LegStatus::default(),
             tailscale_loop,
+            None,
         ));
 
         let cleared = tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -2985,6 +3053,7 @@ mod live_tailscale_mode_tests {
                 Console::noop(),
                 LegStatus::default(),
                 ts,
+                None,
             ));
             Self {
                 shutdown,

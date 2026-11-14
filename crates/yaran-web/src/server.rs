@@ -19,6 +19,8 @@
 //! ├── build_routes
 //! ├── changes
 //! ├── changes_routes
+//! ├── cloud_mode
+//! ├── cloud_mode_routes
 //! ├── cloud_routes
 //! ├── config_routes
 //! ├── console
@@ -65,6 +67,7 @@
 //! ├── browse_routes
 //! ├── build_routes
 //! ├── changes_routes
+//! ├── cloud_mode_routes
 //! ├── cloud_routes
 //! ├── config_routes
 //! ├── crate
@@ -233,6 +236,9 @@ pub struct AppState {
     /// bootstrap document so the Preferences row can say the flag outranks the
     /// saved value for as long as this run lasts.
     pub tailscale_forced_no: bool,
+    /// This serve's live `[cloud] mode` lane (view snapshot, ingress reader for
+    /// Phase 11), or `None` when nothing serves behind this router.
+    pub cloud: Option<crate::cloud_mode::CloudModeControl>,
     /// Overrides how long a create handler waits for its resource to surface
     /// before answering `202 Accepted`. `None` in every real serve, which uses
     /// [`crate::rest_common::CREATE_AWAIT_TIMEOUT`] and
@@ -426,6 +432,8 @@ pub struct RouterParams {
     pub tailscale_mode_control: Option<crate::serve_legs::TailscaleModeControl>,
     /// Whether this run was started with `--no-tailscale`.
     pub tailscale_forced_no: bool,
+    /// The handle the cloud-mode route and bootstrap read; `None` with no serve loop.
+    pub cloud_mode_control: Option<crate::cloud_mode::CloudModeControl>,
     /// How long a create handler waits for its resource before answering `202`.
     /// `None` uses the real windows; overridden only by tests (see
     /// [`RouterParams::with_create_await_timeout`]).
@@ -485,6 +493,7 @@ impl RouterParams {
             live_tailscale_host_literals: None,
             tailscale_mode_control: None,
             tailscale_forced_no: false,
+            cloud_mode_control: None,
             create_await_timeout: None,
             release_notes_api_base: yaran_core::urls::GITHUB_API_BASE.to_string(),
             ownership_publisher: None,
@@ -662,6 +671,12 @@ impl RouterParams {
         self
     }
 
+    /// Give the routes this serve's live `[cloud] mode` lane.
+    pub fn with_cloud_mode_control(mut self, control: crate::cloud_mode::CloudModeControl) -> Self {
+        self.cloud_mode_control = Some(control);
+        self
+    }
+
     /// Let the Host guard read rule 5 from the serve's live Tailscale-mode cell,
     /// so a mode change applied while yaran serves moves the guard with it.
     pub fn with_live_tailscale_host_literals(
@@ -759,6 +774,10 @@ pub fn build_app(
     // channel read by the socket; this signal is what an older page refetches on.
     // Same lifetime/teardown story as the config forwarder above.
     spawn_spine_changed_forwarder(engine.subscribe_spine_changes(), Arc::clone(&event_bus));
+    crate::cloud_mode_routes::spawn_cloud_changed_forwarder(
+        params.cloud_mode_control.as_ref(),
+        Arc::clone(&event_bus),
+    );
     // Run the first-load gate ONCE for this launch, off every request path. The
     // resolver parks the screen (if any) in this state and emits `config.changed`
     // so already-connected clients refetch bootstrap and find it; clients that
@@ -857,6 +876,7 @@ pub fn build_app(
         first_load,
         tailscale_mode: params.tailscale_mode_control.clone(),
         tailscale_forced_no: params.tailscale_forced_no,
+        cloud: params.cloud_mode_control.clone(),
     };
 
     // Every route is served plainly (trusted-local: no login gate). `extra_gated`
@@ -885,6 +905,7 @@ pub fn build_app(
         .merge(crate::changes_routes::routes())
         .merge(crate::resource_routes::routes())
         .merge(crate::bootstrap_routes::routes())
+        .merge(crate::cloud_mode_routes::routes())
         .merge(crate::build_routes::routes())
         .merge(crate::workspace_routes::routes())
         .merge(crate::session_actions::routes())
@@ -3093,7 +3114,7 @@ fn subscribed_resource_frame(
         ("session.changes", Some(session_id)) => {
             subscribed.contains(&event_bus::changes_topic(session_id))
         }
-        ("config.changed", _) => subscribed.contains("config"),
+        ("config.changed" | "cloud.changed", _) => subscribed.contains("config"),
         ("projects.changed", _) => subscribed.contains("projects"),
         ("sessions.changed" | "pty.owner", _) => subscribed.contains("sessions"),
         _ => false,

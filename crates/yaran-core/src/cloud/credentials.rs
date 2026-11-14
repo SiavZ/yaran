@@ -39,6 +39,7 @@
 //! ├── cloud::cli::pair_phone
 //! ├── cloud::cli::tests
 //! ├── cloud::credentials::tests
+//! ├── cloud::leg_identity
 //! ├── cloud::login
 //! ├── cloud::machine_api
 //! ├── cloud::machine_api_error

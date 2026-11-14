@@ -1,4 +1,8 @@
 //! The terminal UI's `App`: its data model, types, bootstrap, run loop and state helpers.
+//! The terminal UI's `App`: its state, types, bootstrap and run loop.
+//!
+//! Each concern (input, rendering, sessions, workers, modals) lives in a sibling
+//! submodule as its own `impl App` block; this file holds the data model they share.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -6,7 +10,9 @@
 //! ├── app::background_server
 //! ├── app::changes_job
 //! ├── app::cloud_commands
+//! ├── app::cloud_crumb
 //! ├── app::cloud_input
+//! ├── app::cloud_mode
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
 //! ├── app::components
@@ -47,6 +53,8 @@
 //! ├── yaran-core::agent_tabs
 //! ├── yaran-core::background_serve
 //! ├── yaran-core::browser
+//! ├── yaran-core::cloud::leg_identity
+//! ├── yaran-core::cloud::leg_outcome
 //! ├── yaran-core::config
 //! ├── yaran-core::config_queue
 //! ├── yaran-core::config_sync
@@ -87,7 +95,9 @@
 //! ├── app::background_server
 //! ├── app::changes_job
 //! ├── app::cloud_commands
+//! ├── app::cloud_crumb
 //! ├── app::cloud_input
+//! ├── app::cloud_mode
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
 //! ├── app::first_load
@@ -830,6 +840,10 @@ pub struct App {
     /// request, and a superseded one resolves as such, so at most one is open.
     pub(crate) pending_tailscale_mode_op:
         Option<yaran_core::engine::HandlerStatusOp<yaran_core::config::TailscaleModeOutcome>>,
+    /// The keyed status op for a live `[cloud] mode` change in background mode.
+    pub(crate) pending_cloud_mode_op: Option<
+        yaran_core::engine::HandlerStatusOp<yaran_core::cloud::leg_outcome::CloudModeOutcome>,
+    >,
     /// In-flight project-persistence status ops whose final is decided in the
     /// completion handler. Each non-`Add` persistence dispatch mints a
     /// [`yaran_core::engine::HandlerStatusOp`] (its own opaque id), shows its
@@ -2433,6 +2447,7 @@ pub(crate) enum PromptState {
     ChangeDefaultProvider(ChangeDefaultProviderPrompt),
     ChangeProjectDefaultProvider(ChangeProjectDefaultProviderPrompt),
     SetTailscaleMode(SetTailscaleModePrompt),
+    SetCloudMode(SetCloudModePrompt),
     /// The human board's Assign picker.
     AssignBoardCard(AssignBoardCardPrompt),
     WatchRules(WatchRulesPrompt),
@@ -3468,6 +3483,11 @@ pub(crate) enum OverlayMouseLayout {
         cancel: Option<Rect>,
         confirm: Option<Rect>,
     },
+    SetCloudMode {
+        list: Rect,
+        items: usize,
+        offset: usize,
+    },
     AssignBoardCard {
         list: Rect,
         items: usize,
@@ -4149,11 +4169,14 @@ pub(crate) fn build_grouped_left_items(
 mod background_server;
 mod changes_job;
 mod cloud_commands;
+mod cloud_crumb;
 mod cloud_input;
+mod cloud_mode;
 mod cloud_render;
 #[cfg(test)]
 mod cloud_tests;
 pub(crate) use background_server::{BackgroundServerStart, CompanionRouting};
+pub(crate) use cloud_mode::SetCloudModePrompt;
 // `pub(crate)` for its width helpers alone: the diff wrapper has to measure a
 // CJK glyph exactly as the pane's own wrapper does, and two functions that
 // disagree about that produce rows too wide for the box they were measured for.
@@ -4577,6 +4600,7 @@ impl App {
             companion_followup_ran: false,
             pending_background_server_start: None,
             pending_tailscale_mode_op: None,
+            pending_cloud_mode_op: None,
             server_flip_preflight_pending: false,
             pending_persist_ops: HashMap::new(),
             configure_save_op: None,
@@ -5828,6 +5852,10 @@ impl App {
                 self.stop_background_server();
                 Ok(())
             }
+            "set-cloud-mode" => {
+                self.open_set_cloud_mode_prompt();
+                Ok(())
+            }
             "set-tailscale-mode" => {
                 self.open_set_tailscale_mode_prompt();
                 Ok(())
@@ -6197,6 +6225,8 @@ impl App {
         // Captured BEFORE the swap, because the comparison is against what the
         // running serve was told, not against what the file now says.
         let tailscale_before = self.engine.config.server.tailscale_mode();
+        let cloud_before =
+            yaran_core::cloud::leg_identity::settings_from_config(&self.engine.config);
         self.engine.config = config;
         self.engine.retune_after_config_swap();
         self.sync_view_state_from_config();
@@ -6249,6 +6279,9 @@ impl App {
             let mode = self.engine.config.server.tailscale_mode();
             self.ask_companion_for_tailscale_mode(mode);
         }
+        let cloud_after =
+            yaran_core::cloud::leg_identity::settings_from_config(&self.engine.config);
+        self.apply_cloud_reload(serving_before, &cloud_before, &cloud_after);
         // A config file can hand Tab to the agent while every `focus_next` and
         // `focus_prev` key is one the typeable pane types, and nobody toggled
         // anything, so the load is the only place that can say the pane has no
