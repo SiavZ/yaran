@@ -19,6 +19,7 @@ pub mod bounded_command;
 pub mod brand_env;
 pub mod browser;
 pub mod changes_status;
+pub mod cloud;
 pub mod config;
 pub mod config_migrate;
 pub mod config_queue;
