@@ -19,6 +19,21 @@
 //! parameterized row, menu or dialog actions rather than global menu entries.
 //! The exhaustiveness test in `keybindings.rs` guarantees every command in this
 //! table is listed by the TUI palette exactly once.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! palette.rs
+//! ├── action
+//! └── palette::search
+//! External: std
+//!
+//! Used by:
+//! palette.rs
+//! ├── crate
+//! ├── palette::search
+//! ├── yaran-tui::app
+//! └── yaran-tui::keybindings
+//! <module-headers:end>
 
 pub mod search;
 
@@ -604,6 +619,36 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         description: "Show or hide the human board in place of the staged list and commit box",
         // TUI-only for now: the board pane exists only in the terminal UI. The
         // web has no counterpart yet, so there is no app-menu entry to add.
+    },
+    // ── Yaran Cloud ───────────────────────────────────────────────
+    // Global and parameter-free, so the web gets a counterpart: the app menu's
+    // one "Yaran Cloud…" dialog covers login, rotate, logout and status, and
+    // leaves the QR to the phone dialog (Phase 13) rather than duplicating it. Always listed:
+    // the worker answers "not paired" instead of the palette guessing.
+    PaletteCommand {
+        action: Action::CloudLogin,
+        name: "cloud-login",
+        description: "Pair this machine with a Yaran Cloud organization",
+    },
+    PaletteCommand {
+        action: Action::CloudLogout,
+        name: "cloud-logout",
+        description: "Unpair this machine from Yaran Cloud and delete its credentials",
+    },
+    PaletteCommand {
+        action: Action::CloudRotateToken,
+        name: "cloud-rotate-token",
+        description: "Rotate this machine's Yaran Cloud tunnel token",
+    },
+    PaletteCommand {
+        action: Action::CloudStatus,
+        name: "cloud-status",
+        description: "Show this machine's Yaran Cloud pairing and tunnel",
+    },
+    PaletteCommand {
+        action: Action::CloudPairPhone,
+        name: "cloud-pair-phone",
+        description: "Show the QR code that adds your organization to the Yaran app",
     },
     PaletteCommand {
         action: Action::ToggleRandomizedPetNameDefault,

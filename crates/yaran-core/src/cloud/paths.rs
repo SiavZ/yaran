@@ -6,6 +6,30 @@
 //! - `ensure_dir` creates `cloud/` owner-only (`0700`) through `file_modes`.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/paths.rs
+//! ├── config
+//! └── file_modes
+//! External: std, tempfile
+//!
+//! Used by:
+//! cloud/paths.rs
+//! ├── cloud
+//! ├── cloud::actions
+//! ├── cloud::cli
+//! ├── cloud::credentials
+//! ├── cloud::leg_state
+//! ├── cloud::login
+//! ├── cloud::login_session
+//! ├── cloud::machine_api
+//! ├── cloud::status
+//! ├── cloud::test_support
+//! ├── yaran-core[test cloud_login]
+//! ├── yaran-core[test cloud_machine_api]
+//! ├── yaran-tui::app::cloud_commands
+//! ├── yaran-web::cloud_routes
+//! ├── yaran-web::cloud_routes::actions_routes
+//! └── yaran-web::cloud_routes::tests
 //! <module-headers:end>
 
 use std::io;

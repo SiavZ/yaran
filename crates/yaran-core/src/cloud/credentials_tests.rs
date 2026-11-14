@@ -1,6 +1,15 @@
 //! Tests for the credentials store (round trip, modes, refusals, D24 consent key).
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/credentials_tests.rs
+//! ├── cloud::credentials
+//! └── cloud::test_support
+//! External: serde_json, std, tempfile
+//!
+//! Used by:
+//! cloud/credentials_tests.rs
+//! └── cloud::credentials
 //! <module-headers:end>
 
 use super::*;

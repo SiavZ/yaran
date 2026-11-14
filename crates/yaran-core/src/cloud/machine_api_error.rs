@@ -10,6 +10,20 @@
 //!   characters here, before anything logs or shows it (T53).
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/machine_api_error.rs
+//! ├── cloud::credentials
+//! ├── cloud::protocol::errors
+//! ├── cloud::protocol::test_fixtures
+//! └── sanitize
+//! External: chrono, serde_json, std
+//!
+//! Used by:
+//! cloud/machine_api_error.rs
+//! ├── cloud
+//! ├── cloud::login
+//! ├── cloud::machine_api
+//! └── cloud::outcome
 //! <module-headers:end>
 
 use std::fmt;

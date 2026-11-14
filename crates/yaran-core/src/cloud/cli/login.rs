@@ -8,6 +8,17 @@
 //! - Blocking; the CLI's own thread.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/cli/login.rs
+//! ├── cloud::cli
+//! ├── cloud::leg_state
+//! ├── cloud::login
+//! └── cloud::outcome
+//! External: std
+//!
+//! Used by:
+//! cloud/cli/login.rs
+//! └── cloud::cli
 //! <module-headers:end>
 
 use std::io::{BufRead, Write};

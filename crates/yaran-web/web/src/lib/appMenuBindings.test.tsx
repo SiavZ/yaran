@@ -4,6 +4,15 @@
 // window-level handler called preventDefault on the chord, so a stray
 // reintroduction would silently steal Ctrl+K from the browser (and from a
 // terminal-focused agent) again.
+//
+// <module-headers:begin>
+// Uses:
+// src/lib/appMenuBindings.test.tsx
+// └── src/components/AppMenu.tsx
+// External: @testing-library/react, vitest
+//
+// Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
+// <module-headers:end>
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render } from "@testing-library/react"
 
@@ -13,6 +22,7 @@ vi.mock("@/lib/store", () => ({
   openMacrosDialog: vi.fn(),
   openGlobalEnv: vi.fn(),
   openTaskManager: vi.fn(),
+  openCloudDialog: vi.fn(),
   sortAgents: vi.fn(),
   openAddProject: vi.fn(),
   openAddProjectForInit: vi.fn(),

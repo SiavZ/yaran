@@ -1,4 +1,16 @@
 // @vitest-environment jsdom
+//
+// Tests for the desktop app menu flyout.
+//
+// <module-headers:begin>
+// Uses:
+// src/components/AppMenu.test.tsx
+// ├── src/components/AppMenu.tsx
+// └── src/lib/appMenu.ts
+// External: @testing-library/react, vitest
+//
+// Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
+// <module-headers:end>
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
@@ -15,6 +27,7 @@ vi.mock("@/lib/store", () => ({
   openMacrosDialog: vi.fn(),
   openGlobalEnv: vi.fn(),
   openTaskManager: vi.fn(),
+  openCloudDialog: vi.fn(),
   openWelcomeScreen: vi.fn(),
   openReleaseNotes: vi.fn(),
   sortAgents: vi.fn(),

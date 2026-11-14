@@ -1,3 +1,12 @@
+//! yaran-core build script: stamps the display version, the git commit and the publisher domain into the crate.
+//!
+//! <module-headers:begin>
+//! Uses: none
+//! External: std
+//!
+//! Used by: entry point (cargo build script of yaran-core)
+//! <module-headers:end>
+
 use std::env;
 use std::process::Command;
 

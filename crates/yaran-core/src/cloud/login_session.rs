@@ -11,6 +11,21 @@
 //! - Dropping the handle does not cancel; call `cancel`.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/login_session.rs
+//! ├── cloud::login
+//! ├── cloud::machine_api
+//! ├── cloud::outcome
+//! ├── cloud::paths
+//! └── cloud::test_support
+//! External: serde_json, std, tempfile
+//!
+//! Used by:
+//! cloud/login_session.rs
+//! ├── cloud
+//! ├── yaran-tui::app::cloud_commands
+//! ├── yaran-tui::app::cloud_tests
+//! └── yaran-web::cloud_routes
 //! <module-headers:end>
 
 use std::sync::atomic::{AtomicBool, Ordering};

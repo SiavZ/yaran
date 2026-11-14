@@ -17,6 +17,14 @@
 //!
 //! Used by:
 //! cloud/protocol/rules.rs
+//! ├── cloud::config
+//! ├── cloud::credentials
+//! ├── cloud::identity
+//! ├── cloud::login
+//! ├── cloud::loopback
+//! ├── cloud::machine_api
+//! ├── cloud::org_url
+//! ├── cloud::pkce
 //! ├── cloud::protocol
 //! ├── cloud::protocol::errors
 //! ├── cloud::protocol::handoff
@@ -27,7 +35,9 @@
 //! ├── cloud::protocol::pairing
 //! ├── cloud::protocol::signing
 //! ├── cloud::protocol::test_fixtures
-//! └── cloud::protocol::uri
+//! ├── cloud::protocol::uri
+//! ├── cloud::test_support
+//! └── yaran-core[test cloud_login]
 //! <module-headers:end>
 
 use std::fmt;

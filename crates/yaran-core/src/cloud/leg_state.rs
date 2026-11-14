@@ -8,6 +8,17 @@
 //! - Holds no secret.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/leg_state.rs
+//! ├── cloud::paths
+//! └── private_file
+//! External: anyhow, rustix, serde, serde_json, std, tempfile
+//!
+//! Used by:
+//! cloud/leg_state.rs
+//! ├── cloud
+//! ├── cloud::cli::login
+//! └── cloud::status
 //! <module-headers:end>
 
 use std::fs;

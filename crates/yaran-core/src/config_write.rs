@@ -9,6 +9,33 @@
 //! Both the TUI and the web surface share this patch path so a save from either
 //! preserves the same on-disk shape. The TUI keeps its own pretty
 //! first-creation renderer; the web uses [`save_config`] for a plain fallback.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! config_write.rs
+//! ├── cloud::config_patch
+//! ├── config
+//! ├── file_modes
+//! └── logger
+//! External: anyhow, std, tempfile, toml, toml_edit
+//!
+//! Used by:
+//! config_write.rs
+//! ├── cloud::config_patch
+//! ├── config
+//! ├── config_migrate
+//! ├── config_queue
+//! ├── crate
+//! ├── engine
+//! ├── engine::command
+//! ├── engine::config_saver
+//! ├── yaran-core[test upgrade_config]
+//! ├── yaran-tui::cli
+//! ├── yaran-tui::config
+//! ├── yaran-web
+//! ├── yaran-web::bootstrap
+//! └── yaran-web::engine_actor
+//! <module-headers:end>
 
 use std::collections::BTreeMap;
 use std::fs;

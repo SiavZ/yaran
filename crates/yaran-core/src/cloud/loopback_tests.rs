@@ -1,6 +1,14 @@
 //! Tests for the loopback listener and the pasted-URL parser.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/loopback_tests.rs
+//! └── cloud::loopback
+//! External: std
+//!
+//! Used by:
+//! cloud/loopback_tests.rs
+//! └── cloud::loopback
 //! <module-headers:end>
 
 use super::*;

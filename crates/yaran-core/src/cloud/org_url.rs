@@ -7,6 +7,18 @@
 //! - Pure; the error is a sentence a surface can show as is.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/org_url.rs
+//! ├── cloud::protocol::rules
+//! └── sanitize
+//! External: url
+//!
+//! Used by:
+//! cloud/org_url.rs
+//! ├── cloud
+//! ├── cloud::cli::pair_phone
+//! ├── cloud::login
+//! └── yaran-tui::app::cloud_commands
 //! <module-headers:end>
 
 use crate::cloud::protocol::rules::is_org_url;

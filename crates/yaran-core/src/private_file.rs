@@ -11,6 +11,18 @@
 //! - Blocking I/O: call from a worker or CLI thread, never the UI thread.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! private_file.rs
+//! ├── file_modes
+//! └── io_retry
+//! External: anyhow, rustix, std, tempfile
+//!
+//! Used by:
+//! private_file.rs
+//! ├── cloud::credentials
+//! ├── cloud::leg_state
+//! ├── crate
+//! └── human_board::store
 //! <module-headers:end>
 
 use std::fs::{self, File, OpenOptions};

@@ -10,6 +10,18 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/qr.rs
+//! ├── cloud::protocol::test_fixtures
+//! └── cloud::protocol::uri
+//! External: qrcode, ring
+//!
+//! Used by:
+//! cloud/qr.rs
+//! ├── cloud
+//! ├── cloud::cli::pair_phone
+//! ├── yaran-tui::app::cloud_commands
+//! └── yaran-tui::app::cloud_tests
 //! <module-headers:end>
 
 use qrcode::render::{svg, unicode};

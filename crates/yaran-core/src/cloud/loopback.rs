@@ -12,6 +12,18 @@
 //! - Binds loopback only; never a wildcard address.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/loopback.rs
+//! ├── cloud::loopback::tests
+//! ├── cloud::pkce
+//! └── cloud::protocol::rules
+//! External: std, url
+//!
+//! Used by:
+//! cloud/loopback.rs
+//! ├── cloud
+//! ├── cloud::login
+//! └── cloud::loopback::tests
 //! <module-headers:end>
 
 use std::io::{self, Read, Write};

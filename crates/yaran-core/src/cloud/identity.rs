@@ -9,6 +9,18 @@
 //! - The private key never leaves the `Ed25519KeyPair` and is never logged.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/identity.rs
+//! ├── cloud::protocol::fingerprint
+//! └── cloud::protocol::rules
+//! External: ring, std, sysinfo
+//!
+//! Used by:
+//! cloud/identity.rs
+//! ├── cloud
+//! ├── cloud::login
+//! ├── cloud::machine_api
+//! └── yaran-core[test cloud_machine_api]
 //! <module-headers:end>
 
 use ring::rand::SystemRandom;

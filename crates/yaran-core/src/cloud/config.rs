@@ -11,6 +11,19 @@
 //!   `publisher.json` (`YARAN_PUBLISHER_DOMAIN`, set by `build.rs`).
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/config.rs
+//! └── cloud::protocol::rules
+//! External: serde, toml
+//!
+//! Used by:
+//! cloud/config.rs
+//! ├── cloud
+//! ├── cloud::cli
+//! ├── cloud::config_patch
+//! ├── cloud::status
+//! ├── config
+//! └── yaran-web::cloud_routes
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};

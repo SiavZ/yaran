@@ -14,6 +14,22 @@
 //! atomic rename. A folder change rewrites only the notes of the cards it
 //! changed, so two machines editing different cards never touch the same
 //! file.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! human_board/store.rs
+//! ├── human_board
+//! ├── human_board::id
+//! ├── human_board::markdown
+//! └── private_file
+//! External: anyhow, chrono, serde_json, std, tempfile
+//!
+//! Used by:
+//! human_board/store.rs
+//! ├── human_board
+//! ├── human_board::seen
+//! └── human_board::sync
+//! <module-headers:end>
 
 use std::fs::{self, File};
 use std::io;

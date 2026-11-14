@@ -7,6 +7,16 @@
 //! - Pure document edit; no I/O.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/config_patch.rs
+//! ├── cloud::config
+//! └── config_write
+//! External: toml, toml_edit
+//!
+//! Used by:
+//! cloud/config_patch.rs
+//! ├── cloud
+//! └── config_write
 //! <module-headers:end>
 
 use toml_edit::DocumentMut;

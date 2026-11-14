@@ -1,3 +1,39 @@
+//! The canonical, fully commented `config.toml` renderer and the TUI's config load/save orchestration.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! config.rs
+//! ├── config::config_schema_cloud
+//! ├── crate
+//! ├── keybindings
+//! ├── yaran-core::config
+//! ├── yaran-core::config_migrate
+//! ├── yaran-core::config_write
+//! ├── yaran-core::logger
+//! └── yaran-core::watch
+//! External: anyhow, crokey, crossterm, indexmap, std, tempfile, toml, toml_edit
+//!
+//! Used by:
+//! config.rs
+//! ├── app
+//! ├── app::grouped_sidebar_tests
+//! ├── app::human_board::tests
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::overlay_dismiss
+//! ├── app::render
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── app::workers
+//! ├── cli
+//! ├── config::config_schema_cloud
+//! ├── config_saver
+//! ├── crate
+//! ├── keybindings
+//! └── theme
+//! <module-headers:end>
+
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs;

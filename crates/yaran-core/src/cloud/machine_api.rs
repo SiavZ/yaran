@@ -15,6 +15,39 @@
 //!   bodies.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/machine_api.rs
+//! ├── cloud::credentials
+//! ├── cloud::identity
+//! ├── cloud::machine_api::tests
+//! ├── cloud::machine_api_error
+//! ├── cloud::paths
+//! ├── cloud::protocol
+//! ├── cloud::protocol::machine
+//! ├── cloud::protocol::meta
+//! ├── cloud::protocol::rules
+//! ├── cloud::protocol::signing
+//! ├── cloud::revocation
+//! └── cloud::signed_request
+//! External: serde, serde_json, std, tracing, ureq, url
+//!
+//! Used by:
+//! cloud/machine_api.rs
+//! ├── cloud
+//! ├── cloud::actions
+//! ├── cloud::cli
+//! ├── cloud::cli::tests
+//! ├── cloud::login
+//! ├── cloud::login_session
+//! ├── cloud::machine_api::tests
+//! ├── cloud::status
+//! ├── yaran-core[test cloud_login]
+//! ├── yaran-core[test cloud_machine_api]
+//! ├── yaran-tui::app::cloud_commands
+//! ├── yaran-tui::app::cloud_tests
+//! ├── yaran-web::cloud_routes
+//! ├── yaran-web::cloud_routes::actions_routes
+//! └── yaran-web::cloud_routes::tests
 //! <module-headers:end>
 
 use std::time::Duration;

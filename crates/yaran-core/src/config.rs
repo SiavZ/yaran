@@ -4,6 +4,142 @@
 //! `expand_path`, `resolve_project_env`, …). The keybinding-aware *renderer* of
 //! the documented config, plus `ensure_config`/`save_config` orchestration and
 //! the toml_edit patching, live in the binary's `config` module, not here.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! config.rs
+//! ├── amq::config
+//! ├── brand_env
+//! ├── cloud::config
+//! ├── config_migrate
+//! ├── config_write
+//! ├── crate
+//! ├── editor
+//! ├── file_drop
+//! ├── file_modes
+//! ├── human_board
+//! ├── lockfile
+//! ├── logger
+//! ├── model
+//! ├── status_text
+//! ├── theme
+//! └── watch
+//! External: anyhow, home, indexmap, libc, rustix, serde, std, tempfile, toml, toml_edit, uuid
+//!
+//! Used by:
+//! config.rs
+//! ├── agent_env
+//! ├── agent_job
+//! ├── amq::config
+//! ├── auto_resume
+//! ├── background_serve
+//! ├── cloud::cli
+//! ├── cloud::paths
+//! ├── config_migrate
+//! ├── config_queue
+//! ├── config_sync
+//! ├── config_write
+//! ├── crate
+//! ├── engine
+//! ├── engine::amq
+//! ├── engine::command
+//! ├── engine::companion
+//! ├── engine::config_saver
+//! ├── engine::events
+//! ├── engine::lifecycle
+//! ├── engine::limits
+//! ├── engine::provider_sessions
+//! ├── engine::resume_fallback
+//! ├── engine::shared_workspace
+//! ├── engine::test_support
+//! ├── engine::watch_tick
+//! ├── file_drop
+//! ├── git
+//! ├── human_board::cli
+//! ├── human_board::settings
+//! ├── logger
+//! ├── macros
+//! ├── orphan_worktrees
+//! ├── peer::amq
+//! ├── peer::router
+//! ├── peer::session_store
+//! ├── project_browser
+//! ├── provider
+//! ├── purge
+//! ├── purge_amq
+//! ├── resume_recovery
+//! ├── startup
+//! ├── storage
+//! ├── tailscale
+//! ├── test_provider
+//! ├── theme
+//! ├── viewmodel
+//! ├── watch::builtin
+//! ├── wire
+//! ├── worker
+//! ├── worktree_manager
+//! ├── yaran-core[test auto_resume]
+//! ├── yaran-core[test logger_jsonlines]
+//! ├── yaran-core[test purge_integration]
+//! ├── yaran-core[test upgrade_config]
+//! ├── yaran-core[test upgrade_database]
+//! ├── yaran-tui::app
+//! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::cloud_tests
+//! ├── yaran-tui::app::human_board
+//! ├── yaran-tui::app::input
+//! ├── yaran-tui::app::pty_ownership
+//! ├── yaran-tui::app::render
+//! ├── yaran-tui::app::sessions
+//! ├── yaran-tui::app::shared_workspace_tests
+//! ├── yaran-tui::app::test_support
+//! ├── yaran-tui::app::workers
+//! ├── yaran-tui::config
+//! ├── yaran-tui::config::config_schema_cloud
+//! ├── yaran-tui::config_saver
+//! ├── yaran-tui::doctor
+//! ├── yaran-tui::keybindings
+//! ├── yaran-tui::server_screen
+//! ├── yaran-web
+//! ├── yaran-web::background
+//! ├── yaran-web::bootstrap
+//! ├── yaran-web::browse_routes
+//! ├── yaran-web::changes
+//! ├── yaran-web::config_routes
+//! ├── yaran-web::engine_actor
+//! ├── yaran-web::file_drop_routes
+//! ├── yaran-web::file_routes
+//! ├── yaran-web::git_routes
+//! ├── yaran-web::project_actions
+//! ├── yaran-web::project_reads
+//! ├── yaran-web::serve_legs
+//! ├── yaran-web::server
+//! ├── yaran-web::session_actions
+//! ├── yaran-web::startup_logs
+//! ├── yaran-web::test_support
+//! ├── yaran-web[test add_project_base_branch]
+//! ├── yaran-web[test background_serve_claims]
+//! ├── yaran-web[test changes_events]
+//! ├── yaran-web[test file_move_and_info_routes]
+//! ├── yaran-web[test file_tree_routes]
+//! ├── yaran-web[test first_load_routes]
+//! ├── yaran-web[test live_server_limits]
+//! ├── yaran-web[test missing_working_copy]
+//! ├── yaran-web[test project_worktrees_routes]
+//! ├── yaran-web[test pull_request_resolution]
+//! ├── yaran-web[test serve_with_engine]
+//! ├── yaran-web[test session_branch_routes]
+//! ├── yaran-web[test static_serving]
+//! ├── yaran-web[test tab_routes]
+//! ├── yaran-web[test terminal_file_routes]
+//! ├── yaran-web[test workspace_push]
+//! ├── yaran-web[test ws_transport]
+//! ├── yaran[bin yaran]
+//! ├── yaran[bin yaran]::companion
+//! ├── yaran[test jcode_doubleclick_acceptance]
+//! ├── yaran[test jcode_mouse_acceptance]
+//! └── yaran[test overlay_config]
+//! <module-headers:end>
 
 use std::collections::BTreeMap;
 use std::env;

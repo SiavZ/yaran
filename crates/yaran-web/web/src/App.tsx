@@ -1,3 +1,77 @@
+/**
+ * The web UI's root component: the shell layout and every app-level dialog.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/App.tsx
+ * ├── src/components/AddProjectDialog.tsx
+ * ├── src/components/AgentEnvDialog.tsx
+ * ├── src/components/AgentInfoDialog.tsx
+ * ├── src/components/AgentStartupCommandDialog.tsx
+ * ├── src/components/AttachPullRequestDialog.tsx
+ * ├── src/components/ChangeProviderDialog.tsx
+ * ├── src/components/ChangedFiles.tsx
+ * ├── src/components/CheckoutDefaultBranchDialog.tsx
+ * ├── src/components/CommitDialog.tsx
+ * ├── src/components/ConfigEditorDialog.tsx
+ * ├── src/components/ConfirmCloseEditorTabDialog.tsx
+ * ├── src/components/ConfirmCloseTabDialog.tsx
+ * ├── src/components/ConfirmDeleteTerminalDialog.tsx
+ * ├── src/components/ConfirmDetachAgentDialog.tsx
+ * ├── src/components/ConfirmDiscardFileDialog.tsx
+ * ├── src/components/ConfirmForceReconnectDialog.tsx
+ * ├── src/components/ConfirmForceStopAgentDialog.tsx
+ * ├── src/components/ConfirmRecreateWorkingCopyDialog.tsx
+ * ├── src/components/ConfirmUseExistingBranchDialog.tsx
+ * ├── src/components/ConfirmVanishedEditorDialog.tsx
+ * ├── src/components/CreateAgentDialog.tsx
+ * ├── src/components/CustomizeWebappDialog.tsx
+ * ├── src/components/DeleteProjectDialog.tsx
+ * ├── src/components/DeleteSessionDialog.tsx
+ * ├── src/components/EditorOverlay.tsx
+ * ├── src/components/FirstLoadDialog.tsx
+ * ├── src/components/GlobalEnvDialog.tsx
+ * ├── src/components/InsetHeader.tsx
+ * ├── src/components/MacrosDialog.tsx
+ * ├── src/components/MobileShell.tsx
+ * ├── src/components/NewAgentPickerDialog.tsx
+ * ├── src/components/OfflineOverlay.tsx
+ * ├── src/components/ProjectInfoDialog.tsx
+ * ├── src/components/ProjectSettingsDialog.tsx
+ * ├── src/components/RemoveProjectDialog.tsx
+ * ├── src/components/RenameSessionDialog.tsx
+ * ├── src/components/Sidebar.tsx
+ * ├── src/components/StandaloneAgentDialog.tsx
+ * ├── src/components/StandaloneEditor.tsx
+ * ├── src/components/StartupLogsDialog.tsx
+ * ├── src/components/TaskManagerDialog.tsx
+ * ├── src/components/TerminalArea.tsx
+ * ├── src/components/TheaterChrome.tsx
+ * ├── src/components/WorktreesDialog.tsx
+ * ├── src/components/cloud/CloudDialog.tsx
+ * ├── src/components/terminalAreaModel.ts
+ * ├── src/components/ui/resizable.tsx
+ * ├── src/components/ui/sidebar.tsx
+ * ├── src/components/ui/sonner.tsx
+ * ├── src/hooks/use-changes-pane-controller.ts
+ * ├── src/hooks/use-mobile.ts
+ * ├── src/hooks/use-theater.ts
+ * ├── src/hooks/use-visual-viewport.ts
+ * ├── src/lib/paneCover.ts
+ * ├── src/lib/store.ts
+ * ├── src/lib/theater.ts
+ * └── src/lib/viewport.ts
+ * External: react
+ *
+ * Used by:
+ * src/App.tsx
+ * ├── src/App.test.tsx
+ * ├── src/TheaterDesktop.test.tsx
+ * ├── src/TheaterDesktopCover.test.tsx
+ * └── src/main.tsx
+ * <module-headers:end>
+ */
+
 import type * as React from "react"
 
 import { AddProjectDialog } from "@/components/AddProjectDialog"
@@ -23,6 +97,7 @@ import { ConfirmForceStopAgentDialog } from "@/components/ConfirmForceStopAgentD
 import { ConfirmRecreateWorkingCopyDialog } from "@/components/ConfirmRecreateWorkingCopyDialog"
 import { ConfirmUseExistingBranchDialog } from "@/components/ConfirmUseExistingBranchDialog"
 import { TaskManagerDialog } from "@/components/TaskManagerDialog"
+import { CloudDialog } from "@/components/cloud/CloudDialog"
 import { ConfirmDiscardFileDialog } from "@/components/ConfirmDiscardFileDialog"
 import { ConfirmCloseEditorTabDialog } from "@/components/ConfirmCloseEditorTabDialog"
 import { ConfirmVanishedEditorDialog } from "@/components/ConfirmVanishedEditorDialog"
@@ -99,6 +174,7 @@ function GlobalOverlays() {
       <ConfirmRecreateWorkingCopyDialog />
       <ConfirmUseExistingBranchDialog />
       <TaskManagerDialog />
+      <CloudDialog />
       <ConfigEditorDialog />
       <CustomizeWebappDialog />
       <FirstLoadDialog />

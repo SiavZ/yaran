@@ -6,6 +6,19 @@
 //! protocol mismatch, claim refusal, timeout, cancel, and the D24 consent key.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! tests/cloud_login.rs
+//! ├── yaran-core::cloud::credentials
+//! ├── yaran-core::cloud::login
+//! ├── yaran-core::cloud::machine_api
+//! ├── yaran-core::cloud::outcome
+//! ├── yaran-core::cloud::paths
+//! ├── yaran-core::cloud::pkce
+//! ├── yaran-core::cloud::protocol::rules
+//! └── yaran-core::cloud::test_support
+//! External: serde_json, std, tempfile, url
+//!
+//! Used by: entry point (cargo test -p yaran-core --test <name> (integration tests))
 //! <module-headers:end>
 
 use std::collections::HashMap;

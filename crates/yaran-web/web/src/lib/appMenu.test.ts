@@ -1,3 +1,17 @@
+/**
+ * Tests for the app menu definition (`lib/appMenu.ts`).
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/lib/appMenu.test.ts
+ * ├── src/lib/appMenu.ts
+ * └── src/lib/creationMenus.ts
+ * External: lucide-react, vitest
+ *
+ * Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
+ * <module-headers:end>
+ */
+
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const openCustomizeWebapp = vi.fn()
@@ -5,6 +19,7 @@ const openConfigEditor = vi.fn()
 const openMacrosDialog = vi.fn()
 const openGlobalEnv = vi.fn()
 const openTaskManager = vi.fn()
+const openCloudDialog = vi.fn()
 const sortAgents = vi.fn()
 const openWelcomeScreen = vi.fn()
 const openReleaseNotes = vi.fn()
@@ -22,6 +37,7 @@ vi.mock("@/lib/store", () => ({
   openMacrosDialog: () => openMacrosDialog(),
   openGlobalEnv: () => openGlobalEnv(),
   openTaskManager: () => openTaskManager(),
+  openCloudDialog: () => openCloudDialog(),
   sortAgents: (by: string) => sortAgents(by),
   openWelcomeScreen: () => openWelcomeScreen(),
   openReleaseNotes: () => openReleaseNotes(),
@@ -73,6 +89,7 @@ describe("appMenuModel", () => {
       // No top-level new-standalone-terminal: its one home is the New submenu
       // above (pinned as absent by the test below).
       ["item", "task-manager"],
+      ["item", "yaran-cloud"],
       ["separator", "sep-about"],
       ["item", "welcome-screen"],
       ["item", "release-notes"],
@@ -181,6 +198,7 @@ describe("appMenuModel", () => {
       "edit-macros",
       "global-env",
       "task-manager",
+      "yaran-cloud",
       // Every creation variant opens a dialog (picker or from-PR dialog).
       "new-agent-plain",
       "new-agent-from-pr",
@@ -201,6 +219,15 @@ describe("appMenuModel", () => {
     expect(titleOf("new-standalone-terminal")?.title).toBe(
       "New standalone terminal in your home folder",
     )
+  })
+
+  it("offers one Yaran Cloud… entry with an icon and a trailing ellipsis", () => {
+    const cloud = walk(appMenuModel(ctx)).filter((e) => e.id === "yaran-cloud")
+    expect(cloud).toHaveLength(1)
+    const [entry] = cloud
+    if (entry.kind !== "item") throw new Error("yaran-cloud is not an item")
+    expect(entry.title).toBe("Yaran Cloud…")
+    expect(entry.icon).toBeDefined()
   })
 
   it("gives every item and submenu a leading icon", () => {
@@ -280,6 +307,8 @@ describe("appMenuModel", () => {
     expect(openGlobalEnv).toHaveBeenCalledOnce()
     run("task-manager")
     expect(openTaskManager).toHaveBeenCalledOnce()
+    run("yaran-cloud")
+    expect(openCloudDialog).toHaveBeenCalledOnce()
     run("reload-config")
     expect(reload).toHaveBeenCalledOnce()
     run("welcome-screen")

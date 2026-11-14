@@ -1,4 +1,64 @@
 //! Yaran TUI library: the terminal user-interface surface over `yaran-core`.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! lib.rs
+//! ├── app
+//! ├── cli
+//! ├── clipboard
+//! ├── config
+//! ├── config_saver
+//! ├── diff
+//! ├── doctor
+//! ├── key_encode
+//! ├── keybindings
+//! ├── raw_input
+//! ├── server_screen
+//! ├── theme
+//! ├── tui_color
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::editor
+//! ├── yaran-core::engine
+//! ├── yaran-core::focus
+//! ├── yaran-core::git
+//! ├── yaran-core::io_retry
+//! ├── yaran-core::lockfile
+//! ├── yaran-core::logger
+//! ├── yaran-core::model
+//! ├── yaran-core::pty
+//! ├── yaran-core::reload_handoff
+//! ├── yaran-core::startup
+//! ├── yaran-core::statusline
+//! ├── yaran-core::storage
+//! └── yaran-core::term_identity
+//! External: anyhow, std
+//!
+//! Used by:
+//! lib.rs
+//! ├── app
+//! ├── app::background_server
+//! ├── app::hangup
+//! ├── app::human_board
+//! ├── app::human_board::tests
+//! ├── app::human_board_relay
+//! ├── app::input
+//! ├── app::input::host_selection_regression_tests
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::presize
+//! ├── app::pty_ownership
+//! ├── app::redraw
+//! ├── app::render
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── app::workers
+//! ├── cli
+//! ├── config
+//! ├── config_saver
+//! ├── diff
+//! ├── theme
+//! └── yaran[bin yaran]
+//! <module-headers:end>
 
 mod app;
 mod cli;

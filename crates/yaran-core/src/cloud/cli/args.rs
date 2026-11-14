@@ -7,6 +7,12 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! Uses: none
+//! External: none
+//!
+//! Used by:
+//! cloud/cli/args.rs
+//! └── cloud::cli
 //! <module-headers:end>
 
 /// Which verb a help request is about.

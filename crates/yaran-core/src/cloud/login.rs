@@ -11,6 +11,32 @@
 //! - The listener lives only for the duration of the call (RFC 8252 §8.3).
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/login.rs
+//! ├── cloud::credentials
+//! ├── cloud::identity
+//! ├── cloud::loopback
+//! ├── cloud::machine_api
+//! ├── cloud::machine_api_error
+//! ├── cloud::org_url
+//! ├── cloud::outcome
+//! ├── cloud::paths
+//! ├── cloud::pkce
+//! ├── cloud::protocol
+//! ├── cloud::protocol::machine
+//! ├── cloud::protocol::meta
+//! ├── cloud::protocol::pairing
+//! └── cloud::protocol::rules
+//! External: chrono, std, url
+//!
+//! Used by:
+//! cloud/login.rs
+//! ├── cloud
+//! ├── cloud::cli::login
+//! ├── cloud::login_session
+//! ├── yaran-core[test cloud_login]
+//! ├── yaran-tui::app::cloud_commands
+//! └── yaran-web::cloud_routes
 //! <module-headers:end>
 
 use std::sync::mpsc::{Receiver, TryRecvError};

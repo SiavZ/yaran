@@ -8,6 +8,21 @@
 //!   worker or CLI threads only.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/actions.rs
+//! ├── cloud::credentials
+//! ├── cloud::machine_api
+//! ├── cloud::outcome
+//! ├── cloud::paths
+//! └── cloud::protocol::machine
+//! External: none
+//!
+//! Used by:
+//! cloud/actions.rs
+//! ├── cloud
+//! ├── cloud::cli::manage
+//! ├── yaran-tui::app::cloud_commands
+//! └── yaran-web::cloud_routes::actions_routes
 //! <module-headers:end>
 
 use crate::cloud::credentials::{self, CredentialsError};

@@ -9,6 +9,18 @@
 //! - Destructive verbs confirm on a terminal and require `--yes` elsewhere.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/cli/manage.rs
+//! ├── cloud::actions
+//! ├── cloud::cli
+//! ├── cloud::credentials
+//! ├── cloud::outcome
+//! └── cloud::status
+//! External: std
+//!
+//! Used by:
+//! cloud/cli/manage.rs
+//! └── cloud::cli
 //! <module-headers:end>
 
 use std::io::{BufRead, Write};

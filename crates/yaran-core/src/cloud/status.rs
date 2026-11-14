@@ -9,6 +9,24 @@
 //!   threads only.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/status.rs
+//! ├── cloud::config
+//! ├── cloud::credentials
+//! ├── cloud::leg_state
+//! ├── cloud::machine_api
+//! ├── cloud::paths
+//! └── cloud::test_support
+//! External: serde, serde_json, tempfile
+//!
+//! Used by:
+//! cloud/status.rs
+//! ├── cloud
+//! ├── cloud::cli::manage
+//! ├── yaran-tui::app::cloud_commands
+//! ├── yaran-tui::app::cloud_render
+//! ├── yaran-tui::app::cloud_tests
+//! └── yaran-web::cloud_routes
 //! <module-headers:end>
 
 use serde::Serialize;

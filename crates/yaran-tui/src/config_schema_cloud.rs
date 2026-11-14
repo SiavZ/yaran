@@ -8,6 +8,15 @@
 //! - Pure data.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! config_schema_cloud.rs
+//! ├── config
+//! └── yaran-core::config
+//! External: toml
+//!
+//! Used by:
+//! config_schema_cloud.rs
+//! └── config
 //! <module-headers:end>
 
 use super::{CommentSource, ConfigEntry, FieldValue};

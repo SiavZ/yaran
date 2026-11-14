@@ -8,8 +8,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-core/src/action.rs": {
-    "lines": 835,
-    "reason": "baseline 2026-11-14"
+    "lines": 874,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-core/src/agent_job.rs": {
     "lines": 3520,
@@ -28,8 +28,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-core/src/config.rs": {
-    "lines": 6520,
-    "reason": "baseline 2026-11-14"
+    "lines": 6664,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-core/src/config_migrate.rs": {
     "lines": 526,
@@ -40,8 +40,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-core/src/config_write.rs": {
-    "lines": 3841,
-    "reason": "baseline 2026-11-14"
+    "lines": 3874,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-core/src/diff.rs": {
     "lines": 892,
@@ -148,8 +148,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-core/src/palette.rs": {
-    "lines": 789,
-    "reason": "baseline 2026-11-14"
+    "lines": 834,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-core/src/peer/amq.rs": {
     "lines": 839,
@@ -260,8 +260,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-core/tests/upgrade_config.rs": {
-    "lines": 550,
-    "reason": "baseline 2026-11-14"
+    "lines": 561,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-core/tests/upgrade_database.rs": {
     "lines": 1242,
@@ -304,16 +304,16 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/app/input.rs": {
-    "lines": 39165,
-    "reason": "baseline 2026-11-14"
+    "lines": 39239,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/app/mod.rs": {
-    "lines": 10472,
-    "reason": "baseline 2026-11-14"
+    "lines": 10616,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/app/modal.rs": {
-    "lines": 1919,
-    "reason": "baseline 2026-11-14"
+    "lines": 1971,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/app/name_chip_dialogs.rs": {
     "lines": 1296,
@@ -328,8 +328,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/app/overlay_dismiss.rs": {
-    "lines": 1793,
-    "reason": "baseline 2026-11-14"
+    "lines": 1825,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/app/pty_ownership.rs": {
     "lines": 3575,
@@ -340,8 +340,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/app/render.rs": {
-    "lines": 27841,
-    "reason": "baseline 2026-11-14"
+    "lines": 27906,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/app/reorder.rs": {
     "lines": 519,
@@ -352,32 +352,32 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/app/sessions.rs": {
-    "lines": 9354,
-    "reason": "baseline 2026-11-14"
+    "lines": 9407,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/app/test_support.rs": {
-    "lines": 705,
-    "reason": "baseline 2026-11-14"
+    "lines": 756,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/app/text_input.rs": {
     "lines": 1918,
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/app/workers.rs": {
-    "lines": 3800,
-    "reason": "baseline 2026-11-14"
+    "lines": 3839,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/app/worktree_manager.rs": {
     "lines": 560,
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/cli.rs": {
-    "lines": 3029,
-    "reason": "baseline 2026-11-14"
+    "lines": 3063,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/config.rs": {
-    "lines": 5824,
-    "reason": "baseline 2026-11-14"
+    "lines": 5865,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/diff.rs": {
     "lines": 1726,
@@ -388,8 +388,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/keybindings.rs": {
-    "lines": 4160,
-    "reason": "baseline 2026-11-14"
+    "lines": 4228,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-tui/src/raw_input.rs": {
     "lines": 1231,
@@ -400,8 +400,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/theme.rs": {
-    "lines": 1834,
-    "reason": "baseline 2026-11-14"
+    "lines": 1882,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-web/build.rs": {
     "lines": 543,
@@ -428,8 +428,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/src/engine_actor.rs": {
-    "lines": 7547,
-    "reason": "baseline 2026-11-14"
+    "lines": 7639,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-web/src/file_drop_routes.rs": {
     "lines": 1804,
@@ -448,8 +448,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/src/lib.rs": {
-    "lines": 3532,
-    "reason": "baseline 2026-11-14"
+    "lines": 3590,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-web/src/project_actions.rs": {
     "lines": 1006,
@@ -468,8 +468,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/src/server.rs": {
-    "lines": 6604,
-    "reason": "baseline 2026-11-14"
+    "lines": 6693,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-web/src/session_actions.rs": {
     "lines": 1726,
@@ -696,8 +696,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/web/src/lib/store.ts": {
-    "lines": 6335,
-    "reason": "baseline 2026-11-14"
+    "lines": 6597,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "crates/yaran-web/web/src/lib/storePrReference.test.ts": {
     "lines": 571,
@@ -728,8 +728,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran/src/main.rs": {
-    "lines": 564,
-    "reason": "baseline 2026-11-14"
+    "lines": 601,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook)"
   },
   "tools/preview-env/screens/lib.js": {
     "lines": 963,

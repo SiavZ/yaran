@@ -21,6 +21,33 @@
 //! - Blocking I/O: worker or CLI threads only.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/credentials.rs
+//! ├── cloud::credentials::tests
+//! ├── cloud::paths
+//! ├── cloud::protocol::machine
+//! ├── cloud::protocol::rules
+//! ├── file_modes
+//! └── private_file
+//! External: chrono, ring, serde, serde_json, std, tracing
+//!
+//! Used by:
+//! cloud/credentials.rs
+//! ├── cloud
+//! ├── cloud::actions
+//! ├── cloud::cli::manage
+//! ├── cloud::cli::pair_phone
+//! ├── cloud::cli::tests
+//! ├── cloud::credentials::tests
+//! ├── cloud::login
+//! ├── cloud::machine_api
+//! ├── cloud::machine_api_error
+//! ├── cloud::status
+//! ├── cloud::test_support
+//! ├── yaran-core[test cloud_login]
+//! ├── yaran-core[test cloud_machine_api]
+//! ├── yaran-tui::app::cloud_commands
+//! └── yaran-web::cloud_routes::tests
 //! <module-headers:end>
 
 use std::fmt;

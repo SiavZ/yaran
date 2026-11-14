@@ -8,6 +8,13 @@
 //!   and a dropped receiver is pruned).
 //!
 //! <module-headers:begin>
+//! Uses: none
+//! External: std
+//!
+//! Used by:
+//! cloud/revocation.rs
+//! ├── cloud
+//! └── cloud::machine_api
 //! <module-headers:end>
 
 use std::sync::atomic::{AtomicU64, Ordering};

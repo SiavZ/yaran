@@ -7,6 +7,35 @@
 //! - No runtime behaviour of its own.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/mod.rs
+//! ├── cloud::actions
+//! ├── cloud::cli
+//! ├── cloud::config
+//! ├── cloud::config_patch
+//! ├── cloud::credentials
+//! ├── cloud::identity
+//! ├── cloud::leg_state
+//! ├── cloud::login
+//! ├── cloud::login_session
+//! ├── cloud::loopback
+//! ├── cloud::machine_api
+//! ├── cloud::machine_api_error
+//! ├── cloud::org_url
+//! ├── cloud::outcome
+//! ├── cloud::paths
+//! ├── cloud::pkce
+//! ├── cloud::protocol
+//! ├── cloud::qr
+//! ├── cloud::revocation
+//! ├── cloud::signed_request
+//! ├── cloud::status
+//! └── cloud::test_support
+//! External: none
+//!
+//! Used by:
+//! cloud/mod.rs
+//! └── crate
 //! <module-headers:end>
 
 pub mod actions;

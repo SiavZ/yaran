@@ -1,6 +1,15 @@
 //! Unit tests for `MachineApi`: transport rules, body cap, revocation, write-backs.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/machine_api_tests.rs
+//! ├── cloud::machine_api
+//! └── cloud::test_support
+//! External: serde_json, std, tempfile, tracing, tracing_subscriber
+//!
+//! Used by:
+//! cloud/machine_api_tests.rs
+//! └── cloud::machine_api
 //! <module-headers:end>
 
 use super::*;

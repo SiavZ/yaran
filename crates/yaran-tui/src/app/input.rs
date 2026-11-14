@@ -1,3 +1,66 @@
+//! Keyboard and mouse handling for the terminal UI (`handle_key`, `handle_left_key`, ...).
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/input.rs
+//! ├── app
+//! ├── app::changes_job
+//! ├── app::components
+//! ├── app::hangup
+//! ├── app::human_board
+//! ├── app::human_board_dialog
+//! ├── app::input::host_click_regression_tests
+//! ├── app::input::host_selection_regression_tests
+//! ├── app::modal
+//! ├── app::pty_ownership
+//! ├── app::render
+//! ├── app::reorder
+//! ├── app::test_support
+//! ├── clipboard
+//! ├── config
+//! ├── crate
+//! ├── key_encode
+//! ├── keybindings
+//! ├── raw_input
+//! ├── theme
+//! ├── yaran-core::add_project_plan
+//! ├── yaran-core::config
+//! ├── yaran-core::config_queue
+//! ├── yaran-core::engine
+//! ├── yaran-core::engine::status_op
+//! ├── yaran-core::gh
+//! ├── yaran-core::git
+//! ├── yaran-core::gitignore_seed
+//! ├── yaran-core::ids
+//! ├── yaran-core::macros
+//! ├── yaran-core::model
+//! ├── yaran-core::pr_reference
+//! ├── yaran-core::project_prose
+//! ├── yaran-core::pty
+//! ├── yaran-core::reload_policy
+//! ├── yaran-core::statusline
+//! ├── yaran-core::storage
+//! ├── yaran-core::test_git
+//! ├── yaran-core::text
+//! ├── yaran-core::watch
+//! ├── yaran-core::welcome_screen
+//! ├── yaran-core::worker
+//! └── yaran-core::worktree_manager
+//! External: anyhow, chrono, crokey, crossterm, home, ratatui, rustix, std, tempfile, toml
+//!
+//! Used by:
+//! app/input.rs
+//! ├── app
+//! ├── app::cloud_input
+//! ├── app::input::host_click_regression_tests
+//! ├── app::input::host_selection_regression_tests
+//! ├── app::modal
+//! ├── app::new_agent_settings
+//! ├── app::overlay_dismiss
+//! ├── app::render
+//! └── app::session_settings
+//! <module-headers:end>
+
 use super::components::{ButtonPressedTarget, PressedButton, next_focus};
 use super::modal::{ModalKeyStep, binding_lookup_is_suppressed, click_target, modal_key_step};
 use super::*;
@@ -681,7 +744,7 @@ fn relative_point_clamped(rect: Rect, column: u16, row: u16) -> (u16, u16) {
 /// the only offset that highlights the glyph the user clicked on.
 ///
 /// A click past the end of the text yields `text.len()`.
-fn cursor_from_single_line_position(
+pub(super) fn cursor_from_single_line_position(
     text: &str,
     text_area: Rect,
     prefix_width: usize,
@@ -2026,6 +2089,7 @@ impl App {
                 reply: Some(reply),
                 ..
             } => reply.input.insert_str(text),
+            PromptState::Cloud(prompt) => prompt.paste(text),
             // Report, confirm, and picker modals hold no text field; the
             // paste is dropped, as their key handlers drop plain characters.
             PromptState::AgentInfo(_)
@@ -5848,6 +5912,10 @@ impl App {
         // firing an action after the user has switched to the keyboard.
         self.pressed_button = None;
 
+        if let Some(should_exit) = self.handle_cloud_prompt_key(key) {
+            return Ok(should_exit);
+        }
+
         if let Some(should_exit) = self.handle_monitoring_prompt_key(key) {
             return Ok(should_exit);
         }
@@ -6733,7 +6801,10 @@ impl App {
 
     fn prompt_mouse_target(&self, column: u16, row: u16) -> Option<PromptMouseTarget> {
         match self.overlay_layout.active {
-            OverlayMouseLayout::None | OverlayMouseLayout::Help => None,
+            // The Yaran Cloud modals route their own clicks (`handle_cloud_mouse`).
+            OverlayMouseLayout::None
+            | OverlayMouseLayout::Help
+            | OverlayMouseLayout::Cloud { .. } => None,
             OverlayMouseLayout::Command {
                 input,
                 list,
@@ -9460,6 +9531,9 @@ impl App {
     }
 
     pub(crate) fn handle_prompt_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if let Some(result) = self.handle_cloud_mouse(&mouse) {
+            return result;
+        }
         if let Some(result) = self.handle_human_board_card_mouse(&mouse) {
             return result;
         }

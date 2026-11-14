@@ -9,6 +9,29 @@
 //!   and stops when dropped.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/test_support.rs
+//! ├── cloud::credentials
+//! ├── cloud::paths
+//! ├── cloud::protocol::machine
+//! ├── cloud::protocol::meta
+//! ├── cloud::protocol::rules
+//! └── cloud::protocol::signing
+//! External: ring, serde_json, std
+//!
+//! Used by:
+//! cloud/test_support.rs
+//! ├── cloud
+//! ├── cloud::cli::tests
+//! ├── cloud::credentials::tests
+//! ├── cloud::login_session
+//! ├── cloud::machine_api::tests
+//! ├── cloud::signed_request
+//! ├── cloud::status
+//! ├── yaran-core[test cloud_login]
+//! ├── yaran-core[test cloud_machine_api]
+//! ├── yaran-tui::app::cloud_tests
+//! └── yaran-web::cloud_routes::tests
 //! <module-headers:end>
 
 use std::io::{BufRead, BufReader, Read, Write};

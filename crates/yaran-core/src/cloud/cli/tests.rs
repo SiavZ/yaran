@@ -1,6 +1,17 @@
 //! Tests for `yaran cloud` through `run_with`, against a mock Worker.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/cli/tests.rs
+//! ├── cloud::cli
+//! ├── cloud::credentials
+//! ├── cloud::machine_api
+//! └── cloud::test_support
+//! External: serde_json, std, tempfile
+//!
+//! Used by:
+//! cloud/cli/tests.rs
+//! └── cloud::cli
 //! <module-headers:end>
 
 use super::*;

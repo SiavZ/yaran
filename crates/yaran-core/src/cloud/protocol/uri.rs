@@ -17,7 +17,8 @@
 //!
 //! Used by:
 //! cloud/protocol/uri.rs
-//! └── cloud::protocol
+//! ├── cloud::protocol
+//! └── cloud::qr
 //! <module-headers:end>
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};

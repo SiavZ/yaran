@@ -10,6 +10,29 @@
 //!   running), 4 (not paired) and 5 (revoked).
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/cli/mod.rs
+//! ├── browser
+//! ├── cloud::cli::args
+//! ├── cloud::cli::login
+//! ├── cloud::cli::manage
+//! ├── cloud::cli::pair_phone
+//! ├── cloud::cli::tests
+//! ├── cloud::config
+//! ├── cloud::machine_api
+//! ├── cloud::outcome
+//! ├── cloud::paths
+//! └── config
+//! External: std
+//!
+//! Used by:
+//! cloud/cli/mod.rs
+//! ├── cloud
+//! ├── cloud::cli::login
+//! ├── cloud::cli::manage
+//! ├── cloud::cli::pair_phone
+//! ├── cloud::cli::tests
+//! └── yaran[bin yaran]
 //! <module-headers:end>
 
 mod args;

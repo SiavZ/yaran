@@ -29,7 +29,9 @@
 //!
 //! Used by:
 //! cloud/protocol/mod.rs
-//! └── cloud
+//! ├── cloud
+//! ├── cloud::login
+//! └── cloud::machine_api
 //! <module-headers:end>
 
 pub mod concat_kdf;

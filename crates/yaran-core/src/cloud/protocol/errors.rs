@@ -17,6 +17,7 @@
 //!
 //! Used by:
 //! cloud/protocol/errors.rs
+//! ├── cloud::machine_api_error
 //! ├── cloud::protocol
 //! └── cloud::protocol::handoff_consent
 //! <module-headers:end>

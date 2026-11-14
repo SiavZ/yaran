@@ -1,3 +1,125 @@
+//! The terminal UI's `App`: its data model, types, bootstrap, run loop and state helpers.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/mod.rs
+//! ├── app::background_server
+//! ├── app::changes_job
+//! ├── app::cloud_commands
+//! ├── app::cloud_input
+//! ├── app::cloud_render
+//! ├── app::cloud_tests
+//! ├── app::components
+//! ├── app::components::focus_ring
+//! ├── app::first_load
+//! ├── app::grouped_sidebar_tests
+//! ├── app::hangup
+//! ├── app::human_board
+//! ├── app::human_board_dialog
+//! ├── app::human_board_relay
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::new_agent_settings
+//! ├── app::orphan_worktrees
+//! ├── app::overlay_dismiss
+//! ├── app::presize
+//! ├── app::pty_ownership
+//! ├── app::redraw
+//! ├── app::render
+//! ├── app::reorder
+//! ├── app::session_settings
+//! ├── app::sessions
+//! ├── app::shared_workspace_tests
+//! ├── app::test_support
+//! ├── app::text_input
+//! ├── app::ui_audit_tests
+//! ├── app::workers
+//! ├── app::worktree_manager
+//! ├── clipboard
+//! ├── config
+//! ├── crate
+//! ├── diff
+//! ├── keybindings
+//! ├── raw_input
+//! ├── theme
+//! ├── yaran-core::agent_search
+//! ├── yaran-core::agent_tabs
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::browser
+//! ├── yaran-core::config
+//! ├── yaran-core::config_queue
+//! ├── yaran-core::config_sync
+//! ├── yaran-core::engine
+//! ├── yaran-core::engine::status_op
+//! ├── yaran-core::first_load
+//! ├── yaran-core::flat_list
+//! ├── yaran-core::gh
+//! ├── yaran-core::git
+//! ├── yaran-core::home_path
+//! ├── yaran-core::human_board
+//! ├── yaran-core::ids
+//! ├── yaran-core::logger
+//! ├── yaran-core::macros
+//! ├── yaran-core::model
+//! ├── yaran-core::palette
+//! ├── yaran-core::peer
+//! ├── yaran-core::pr_reference
+//! ├── yaran-core::project_browser
+//! ├── yaran-core::quiet_tail
+//! ├── yaran-core::release_notes
+//! ├── yaran-core::reload_handoff
+//! ├── yaran-core::reload_policy
+//! ├── yaran-core::session_settings
+//! ├── yaran-core::sidebar
+//! ├── yaran-core::statusline
+//! ├── yaran-core::term_identity
+//! ├── yaran-core::test_git
+//! ├── yaran-core::test_scratch
+//! ├── yaran-core::version
+//! ├── yaran-core::worker
+//! ├── yaran-core::working_copy
+//! └── yaran-core::worktree_manager
+//! External: anyhow, chrono, crossterm, libc, ratatui, signal_hook, std, tempfile, uuid
+//!
+//! Used by:
+//! app/mod.rs
+//! ├── app::background_server
+//! ├── app::changes_job
+//! ├── app::cloud_commands
+//! ├── app::cloud_input
+//! ├── app::cloud_render
+//! ├── app::cloud_tests
+//! ├── app::first_load
+//! ├── app::grouped_sidebar_tests
+//! ├── app::human_board
+//! ├── app::human_board::tests
+//! ├── app::human_board_dialog
+//! ├── app::human_board_relay
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::new_agent_settings
+//! ├── app::orphan_worktrees
+//! ├── app::overlay_dismiss
+//! ├── app::presize
+//! ├── app::pty_ownership
+//! ├── app::redraw
+//! ├── app::render
+//! ├── app::reorder
+//! ├── app::session_settings
+//! ├── app::sessions
+//! ├── app::shared_workspace_tests
+//! ├── app::test_support
+//! ├── app::ui_audit_tests
+//! ├── app::workers
+//! ├── app::worktree_manager
+//! ├── clipboard
+//! ├── config_saver
+//! ├── crate
+//! └── server_screen
+//! <module-headers:end>
+
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::io::{Write as _, stdout};
@@ -302,6 +424,8 @@ pub struct App {
     /// The in-flight orphan-worktree cleaner worker, inventory or removal.
     /// `Some` also means "one is running", so a second cannot start.
     pub(crate) orphan_worktrees_rx: Option<mpsc::Receiver<orphan_worktrees::OrphanWorktreesAnswer>>,
+    /// The Yaran Cloud commands' running login and worker channel.
+    pub(crate) cloud: cloud_commands::CloudState,
     /// Notes that arrived while the user had a DIFFERENT modal open.
     /// `PromptState` is a single slot, so showing the what's-new screen the
     /// instant the fetch lands would discard whatever the user was typing. The
@@ -2312,6 +2436,9 @@ pub(crate) enum PromptState {
     /// The human board's Assign picker.
     AssignBoardCard(AssignBoardCardPrompt),
     WatchRules(WatchRulesPrompt),
+    /// The five Yaran Cloud modals; the family follows the stage (see
+    /// [`crate::app::cloud_commands`]).
+    Cloud(cloud_commands::CloudPrompt),
     /// The per-session settings modal (AMQ + orchestrator workstream).
     /// Boxed: the draft carries two text inputs and the rule list.
     SessionSettings(Box<SessionSettingsPrompt>),
@@ -3335,6 +3462,12 @@ pub(crate) enum OverlayMouseLayout {
         items: usize,
         offset: usize,
     },
+    /// A Yaran Cloud modal: the login's field, or a confirm's two buttons.
+    Cloud {
+        field: Option<Rect>,
+        cancel: Option<Rect>,
+        confirm: Option<Rect>,
+    },
     AssignBoardCard {
         list: Rect,
         items: usize,
@@ -4015,6 +4148,11 @@ pub(crate) fn build_grouped_left_items(
 
 mod background_server;
 mod changes_job;
+mod cloud_commands;
+mod cloud_input;
+mod cloud_render;
+#[cfg(test)]
+mod cloud_tests;
 pub(crate) use background_server::{BackgroundServerStart, CompanionRouting};
 // `pub(crate)` for its width helpers alone: the diff wrapper has to measure a
 // CJK glyph exactly as the pane's own wrapper does, and two functions that
@@ -4343,6 +4481,7 @@ impl App {
             unpushed_count_rx: None,
             notes_fetch_rx: None,
             orphan_worktrees_rx: None,
+            cloud: Default::default(),
             deferred_first_load_notes: None,
             notes_fetch_explicit_request: Arc::new(AtomicBool::new(false)),
             fullscreen_overlay: FullscreenOverlay::None,
@@ -5803,6 +5942,11 @@ impl App {
             }
             "toggle-tab-to-agent" => {
                 self.toggle_tab_reaches_agent();
+                Ok(())
+            }
+            "cloud-login" | "cloud-logout" | "cloud-rotate-token" | "cloud-status"
+            | "cloud-pair-phone" => {
+                self.run_cloud_command(command);
                 Ok(())
             }
             "toggle-human-board" => {

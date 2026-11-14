@@ -7,6 +7,17 @@
 //! - Pure apart from reading the credentials.
 //!
 //! <module-headers:begin>
+//! Uses:
+//! cloud/cli/pair_phone.rs
+//! ├── cloud::cli
+//! ├── cloud::credentials
+//! ├── cloud::org_url
+//! └── cloud::qr
+//! External: std
+//!
+//! Used by:
+//! cloud/cli/pair_phone.rs
+//! └── cloud::cli
 //! <module-headers:end>
 
 use std::io::Write;

@@ -11,6 +11,25 @@
 // - Global actions and dialogs belong here; preferences do not. A preference is
 //   a row in `settingsDescriptors.ts`, and a per-entity action lives in that
 //   entity's own `⋯` menu.
+//
+// <module-headers:begin>
+// Uses:
+// src/lib/appMenu.ts
+// ├── src/lib/configApi.ts
+// ├── src/lib/creationMenus.ts
+// ├── src/lib/notify.ts
+// └── src/lib/store.ts
+// External: lucide-react
+//
+// Used by:
+// src/lib/appMenu.ts
+// ├── src/components/AppMenu.test.tsx
+// ├── src/components/AppMenu.tsx
+// ├── src/components/AppMenuSheet.test.tsx
+// ├── src/components/AppMenuSheet.tsx
+// ├── src/components/TheaterPill.test.tsx
+// └── src/lib/appMenu.test.ts
+// <module-headers:end>
 
 import {
   Activity,
@@ -18,6 +37,7 @@ import {
   PartyPopper,
   ArrowUpDown,
   CalendarPlus,
+  Cloud,
   Clock,
   FileCode,
   FolderGit2,
@@ -43,6 +63,7 @@ import {
   openGlobalEnv,
   openTaskManager,
   openMacrosDialog,
+  openCloudDialog,
   sortAgents,
 } from "@/lib/store"
 
@@ -241,6 +262,15 @@ export function appMenuModel(ctx: AppMenuContext): AppMenuEntry[] {
       title: "Task Manager…",
       icon: Activity,
       run: () => openTaskManager(),
+    },
+    {
+      kind: "item",
+      id: "yaran-cloud",
+      // The one web home of the global `cloud-*` palette commands: status,
+      // Connect, Rotate token… and Disconnect… all live in the dialog.
+      title: "Yaran Cloud…",
+      icon: Cloud,
+      run: () => openCloudDialog(),
     },
     { kind: "separator", id: "sep-about" },
     // Actions rather than preferences: their `ui.disable_*` counterparts are
