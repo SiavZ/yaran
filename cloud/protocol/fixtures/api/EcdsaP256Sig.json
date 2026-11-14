@@ -1,0 +1,22 @@
+{
+  "type": "EcdsaP256Sig",
+  "schema": "common.schema.json#/$defs/EcdsaP256Sig",
+  "valid": [
+    {
+      "name": "raw r||s",
+      "value": "AVpCXCG8heWN7uUaQ0cMRl9z9n4BxxG5zORzd_6hXZwBKYieUujX7dkJNGXMoydgx0pBuhvjNOfc4Kw7vTXlyg"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "85 chars",
+      "keyword": "pattern",
+      "value": "AVpCXCG8heWN7uUaQ0cMRl9z9n4BxxG5zORzd_6hXZwBKYieUujX7dkJNGXMoydgx0pBuhvjNOfc4Kw7vTXly"
+    },
+    {
+      "name": "87 chars",
+      "keyword": "pattern",
+      "value": "AVpCXCG8heWN7uUaQ0cMRl9z9n4BxxG5zORzd_6hXZwBKYieUujX7dkJNGXMoydgx0pBuhvjNOfc4Kw7vTXlygA"
+    }
+  ]
+}

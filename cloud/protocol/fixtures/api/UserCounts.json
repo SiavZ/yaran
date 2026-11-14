@@ -1,0 +1,38 @@
+{
+  "type": "UserCounts",
+  "schema": "me.schema.json#/$defs/UserCounts",
+  "valid": [
+    {
+      "name": "counts",
+      "value": {
+        "machines": 2,
+        "devices": 1
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "negative",
+      "keyword": "minimum",
+      "value": {
+        "machines": -1,
+        "devices": 0
+      }
+    },
+    {
+      "name": "missing devices",
+      "keyword": "required",
+      "value": {
+        "machines": 1
+      }
+    },
+    {
+      "name": "string",
+      "keyword": "type",
+      "value": {
+        "machines": "1",
+        "devices": 0
+      }
+    }
+  ]
+}

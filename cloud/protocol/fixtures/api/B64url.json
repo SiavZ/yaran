@@ -1,0 +1,26 @@
+{
+  "type": "B64url",
+  "schema": "common.schema.json#/$defs/B64url",
+  "valid": [
+    {
+      "name": "alphabet",
+      "value": "abc_-XYZ09"
+    },
+    {
+      "name": "empty",
+      "value": ""
+    }
+  ],
+  "invalid": [
+    {
+      "name": "plus",
+      "keyword": "pattern",
+      "value": "a+b"
+    },
+    {
+      "name": "padding",
+      "keyword": "pattern",
+      "value": "abcd=="
+    }
+  ]
+}

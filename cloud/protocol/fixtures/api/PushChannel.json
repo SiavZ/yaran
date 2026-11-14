@@ -1,0 +1,34 @@
+{
+  "type": "PushChannel",
+  "schema": "common.schema.json#/$defs/PushChannel",
+  "valid": [
+    {
+      "name": "unifiedpush",
+      "value": "unifiedpush"
+    },
+    {
+      "name": "fcm_embedded",
+      "value": "fcm_embedded"
+    },
+    {
+      "name": "apns_relay",
+      "value": "apns_relay"
+    },
+    {
+      "name": "fcm_relay",
+      "value": "fcm_relay"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not in the enum",
+      "keyword": "enum",
+      "value": "not_a_value"
+    },
+    {
+      "name": "not a string",
+      "keyword": "enum",
+      "value": 1
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Opening must fail with jwe_state_mismatch.",
+  "recipient_jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "8Var4GwjX4An93uQS7S9IyMcBbdl0Kf7l1b1lZkn3k0",
+    "y": "Uug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+    "d": "vHanw0WEcfLQGc-ouuxn54vepkPsM-NNKdC79SIcUDQ"
+  },
+  "recipient_pk": "BPFWq-BsI1-AJ_d7kEu0vSMjHAW3ZdCn-5dW9ZWZJ95NUug3eVAdoPtdCs-CNAiJ1HfP0AdIdYAiyMrLKXKdRvM",
+  "expected_host": "laptop-ada.example.com",
+  "expected_state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLW1hY2hpbmU",
+  "expected_kind": "machine",
+  "now": 1731571500,
+  "compact_jwe": "eyJhbGciOiJFQ0RILUVTIiwiZW5jIjoiQTI1NkdDTSIsInR5cCI6InlhcmFuLWhhbmRvZmYrandlIiwiY3R5IjoieWFyYW4taGFuZG9mZitqc29uIiwia2lkIjoiNi1QMS1TcFpYR1BqQVN4SW9NbURObDdPeEFJR2h6UFBETjlDN3NCUFlBYyIsImVwayI6eyJ4IjoiZGtqRkNzSXRtV2s5VDNtbXB2UUVPQWtXSElIZlJ2MkRzczBNOGlrbVY4ZyIsImNydiI6IlAtMjU2Iiwia3R5IjoiRUMiLCJ5Ijoib0IyeFljM1MtV2k4VElHZDhQRmlvZVl0OVFiUzJXelJQQm9weHdjRDBOayJ9LCJhcHUiOiJiR0Z3ZEc5d0xXRmtZUzVsZUdGdGNHeGxMbU52YlEiLCJhcHYiOiJZekk1ZEZwVE1YWmtSMmhzWTJreGIxbFhOV3RpTWxwdFRGaE9NRmxZVW13In0..H15LOzKvW3TAMfpm.DpmmVTds1NHxqjMNNm6C1ikqILNjPDQFtqDzRPXNCsY7TyZ-sgudNHlFHvDDLcrKIRq06-eQ8mWgSxN7_ZvUtRYVrcc6APyyaW2maU5I-ijtTvEzBFtWUiLEnTNvTlVNYo6EicaWziUc58YMG3gkHfrbmftagBt8mjl3rMaNm22prXNzg7Vk9meyRcTv6o4Gi1oOWNVX3xdHIeLr7fSxi3bzdaSUZIFcBCfmFw4uVoxiwX-maHm6dF1EyEui5vb7LyTaaZ-eZAphP0nfbDVSUp23n7bYxB-vGQGbTh5QJC6ZcTdICldQSLpuKwNmfVnjcWqTD8n2hDFrJ3YT6-PAdtMCY9A7BmL40eRzW3or3XVIQH0tRCSXW8p2fL-t92feMW03sNXWNvqCYqRvut-Q7w2Eex4Y7vpu49HBc2QGQXt80S9fgJDYit7hmBjjBM5ZXlyIse_LZuvdSF8LsxcxNKXwuKwVVNGKB7_qKdtaVlwaKX_6ZYriLUIOu5F7BRcppw4ojZ0CcR4p2_vEHFYRCeMfk1IN9-lsPno1anOzyQKhiHUyQePBkMiVIs0_xpuRYdQQEzsVLjulQTwp3adwU1HruUsqj_xQDw.HYQyZ1rZkkAWNXdm-usS-Q",
+  "expect_code": "jwe_state_mismatch"
+}

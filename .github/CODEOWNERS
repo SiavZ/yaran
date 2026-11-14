@@ -33,3 +33,4 @@ Cargo.lock                          @SiavZ
 tools/module-headers/               @SiavZ
 tools/module-headers/scope.json     @SiavZ
 tools/module-headers/baseline-oversize.json @SiavZ
+cloud/protocol/                     @SiavZ

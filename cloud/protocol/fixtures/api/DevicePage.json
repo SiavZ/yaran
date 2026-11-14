@@ -1,0 +1,78 @@
+{
+  "type": "DevicePage",
+  "schema": "devices.schema.json#/$defs/DevicePage",
+  "valid": [
+    {
+      "name": "page",
+      "value": {
+        "items": [
+          {
+            "id": "c0ffee00-1234-4abc-bdef-0123456789ab",
+            "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+            "device_key_fingerprint": "K7QF-3MZD-W2PA-HX5R-LC4N-TB6E",
+            "platform": "ios",
+            "flavor": "appstore",
+            "form_factor": "tablet",
+            "app_version": "1.0.0",
+            "label": "Ada's iPad",
+            "push": {
+              "kind": "webpush",
+              "channel": "apns_relay",
+              "endpoint_host": "relay.example.com",
+              "last_success_at": "2026-11-14T12:00:00Z",
+              "last_error_code": null,
+              "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+            },
+            "push_state": "active",
+            "mute_all": false,
+            "muted_until": null,
+            "muted_machine_ids": [
+              "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+            ],
+            "created_at": "2026-11-14T12:00:00Z",
+            "last_seen_at": "2026-11-15T08:30:00Z",
+            "current": true
+          }
+        ],
+        "next_cursor": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "item missing id",
+      "keyword": "required",
+      "value": {
+        "items": [
+          {
+            "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+            "device_key_fingerprint": "K7QF-3MZD-W2PA-HX5R-LC4N-TB6E",
+            "platform": "ios",
+            "flavor": "appstore",
+            "form_factor": "tablet",
+            "app_version": "1.0.0",
+            "label": "Ada's iPad",
+            "push": {
+              "kind": "webpush",
+              "channel": "apns_relay",
+              "endpoint_host": "relay.example.com",
+              "last_success_at": "2026-11-14T12:00:00Z",
+              "last_error_code": null,
+              "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+            },
+            "push_state": "active",
+            "mute_all": false,
+            "muted_until": null,
+            "muted_machine_ids": [
+              "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+            ],
+            "created_at": "2026-11-14T12:00:00Z",
+            "last_seen_at": "2026-11-15T08:30:00Z",
+            "current": true
+          }
+        ],
+        "next_cursor": null
+      }
+    }
+  ]
+}

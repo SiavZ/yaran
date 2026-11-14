@@ -1,0 +1,54 @@
+{
+  "type": "EndpointMintRequest",
+  "schema": "relay.schema.json#/$defs/EndpointMintRequest",
+  "valid": [
+    {
+      "name": "apns",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "fcm",
+      "value": {
+        "kind": "fcm",
+        "app_id": "com.example.yaran",
+        "fcm_token": "fcm-token:APA91b",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown kind",
+      "keyword": "oneOf",
+      "value": {
+        "kind": "webpush",
+        "app_id": "com.example.yaran",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "apns with fcm token",
+      "keyword": "oneOf",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "fcm_token": "x"
+      }
+    }
+  ]
+}

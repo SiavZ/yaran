@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pairing.schema.json",
+  "title": "PairingSchemas",
+  "description": "W2/W3 machine pairing in the browser (D7). Pair request lifetime 10 min; code lifetime 120 s, single use.",
+  "$defs": {
+    "PairState": {
+      "title": "PairState",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{22,128}$"
+    },
+    "PairAuthorizeQuery": {
+      "title": "PairAuthorizeQuery",
+      "description": "W2 query string (integers arrive as decimal strings and are coerced before validation). The confirm page shows machine_pubkey's MachineKeyFingerprint.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "state", "code_challenge", "code_challenge_method", "machine_pubkey", "machine_name", "callback", "yaran_version"],
+      "properties": {
+        "v": { "type": "integer", "minimum": 1 },
+        "state": { "$ref": "#/$defs/PairState" },
+        "code_challenge": {
+          "description": "base64url(SHA-256(code_verifier)), RFC 7636.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "code_challenge_method": { "const": "S256" },
+        "machine_pubkey": { "$ref": "common.schema.json#/$defs/Ed25519PublicKey" },
+        "machine_name": { "$ref": "common.schema.json#/$defs/MachineName" },
+        "callback": {
+          "description": "Loopback callback; port 1024-65535 is checked in code.",
+          "type": "string",
+          "pattern": "^http://127\\.0\\.0\\.1:([1-9][0-9]{3,4})/callback$"
+        },
+        "yaran_version": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "origin_port": { "$ref": "common.schema.json#/$defs/OriginPort" }
+      }
+    },
+    "PairConsent": {
+      "title": "PairConsent",
+      "description": "W3 form post from the confirm page. replace_machine_id is allowed only with approve on the same-name branch (checked in code).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "csrf", "decision"],
+      "properties": {
+        "request_id": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "csrf": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22,128}$" },
+        "decision": { "enum": ["approve", "deny"] },
+        "replace_machine_id": { "$ref": "common.schema.json#/$defs/Uuid" }
+      }
+    },
+    "PairCallbackQuery": {
+      "title": "PairCallbackQuery",
+      "description": "What W2/W3 redirect to the loopback callback: ?code&state or ?error&state.",
+      "oneOf": [
+        {
+          "title": "PairCallbackSuccess",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "state"],
+          "properties": {
+            "code": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+            "state": { "$ref": "#/$defs/PairState" }
+          }
+        },
+        {
+          "title": "PairCallbackError",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["error", "state"],
+          "properties": {
+            "error": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+            "state": { "$ref": "#/$defs/PairState" }
+          }
+        }
+      ]
+    }
+  }
+}

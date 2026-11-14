@@ -1,0 +1,63 @@
+{
+  "type": "HandoffCallback",
+  "schema": "handoff.schema.json#/$defs/HandoffCallback",
+  "valid": [
+    {
+      "name": "success",
+      "value": {
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..AAAAAAAAAAAAAAAA.Y2lwaGVy.dGFnMDEyMzQ1Njc4OWFi"
+      }
+    },
+    {
+      "name": "declined",
+      "value": {
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "error": "handoff_declined"
+      }
+    },
+    {
+      "name": "protocol range",
+      "value": {
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "error": "protocol_unsupported",
+        "min": "1",
+        "max": "1"
+      }
+    },
+    {
+      "name": "skewed",
+      "value": {
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "error": "handoff_timestamp_skewed",
+        "server_time": "1731571200"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "jwe and error",
+      "keyword": "oneOf",
+      "value": {
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..AAAAAAAAAAAAAAAA.Y2lwaGVy.dGFnMDEyMzQ1Njc4OWFi",
+        "error": "handoff_declined"
+      }
+    },
+    {
+      "name": "four-part jwe",
+      "keyword": "oneOf",
+      "value": {
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "jwe": "a..b.c"
+      }
+    },
+    {
+      "name": "missing state",
+      "keyword": "oneOf",
+      "value": {
+        "jwe": "eyJhbGciOiJFQ0RILUVTIn0..AAAAAAAAAAAAAAAA.Y2lwaGVy.dGFnMDEyMzQ1Njc4OWFi"
+      }
+    }
+  ]
+}

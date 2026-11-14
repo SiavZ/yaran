@@ -1,0 +1,11 @@
+{
+  "description": "Design §3 capabilities (open enum). Clients gate optional UI on these, never on the Worker version.",
+  "capabilities": [
+    "pairing.v1",
+    "handoff.v1",
+    "push.webpush",
+    "devices.test_push",
+    "admin.audit",
+    "admin.reconcile"
+  ]
+}

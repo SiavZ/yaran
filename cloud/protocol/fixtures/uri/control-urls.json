@@ -1,0 +1,86 @@
+{
+  "description": "In-WebView control URLs (§10). expect: reauth | home | settings | ignore; code names the registry code logged for an ignored URI that is invalid rather than merely for another host.",
+  "cases": [
+    {
+      "uri": "yaranapp://reauth?host=laptop-ada.example.com",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "reauth"
+    },
+    {
+      "uri": "YARANAPP://reauth?host=laptop-ada.example.com",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "reauth"
+    },
+    {
+      "uri": "yaranapp://reauth?host=laptop-ada.example.com&why=expired",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "reauth"
+    },
+    {
+      "uri": "yaranapp://reauth?host=other-ada.example.com",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "ignore"
+    },
+    {
+      "uri": "yaranapp://reauth",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "ignore",
+      "code": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://reauth?host=laptop-ada.example.com&host=laptop-ada.example.com",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "ignore",
+      "code": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://reauth?host=Laptop-Ada.example.com",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "ignore",
+      "code": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://reauth?host=laptop_ada.example.com",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "ignore",
+      "code": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://reauth?host=laptop-ada.example.com:443",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "ignore",
+      "code": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://home",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "home"
+    },
+    {
+      "uri": "yaranapp://home?from=menu",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "home"
+    },
+    {
+      "uri": "yaranapp://settings",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "settings"
+    },
+    {
+      "uri": "yaranapp://settings?tab=push",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "settings"
+    },
+    {
+      "uri": "yaranapp://explode",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "ignore",
+      "code": "uri_invalid"
+    },
+    {
+      "uri": "yaranapp://add-org?u=https%3A%2F%2Fcp.example.com",
+      "loaded_host": "laptop-ada.example.com",
+      "expect": "ignore"
+    }
+  ]
+}

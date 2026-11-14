@@ -1,0 +1,152 @@
+openapi: 3.1.0
+info:
+  title: yaran publisher push relay
+  version: "1"
+  summary: Converts an org Worker's Web Push messages into APNs (and, in the G5 fallback, FCM) messages.
+  description: >-
+    Phase 02 Design §5 (R1-R3) and §9. The relay stores nothing: an endpoint is self-describing
+    (an AES-256-GCM sealed blob under the relay's endpoint key). It never decrypts a push body.
+    Error bodies are the §4 ErrorEnvelope; codes are listed per operation in x-error-codes.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://{publisherRelay}
+    description: The publisher's relay deployment (a build-config value, never invented here).
+    variables:
+      publisherRelay:
+        default: publisher-relay
+tags:
+  - name: relay
+    description: Publisher push relay.
+paths:
+  /v1/meta:
+    get:
+      operationId: relayMeta
+      summary: Relay metadata
+      description: R1. Protocol range, served app ids, channels and the current endpoint key id.
+      tags: [relay]
+      security: []
+      x-error-codes: [method_not_allowed, rate_limited, internal, unavailable]
+      responses:
+        "200":
+          description: Relay metadata.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/relay.schema.json#/$defs/RelayMeta" }
+        "405": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /v1/endpoints:
+    post:
+      operationId: mintEndpoint
+      summary: Mint a push endpoint
+      description: R2. Public and rate-limited; seals the APNs (or FCM) token, app, VAPID key and registration id into the endpoint URL.
+      tags: [relay]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+      x-error-codes: [bad_request, validation_failed, protocol_unsupported, relay_app_unknown, payload_too_large, unsupported_media_type, rate_limited, internal, unavailable]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/relay.schema.json#/$defs/EndpointMintRequest" }
+      responses:
+        "201":
+          description: The minted endpoint.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/relay.schema.json#/$defs/EndpointMintResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /w/{endpoint}:
+    post:
+      operationId: relayPush
+      summary: Deliver a Web Push message
+      description: >-
+        R3. An RFC 8030 push message with an RFC 8291 aes128gcm body (at most 2900 bytes) and RFC 8292
+        VAPID authorization. high/normal Urgency become an APNs alert the NSE rewrites; low/very-low
+        a background push (§9 "Relay → APNs").
+      tags: [relay]
+      security:
+        - vapid: []
+      parameters:
+        - name: endpoint
+          in: path
+          required: true
+          description: v1.<kid>.<opaque>, the last path segment of a minted endpoint.
+          schema: { type: string, pattern: '^v1\.[A-Za-z0-9_-]{1,16}\.[A-Za-z0-9_-]{16,1024}$' }
+        - name: TTL
+          in: header
+          required: true
+          description: Seconds the push service may hold the message (RFC 8030).
+          schema: { type: integer, minimum: 0 }
+        - name: Urgency
+          in: header
+          required: false
+          description: RFC 8030 urgency.
+          schema: { enum: [very-low, low, normal, high] }
+        - name: Topic
+          in: header
+          required: false
+          description: Collapse key, 32 base64url characters (becomes apns-collapse-id).
+          schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,32}$' }
+        - name: Content-Encoding
+          in: header
+          required: true
+          description: Must be aes128gcm.
+          schema: { const: aes128gcm }
+      x-error-codes: [relay_vapid_invalid, relay_vapid_mismatch, relay_endpoint_invalid, push_endpoint_gone, relay_upstream_failed, payload_too_large, rate_limited, unavailable, internal]
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, contentMediaType: application/octet-stream, maxLength: 2900 }
+      responses:
+        "201": { description: Accepted for delivery (RFC 8030). }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    vapid:
+      type: http
+      scheme: vapid
+      description: "RFC 8292 VAPID (Authorization: vapid t=<ES256 JWT>, k=<P256Point>); aud is the relay origin, exp at most 24 h ahead, k must equal the key bound at mint."
+  parameters:
+    YaranProtocol:
+      name: Yaran-Protocol
+      in: header
+      required: true
+      description: The negotiated protocol version (§3).
+      schema: { type: integer, minimum: 1 }
+  headers:
+    YaranProtocol:
+      description: The protocol version served.
+      schema: { type: integer, minimum: 1 }
+    YaranRequestId:
+      description: The request id, equal to the error envelope's request_id.
+      schema: { $ref: "../schemas/common.schema.json#/$defs/RequestId" }
+  responses:
+    Error:
+      description: A §4 error envelope; 429 and 503 carry Retry-After.
+      headers:
+        Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "../schemas/error.schema.json#/$defs/ErrorEnvelope" }

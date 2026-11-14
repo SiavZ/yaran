@@ -1,0 +1,143 @@
+{
+  "type": "MachineSummary",
+  "schema": "me.schema.json#/$defs/MachineSummary",
+  "valid": [
+    {
+      "name": "required only",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "status": "online",
+        "status_checked_at": "2026-11-14T12:00:00Z",
+        "paired_at": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "every field",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "status": "online",
+        "status_checked_at": "2026-11-14T12:00:00Z",
+        "paired_at": "2026-11-14T12:00:00Z",
+        "reported_protocol": 1,
+        "last_seen_at": "2026-11-15T08:30:00Z",
+        "yaran_version": "0.42.0"
+      }
+    },
+    {
+      "name": "nulls",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "status": "online",
+        "status_checked_at": "2026-11-14T12:00:00Z",
+        "paired_at": "2026-11-14T12:00:00Z",
+        "reported_protocol": null,
+        "last_seen_at": null,
+        "yaran_version": null
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown status",
+      "keyword": "enum",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "status": "broken",
+        "status_checked_at": "2026-11-14T12:00:00Z",
+        "paired_at": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "protocol zero",
+      "keyword": "oneOf",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "status": "online",
+        "status_checked_at": "2026-11-14T12:00:00Z",
+        "paired_at": "2026-11-14T12:00:00Z",
+        "reported_protocol": 0
+      }
+    },
+    {
+      "name": "bad last_seen_at",
+      "keyword": "oneOf",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "status": "online",
+        "status_checked_at": "2026-11-14T12:00:00Z",
+        "paired_at": "2026-11-14T12:00:00Z",
+        "last_seen_at": "never"
+      }
+    },
+    {
+      "name": "http url",
+      "keyword": "pattern",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "http://laptop-ada.example.com",
+        "status": "online",
+        "status_checked_at": "2026-11-14T12:00:00Z",
+        "paired_at": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "uppercase name",
+      "keyword": "pattern",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "Laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "status": "online",
+        "status_checked_at": "2026-11-14T12:00:00Z",
+        "paired_at": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "missing paired_at",
+      "keyword": "required",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "status": "online",
+        "status_checked_at": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "41-char version",
+      "keyword": "oneOf",
+      "value": {
+        "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "name": "laptop",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "status": "online",
+        "status_checked_at": "2026-11-14T12:00:00Z",
+        "paired_at": "2026-11-14T12:00:00Z",
+        "yaran_version": "11111111111111111111111111111111111111111"
+      }
+    }
+  ]
+}

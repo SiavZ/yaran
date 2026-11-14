@@ -1,0 +1,46 @@
+{
+  "type": "OrgRef",
+  "schema": "common.schema.json#/$defs/OrgRef",
+  "valid": [
+    {
+      "name": "org",
+      "value": {
+        "name": "Example Org",
+        "url": "https://cp.example.com"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing url",
+      "keyword": "required",
+      "value": {
+        "name": "Example Org"
+      }
+    },
+    {
+      "name": "empty name",
+      "keyword": "minLength",
+      "value": {
+        "name": "",
+        "url": "https://cp.example.com"
+      }
+    },
+    {
+      "name": "81 char name",
+      "keyword": "maxLength",
+      "value": {
+        "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+        "url": "https://cp.example.com"
+      }
+    },
+    {
+      "name": "http url",
+      "keyword": "pattern",
+      "value": {
+        "name": "x",
+        "url": "http://cp.example.com"
+      }
+    }
+  ]
+}

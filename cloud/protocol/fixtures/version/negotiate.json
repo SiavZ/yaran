@@ -1,0 +1,140 @@
+{
+  "description": "§3 negotiation: n = min(cmax, smax), require n >= max(cmin, smin). expect is {version} or {update: client|server}; deprecated is the server's deprecation entry for the chosen n, or null.",
+  "cases": [
+    {
+      "name": "overlap, equal",
+      "client": {
+        "min": 1,
+        "max": 1
+      },
+      "server": {
+        "min": 1,
+        "max": 1
+      },
+      "expect": {
+        "version": 1
+      },
+      "deprecated": null
+    },
+    {
+      "name": "client newer",
+      "client": {
+        "min": 1,
+        "max": 2
+      },
+      "server": {
+        "min": 1,
+        "max": 1
+      },
+      "expect": {
+        "version": 1
+      },
+      "deprecated": null
+    },
+    {
+      "name": "server newer",
+      "client": {
+        "min": 1,
+        "max": 1
+      },
+      "server": {
+        "min": 1,
+        "max": 2
+      },
+      "expect": {
+        "version": 1
+      },
+      "deprecated": null
+    },
+    {
+      "name": "partial overlap",
+      "client": {
+        "min": 1,
+        "max": 3
+      },
+      "server": {
+        "min": 2,
+        "max": 4
+      },
+      "expect": {
+        "version": 3
+      },
+      "deprecated": null
+    },
+    {
+      "name": "disjoint, client too old",
+      "client": {
+        "min": 1,
+        "max": 1
+      },
+      "server": {
+        "min": 2,
+        "max": 3
+      },
+      "expect": {
+        "update": "client"
+      },
+      "deprecated": null
+    },
+    {
+      "name": "disjoint, server too old",
+      "client": {
+        "min": 2,
+        "max": 3
+      },
+      "server": {
+        "min": 1,
+        "max": 1
+      },
+      "expect": {
+        "update": "server"
+      },
+      "deprecated": null
+    },
+    {
+      "name": "deprecated choice",
+      "client": {
+        "min": 1,
+        "max": 1
+      },
+      "server": {
+        "min": 1,
+        "max": 2
+      },
+      "deprecations": [
+        {
+          "protocol": 1,
+          "after": "2027-12-01"
+        }
+      ],
+      "expect": {
+        "version": 1
+      },
+      "deprecated": {
+        "protocol": 1,
+        "after": "2027-12-01"
+      }
+    },
+    {
+      "name": "deprecation of another version is not ours",
+      "client": {
+        "min": 1,
+        "max": 2
+      },
+      "server": {
+        "min": 1,
+        "max": 2
+      },
+      "deprecations": [
+        {
+          "protocol": 1,
+          "after": "2027-12-01"
+        }
+      ],
+      "expect": {
+        "version": 2
+      },
+      "deprecated": null
+    }
+  ]
+}

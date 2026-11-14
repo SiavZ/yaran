@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handoff.schema.json",
+  "title": "HandoffSchemas",
+  "description": "Sealed handoff (Design §8, D8, D24): W16/W16b on the Worker, Y1/Y1b on the machine hostname.",
+  "$defs": {
+    "HandoffState": {
+      "title": "HandoffState",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{22,128}$"
+    },
+    "HandoffBuild": {
+      "title": "HandoffBuild",
+      "description": "Default release; dev is the only way to ask for the custom-scheme callback.",
+      "enum": ["release", "dev"]
+    },
+    "HandoffMode": {
+      "title": "HandoffMode",
+      "description": "Default query; fragment puts state/jwe/error after '#'.",
+      "enum": ["query", "fragment"]
+    },
+    "HandoffQuery": {
+      "title": "HandoffQuery",
+      "description": "W16 and Y1 GET (renders the consent page). v arrives as a decimal string and is coerced before validation. device refuses control and bidi characters in code; pk and dk are checked on-curve in code.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "pk", "state", "redirect", "device", "dk", "dts", "dsig"],
+      "properties": {
+        "v": { "type": "integer", "minimum": 1 },
+        "pk": { "$ref": "common.schema.json#/$defs/P256Point" },
+        "state": { "$ref": "#/$defs/HandoffState" },
+        "redirect": { "type": "string", "maxLength": 256 },
+        "build": { "$ref": "#/$defs/HandoffBuild" },
+        "mode": { "$ref": "#/$defs/HandoffMode" },
+        "device": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "dk": { "$ref": "common.schema.json#/$defs/P256Point" },
+        "dts": { "type": "string", "pattern": "^(?:0|[1-9][0-9]{0,11})$" },
+        "dsig": { "$ref": "common.schema.json#/$defs/EcdsaP256Sig" }
+      }
+    },
+    "HandoffConsent": {
+      "title": "HandoffConsent",
+      "description": "W16b and Y1b POST form from the consent page. dk must equal the key the GET recorded with csrf; dts/dsig are not re-sent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "pk", "state", "redirect", "device", "dk", "csrf", "decision"],
+      "properties": {
+        "v": { "type": "integer", "minimum": 1 },
+        "pk": { "$ref": "common.schema.json#/$defs/P256Point" },
+        "state": { "$ref": "#/$defs/HandoffState" },
+        "redirect": { "type": "string", "maxLength": 256 },
+        "build": { "$ref": "#/$defs/HandoffBuild" },
+        "mode": { "$ref": "#/$defs/HandoffMode" },
+        "device": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "dk": { "$ref": "common.schema.json#/$defs/P256Point" },
+        "csrf": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22,128}$" },
+        "decision": { "enum": ["continue", "cancel"] }
+      }
+    },
+    "HandoffProtectedHeader": {
+      "title": "HandoffProtectedHeader",
+      "description": "The JWE protected header of profile yaran-handoff+jwe v1. kid is the RFC 7638 thumbprint of the recipient pk; apu is base64url(host), apv is base64url(state).",
+      "type": "object",
+      "required": ["alg", "enc", "typ", "cty", "kid", "epk", "apu", "apv"],
+      "properties": {
+        "alg": { "const": "ECDH-ES" },
+        "enc": { "const": "A256GCM" },
+        "typ": { "const": "yaran-handoff+jwe" },
+        "cty": { "const": "yaran-handoff+json" },
+        "kid": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "epk": {
+          "type": "object",
+          "required": ["kty", "crv", "x", "y"],
+          "properties": {
+            "kty": { "const": "EC" },
+            "crv": { "const": "P-256" },
+            "x": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+            "y": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+          }
+        },
+        "apu": { "$ref": "common.schema.json#/$defs/B64url" },
+        "apv": { "$ref": "common.schema.json#/$defs/B64url" }
+      }
+    },
+    "HandoffPayload": {
+      "title": "HandoffPayload",
+      "description": "The JWE plaintext (cty yaran-handoff+json), UTF-8 JSON, at most 6 KiB. cookie is present only when the request carried a CF_Authorization cookie.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "kind", "host", "jwt", "email", "exp", "iat"],
+      "properties": {
+        "v": { "const": 1 },
+        "kind": { "enum": ["machine", "control_plane"] },
+        "host": { "$ref": "common.schema.json#/$defs/Hostname" },
+        "jwt": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$" },
+        "email": { "$ref": "common.schema.json#/$defs/Email" },
+        "exp": { "type": "integer", "minimum": 0 },
+        "iat": { "type": "integer", "minimum": 0 },
+        "cookie": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "HandoffCallback": {
+      "title": "HandoffCallback",
+      "description": "The parameters the app's callback receives (query or fragment). min/max ride only with protocol_unsupported, server_time only with handoff_timestamp_skewed.",
+      "oneOf": [
+        {
+          "title": "HandoffCallbackSuccess",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "jwe"],
+          "properties": {
+            "state": { "$ref": "#/$defs/HandoffState" },
+            "jwe": { "type": "string", "maxLength": 8192, "pattern": "^[A-Za-z0-9_-]+\\.\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$" }
+          }
+        },
+        {
+          "title": "HandoffCallbackError",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "error"],
+          "properties": {
+            "state": { "$ref": "#/$defs/HandoffState" },
+            "error": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+            "min": { "type": "string", "pattern": "^[1-9][0-9]{0,4}$" },
+            "max": { "type": "string", "pattern": "^[1-9][0-9]{0,4}$" },
+            "server_time": { "type": "string", "pattern": "^(?:0|[1-9][0-9]{0,11})$" }
+          }
+        }
+      ]
+    }
+  }
+}

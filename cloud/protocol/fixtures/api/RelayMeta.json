@@ -1,0 +1,112 @@
+{
+  "type": "RelayMeta",
+  "schema": "relay.schema.json#/$defs/RelayMeta",
+  "valid": [
+    {
+      "name": "apns only",
+      "value": {
+        "service": "yaran-push-relay",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "apps": [
+          "com.example.yaran"
+        ],
+        "channels": [
+          "apns"
+        ],
+        "endpoint_key_id": "k1"
+      }
+    },
+    {
+      "name": "with fcm",
+      "value": {
+        "service": "yaran-push-relay",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "apps": [
+          "com.example.yaran"
+        ],
+        "channels": [
+          "apns",
+          "fcm"
+        ],
+        "endpoint_key_id": "k1"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "other service",
+      "keyword": "const",
+      "value": {
+        "service": "yaran-cloud",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "apps": [
+          "com.example.yaran"
+        ],
+        "channels": [
+          "apns"
+        ],
+        "endpoint_key_id": "k1"
+      }
+    },
+    {
+      "name": "unknown channel",
+      "keyword": "enum",
+      "value": {
+        "service": "yaran-push-relay",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "apps": [
+          "com.example.yaran"
+        ],
+        "channels": [
+          "webpush"
+        ],
+        "endpoint_key_id": "k1"
+      }
+    },
+    {
+      "name": "17-char kid",
+      "keyword": "pattern",
+      "value": {
+        "service": "yaran-push-relay",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "apps": [
+          "com.example.yaran"
+        ],
+        "channels": [
+          "apns"
+        ],
+        "endpoint_key_id": "kkkkkkkkkkkkkkkkk"
+      }
+    },
+    {
+      "name": "missing apps",
+      "keyword": "required",
+      "value": {
+        "service": "yaran-push-relay",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "channels": [
+          "apns"
+        ],
+        "endpoint_key_id": "k1"
+      }
+    }
+  ]
+}

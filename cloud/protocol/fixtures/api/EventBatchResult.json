@@ -1,0 +1,46 @@
+{
+  "type": "EventBatchResult",
+  "schema": "machine.schema.json#/$defs/EventBatchResult",
+  "valid": [
+    {
+      "name": "result",
+      "value": {
+        "accepted": [
+          "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        ],
+        "duplicates": [],
+        "push_enabled": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing push_enabled",
+      "keyword": "required",
+      "value": {
+        "accepted": [],
+        "duplicates": []
+      }
+    },
+    {
+      "name": "bad id",
+      "keyword": "pattern",
+      "value": {
+        "accepted": [
+          "x"
+        ],
+        "duplicates": [],
+        "push_enabled": true
+      }
+    },
+    {
+      "name": "object duplicates",
+      "keyword": "type",
+      "value": {
+        "accepted": [],
+        "duplicates": {},
+        "push_enabled": true
+      }
+    }
+  ]
+}

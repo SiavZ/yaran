@@ -1,0 +1,57 @@
+{
+  "description": "topic(m, a, t) = first 32 chars of base64url(SHA-256(\"yaran-topic-v1\\n\" + m + \"\\n\" + a + \"\\n\" + (t or \"\"))); delivery is the per-kind Web Push table with push.ttl_seconds = 3600.",
+  "topics": [
+    {
+      "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "t": null,
+      "digest_input_utf8": "yaran-topic-v1\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\n",
+      "topic": "27wQ8UTqdgpP5eiDG-JxsPHLAZsDNPad"
+    },
+    {
+      "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+      "t": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+      "digest_input_utf8": "yaran-topic-v1\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\n9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+      "topic": "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re"
+    },
+    {
+      "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "a": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "t": null,
+      "digest_input_utf8": "yaran-topic-v1\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+      "topic": "EnDJJCgZQ9PwoZCFoyIAC20yro2qwG1D"
+    }
+  ],
+  "ttl_setting": 3600,
+  "delivery": [
+    {
+      "k": "attention_raised",
+      "urgency": "high",
+      "ttl": 3600,
+      "topic": true,
+      "visible": true
+    },
+    {
+      "k": "attention_cleared",
+      "urgency": "very-low",
+      "ttl": 3600,
+      "topic": true,
+      "visible": false
+    },
+    {
+      "k": "agent_exited_badly",
+      "urgency": "high",
+      "ttl": 3600,
+      "topic": true,
+      "visible": true
+    },
+    {
+      "k": "test",
+      "urgency": "normal",
+      "ttl": 300,
+      "topic": false,
+      "visible": true
+    }
+  ]
+}

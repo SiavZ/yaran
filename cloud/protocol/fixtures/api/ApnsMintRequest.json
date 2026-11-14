@@ -1,0 +1,114 @@
+{
+  "type": "ApnsMintRequest",
+  "schema": "relay.schema.json#/$defs/ApnsMintRequest",
+  "valid": [
+    {
+      "name": "production",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "sandbox",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "sandbox",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "uppercase token",
+      "keyword": "pattern",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "apns_token": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "63-char token",
+      "keyword": "pattern",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "apns_token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "unknown environment",
+      "keyword": "enum",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "staging",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "156-char app id",
+      "keyword": "maxLength",
+      "value": {
+        "kind": "apns",
+        "app_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "extra": 1
+      }
+    },
+    {
+      "name": "missing registration_id",
+      "keyword": "required",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+      }
+    },
+    {
+      "name": "fcm kind",
+      "keyword": "const",
+      "value": {
+        "kind": "fcm",
+        "app_id": "com.example.yaran",
+        "apns_token": "abababababababababababababababababababababababababababababababab",
+        "apns_environment": "production",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "type": "UserSlug",
+  "schema": "common.schema.json#/$defs/UserSlug",
+  "valid": [
+    {
+      "name": "slug",
+      "value": "ada"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "31 chars",
+      "keyword": "pattern",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "underscore",
+      "keyword": "pattern",
+      "value": "ada_l"
+    }
+  ]
+}

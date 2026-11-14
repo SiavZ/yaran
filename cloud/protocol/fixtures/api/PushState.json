@@ -1,0 +1,38 @@
+{
+  "type": "PushState",
+  "schema": "devices.schema.json#/$defs/PushState",
+  "valid": [
+    {
+      "name": "active",
+      "value": "active"
+    },
+    {
+      "name": "gone",
+      "value": "gone"
+    },
+    {
+      "name": "auth_failed",
+      "value": "auth_failed"
+    },
+    {
+      "name": "failing",
+      "value": "failing"
+    },
+    {
+      "name": "none",
+      "value": "none"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not in the enum",
+      "keyword": "enum",
+      "value": "not_a_value"
+    },
+    {
+      "name": "not a string",
+      "keyword": "enum",
+      "value": 1
+    }
+  ]
+}

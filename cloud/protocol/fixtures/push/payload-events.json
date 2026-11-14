@@ -1,0 +1,455 @@
+{
+  "description": "Machine Event -> PushPayload v1. serialized is the exact UTF-8 JSON (key order v,k,m,a,t,s,p,l,ts); exit_status never reaches the payload.",
+  "cases": [
+    {
+      "name": "raised on the slot tab with names",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000001",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "needs_attention",
+        "project": "yaran",
+        "label": "fix the tests"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "fix the tests",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"p\":\"yaran\",\"l\":\"fix the tests\",\"ts\":1731571200}",
+      "bytes": 186
+    },
+    {
+      "name": "raised on an extra tab",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000002",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "needs_attention",
+        "tab_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "project": "yaran",
+        "label": "fix the tests"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "t": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "fix the tests",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"t\":\"9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d\",\"s\":\"needs_attention\",\"p\":\"yaran\",\"l\":\"fix the tests\",\"ts\":1731571200}",
+      "bytes": 229
+    },
+    {
+      "name": "raised with push.detail minimal",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000003",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "needs_attention"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "needs_attention",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"ts\":1731571200}",
+      "bytes": 154
+    },
+    {
+      "name": "cleared to typing",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000004",
+        "kind": "attention_cleared",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "typing",
+        "tab_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_cleared",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "t": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "s": "typing",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_cleared\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"t\":\"9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d\",\"s\":\"typing\",\"ts\":1731571200}",
+      "bytes": 189
+    },
+    {
+      "name": "cleared to busy",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000005",
+        "kind": "attention_cleared",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "busy",
+        "tab_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_cleared",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "t": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "s": "busy",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_cleared\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"t\":\"9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d\",\"s\":\"busy\",\"ts\":1731571200}",
+      "bytes": 187
+    },
+    {
+      "name": "cleared to idle",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000006",
+        "kind": "attention_cleared",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "idle",
+        "tab_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_cleared",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "t": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "s": "idle",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_cleared\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"t\":\"9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d\",\"s\":\"idle\",\"ts\":1731571200}",
+      "bytes": 187
+    },
+    {
+      "name": "cleared to detached",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000007",
+        "kind": "attention_cleared",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "detached",
+        "tab_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_cleared",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "t": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "s": "detached",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_cleared\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"t\":\"9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d\",\"s\":\"detached\",\"ts\":1731571200}",
+      "bytes": 191
+    },
+    {
+      "name": "cleared to exited",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000008",
+        "kind": "attention_cleared",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "exited",
+        "tab_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_cleared",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "t": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "s": "exited",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_cleared\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"t\":\"9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d\",\"s\":\"exited\",\"ts\":1731571200}",
+      "bytes": 189
+    },
+    {
+      "name": "exited badly: launch_failed",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000009",
+        "kind": "agent_exited_badly",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "ending": "launch_failed",
+        "exit_status": 1,
+        "project": "yaran",
+        "label": "agent"
+      },
+      "payload": {
+        "v": 1,
+        "k": "agent_exited_badly",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "launch_failed",
+        "p": "yaran",
+        "l": "agent",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"agent_exited_badly\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"launch_failed\",\"p\":\"yaran\",\"l\":\"agent\",\"ts\":1731571200}",
+      "bytes": 178
+    },
+    {
+      "name": "exited badly: exited",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-00000000000a",
+        "kind": "agent_exited_badly",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "ending": "exited",
+        "exit_status": 1,
+        "project": "yaran",
+        "label": "agent"
+      },
+      "payload": {
+        "v": 1,
+        "k": "agent_exited_badly",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "exited",
+        "p": "yaran",
+        "l": "agent",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"agent_exited_badly\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"exited\",\"p\":\"yaran\",\"l\":\"agent\",\"ts\":1731571200}",
+      "bytes": 171
+    },
+    {
+      "name": "exited badly: exited_unknown",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-00000000000b",
+        "kind": "agent_exited_badly",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "ending": "exited_unknown",
+        "exit_status": 1,
+        "project": "yaran",
+        "label": "agent"
+      },
+      "payload": {
+        "v": 1,
+        "k": "agent_exited_badly",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "exited_unknown",
+        "p": "yaran",
+        "l": "agent",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"agent_exited_badly\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"exited_unknown\",\"p\":\"yaran\",\"l\":\"agent\",\"ts\":1731571200}",
+      "bytes": 179
+    },
+    {
+      "name": "exited badly: rapid_clean_exit",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-00000000000c",
+        "kind": "agent_exited_badly",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "ending": "rapid_clean_exit",
+        "exit_status": 1,
+        "project": "yaran",
+        "label": "agent"
+      },
+      "payload": {
+        "v": 1,
+        "k": "agent_exited_badly",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "rapid_clean_exit",
+        "p": "yaran",
+        "l": "agent",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"agent_exited_badly\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"rapid_clean_exit\",\"p\":\"yaran\",\"l\":\"agent\",\"ts\":1731571200}",
+      "bytes": 181
+    },
+    {
+      "name": "long ASCII project is truncated",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-00000000000d",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "needs_attention",
+        "project": "a-very-long-project-name-indeed",
+        "label": "short"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "needs_attention",
+        "p": "a-very-long-project-n…",
+        "l": "short",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"p\":\"a-very-long-project-n…\",\"l\":\"short\",\"ts\":1731571200}",
+      "bytes": 197
+    },
+    {
+      "name": "CJK label of exactly 24 bytes is kept",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-00000000000e",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "needs_attention",
+        "label": "日本語のラベルで"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "needs_attention",
+        "l": "日本語のラベルで",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"l\":\"日本語のラベルで\",\"ts\":1731571200}",
+      "bytes": 185
+    },
+    {
+      "name": "CJK label over 24 bytes is truncated",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-00000000000f",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "needs_attention",
+        "label": "日本語のラベルです"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "needs_attention",
+        "l": "日本語のラベル…",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"l\":\"日本語のラベル…\",\"ts\":1731571200}",
+      "bytes": 185
+    },
+    {
+      "name": "emoji at the 24-byte boundary is kept",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000010",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "needs_attention",
+        "label": "abcdefghijklmnopqrst😀"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "needs_attention",
+        "l": "abcdefghijklmnopqrst😀",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"l\":\"abcdefghijklmnopqrst😀\",\"ts\":1731571200}",
+      "bytes": 185
+    },
+    {
+      "name": "emoji crossing the 21-byte cut is dropped whole",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000011",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "needs_attention",
+        "label": "abcdefghijklmnopqrst😀x"
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "needs_attention",
+        "l": "abcdefghijklmnopqrst…",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"l\":\"abcdefghijklmnopqrst…\",\"ts\":1731571200}",
+      "bytes": 184
+    },
+    {
+      "name": "empty project and label are omitted",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000012",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "state": "needs_attention",
+        "project": "",
+        "label": ""
+      },
+      "payload": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+        "a": "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "s": "needs_attention",
+        "ts": 1731571200
+      },
+      "serialized": "{\"v\":1,\"k\":\"attention_raised\",\"m\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"a\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"s\":\"needs_attention\",\"ts\":1731571200}",
+      "bytes": 154
+    }
+  ],
+  "refused": [
+    {
+      "name": "128-character ids exceed the 320-byte cap",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "event": {
+        "id": "0b8e4c1d-2f3a-4b5c-9d6e-000000000013",
+        "kind": "attention_raised",
+        "ts": "2024-11-14T08:00:00Z",
+        "agent_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "state": "needs_attention",
+        "tab_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "project": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+        "label": "llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll"
+      },
+      "serialized_bytes": 443,
+      "expect": "too_large"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "type": "Platform",
+  "schema": "common.schema.json#/$defs/Platform",
+  "valid": [
+    {
+      "name": "android",
+      "value": "android"
+    },
+    {
+      "name": "ios",
+      "value": "ios"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not in the enum",
+      "keyword": "enum",
+      "value": "not_a_value"
+    },
+    {
+      "name": "not a string",
+      "keyword": "enum",
+      "value": 1
+    }
+  ]
+}

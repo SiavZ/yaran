@@ -1,0 +1,77 @@
+{
+  "type": "ClaimRequest",
+  "schema": "machine.schema.json#/$defs/ClaimRequest",
+  "valid": [
+    {
+      "name": "claim",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk.~",
+        "yaran_version": "0.42.0",
+        "origin_port": 3890
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk.~",
+        "yaran_version": "0.42.0",
+        "origin_port": 3890,
+        "extra": true
+      }
+    },
+    {
+      "name": "missing origin_port",
+      "keyword": "required",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk.~",
+        "yaran_version": "0.42.0"
+      }
+    },
+    {
+      "name": "42-char verifier",
+      "keyword": "pattern",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjX",
+        "yaran_version": "0.42.0",
+        "origin_port": 3890
+      }
+    },
+    {
+      "name": "plus in verifier",
+      "keyword": "pattern",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk.~+",
+        "yaran_version": "0.42.0",
+        "origin_port": 3890
+      }
+    },
+    {
+      "name": "port too big",
+      "keyword": "maximum",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk.~",
+        "yaran_version": "0.42.0",
+        "origin_port": 70000
+      }
+    },
+    {
+      "name": "empty version",
+      "keyword": "minLength",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk.~",
+        "yaran_version": "",
+        "origin_port": 3890
+      }
+    }
+  ]
+}

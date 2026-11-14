@@ -1,0 +1,164 @@
+{
+  "type": "HandoffPayload",
+  "schema": "handoff.schema.json#/$defs/HandoffPayload",
+  "valid": [
+    {
+      "name": "machine",
+      "value": {
+        "v": 1,
+        "kind": "machine",
+        "host": "laptop-ada.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada@example.org",
+        "exp": 1731657600,
+        "iat": 1731571200
+      }
+    },
+    {
+      "name": "control plane with cookie",
+      "value": {
+        "v": 1,
+        "kind": "control_plane",
+        "host": "cp.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada@example.org",
+        "exp": 1731657600,
+        "iat": 1731571200,
+        "cookie": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "v2",
+      "keyword": "const",
+      "value": {
+        "v": 2,
+        "kind": "machine",
+        "host": "laptop-ada.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada@example.org",
+        "exp": 1731657600,
+        "iat": 1731571200
+      }
+    },
+    {
+      "name": "unknown kind",
+      "keyword": "enum",
+      "value": {
+        "v": 1,
+        "kind": "phone",
+        "host": "laptop-ada.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada@example.org",
+        "exp": 1731657600,
+        "iat": 1731571200
+      }
+    },
+    {
+      "name": "uppercase host",
+      "keyword": "pattern",
+      "value": {
+        "v": 1,
+        "kind": "machine",
+        "host": "Laptop.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada@example.org",
+        "exp": 1731657600,
+        "iat": 1731571200
+      }
+    },
+    {
+      "name": "not a jwt",
+      "keyword": "pattern",
+      "value": {
+        "v": 1,
+        "kind": "machine",
+        "host": "laptop-ada.example.com",
+        "jwt": "notajwt",
+        "email": "ada@example.org",
+        "exp": 1731657600,
+        "iat": 1731571200
+      }
+    },
+    {
+      "name": "bad email",
+      "keyword": "format",
+      "value": {
+        "v": 1,
+        "kind": "machine",
+        "host": "laptop-ada.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada",
+        "exp": 1731657600,
+        "iat": 1731571200
+      }
+    },
+    {
+      "name": "negative exp",
+      "keyword": "minimum",
+      "value": {
+        "v": 1,
+        "kind": "machine",
+        "host": "laptop-ada.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada@example.org",
+        "exp": -1,
+        "iat": 1731571200
+      }
+    },
+    {
+      "name": "string iat",
+      "keyword": "type",
+      "value": {
+        "v": 1,
+        "kind": "machine",
+        "host": "laptop-ada.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada@example.org",
+        "exp": 1731657600,
+        "iat": "1"
+      }
+    },
+    {
+      "name": "empty cookie",
+      "keyword": "minLength",
+      "value": {
+        "v": 1,
+        "kind": "machine",
+        "host": "laptop-ada.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada@example.org",
+        "exp": 1731657600,
+        "iat": 1731571200,
+        "cookie": ""
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "v": 1,
+        "kind": "machine",
+        "host": "laptop-ada.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "email": "ada@example.org",
+        "exp": 1731657600,
+        "iat": 1731571200,
+        "aud": "x"
+      }
+    },
+    {
+      "name": "missing email",
+      "keyword": "required",
+      "value": {
+        "v": 1,
+        "kind": "machine",
+        "host": "laptop-ada.example.com",
+        "jwt": "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFkYUBleGFtcGxlLm9yZyJ9.c2lnbmF0dXJl",
+        "exp": 1731657600,
+        "iat": 1731571200
+      }
+    }
+  ]
+}

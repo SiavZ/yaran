@@ -1,0 +1,105 @@
+{
+  "type": "HandoffConsent",
+  "schema": "handoff.schema.json#/$defs/HandoffConsent",
+  "valid": [
+    {
+      "name": "continue",
+      "value": {
+        "v": 1,
+        "pk": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOck",
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "redirect": "https://app.example.com/auth/callback",
+        "device": "Ada's Pixel",
+        "dk": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "continue"
+      }
+    },
+    {
+      "name": "cancel",
+      "value": {
+        "v": 1,
+        "pk": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOck",
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "redirect": "https://app.example.com/auth/callback",
+        "device": "Ada's Pixel",
+        "dk": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "cancel",
+        "build": "release",
+        "mode": "query"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing dk",
+      "keyword": "required",
+      "value": {
+        "v": 1,
+        "pk": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOck",
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "redirect": "https://app.example.com/auth/callback",
+        "device": "Ada's Pixel",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "continue"
+      }
+    },
+    {
+      "name": "unknown decision",
+      "keyword": "enum",
+      "value": {
+        "v": 1,
+        "pk": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOck",
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "redirect": "https://app.example.com/auth/callback",
+        "device": "Ada's Pixel",
+        "dk": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "approve"
+      }
+    },
+    {
+      "name": "short csrf",
+      "keyword": "pattern",
+      "value": {
+        "v": 1,
+        "pk": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOck",
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "redirect": "https://app.example.com/auth/callback",
+        "device": "Ada's Pixel",
+        "dk": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "csrf": "abc",
+        "decision": "continue"
+      }
+    },
+    {
+      "name": "re-sent dts",
+      "keyword": "additionalProperties",
+      "value": {
+        "v": 1,
+        "pk": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOck",
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "redirect": "https://app.example.com/auth/callback",
+        "device": "Ada's Pixel",
+        "dk": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "continue",
+        "dts": "1731571200"
+      }
+    },
+    {
+      "name": "missing csrf",
+      "keyword": "required",
+      "value": {
+        "v": 1,
+        "pk": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOck",
+        "state": "s3cr3tStateValue_abcdefGHIJ",
+        "redirect": "https://app.example.com/auth/callback",
+        "device": "Ada's Pixel",
+        "dk": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "decision": "continue"
+      }
+    }
+  ]
+}

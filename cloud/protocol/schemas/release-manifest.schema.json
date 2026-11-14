@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "release-manifest.schema.json",
+  "title": "ReleaseManifestSchemas",
+  "description": "cloud-deploy:worker/release.json, read by the Worker's update checker (Phases 07, 18).",
+  "$defs": {
+    "ReleaseManifest": {
+      "title": "ReleaseManifest",
+      "type": "object",
+      "required": ["train", "version", "tag", "released_at", "protocol", "min_update_from", "security", "notes_url", "tarball"],
+      "properties": {
+        "train": { "const": "yaran-cloud" },
+        "version": { "$ref": "common.schema.json#/$defs/SemVer" },
+        "tag": { "type": "string", "pattern": "^yaran-cloud-v[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}(?:-[0-9A-Za-z.-]{1,32})?$" },
+        "released_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "protocol": { "$ref": "common.schema.json#/$defs/ProtocolRange" },
+        "min_update_from": { "$ref": "common.schema.json#/$defs/SemVer" },
+        "security": { "type": "boolean" },
+        "notes_url": { "type": "string", "pattern": "^https://" },
+        "tarball": {
+          "type": "object",
+          "required": ["url", "sha256"],
+          "properties": {
+            "url": { "type": "string", "pattern": "^https://" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      }
+    }
+  }
+}

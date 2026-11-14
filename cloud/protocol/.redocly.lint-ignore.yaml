@@ -1,0 +1,10 @@
+# Exceptions to recommended-strict, each one deliberate.
+# W3, W16b and Y1b are HTML form posts whose only success is a redirect to the callback
+# (302/303, Design §5 and §8); they have no 2xx answer by design.
+openapi/worker.openapi.yaml:
+  operation-2xx-response:
+    - '#/paths/~1v1~1pair~1authorize/post/responses'
+    - '#/paths/~1v1~1handoff/post/responses'
+openapi/yaran-machine.openapi.yaml:
+  operation-2xx-response:
+    - '#/paths/~1__yaran~1handoff/post/responses'

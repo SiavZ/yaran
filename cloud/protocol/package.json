@@ -1,0 +1,36 @@
+{
+  "name": "@yaran/protocol",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The yaran cloud wire contract: JSON Schemas, OpenAPI documents, generated types, validators, codecs and shared test vectors.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./schemas/*": "./schemas/*",
+    "./registry/*": "./registry/*",
+    "./fixtures/*": "./fixtures/*"
+  },
+  "scripts": {
+    "gen": "node scripts/gen-types.mjs && node scripts/gen-vectors.mjs",
+    "gen:check": "node scripts/gen-types.mjs --check",
+    "gen:vectors:check": "node scripts/gen-vectors.mjs --check",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint:openapi": "redocly lint"
+  },
+  "dependencies": {
+    "@cfworker/json-schema": "4.1.6",
+    "jose": "6.2.17"
+  },
+  "devDependencies": {
+    "@redocly/cli": "2.78.0",
+    "@types/node": "22.20.5",
+    "json-schema-to-typescript": "16.0.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  }
+}

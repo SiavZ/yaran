@@ -1,0 +1,415 @@
+{
+  "type": "DeviceRegistration",
+  "schema": "devices.schema.json#/$defs/DeviceRegistration",
+  "valid": [
+    {
+      "name": "webpush",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "no push, locale, timed mute",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "none"
+        },
+        "mute_all": false,
+        "muted_until": "2026-11-15T08:30:00Z",
+        "muted_machine_ids": [
+          "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        ],
+        "locale": "en-GB"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing device_key",
+      "keyword": "required",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "uppercase install id",
+      "keyword": "pattern",
+      "value": {
+        "install_id": "9B8A7C6D-5E4F-4A3B-9C2D-1E0F2A3B4C5D",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "unknown platform",
+      "keyword": "enum",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "windows",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "unknown flavor",
+      "keyword": "enum",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "beta",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "unknown form factor",
+      "keyword": "enum",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "watch",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "bad app version",
+      "keyword": "pattern",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "empty label",
+      "keyword": "minLength",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "bad locale",
+      "keyword": "pattern",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": [],
+        "locale": "english"
+      }
+    },
+    {
+      "name": "webpush without fields",
+      "keyword": "oneOf",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush"
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "string mute_all",
+      "keyword": "type",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": "no",
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "bad muted_until",
+      "keyword": "oneOf",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": "later",
+        "muted_machine_ids": []
+      }
+    },
+    {
+      "name": "duplicate muted ids",
+      "keyword": "uniqueItems",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": [
+          "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+          "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+        ]
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "BOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": [],
+        "extra": 1
+      }
+    },
+    {
+      "name": "compressed device key",
+      "keyword": "pattern",
+      "value": {
+        "install_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "device_key": "AOD5Ay5Wv3FZTu6gP4Wmo5DB6kcNW6zUjG-BsmhSS8hVa88c6htTZ0qTf11fZHXuPCmjPoiOebuDJDe5_lb3u7A",
+        "platform": "android",
+        "flavor": "foss",
+        "form_factor": "phone",
+        "app_version": "1.0.0",
+        "label": "Ada's Pixel",
+        "push": {
+          "kind": "webpush",
+          "channel": "unifiedpush",
+          "distributor": "io.heckel.ntfy",
+          "endpoint": "https://push.example.org/up/abc",
+          "keys": {
+            "p256dh": "BGYebOtHgFuJ_f-YrHMCsmIU8XP7gDIBxEGl2fj1P9cPM_vcowX5Xb02kPQ_e0oW3HaX7N2c8TrnKOk6xNdd35o",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+          }
+        },
+        "mute_all": false,
+        "muted_until": null,
+        "muted_machine_ids": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,196 @@
+{
+  "type": "HandoffProtectedHeader",
+  "schema": "handoff.schema.json#/$defs/HandoffProtectedHeader",
+  "valid": [
+    {
+      "name": "profile",
+      "value": {
+        "alg": "ECDH-ES",
+        "enc": "A256GCM",
+        "typ": "yaran-handoff+jwe",
+        "cty": "yaran-handoff+json",
+        "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "VDdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apu": "bGFwdG9wLWFkYS5leGFtcGxlLmNvbQ",
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "rsa alg",
+      "keyword": "const",
+      "value": {
+        "alg": "RSA-OAEP",
+        "enc": "A256GCM",
+        "typ": "yaran-handoff+jwe",
+        "cty": "yaran-handoff+json",
+        "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "VDdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apu": "bGFwdG9wLWFkYS5leGFtcGxlLmNvbQ",
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK"
+      }
+    },
+    {
+      "name": "a128gcm",
+      "keyword": "const",
+      "value": {
+        "alg": "ECDH-ES",
+        "enc": "A128GCM",
+        "typ": "yaran-handoff+jwe",
+        "cty": "yaran-handoff+json",
+        "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "VDdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apu": "bGFwdG9wLWFkYS5leGFtcGxlLmNvbQ",
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK"
+      }
+    },
+    {
+      "name": "other typ",
+      "keyword": "const",
+      "value": {
+        "alg": "ECDH-ES",
+        "enc": "A256GCM",
+        "typ": "JWE",
+        "cty": "yaran-handoff+json",
+        "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "VDdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apu": "bGFwdG9wLWFkYS5leGFtcGxlLmNvbQ",
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK"
+      }
+    },
+    {
+      "name": "other cty",
+      "keyword": "const",
+      "value": {
+        "alg": "ECDH-ES",
+        "enc": "A256GCM",
+        "typ": "yaran-handoff+jwe",
+        "cty": "JWT",
+        "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "VDdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apu": "bGFwdG9wLWFkYS5leGFtcGxlLmNvbQ",
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK"
+      }
+    },
+    {
+      "name": "42-char kid",
+      "keyword": "pattern",
+      "value": {
+        "alg": "ECDH-ES",
+        "enc": "A256GCM",
+        "typ": "yaran-handoff+jwe",
+        "cty": "yaran-handoff+json",
+        "kid": "zbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "VDdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apu": "bGFwdG9wLWFkYS5leGFtcGxlLmNvbQ",
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK"
+      }
+    },
+    {
+      "name": "other curve",
+      "keyword": "const",
+      "value": {
+        "alg": "ECDH-ES",
+        "enc": "A256GCM",
+        "typ": "yaran-handoff+jwe",
+        "cty": "yaran-handoff+json",
+        "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-384",
+          "x": "VDdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apu": "bGFwdG9wLWFkYS5leGFtcGxlLmNvbQ",
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK"
+      }
+    },
+    {
+      "name": "42-char x",
+      "keyword": "pattern",
+      "value": {
+        "alg": "ECDH-ES",
+        "enc": "A256GCM",
+        "typ": "yaran-handoff+jwe",
+        "cty": "yaran-handoff+json",
+        "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "DdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apu": "bGFwdG9wLWFkYS5leGFtcGxlLmNvbQ",
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK"
+      }
+    },
+    {
+      "name": "missing apu",
+      "keyword": "required",
+      "value": {
+        "alg": "ECDH-ES",
+        "enc": "A256GCM",
+        "typ": "yaran-handoff+jwe",
+        "cty": "yaran-handoff+json",
+        "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "VDdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK"
+      }
+    },
+    {
+      "name": "padded apv",
+      "keyword": "pattern",
+      "value": {
+        "alg": "ECDH-ES",
+        "enc": "A256GCM",
+        "typ": "yaran-handoff+jwe",
+        "cty": "yaran-handoff+json",
+        "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+        "epk": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "VDdpcPszAH0odhoLQoN_1Zc6Ils5yadCRBDJXrOVjWI",
+          "y": "AItOWyAYh8g2VW22iOwhrcMyLM4PFtM7pIGNFDJAm9c"
+        },
+        "apu": "bGFwdG9wLWFkYS5leGFtcGxlLmNvbQ",
+        "apv": "czNjcjN0U3RhdGVWYWx1ZV9hYmNkZWZHSElK="
+      }
+    }
+  ]
+}

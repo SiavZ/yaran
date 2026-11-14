@@ -1,0 +1,34 @@
+{
+  "type": "PushKind",
+  "schema": "push.schema.json#/$defs/PushKind",
+  "valid": [
+    {
+      "name": "attention_raised",
+      "value": "attention_raised"
+    },
+    {
+      "name": "attention_cleared",
+      "value": "attention_cleared"
+    },
+    {
+      "name": "agent_exited_badly",
+      "value": "agent_exited_badly"
+    },
+    {
+      "name": "test",
+      "value": "test"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not in the enum",
+      "keyword": "enum",
+      "value": "not_a_value"
+    },
+    {
+      "name": "not a string",
+      "keyword": "enum",
+      "value": 1
+    }
+  ]
+}
