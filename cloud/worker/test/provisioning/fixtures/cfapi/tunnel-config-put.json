@@ -1,0 +1,65 @@
+{
+  "source": "derived",
+  "from": "derived from cloudflare/api-schemas openapi.json examples (commit 2026-11-13), trimmed",
+  "request": {
+    "method": "PUT",
+    "path": "/accounts/{account}/cfd_tunnel/{tunnel_id}/configurations",
+    "body": {
+      "config": {
+        "ingress": [
+          {
+            "hostname": "laptop-alice.example.com",
+            "service": "http://127.0.0.1:3890",
+            "originRequest": {
+              "access": {
+                "required": true,
+                "teamName": "acme",
+                "audTag": [
+                  "aud"
+                ]
+              }
+            }
+          },
+          {
+            "service": "http_status:404"
+          }
+        ],
+        "originRequest": {}
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "tunnel_id": "00000000-0000-4000-8000-000000000001",
+        "version": 1,
+        "config": {
+          "ingress": [
+            {
+              "hostname": "laptop-alice.example.com",
+              "service": "http://127.0.0.1:3890",
+              "originRequest": {
+                "access": {
+                  "required": true,
+                  "teamName": "acme",
+                  "audTag": [
+                    "aud"
+                  ]
+                }
+              }
+            },
+            {
+              "service": "http_status:404"
+            }
+          ],
+          "originRequest": {}
+        },
+        "source": "cloudflare"
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "source": "derived",
+  "from": "derived from cloudflare/api-schemas openapi.json examples (commit 2026-11-13), trimmed",
+  "request": {
+    "method": "POST",
+    "path": "/accounts/{account}/access/apps",
+    "body": {
+      "type": "self_hosted",
+      "name": "yaran:a1b2c3d4:m:x",
+      "domain": "laptop-alice.example.com",
+      "policies": [
+        {
+          "id": "{policy_id}",
+          "precedence": 1
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 201,
+    "body": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {
+        "id": "023e105f-4ece-f8ad-9ca3-1a8372d0c353",
+        "aud": "737646a56ab1df6ec9bddc7e5ca84eaf3b0768850f3ffb5d74f1534911fe3893",
+        "name": "yaran:a1b2c3d4:m:x",
+        "domain": "laptop-alice.example.com",
+        "type": "self_hosted",
+        "policies": [
+          {
+            "id": "f174e90a-fafe-4643-bbbc-4a0ed4fc8415",
+            "precedence": 1
+          }
+        ]
+      }
+    }
+  }
+}

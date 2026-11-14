@@ -1,0 +1,26 @@
+{
+  "source": "derived",
+  "from": "derived from cloudflare/api-schemas openapi.json examples (commit 2026-11-13), trimmed",
+  "request": {
+    "method": "POST",
+    "path": "/accounts/{account}/cfd_tunnel",
+    "body": {
+      "name": "{tunnel_name}",
+      "config_src": "cloudflare"
+    }
+  },
+  "response": {
+    "status": 409,
+    "body": {
+      "success": false,
+      "errors": [
+        {
+          "code": 1013,
+          "message": "You already have a tunnel with this name"
+        }
+      ],
+      "messages": [],
+      "result": null
+    }
+  }
+}

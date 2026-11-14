@@ -204,6 +204,9 @@
     "mobile/plugins/push/vitest.config.ts": "loaded by vitest, via npm test in mobile/plugins/push",
     "mobile/plugins/push/android/src/main/kotlin/io/github/siavz/yaran/push/PushPlugin.kt": "Capacitor plugin class (@CapacitorPlugin name Push), registered by the Capacitor CLI",
     "mobile/plugins/push/android/src/main/kotlin/io/github/siavz/yaran/push/YaranPushService.kt": "UnifiedPush PushService, declared in mobile/plugins/push/android/src/main/AndroidManifest.xml",
-    "mobile/android/app/src/play/relay-fcm/kotlin/io/github/siavz/yaran/push/fcmrelay/*.kt": "service and provider declared in mobile/android/app/src/play/relay-fcm/AndroidManifest.xml (relay-fcm builds only)"
+    "mobile/android/app/src/play/relay-fcm/kotlin/io/github/siavz/yaran/push/fcmrelay/*.kt": "service and provider declared in mobile/android/app/src/play/relay-fcm/AndroidManifest.xml (relay-fcm builds only)",
+    "cloud/worker/test/provisioning/*.test.ts": "vitest, via npm run test:provisioning in cloud/worker",
+    "cloud/worker/test/provisioning/setup.ts": "vitest setupFiles, from cloud/worker/vitest.provisioning.config.ts",
+    "cloud/worker/vitest.provisioning.config.ts": "loaded by vitest, via npm run test:provisioning in cloud/worker"
   }
 }
