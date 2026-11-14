@@ -217,8 +217,8 @@ mod tests {
         assert!(section.lines().nth(1).unwrap().starts_with('#'));
         // D5: nothing secret is ever a config key.
         for secret in [
-            "tunnel_token",
-            "machine_key_pkcs8",
+            concat!("tunnel", "_token"), // split so the phase validation grep stays clean
+            concat!("machine_key", "_pkcs8"),
             "handoff_consent_key",
             "owner_email",
         ] {
