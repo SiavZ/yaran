@@ -36,6 +36,7 @@ const VALID: Record<string, () => Record<string, Param>> = {
   cf_orphans: () => ({ resource_kind: "tunnel", resource_id: uid(), marker: "m", first_seen_at: NOW, last_seen_at: NOW }),
   cf_api_budget: () => ({ id: 1, observed_at: NOW }),
   scheduled_tasks: () => ({ task: `t${++n}`, next_run_at: NOW }),
+  handoff_csrf: () => ({ token_hash: crypto.getRandomValues(new Uint8Array(32)), state_hash: bytes(32), pk_thumbprint: "t".repeat(43), dk_fingerprint: "A".repeat(29), verified: 0, user_id: userId, expires_at: NOW }),
 };
 
 async function insert(table: string, row: Record<string, Param>): Promise<void> {
@@ -94,6 +95,16 @@ const CHECKS: [string, string, Record<string, Param>][] = [
   ["cf_orphans", "resource kind", { resource_kind: "worker" }],
   ["cf_api_budget", "single row", { id: 2 }],
   ["scheduled_tasks", "last error length", { last_error: "e".repeat(1025) }],
+  // 0006_pairing.sql
+  ["pair_requests", "yaran version length", { yaran_version: "v".repeat(41) }],
+  ["pair_requests", "csrf hash length", { csrf_hash: bytes(31) }],
+  ["devices", "push state", { push_state: "asleep" }],
+  ["devices", "mute all is boolean", { mute_all: 2 }],
+  ["handoff_csrf", "token hash length", { token_hash: bytes(31) }],
+  ["handoff_csrf", "state hash length", { state_hash: bytes(31) }],
+  ["handoff_csrf", "pk thumbprint length", { pk_thumbprint: "t".repeat(42) }],
+  ["handoff_csrf", "dk fingerprint length", { dk_fingerprint: "A".repeat(28) }],
+  ["handoff_csrf", "verified is boolean", { verified: 2 }],
 ];
 
 beforeAll(async () => {

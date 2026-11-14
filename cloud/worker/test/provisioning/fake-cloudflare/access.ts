@@ -20,6 +20,8 @@ import { LIMITS, type FakeApp, type FakePolicy, type FakeState } from "./state.t
 export function accessRoutes(st: FakeState) {
   return (req: FakeReq): Response | null => {
     const { method, path, query, body } = req;
+    // Phase 06: revoke a user's Access sessions (sign out everywhere).
+    if (match(path, /^\/accounts\/[^/]+\/access\/organizations\/revoke_user$/)) return method === "POST" ? ok(null) : null;
     if (match(path, /^\/accounts\/[^/]+\/access\/apps$/)) {
       if (method === "GET") {
         let items = [...st.apps.values()];

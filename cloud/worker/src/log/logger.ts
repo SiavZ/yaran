@@ -27,6 +27,7 @@
  * ├── test/helpers/app.ts
  * ├── test/machine-signature.test.ts
  * ├── test/migrate-runtime.test.ts
+ * ├── test/phase06/fakes.ts
  * └── test/sanitize.test.ts
  * <module-headers:end>
  */

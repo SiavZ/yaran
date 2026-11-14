@@ -33,7 +33,7 @@ import { HttpError } from "../src/http/responses.ts";
 import { createLogger } from "../src/log/logger.ts";
 import { machineKeys, signedRequest, type MachineKeys } from "./helpers/machine.ts";
 import { closeSetup, NOW, seedMachine, seedUser } from "./helpers/seed.ts";
-import { errorCode, handler } from "./helpers/worker.ts";
+import { errorCode, handler, PROBE_ROUTES } from "./helpers/worker.ts";
 
 let owner = "";
 beforeAll(async () => {
@@ -78,7 +78,7 @@ describe("Worker rules through the pipeline", () => {
   let keys: MachineKeys;
   let active = "";
   const claimCode = "claim-code-0001";
-  const call = handler({ pairCodeKey: async (_db, code) => (code === claimCode ? keys.publicKey : null) });
+  const call = handler({ pairCodeKey: async (_db, code) => (code === claimCode ? keys.publicKey : null) }, PROBE_ROUTES);
   beforeAll(async () => {
     keys = await machineKeys();
     active = await seedMachine({ owner, publicKey: keys.publicKey, status: "active" });

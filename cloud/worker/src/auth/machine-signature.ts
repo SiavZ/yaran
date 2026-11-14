@@ -27,6 +27,7 @@
  * src/auth/machine-signature.ts
  * ├── src/auth/authorize.ts
  * ├── src/http/pipeline.ts
+ * ├── src/pairing/pair-requests.ts
  * └── test/machine-signature.test.ts
  * <module-headers:end>
  */

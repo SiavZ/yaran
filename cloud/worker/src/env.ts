@@ -17,6 +17,7 @@
  * ├── src/http/context.ts
  * ├── src/http/pipeline.ts
  * ├── src/index.ts
+ * ├── src/routes/call.ts
  * ├── src/scheduled/dispatcher.ts
  * ├── src/security/rate-limit.ts
  * └── src/security/secrets.ts
@@ -40,6 +41,8 @@ declare global {
       CF_API_BASE_URL?: string | undefined;
       /** Space-separated https app callback URLs (02 §8; 06 handoff, 05 G1 fallback L2). */
       APP_CALLBACK_URLS?: string | undefined;
+      /** The Worker's own version, served as `Meta.worker.version` (06). */
+      WORKER_VERSION?: string | undefined;
       /** "off" disables the runtime migrator (G11 fallback); anything else leaves it on. */
       RUNTIME_MIGRATIONS?: string | undefined;
     }

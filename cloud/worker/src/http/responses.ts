@@ -23,21 +23,38 @@
  * ├── src/auth/authorize.ts
  * ├── src/auth/identity.ts
  * ├── src/auth/machine-signature.ts
+ * ├── src/cloudflare/access-sessions.ts
+ * ├── src/devices/device-params.ts
+ * ├── src/devices/devices-repo.ts
+ * ├── src/devices/install-id.ts
  * ├── src/http/body.ts
  * ├── src/http/context.ts
  * ├── src/http/host-guard.ts
  * ├── src/http/pipeline.ts
  * ├── src/http/routes.ts
  * ├── src/index.ts
+ * ├── src/machine-api/claim.ts
+ * ├── src/machine-api/config.ts
+ * ├── src/me/cursor.ts
+ * ├── src/me/devices-route.ts
+ * ├── src/me/machines-route.ts
+ * ├── src/me/me-route.ts
+ * ├── src/pairing/authorize-route.ts
+ * ├── src/routes/phase06-context.ts
  * ├── src/security/data-key.ts
  * ├── src/security/rate-limit.ts
+ * ├── src/sessions/handoff-route.ts
+ * ├── src/sessions/revoke-sessions.ts
+ * ├── src/shared/json-body.ts
  * ├── test/access-jwt.test.ts
  * ├── test/body.test.ts
+ * ├── test/devices/device-params.test.ts
  * ├── test/error-codes.test.ts
  * ├── test/helpers/worker.ts
  * ├── test/machine-signature.test.ts
  * ├── test/rate-limit.test.ts
- * └── test/responses.test.ts
+ * ├── test/responses.test.ts
+ * └── test/sessions/revoke-sessions.test.ts
  * <module-headers:end>
  */
 import { buildErrorEnvelope, errorEntry, type ErrorCode } from "@yaran/protocol";
@@ -82,11 +99,18 @@ export interface ResponseMeta {
 /** Stamps the protocol, request-id and security headers onto a response. */
 export function finalize(res: Response, meta: ResponseMeta): Response {
   const out = new Response(res.body, res);
-  for (const [k, v] of Object.entries(BASE_HEADERS)) out.headers.set(k, v);
+  for (const [k, v] of Object.entries(BASE_HEADERS)) {
+    // A page may tighten or widen its own Referrer-Policy (06's consent pages need same-origin).
+    if (k !== "Referrer-Policy" || !out.headers.has(k)) out.headers.set(k, v);
+  }
   out.headers.set("Cache-Control", meta.cacheControl ?? "no-store");
   out.headers.set("Yaran-Protocol", String(meta.protocol));
   out.headers.set("Yaran-Request-Id", meta.requestId);
-  if ((out.headers.get("Content-Type") ?? "").startsWith("text/html")) out.headers.set("Content-Security-Policy", CSP);
+  // A page that sets its own CSP keeps it: 06's consent forms must allow form-action to the
+  // validated loopback or app callback, which the default would block on the redirect.
+  if ((out.headers.get("Content-Type") ?? "").startsWith("text/html") && !out.headers.has("Content-Security-Policy")) {
+    out.headers.set("Content-Security-Policy", CSP);
+  }
   if ((out.status === 429 || out.status === 503) && !out.headers.has("Retry-After")) {
     out.headers.set("Retry-After", String(DEFAULT_RETRY_AFTER_S));
   }

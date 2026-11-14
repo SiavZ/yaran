@@ -26,6 +26,7 @@
  * <module-headers:end>
  */
 import init from "../../migrations/0001_init.sql";
+import pairing from "../../migrations/0006_pairing.sql";
 import { all, run, stmt } from "./client.ts";
 import type { Logger } from "../log/logger.ts";
 
@@ -35,7 +36,10 @@ export interface Migration {
 }
 
 /** Every migration, in order. A new `migrations/000N_*.sql` file adds one line here. */
-export const MIGRATIONS: readonly Migration[] = [{ name: "0001_init.sql", sql: init }];
+export const MIGRATIONS: readonly Migration[] = [
+  { name: "0001_init.sql", sql: init },
+  { name: "0006_pairing.sql", sql: pairing },
+];
 
 const LEASE = "~lease";
 export const LEASE_STALE_S = 60;

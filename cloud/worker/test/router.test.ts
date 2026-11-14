@@ -48,7 +48,7 @@ describe("compileRoutes", () => {
 
 describe("G8 probes through the pipeline", () => {
   beforeAll(() => closeSetup());
-  const call = handler();
+  const call = handler({}, PROBE_ROUTES);
   it("documents that the runtime URL parser resolves %2e%2e before the Worker sees it", () => {
     expect(new URL(`https://${CP_HOST}/v1/machine/%2e%2e/me`).pathname).toBe("/v1/me");
   });

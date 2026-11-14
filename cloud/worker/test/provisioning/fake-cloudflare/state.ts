@@ -67,7 +67,11 @@ export class FakeState {
   issued: string[] = [];
   private seq = 0;
 
+  /** Random ids, for fakes whose resources share one database (deterministic by default). */
+  constructor(private readonly randomIds = false) {}
+
   hex(n: number): string {
+    if (this.randomIds) return Array.from(crypto.getRandomValues(new Uint8Array(Math.ceil(n / 2))), (b) => b.toString(16).padStart(2, "0")).join("").slice(0, n);
     this.seq++;
     let out = "";
     let x = this.seq * 2654435761;

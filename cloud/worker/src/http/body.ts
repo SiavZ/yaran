@@ -18,6 +18,7 @@
  * Used by:
  * src/http/body.ts
  * ├── src/http/pipeline.ts
+ * ├── src/shared/json-body.ts
  * └── test/body.test.ts
  * <module-headers:end>
  */
@@ -59,14 +60,17 @@ export function isJsonContentType(request: Request): boolean {
   return type === "application/json";
 }
 
-/** Parses the body as JSON and validates it against the named Phase 02 schema type. */
-export function readJson<T>(ctx: RequestContext, typeName: string): T {
-  let value: unknown;
+/** Parses raw body bytes as JSON (`bad_request` when they are not). */
+export function parseJsonBytes(body: Uint8Array): unknown {
   try {
-    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(ctx.body));
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body));
   } catch {
     throw new HttpError("bad_request", "The request body is not valid JSON.");
   }
+}
+
+/** Validates a parsed value against the named Phase 02 schema type (`validation_failed`). */
+export function validateAs<T>(typeName: string, value: unknown): T {
   const result = validate(typeName, value);
   if (!result.valid) {
     throw new HttpError("validation_failed", "The request body does not match the expected shape.", {
@@ -74,4 +78,9 @@ export function readJson<T>(ctx: RequestContext, typeName: string): T {
     });
   }
   return value as T;
+}
+
+/** Parses the body as JSON and validates it against the named Phase 02 schema type. */
+export function readJson<T>(ctx: RequestContext, typeName: string): T {
+  return validateAs<T>(typeName, parseJsonBytes(ctx.body));
 }

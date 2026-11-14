@@ -44,6 +44,13 @@
     // Per machine id, the signed machine API.
     { "name": "RL_MACHINE", "namespace_id": "7703", "simple": { "limit": 120, "period": 60 } }
   ],
+  // Deploy variables (plain, not secret).
+  "vars": {
+    // The https app-callback URLs a release build may receive a sealed handoff on, space
+    // separated, compared byte for byte (02 §8). Phase 07's deploy template sets the
+    // publisher's real value; this placeholder only satisfies local runs.
+    "APP_CALLBACK_URLS": "https://yaran.example/auth/callback"
+  },
   // Workers Logs: the structured JSON log lines are indexed by field.
   "observability": { "enabled": true },
   // Plain vars set in the dashboard are not kept across deploys: this file is the truth.

@@ -64,29 +64,71 @@
  * ├── yaran-cloud:src/auth/nonce-store.ts
  * ├── yaran-cloud:src/cloudflare/errors.ts
  * ├── yaran-cloud:src/db/settings.ts
+ * ├── yaran-cloud:src/devices/device-params.ts
+ * ├── yaran-cloud:src/devices/devices-repo.ts
  * ├── yaran-cloud:src/http/body.ts
  * ├── yaran-cloud:src/http/pipeline.ts
  * ├── yaran-cloud:src/http/responses.ts
  * ├── yaran-cloud:src/index.ts
+ * ├── yaran-cloud:src/machine-api/claim.ts
+ * ├── yaran-cloud:src/machine-api/config.ts
+ * ├── yaran-cloud:src/machine-api/origin.ts
+ * ├── yaran-cloud:src/machine-api/rotate.ts
+ * ├── yaran-cloud:src/machine-api/unpair.ts
+ * ├── yaran-cloud:src/machines/machine-view-model.ts
+ * ├── yaran-cloud:src/me/cursor.ts
+ * ├── yaran-cloud:src/me/devices-route.ts
+ * ├── yaran-cloud:src/me/machines-route.ts
+ * ├── yaran-cloud:src/me/me-route.ts
+ * ├── yaran-cloud:src/pairing/authorize-page.ts
+ * ├── yaran-cloud:src/pairing/authorize-params.ts
+ * ├── yaran-cloud:src/pairing/authorize-route.ts
+ * ├── yaran-cloud:src/pairing/pair-requests.ts
+ * ├── yaran-cloud:src/pairing/pkce.ts
+ * ├── yaran-cloud:src/pairing/qr.ts
  * ├── yaran-cloud:src/provisioning/engine.ts
  * ├── yaran-cloud:src/provisioning/index.ts
  * ├── yaran-cloud:src/provisioning/ports.ts
  * ├── yaran-cloud:src/provisioning/provision-error.ts
  * ├── yaran-cloud:src/provisioning/quota.ts
  * ├── yaran-cloud:src/provisioning/settings.ts
+ * ├── yaran-cloud:src/routes/call.ts
+ * ├── yaran-cloud:src/routes/meta.ts
+ * ├── yaran-cloud:src/routes/phase06-context.ts
  * ├── yaran-cloud:src/security/data-key.ts
+ * ├── yaran-cloud:src/sessions/handoff-csrf.ts
+ * ├── yaran-cloud:src/sessions/handoff-page.ts
+ * ├── yaran-cloud:src/sessions/handoff-params.ts
+ * ├── yaran-cloud:src/sessions/handoff-remembered.ts
+ * ├── yaran-cloud:src/sessions/handoff-route.ts
  * ├── yaran-cloud:test/audit.test.ts
  * ├── yaran-cloud:test/data-key.test.ts
+ * ├── yaran-cloud:test/devices/device-fixtures.ts
+ * ├── yaran-cloud:test/devices/devices-route.test.ts
  * ├── yaran-cloud:test/ed25519.test.ts
  * ├── yaran-cloud:test/error-codes.test.ts
  * ├── yaran-cloud:test/helpers/machine.ts
+ * ├── yaran-cloud:test/machine-api/claim.test.ts
+ * ├── yaran-cloud:test/machine-api/machine-routes.test.ts
  * ├── yaran-cloud:test/machine-signature.test.ts
+ * ├── yaran-cloud:test/machines/machine-view-model.test.ts
+ * ├── yaran-cloud:test/me/machines-route.test.ts
+ * ├── yaran-cloud:test/me/me-route.test.ts
+ * ├── yaran-cloud:test/me/meta.test.ts
  * ├── yaran-cloud:test/no-secret-leak.test.ts
+ * ├── yaran-cloud:test/pairing/authorize-route.test.ts
+ * ├── yaran-cloud:test/pairing/pair-helpers.ts
+ * ├── yaran-cloud:test/phase06/fakes.ts
+ * ├── yaran-cloud:test/phase06/harness.ts
  * ├── yaran-cloud:test/provisioning/errors.test.ts
  * ├── yaran-cloud:test/provisioning/origin-port.test.ts
  * ├── yaran-cloud:test/provisioning/registry.test.ts
  * ├── yaran-cloud:test/provisioning/rotate.test.ts
- * └── yaran-cloud:test/provisioning/teardown.test.ts
+ * ├── yaran-cloud:test/provisioning/teardown.test.ts
+ * ├── yaran-cloud:test/routes.test.ts
+ * ├── yaran-cloud:test/sessions/handoff-helpers.ts
+ * ├── yaran-cloud:test/sessions/handoff-remembered.test.ts
+ * └── yaran-cloud:test/sessions/handoff-route.test.ts
  * <module-headers:end>
  */
 export type * from "./generated/types.ts";

@@ -31,6 +31,7 @@
  * Used by:
  * src/security/rate-limit.ts
  * ├── src/http/pipeline.ts
+ * ├── src/routes/phase06-context.ts
  * ├── src/scheduled/purge.ts
  * └── test/rate-limit.test.ts
  * <module-headers:end>

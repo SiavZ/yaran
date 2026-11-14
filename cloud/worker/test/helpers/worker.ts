@@ -22,10 +22,13 @@
  * ├── test/identity.test.ts
  * ├── test/machine-signature.test.ts
  * ├── test/no-secret-leak.test.ts
+ * ├── test/pairing/authorize-route.test.ts
+ * ├── test/phase06/harness.ts
  * ├── test/rate-limit.test.ts
  * ├── test/responses.test.ts
  * ├── test/router.test.ts
- * └── test/secrets.test.ts
+ * ├── test/secrets.test.ts
+ * └── test/sessions/handoff-route.test.ts
  * <module-headers:end>
  */
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";

@@ -48,6 +48,7 @@ export const PAIR_REQUEST_GRACE_S = 86_400;
 export const SEALED_COLUMNS: readonly { table: string; column: string; purpose: SealPurpose }[] = [
   { table: "devices", column: "endpoint_enc", purpose: "device_endpoint" },
   { table: "devices", column: "auth_enc", purpose: "device_auth" },
+  { table: "pair_requests", column: "state_enc", purpose: "pair_state" },
 ];
 /** Settings rows holding a sealed string. */
 export const SEALED_SETTINGS: readonly { key: "vapid_private_key_enc"; purpose: SealPurpose }[] = [

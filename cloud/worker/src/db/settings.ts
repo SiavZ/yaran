@@ -25,10 +25,12 @@
  * ├── src/auth/access-jwt.ts
  * ├── src/http/pipeline.ts
  * ├── src/provisioning/context.ts
+ * ├── src/routes/phase06-context.ts
  * ├── src/scheduled/purge.ts
  * ├── src/security/data-key.ts
  * ├── test/data-key.test.ts
  * ├── test/helpers/seed.ts
+ * ├── test/phase06/fakes.ts
  * ├── test/prov-context.test.ts
  * ├── test/purge.test.ts
  * └── test/settings.test.ts

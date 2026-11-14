@@ -16,6 +16,7 @@
  *
  * Used by:
  * src/provisioning/machine-rows.ts
+ * ├── src/pairing/sweep.ts
  * ├── src/provisioning/engine.ts
  * ├── src/provisioning/index.ts
  * ├── src/provisioning/ops-store.ts
