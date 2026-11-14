@@ -16,6 +16,7 @@
  * ├── src/lib/api.ts
  * ├── src/lib/machinesStore.ts
  * ├── src/lib/native/machineView.ts
+ * ├── src/lib/openMachine.ts
  * ├── src/lib/orgStore.ts
  * ├── src/lib/route.ts
  * ├── src/lib/settingsStore.ts
@@ -45,7 +46,8 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { ApiFailure } from '../../lib/api.ts';
 import { MACHINE_POLL_MS, machinesStore, refreshMachines, type OrgMachines } from '../../lib/machinesStore.ts';
-import { MachineView, Session } from '../../lib/native/machineView.ts';
+import { Session } from '../../lib/native/machineView.ts';
+import { openMachine } from '../../lib/openMachine.ts';
 import { handleDeviceRevoked, orgStore, type OrgRecord } from '../../lib/orgStore.ts';
 import { navigate } from '../../lib/route.ts';
 import { updateSettings } from '../../lib/settingsStore.ts';
@@ -72,9 +74,8 @@ function OrgSection({ org, list, grouped }: { org: OrgRecord; list: OrgMachines 
   }, [org]);
 
   async function open(m: MachineSummary) {
-    const target = { orgId: org.id, machineId: m.id, host: m.hostname };
-    await updateSettings({ lastMachine: target });
-    await MachineView.open(target);
+    await updateSettings({ lastMachine: { orgId: org.id, machineId: m.id, host: m.hostname } });
+    await openMachine(org.id, m.id);
   }
 
   const failure = list?.state === 'failed' ? list.failure : null;

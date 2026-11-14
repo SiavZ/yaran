@@ -18,7 +18,7 @@
  * └── io.github.siavz.yaran.machineview.SealedEnvelope (inferred)
  * External: java.security, java.security.spec, org.json, org.junit, org.junit.Assert
  *
- * Used by: entry point (JUnit and Robolectric, via ./gradlew testDebugUnitTest in mobile/plugins/machine-view/android)
+ * Used by: entry point (JUnit/Robolectric, via ./gradlew test in mobile/android)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview

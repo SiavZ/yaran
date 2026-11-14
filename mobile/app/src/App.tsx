@@ -15,6 +15,7 @@
  * ├── src/lib/buildInfo.ts
  * ├── src/lib/lifecycle.ts
  * ├── src/lib/native/machineView.ts
+ * ├── src/lib/openMachine.ts
  * ├── src/lib/orgStore.ts
  * ├── src/lib/route.ts
  * ├── src/lib/store.ts
@@ -49,6 +50,7 @@ import { useEffect, useState } from 'react';
 import { loadBuildInfo, type ShellBuildInfo } from './lib/buildInfo.ts';
 import { installLifecycle, reopenLastMachine } from './lib/lifecycle.ts';
 import { MachineView } from './lib/native/machineView.ts';
+import { closedDestination } from './lib/openMachine.ts';
 import { orgStore } from './lib/orgStore.ts';
 import { navigate, useRoute, type Route } from './lib/route.ts';
 import { useStore } from './lib/store.ts';
@@ -119,8 +121,8 @@ export function App() {
     });
     // Control URLs from inside a machine (Phase 15) close it with a reason the shell routes.
     void MachineView.addListener('closed', (e) => {
-      if (e.reason === 'settings') navigate({ name: 'settings' });
-      if (e.reason === 'home') navigate({ name: 'machines' });
+      const to = closedDestination(e);
+      navigate({ name: to === 'org_sign_in' ? 'orgs' : to });
     });
     return () => {
       live = false;

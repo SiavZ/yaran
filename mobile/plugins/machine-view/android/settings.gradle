@@ -1,5 +1,0 @@
-// Standalone settings for the machine-view plugin. Inside the app, Capacitor's generated
-// capacitor.settings.gradle includes this module (as :yaran-machine-view) and :capacitor-android.
-rootProject.name = 'yaran-machine-view'
-include ':capacitor-android'
-project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/android/capacitor')

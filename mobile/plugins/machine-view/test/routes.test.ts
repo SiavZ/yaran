@@ -13,7 +13,7 @@
  * └── src/routes.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in mobile/plugins/machine-view)
+ * Used by: entry point (vitest, via npm test in the plugin package)
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";

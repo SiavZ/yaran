@@ -10,13 +10,16 @@
  * Uses:
  * src/index.ts
  * ├── src/definitions.ts
- * ├── src/openMachine.ts
  * ├── src/outcomes.ts
  * ├── src/routes.ts
  * └── src/web.ts
  * External: @capacitor/core
  *
  * Used by: entry point (package entry of @yaran/machine-view, the "." export in mobile/plugins/machine-view/package.json)
+ * src/index.ts
+ * ├── @yaran/mobile-shell:src/lib/native/machineView.ts
+ * ├── @yaran/mobile-shell:src/lib/openMachine.test.ts
+ * └── @yaran/mobile-shell:src/lib/openMachine.ts
  * <module-headers:end>
  */
 import { registerPlugin } from "@capacitor/core";
@@ -33,4 +36,3 @@ export const Session = registerPlugin<SessionPlugin>("Session", {
 export type * from "./definitions.ts";
 export * from "./outcomes.ts";
 export * from "./routes.ts";
-export * from "./openMachine.ts";

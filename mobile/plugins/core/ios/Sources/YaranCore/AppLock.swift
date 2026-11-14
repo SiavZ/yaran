@@ -20,6 +20,7 @@
 /// Used by:
 /// YaranCore/AppLock
 /// ├── App/SceneDelegate (inferred)
+/// ├── MachineViewCore/CoreAdapters (inferred)
 /// ├── YaranCore/PluginArguments (inferred)
 /// ├── YaranCore/ScreenPrivacy (inferred)
 /// ├── YaranCoreTests/VaultTests (inferred)

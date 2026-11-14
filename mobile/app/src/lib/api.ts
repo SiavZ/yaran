@@ -17,7 +17,8 @@
  * ├── @yaran/protocol:src/index.ts
  * ├── src/lib/assertNever.ts
  * ├── src/lib/diagnostics.ts
- * └── src/lib/native/machineView.ts
+ * ├── src/lib/native/machineView.ts
+ * └── src/lib/protocolCompat.ts
  * External: @lingui/core
  *
  * Used by:
@@ -26,16 +27,18 @@
  * ├── src/lib/machinesStore.ts
  * ├── src/screens/machines/MachineList.tsx
  * ├── src/screens/machines/RemoveMachineDialog.tsx
- * └── src/screens/machines/states/ErrorState.tsx
+ * ├── src/screens/machines/states/ErrorState.tsx
+ * └── src/screens/onboarding/ConfirmOrg.tsx
  * <module-headers:end>
  */
 import { msg } from '@lingui/core/macro';
 import type { MessageDescriptor } from '@lingui/core';
-import { interpretError, validate, type MachinePage, type MachineSummary, type Me, type TeardownStarted } from '@yaran/protocol';
+import { interpretError, validate, type MachinePage, type MachineSummary, type Me, type Meta, type TeardownStarted } from '@yaran/protocol';
 
 import { assertNever } from './assertNever.ts';
 import { log } from './diagnostics.ts';
 import { Session, type ApiResult } from './native/machineView.ts';
+import { updateFor } from './protocolCompat.ts';
 
 export type ApiFailure =
   | { kind: 'session_expired' }
@@ -52,8 +55,8 @@ export type ApiOutcome<T> = { ok: true; value: T } | { ok: false; failure: ApiFa
 /** A page cap so a misbehaving server cannot make the shell loop forever. */
 export const MAX_MACHINE_PAGES = 20;
 
-// Maps a native result to a validated value or a failure.
-function interpret<T>(result: ApiResult, typeName: string, okStatus: number[]): ApiOutcome<T> {
+// Maps a native result to a validated value or a failure; `orgId` names the host in a TLS failure.
+function interpret<T>(result: ApiResult, typeName: string, okStatus: number[], orgId: string): ApiOutcome<T> {
   switch (result.kind) {
     case 'ok': {
       if (!okStatus.includes(result.status) || !validate(typeName, result.body).valid) {
@@ -63,7 +66,7 @@ function interpret<T>(result: ApiResult, typeName: string, okStatus: number[]): 
       return { ok: true, value: result.body as T };
     }
     case 'api_error': {
-      const e = interpretError(result.status, result.body);
+      const e = interpretError(result.status, result.error);
       const code = e.code === 'unknown' ? (e.rawCode ?? `HTTP ${result.status}`) : e.code;
       return { ok: false, failure: { kind: 'api_error', code, known: e.code !== 'unknown', status: result.status, requestId: e.requestId } };
     }
@@ -72,18 +75,18 @@ function interpret<T>(result: ApiResult, typeName: string, okStatus: number[]): 
     case 'offline':
       return { ok: false, failure: { kind: result.kind } };
     case 'tls_error':
-      return { ok: false, failure: { kind: 'tls_error', host: result.host } };
+      return { ok: false, failure: { kind: 'tls_error', host: new URL(orgId).hostname } };
     case 'refused':
       return { ok: false, failure: { kind: 'refused', reason: result.reason } };
     case 'protocol_unsupported':
-      return { ok: false, failure: { kind: 'protocol_unsupported', update: result.update } };
+      return { ok: false, failure: { kind: 'protocol_unsupported', update: updateFor(result) } };
     default:
       return assertNever(result);
   }
 }
 
 export async function getMe(orgId: string): Promise<ApiOutcome<Me>> {
-  return interpret<Me>(await Session.request({ orgId, method: 'GET', path: '/v1/me' }), 'Me', [200]);
+  return interpret<Me>(await Session.request({ orgId, method: 'GET', path: '/v1/me' }), 'Me', [200], orgId);
 }
 
 /** Every machine of the signed-in user, following `next_cursor`. */
@@ -92,7 +95,7 @@ export async function listMachines(orgId: string): Promise<ApiOutcome<MachineSum
   let cursor: string | null = null;
   for (let page = 0; page < MAX_MACHINE_PAGES; page++) {
     const path: string = cursor === null ? '/v1/me/machines' : `/v1/me/machines?cursor=${encodeURIComponent(cursor)}`;
-    const got = interpret<MachinePage>(await Session.request({ orgId, method: 'GET', path }), 'MachinePage', [200]);
+    const got = interpret<MachinePage>(await Session.request({ orgId, method: 'GET', path }), 'MachinePage', [200], orgId);
     if (!got.ok) return got;
     all.push(...got.value.items);
     cursor = got.value.next_cursor;
@@ -106,7 +109,33 @@ export async function listMachines(orgId: string): Promise<ApiOutcome<MachineSum
 export async function removeMachine(orgId: string, machineId: string): Promise<ApiOutcome<TeardownStarted | 'already_gone'>> {
   const result = await Session.request({ orgId, method: 'DELETE', path: `/v1/me/machines/${encodeURIComponent(machineId)}` });
   if (result.kind === 'api_error' && result.status === 404) return { ok: true, value: 'already_gone' };
-  return interpret<TeardownStarted>(result, 'TeardownStarted', [202]);
+  return interpret<TeardownStarted>(result, 'TeardownStarted', [202], orgId);
+}
+
+/** Why the public `/v1/meta` fetch failed; each has its own sentence on Confirm org. */
+export type MetaFailure = 'offline' | 'tls_error' | 'not_json' | 'access_redirect' | 'invalid' | 'refused';
+
+/** `GET <orgUrl>/v1/meta` through the native client, validated as a 02 `Meta`. */
+export async function getMeta(orgUrl: string): Promise<{ ok: true; meta: Meta } | { ok: false; code: MetaFailure }> {
+  const result = await Session.meta({ orgUrl });
+  switch (result.kind) {
+    case 'ok':
+      return result.status === 200 && validate('Meta', result.body).valid ? { ok: true, meta: result.body as Meta } : { ok: false, code: 'invalid' };
+    case 'offline':
+    case 'tls_error':
+      return { ok: false, code: result.kind };
+    // The native client turns a redirect toward Access (or an envelope-less 401/403) into this.
+    case 'session_expired':
+      return { ok: false, code: 'access_redirect' };
+    case 'refused':
+      return { ok: false, code: result.reason === 'not_json' ? 'not_json' : 'refused' };
+    case 'api_error':
+    case 'device_revoked':
+    case 'protocol_unsupported':
+      return { ok: false, code: 'invalid' };
+    default:
+      return assertNever(result);
+  }
 }
 
 // Sentences for the envelope codes these three routes document; anything else is generic.

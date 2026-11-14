@@ -22,8 +22,11 @@ let package = Package(
     products: [
         .library(name: "MachineViewCore", targets: ["MachineViewCore"])
     ],
+    dependencies: [
+        .package(path: "../../../core/ios"),
+    ],
     targets: [
-        .target(name: "MachineViewCore"),
+        .target(name: "MachineViewCore", dependencies: [.product(name: "YaranCore", package: "ios")]),
         .testTarget(name: "MachineViewCoreTests", dependencies: ["MachineViewCore"]),
     ]
 )

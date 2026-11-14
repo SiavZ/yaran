@@ -19,10 +19,8 @@
  * Used by:
  * src/definitions.ts
  * ├── src/index.ts
- * ├── src/openMachine.ts
  * ├── src/web.ts
- * ├── test/contract.test.ts
- * └── test/openMachine.test.ts
+ * └── test/contract.test.ts
  * <module-headers:end>
  */
 import type { PluginListenerHandle } from "@capacitor/core";

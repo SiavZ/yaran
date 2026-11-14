@@ -20,6 +20,7 @@
 /// Used by:
 /// YaranCore/ScreenPrivacy
 /// ├── App/SceneDelegate (inferred)
+/// ├── MachineViewCore/CoreAdapters (inferred)
 /// ├── YaranCoreTests/PluginArgumentsTests (inferred)
 /// └── YaranSecureStorePlugin/ScreenPrivacyPlugin (inferred)
 /// <module-headers:end>

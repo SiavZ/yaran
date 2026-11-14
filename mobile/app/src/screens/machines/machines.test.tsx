@@ -118,7 +118,7 @@ describe('MachineList', () => {
     request.mockResolvedValueOnce(page([machine()]));
     renderShell(<MachineList />);
     const dialog = await openRemove();
-    request.mockResolvedValueOnce({ kind: 'api_error', status: 404, body: { error: { code: 'not_found', message: 'x', retryable: false }, request_id: 'r' } });
+    request.mockResolvedValueOnce({ kind: 'api_error', status: 404, error: { error: { code: 'not_found', message: 'x', retryable: false }, request_id: 'r' } });
     request.mockResolvedValue(page([]));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove machine' }));
     await waitFor(() => expect(toast.info).toHaveBeenCalled());

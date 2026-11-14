@@ -2,9 +2,9 @@
  * The seams to Phase 14's native core library, and the one holder the app installs them in.
  *
  * Phase 14 owns the vault, app lock, diagnostics log and screen privacy (`mobile/plugins/core`).
- * This plugin codes against these small interfaces instead, and Phase 14's MainActivity calls
- * [CoreBindings.install] with adapters over its core before the bridge loads the plugins.
- * Until then every vault use fails closed with a clear error.
+ * This plugin codes against these small interfaces, so its tests use fakes; the app's
+ * Application calls [CoreBindings.install] with [CoreAdapters.from], the real core, before any
+ * activity or plugin runs. Uninstalled, every use fails closed with a clear error.
  *
  * - Implementations must be thread-safe: the plugins call them from a background executor.
  * - [DiagnosticsSink] lines are already free of secrets; the core sanitizes them again.
@@ -15,6 +15,9 @@
  *
  * Used by:
  * io.github.siavz.yaran.machineview.CoreBindings
+ * ├── io.github.siavz.yaran.app.YaranApplication
+ * ├── io.github.siavz.yaran.machineview.CoreAdapters (inferred)
+ * ├── io.github.siavz.yaran.machineview.CoreAdaptersTest (inferred)
  * ├── io.github.siavz.yaran.machineview.DeviceKeyStore (inferred)
  * ├── io.github.siavz.yaran.machineview.Fakes (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClient (inferred)

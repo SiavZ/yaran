@@ -17,8 +17,10 @@
  *
  * Used by:
  * src/lib/machinesStore.ts
+ * ├── src/lib/lifecycle.test.ts
  * ├── src/lib/lifecycle.ts
  * ├── src/lib/machinesStore.test.ts
+ * ├── src/lib/openMachine.ts
  * ├── src/lib/orgStore.test.ts
  * ├── src/lib/orgStore.ts
  * ├── src/screens/machines/MachineList.tsx

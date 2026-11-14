@@ -22,7 +22,7 @@
  * └── io.github.siavz.yaran.machineview.SessionStore (inferred)
  * External: java.net, javax.net.ssl, okhttp3.mockwebserver, okhttp3.tls, org.json, org.junit, org.junit.Assert
  *
- * Used by: entry point (JUnit and Robolectric, via ./gradlew testDebugUnitTest in mobile/plugins/machine-view/android)
+ * Used by: entry point (JUnit/Robolectric, via ./gradlew test in mobile/android)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview

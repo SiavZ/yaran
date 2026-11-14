@@ -1,8 +1,8 @@
 /// The seams to Phase 14's native core (vault, diagnostics, org records, app lock, privacy).
 ///
-/// `plugins/core` lands with Phase 14; this plugin codes against these protocols and Phase
-/// 14's AppDelegate calls `CoreBindings.install` once with its implementations. Until then
-/// every vault use fails closed (`VaultError.unavailable`), never silently.
+/// This plugin codes against these protocols, so its tests use fakes; the app's AppDelegate
+/// calls `CoreAdapters.installDefault()` at launch, which installs `plugins/core` behind them.
+/// Uninstalled, every vault use fails closed (`VaultError.unavailable`), never silently.
 ///
 /// - `Fallbacks` holds the gate-selected build switches (Phase 03 G1, G6, G13), one constant each.
 ///
@@ -17,6 +17,7 @@
 /// ├── MachineView/AppServices (inferred)
 /// ├── MachineView/MachineViewController (inferred)
 /// ├── MachineViewCore/CookieInjector (inferred)
+/// ├── MachineViewCore/CoreAdapters (inferred)
 /// ├── MachineViewCore/DataStores (inferred)
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)

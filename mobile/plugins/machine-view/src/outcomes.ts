@@ -21,7 +21,6 @@
  * src/outcomes.ts
  * ├── src/definitions.ts
  * ├── src/index.ts
- * ├── src/openMachine.ts
  * └── test/outcomes.test.ts
  * <module-headers:end>
  */

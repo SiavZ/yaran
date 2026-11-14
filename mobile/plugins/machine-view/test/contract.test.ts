@@ -14,7 +14,7 @@
  * └── src/web.ts
  * External: node:fs, vitest
  *
- * Used by: entry point (vitest, via npm test in mobile/plugins/machine-view)
+ * Used by: entry point (vitest, via npm test in the plugin package)
  * <module-headers:end>
  */
 import { readFileSync } from "node:fs";

@@ -20,7 +20,7 @@
  * └── io.github.siavz.yaran.machineview.NavigationPolicy (inferred)
  * External: android.content, android.net, android.os, android.view, android.webkit, androidx.test.core.app, org.junit, org.junit.Assert, org.junit.runner, org.robolectric, org.robolectric.Shadows, org.robolectric.annotation
  *
- * Used by: entry point (JUnit and Robolectric, via ./gradlew testDebugUnitTest in mobile/plugins/machine-view/android)
+ * Used by: entry point (JUnit/Robolectric, via ./gradlew test in mobile/android)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview

@@ -14,7 +14,7 @@
  * Uses: none
  * External: java.io, javax.xml.parsers, org.junit, org.junit.Assert, org.w3c.dom
  *
- * Used by: entry point (JUnit and Robolectric, via ./gradlew testDebugUnitTest in mobile/plugins/machine-view/android)
+ * Used by: entry point (JUnit/Robolectric, via ./gradlew test in mobile/android)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview

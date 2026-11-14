@@ -4,7 +4,9 @@
  * <module-headers:begin>
  * Uses:
  * src/lib/lifecycle.test.ts
+ * ├── @yaran/protocol:src/index.ts
  * ├── src/lib/lifecycle.ts
+ * ├── src/lib/machinesStore.ts
  * ├── src/lib/native/machineView.ts
  * ├── src/lib/orgStore.ts
  * └── src/lib/settingsStore.ts
@@ -15,8 +17,10 @@
  */
 import { App } from '@capacitor/app';
 import { describe, expect, it, vi } from 'vitest';
+import type { MachineSummary } from '@yaran/protocol';
 
 import { installLifecycle, reopenLastMachine } from './lifecycle.ts';
+import { machinesStore } from './machinesStore.ts';
 import { MachineView, Session } from './native/machineView.ts';
 import { orgStore } from './orgStore.ts';
 import { DEFAULT_SETTINGS, settingsStore } from './settingsStore.ts';
@@ -27,9 +31,19 @@ const org = { id: last.orgId, name: 'Ada', teamDomain: null, addedAt: 'x' };
 describe('reopenLastMachine', () => {
   it('reopens when the setting is on and the org is still added', async () => {
     orgStore.set({ loaded: true, orgs: [org] });
-    settingsStore.set({ ...DEFAULT_SETTINGS, reopenLastMachine: true, lastMachine: last });
+    settingsStore.set({ ...DEFAULT_SETTINGS, reopenLastMachine: true, lastMachine: { ...last, host: 'stale.example.com' } });
+    machinesStore.set({ [last.orgId]: { state: 'ready', machines: [{ id: 'm', hostname: 'm1.example.com' } as MachineSummary], fetchedAt: 0 } });
     expect(await reopenLastMachine()).toBe(true);
+    // The host comes from the authenticated list, not from the saved setting.
     expect(MachineView.open).toHaveBeenCalledWith(last);
+  });
+  it('refreshes a cold list first and refuses a machine it no longer lists', async () => {
+    orgStore.set({ loaded: true, orgs: [org] });
+    settingsStore.set({ ...DEFAULT_SETTINGS, reopenLastMachine: true, lastMachine: last });
+    machinesStore.set({});
+    expect(await reopenLastMachine()).toBe(false);
+    expect(Session.request).toHaveBeenCalled();
+    expect(MachineView.open).not.toHaveBeenCalled();
   });
   it('does nothing when the setting is off or the org is gone', async () => {
     settingsStore.set({ ...DEFAULT_SETTINGS, reopenLastMachine: false, lastMachine: last });

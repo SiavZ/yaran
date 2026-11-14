@@ -15,8 +15,10 @@
  *
  * Used by:
  * src/lib/protocolCompat.ts
+ * ├── src/lib/api.ts
  * ├── src/lib/protocolCompat.test.ts
- * └── src/screens/onboarding/ConfirmOrg.tsx
+ * ├── src/screens/onboarding/ConfirmOrg.tsx
+ * └── src/screens/onboarding/SignInResult.tsx
  * <module-headers:end>
  */
 import { PROTOCOL_MAX, PROTOCOL_MIN, deprecationFor, negotiate, type Meta, type ProtocolRange } from '@yaran/protocol';
@@ -31,4 +33,11 @@ export function protocolVerdict(meta: Pick<Meta, 'protocol' | 'deprecations'>, a
   const n = negotiate(app, meta.protocol);
   if (!n.ok) return { ok: false, update: n.update === 'client' ? 'app' : 'control_plane' };
   return { ok: true, version: n.version, deprecatedAfter: deprecationFor(n.version, meta.deprecations)?.after ?? null };
+}
+
+/** The side to update after a native `protocol_unsupported`, from the server's range when it sent one. */
+export function updateFor(server: { min?: number; max?: number }, app = APP_PROTOCOL): 'client' | 'server' {
+  if (server.min === undefined || server.max === undefined) return 'client';
+  const n = negotiate(app, { min: server.min, max: server.max });
+  return n.ok ? 'client' : n.update;
 }

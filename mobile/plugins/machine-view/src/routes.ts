@@ -14,7 +14,6 @@
  * Used by:
  * src/routes.ts
  * ├── src/index.ts
- * ├── src/openMachine.ts
  * └── test/routes.test.ts
  * <module-headers:end>
  */

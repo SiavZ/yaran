@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# iOS target type check without Xcode: the MachineView sources against Mac Catalyst UIKit.
+# iOS target type check without Xcode: MachineView and the app delegates against Mac Catalyst UIKit.
 #
 # The Command Line Tools ship no iOS SDK, but the macOS SDK carries UIKit for Mac Catalyst
-# (iOSSupport). This builds MachineViewCore for arm64-apple-ios17.4-macabi, re-targets the
-# real Capacitor 8.6.2 swiftinterface (fetched by `swift package resolve` at the plugin
-# root) to the same triple, and type-checks every file of ios/Sources/MachineView. It proves
-# the code names real APIs with the right types; it is not an iOS build and links nothing.
+# (iOSSupport). This builds YaranCore and MachineViewCore for arm64-apple-ios17.4-macabi,
+# re-targets the real Capacitor 8.6.2 swiftinterface (fetched by `swift package resolve` at
+# the plugin root) to the same triple, and type-checks every file of ios/Sources/MachineView
+# plus the app's AppDelegate and SceneDelegate. It proves the code names real APIs with the
+# right types; it is not an iOS build and links nothing.
 #
 # - Writes only to a fresh temporary directory, removed on exit.
 #
@@ -32,7 +33,13 @@ mods="$tmp/Capacitor.framework/Modules/Capacitor.swiftmodule"
 sed "s/-target arm64-apple-ios[0-9.]*/-target $triple/" "$mods/arm64-apple-ios.swiftinterface" \
   > "$mods/arm64-apple-ios-macabi.swiftinterface"
 
-swiftc -emit-module -module-name MachineViewCore -target "$triple" -sdk "$sdk" -Fsystem "$fw" \
+core="$root/../core/ios/Sources/YaranCore"
+app="$root/../../ios/App/App"
+swiftc -emit-module -module-name YaranCore -swift-version 5 -target "$triple" -sdk "$sdk" -Fsystem "$fw" \
+  -emit-module-path "$tmp/YaranCore.swiftmodule" "$core"/*.swift
+swiftc -emit-module -module-name MachineViewCore -target "$triple" -sdk "$sdk" -Fsystem "$fw" -I "$tmp" \
   -emit-module-path "$tmp/MachineViewCore.swiftmodule" "$here"/MachineViewCore/Sources/MachineViewCore/*.swift
 swiftc -typecheck -target "$triple" -sdk "$sdk" -Fsystem "$fw" -F "$tmp" -I "$tmp" "$here"/Sources/MachineView/*.swift
-echo "MachineView type-checks against Mac Catalyst UIKit and Capacitor 8.6.2."
+# The app target's delegates, which install the core bindings at launch.
+swiftc -typecheck -target "$triple" -sdk "$sdk" -Fsystem "$fw" -F "$tmp" -I "$tmp" "$app"/AppDelegate.swift "$app"/SceneDelegate.swift
+echo "MachineView and the app delegates type-check against Mac Catalyst UIKit and Capacitor 8.6.2."

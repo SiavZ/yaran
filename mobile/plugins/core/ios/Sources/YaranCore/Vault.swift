@@ -22,6 +22,8 @@
 /// Used by:
 /// YaranCore/Vault
 /// ├── AppTests/KeychainAccessTests (inferred)
+/// ├── MachineViewCore/CoreAdapters (inferred)
+/// ├── MachineViewCoreTests/CoreAdaptersTests (inferred)
 /// ├── YaranCore/AppLock (inferred)
 /// ├── YaranCore/PluginArguments (inferred)
 /// ├── YaranCoreTests/PluginArgumentsTests (inferred)

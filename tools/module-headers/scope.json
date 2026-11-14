@@ -164,6 +164,7 @@
     "mobile/plugins/*/android/build.gradle.kts": "Gradle build script, included from mobile/android/settings.gradle",
     "mobile/android/buildSrc/src/main/kotlin/**/AndroidGuardsPlugin.kt": "Gradle plugin applied by mobile/android/app/build.gradle.kts",
     "mobile/android/app/src/main/java/**/MainActivity.kt": "launcher Activity, mobile/android/app/src/main/AndroidManifest.xml",
+    "mobile/android/app/src/main/java/**/YaranApplication.kt": "the Application class, android:name in mobile/android/app/src/main/AndroidManifest.xml",
     "mobile/{android,plugins}/**/src/test/**/*Test.kt": "JUnit/Robolectric, via ./gradlew test in mobile/android",
     "mobile/plugins/*/android/src/androidTest/**/*Test.kt": "instrumented test, via ./gradlew connectedAndroidTest in mobile/android",
     "mobile/plugins/secure-store/android/src/main/java/**/*Plugin.kt": "Capacitor plugin class, listed in capacitor.plugins.json by the Capacitor CLI sync",

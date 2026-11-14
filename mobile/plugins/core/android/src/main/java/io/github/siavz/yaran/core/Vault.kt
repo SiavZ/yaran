@@ -26,6 +26,8 @@
  * ├── io.github.siavz.yaran.core.KeyProvider (inferred)
  * ├── io.github.siavz.yaran.core.SoftwareKeyProvider (inferred)
  * ├── io.github.siavz.yaran.core.VaultTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.CoreAdapters
+ * ├── io.github.siavz.yaran.machineview.CoreAdaptersTest
  * ├── io.github.siavz.yaran.securestore.BuildInfoPlugin
  * ├── io.github.siavz.yaran.securestore.DiagnosticsPlugin
  * ├── io.github.siavz.yaran.securestore.SecureStorePlugin

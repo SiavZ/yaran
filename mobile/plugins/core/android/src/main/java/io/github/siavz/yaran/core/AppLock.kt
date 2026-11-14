@@ -23,6 +23,7 @@
  * io.github.siavz.yaran.core.AppLock
  * ├── io.github.siavz.yaran.app.MainActivity
  * ├── io.github.siavz.yaran.core.AppLockPolicyTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.CoreAdapters
  * ├── io.github.siavz.yaran.securestore.AppLockPlugin
  * ├── io.github.siavz.yaran.securestore.SecureStorePlugin
  * ├── io.github.siavz.yaran.securestore.Validation
