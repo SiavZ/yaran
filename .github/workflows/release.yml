@@ -46,6 +46,8 @@ jobs:
     # release workflow refuses to run with YARAN_DISABLE_UI_BUILD set" is true of
     # the whole workflow rather than of most of it.
     needs: no-ui-build-hatch
+    # Binary train only: a yaran-cloud-v*/yaran-mobile-v* release skips (Phase 18, R17).
+    if: startsWith(github.event.release.tag_name, 'yaran-v') || startsWith(github.event.release.tag_name, 'dux-amq-v')
     outputs:
       version: ${{ steps.release_version.outputs.value }}
       npm_tag: ${{ steps.npm_dist_tag.outputs.value }}

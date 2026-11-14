@@ -260,6 +260,36 @@ checksum_line_from_sums() {
     awk -v name="$name" '$2 == name || $2 == "*" name { print; exit }' "$sums"
 }
 
+# True when a tag belongs to the binary train (the only one install.sh installs).
+is_binary_tag() {
+    case "${1:-}" in
+        yaran-v*|dux-amq-v*|v*) return 0 ;;
+        *)                      return 1 ;;
+    esac
+}
+
+# From a /releases array (newest first), print the first non-draft,
+# non-prerelease binary-train tag, else the first non-draft binary prerelease.
+# Relies on GitHub's field order inside each release: tag_name, then draft,
+# then prerelease (nested author/asset objects carry none of the three).
+pick_binary_tag() {
+    printf '%s' "${1:-}" \
+        | grep -oE '"(tag_name|draft|prerelease)"[[:space:]]*:[[:space:]]*("[^"]*"|true|false)' \
+        | sed -E 's/^"([a-z_]+)"[[:space:]]*:[[:space:]]*"?([^"]*)"?$/\1 \2/' \
+        | awk '
+            $1 == "tag_name"   { tag = $2; draft = ""; next }
+            $1 == "draft"      { draft = $2; next }
+            $1 == "prerelease" {
+                if (tag == "" || draft != "false") { tag = ""; next }
+                if (tag ~ /^(yaran-v|dux-amq-v|v)/) {
+                    if ($2 == "false") { print tag; found = 1; exit }
+                    if (pre == "") pre = tag
+                }
+                tag = ""
+            }
+            END { if (!found && pre != "") print pre }'
+}
+
 resolve_version() {
     if [ -n "$VERSION" ]; then
         # New releases use yaran-vX.Y.Z. Historical dux-amq-vX.Y.Z tags
@@ -272,20 +302,24 @@ resolve_version() {
     fi
 
     log "Fetching latest release version..."
-    local response tag
+    local response tag=""
 
-    # `/releases/latest` excludes prereleases and answers 404 when a repository
-    # has only prereleases, which is the state this fork was in before its first
-    # stable release. Fall back to the full list (newest first) so such a repo
-    # still installs rather than dying with a bare error.
+    # Only the binary train ships yaran-<os>-<arch>.tar.gz. The repository also
+    # publishes yaran-cloud-v* and yaran-mobile-v* releases, so "latest" is
+    # trusted only when its tag belongs to this train.
     if response="$(http_get "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null)"; then
         tag="$(parse_tag "$response")"
+        is_binary_tag "$tag" || tag=""
     fi
 
-    if [ -z "${tag:-}" ]; then
-        log "No stable release found; falling back to the most recent release..."
-        response="$(http_get "https://api.github.com/repos/${REPO}/releases?per_page=1" 2>/dev/null)" || true
-        tag="$(parse_tag "${response:-}")"
+    # `/releases/latest` excludes prereleases and answers 404 when a repository
+    # has only prereleases, and it may name another train. Fall back to the list
+    # (newest first): the newest stable binary release, else the newest
+    # binary prerelease.
+    if [ -z "$tag" ]; then
+        log "No stable binary release named latest; searching recent releases..."
+        response="$(http_get "https://api.github.com/repos/${REPO}/releases?per_page=30" 2>/dev/null)" || true
+        tag="$(pick_binary_tag "${response:-}")"
     fi
 
     if [ -z "${tag:-}" ]; then
