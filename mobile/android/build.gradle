@@ -1,0 +1,42 @@
+// Top-level build file. Plugin versions come from gradle/libs.versions.toml; module
+// dependencies belong in each module's own build file.
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath libs.android.gradle.plugin
+        classpath libs.kotlin.gradle.plugin
+    }
+}
+
+plugins {
+    alias(libs.plugins.ktlint) apply false
+    alias(libs.plugins.detekt) apply false
+    alias(libs.plugins.aboutlibraries) apply false
+}
+
+apply from: "variables.gradle"
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+// Style and static analysis on yaran's own Kotlin modules (not Capacitor's).
+configure(subprojects.findAll { it.path in [':app', ':yaran-core', ':yaran-secure-store'] }) {
+    apply plugin: 'org.jlleitschuh.gradle.ktlint'
+    apply plugin: 'io.gitlab.arturbosch.detekt'
+    detekt {
+        buildUponDefaultConfig = true
+        config.setFrom(rootProject.file('detekt.yml'))
+    }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
+}
