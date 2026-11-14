@@ -9,6 +9,7 @@
 //! <module-headers:begin>
 //! <module-headers:end>
 
+pub mod actions;
 pub mod cli;
 pub mod config;
 pub mod config_patch;

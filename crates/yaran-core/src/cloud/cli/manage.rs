@@ -14,18 +14,10 @@
 use std::io::{BufRead, Write};
 
 use super::{CloudDeps, confirm, finish};
-use crate::cloud::credentials::{self, Credentials};
-use crate::cloud::machine_api::{MachineApiError, Unpaired};
+use crate::cloud::actions;
+use crate::cloud::credentials;
 use crate::cloud::outcome::CloudActionOutcome;
-use crate::cloud::protocol::machine::RotateReason;
 use crate::cloud::status::{StatusReport, gather};
-
-fn api_for(
-    deps: &CloudDeps,
-    creds: &Credentials,
-) -> Result<crate::cloud::machine_api::MachineApi, MachineApiError> {
-    (deps.api)(&creds.org_url, &deps.paths)
-}
 
 pub(super) fn status(deps: &CloudDeps, json: bool, offline: bool, out: &mut dyn Write) -> i32 {
     let report = gather(
@@ -126,9 +118,6 @@ pub(super) fn logout(
             );
         }
     };
-    let hostname = creds
-        .as_ref()
-        .map_or_else(|| "this machine".to_string(), |c| c.hostname.clone());
     let question = match &creds {
         Some(c) => format!(
             "Disconnect {} from {}? Phones lose access to it.",
@@ -139,33 +128,21 @@ pub(super) fn logout(
     if let Err(code) = confirm(deps, yes, &question, &mut *stdin, out) {
         return code;
     }
-    if !local_only && let Some(c) = &creds {
-        match api_for(deps, c).and_then(|api| api.unpair()) {
-            Ok(Unpaired::TeardownStarted | Unpaired::AlreadyRevoked) => {}
-            Err(e) => {
-                let code = finish(&CloudActionOutcome::from_api_error(e, &hostname), out);
-                let _ = writeln!(
-                    out,
-                    "The credentials were kept. Run `yaran cloud logout --local-only` to forget them anyway."
-                );
-                return code.max(1);
-            }
-        }
-    }
-    if let Err(e) = credentials::delete(&deps.paths) {
-        return finish(
-            &CloudActionOutcome::CredentialsUnreadable {
-                reason: e.to_string(),
-            },
+    let outcome = actions::logout(&deps.paths, &deps.api, local_only);
+    let code = finish(&outcome, out);
+    if !matches!(
+        outcome,
+        CloudActionOutcome::Unpaired { .. }
+            | CloudActionOutcome::UnpairedLocallyOnly { .. }
+            | CloudActionOutcome::NotPaired
+    ) {
+        let _ = writeln!(
             out,
+            "The credentials were kept. Run `yaran cloud logout --local-only` to forget them anyway."
         );
+        return code.max(1);
     }
-    let outcome = if local_only {
-        CloudActionOutcome::UnpairedLocallyOnly { hostname }
-    } else {
-        CloudActionOutcome::Unpaired { hostname }
-    };
-    finish(&outcome, out)
+    code
 }
 
 pub(super) fn rotate(
@@ -202,22 +179,9 @@ pub(super) fn rotate(
         return code;
     }
     let outcome = if consent_key {
-        match credentials::rotate_consent_key(&deps.paths) {
-            Ok(Some(c)) => CloudActionOutcome::ConsentKeyRotated {
-                hostname: c.hostname,
-            },
-            Ok(None) => CloudActionOutcome::NotPaired,
-            Err(e) => CloudActionOutcome::CredentialsUnreadable {
-                reason: e.to_string(),
-            },
-        }
+        actions::rotate_consent_key(&deps.paths)
     } else {
-        match api_for(deps, &creds).and_then(|api| api.rotate(RotateReason::User)) {
-            Ok(_) => CloudActionOutcome::Rotated {
-                hostname: creds.hostname.clone(),
-            },
-            Err(e) => CloudActionOutcome::from_api_error(e, &creds.hostname),
-        }
+        actions::rotate_token(&deps.paths, &deps.api)
     };
     finish(&outcome, out)
 }
