@@ -217,6 +217,7 @@ fn keys_added_since_the_old_config_was_written_fall_back_to_their_defaults() {
     );
     assert_eq!(config.editor, fresh.editor);
     assert_eq!(config.capabilities, fresh.capabilities);
+    assert_eq!(config.cloud, fresh.cloud);
     // Keys added inside sections the old file DID mention: the one the user set
     // wins, every sibling defaults.
     assert_eq!(config.ui.agent_tabs_max, fresh.ui.agent_tabs_max);

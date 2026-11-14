@@ -20,6 +20,7 @@ use crate::cloud::credentials::{self, Credentials, HandoffConsentKey};
 use crate::cloud::identity::{MachineIdentity, check_machine_name, default_machine_name};
 use crate::cloud::loopback::{CallbackResult, LoopbackListener, parse_pasted_callback};
 use crate::cloud::machine_api::{ApiFactory, MachineApiError};
+use crate::cloud::machine_api_error::server_text;
 use crate::cloud::org_url::normalize_org_url;
 use crate::cloud::outcome::CloudActionOutcome;
 use crate::cloud::paths::CloudPaths;
@@ -146,7 +147,7 @@ pub fn run_login(params: LoginParams, io: &mut dyn LoginIo) -> LoginOutcome {
     let org_name = meta
         .org
         .as_ref()
-        .map_or_else(|| org_url.clone(), |o| o.name.clone());
+        .map_or_else(|| org_url.clone(), |o| server_text(&o.name));
 
     let (identity, pkce, listener) = match (
         MachineIdentity::generate(),
@@ -224,10 +225,12 @@ pub fn run_login(params: LoginParams, io: &mut dyn LoginIo) -> LoginOutcome {
         yaran_version,
         origin_port: i64::from(params.origin_port),
     };
-    let claim = match api.claim(&identity, &request) {
+    let mut claim = match api.claim(&identity, &request) {
         Ok(c) => c,
         Err(e) => return claim_refusal(e),
     };
+    // Server text crossed a trust boundary; it is shown on every surface (T53).
+    claim.org.name = server_text(&claim.org.name);
     let paired_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let stored = credentials::update(&params.paths, |previous| {
         let same_org = previous.filter(|p| p.org_url == claim.org.url);

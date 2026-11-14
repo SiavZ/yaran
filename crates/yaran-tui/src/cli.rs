@@ -1738,6 +1738,16 @@ mod tests {
     }
 
     #[test]
+    fn config_diff_reports_the_cloud_mode() {
+        let mut config = Config::default();
+        config.cloud.mode = "no".to_string();
+        assert_eq!(
+            collect_config_changes(&config),
+            vec!["cloud.mode: auto -> no".to_string()]
+        );
+    }
+
+    #[test]
     fn config_diff_reports_the_tailscale_mode() {
         // The exhaustiveness walk below covers this structurally, but the walk
         // mutates a string by appending to it, and this particular setting has a

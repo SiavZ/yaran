@@ -84,3 +84,57 @@ fn an_unreachable_control_plane_is_a_network_error() {
         .with_test_transport(&format!("http://127.0.0.1:{port}"));
     assert!(matches!(api.config(), Err(MachineApiError::Network(_))));
 }
+
+#[test]
+fn no_secret_reaches_a_log_line() {
+    use tracing_subscriber::layer::SubscriberExt;
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<String>>);
+    struct Visitor<'a>(&'a mut String);
+    impl tracing::field::Visit for Visitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.push_str(&format!(" {}={:?}", field.name(), value));
+        }
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut line = String::new();
+            event.record(&mut Visitor(&mut line));
+            let mut all = self.0.lock().unwrap();
+            all.push_str(&line);
+            all.push('\n');
+        }
+    }
+    let capture = Capture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let (_root, paths, _w, api) = setup(|req| match req.path.as_str() {
+        "/v1/machine/rotate" => MockResponse::json(
+            200,
+            serde_json::json!({
+                "tunnel": {"id": crate::cloud::test_support::SAMPLE_TUNNEL_ID, "token": "fresh-secret-token", "token_version": 2},
+                "rotated": true
+            }),
+        ),
+        _ => MockResponse::error(401, "signature_invalid", "bad signature"),
+    });
+    let creds = pair_sample(&paths, SAMPLE_ORG);
+    tracing::subscriber::with_default(subscriber, || {
+        api.rotate(RotateReason::User).unwrap();
+        let _ = api.config();
+        let _ = credentials::stamp_revoked(&paths);
+    });
+    let logged = capture.0.lock().unwrap().clone();
+    assert!(logged.contains("/v1/machine/rotate"), "{logged}");
+    for secret in [
+        "fresh-secret-token",
+        creds.tunnel_token.as_str(),
+        creds.machine_key_pkcs8.as_str(),
+        creds.handoff_consent_key.as_str(),
+    ] {
+        assert!(!logged.contains(secret), "secret in log: {logged}");
+    }
+}

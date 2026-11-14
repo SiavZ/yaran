@@ -266,7 +266,9 @@ pub fn help_text() -> &'static str {
                            (`yaran peer --help` for send, list, sync-amq)\n\
           yaran board        Post cards for the person running yaran, or resolve\n\
                            them (`yaran board --help` for post, resolve, list)\n\
-          yaran session      Permanently purge an agent's data (yaran session --help)\n\n\
+          yaran session      Permanently purge an agent's data (yaran session --help)\n\
+          yaran cloud        Connect this machine to Yaran Cloud for your phone\n\
+                           (`yaran cloud --help` for login, logout, status, rotate, pair-phone)\n\n\
          Server subcommand:\n\
           yaran server                     Serve on the configured host and port\n\
           yaran server --bind <ADDR:PORT>  Bind this exact address instead\n\
@@ -358,6 +360,16 @@ mod tests {
         assert!(
             help.contains("yaran board"),
             "--help must name the `yaran board` subcommand:\n{help}"
+        );
+    }
+
+    /// `yaran cloud` is dispatched by the binary before the TUI, so `--help` must name it.
+    #[test]
+    fn help_lists_the_cloud_subcommand() {
+        let help = help_text();
+        assert!(
+            help.contains("yaran cloud"),
+            "--help must name `yaran cloud`:\n{help}"
         );
     }
 

@@ -8,6 +8,9 @@ use toml_edit::{DocumentMut, Item};
 
 use crate::keybindings;
 
+#[path = "config_schema_cloud.rs"]
+mod config_schema_cloud;
+
 pub use yaran_core::config::*;
 
 #[allow(deprecated)] // blessed sync-direct: boot/first-creation path runs before the queue exists
@@ -339,7 +342,7 @@ enum ConfigEntry {
 /// changing here needs the matching entry there checked, and vice versa; there
 /// is no codegen linking the two.
 fn config_schema() -> Vec<ConfigEntry> {
-    vec![
+    let mut schema = vec![
         ConfigEntry::Comment("# yaran configuration"),
         ConfigEntry::Comment(
             "# Every value is materialized here so the file doubles as documentation.",
@@ -1835,7 +1838,9 @@ fn config_schema() -> Vec<ConfigEntry> {
             )),
             value_fn: |c| FieldValue::U32(c.board.news_close_hours),
         },
-    ]
+    ];
+    schema.extend(config_schema_cloud::entries());
+    schema
 }
 
 fn render_config(config: &Config, bindings: &crate::keybindings::RuntimeBindings) -> String {

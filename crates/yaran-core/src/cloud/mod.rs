@@ -9,13 +9,14 @@
 //! <module-headers:begin>
 //! <module-headers:end>
 
-//TODO pub mod cli;
+pub mod cli;
 pub mod config;
 pub mod config_patch;
 pub mod credentials;
 pub mod identity;
 pub mod leg_state;
 pub mod login;
+pub mod login_session;
 pub mod loopback;
 pub mod machine_api;
 pub mod machine_api_error;
@@ -27,5 +28,6 @@ pub mod protocol;
 pub mod qr;
 pub mod revocation;
 pub mod signed_request;
+pub mod status;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
