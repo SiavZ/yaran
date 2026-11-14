@@ -21,10 +21,11 @@ import { resetJwksCache, verifyAccessJwt } from "../src/auth/access-jwt.ts";
 import { HttpError } from "../src/http/responses.ts";
 import { forgedJwt, mintJwt, mintServiceToken, serveJwks } from "./helpers/access.ts";
 import { AUD, closeSetup, CP_HOST, NOW, seedUser, TEAM } from "./helpers/seed.ts";
-import { errorCode, handler } from "./helpers/worker.ts";
+import { errorCode, handler, PROBE_ROUTES } from "./helpers/worker.ts";
 import { network } from "./setup.ts";
 
-const call = handler();
+// These probe the pipeline itself, so they run against the echo routes, not production handlers.
+const call = handler({}, PROBE_ROUTES);
 const me = (jwt: string | null) => call(new Request(`https://${CP_HOST}/v1/me`, {
   headers: { "Yaran-Protocol": "1", ...(jwt === null ? {} : { "Cf-Access-Jwt-Assertion": jwt }) },
 }));

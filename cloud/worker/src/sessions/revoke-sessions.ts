@@ -9,8 +9,8 @@
  * Uses:
  * src/sessions/revoke-sessions.ts
  * ├── src/cloudflare/access-sessions.ts
- * ├── src/seams/context.ts
- * └── src/seams/foundation.ts
+ * ├── src/http/responses.ts
+ * └── src/routes/call.ts
  * External: none
  *
  * Used by:
@@ -20,8 +20,9 @@
  * <module-headers:end>
  */
 import { revokeUserSessions } from "../cloudflare/access-sessions.ts";
-import type { Phase06Ctx } from "../seams/context.ts";
-import { ApiError, type AuditRecord } from "../seams/foundation.ts";
+import type { Phase06Ctx } from "../routes/call.ts";
+import { HttpError } from "../http/responses.ts";
+import { type AuditRecord } from "../routes/call.ts";
 
 export const DASHBOARD_FALLBACK = "Revoke them in the Cloudflare dashboard instead: Zero Trust → Users → the person → Revoke sessions.";
 
@@ -29,8 +30,8 @@ export async function revokeSessions(ctx: Phase06Ctx, o: { email: string; userId
   try {
     await revokeUserSessions(ctx, o.email);
   } catch (e) {
-    const code = e instanceof ApiError ? e.code : "cloudflare_api_failed";
-    throw new ApiError(code, `The phone was removed, but its Access sessions could not be revoked. ${DASHBOARD_FALLBACK}`, { fallback: "dashboard" });
+    const code = e instanceof HttpError ? e.code : "cloudflare_api_failed";
+    throw new HttpError(code, `The phone was removed, but its Access sessions could not be revoked. ${DASHBOARD_FALLBACK}`, { details: { fallback: "dashboard" } });
   }
   await ctx.audit.record({ action: "sessions.revoked", actor: o.actor, target: { kind: "user", id: o.userId }, outcome: "ok" });
 }

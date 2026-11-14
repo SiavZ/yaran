@@ -15,7 +15,7 @@
  * Uses:
  * src/devices/device-params.ts
  * ├── @yaran/protocol:src/index.ts
- * └── src/seams/foundation.ts
+ * └── src/http/responses.ts
  * External: none
  *
  * Used by:
@@ -27,19 +27,21 @@
  * <module-headers:end>
  */
 import { b64urlDecode, decodeP256Point, HOSTNAME_RE, importP256Public, validate, type DevicePatch, type DeviceRegistration, type Settings } from "@yaran/protocol";
-import { ApiError } from "../seams/foundation.ts";
+import { HttpError } from "../http/responses.ts";
 
 export const ENDPOINT_MAX_CHARS = 2048;
 const BLOCKED_SUFFIXES = ["localhost", "internal", "local", "arpa", "workers.dev"];
 // C0, DEL, C1, and the bidi controls (LRM/RLM, embeddings/overrides, isolates, ALM).
+// Control and bidi characters are exactly what this rejects.
+// eslint-disable-next-line no-control-regex
 const CONTROL_OR_BIDI = /[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/;
 
 function invalidEndpoint(why: string): never {
-  throw new ApiError("push_endpoint_invalid", `The push endpoint is not allowed: ${why}.`);
+  throw new HttpError("push_endpoint_invalid", `The push endpoint is not allowed: ${why}.`);
 }
 
 function failed(path: string, message: string): never {
-  throw new ApiError("validation_failed", `Invalid ${path.slice(1)}: ${message}.`, { errors: [{ path, message }] });
+  throw new HttpError("validation_failed", `Invalid ${path.slice(1)}: ${message}.`, { details: { errors: [{ path, message }] } });
 }
 
 const underSuffix = (host: string, suffix: string) => host === suffix || host.endsWith(`.${suffix}`);
@@ -76,10 +78,10 @@ export function checkEndpoint(endpoint: string, scope: EndpointScope): string {
 export function checkRelay(channel: string, endpoint: string, push: Settings["push"]): void {
   if (channel !== "apns_relay" && channel !== "fcm_relay") return;
   if (!push.relay_allowed) {
-    throw new ApiError("push_relay_disallowed", "This org does not allow push relays, so this phone cannot receive notifications here.", { reason: "disabled" });
+    throw new HttpError("push_relay_disallowed", "This org does not allow push relays, so this phone cannot receive notifications here.", { details: { reason: "disabled" } });
   }
   if (push.allowed_relays.length > 0 && !push.allowed_relays.includes(new URL(endpoint).origin)) {
-    throw new ApiError("push_relay_disallowed", "This org only allows its listed push relays; ask an admin to add this one.", { reason: "not_allowlisted" });
+    throw new HttpError("push_relay_disallowed", "This org only allows its listed push relays; ask an admin to add this one.", { details: { reason: "not_allowlisted" } });
   }
 }
 
@@ -97,7 +99,7 @@ export function checkLabel(label: string): void {
 function schema(type: "DeviceRegistration" | "DevicePatch", value: unknown): void {
   const r = validate(type, value);
   if (!r.valid) {
-    throw new ApiError("validation_failed", `The request does not match ${type}.`, { errors: r.errors.map((e) => ({ path: e.path, message: e.message })) });
+    throw new HttpError("validation_failed", `The request does not match ${type}.`, { details: { errors: r.errors.map((e) => ({ path: e.path, message: e.message })) } });
   }
 }
 

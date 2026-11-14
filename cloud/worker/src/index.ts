@@ -5,7 +5,7 @@
  * dispatcher. Both first make sure the D1 schema is current (the G11 fallback migrator,
  * a no-op once the database has every migration).
  *
- * Seams: Phase 06 passes its W4 pair-code key resolver here as
+ * Phase 06's W4 pair-code key resolver is passed here as
  * `createFetchHandler(ROUTES, { pairCodeKey })`; routes join through `http/routes.ts` and
  * cron tasks through `scheduled/tasks.ts`.
  *
@@ -19,6 +19,7 @@
  * ├── src/http/responses.ts
  * ├── src/http/routes.ts
  * ├── src/log/logger.ts
+ * ├── src/pairing/pair-requests.ts
  * ├── src/scheduled/dispatcher.ts
  * └── src/scheduled/tasks.ts
  * External: none
@@ -37,10 +38,11 @@ import { createFetchHandler } from "./http/pipeline.ts";
 import { errorResponse, finalize, HttpError } from "./http/responses.ts";
 import { ROUTES } from "./http/routes.ts";
 import { createLogger } from "./log/logger.ts";
+import { pairCodeKey } from "./pairing/pair-requests.ts";
 import { dispatch } from "./scheduled/dispatcher.ts";
 import { TASKS } from "./scheduled/tasks.ts";
 
-const handle = createFetchHandler(ROUTES);
+const handle = createFetchHandler(ROUTES, { pairCodeKey });
 const nowS = () => Math.floor(Date.now() / 1000);
 
 async function schemaReady(env: Env): Promise<boolean> {

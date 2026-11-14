@@ -9,18 +9,22 @@
  * ├── @yaran/protocol:src/index.ts
  * ├── cloud/protocol/fixtures/sig/fingerprint.json
  * ├── src/pairing/authorize-route.ts
+ * ├── test/helpers/worker.ts
  * ├── test/pairing/pair-helpers.ts
- * └── test/phase06/fakes.ts
+ * ├── test/phase06/fakes.ts
+ * └── test/provisioning/fake-cloudflare/faults.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import fingerprints from "@yaran/protocol/fixtures/sig/fingerprint.json" with { type: "json" };
 import { b64urlDecode } from "@yaran/protocol";
 import { describe, expect, it } from "vitest";
 import { nextFreeName } from "../../src/pairing/authorize-route.ts";
-import { seedMachine, seedUser } from "../phase06/fakes.ts";
+import { errorCode } from "../helpers/worker.ts";
+import { opsOf, seedMachine, seedUser } from "../phase06/fakes.ts";
+import { on } from "../provisioning/fake-cloudflare/faults.ts";
 import { approvePairing, authorizeQuery, fixtureMachine, formFields, getAuthorize, pairWorld, postAuthorize, userJwt } from "./pair-helpers.ts";
 
 const location = (r: Response) => new URL(r.headers.get("Location")!);
@@ -46,7 +50,7 @@ describe("GET /v1/pair/authorize: who may pair", () => {
     const off = await seedUser(pw.w.ctx.db, `off-${crypto.randomUUID().slice(0, 6)}@example.org`, { status: "disabled" });
     const res = await getAuthorize(pw, authorizeQuery(await fixtureMachine()), userJwt(off.email));
     expect(res.status).toBe(403);
-    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("user_disabled");
+    expect(await errorCode(res)).toBe("user_disabled");
   });
 });
 
@@ -138,7 +142,7 @@ describe("POST /v1/pair/authorize", () => {
     expect([...u.searchParams.keys()].sort()).toEqual(["code", "state"]);
     expect(u.searchParams.get("code")).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(u.searchParams.get("state")).toBe(m.state);
-    expect(pw.w.prov.calls.map((c) => c.fn)).toEqual(["startProvision", "driveOp"]);
+    expect((await opsOf(pw.w, machineId)).map((o) => [o.kind, o.state])).toEqual([["provision", "succeeded"]]);
     expect(pw.w.audit.at(-1)).toMatchObject({ action: "pair.approved", target: { kind: "machine", id: machineId } });
     const row = await pw.w.ctx.db.prepare("SELECT code_hash, status FROM pair_requests WHERE machine_id = ?").bind(machineId).first<{ code_hash: ArrayBuffer; status: string }>();
     expect(row!.status).toBe("confirmed");
@@ -151,7 +155,7 @@ describe("POST /v1/pair/authorize", () => {
     const res = await postAuthorize(pw, { request_id: f["request_id"]!, csrf: f["csrf"]!, decision: "deny" });
     expect(Object.fromEntries(location(res).searchParams)).toEqual({ error: "pair_denied", state: m.state });
     expect(pw.w.audit.at(-1)!.action).toBe("pair.denied");
-    expect(pw.w.prov.calls).toEqual([]);
+    expect(pw.w.cf.calls).toEqual([]);
   });
   it("refuses a wrong csrf, a foreign Origin and the replace field with deny", async () => {
     const pw = await pairWorld();
@@ -163,27 +167,35 @@ describe("POST /v1/pair/authorize", () => {
     expect(deny.status).toBe(400);
     expect(await deny.text()).toContain("pair_request_invalid");
   });
-  it("a provisioning failure renders Retry, and Retry reuses the same machine id", async () => {
+  it("a provisioning failure renders Retry, and Retry pairs a fresh machine for the same request", async () => {
     const pw = await pairWorld();
-    pw.w.prov.nextDrive = { state: "failed", errorCode: "account_quota_reached", details: { resource: "access_apps", used: 500, limit: 500 } };
+    // The account already holds one Access application and the org allows one.
+    pw.w.settings.quota_limits = { ...pw.w.settings.quota_limits, access_apps: 1 };
+    pw.w.cf.state.apps.set("existing", { id: "existing", aud: "a".repeat(64), name: "someone else's app", domain: "other.example.com" });
+    // Drop the quota observation an earlier test in this file cached, so P0 counts afresh.
+    await pw.w.ctx.db.prepare("DELETE FROM scheduled_tasks WHERE task = 'cf_orphans'").run();
     const f = formFields(await (await getAuthorize(pw, authorizeQuery(await fixtureMachine()))).text());
     const fail = await postAuthorize(pw, { request_id: f["request_id"]!, csrf: f["csrf"]!, decision: "approve" });
     expect(fail.status).toBe(409);
     const html = await fail.text();
-    expect(html).toContain("This org has used 500 of 500 Access applications. Ask an admin to remove unused machines");
+    expect(html).toContain("This org has used 1 of 1 Access applications. Ask an admin to remove unused machines");
     expect(html).toContain(">Retry</button>");
     expect(pw.w.audit.at(-1)).toMatchObject({ action: "pair.refused", detail: { reason: "quota" } });
-    pw.w.prov.nextDrive = { state: "complete", errorCode: null };
+    const machineId = (await pw.w.ctx.db.prepare("SELECT machine_id FROM pair_requests WHERE id = ?").bind(f["request_id"]).first<{ machine_id: string }>())!.machine_id;
+    pw.w.settings.quota_limits = { ...pw.w.settings.quota_limits, access_apps: 500 };
     const retry = formFields(html);
     const ok = await postAuthorize(pw, retry);
     expect(ok.status).toBe(302);
-    const ids = pw.w.prov.calls.filter((c) => c.fn === "startProvision").map((c) => c.args[0]);
-    expect(ids).toHaveLength(2);
-    expect(ids[0]).toBe(ids[1]);
+    // 05 compensated the refused attempt and failed that machine, so the request moved on.
+    expect((await opsOf(pw.w, machineId)).map((o) => [o.kind, o.state])).toEqual([["provision", "compensated"]]);
+    const fresh = (await pw.w.ctx.db.prepare("SELECT machine_id FROM pair_requests WHERE id = ?").bind(f["request_id"]).first<{ machine_id: string }>())!.machine_id;
+    expect(fresh).not.toBe(machineId);
+    expect((await opsOf(pw.w, fresh)).map((o) => [o.kind, o.state])).toEqual([["provision", "succeeded"]]);
   });
   it("an op still running answers provisioning_in_progress with Retry", async () => {
     const pw = await pairWorld();
-    pw.w.prov.nextDrive = { state: "in_progress", errorCode: null };
+    // Cloudflare keeps failing transiently, so the inline drive defers the op.
+    pw.w.cf.faults.push({ kind: "transient", when: on("POST", /access\/policies$/), times: 20 });
     const f = formFields(await (await getAuthorize(pw, authorizeQuery(await fixtureMachine()))).text());
     const res = await postAuthorize(pw, { request_id: f["request_id"]!, csrf: f["csrf"]!, decision: "approve" });
     expect(res.status).toBe(409);
@@ -196,7 +208,7 @@ describe("POST /v1/pair/authorize", () => {
     await seedMachine(pw.w.ctx.db, pw.user, { name: "raced" });
     const res = await postAuthorize(pw, { request_id: f["request_id"]!, csrf: f["csrf"]!, decision: "approve" });
     expect(location(res).searchParams.get("error")).toBe("machine_cap_reached");
-    expect(pw.w.prov.calls).toEqual([]);
+    expect(pw.w.cf.calls).toEqual([]);
   });
   it("replace_machine_id naming the caller's same-name machine is accepted, even at the cap", async () => {
     const pw = await pairWorld();

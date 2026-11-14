@@ -28,9 +28,12 @@
  *
  * Used by:
  * src/security/data-key.ts
+ * ├── src/routes/call.ts
+ * ├── src/routes/phase06-context.ts
  * ├── src/scheduled/purge.ts
  * ├── test/data-key.test.ts
- * └── test/no-secret-leak.test.ts
+ * ├── test/no-secret-leak.test.ts
+ * └── test/sessions/handoff-remembered.test.ts
  * <module-headers:end>
  */
 import { b64urlDecode, b64urlEncode } from "@yaran/protocol";
@@ -39,7 +42,7 @@ import type { AppContext } from "../http/context.ts";
 import { HttpError } from "../http/responses.ts";
 import { decodeDataKey } from "./secrets.ts";
 
-export type SealPurpose = "vapid" | "device_endpoint" | "device_auth";
+export type SealPurpose = "vapid" | "device_endpoint" | "device_auth" | "pair_state";
 export type MacPurpose = "handoff_consent";
 type Purpose = SealPurpose | MacPurpose | "key_check";
 

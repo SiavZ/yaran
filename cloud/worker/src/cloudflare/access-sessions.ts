@@ -11,8 +11,8 @@
  * <module-headers:begin>
  * Uses:
  * src/cloudflare/access-sessions.ts
- * ├── src/seams/context.ts
- * └── src/seams/foundation.ts
+ * ├── src/http/responses.ts
+ * └── src/routes/call.ts
  * External: none
  *
  * Used by:
@@ -20,11 +20,11 @@
  * └── src/sessions/revoke-sessions.ts
  * <module-headers:end>
  */
-import type { Phase06Ctx } from "../seams/context.ts";
-import { ApiError } from "../seams/foundation.ts";
+import type { Phase06Ctx } from "../routes/call.ts";
+import { HttpError } from "../http/responses.ts";
 
 export async function revokeUserSessions(ctx: Phase06Ctx, email: string): Promise<void> {
   const { accountId } = await ctx.settings.internal();
-  if (!accountId) throw new ApiError("unavailable", "The Cloudflare account is not recorded yet; finish setup first.");
-  await ctx.cloudflare.call({ method: "POST", path: `/accounts/${accountId}/access/organizations/revoke_user`, body: { email }, priority: "interactive" });
+  if (!accountId) throw new HttpError("unavailable", "The Cloudflare account is not recorded yet; finish setup first.");
+  await ctx.cloudflare.call({ method: "POST", path: `/accounts/${accountId}/access/organizations/revoke_user`, body: { email } });
 }

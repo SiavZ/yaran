@@ -11,28 +11,27 @@
  * Uses:
  * src/me/me-route.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── src/http/responses.ts
  * ├── src/machines/machine-rows.ts
- * ├── src/seams/context.ts
- * ├── src/seams/foundation.ts
+ * ├── src/routes/call.ts
  * └── src/shared/timestamp.ts
  * External: none
  *
  * Used by:
  * src/me/me-route.ts
- * ├── src/routes/pairing-and-sessions.ts
- * └── test/me/me-route.test.ts
+ * └── src/routes/pairing-and-sessions.ts
  * <module-headers:end>
  */
 import type { Me } from "@yaran/protocol";
 import { countLiveMachines } from "../machines/machine-rows.ts";
-import type { Handler, RouteRow } from "../seams/context.ts";
-import { ApiError } from "../seams/foundation.ts";
+import type { Handler, RouteRow } from "../routes/call.ts";
+import { HttpError } from "../http/responses.ts";
 import { toTimestamp } from "../shared/timestamp.ts";
 
 const getMe: Handler = async ({ ctx, user }) => {
-  if (!user) throw new ApiError("unauthenticated", "This route needs a signed-in user.");
+  if (!user) throw new HttpError("unauthenticated", "This route needs a signed-in user.");
   const [settings, internal] = await Promise.all([ctx.settings.read(), ctx.settings.internal()]);
-  if (!internal.controlPlaneHost) throw new ApiError("setup_incomplete", "Setup has not recorded the control-plane host yet.");
+  if (!internal.controlPlaneHost) throw new HttpError("setup_incomplete", "Setup has not recorded the control-plane host yet.");
   const devices = await ctx.db.prepare("SELECT count(*) AS n FROM devices WHERE user_id = ? AND revoked_at IS NULL").bind(user.userId).first<{ n: number }>();
   const me: Me = {
     email: user.email,
@@ -46,4 +45,4 @@ const getMe: Handler = async ({ ctx, user }) => {
   return Response.json(me, { headers: { "Cache-Control": "no-store" } });
 };
 
-export const ME_ROUTES: RouteRow[] = [{ method: "GET", path: "/v1/me", auth: { kind: "user" }, kind: "json", handler: getMe, rateLimit: "RL_IP", bodyLimit: 0 }];
+export const ME_ROUTES: RouteRow[] = [{ method: "GET", path: "/v1/me", auth: { kind: "user" }, kind: "json", protocol: "header", handler: getMe, rateLimit: "ip", bodyLimit: 0 }];

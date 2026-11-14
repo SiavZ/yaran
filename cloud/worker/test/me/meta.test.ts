@@ -6,17 +6,15 @@
  * Uses:
  * test/me/meta.test.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/routes/meta.ts
  * ├── test/phase06/fakes.ts
  * └── test/phase06/harness.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { validate, type Meta } from "@yaran/protocol";
 import { describe, expect, it } from "vitest";
-import { META_ROUTES } from "../../src/routes/meta.ts";
 import { CP_HOST, makeWorld, TEAM } from "../phase06/fakes.ts";
 import { dispatch } from "../phase06/harness.ts";
 
@@ -24,7 +22,7 @@ async function meta(setupState: "open" | "closed", pushEnabled = true): Promise<
   const w = await makeWorld();
   w.internal.setupState = setupState;
   w.settings.push.enabled = pushEnabled;
-  const res = await dispatch(META_ROUTES, new Request(`https://${CP_HOST}/v1/meta`), w.ctx);
+  const res = await dispatch(new Request(`https://${CP_HOST}/v1/meta`), w);
   return { res, body: (await res.json()) as Meta };
 }
 

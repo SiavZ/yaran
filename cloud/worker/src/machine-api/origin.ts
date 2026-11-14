@@ -12,7 +12,7 @@
  * src/machine-api/origin.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── src/machines/machine-rows.ts
- * ├── src/seams/context.ts
+ * ├── src/routes/call.ts
  * └── src/shared/json-body.ts
  * External: none
  *
@@ -23,7 +23,7 @@
  */
 import type { OriginUpdate, OriginUpdateResult } from "@yaran/protocol";
 import { getMachine } from "../machines/machine-rows.ts";
-import type { RouteCall, RouteRow } from "../seams/context.ts";
+import type { RouteCall, RouteRow } from "../routes/call.ts";
 import { checkOriginPortField, parseJson, validated } from "../shared/json-body.ts";
 
 async function putOrigin({ ctx, body, machine }: RouteCall): Promise<Response> {
@@ -34,9 +34,9 @@ async function putOrigin({ ctx, body, machine }: RouteCall): Promise<Response> {
   const m = await getMachine(ctx, id);
   let answer: OriginUpdateResult = { origin_port: req.origin_port, changed: false };
   if (m && m.origin_port !== req.origin_port) {
+    // 05 stores the port, audits machine.origin_changed and re-points the ingress (now, or
+    // after a live op ends).
     await ctx.provisioning.setOriginPort(id, req.origin_port);
-    await ctx.db.prepare("UPDATE machines SET origin_port = ? WHERE id = ?").bind(req.origin_port, id).run();
-    await ctx.audit.record({ action: "machine.origin_changed", actor: { kind: "machine", id }, target: { kind: "machine", id }, outcome: "ok", detail: { from: m.origin_port, to: req.origin_port } });
     answer = { origin_port: req.origin_port, changed: true };
   }
   return Response.json(answer, { status: 202, headers: { "Cache-Control": "no-store" } });
@@ -46,8 +46,8 @@ export const ORIGIN_ROUTE: RouteRow = {
   method: "PUT",
   path: "/v1/machine/origin",
   auth: { kind: "machine", key: "registered" },
-  kind: "json",
+  kind: "json", protocol: "header",
   handler: putOrigin,
-  rateLimit: "RL_MACHINE",
+  rateLimit: "machine",
   bodyLimit: 1024,
 };

@@ -9,7 +9,7 @@
  * └── src/pairing/qr.ts
  * External: jsqr, vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import addOrg from "@yaran/protocol/fixtures/uri/add-org.json" with { type: "json" };

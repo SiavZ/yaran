@@ -18,7 +18,8 @@
  * Uses:
  * src/http/routes.ts
  * ├── src/http/context.ts
- * └── src/http/responses.ts
+ * ├── src/http/responses.ts
+ * └── src/routes/pairing-and-sessions.ts
  * External: none
  *
  * Used by:
@@ -28,6 +29,9 @@
  * ├── src/http/pipeline.ts
  * ├── src/http/router.ts
  * ├── src/index.ts
+ * ├── src/routes/call.ts
+ * ├── src/routes/pairing-and-sessions.ts
+ * ├── src/routes/phase06-context.ts
  * ├── src/security/rate-limit.ts
  * ├── test/body.test.ts
  * ├── test/helpers/matrix.ts
@@ -37,6 +41,7 @@
  */
 import type { RequestContext } from "./context.ts";
 import type { ResponseKind } from "./responses.ts";
+import { PHASE06_ROUTE_TABLE } from "../routes/pairing-and-sessions.ts";
 
 export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -67,4 +72,4 @@ export interface Route {
 export const DEFAULT_BODY_LIMIT = 64 * 1024;
 
 /** Every production route. Phases 05–08 append one spread line each. */
-export const ROUTES: readonly Route[] = [];
+export const ROUTES: readonly Route[] = [...PHASE06_ROUTE_TABLE];

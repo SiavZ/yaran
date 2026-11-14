@@ -8,7 +8,7 @@
  * Uses:
  * src/me/cursor.ts
  * ├── @yaran/protocol:src/index.ts
- * └── src/seams/foundation.ts
+ * └── src/http/responses.ts
  * External: none
  *
  * Used by:
@@ -18,7 +18,7 @@
  * <module-headers:end>
  */
 import { b64urlDecode, b64urlEncode, utf8, utf8Decode } from "@yaran/protocol";
-import { ApiError } from "../seams/foundation.ts";
+import { HttpError } from "../http/responses.ts";
 
 export interface PagePosition {
   createdAt: number;
@@ -36,13 +36,13 @@ export function pageQuery(url: URL): { limit: number; after: PagePosition | null
   const rawLimit = url.searchParams.get("limit");
   const limit = rawLimit === null ? 50 : Number(rawLimit);
   if (!/^[1-9][0-9]{0,2}$/.test(rawLimit ?? "50") || limit > 100) {
-    throw new ApiError("validation_failed", "limit must be an integer from 1 to 100.", { errors: [{ path: "/limit", message: "1-100" }] });
+    throw new HttpError("validation_failed", "limit must be an integer from 1 to 100.", { details: { errors: [{ path: "/limit", message: "1-100" }] } });
   }
   const cursor = url.searchParams.get("cursor");
   if (cursor === null) return { limit, after: null };
   const bytes = cursor.length <= 256 ? b64urlDecode(cursor) : null;
   const m = bytes ? POS_RE.exec(utf8Decode(bytes) ?? "") : null;
-  if (!m) throw new ApiError("validation_failed", "cursor is not one this server issued.", { errors: [{ path: "/cursor", message: "unknown cursor" }] });
+  if (!m) throw new HttpError("validation_failed", "cursor is not one this server issued.", { details: { errors: [{ path: "/cursor", message: "unknown cursor" }] } });
   return { limit, after: { createdAt: Number(m[1]), id: m[2]! } };
 }
 

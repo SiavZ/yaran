@@ -13,11 +13,11 @@
  * Uses:
  * src/machine-api/claim.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── src/http/responses.ts
  * ├── src/machines/machine-rows.ts
  * ├── src/pairing/pair-requests.ts
  * ├── src/pairing/pkce.ts
- * ├── src/seams/context.ts
- * ├── src/seams/foundation.ts
+ * ├── src/routes/call.ts
  * └── src/shared/json-body.ts
  * External: none
  *
@@ -30,11 +30,11 @@ import type { ClaimRequest, ClaimResponse } from "@yaran/protocol";
 import { activateClaimed, getMachine, markReplaced } from "../machines/machine-rows.ts";
 import { claim, findByCode } from "../pairing/pair-requests.ts";
 import { verifyS256 } from "../pairing/pkce.ts";
-import type { RouteCall, RouteRow } from "../seams/context.ts";
-import { ApiError } from "../seams/foundation.ts";
+import type { RouteCall, RouteRow } from "../routes/call.ts";
+import { HttpError } from "../http/responses.ts";
 import { checkOriginPortField, parseJson, validated } from "../shared/json-body.ts";
 
-const codeInvalid = () => new ApiError("pair_code_invalid", "This pairing code is unknown, used or expired. Run the login command again.");
+const codeInvalid = () => new HttpError("pair_code_invalid", "This pairing code is unknown, used or expired. Run the login command again.");
 
 async function postClaim({ ctx, body, machine }: RouteCall): Promise<Response> {
   const raw = parseJson(body);
@@ -43,7 +43,7 @@ async function postClaim({ ctx, body, machine }: RouteCall): Promise<Response> {
   const pair = await findByCode(ctx, req.code);
   if (!pair || pair.machine_id === null) throw codeInvalid();
   if (!(await verifyS256(req.code_verifier, pair.code_challenge))) {
-    throw new ApiError("pkce_mismatch", "The code verifier does not match the challenge sent when pairing started.");
+    throw new HttpError("pkce_mismatch", "The code verifier does not match the challenge sent when pairing started.");
   }
   const m = await getMachine(ctx, pair.machine_id);
   if (!m || m.status !== "awaiting_claim" || m.hostname === null || m.tunnel_id === null) throw codeInvalid();
@@ -89,8 +89,8 @@ export const CLAIM_ROUTE: RouteRow = {
   method: "POST",
   path: "/v1/machine/claim",
   auth: { kind: "machine", key: "pair_request" },
-  kind: "json",
+  kind: "json", protocol: "header",
   handler: postClaim,
-  rateLimit: "RL_AUTH",
+  rateLimit: "auth",
   bodyLimit: 65536,
 };

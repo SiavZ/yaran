@@ -18,8 +18,8 @@
  * src/devices/devices-repo.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── src/devices/device-params.ts
- * ├── src/seams/context.ts
- * ├── src/seams/foundation.ts
+ * ├── src/http/responses.ts
+ * ├── src/routes/call.ts
  * └── src/shared/timestamp.ts
  * External: none
  *
@@ -30,8 +30,9 @@
  * <module-headers:end>
  */
 import { b64urlDecode, b64urlEncode, deviceKeyFingerprint, timingSafeEqual, type Device, type Flavor, type FormFactor, type Platform, type PushChannel, type PushState } from "@yaran/protocol";
-import type { Phase06Ctx } from "../seams/context.ts";
-import { ApiError, type AuditRecord, type FoundationCtx } from "../seams/foundation.ts";
+import type { Phase06Ctx } from "../routes/call.ts";
+import { HttpError } from "../http/responses.ts";
+import { type AuditRecord, type FoundationCtx } from "../routes/call.ts";
 import { fromTimestamp, toNullableTimestamp, toTimestamp } from "../shared/timestamp.ts";
 import type { CheckedRegistration } from "./device-params.ts";
 
@@ -55,15 +56,27 @@ export interface DeviceRow {
   last_seen_at: number | null;
   revoked_at: number | null;
   push_state: PushState;
-  push_last_success_at: number | null;
-  push_last_error_code: string | null;
+  last_push_ok_at: number | null;
   mute_all: number;
   muted_until: number | null;
+  /** JSON array from `device_machine_mutes`, assembled by `DEVICE_COLUMNS`. */
   muted_machine_ids: string;
 }
 
-const endpointAad = (id: string) => `devices.endpoint_enc:${id}`;
-const authAad = (id: string) => `devices.auth_enc:${id}`;
+/** Every device column plus the per-machine mutes as a JSON array, in a stable order. */
+const DEVICE_COLUMNS = `devices.*, (SELECT json_group_array(machine_id) FROM
+  (SELECT machine_id FROM device_machine_mutes WHERE device_id = devices.id ORDER BY machine_id)) AS muted_machine_ids`;
+
+/** Replaces a device's per-machine mutes (Phase 08's `device_machine_mutes` table). */
+function setMutesStatements(ctx: FoundationCtx, deviceId: string, machineIds: readonly string[]): D1PreparedStatement[] {
+  return [
+    ctx.db.prepare("DELETE FROM device_machine_mutes WHERE device_id = ?").bind(deviceId),
+    ctx.db.prepare("INSERT INTO device_machine_mutes (device_id, machine_id) SELECT ?, value FROM json_each(?)").bind(deviceId, JSON.stringify(machineIds)),
+  ];
+}
+
+const endpointAad = (id: string) => ({ table: "devices", column: "endpoint_enc", rowId: id });
+const authAad = (id: string) => ({ table: "devices", column: "auth_enc", rowId: id });
 
 const vapidB64 = (raw: ArrayBuffer | null): string | null => (raw === null ? null : b64urlEncode(new Uint8Array(raw)));
 
@@ -76,8 +89,7 @@ export function toDevice(row: DeviceRow, currentInstallId: string | null): Devic
           kind: "webpush",
           channel: row.push_kind,
           ...(row.endpoint_host ? { endpoint_host: row.endpoint_host } : {}),
-          last_success_at: toNullableTimestamp(row.push_last_success_at),
-          last_error_code: row.push_last_error_code,
+          last_success_at: toNullableTimestamp(row.last_push_ok_at),
           vapid_public_key: vapidB64(row.push_vapid_public_key),
         };
   return {
@@ -111,25 +123,25 @@ export async function ownsMachines(ctx: FoundationCtx, userId: string, ids: read
 }
 
 export function getOwnedDevice(ctx: FoundationCtx, id: string, userId: string): Promise<DeviceRow | null> {
-  return ctx.db.prepare("SELECT * FROM devices WHERE id = ? AND user_id = ? AND revoked_at IS NULL").bind(id, userId).first<DeviceRow>();
+  return ctx.db.prepare(`SELECT ${DEVICE_COLUMNS} FROM devices WHERE id = ? AND user_id = ? AND revoked_at IS NULL`).bind(id, userId).first<DeviceRow>();
 }
 
 const byInstall = (ctx: FoundationCtx, userId: string, installId: string) =>
-  ctx.db.prepare("SELECT * FROM devices WHERE user_id = ? AND install_id = ?").bind(userId, installId).first<DeviceRow>();
+  ctx.db.prepare(`SELECT ${DEVICE_COLUMNS} FROM devices WHERE user_id = ? AND install_id = ?`).bind(userId, installId).first<DeviceRow>();
 
 /** Registers or updates the install's device; `created` decides 201 vs 200. */
 export async function upsertDevice(ctx: Phase06Ctx, userId: string, c: CheckedRegistration): Promise<{ row: DeviceRow; created: boolean }> {
   const { reg } = c;
   if (!(await ownsMachines(ctx, userId, reg.muted_machine_ids))) {
-    throw new ApiError("validation_failed", "muted_machine_ids names a machine that is not yours.", { errors: [{ path: "/muted_machine_ids", message: "unknown machine" }] });
+    throw new HttpError("validation_failed", "muted_machine_ids names a machine that is not yours.", { details: { errors: [{ path: "/muted_machine_ids", message: "unknown machine" }] } });
   }
   const internal = await ctx.settings.internal();
   const existing = await byInstall(ctx, userId, reg.install_id);
   const id = existing?.id ?? crypto.randomUUID();
   if (existing) {
-    if (existing.revoked_at !== null) throw new ApiError("device_revoked", "This phone was removed from the org. Sign in again to add it back.");
+    if (existing.revoked_at !== null) throw new HttpError("device_revoked", "This phone was removed from the org. Sign in again to add it back.");
     if (!timingSafeEqual(new Uint8Array(existing.device_key), c.deviceKey)) {
-      throw new ApiError("conflict", "This install is already registered with a different device key. Remove the org from the app and add it again.");
+      throw new HttpError("conflict", "This install is already registered with a different device key. Remove the org from the app and add it again.");
     }
   }
   const p = c.push;
@@ -141,43 +153,47 @@ export async function upsertDevice(ctx: Phase06Ctx, userId: string, c: CheckedRe
     p ? await ctx.dataKey.seal("device_auth", authAad(id), p.auth) : null,
     p && internal.vapidPublicKey ? b64urlDecode(internal.vapidPublicKey) : null,
     reg.app_version, reg.label, p ? "active" : "none",
-    reg.mute_all ? 1 : 0, reg.muted_until === null ? null : fromTimestamp(reg.muted_until), JSON.stringify(reg.muted_machine_ids),
+    reg.mute_all ? 1 : 0, reg.muted_until === null ? null : fromTimestamp(reg.muted_until),
   ];
   if (existing) {
     await ctx.db
       .prepare(
         `UPDATE devices SET platform = ?, flavor = ?, form_factor = ?, locale = ?, push_kind = ?, push_distributor = ?, endpoint_enc = ?,
            endpoint_host = ?, p256dh = ?, auth_enc = ?, push_vapid_public_key = ?, app_version = ?, label = ?, push_state = ?,
-           mute_all = ?, muted_until = ?, muted_machine_ids = ?, push_last_error_code = NULL
+           mute_all = ?, muted_until = ?
          WHERE id = ? AND revoked_at IS NULL`,
       )
       .bind(...fields, id)
       .run();
+    await ctx.db.batch(setMutesStatements(ctx, id, reg.muted_machine_ids));
     return { row: (await byInstall(ctx, userId, reg.install_id))!, created: false };
   }
   const cap = (await ctx.settings.read()).device_cap_per_user;
   const ins = await ctx.db
     .prepare(
       `INSERT OR IGNORE INTO devices (platform, flavor, form_factor, locale, push_kind, push_distributor, endpoint_enc, endpoint_host, p256dh,
-         auth_enc, push_vapid_public_key, app_version, label, push_state, mute_all, muted_until, muted_machine_ids,
+         auth_enc, push_vapid_public_key, app_version, label, push_state, mute_all, muted_until,
          id, user_id, install_id, device_key, device_key_fingerprint, created_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        WHERE (SELECT count(*) FROM devices WHERE user_id = ? AND revoked_at IS NULL) < ?`,
     )
     .bind(...fields, id, userId, reg.install_id, c.deviceKey, await deviceKeyFingerprint(reg.device_key), ctx.now(), userId, cap)
     .run();
-  if (ins.meta.changes === 1) return { row: (await byInstall(ctx, userId, reg.install_id))!, created: true };
+  if (ins.meta.changes === 1) {
+    await ctx.db.batch(setMutesStatements(ctx, id, reg.muted_machine_ids));
+    return { row: (await byInstall(ctx, userId, reg.install_id))!, created: true };
+  }
   // A concurrent registration of the same install won the insert: answer as its update.
   if (await byInstall(ctx, userId, reg.install_id)) return upsertDevice(ctx, userId, c);
   await ctx.audit.record({ action: "device.cap_refused", actor: { kind: "user", id: userId }, target: { kind: "user", id: userId }, outcome: "denied", errorCode: "device_cap_reached", detail: { limit: cap } });
-  throw new ApiError("device_cap_reached", `You already have ${cap} phones registered with this org. Remove one in the console before adding another.`, { limit: cap });
+  throw new HttpError("device_cap_reached", `You already have ${cap} phones registered with this org. Remove one in the console before adding another.`, { details: { limit: cap } });
 }
 
 /** One page of the user's devices (revoked ones never listed), oldest first. */
 export async function listDevices(ctx: FoundationCtx, userId: string, limit: number, after: { createdAt: number; id: string } | null): Promise<DeviceRow[]> {
   const r = await ctx.db
     .prepare(
-      `SELECT * FROM devices WHERE user_id = ? AND revoked_at IS NULL
+      `SELECT ${DEVICE_COLUMNS} FROM devices WHERE user_id = ? AND revoked_at IS NULL
          AND (? IS NULL OR created_at > ? OR (created_at = ? AND id > ?))
        ORDER BY created_at, id LIMIT ?`,
     )
@@ -196,18 +212,17 @@ export async function patchDevice(
   const row = await getOwnedDevice(ctx, id, userId);
   if (!row) return null;
   if (patch.muted_machine_ids && !(await ownsMachines(ctx, userId, patch.muted_machine_ids))) {
-    throw new ApiError("validation_failed", "muted_machine_ids names a machine that is not yours.", { errors: [{ path: "/muted_machine_ids", message: "unknown machine" }] });
+    throw new HttpError("validation_failed", "muted_machine_ids names a machine that is not yours.", { details: { errors: [{ path: "/muted_machine_ids", message: "unknown machine" }] } });
   }
-  await ctx.db
-    .prepare("UPDATE devices SET label = ?, mute_all = ?, muted_until = ?, muted_machine_ids = ? WHERE id = ? AND revoked_at IS NULL")
+  const update = ctx.db
+    .prepare("UPDATE devices SET label = ?, mute_all = ?, muted_until = ? WHERE id = ? AND revoked_at IS NULL")
     .bind(
       patch.label ?? row.label,
       patch.mute_all === undefined ? row.mute_all : patch.mute_all ? 1 : 0,
       patch.muted_until === undefined ? row.muted_until : patch.muted_until === null ? null : fromTimestamp(patch.muted_until),
-      patch.muted_machine_ids === undefined ? row.muted_machine_ids : JSON.stringify(patch.muted_machine_ids),
       id,
-    )
-    .run();
+    );
+  await ctx.db.batch([update, ...(patch.muted_machine_ids === undefined ? [] : setMutesStatements(ctx, id, patch.muted_machine_ids))]);
   return getOwnedDevice(ctx, id, userId);
 }
 
@@ -246,17 +261,17 @@ export async function setPushOutcome(ctx: FoundationCtx, deviceId: string, outco
   let binds: unknown[];
   switch (k) {
     case "delivered":
-      sql = "UPDATE devices SET push_state = 'active', push_last_success_at = ?, push_last_error_code = NULL WHERE id = ? AND revoked_at IS NULL AND push_kind <> 'none'";
+      sql = "UPDATE devices SET push_state = 'active', last_push_ok_at = ? WHERE id = ? AND revoked_at IS NULL AND push_kind <> 'none'";
       binds = [ctx.now(), deviceId];
       break;
     case "gone":
-      sql = `UPDATE devices SET ${CLEAR_PUSH}, push_state = 'gone', push_last_error_code = ? WHERE id = ? AND revoked_at IS NULL`;
-      binds = [outcome.errorCode, deviceId];
+      sql = `UPDATE devices SET ${CLEAR_PUSH}, push_state = 'gone' WHERE id = ? AND revoked_at IS NULL`;
+      binds = [deviceId];
       break;
     case "auth_failed":
     case "failing":
-      sql = "UPDATE devices SET push_state = ?, push_last_error_code = ? WHERE id = ? AND revoked_at IS NULL";
-      binds = [k, outcome.errorCode, deviceId];
+      sql = "UPDATE devices SET push_state = ? WHERE id = ? AND revoked_at IS NULL";
+      binds = [k, deviceId];
       break;
     default: {
       const never: never = k;

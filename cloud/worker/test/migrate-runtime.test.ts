@@ -47,9 +47,9 @@ describe("runtime migrator", () => {
   it("migrates an empty database once, even with two concurrent runs", async () => {
     await dropEverything();
     const results = await Promise.all([migrate(env.DB, log, now, MIGRATIONS, 20), migrate(env.DB, log, now, MIGRATIONS, 20)]);
-    expect(results.flat()).toEqual(["0001_init.sql"]);
+    expect(results.flat()).toEqual(MIGRATIONS.map((m) => m.name));
     expect(await tables()).toEqual(expect.arrayContaining(["users", "machines", "audit_log", "schema_migrations"]));
-    expect(await all(env.DB, "SELECT version FROM schema_migrations")).toEqual([{ version: "0001_init.sql" }]);
+    expect(await all(env.DB, "SELECT version FROM schema_migrations ORDER BY version")).toEqual(MIGRATIONS.map((m) => ({ version: m.name })));
   });
   it("records nothing when a statement fails", async () => {
     const bad = [...MIGRATIONS, { name: "0002_bad.sql", sql: "CREATE TABLE ok_table (x INTEGER); CREATE TABLE broken (" }];
@@ -67,6 +67,6 @@ describe("runtime migrator", () => {
   it("serves through the entry point once migrated", async () => {
     const res = await SELF.fetch("https://cp.example.com/v1/meta");
     expect(res.headers.get("Yaran-Request-Id")).toBeTruthy();
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
   });
 });

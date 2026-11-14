@@ -13,13 +13,13 @@
  * Uses:
  * src/pairing/authorize-route.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── src/http/responses.ts
  * ├── src/machines/machine-rows.ts
  * ├── src/pairing/authorize-page.ts
  * ├── src/pairing/authorize-params.ts
  * ├── src/pairing/pair-requests.ts
  * ├── src/pairing/pkce.ts
- * ├── src/seams/context.ts
- * └── src/seams/foundation.ts
+ * └── src/routes/call.ts
  * External: none
  *
  * Used by:
@@ -30,8 +30,9 @@
  */
 import { errorEntry, machineKeyFingerprint, utf8Decode, validate, type ErrorCode, type PairConsent, type Settings } from "@yaran/protocol";
 import { getOwnedMachine, insertProvisioningMachine, liveMachineNames } from "../machines/machine-rows.ts";
-import type { Phase06Ctx, RouteCall, RouteRow } from "../seams/context.ts";
-import { ApiError, type UserIdentity } from "../seams/foundation.ts";
+import type { Phase06Ctx, RouteCall, RouteRow } from "../routes/call.ts";
+import { HttpError } from "../http/responses.ts";
+import { type UserIdentity } from "../routes/call.ts";
 import { callbackUrl, parseAuthorizeQuery } from "./authorize-params.ts";
 import { confirmPage, pairErrorPage } from "./authorize-page.ts";
 import { randomToken } from "./pkce.ts";
@@ -180,8 +181,12 @@ async function postAuthorize({ req, ctx, user, body }: RouteCall): Promise<Respo
     if (!old || old.status !== "active" || old.name !== row.machine_name) return pairErrorPage("pair_request_invalid", { status: 400 });
   }
 
-  // One machine per pair request: the first approve creates and links it, a Retry reuses it.
+  // One machine per pair request: the first approve creates and links it, a Retry reuses it,
+  // unless 05 compensated that attempt and marked the machine failed (a failed machine is
+  // never provisioned again), in which case the Retry pairs a fresh one.
   let machineId = row.machine_id;
+  const failed = machineId !== null && (await getOwnedMachine(ctx, machineId, me.userId))?.status === "failed" ? machineId : null;
+  if (failed !== null) machineId = null;
   if (machineId === null) {
     const candidate = crypto.randomUUID();
     const taken = new Set((await liveMachineNames(ctx, me.userId)).map((m) => m.name));
@@ -199,7 +204,7 @@ async function postAuthorize({ req, ctx, user, body }: RouteCall): Promise<Respo
       await audit(ctx, me, "pair.refused", { outcome: "denied", errorCode: "machine_cap_reached", detail: { reason: "cap", limit: settings.machine_cap_per_user } });
       return refuseToCallback(port, state, "machine_cap_reached");
     }
-    if (await requests.linkMachine(ctx, row.id, candidate, replace)) {
+    if (await (failed === null ? requests.linkMachine(ctx, row.id, candidate, replace) : requests.relinkMachine(ctx, row.id, failed, candidate, replace))) {
       machineId = candidate;
     } else {
       // A concurrent approve linked its own machine first; drop ours (nothing was provisioned for it).
@@ -215,7 +220,7 @@ async function postAuthorize({ req, ctx, user, body }: RouteCall): Promise<Respo
     const op = await ctx.provisioning.startProvision(machineId);
     view = await ctx.provisioning.driveOp(op.opId, PROVISION_INLINE_BUDGET);
   } catch (e) {
-    if (!(e instanceof ApiError)) throw e;
+    if (!(e instanceof HttpError)) throw e;
     view = { state: "failed" as const, errorCode: e.code, ...(e.details ? { details: e.details } : {}) };
   }
   switch (view.state) {
@@ -245,7 +250,9 @@ async function postAuthorize({ req, ctx, user, body }: RouteCall): Promise<Respo
   return redirectTo(callbackUrl(port, { code, state }));
 }
 
+// Protocol "none": W2 negotiates `v` itself, because 02 wants an unsupported version
+// redirected to the loopback callback with min and max, not answered with a page.
 export const PAIR_AUTHORIZE_ROUTES: RouteRow[] = [
-  { method: "GET", path: "/v1/pair/authorize", auth: { kind: "user" }, kind: "html", handler: getAuthorize, rateLimit: "RL_AUTH", bodyLimit: 0 },
-  { method: "POST", path: "/v1/pair/authorize", auth: { kind: "user" }, kind: "html", handler: postAuthorize, rateLimit: "RL_AUTH", bodyLimit: 4096 },
+  { method: "GET", path: "/v1/pair/authorize", auth: { kind: "user" }, kind: "html", protocol: "none", handler: getAuthorize, rateLimit: "auth", bodyLimit: 0 },
+  { method: "POST", path: "/v1/pair/authorize", auth: { kind: "user" }, kind: "html", protocol: "none", handler: postAuthorize, rateLimit: "auth", bodyLimit: 4096 },
 ];

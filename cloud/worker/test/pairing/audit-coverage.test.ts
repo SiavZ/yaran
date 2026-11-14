@@ -7,23 +7,23 @@
  * Uses:
  * test/pairing/audit-coverage.test.ts
  * ├── src/pairing/sweep.ts
- * ├── src/routes/pairing-and-sessions.ts
  * ├── test/devices/device-fixtures.ts
  * ├── test/pairing/pair-helpers.ts
  * ├── test/phase06/fakes.ts
  * ├── test/phase06/harness.ts
+ * ├── test/provisioning/fake-cloudflare/faults.ts
  * └── test/sessions/handoff-helpers.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";
-import { PHASE06_ROUTES } from "../../src/routes/pairing-and-sessions.ts";
 import { runPairSweep } from "../../src/pairing/sweep.ts";
 import { registration } from "../devices/device-fixtures.ts";
 import { CP_HOST } from "../phase06/fakes.ts";
 import { dispatch } from "../phase06/harness.ts";
+import { on } from "../provisioning/fake-cloudflare/faults.ts";
 import { formFromPage, get, handoffQuery, makePhone, post } from "../sessions/handoff-helpers.ts";
 import {
   approvePairing,
@@ -42,18 +42,23 @@ import {
 
 const SECRET_PATTERNS = [/eyJ[A-Za-z0-9_-]+\./, /[A-Za-z0-9_-]{40,}/, /https?:\/\//];
 
-/** Runs `step` and returns the audit actions it wrote. */
+/** 05's own provisioning trail (steps, op outcomes, quota, rate limits), which this test does not cover. */
+const PROVISIONING_TRAIL = /^(provision|teardown|quota|cloudflare)\./;
+
+/** Runs `step` and returns the Phase 06 audit actions it wrote. */
 async function written(pw: PairWorld, step: () => Promise<unknown>): Promise<string[]> {
+  await pw.w.refresh();
   const before = pw.w.audit.length;
   await step();
-  return pw.w.audit.slice(before).map((a) => a.action);
+  await pw.w.refresh();
+  return pw.w.audit.slice(before).map((a) => a.action).filter((a) => !PROVISIONING_TRAIL.test(a));
 }
 
 function api(pw: PairWorld, method: string, path: string, body?: unknown, installId?: string): Promise<Response> {
   const headers: Record<string, string> = { "Cf-Access-Jwt-Assertion": pw.jwt, "Yaran-Protocol": "1" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (installId) headers["Yaran-Install-Id"] = installId;
-  return dispatch(PHASE06_ROUTES, new Request(`https://${CP_HOST}${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), pw.w.ctx);
+  return dispatch(new Request(`https://${CP_HOST}${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), pw.w);
 }
 
 describe("audit coverage", () => {
@@ -74,7 +79,8 @@ describe("audit coverage", () => {
     expect(await written(pw, async () => ({ code, machineId } = await approvePairing(pw, m)))).toEqual(["pair.requested", "pair.approved"]);
     expect(await written(pw, () => claimRequest(pw, m, claimBody(m, code)))).toEqual(["machine.claimed"]);
 
-    pw.w.prov.nextDrive = { state: "failed", errorCode: "provisioning_failed" };
+    // Cloudflare refuses the policy create outright: the op fails and compensates.
+    pw.w.cf.faults.push({ kind: "permanent", when: on("POST", /access\/policies$/) });
     const failing = await fixtureMachine("failing");
     expect(
       await written(pw, async () => {
@@ -82,7 +88,6 @@ describe("audit coverage", () => {
         await postAuthorize(pw, { request_id: f["request_id"]!, csrf: f["csrf"]!, decision: "approve" });
       }),
     ).toEqual(["pair.requested", "pair.provision_failed"]);
-    pw.w.prov.nextDrive = { state: "complete", errorCode: null };
 
     const again = await fixtureMachine();
     expect(

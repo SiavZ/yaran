@@ -10,6 +10,7 @@
  * <module-headers:begin>
  * Uses:
  * src/routes/pairing-and-sessions.ts
+ * ├── src/http/routes.ts
  * ├── src/machine-api/claim.ts
  * ├── src/machine-api/config.ts
  * ├── src/machine-api/origin.ts
@@ -19,15 +20,15 @@
  * ├── src/me/machines-route.ts
  * ├── src/me/me-route.ts
  * ├── src/pairing/authorize-route.ts
+ * ├── src/routes/call.ts
  * ├── src/routes/meta.ts
- * ├── src/seams/context.ts
+ * ├── src/routes/phase06-context.ts
  * └── src/sessions/handoff-route.ts
  * External: none
  *
  * Used by:
  * src/routes/pairing-and-sessions.ts
- * ├── test/pairing/audit-coverage.test.ts
- * ├── test/pairing/pair-helpers.ts
+ * ├── src/http/routes.ts
  * └── test/routes.test.ts
  * <module-headers:end>
  */
@@ -40,10 +41,13 @@ import { DEVICE_ROUTES } from "../me/devices-route.ts";
 import { MY_MACHINE_ROUTES } from "../me/machines-route.ts";
 import { ME_ROUTES } from "../me/me-route.ts";
 import { PAIR_AUTHORIZE_ROUTES } from "../pairing/authorize-route.ts";
-import type { RouteRow } from "../seams/context.ts";
+import type { Route } from "../http/routes.ts";
+import type { RouteRow } from "./call.ts";
+import { toRoute } from "./phase06-context.ts";
 import { HANDOFF_ROUTES } from "../sessions/handoff-route.ts";
 import { META_ROUTES } from "./meta.ts";
 
+/** Phase 06's rows in 06's handler shape; `PHASE06_ROUTE_TABLE` is them as 04 routes. */
 export const PHASE06_ROUTES: readonly RouteRow[] = [
   ...META_ROUTES,
   ...PAIR_AUTHORIZE_ROUTES,
@@ -58,8 +62,4 @@ export const PHASE06_ROUTES: readonly RouteRow[] = [
   ...DEVICE_ROUTES,
 ];
 
-/** 04 tier-2 buckets Phase 06 declares: per-user pairing attempts and handoffs per JWT sub. */
-export const PHASE06_RATE_BUCKETS = {
-  pair: { limit: 10, windowS: 600 },
-  handoff: { limit: 20, windowS: 60 },
-} as const;
+export const PHASE06_ROUTE_TABLE: readonly Route[] = PHASE06_ROUTES.map(toRoute);

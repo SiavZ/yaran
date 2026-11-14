@@ -6,17 +6,15 @@
  * Uses:
  * test/me/me-route.test.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/me/me-route.ts
  * ├── test/phase06/fakes.ts
  * └── test/phase06/harness.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { validate, type Me } from "@yaran/protocol";
 import { describe, expect, it } from "vitest";
-import { ME_ROUTES } from "../../src/me/me-route.ts";
 import { CP_HOST, fakeJwt, makeWorld, seedMachine, seedUser } from "../phase06/fakes.ts";
 import { CP_AUD, dispatch } from "../phase06/harness.ts";
 
@@ -38,7 +36,7 @@ describe("GET /v1/me", () => {
     }
     w.settings.machine_cap_per_user = 7;
     const exp = 1_800_003_600;
-    const res = await dispatch(ME_ROUTES, new Request(`https://${CP_HOST}/v1/me`, { headers: { "Cf-Access-Jwt-Assertion": fakeJwt({ email: user.email, sub: "s", exp, aud: [CP_AUD] }) } }), w.ctx);
+    const res = await dispatch(new Request(`https://${CP_HOST}/v1/me`, { headers: { "Cf-Access-Jwt-Assertion": fakeJwt({ email: user.email, sub: "s", exp, aud: [CP_AUD] }) } }), w);
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     const me = (await res.json()) as Me;
@@ -56,6 +54,6 @@ describe("GET /v1/me", () => {
 
   it("refuses a request with no Access JWT", async () => {
     const w = await makeWorld();
-    expect((await dispatch(ME_ROUTES, new Request(`https://${CP_HOST}/v1/me`), w.ctx)).status).toBe(401);
+    expect((await dispatch(new Request(`https://${CP_HOST}/v1/me`), w)).status).toBe(401);
   });
 });

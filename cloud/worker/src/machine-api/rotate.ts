@@ -10,7 +10,7 @@
  * Uses:
  * src/machine-api/rotate.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/seams/context.ts
+ * ├── src/routes/call.ts
  * └── src/shared/json-body.ts
  * External: none
  *
@@ -20,7 +20,7 @@
  * <module-headers:end>
  */
 import type { RotateRequest, RotateResponse } from "@yaran/protocol";
-import type { RouteCall, RouteRow } from "../seams/context.ts";
+import type { RouteCall, RouteRow } from "../routes/call.ts";
 import { parseJson, validated } from "../shared/json-body.ts";
 
 async function postRotate({ ctx, body, machine }: RouteCall): Promise<Response> {
@@ -29,9 +29,8 @@ async function postRotate({ ctx, body, machine }: RouteCall): Promise<Response> 
   let answer: RotateResponse;
   switch (req.reason) {
     case "user": {
-      const tunnel = await ctx.provisioning.rotateTunnelSecret(id, { evict: false });
-      await ctx.audit.record({ action: "machine.rotated", actor: { kind: "machine", id }, target: { kind: "machine", id }, outcome: "ok", detail: { reason: "user", token_version: tunnel.token_version } });
-      answer = { tunnel, rotated: true };
+      // 05's rotate op audits machine.rotated when it succeeds.
+      answer = { tunnel: await ctx.provisioning.rotateTunnelSecret(id, { evict: false }), rotated: true };
       break;
     }
     case "sync":
@@ -49,8 +48,8 @@ export const ROTATE_ROUTE: RouteRow = {
   method: "POST",
   path: "/v1/machine/rotate",
   auth: { kind: "machine", key: "registered" },
-  kind: "json",
+  kind: "json", protocol: "header",
   handler: postRotate,
-  rateLimit: "RL_MACHINE",
+  rateLimit: "machine",
   bodyLimit: 1024,
 };

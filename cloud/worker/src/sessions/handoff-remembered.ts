@@ -14,7 +14,7 @@
  * Uses:
  * src/sessions/handoff-remembered.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/seams/foundation.ts
+ * ├── src/routes/call.ts
  * └── src/sessions/handoff-params.ts
  * External: none
  *
@@ -34,7 +34,7 @@ import {
   deviceKeyFp24,
   verifyHandoffDeviceSig,
 } from "@yaran/protocol";
-import type { FoundationCtx } from "../seams/foundation.ts";
+import type { FoundationCtx } from "../routes/call.ts";
 import type { HandoffGet } from "./handoff-params.ts";
 
 /** One cookie's raw value from a Cookie header, or null. */

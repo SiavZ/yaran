@@ -1,22 +1,28 @@
 /**
- * Test fakes for the seams Phase 06 consumes from 04, 05 and 07: an audit log, a
- * rate limiter, a data-key sealer, settings, a provisioning facade and a Cloudflare
- * client, assembled into a `Phase06Ctx` over the real test D1 database.
+ * The Phase 06 test world: the real foundation over the test D1 database, with only
+ * Cloudflare faked (05's fake API, served to the Worker's global `fetch` through msw).
  *
- * - The fake 05 mutates the `machines` row the way 05's saga is documented to (P0 sets
- *   the hostname (with a suffix, as 05 does when a live row holds the plain one), P6 moves to awaiting_claim, teardown moves to revoking), so route code
- *   sees realistic state.
- * - The consent MAC key is 02's real derivation over the fixture DATA_KEY.
+ * - `settings` and `internal` are plain objects a test edits; `harness.dispatch` (and
+ *   `flush`) writes them to D1 before a request, so the Worker reads them as stored rows.
+ * - `audit` mirrors the rows this world wrote to `audit_log`; `dispatch` and `refresh`
+ *   reload it.
+ * - Requests run through 04's real pipeline at the world's clock (`harness.ts`).
  *
  * <module-headers:begin>
  * Uses:
  * test/phase06/fakes.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/seams/console.ts
- * ├── src/seams/context.ts
- * ├── src/seams/foundation.ts
- * └── src/seams/provisioning.ts
- * External: cloudflare:workers
+ * ├── src/db/client.ts
+ * ├── src/db/settings.ts
+ * ├── src/http/context.ts
+ * ├── src/log/logger.ts
+ * ├── src/routes/call.ts
+ * ├── src/routes/phase06-context.ts
+ * ├── test/helpers/access.ts
+ * ├── test/helpers/seed.ts
+ * ├── test/provisioning/fake-cloudflare/index.ts
+ * └── test/setup.ts
+ * External: cloudflare:test, msw
  *
  * Used by:
  * test/phase06/fakes.ts
@@ -24,12 +30,14 @@
  * ├── test/devices/devices-repo.test.ts
  * ├── test/devices/devices-route.test.ts
  * ├── test/machine-api/claim.test.ts
+ * ├── test/machine-api/machine-routes.test.ts
  * ├── test/me/machines-route.test.ts
  * ├── test/me/me-route.test.ts
  * ├── test/me/meta.test.ts
  * ├── test/pairing/audit-coverage.test.ts
  * ├── test/pairing/authorize-route.test.ts
  * ├── test/pairing/pair-helpers.ts
+ * ├── test/pairing/pair-requests.test.ts
  * ├── test/phase06/harness.ts
  * ├── test/sessions/handoff-helpers.ts
  * ├── test/sessions/handoff-remembered.test.ts
@@ -37,17 +45,26 @@
  * └── test/sessions/revoke-sessions.test.ts
  * <module-headers:end>
  */
-import { b64urlDecode, workerConsentKey, type Settings, type TunnelCredentials } from "@yaran/protocol";
-import { env } from "cloudflare:workers";
-import type { InternalSettings } from "../../src/seams/console.ts";
-import type { Phase06Ctx } from "../../src/seams/context.ts";
-import { ApiError, type AuditRecord, type SealPurpose } from "../../src/seams/foundation.ts";
-import type { OpView, RevokeReason } from "../../src/seams/provisioning.ts";
+import type { Settings } from "@yaran/protocol";
+import { env } from "cloudflare:test";
+import { http } from "msw";
+import { all } from "../../src/db/client.ts";
+import { setSetting } from "../../src/db/settings.ts";
+import type { AppContext } from "../../src/http/context.ts";
+import { createLogger } from "../../src/log/logger.ts";
+import type { AuditRecord, OrgSettings, Phase06Ctx } from "../../src/routes/call.ts";
+import { phase06Ctx } from "../../src/routes/phase06-context.ts";
+import { serveJwks } from "../helpers/access.ts";
+import { AUD, TEAM as SEED_TEAM } from "../helpers/seed.ts";
+import { createFakeCloudflare, FAKE_BASE, type FakeCloudflare } from "../provisioning/fake-cloudflare/index.ts";
+import { network } from "../setup.ts";
 
 export const CP_HOST = "cp.example.com";
 export const ZONE = "example.com";
-export const TEAM = "acme.cloudflareaccess.com";
+export const TEAM = SEED_TEAM;
+export const CP_AUD = AUD;
 export const APP_CALLBACK = "https://yaran.example/auth/callback";
+export const INSTANCE_ID = "0123abcd";
 
 export function defaultSettings(): Settings {
   return {
@@ -65,38 +82,49 @@ export function defaultSettings(): Settings {
   };
 }
 
-export interface FakeProvisioning {
-  calls: { fn: string; args: unknown[] }[];
-  /** What the next driveOp answers; default is a completed provision. */
-  nextDrive: OpView;
-  /** Make setOriginPort refuse as if another op were live. */
-  originBusy: boolean;
-}
-
 export interface TestWorld {
   ctx: Phase06Ctx;
+  /** The audit rows this world wrote, oldest first (reloaded by `refresh`). */
   audit: AuditRecord[];
-  prov: FakeProvisioning;
   settings: Settings;
-  internal: InternalSettings;
+  internal: OrgSettings;
   /** Mutable clock, Unix seconds. */
   clock: { now: number };
-  /** Mutable consent key version (bumped to simulate a DATA_KEY rotation). */
-  keyState: { kv: number };
-  cfCalls: { method: string; path: string; body?: unknown }[];
-  cfFail: { next: boolean };
+  /** The fake Cloudflare API: its state, call log and fault queue. */
+  cf: FakeCloudflare;
+  /** The Worker environment requests run with (a test may swap DATA_KEY). */
+  env: Cloudflare.Env;
+  /** Writes `settings` and `internal` to D1. */
+  flush(): Promise<void>;
+  /** Reloads `audit` from D1. */
+  refresh(): Promise<void>;
 }
 
-const PREFIX = "k1.";
+interface AuditDbRow {
+  actor_kind: AuditRecord["actor"]["kind"];
+  actor_id: string | null;
+  action: AuditRecord["action"];
+  target_kind: AuditRecord["target"]["kind"] | null;
+  target_id: string | null;
+  outcome: AuditRecord["outcome"];
+  error_code: AuditRecord["errorCode"] | null;
+  detail: string | null;
+}
+
+const toRecord = (r: AuditDbRow): AuditRecord => ({
+  action: r.action,
+  actor: { kind: r.actor_kind, id: r.actor_id },
+  target: { kind: r.target_kind ?? "org", id: r.target_id },
+  outcome: r.outcome,
+  ...(r.error_code ? { errorCode: r.error_code } : {}),
+  ...(r.detail ? { detail: JSON.parse(r.detail) as Record<string, unknown> } : {}),
+});
 
 export async function makeWorld(o: { now?: number } = {}): Promise<TestWorld> {
   const db = env.DB;
-  const audit: AuditRecord[] = [];
   const clock = { now: o.now ?? 1_800_000_000 };
-  const keyState = { kv: 1 };
-  const consentKey = await workerConsentKey(b64urlDecode(env.DATA_KEY.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""))!);
   const settings = defaultSettings();
-  const internal: InternalSettings = {
+  const internal: OrgSettings = {
     setupState: "closed",
     controlPlaneHost: CP_HOST,
     teamDomain: TEAM,
@@ -104,85 +132,46 @@ export async function makeWorld(o: { now?: number } = {}): Promise<TestWorld> {
     accountId: "acc123",
     vapidPublicKey: "BKUlPUj77ORqEFSElVaFE7fgXBWgwRjy9OY7egX9DUHtzQG-K868ewmuQi5l0U_0bpE5nHtwv8k3E789D7IHcoQ",
   };
-  const prov: FakeProvisioning = { calls: [], nextDrive: { state: "complete", errorCode: null }, originBusy: false };
-  const counters = new Map<string, number>();
-  const cfCalls: TestWorld["cfCalls"] = [];
-  const cfFail = { next: false };
-  const creds = async (id: string): Promise<TunnelCredentials> => {
-    const row = await db.prepare("SELECT tunnel_id, tunnel_secret_generation FROM machines WHERE id = ?").bind(id).first<{ tunnel_id: string; tunnel_secret_generation: number }>();
-    return { id: row!.tunnel_id, token: `tunnel-token-${id}-${row!.tunnel_secret_generation}`, token_version: row!.tunnel_secret_generation };
+  // Worlds in one file share D1, so each fake mints ids from its own sequence.
+  const cf = createFakeCloudflare({ randomIds: true });
+  network.use(http.all(`${FAKE_BASE}/*`, async ({ request }) => {
+    const body = request.method === "GET" || request.method === "DELETE" ? undefined : await request.text();
+    return cf.fetch(request.url, { method: request.method, headers: request.headers, ...(body ? { body } : {}) });
+  }));
+  serveJwks();
+  const baseline = (await all<{ n: number | null }>(db, "SELECT max(rowid) AS n FROM audit_log"))[0]?.n ?? 0;
+  const workerEnv: Cloudflare.Env = { ...env, APP_CALLBACK_URLS: APP_CALLBACK, WORKER_VERSION: "1.0.0" };
+  const app: AppContext = {
+    env: workerEnv, db, log: createLogger(), now: () => clock.now, requestId: "req-test-1", ip: null, country: null,
+    actor: () => ({ kind: "system" }), waitUntil: () => {},
   };
-
-  const ctx: Phase06Ctx = {
-    db,
-    now: () => clock.now,
-    requestId: "req-test-1",
-    audit: { record: async (r) => void audit.push(r) },
-    rateLimit: async (bucket, key) => {
-      const k = `${bucket}:${key}`;
-      const n = (counters.get(k) ?? 0) + 1;
-      counters.set(k, n);
-      const max = bucket === "handoff" ? 20 : 10;
-      return n > max ? { ok: false, retryAfterS: 60 } : { ok: true };
+  const w: TestWorld = {
+    ctx: phase06Ctx(app),
+    audit: [],
+    settings,
+    internal,
+    clock,
+    cf,
+    env: workerEnv,
+    flush: async () => {
+      const put = (k: Parameters<typeof setSetting>[1], v: unknown) => (v === null ? Promise.resolve() : setSetting(db, k, v as never, "test", 0));
+      for (const [k, v] of Object.entries(w.settings)) await put(k as keyof Settings, v);
+      await db.prepare("DELETE FROM settings WHERE key = 'vapid_public_key'").run();
+      await Promise.all([
+        put("setup_state", w.internal.setupState), put("control_plane_host", w.internal.controlPlaneHost),
+        put("team_domain", w.internal.teamDomain), put("zone_name", w.internal.zoneName), put("account_id", w.internal.accountId),
+        put("vapid_public_key", w.internal.vapidPublicKey), put("control_plane_aud", CP_AUD), put("instance_id", INSTANCE_ID),
+        put("zone_id", "zone123"),
+      ]);
     },
-    dataKey: {
-      seal: async (purpose: SealPurpose, aad: string, plaintext: string) => PREFIX + btoa(`${purpose}|${aad}|${plaintext}`),
-      open: async (purpose: SealPurpose, aad: string, sealed: string) => {
-        const [p, a, ...rest] = atob(sealed.slice(PREFIX.length)).split("|");
-        if (p !== purpose || a !== aad) throw new Error("open failed: wrong purpose or aad");
-        return rest.join("|");
-      },
-      macKey: async () => ({ kv: keyState.kv, key: consentKey }),
+    refresh: async () => {
+      w.audit = (await all<AuditDbRow>(db,
+        "SELECT actor_kind, actor_id, action, target_kind, target_id, outcome, error_code, detail FROM audit_log WHERE rowid > ? ORDER BY rowid", baseline))
+        .map(toRecord);
     },
-    provisioning: {
-      startProvision: async (machineId) => {
-        prov.calls.push({ fn: "startProvision", args: [machineId] });
-        return { opId: `op-${machineId}` };
-      },
-      driveOp: async (opId, budget) => {
-        prov.calls.push({ fn: "driveOp", args: [opId, budget] });
-        const id = opId.slice(3);
-        if (prov.nextDrive.state === "complete") {
-          const m = await db.prepare("SELECT m.slug, u.slug AS us FROM machines m JOIN users u ON u.id = m.owner_user_id WHERE m.id = ?").bind(id).first<{ slug: string; us: string }>();
-          await db
-            .prepare("UPDATE machines SET status = 'awaiting_claim', hostname = ?, tunnel_id = ?, access_app_aud = ?, access_app_id = ? WHERE id = ? AND status = 'provisioning'")
-            .bind(`${m!.slug}-${m!.us}-${id.slice(0, 4)}.${ZONE}`, crypto.randomUUID(), fakeAud(id), `app-${id}`, id)
-            .run();
-        }
-        return prov.nextDrive;
-      },
-      startTeardown: async (machineId, reason: RevokeReason) => {
-        prov.calls.push({ fn: "startTeardown", args: [machineId, reason] });
-        await db.prepare("UPDATE machines SET status = 'revoking', revoke_reason = ? WHERE id = ? AND status NOT IN ('revoking','revoked')").bind(reason, machineId).run();
-        return { opId: `op-t-${machineId}` };
-      },
-      rotateTunnelSecret: async (machineId, opts) => {
-        prov.calls.push({ fn: "rotateTunnelSecret", args: [machineId, opts] });
-        await db.prepare("UPDATE machines SET tunnel_secret_generation = tunnel_secret_generation + 1 WHERE id = ?").bind(machineId).run();
-        return creds(machineId);
-      },
-      fetchTunnelToken: async (machineId) => {
-        prov.calls.push({ fn: "fetchTunnelToken", args: [machineId] });
-        return creds(machineId);
-      },
-      setOriginPort: async (machineId, port) => {
-        prov.calls.push({ fn: "setOriginPort", args: [machineId, port] });
-        if (prov.originBusy) throw new ApiError("provisioning_in_progress", "Another provisioning step is running for this machine.");
-        const r = await db.prepare("UPDATE machines SET origin_port = ? WHERE id = ? AND origin_port <> ?").bind(port, machineId, port).run();
-        return { changed: r.meta.changes > 0, op: null };
-      },
-    },
-    cloudflare: {
-      call: async <T>(req: { method: string; path: string; body?: unknown }) => {
-        cfCalls.push(req);
-        if (cfFail.next) throw new ApiError("cloudflare_permission_denied", "The API token lacks Access: Organizations write.");
-        return { success: true } as T;
-      },
-    },
-    settings: { read: async () => settings, internal: async () => internal },
-    env: { APP_CALLBACK_URLS: APP_CALLBACK, WORKER_VERSION: "1.0.0" },
   };
-  return { ctx, audit, prov, settings, internal, clock, keyState, cfCalls, cfFail };
+  await w.flush();
+  return w;
 }
 
 export interface SeededUser {
@@ -201,7 +190,11 @@ export async function seedUser(db: D1Database, email: string, o: { role?: "user"
   return { id, email, slug };
 }
 
-/** Inserts a machine row in the given lifecycle state (05 columns filled for active ones). */
+/** The Access application AUD a seeded machine carries. */
+export function fakeAud(machineId: string): string {
+  return `aud-${machineId.replace(/-/g, "")}`;
+}
+
 export async function seedMachine(
   db: D1Database,
   owner: SeededUser,
@@ -215,10 +208,10 @@ export async function seedMachine(
     .prepare(
       `INSERT INTO machines (id, instance_id, owner_user_id, name, slug, hostname, public_key, status, tunnel_id,
          access_app_aud, access_app_id, cf_status, created_at, claimed_at)
-       VALUES (?, 'inst0001', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
     )
     .bind(
-      id, owner.id, name, name,
+      id, INSTANCE_ID, owner.id, name, name,
       live ? `${name}-${owner.slug}-${id.slice(0, 4)}.${ZONE}` : null,
       o.publicKey ?? crypto.getRandomValues(new Uint8Array(32)),
       status,
@@ -231,11 +224,23 @@ export async function seedMachine(
   return id;
 }
 
-/** A schema-valid Access AUD (64 hex) derived from a machine id. */
-export const fakeAud = (id: string) => id.replace(/-/g, "").repeat(2);
-
-/** An unsigned JWT-shaped string; the fake requireUser decodes it without verifying. */
+/** An unsigned Access-shaped token; `harness.dispatch` signs its claims with the test key. */
 export function fakeJwt(claims: Record<string, unknown>): string {
   const b = (o: unknown) => btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   return `${b({ alg: "RS256", kid: "k1" })}.${b(claims)}.c2ln`;
+}
+
+/** The machine's live AUD as provisioning recorded it. */
+export async function machineAud(w: TestWorld, machineId: string): Promise<string | null> {
+  return (await w.ctx.db.prepare("SELECT access_app_aud FROM machines WHERE id = ?").bind(machineId).first<{ access_app_aud: string | null }>())?.access_app_aud ?? null;
+}
+
+/** The provisioning ops 05 ran for a machine, oldest first. */
+export async function opsOf(w: TestWorld, machineId: string): Promise<Array<{ kind: string; state: string; params: string }>> {
+  return (await w.ctx.db.prepare("SELECT kind, state, params FROM provisioning_ops WHERE machine_id = ? ORDER BY created_at, rowid").bind(machineId)
+    .all<{ kind: string; state: string; params: string }>()).results;
+}
+
+export async function machineRow(w: TestWorld, id: string): Promise<Record<string, unknown>> {
+  return (await w.ctx.db.prepare("SELECT * FROM machines WHERE id = ?").bind(id).first<Record<string, unknown>>())!;
 }

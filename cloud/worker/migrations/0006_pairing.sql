@@ -16,16 +16,25 @@ CREATE INDEX pair_requests_by_user ON pair_requests(user_id, status);
 -- The machine a Replace pairing superseded points at its successor.
 ALTER TABLE machines ADD COLUMN replaced_by TEXT REFERENCES machines(id);
 
--- Device delivery health and mutes (06 registration; 08 writes delivery outcomes through
--- 06's devices repository). push_state 'none' is a registration without push.
+-- Device push state and mutes, in Phase 08's design (08 owns their delivery semantics;
+-- 06 writes push_state on registration and the mutes on PATCH /v1/me/devices/{id}).
+-- 0008_push.sql adds the delivery counters 08 alone uses.
+-- active | gone (subscription cleared, row kept) | auth_failed (VAPID mismatch) |
+-- failing (5 exhausted pushes in a row) | none (no subscription).
 ALTER TABLE devices ADD COLUMN push_state TEXT NOT NULL DEFAULT 'none'
   CHECK (push_state IN ('active','gone','auth_failed','failing','none'));
-ALTER TABLE devices ADD COLUMN push_last_success_at INTEGER;
-ALTER TABLE devices ADD COLUMN push_last_error_code TEXT CHECK (push_last_error_code IS NULL OR length(push_last_error_code) <= 64);
+-- Last 2xx from the push service; served as Device.push.last_success_at.
+ALTER TABLE devices ADD COLUMN last_push_ok_at INTEGER;
+-- Per-org mutes (02 DevicePatch): indefinite, and timed (Unix seconds, NULL = not muted).
 ALTER TABLE devices ADD COLUMN mute_all INTEGER NOT NULL DEFAULT 0 CHECK (mute_all IN (0, 1));
 ALTER TABLE devices ADD COLUMN muted_until INTEGER;
-ALTER TABLE devices ADD COLUMN muted_machine_ids TEXT NOT NULL DEFAULT '[]'
-  CHECK (json_valid(muted_machine_ids) AND json_type(muted_machine_ids) = 'array');
+
+-- Per-machine mutes (02 muted_machine_ids, at most 100 per device, enforced by 06).
+CREATE TABLE device_machine_mutes (
+  device_id   TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  machine_id  TEXT NOT NULL,
+  PRIMARY KEY (device_id, machine_id)
+) WITHOUT ROWID;
 
 -- One row per consent page the handoff GET rendered: the csrf token (hashed) bound to the
 -- request's state, pk and dk plus the GET's device-signature verdict (D24). Single use,

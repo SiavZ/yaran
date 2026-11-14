@@ -14,25 +14,23 @@
  * Uses:
  * src/me/machines-route.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── src/http/responses.ts
  * ├── src/machines/machine-rows.ts
  * ├── src/machines/machine-view-model.ts
  * ├── src/me/cursor.ts
- * ├── src/seams/context.ts
- * └── src/seams/foundation.ts
+ * └── src/routes/call.ts
  * External: none
  *
  * Used by:
  * src/me/machines-route.ts
- * ├── src/routes/pairing-and-sessions.ts
- * ├── test/devices/devices-route.test.ts
- * └── test/me/machines-route.test.ts
+ * └── src/routes/pairing-and-sessions.ts
  * <module-headers:end>
  */
 import type { MachinePage, TeardownStarted } from "@yaran/protocol";
 import { getOwnedMachine, listOwnedMachines } from "../machines/machine-rows.ts";
 import { machineSummary } from "../machines/machine-view-model.ts";
-import type { RouteCall, RouteRow } from "../seams/context.ts";
-import { ApiError } from "../seams/foundation.ts";
+import type { RouteCall, RouteRow } from "../routes/call.ts";
+import { HttpError } from "../http/responses.ts";
 import { nextCursor, pageQuery } from "./cursor.ts";
 
 async function listMachines({ req, ctx, user }: RouteCall): Promise<Response> {
@@ -48,7 +46,7 @@ async function listMachines({ req, ctx, user }: RouteCall): Promise<Response> {
 
 async function deleteMachine({ ctx, user, params }: RouteCall): Promise<Response> {
   const row = await getOwnedMachine(ctx, params["id"] ?? "", user!.userId);
-  if (!row || row.status === "revoked") throw new ApiError("not_found", "No machine with that id is paired to your account.");
+  if (!row || row.status === "revoked") throw new HttpError("not_found", "No machine with that id is paired to your account.");
   if (row.status !== "revoking") {
     await ctx.provisioning.startTeardown(row.id, "user_unpair");
     await ctx.audit.record({
@@ -64,6 +62,6 @@ async function deleteMachine({ ctx, user, params }: RouteCall): Promise<Response
 }
 
 export const MY_MACHINE_ROUTES: RouteRow[] = [
-  { method: "GET", path: "/v1/me/machines", auth: { kind: "user" }, kind: "json", handler: listMachines, rateLimit: "RL_IP", bodyLimit: 0 },
-  { method: "DELETE", path: "/v1/me/machines/:id", auth: { kind: "user" }, kind: "json", handler: deleteMachine, rateLimit: "RL_IP", bodyLimit: 0 },
+  { method: "GET", path: "/v1/me/machines", auth: { kind: "user" }, kind: "json", protocol: "header", handler: listMachines, rateLimit: "ip", bodyLimit: 0 },
+  { method: "DELETE", path: "/v1/me/machines/:id", auth: { kind: "user" }, kind: "json", protocol: "header", handler: deleteMachine, rateLimit: "ip", bodyLimit: 0 },
 ];

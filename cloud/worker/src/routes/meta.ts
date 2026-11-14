@@ -14,18 +14,17 @@
  * src/routes/meta.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── cloud/protocol/registry/capabilities.json
- * └── src/seams/context.ts
+ * └── src/routes/call.ts
  * External: none
  *
  * Used by:
  * src/routes/meta.ts
- * ├── src/routes/pairing-and-sessions.ts
- * └── test/me/meta.test.ts
+ * └── src/routes/pairing-and-sessions.ts
  * <module-headers:end>
  */
 import { PROTOCOL_MAX, PROTOCOL_MIN, type Meta } from "@yaran/protocol";
 import capabilities from "@yaran/protocol/registry/capabilities.json" with { type: "json" };
-import type { Handler, RouteRow } from "../seams/context.ts";
+import type { Handler, RouteRow } from "../routes/call.ts";
 
 const getMeta: Handler = async ({ ctx }) => {
   const internal = await ctx.settings.internal();
@@ -45,4 +44,4 @@ const getMeta: Handler = async ({ ctx }) => {
   return Response.json(meta, { headers: { "Cache-Control": "public, max-age=60" } });
 };
 
-export const META_ROUTES: RouteRow[] = [{ method: "GET", path: "/v1/meta", auth: { kind: "public" }, kind: "json", handler: getMeta, rateLimit: "RL_IP", bodyLimit: 0 }];
+export const META_ROUTES: RouteRow[] = [{ method: "GET", path: "/v1/meta", auth: { kind: "public" }, kind: "json", protocol: "none", handler: getMeta, rateLimit: "ip", bodyLimit: 0 }];

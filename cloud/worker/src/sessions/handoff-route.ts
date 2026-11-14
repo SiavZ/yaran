@@ -15,8 +15,9 @@
  * Uses:
  * src/sessions/handoff-route.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/seams/context.ts
- * ├── src/seams/foundation.ts
+ * ├── src/http/responses.ts
+ * ├── src/provisioning/context.ts
+ * ├── src/routes/call.ts
  * ├── src/sessions/handoff-csrf.ts
  * ├── src/sessions/handoff-page.ts
  * ├── src/sessions/handoff-params.ts
@@ -25,18 +26,18 @@
  *
  * Used by:
  * src/sessions/handoff-route.ts
- * ├── src/routes/pairing-and-sessions.ts
- * └── test/sessions/handoff-helpers.ts
+ * └── src/routes/pairing-and-sessions.ts
  * <module-headers:end>
  */
 import { errorEntry, sealHandoff, utf8Decode, type ErrorCode, type HandoffPayload } from "@yaran/protocol";
-import type { Handler, Phase06Ctx, RouteCall, RouteRow } from "../seams/context.ts";
-import { ApiError, errorResponse, type UserIdentity } from "../seams/foundation.ts";
+import type { Handler, Phase06Ctx, RouteCall, RouteRow } from "../routes/call.ts";
+import { errorResponse, HttpError } from "../http/responses.ts";
+import { appCallbackUrls } from "../provisioning/context.ts";
+import { type UserIdentity } from "../routes/call.ts";
 import { consumeHandoffCsrf, mintHandoffCsrf, pkThumbprint } from "./handoff-csrf.ts";
 import { consentPage, handoffErrorPage, platformFromUa } from "./handoff-page.ts";
 import {
   callbackUrl,
-  configuredCallbacks,
   parseHandoffConsent,
   parseHandoffQuery,
   type HandoffCommon,
@@ -67,22 +68,22 @@ function refuse(call: RouteCall, r: Pick<Refusal, "code" | "target" | "extra">, 
   const extra: Record<string, string> = retryAfterS === undefined ? {} : { "Retry-After": String(retryAfterS) };
   if (r.target) return redirectTo(callbackUrl(r.target, { error: r.code, ...r.extra }), status, extra);
   if (isNavigation(call.req)) {
-    const misconfigured = configuredCallbacks(call.ctx.env.APP_CALLBACK_URLS).every((u) => !u.startsWith("https://"));
+    const misconfigured = appCallbackUrls(call.ctx.env.APP_CALLBACK_URLS).every((u) => !u.startsWith("https://"));
     return handoffErrorPage(r.code, errorEntry(r.code)?.status ?? 400, misconfigured);
   }
   const message = r.code === "handoff_request_invalid" ? "The handoff request is malformed or names a callback this org does not allow." : `The handoff request was refused: ${r.code}.`;
-  return errorResponse(r.code, message, call.ctx.requestId, Object.keys(r.extra).length ? r.extra : undefined);
+  return errorResponse(new HttpError(r.code, message, Object.keys(r.extra).length ? { details: r.extra } : {}), "json", call.ctx.requestId);
 }
 
 async function controlPlaneHost(ctx: Phase06Ctx): Promise<string> {
   const host = (await ctx.settings.internal()).controlPlaneHost;
-  if (!host) throw new ApiError("setup_incomplete", "Setup has not recorded the control-plane host yet.");
+  if (!host) throw new HttpError("setup_incomplete", "Setup has not recorded the control-plane host yet.");
   return host;
 }
 
 function requireIdentity(call: RouteCall): { user: UserIdentity; jwt: string } {
   const jwt = call.req.headers.get("Cf-Access-Jwt-Assertion");
-  if (!call.user || !jwt) throw new ApiError("handoff_jwt_missing", "No Access JWT reached the Worker; the control-plane Access app must cover /v1/handoff.");
+  if (!call.user || !jwt) throw new HttpError("handoff_jwt_missing", "No Access JWT reached the Worker; the control-plane Access app must cover /v1/handoff.");
   return { user: call.user, jwt };
 }
 
@@ -117,7 +118,7 @@ async function issue(
 const getHandoff: Handler = async (call) => {
   const { ctx, req } = call;
   const host = await controlPlaneHost(ctx);
-  const parsed = parseHandoffQuery(new URL(req.url).searchParams, configuredCallbacks(ctx.env.APP_CALLBACK_URLS), ctx.now());
+  const parsed = parseHandoffQuery(new URL(req.url).searchParams, appCallbackUrls(ctx.env.APP_CALLBACK_URLS), ctx.now());
   if (!parsed.ok) return refuse(call, parsed, 302);
   const q = parsed.value;
   const { user } = requireIdentity(call);
@@ -131,7 +132,7 @@ const postHandoff: Handler = async (call) => {
   const { ctx, req } = call;
   const host = await controlPlaneHost(ctx);
   const form = new URLSearchParams(utf8Decode(call.body) ?? "");
-  const parsed = parseHandoffConsent(form, configuredCallbacks(ctx.env.APP_CALLBACK_URLS));
+  const parsed = parseHandoffConsent(form, appCallbackUrls(ctx.env.APP_CALLBACK_URLS));
   if (!parsed.ok) return refuse(call, parsed, 303);
   const q = parsed.value;
   const fail = (code: ErrorCode) => refuse(call, { code, target: parsed.target, extra: {} }, 303);
@@ -153,7 +154,8 @@ const postHandoff: Handler = async (call) => {
   }
 };
 
+// Protocol "none": W16/W16b negotiate `v` themselves, so a refusal can redirect to the app.
 export const HANDOFF_ROUTES: RouteRow[] = [
-  { method: "GET", path: "/v1/handoff", auth: { kind: "user" }, kind: "html", handler: getHandoff, rateLimit: "RL_AUTH", bodyLimit: 0 },
-  { method: "POST", path: "/v1/handoff", auth: { kind: "user" }, kind: "html", handler: postHandoff, rateLimit: "RL_AUTH", bodyLimit: 16384 },
+  { method: "GET", path: "/v1/handoff", auth: { kind: "user" }, kind: "html", protocol: "none", handler: getHandoff, rateLimit: "auth", bodyLimit: 0 },
+  { method: "POST", path: "/v1/handoff", auth: { kind: "user" }, kind: "html", protocol: "none", handler: postHandoff, rateLimit: "auth", bodyLimit: 16384 },
 ];

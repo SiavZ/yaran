@@ -14,7 +14,7 @@
  * External: none
  *
  * Used by:
- * src/seams/ui-kit.ts
+ * src/ui/kit.ts
  * ├── src/pairing/authorize-page.ts
  * └── src/sessions/handoff-page.ts
  * <module-headers:end>

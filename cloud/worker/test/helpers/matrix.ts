@@ -11,8 +11,9 @@
  * ├── test/helpers/access.ts
  * ├── test/helpers/machine.ts
  * ├── test/helpers/seed.ts
- * └── test/helpers/worker.ts
- * External: cloudflare:test
+ * ├── test/helpers/worker.ts
+ * └── test/setup.ts
+ * External: cloudflare:test, msw
  *
  * Used by:
  * test/helpers/matrix.ts
@@ -21,6 +22,8 @@
  * <module-headers:end>
  */
 import { env } from "cloudflare:test";
+import { http, HttpResponse } from "msw";
+import { network } from "../setup.ts";
 import type { Route } from "../../src/http/routes.ts";
 import { mintJwt, mintServiceToken, serveJwks } from "./access.ts";
 import { machineKeys, signedRequest, type MachineKeys } from "./machine.ts";
@@ -97,9 +100,13 @@ export async function matrixFixture(): Promise<Fixture> {
   const owner = await seedUser();
   const admin = await seedUser({ role: "admin" });
   const disabled = await seedUser({ disabled: true });
+  const active = await seedMachine({ owner: owner.id, publicKey: keys.publicKey, status: "active" });
+  // A provisioned machine, so routes that need its tunnel and Access app answer.
+  await env.DB.prepare("UPDATE machines SET tunnel_id = ?, access_app_id = ?, access_app_aud = ? WHERE id = ?")
+    .bind(crypto.randomUUID(), crypto.randomUUID(), "a".repeat(64), active).run();
   return {
     keys,
-    active: await seedMachine({ owner: owner.id, publicKey: keys.publicKey, status: "active" }),
+    active,
     revoked: await seedMachine({ owner: owner.id, publicKey: keys.publicKey, status: "revoked" }),
     jwts: {
       user: await mintJwt({ email: owner.email }),
@@ -113,6 +120,14 @@ export async function matrixFixture(): Promise<Fixture> {
   };
 }
 
+/** Undoes what a route that ran did to the fixture machine (an unpair revokes it). */
+export async function resetActive(f: Fixture): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM provisioning_ops WHERE machine_id = ?").bind(f.active),
+    env.DB.prepare("UPDATE machines SET status = 'active', revoke_reason = NULL, revoked_by = NULL, revoked_at = NULL WHERE id = ?").bind(f.active),
+  ]);
+}
+
 export async function setSetupState(setup: SetupKind): Promise<void> {
   if (setup === "open") await openSetup();
   else await closeSetup();
@@ -123,6 +138,9 @@ let ipCounter = 0;
 /** Sends one matrix request (a replay sends it twice and returns the second answer). */
 export async function send(f: Fixture, route: Route, id: IdentityKind, host: HostKind, environment: Cloudflare.Env = env): Promise<Response> {
   serveJwks();
+  // A route that reaches Cloudflare (an unpair's teardown) finds nothing there, which is done.
+  network.use(http.all("https://api.cloudflare.com/*", () =>
+    HttpResponse.json({ success: false, errors: [{ code: 7003, message: "not found" }], messages: [], result: null }, { status: 404 })));
   const hostname = HOSTS[host];
   const path = route.path.replace(/:[a-z_]+/g, () => crypto.randomUUID());
   const query = route.protocol === "query" ? "?v=1" : "";
@@ -150,6 +168,10 @@ export async function send(f: Fixture, route: Route, id: IdentityKind, host: Hos
     h.set("CF-Connecting-IP", ip);
     return new Request(r, { headers: h });
   };
-  if (id === "replayed_nonce") await f.call(withIp(request.clone()), environment);
+  if (id === "replayed_nonce") {
+    await f.call(withIp(request.clone()), environment);
+    // The first send may have unpaired the machine; the replay must meet the nonce check.
+    await resetActive(f);
+  }
   return f.call(withIp(request), environment);
 }

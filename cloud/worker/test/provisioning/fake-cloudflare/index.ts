@@ -18,6 +18,7 @@
  *
  * Used by:
  * test/provisioning/fake-cloudflare/index.ts
+ * ├── test/phase06/fakes.ts
  * ├── test/provisioning/fixture-contract.test.ts
  * └── test/provisioning/helpers/world.ts
  * <module-headers:end>
@@ -53,8 +54,8 @@ export interface FakeCloudflare {
   options: { tokenInResponse: boolean };
 }
 
-export function createFakeCloudflare(opts: { tokenInResponse?: boolean; base?: string } = {}): FakeCloudflare {
-  const state = new FakeState();
+export function createFakeCloudflare(opts: { tokenInResponse?: boolean; base?: string; randomIds?: boolean } = {}): FakeCloudflare {
+  const state = new FakeState(opts.randomIds ?? false);
   const base = opts.base ?? FAKE_BASE;
   const fake: FakeCloudflare = {
     state,

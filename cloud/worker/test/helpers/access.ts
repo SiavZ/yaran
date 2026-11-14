@@ -14,7 +14,9 @@
  * ├── test/access-jwt.test.ts
  * ├── test/body.test.ts
  * ├── test/helpers/matrix.ts
- * └── test/identity.test.ts
+ * ├── test/identity.test.ts
+ * ├── test/phase06/fakes.ts
+ * └── test/phase06/harness.ts
  * <module-headers:end>
  */
 import { exportJWK, SignJWT, type JWK } from "jose";

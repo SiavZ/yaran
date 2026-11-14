@@ -16,7 +16,8 @@
  * ├── test/no-secret-leak.test.ts
  * ├── test/prov-context.test.ts
  * ├── test/purge.test.ts
- * └── test/rate-limit.test.ts
+ * ├── test/rate-limit.test.ts
+ * └── test/sessions/handoff-remembered.test.ts
  * <module-headers:end>
  */
 import { env } from "cloudflare:test";

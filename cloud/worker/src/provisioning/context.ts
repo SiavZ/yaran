@@ -24,6 +24,8 @@
  * Used by:
  * src/provisioning/context.ts
  * ├── src/reconcile/tasks.ts
+ * ├── src/routes/phase06-context.ts
+ * ├── src/sessions/handoff-route.ts
  * └── test/prov-context.test.ts
  * <module-headers:end>
  */

@@ -10,19 +10,23 @@
  * ├── cloud/protocol/fixtures/handoff/consent-cookie.json
  * ├── cloud/protocol/fixtures/handoff/remembered-consent.json
  * ├── cloud/protocol/fixtures/sig/device-fingerprint.json
+ * ├── src/security/data-key.ts
  * ├── src/sessions/handoff-params.ts
  * ├── src/sessions/handoff-remembered.ts
+ * ├── test/helpers/app.ts
  * ├── test/phase06/fakes.ts
  * └── test/sessions/handoff-helpers.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import cookieFx from "@yaran/protocol/fixtures/handoff/consent-cookie.json" with { type: "json" };
 import rememberedFx from "@yaran/protocol/fixtures/handoff/remembered-consent.json" with { type: "json" };
 import devFpFx from "@yaran/protocol/fixtures/sig/device-fingerprint.json" with { type: "json" };
 import { CONSENT_COOKIE_NAME, deviceKeyFingerprint, fromHex } from "@yaran/protocol";
+import { resetKeyRingCache } from "../../src/security/data-key.ts";
+import { freshDataKey } from "../helpers/app.ts";
 import { describe, expect, it } from "vitest";
 import type { HandoffGet } from "../../src/sessions/handoff-params.ts";
 import { rememberedConsent } from "../../src/sessions/handoff-remembered.ts";
@@ -129,8 +133,16 @@ describe("the page still shows", () => {
     const t = await get(s, await handoffQuery(s), { Cookie: tampered });
     expect(t.status).toBe(200);
     expect(t.headers.get("Set-Cookie")).toBeNull();
-    s.w.keyState.kv++;
-    expect((await get(s, await handoffQuery(s), { Cookie: cookie })).status).toBe(200);
+    // Rotate DATA_KEY: the consent MAC key's version moves on, so the old cookie is stale.
+    const original = s.w.env;
+    s.w.env = { ...original, DATA_KEY_PREVIOUS: original.DATA_KEY, DATA_KEY: freshDataKey() };
+    try {
+      expect((await get(s, await handoffQuery(s), { Cookie: cookie })).status).toBe(200);
+    } finally {
+      s.w.env = original;
+      await s.w.ctx.db.prepare("DELETE FROM settings WHERE key = 'data_key_state'").run();
+      resetKeyRingCache();
+    }
   });
 
   it("not at all for a stale dts: that is handoff_timestamp_skewed with server_time", async () => {

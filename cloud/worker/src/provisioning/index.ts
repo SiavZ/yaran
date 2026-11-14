@@ -29,6 +29,7 @@
  *
  * Used by:
  * src/provisioning/index.ts
+ * ├── src/routes/phase06-context.ts
  * ├── test/provisioning/crash-matrix.test.ts
  * ├── test/provisioning/drift.test.ts
  * ├── test/provisioning/origin-port.test.ts
@@ -76,6 +77,8 @@ export interface OpView {
   step: StepName | "done";
   state: WireProvisioningState;
   error_code: string | null;
+  /** The recorded failure's sanitized detail (for example a quota refusal's resource, used and limit). */
+  error_detail: Record<string, unknown> | null;
 }
 
 export type OpRef = OpView & { created: boolean };
@@ -109,7 +112,18 @@ const view = (op: OpRow): OpView => ({
   step: op.step,
   state: wireState(op.state),
   error_code: op.last_error_code,
+  error_detail: errorDetail(op.last_error),
 });
+
+function errorDetail(text: string | null): Record<string, unknown> | null {
+  if (text === null) return null;
+  try {
+    const v: unknown = JSON.parse(text);
+    return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
 
 async function flushing<T>(ctx: ProvCtx, run: () => Promise<T>): Promise<T> {
   try {

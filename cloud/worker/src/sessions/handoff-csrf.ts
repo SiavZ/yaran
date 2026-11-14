@@ -13,7 +13,7 @@
  * src/sessions/handoff-csrf.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── src/pairing/pkce.ts
- * └── src/seams/foundation.ts
+ * └── src/routes/call.ts
  * External: none
  *
  * Used by:
@@ -23,7 +23,7 @@
  */
 import { decodeP256Point, deviceKeyFingerprint, jwkThumbprint, pointToJwk, timingSafeEqual } from "@yaran/protocol";
 import { randomToken, sha256Text } from "../pairing/pkce.ts";
-import type { FoundationCtx } from "../seams/foundation.ts";
+import type { FoundationCtx } from "../routes/call.ts";
 
 export const HANDOFF_CSRF_TTL_S = 600;
 

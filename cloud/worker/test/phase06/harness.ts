@@ -1,21 +1,21 @@
 /**
- * A fake of Phase 04's request pipeline, just deep enough to drive Phase 06's route rows
- * end to end: route match, the Origin rule, `requireUser`, the machine-signature check
- * (through @yaran/protocol's verifier and a D1 nonce table), the install-id check and
- * `ApiError` mapping.
+ * Drives Phase 06's routes through 04's real request pipeline at a test world's clock.
  *
- * - `requireUser` decodes the `Cf-Access-Jwt-Assertion` payload without verifying it
- *   (04 owns verification); it refuses a missing JWT, a service token, another AUD and a
- *   disabled or unknown user with 04's codes.
+ * - An unsigned `fakeJwt` in `Cf-Access-Jwt-Assertion` is re-signed with the test JWKS key
+ *   (claims unchanged, issuer defaulted), so Access verification runs for real. A test that
+ *   compares the token the Worker saw signs it up front with `signed`.
+ * - A JSON request without `Yaran-Protocol` gets version 1, and each request a fresh
+ *   client IP: these tests are about Phase 06, not 04's negotiation or per-IP buckets.
+ * - The world's `settings` are flushed to D1 before, and its `audit` reloaded after.
  *
  * <module-headers:begin>
  * Uses:
  * test/phase06/harness.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/devices/install-id.ts
  * ├── src/pairing/pair-requests.ts
- * ├── src/seams/context.ts
- * ├── src/seams/foundation.ts
+ * ├── test/helpers/access.ts
+ * ├── test/helpers/seed.ts
+ * ├── test/helpers/worker.ts
  * └── test/phase06/fakes.ts
  * External: none
  *
@@ -30,105 +30,45 @@
  * └── test/sessions/handoff-helpers.ts
  * <module-headers:end>
  */
-import {
-  b64urlDecode,
-  b64urlEncode,
-  PROTOCOL_MAX,
-  PROTOCOL_MIN,
-  signMachineRequest,
-  utf8,
-  utf8Decode,
-  verifyMachineRequest,
-  type ErrorCode,
-} from "@yaran/protocol";
-import { checkInstallId } from "../../src/devices/install-id.ts";
+import { b64urlDecode, b64urlEncode, signMachineRequest, utf8, utf8Decode } from "@yaran/protocol";
 import { pairCodeKey } from "../../src/pairing/pair-requests.ts";
-import type { Phase06Ctx, RouteRow } from "../../src/seams/context.ts";
-import { ApiError, errorResponse, type UserIdentity } from "../../src/seams/foundation.ts";
-import { CP_HOST } from "./fakes.ts";
+import { mintJwt } from "../helpers/access.ts";
+import { TEAM } from "../helpers/seed.ts";
+import { handler } from "../helpers/worker.ts";
+import { CP_HOST, type TestWorld } from "./fakes.ts";
 
-export const CP_AUD = "cp-aud";
+export { CP_AUD } from "./fakes.ts";
 
-async function requireUser(req: Request, ctx: Phase06Ctx): Promise<UserIdentity> {
-  const jwt = req.headers.get("Cf-Access-Jwt-Assertion");
-  if (!jwt) throw new ApiError("unauthenticated", "No Access JWT.");
-  const payload = JSON.parse(utf8Decode(b64urlDecode(jwt.split(".")[1] ?? "")!) ?? "{}") as Record<string, unknown>;
-  if (payload["common_name"] !== undefined || !payload["email"]) throw new ApiError("service_token_rejected", "Service tokens cannot use this route.");
-  const aud = payload["aud"];
-  if (!(Array.isArray(aud) ? aud : [aud]).includes(CP_AUD)) throw new ApiError("unauthenticated", "JWT for another application.");
-  const email = String(payload["email"]).toLowerCase();
-  const row = await ctx.db.prepare("SELECT id, role, status, slug FROM users WHERE email = ?").bind(email).first<{ id: string; role: "user" | "admin"; status: string; slug: string }>();
-  if (!row) throw new ApiError("unauthenticated", "Unknown user.");
-  if (row.status === "disabled") throw new ApiError("user_disabled", "This account is disabled.");
-  return { userId: row.id, email, sub: String(payload["sub"]), exp: Number(payload["exp"]), role: row.role, slug: row.slug };
+let ipSeq = 0;
+
+/** The same claims signed with the test JWKS key; a token already signed passes unchanged. */
+export async function signed(token: string): Promise<string> {
+  if (!token.endsWith(".c2ln")) return token;
+  const claims = JSON.parse(utf8Decode(b64urlDecode(token.split(".")[1] ?? "") ?? new Uint8Array()) ?? "{}") as Record<string, unknown>;
+  const { email, sub, aud, iss, exp, nbf, iat: _iat, ...extra } = claims;
+  return mintJwt({
+    email: typeof email === "string" ? email : null,
+    sub: typeof sub === "string" ? sub : "",
+    aud: (Array.isArray(aud) ? aud[0] : aud) as string,
+    iss: typeof iss === "string" ? iss : `https://${TEAM}`,
+    ...(typeof exp === "number" ? { exp } : {}),
+    ...(typeof nbf === "number" ? { nbf } : {}),
+    extra,
+  });
 }
 
-function match(rows: readonly RouteRow[], req: Request): { row: RouteRow; params: Record<string, string> } | null {
-  for (const row of rows) {
-    if (row.method !== req.method) continue;
-    const m = new URLPattern({ pathname: row.path }).exec(req.url);
-    if (m) return { row, params: m.pathname.groups as Record<string, string> };
-  }
-  return null;
-}
-
-/** Runs one request through the fake pipeline. */
-export async function dispatch(rows: readonly RouteRow[], req: Request, ctx: Phase06Ctx): Promise<Response> {
-  const hit = match(rows, req);
-  if (!hit) return errorResponse("not_found", "No such route.", ctx.requestId);
-  const { row, params } = hit;
-  const body = new Uint8Array(await req.arrayBuffer());
-  try {
-    const origin = req.headers.get("Origin");
-    const mutating = req.method !== "GET";
-    if (mutating && row.auth.kind === "user" && origin !== null && origin !== `https://${CP_HOST}` && row.kind === "json") {
-      throw new ApiError("origin_mismatch", "Cross-origin request refused.");
-    }
-    let user: UserIdentity | null = null;
-    let machine: { id: string | null; protocol: number } | null = null;
-    switch (row.auth.kind) {
-      case "user":
-      case "admin":
-        user = await requireUser(req, ctx);
-        await checkInstallId(ctx, user, req.headers.get("Yaran-Install-Id"));
-        break;
-      case "machine": {
-        const path = new URL(req.url).pathname;
-        const claimCode = row.auth.key === "pair_request" ? (JSON.parse(utf8Decode(body) || "{}") as { code?: string }).code : undefined;
-        const v = await verifyMachineRequest({
-          method: req.method,
-          path,
-          host: new URL(req.url).host,
-          headers: req.headers,
-          body,
-          now: ctx.now(),
-          protocol: { min: PROTOCOL_MIN, max: PROTOCOL_MAX },
-          ...(claimCode ? { claimCode } : {}),
-          keys: {
-            byMachineId: async (id) => {
-              const r = await ctx.db.prepare("SELECT public_key, status FROM machines WHERE id = ?").bind(id).first<{ public_key: ArrayBuffer; status: string }>();
-              return r ? { publicKey: new Uint8Array(r.public_key), revoked: r.status === "revoking" || r.status === "revoked" } : null;
-            },
-            byPairCode: (code) => pairCodeKey(ctx, code),
-          },
-          nonces: {
-            recordIfNew: async (scope, nonce, exp) =>
-              (await ctx.db.prepare("INSERT OR IGNORE INTO machine_nonces (machine_id, nonce, expires_at) VALUES (?, ?, ?)").bind(scope, nonce, exp).run()).meta.changes === 1,
-          },
-        });
-        if (!v.ok) throw new ApiError(v.code as ErrorCode, `Machine signature refused: ${v.code}.`, v.details);
-        machine = { id: v.machineId, protocol: v.protocol };
-        break;
-      }
-      case "public":
-      case "setup":
-        break;
-    }
-    return await row.handler({ req, ctx, params, user, machine, body });
-  } catch (e) {
-    if (e instanceof ApiError) return errorResponse(e.code, e.message, ctx.requestId, e.details);
-    throw e;
-  }
+/** Runs one request through the production route table and pipeline. */
+export async function dispatch(req: Request, w: TestWorld): Promise<Response> {
+  await w.flush();
+  const headers = new Headers(req.headers);
+  const jwt = headers.get("Cf-Access-Jwt-Assertion");
+  if (jwt) headers.set("Cf-Access-Jwt-Assertion", await signed(jwt));
+  if (!headers.has("Yaran-Protocol")) headers.set("Yaran-Protocol", "1");
+  headers.set("CF-Connecting-IP", `198.51.${(++ipSeq >> 8) & 255}.${ipSeq & 255}`);
+  const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
+  const res = await handler({ now: () => w.clock.now, pairCodeKey })(new Request(req.url, { method: req.method, headers, ...(body ? { body } : {}), redirect: "manual" }), w.env);
+  await w.refresh();
+  return res;
 }
 
 export interface MachineKeys {

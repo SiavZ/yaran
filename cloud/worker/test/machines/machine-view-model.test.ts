@@ -11,7 +11,7 @@
  * └── src/machines/machine-view-model.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { validate } from "@yaran/protocol";

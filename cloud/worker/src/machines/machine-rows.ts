@@ -9,7 +9,7 @@
  * <module-headers:begin>
  * Uses:
  * src/machines/machine-rows.ts
- * └── src/seams/foundation.ts
+ * └── src/routes/call.ts
  * External: none
  *
  * Used by:
@@ -25,7 +25,7 @@
  * └── test/machines/machine-view-model.test.ts
  * <module-headers:end>
  */
-import type { FoundationCtx } from "../seams/foundation.ts";
+import type { FoundationCtx } from "../routes/call.ts";
 
 export type MachineRowStatus = "provisioning" | "awaiting_claim" | "active" | "revoking" | "revoked" | "failed";
 export type CfStatus = "inactive" | "degraded" | "healthy" | "down" | "unknown";

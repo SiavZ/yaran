@@ -14,7 +14,7 @@
  * Uses:
  * src/pairing/authorize-page.ts
  * ├── @yaran/protocol:src/index.ts
- * └── src/seams/ui-kit.ts
+ * └── src/ui/kit.ts
  * External: none
  *
  * Used by:
@@ -23,7 +23,7 @@
  * <module-headers:end>
  */
 import type { ErrorCode } from "@yaran/protocol";
-import { button, chip, form, heading, notice, page, prose, type Html } from "../seams/ui-kit.ts";
+import { button, chip, form, heading, notice, page, prose, type Html } from "../ui/kit.ts";
 
 export const PAIR_FORM_ACTION = "/v1/pair/authorize";
 

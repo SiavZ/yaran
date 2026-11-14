@@ -9,7 +9,6 @@
  * Uses:
  * test/sessions/handoff-helpers.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/sessions/handoff-route.ts
  * ├── test/phase06/fakes.ts
  * └── test/phase06/harness.ts
  * External: none
@@ -22,9 +21,8 @@
  * <module-headers:end>
  */
 import { b64urlEncode, handoffDeviceCanonical, utf8 } from "@yaran/protocol";
-import { HANDOFF_ROUTES } from "../../src/sessions/handoff-route.ts";
 import { APP_CALLBACK, CP_HOST, fakeJwt, makeWorld, seedUser, type SeededUser, type TestWorld } from "../phase06/fakes.ts";
-import { CP_AUD, dispatch } from "../phase06/harness.ts";
+import { CP_AUD, dispatch, signed } from "../phase06/harness.ts";
 
 export interface Phone {
   ecdh: CryptoKeyPair;
@@ -61,7 +59,7 @@ export async function setup(): Promise<Setup> {
   const w = await makeWorld();
   // Storage is shared within a test file, so every setup gets its own user.
   const user = await seedUser(w.ctx.db, `ada${++seq}@example.org`);
-  const jwt = fakeJwt({ email: user.email, sub: "sub-ada", exp: w.clock.now + 3600, aud: [CP_AUD], type: "app" });
+  const jwt = await signed(fakeJwt({ email: user.email, sub: "sub-ada", exp: w.clock.now + 3600, aud: [CP_AUD], type: "app" }));
   return { w, user, jwt, phone: await makePhone() };
 }
 
@@ -87,18 +85,17 @@ export async function handoffQuery(s: Setup, o: Record<string, string | null> = 
 }
 
 export function get(s: Setup, params: URLSearchParams, headers: Record<string, string> = {}): Promise<Response> {
-  return dispatch(HANDOFF_ROUTES, new Request(`https://${CP_HOST}/v1/handoff?${params}`, { headers: { "Cf-Access-Jwt-Assertion": s.jwt, ...headers } }), s.w.ctx);
+  return dispatch(new Request(`https://${CP_HOST}/v1/handoff?${params}`, { headers: { "Cf-Access-Jwt-Assertion": s.jwt, ...headers } }), s.w);
 }
 
 export function post(s: Setup, form: URLSearchParams, headers: Record<string, string> = {}): Promise<Response> {
   return dispatch(
-    HANDOFF_ROUTES,
     new Request(`https://${CP_HOST}/v1/handoff`, {
       method: "POST",
       body: form.toString(),
       headers: { "Cf-Access-Jwt-Assertion": s.jwt, "Content-Type": "application/x-www-form-urlencoded", Origin: `https://${CP_HOST}`, ...headers },
     }),
-    s.w.ctx,
+    s.w,
   );
 }
 

@@ -26,6 +26,8 @@
  * ├── test/machine-signature.test.ts
  * ├── test/migrations.test.ts
  * ├── test/no-secret-leak.test.ts
+ * ├── test/phase06/fakes.ts
+ * ├── test/phase06/harness.ts
  * ├── test/prov-context.test.ts
  * ├── test/purge.test.ts
  * ├── test/rate-limit.test.ts
@@ -51,6 +53,11 @@ export async function closeSetup(host = CP_HOST): Promise<void> {
   await setSetting(env.DB, "control_plane_host", host, "test", NOW);
   await setSetting(env.DB, "team_domain", TEAM, "test", NOW);
   await setSetting(env.DB, "control_plane_aud", AUD, "test", NOW);
+  // The Cloudflare identifiers setup records, which provisioning needs.
+  await setSetting(env.DB, "instance_id", "0123abcd", "test", NOW);
+  await setSetting(env.DB, "account_id", "acc123", "test", NOW);
+  await setSetting(env.DB, "zone_id", "zone123", "test", NOW);
+  await setSetting(env.DB, "zone_name", "example.com", "test", NOW);
 }
 
 export async function openSetup(): Promise<void> {

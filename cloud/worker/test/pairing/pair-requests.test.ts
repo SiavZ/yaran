@@ -8,16 +8,18 @@
  * ├── src/pairing/pair-requests.ts
  * ├── src/pairing/pkce.ts
  * ├── src/pairing/sweep.ts
- * └── test/pairing/pair-helpers.ts
+ * ├── test/pairing/pair-helpers.ts
+ * └── test/phase06/fakes.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";
 import { approve, claim, createPending, deny, expire, findByCode } from "../../src/pairing/pair-requests.ts";
 import { runPairSweep } from "../../src/pairing/sweep.ts";
 import { randomToken } from "../../src/pairing/pkce.ts";
+import { machineRow } from "../phase06/fakes.ts";
 import { approvePairing, authorizeQuery, fixtureMachine, getAuthorize, pairWorld } from "./pair-helpers.ts";
 
 async function pending(pw: Awaited<ReturnType<typeof pairWorld>>): Promise<string> {
@@ -72,7 +74,7 @@ describe("pair requests", () => {
 });
 
 describe("runPairSweep", () => {
-  it("expires abandoned pairings, tears down their awaiting_claim machines and audits pair.expired", async () => {
+  it("expires abandoned pairings, moves their awaiting_claim machines to revoking and audits pair.expired", async () => {
     const pw = await pairWorld();
     const { machineId } = await approvePairing(pw, await fixtureMachine());
     await getAuthorize(pw, authorizeQuery(await fixtureMachine("desk")));
@@ -86,7 +88,8 @@ describe("runPairSweep", () => {
     const r = await runPairSweep(pw.w.ctx, 100);
     expect(r.expired).toBeGreaterThanOrEqual(2);
     expect(r.csrfPurged).toBeGreaterThanOrEqual(1);
-    expect(pw.w.prov.calls.filter((c) => c.fn === "startTeardown").map((c) => c.args)).toContainEqual([machineId, "stale"]);
+    expect(await machineRow(pw.w, machineId)).toMatchObject({ status: "revoking", revoke_reason: "stale", revoked_by: "system" });
+    await pw.w.refresh();
     expect(pw.w.audit.filter((a) => a.action === "pair.expired" && a.target.id === machineId)).toHaveLength(1);
     expect(pw.w.audit.find((a) => a.action === "pair.expired")!.actor).toEqual({ kind: "system", id: null });
     const statuses = await pw.w.ctx.db.prepare("SELECT status FROM pair_requests WHERE user_id = ?").bind(pw.user.id).all<{ status: string }>();

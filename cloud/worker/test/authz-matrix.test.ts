@@ -15,7 +15,7 @@
  * <module-headers:end>
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { expected, HOSTS, IDENTITIES, matrixFixture, send, setSetupState, type Fixture, type HostKind, type SetupKind } from "./helpers/matrix.ts";
+import { expected, HOSTS, IDENTITIES, matrixFixture, resetActive, send, setSetupState, type Fixture, type HostKind, type SetupKind } from "./helpers/matrix.ts";
 import { ALL_ROUTES, errorCode } from "./helpers/worker.ts";
 
 /** Codes that mean the request was refused before reaching its handler. */
@@ -39,6 +39,7 @@ for (const setup of ["open", "closed"] as SetupKind[]) {
           for (const id of IDENTITIES) {
             const want = expected(route, id, host, setup);
             const res = await send(f, route, id, host);
+            await resetActive(f);
             const code = res.status < 400 ? null : await errorCode(res);
             const label = `${id} on ${host}`;
             if (want === "ok") expect(code === null || !REFUSALS.has(code), `${label}: got ${code}`).toBe(true);

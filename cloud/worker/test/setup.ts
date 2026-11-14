@@ -10,7 +10,9 @@
  * Used by:
  * test/setup.ts
  * ├── test/access-jwt.test.ts
- * └── test/helpers/access.ts
+ * ├── test/helpers/access.ts
+ * ├── test/helpers/matrix.ts
+ * └── test/phase06/fakes.ts
  * <module-headers:end>
  */
 import { setupNetwork } from "@msw/cloudflare";

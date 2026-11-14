@@ -83,11 +83,6 @@ export type Parsed<T> = { ok: true; value: T; target: RedirectTarget } | Refusal
 /** Reads a field from a query string or form; the absent value is null. */
 export type Fields = { get(name: string): string | null };
 
-/** The configured https callbacks from the `APP_CALLBACK_URLS` deploy variable. */
-export function configuredCallbacks(appCallbackUrls: string): string[] {
-  return appCallbackUrls.split(/\s+/).filter((s) => s.length > 0);
-}
-
 export function deviceLabelValid(device: string): boolean {
   const n = [...device].length;
   return n >= 1 && n <= 64 && !DEVICE_BAD_RE.test(device);

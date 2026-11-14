@@ -7,20 +7,16 @@
  * Uses:
  * test/devices/devices-route.test.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/me/devices-route.ts
- * ├── src/me/machines-route.ts
  * ├── test/devices/device-fixtures.ts
  * ├── test/phase06/fakes.ts
  * └── test/phase06/harness.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { validate, type Device, type DevicePage } from "@yaran/protocol";
 import { describe, expect, it } from "vitest";
-import { DEVICE_ROUTES } from "../../src/me/devices-route.ts";
-import { MY_MACHINE_ROUTES } from "../../src/me/machines-route.ts";
 import { CP_HOST, fakeJwt, makeWorld, seedMachine, seedUser, type SeededUser, type TestWorld } from "../phase06/fakes.ts";
 import { CP_AUD, dispatch } from "../phase06/harness.ts";
 import { DEVICE_KEYS, p256Point, registration } from "./device-fixtures.ts";
@@ -34,7 +30,7 @@ function req(u: SeededUser, method: string, path: string, o: { body?: unknown; i
   return new Request(`https://${CP_HOST}${path}`, { method, headers, ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}) });
 }
 
-const call = (w: TestWorld, r: Request) => dispatch([...DEVICE_ROUTES, ...MY_MACHINE_ROUTES], r, w.ctx);
+const call = (w: TestWorld, r: Request) => dispatch(r, w);
 const code = async (res: Response) => ((await res.json()) as { error: { code: string; details?: unknown } }).error;
 
 async function setup() {
@@ -179,7 +175,7 @@ describe("W14 DELETE /v1/me/devices/{id}", () => {
     expect(w.audit.at(-1)).toMatchObject({ action: "device.revoked", detail: { sign_out_everywhere: false } });
     const after = await call(w, req(ada, "GET", "/v1/me/machines", { installId: reg.install_id }));
     expect([after.status, (await code(after)).code]).toEqual([403, "device_revoked"]);
-    expect(w.cfCalls).toEqual([]);
+    expect(w.cf.calls).toEqual([]);
   });
 
   it("revokes Access sessions with sign_out_everywhere and 404s another user's device", async () => {
@@ -188,7 +184,7 @@ describe("W14 DELETE /v1/me/devices/{id}", () => {
     const dev = (await (await register(w, ada)).res.json()) as Device;
     expect((await call(w, req(bob, "DELETE", `/v1/me/devices/${dev.id}`))).status).toBe(404);
     expect((await call(w, req(ada, "DELETE", `/v1/me/devices/${dev.id}?sign_out_everywhere=1`))).status).toBe(204);
-    expect(w.cfCalls).toEqual([{ method: "POST", path: "/accounts/acc123/access/organizations/revoke_user", body: { email: ada.email }, priority: "interactive" }]);
+    expect(w.cf.calls.map((c) => [c.method, c.path, c.body])).toEqual([["POST", "/accounts/acc123/access/organizations/revoke_user", { email: ada.email }]]);
     expect(w.audit.slice(-2).map((a) => [a.action, a.detail])).toEqual([["device.revoked", { sign_out_everywhere: true }], ["sessions.revoked", undefined]]);
   });
 });

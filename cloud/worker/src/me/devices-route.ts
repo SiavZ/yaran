@@ -16,23 +16,22 @@
  * ├── @yaran/protocol:src/index.ts
  * ├── src/devices/device-params.ts
  * ├── src/devices/devices-repo.ts
+ * ├── src/http/responses.ts
  * ├── src/me/cursor.ts
- * ├── src/seams/context.ts
- * ├── src/seams/foundation.ts
+ * ├── src/routes/call.ts
  * └── src/sessions/revoke-sessions.ts
  * External: none
  *
  * Used by:
  * src/me/devices-route.ts
- * ├── src/routes/pairing-and-sessions.ts
- * └── test/devices/devices-route.test.ts
+ * └── src/routes/pairing-and-sessions.ts
  * <module-headers:end>
  */
 import { utf8Decode, type DevicePage } from "@yaran/protocol";
 import { checkPatch, checkRegistration } from "../devices/device-params.ts";
 import { listDevices, patchDevice, revokeDevice, toDevice, upsertDevice } from "../devices/devices-repo.ts";
-import type { RouteCall, RouteRow } from "../seams/context.ts";
-import { ApiError } from "../seams/foundation.ts";
+import type { RouteCall, RouteRow } from "../routes/call.ts";
+import { HttpError } from "../http/responses.ts";
 import { revokeSessions } from "../sessions/revoke-sessions.ts";
 import { nextCursor, pageQuery } from "./cursor.ts";
 
@@ -42,17 +41,17 @@ function jsonBody(body: Uint8Array): unknown {
   try {
     return JSON.parse(utf8Decode(body) ?? "");
   } catch {
-    throw new ApiError("bad_request", "The request body is not JSON.");
+    throw new HttpError("bad_request", "The request body is not JSON.");
   }
 }
 
-const notFound = () => new ApiError("not_found", "No phone with that id is registered to your account.");
+const notFound = () => new HttpError("not_found", "No phone with that id is registered to your account.");
 
 async function register({ req, ctx, user, body }: RouteCall): Promise<Response> {
   const [settings, internal] = await Promise.all([ctx.settings.read(), ctx.settings.internal()]);
   const checked = await checkRegistration(jsonBody(body), { controlPlaneHost: internal.controlPlaneHost ?? "", zoneName: internal.zoneName ?? "" }, settings.push);
   const installId = req.headers.get("Yaran-Install-Id");
-  if (installId !== checked.reg.install_id) throw new ApiError("bad_request", "The Yaran-Install-Id header must equal install_id.");
+  if (installId !== checked.reg.install_id) throw new HttpError("bad_request", "The Yaran-Install-Id header must equal install_id.");
   const { row, created } = await upsertDevice(ctx, user!.userId, checked);
   await ctx.audit.record({
     action: created ? "device.registered" : "device.updated",
@@ -95,7 +94,7 @@ async function revoke({ req, ctx, user, params }: RouteCall): Promise<Response> 
 }
 
 const row = (method: RouteRow["method"], path: string, handler: RouteRow["handler"], bodyLimit = 0): RouteRow => ({
-  method, path, auth: { kind: "user" }, kind: "json", handler, rateLimit: "RL_IP", bodyLimit,
+  method, path, auth: { kind: "user" }, kind: "json", protocol: "header", handler, rateLimit: "ip", bodyLimit,
 });
 
 export const DEVICE_ROUTES: RouteRow[] = [

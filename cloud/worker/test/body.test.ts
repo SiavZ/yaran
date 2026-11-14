@@ -24,9 +24,10 @@ import { HttpError, json } from "../src/http/responses.ts";
 import type { Route } from "../src/http/routes.ts";
 import { mintJwt, serveJwks } from "./helpers/access.ts";
 import { closeSetup, CP_HOST, seedUser } from "./helpers/seed.ts";
-import { errorCode, handler } from "./helpers/worker.ts";
+import { errorCode, handler, PROBE_ROUTES } from "./helpers/worker.ts";
 
-const call = handler();
+// These probe the pipeline itself, so they run against the echo routes, not production handlers.
+const call = handler({}, PROBE_ROUTES);
 let jwt = "";
 beforeAll(async () => {
   await closeSetup();

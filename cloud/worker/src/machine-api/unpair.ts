@@ -11,7 +11,7 @@
  * Uses:
  * src/machine-api/unpair.ts
  * ├── @yaran/protocol:src/index.ts
- * └── src/seams/context.ts
+ * └── src/routes/call.ts
  * External: none
  *
  * Used by:
@@ -20,7 +20,7 @@
  * <module-headers:end>
  */
 import type { TeardownStarted } from "@yaran/protocol";
-import type { RouteCall, RouteRow } from "../seams/context.ts";
+import type { RouteCall, RouteRow } from "../routes/call.ts";
 
 async function postUnpair({ ctx, machine }: RouteCall): Promise<Response> {
   const id = machine!.id!;
@@ -34,8 +34,8 @@ export const UNPAIR_ROUTE: RouteRow = {
   method: "POST",
   path: "/v1/machine/unpair",
   auth: { kind: "machine", key: "registered" },
-  kind: "json",
+  kind: "json", protocol: "header",
   handler: postUnpair,
-  rateLimit: "RL_MACHINE",
-  bodyLimit: 0,
+  rateLimit: "machine",
+  bodyLimit: 1024,
 };

@@ -13,12 +13,14 @@
  * Uses:
  * src/pairing/pair-requests.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── src/auth/machine-signature.ts
  * ├── src/pairing/pkce.ts
- * └── src/seams/foundation.ts
+ * └── src/routes/call.ts
  * External: none
  *
  * Used by:
  * src/pairing/pair-requests.ts
+ * ├── src/index.ts
  * ├── src/machine-api/claim.ts
  * ├── src/pairing/authorize-route.ts
  * ├── src/pairing/sweep.ts
@@ -26,8 +28,9 @@
  * └── test/phase06/harness.ts
  * <module-headers:end>
  */
-import { timingSafeEqual, type MachineKey } from "@yaran/protocol";
-import type { FoundationCtx } from "../seams/foundation.ts";
+import { timingSafeEqual } from "@yaran/protocol";
+import type { PairCodeKeyResolver } from "../auth/machine-signature.ts";
+import type { FoundationCtx } from "../routes/call.ts";
 import { sha256Text } from "./pkce.ts";
 
 export const PAIR_REQUEST_TTL_S = 600;
@@ -66,7 +69,7 @@ export interface NewPairRequest {
   csrf: string;
 }
 
-const stateAad = (id: string) => `pair_requests.state_enc:${id}`;
+const stateAad = (id: string) => ({ table: "pair_requests", column: "state_enc", rowId: id });
 
 export async function createPending(ctx: FoundationCtx, p: NewPairRequest): Promise<string> {
   const id = crypto.randomUUID();
@@ -117,6 +120,15 @@ export function linkMachine(ctx: FoundationCtx, id: string, machineId: string, r
   );
 }
 
+/** Swaps the request's machine for a fresh one after 05 compensated and failed the old one. */
+export function relinkMachine(ctx: FoundationCtx, id: string, from: string, machineId: string, replaces: string | null): Promise<boolean> {
+  return transition(
+    ctx,
+    "UPDATE pair_requests SET machine_id = ?, replaces_machine_id = ? WHERE id = ? AND status = 'pending' AND machine_id = ?",
+    machineId, replaces, id, from,
+  );
+}
+
 /** pending → confirmed with the code's hash; the code lives PAIR_CODE_TTL_S from now. */
 export async function approve(ctx: FoundationCtx, id: string, code: string): Promise<boolean> {
   const now = ctx.now();
@@ -129,19 +141,22 @@ export async function approve(ctx: FoundationCtx, id: string, code: string): Pro
 
 /** The confirmed request a live, unexpired code selects. */
 export async function findByCode(ctx: FoundationCtx, code: string): Promise<PairRequestRow | null> {
-  const now = ctx.now();
-  return ctx.db
+  return findLiveCode(ctx.db, code, ctx.now());
+}
+
+async function findLiveCode(db: D1Database, code: string, now: number): Promise<PairRequestRow | null> {
+  return db
     .prepare("SELECT * FROM pair_requests WHERE code_hash = ? AND status = 'confirmed' AND code_expires_at >= ? AND expires_at >= ?")
     .bind(await sha256Text(code), now, now)
     .first<PairRequestRow>();
 }
 
 /** 04's `pair_request` key resolver for W4: the machine key recorded with a live code. */
-export async function pairCodeKey(ctx: FoundationCtx, code: string): Promise<MachineKey | null> {
+export const pairCodeKey: PairCodeKeyResolver = async (db, code, now) => {
   if (!/^[A-Za-z0-9_-]{43}$/.test(code)) return null;
-  const row = await findByCode(ctx, code);
-  return row ? { publicKey: new Uint8Array(row.machine_public_key), revoked: false } : null;
-}
+  const row = await findLiveCode(db, code, now);
+  return row ? new Uint8Array(row.machine_public_key) : null;
+};
 
 /** confirmed → claimed; false for the loser of a race or an expired code. */
 export async function claim(ctx: FoundationCtx, id: string, code: string): Promise<boolean> {

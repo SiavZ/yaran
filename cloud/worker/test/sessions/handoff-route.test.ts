@@ -7,14 +7,16 @@
  * Uses:
  * test/sessions/handoff-route.test.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── test/helpers/worker.ts
  * ├── test/phase06/fakes.ts
  * └── test/sessions/handoff-helpers.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { openHandoff, validate } from "@yaran/protocol";
+import { errorCode } from "../helpers/worker.ts";
 import { describe, expect, it } from "vitest";
 import { APP_CALLBACK, CP_HOST } from "../phase06/fakes.ts";
 import { callbackParams, formFromPage, get, handoffQuery, makePhone, post, setup, STATE, type Setup } from "./handoff-helpers.ts";
@@ -161,8 +163,9 @@ describe("csrf and Origin", () => {
   it("passes the page's own Origin and refuses Origin: null", async () => {
     const s = await setup();
     const form = await formFromPage(await get(s, await handoffQuery(s)), "continue");
+    // 04's pipeline refuses a foreign Origin on every form post before the handler runs.
     const refused = await post(s, form, { Origin: "null" });
-    expect(callbackParams(refused).get("error")).toBe("origin_mismatch");
+    expect([refused.status, await errorCode(refused)]).toEqual([403, "origin_mismatch"]);
     expect((await post(s, form)).headers.get("Location")).toContain("&jwe=");
   });
 });

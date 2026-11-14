@@ -17,7 +17,7 @@
  * src/machines/machine-view-model.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── src/machines/machine-rows.ts
- * ├── src/seams/provisioning.ts
+ * ├── src/routes/call.ts
  * └── src/shared/timestamp.ts
  * External: none
  *
@@ -28,7 +28,7 @@
  * <module-headers:end>
  */
 import { machineKeyFingerprint, type AdminMachine, type MachineStatus, type MachineSummary } from "@yaran/protocol";
-import type { OpView } from "../seams/provisioning.ts";
+import type { OpView } from "../routes/call.ts";
 import { toNullableTimestamp, toTimestamp } from "../shared/timestamp.ts";
 import type { MachineRow } from "./machine-rows.ts";
 

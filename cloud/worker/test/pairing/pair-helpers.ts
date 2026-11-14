@@ -9,7 +9,6 @@
  * Uses:
  * test/pairing/pair-helpers.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/routes/pairing-and-sessions.ts
  * ├── test/phase06/fakes.ts
  * └── test/phase06/harness.ts
  * External: none
@@ -25,7 +24,6 @@
  * <module-headers:end>
  */
 import { b64urlEncode, sha256, utf8 } from "@yaran/protocol";
-import { PHASE06_ROUTES } from "../../src/routes/pairing-and-sessions.ts";
 import { CP_HOST, fakeJwt, makeWorld, seedUser, type SeededUser, type TestWorld } from "../phase06/fakes.ts";
 import { CP_AUD, dispatch, machineKeys, signedRequest, type MachineKeys } from "../phase06/harness.ts";
 
@@ -88,13 +86,13 @@ export async function pairWorld(o: { role?: "user" | "admin" } = {}): Promise<Pa
 export function getAuthorize(pw: PairWorld, query: URLSearchParams, jwt: string | null = pw.jwt): Promise<Response> {
   const headers: Record<string, string> = { Accept: "text/html" };
   if (jwt) headers["Cf-Access-Jwt-Assertion"] = jwt;
-  return dispatch(PHASE06_ROUTES, new Request(`https://${CP_HOST}/v1/pair/authorize?${query}`, { headers }), pw.w.ctx);
+  return dispatch(new Request(`https://${CP_HOST}/v1/pair/authorize?${query}`, { headers }), pw.w);
 }
 
 export function postAuthorize(pw: PairWorld, form: Record<string, string>, origin: string | null = `https://${CP_HOST}`): Promise<Response> {
   const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded", "Cf-Access-Jwt-Assertion": pw.jwt };
   if (origin) headers["Origin"] = origin;
-  return dispatch(PHASE06_ROUTES, new Request(`https://${CP_HOST}/v1/pair/authorize`, { method: "POST", headers, body: new URLSearchParams(form).toString() }), pw.w.ctx);
+  return dispatch(new Request(`https://${CP_HOST}/v1/pair/authorize`, { method: "POST", headers, body: new URLSearchParams(form).toString() }), pw.w);
 }
 
 /** The hidden fields of the first form on a confirm page. */
@@ -119,7 +117,7 @@ export async function approvePairing(pw: PairWorld, m: FixtureMachine, extra: Re
 
 export async function claimRequest(pw: PairWorld, m: FixtureMachine, body: Record<string, unknown>, o: { now?: number; nonce?: string } = {}): Promise<Response> {
   const req = await signedRequest("POST", "/v1/machine/claim", { keys: m.keys, machineId: null, body, now: o.now ?? pw.w.clock.now, ...(o.nonce ? { nonce: o.nonce } : {}) });
-  return dispatch(PHASE06_ROUTES, req, pw.w.ctx);
+  return dispatch(req, pw.w);
 }
 
 export function claimBody(m: FixtureMachine, code: string, over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -128,7 +126,7 @@ export function claimBody(m: FixtureMachine, code: string, over: Record<string, 
 
 export async function machineCall(pw: PairWorld, m: FixtureMachine, machineId: string, method: "GET" | "POST" | "PUT", path: string, body?: unknown, now?: number): Promise<Response> {
   const req = await signedRequest(method, path, { keys: m.keys, machineId, now: now ?? pw.w.clock.now, ...(body === undefined ? {} : { body }) });
-  return dispatch(PHASE06_ROUTES, req, pw.w.ctx);
+  return dispatch(req, pw.w);
 }
 
 /** A machine paired end to end (authorize, approve, claim). */

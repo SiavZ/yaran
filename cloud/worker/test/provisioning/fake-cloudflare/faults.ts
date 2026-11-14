@@ -8,6 +8,8 @@
  *
  * Used by:
  * test/provisioning/fake-cloudflare/faults.ts
+ * ├── test/pairing/audit-coverage.test.ts
+ * ├── test/pairing/authorize-route.test.ts
  * ├── test/provisioning/crash-matrix.test.ts
  * ├── test/provisioning/fake-cloudflare/index.ts
  * ├── test/provisioning/ops-store.test.ts
@@ -15,11 +17,12 @@
  * ├── test/provisioning/provision.test.ts
  * ├── test/provisioning/rotate.test.ts
  * ├── test/provisioning/tasks.test.ts
- * └── test/provisioning/teardown.test.ts
+ * ├── test/provisioning/teardown.test.ts
+ * └── test/sessions/revoke-sessions.test.ts
  * <module-headers:end>
  */
 
-export type FaultKind = "transient" | "crash_after" | "rate_limit" | "permanent" | "timeout" | "non_json";
+export type FaultKind = "transient" | "crash_after" | "rate_limit" | "permanent" | "forbidden" | "timeout" | "non_json";
 
 export interface CallInfo {
   n: number;
@@ -56,6 +59,8 @@ export function faultResponse(kind: Exclude<FaultKind, "crash_after" | "timeout"
       );
     case "permanent":
       return Response.json({ success: false, errors: [{ code: 1001, message: "invalid request \u001b[31mred\u001b[0m" }], messages: [], result: null }, { status: 400 });
+    case "forbidden":
+      return Response.json({ success: false, errors: [{ code: 10000, message: "Authentication error" }], messages: [], result: null }, { status: 403 });
     case "non_json":
       return new Response("<html>bad gateway</html>", { status: 502, headers: { "content-type": "text/html" } });
   }

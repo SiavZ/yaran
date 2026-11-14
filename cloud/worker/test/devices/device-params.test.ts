@@ -7,17 +7,17 @@
  * Uses:
  * test/devices/device-params.test.ts
  * ├── src/devices/device-params.ts
- * ├── src/seams/foundation.ts
+ * ├── src/http/responses.ts
  * ├── test/devices/device-fixtures.ts
  * └── test/phase06/fakes.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";
 import { checkEndpoint, checkLabel, checkPatch, checkRegistration, checkRelay } from "../../src/devices/device-params.ts";
-import { ApiError } from "../../src/seams/foundation.ts";
+import { HttpError } from "../../src/http/responses.ts";
 import { defaultSettings } from "../phase06/fakes.ts";
 import { registration } from "./device-fixtures.ts";
 
@@ -28,7 +28,7 @@ function codeOf(fn: () => unknown): string | null {
     fn();
     return null;
   } catch (e) {
-    return e instanceof ApiError ? e.code : `threw ${String(e)}`;
+    return e instanceof HttpError ? e.code : `threw ${String(e)}`;
   }
 }
 
@@ -37,7 +37,7 @@ async function asyncCodeOf(p: Promise<unknown>): Promise<{ code: string; details
     await p;
     return null;
   } catch (e) {
-    if (!(e instanceof ApiError)) throw e;
+    if (!(e instanceof HttpError)) throw e;
     return e.details ? { code: e.code, details: e.details } : { code: e.code };
   }
 }
@@ -96,7 +96,7 @@ describe("relay rules", () => {
     try {
       checkRelay("fcm_relay", "https://relay.example.net/w/x", { ...push, relay_allowed: false });
     } catch (e) {
-      expect([(e as ApiError).code, (e as ApiError).details]).toEqual(["push_relay_disallowed", { reason: "disabled" }]);
+      expect([(e as HttpError).code, (e as HttpError).details]).toEqual(["push_relay_disallowed", { reason: "disabled" }]);
     }
     const listed = { ...push, allowed_relays: ["https://relay.yaran.example"] };
     expect(codeOf(() => checkRelay("apns_relay", "https://relay.yaran.example/w/x", listed))).toBeNull();
@@ -104,7 +104,7 @@ describe("relay rules", () => {
       checkRelay("apns_relay", "https://relay.example.net/w/x", listed);
       expect.unreachable();
     } catch (e) {
-      expect([(e as ApiError).code, (e as ApiError).details]).toEqual(["push_relay_disallowed", { reason: "not_allowlisted" }]);
+      expect([(e as HttpError).code, (e as HttpError).details]).toEqual(["push_relay_disallowed", { reason: "not_allowlisted" }]);
     }
   });
 });

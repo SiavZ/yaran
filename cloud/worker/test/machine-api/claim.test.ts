@@ -11,12 +11,12 @@
  * └── test/phase06/fakes.ts
  * External: vitest
  *
- * Used by: entry point (vitest in the Workers pool, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { b64urlEncode, validate } from "@yaran/protocol";
 import { describe, expect, it } from "vitest";
-import { fakeAud, seedMachine } from "../phase06/fakes.ts";
+import { machineAud, machineRow, opsOf, seedMachine } from "../phase06/fakes.ts";
 import { approvePairing, claimBody, claimRequest, fixtureMachine, pairWorld } from "../pairing/pair-helpers.ts";
 
 const code = async (r: Response) => ((await r.json()) as { error: { code: string } }).error.code;
@@ -38,13 +38,13 @@ describe("POST /v1/machine/claim", () => {
       origin_port: 3890,
       owner_email: pw.user.email,
       user_slug: pw.user.slug,
-      access: { team_domain: "acme.cloudflareaccess.com", aud: fakeAud(machineId) },
+      access: { team_domain: "acme.cloudflareaccess.com", aud: await machineAud(pw.w, machineId) },
       org: { name: "Example Org", url: "https://cp.example.com" },
       protocol: 1,
     });
     const row = await pw.w.ctx.db.prepare("SELECT status, yaran_version, claimed_at FROM machines WHERE id = ?").bind(machineId).first();
     expect(row).toMatchObject({ status: "active", yaran_version: "0.42.0", claimed_at: pw.w.clock.now });
-    expect(pw.w.audit.at(-1)).toMatchObject({ action: "machine.claimed", actor: { kind: "machine", id: machineId } });
+    expect(pw.w.audit.find((a) => a.action === "machine.claimed")).toMatchObject({ actor: { kind: "machine", id: machineId } });
   });
 
   it("the code is single use: a second claim is pair_code_invalid", async () => {
@@ -108,14 +108,15 @@ describe("POST /v1/machine/claim", () => {
     expect(await code(res)).toBe(expected);
   });
 
-  it("a claim whose origin_port differs from authorize calls setOriginPort before answering", async () => {
+  it("a claim whose origin_port differs from authorize has 05 store and re-point it before answering", async () => {
     const pw = await pairWorld();
     const m = await fixtureMachine();
     const { code: c, machineId } = await approvePairing(pw, m);
     const res = await claimRequest(pw, m, claimBody(m, c, { origin_port: 4000 }));
     expect(res.status).toBe(200);
     expect(((await res.json()) as { origin_port: number }).origin_port).toBe(4000);
-    expect(pw.w.prov.calls.find((x) => x.fn === "setOriginPort")?.args).toEqual([machineId, 4000]);
+    expect(await machineRow(pw.w, machineId)).toMatchObject({ origin_port: 4000, ingress_origin_port: 4000 });
+    expect(pw.w.audit.find((a) => a.action === "machine.origin_changed")).toMatchObject({ target: { id: machineId }, detail: { old_port: 3890, new_port: 4000 } });
   });
 
   it("the same origin_port makes no setOriginPort call", async () => {
@@ -123,7 +124,7 @@ describe("POST /v1/machine/claim", () => {
     const m = await fixtureMachine();
     const { code: c } = await approvePairing(pw, m);
     await claimRequest(pw, m, claimBody(m, c));
-    expect(pw.w.prov.calls.some((x) => x.fn === "setOriginPort")).toBe(false);
+    expect(pw.w.audit.some((a) => a.action === "machine.origin_changed")).toBe(false);
   });
 
   it("Replace tears the old machine down only after the claim succeeds", async () => {
@@ -131,16 +132,15 @@ describe("POST /v1/machine/claim", () => {
     const old = await seedMachine(pw.w.ctx.db, pw.user, { name: "laptop" });
     const m = await fixtureMachine();
     const { code: c, machineId } = await approvePairing(pw, m, { replace_machine_id: old });
-    expect(pw.w.prov.calls.some((x) => x.fn === "startTeardown")).toBe(false);
+    expect(await opsOf(pw.w, old)).toEqual([]);
     // A failed claim leaves the old machine alone.
     await claimRequest(pw, m, claimBody(m, c, { code_verifier: b64urlEncode(new Uint8Array(32)) }));
-    expect(pw.w.prov.calls.some((x) => x.fn === "startTeardown")).toBe(false);
+    expect(await opsOf(pw.w, old)).toEqual([]);
     expect((await claimRequest(pw, m, claimBody(m, c))).status).toBe(200);
-    const fns = pw.w.prov.calls.map((x) => x.fn);
-    expect(fns.indexOf("startTeardown")).toBeGreaterThan(fns.lastIndexOf("fetchTunnelToken"));
-    expect(pw.w.prov.calls.find((x) => x.fn === "startTeardown")?.args).toEqual([old, "user_unpair"]);
-    const oldRow = await pw.w.ctx.db.prepare("SELECT status, replaced_by FROM machines WHERE id = ?").bind(old).first();
-    expect(oldRow).toMatchObject({ status: "revoking", replaced_by: machineId });
-    expect(pw.w.audit.map((a) => a.action).slice(-2)).toEqual(["machine.claimed", "machine.replaced"]);
+    expect((await opsOf(pw.w, old)).map((o) => o.kind)).toEqual(["teardown"]);
+    expect(await machineRow(pw.w, old)).toMatchObject({ revoke_reason: "user_unpair", replaced_by: machineId });
+    expect(["revoking", "revoked"]).toContain((await machineRow(pw.w, old))["status"]);
+    const actions = pw.w.audit.map((a) => a.action);
+    expect(actions.indexOf("machine.replaced")).toBeGreaterThan(actions.indexOf("machine.claimed"));
   });
 });

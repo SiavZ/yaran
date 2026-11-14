@@ -16,6 +16,7 @@
  * src/security/sanitize.ts
  * ├── src/log/logger.ts
  * ├── src/provisioning/context.ts
+ * ├── src/routes/phase06-context.ts
  * ├── src/scheduled/dispatcher.ts
  * └── test/sanitize.test.ts
  * <module-headers:end>

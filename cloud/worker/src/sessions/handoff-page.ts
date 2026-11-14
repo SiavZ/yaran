@@ -14,8 +14,8 @@
  * Uses:
  * src/sessions/handoff-page.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/seams/ui-kit.ts
- * └── src/sessions/handoff-params.ts
+ * ├── src/sessions/handoff-params.ts
+ * └── src/ui/kit.ts
  * External: none
  *
  * Used by:
@@ -24,7 +24,7 @@
  * <module-headers:end>
  */
 import { parseYaranAppUa, type ErrorCode } from "@yaran/protocol";
-import { button, chip, form, heading, notice, page, prose, type Html } from "../seams/ui-kit.ts";
+import { button, chip, form, heading, notice, page, prose, type Html } from "../ui/kit.ts";
 import type { HandoffGet } from "./handoff-params.ts";
 
 /** Android, iOS or iPadOS from a User-Agent, or null when unrecognised. */
