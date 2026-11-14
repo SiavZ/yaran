@@ -23,6 +23,7 @@
 		5A4E0C0D000000000000001D /* YaranCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0D000000000000001E /* YaranCore */; };
 		5A4E0C0D000000000000001F /* YaranCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0D0000000000000020 /* YaranCore */; };
 		5A4E0C0D0000000000000021 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0D0000000000000022 /* CapApp-SPM */; };
+		5A4E0C0F0000000000000001 /* MachineViewCore in Frameworks */ = {isa = PBXBuildFile; productRef = 5A4E0C0F0000000000000002 /* MachineViewCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -66,6 +67,7 @@
 			files = (
 				5A4E0C0D0000000000000021 /* CapApp-SPM in Frameworks */,
 				5A4E0C0D000000000000001D /* YaranCore in Frameworks */,
+				5A4E0C0F0000000000000001 /* MachineViewCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -159,6 +161,7 @@
 			packageProductDependencies = (
 				5A4E0C0D0000000000000022 /* CapApp-SPM */,
 				5A4E0C0D000000000000001E /* YaranCore */,
+				5A4E0C0F0000000000000002 /* MachineViewCore */,
 			);
 			productName = App;
 			productReference = 5A4E0C0D0000000000000026 /* App.app */;
@@ -215,6 +218,7 @@
 			packageReferences = (
 				5A4E0C0D000000000000003F /* XCLocalSwiftPackageReference "CapApp-SPM" */,
 				5A4E0C0D0000000000000040 /* XCLocalSwiftPackageReference "../../plugins/core/ios" */,
+				5A4E0C0F0000000000000003 /* XCLocalSwiftPackageReference "../../plugins/machine-view/ios/MachineViewCore" */,
 			);
 			productRefGroup = 5A4E0C0D0000000000000034 /* Products */;
 			projectDirPath = "";
@@ -612,6 +616,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../../plugins/core/ios;
 		};
+		5A4E0C0F0000000000000003 /* XCLocalSwiftPackageReference "../../plugins/machine-view/ios/MachineViewCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../plugins/machine-view/ios/MachineViewCore;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -629,6 +637,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5A4E0C0D0000000000000040 /* XCLocalSwiftPackageReference "../../plugins/core/ios" */;
 			productName = YaranCore;
+		};
+		5A4E0C0F0000000000000002 /* MachineViewCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5A4E0C0F0000000000000003 /* XCLocalSwiftPackageReference "../../plugins/machine-view/ios/MachineViewCore" */;
+			productName = MachineViewCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
