@@ -3,23 +3,23 @@
  *
  * <module-headers:begin>
  * Uses:
- * test/helpers/tree.ts
+ * test/node/helpers/tree.ts
  * └── scripts/assemble-deploy-tree.ts
  * External: node:fs, node:os, node:path, node:url
  *
  * Used by:
- * test/helpers/tree.ts
- * ├── test/deploy-tree.test.ts
- * └── test/update-job.test.ts
+ * test/node/helpers/tree.ts
+ * ├── test/node/deploy-tree.test.ts
+ * └── test/node/update-job.test.ts
  * <module-headers:end>
  */
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assemble } from "../../scripts/assemble-deploy-tree.ts";
+import { assemble } from "../../../scripts/assemble-deploy-tree.ts";
 
-export const WORKER = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+export const WORKER = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 export function fakeUiKit(): { tokens: string; font: string } {
   const dir = mkdtempSync(join(tmpdir(), "uikit-"));

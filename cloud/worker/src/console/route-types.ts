@@ -11,7 +11,8 @@
  * <module-headers:begin>
  * Uses:
  * src/console/route-types.ts
- * └── src/admin/ports.ts
+ * ├── src/admin/ports.ts
+ * └── src/env.ts
  * External: none
  *
  * Used by:
@@ -25,40 +26,28 @@
  * ├── src/console/admin-routes.ts
  * ├── src/console/routes.ts
  * ├── src/phase07.ts
+ * ├── src/routes/phase07-context.ts
  * ├── src/setup/routes.ts
  * ├── src/setup/steps/claim.ts
  * ├── test/console.test.ts
  * └── test/helpers/deps.ts
  * <module-headers:end>
  */
-import type {
-  AccessIdentityReader,
-  AuditWriter,
-  CfTransport,
-  D1Like,
-  DataKeySealer,
-  Identity,
-  PairingPort,
-  ProvisioningPort,
-  RateLimiter,
-} from "../admin/ports.ts";
+import type { Env } from "../env.ts";
+import type { AccessIdentityReader, AuditWriter, CfTransport, DataKeySealer, Identity, PairingPort, ProvisioningPort } from "../admin/ports.ts";
 
 export type RouteAuth = { kind: "public" } | { kind: "setup" } | { kind: "user" } | { kind: "admin" };
 
-export interface Phase07Env {
-  SETUP_CODE?: string;
-  DATA_KEY?: string;
-  CF_API_TOKEN?: string;
-}
+/** The Worker environment (04's `Env`): secrets, vars and bindings. */
+export type Phase07Env = Env;
 
 export interface Phase07Deps {
-  db: D1Like;
+  db: D1Database;
   env: Phase07Env;
   sealer: DataKeySealer;
   /** 04 `security/secrets.ts` DATA_KEY format check. */
   dataKeyValid(key: string): boolean;
   audit: AuditWriter;
-  rateLimit: RateLimiter;
   accessIdentity: AccessIdentityReader;
   /** 05's client bound to an explicit token (the probe runs before the token is stored). */
   cfFor(token: string): CfTransport;

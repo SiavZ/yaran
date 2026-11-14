@@ -16,6 +16,7 @@
  * src/setup/steps/access.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── src/admin/ports.ts
+ * ├── src/cloudflare/errors.ts
  * ├── src/cloudflare/setup-endpoints.ts
  * └── src/setup/wizard-state.ts
  * External: none
@@ -28,8 +29,9 @@
  * └── test/setup-steps.test.ts
  * <module-headers:end>
  */
+import { CfApiError } from "../../cloudflare/errors.ts";
 import type { Settings } from "@yaran/protocol";
-import { assertNever, isCfApiError, type CfTransport } from "../../admin/ports.ts";
+import { assertNever, type CfTransport } from "../../admin/ports.ts";
 import { access, idp, type CfAccessApp, type CfPolicy } from "../../cloudflare/setup-endpoints.ts";
 import type { SetupEvent } from "../wizard-state.ts";
 
@@ -110,7 +112,7 @@ export async function ensureAccess(cf: CfTransport, i: AccessInput): Promise<Set
     const app = await upsertApp(cf, i.accountId, apps, controlPlaneAppBody(i.host, i.sessionDuration, policy.id, true));
     return { kind: "access_ready", policy_id: policy.id, access_app_id: app.id, access_aud: app.aud, public_paths_mode: "overrides", bypass_app_ids: [] };
   } catch (e) {
-    if (!(isCfApiError(e) && e.kind === "invalid")) throw e;
+    if (!(e instanceof CfApiError && e.kind === "invalid")) throw e;
   }
   // G8 fallback: the main app without overrides, plus one bypass path app per public path.
   const app = await upsertApp(cf, i.accountId, apps, controlPlaneAppBody(i.host, i.sessionDuration, policy.id, false));

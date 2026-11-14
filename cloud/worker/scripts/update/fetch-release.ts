@@ -19,7 +19,7 @@
  * Used by:
  * scripts/update/fetch-release.ts
  * ├── scripts/update/update.ts
- * └── test/update-job.test.ts
+ * └── test/node/update-job.test.ts
  * <module-headers:end>
  */
 import { execFileSync } from "node:child_process";

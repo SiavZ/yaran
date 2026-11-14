@@ -24,11 +24,12 @@ const call = handler();
 describe("validation", () => {
   it("accepts the test secrets and reports each missing or malformed one", () => {
     expect(secretProblems(env)).toEqual([]);
+    // CF_API_TOKEN may be absent (setup keeps the token sealed in D1), never blank.
     expect(secretProblems({ ...env, CF_API_TOKEN: "", SETUP_CODE: "short", DATA_KEY: "!!!" })).toEqual([
-      { name: "CF_API_TOKEN", problem: "missing" },
       { name: "SETUP_CODE", problem: "malformed" },
       { name: "DATA_KEY", problem: "malformed" },
     ]);
+    expect(secretProblems({ ...env, CF_API_TOKEN: "   " })).toEqual([{ name: "CF_API_TOKEN", problem: "malformed" }]);
     expect(decodeDataKey(btoa("x".repeat(31)))).toBeNull();
     expect(decodeDataKey(btoa("x".repeat(32)))?.length).toBe(32);
     expect(decodeDataKey("a".repeat(64))?.length).toBe(48);
@@ -39,7 +40,6 @@ describe("refusal", () => {
   beforeAll(() => closeSetup());
   // The last row repeats a (secret, problem) pair: it is logged once per isolate, not per request.
   const variants: [string, Partial<Cloudflare.Env>, string, boolean][] = [
-    ["missing CF_API_TOKEN", { CF_API_TOKEN: undefined }, "CF_API_TOKEN", true],
     ["missing SETUP_CODE", { SETUP_CODE: undefined }, "SETUP_CODE", true],
     ["missing DATA_KEY", { DATA_KEY: undefined }, "DATA_KEY", true],
     ["short DATA_KEY", { DATA_KEY: btoa("short") }, "DATA_KEY", true],
@@ -58,10 +58,11 @@ describe("refusal", () => {
     for (const value of Object.values(patch)) if (value) expect(lines.join("\n")).not.toContain(value);
     spy.mockRestore();
   });
-  it("refuses setup routes too while setup is open", async () => {
+  it("lets the setup wizard explain a missing SETUP_CODE itself, and does nothing else", async () => {
     await openSetup();
-    const res = await call(new Request(`https://${CP_HOST}/setup`), { ...env, SETUP_CODE: undefined } as Cloudflare.Env);
+    const res = await call(new Request("https://yaran-cloud.acme.workers.dev/setup"), { ...env, SETUP_CODE: undefined } as Cloudflare.Env);
     expect(res.status).toBe(503);
+    expect(await res.text()).toContain("SETUP_CODE");
     await closeSetup();
   });
 });

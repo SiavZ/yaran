@@ -21,7 +21,8 @@
  * ├── src/setup/pages-steps.tsx
  * ├── src/setup/pages.tsx
  * ├── src/setup/routes.ts
- * └── test/ui-kit.test.tsx
+ * ├── src/ui/kit.ts
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
@@ -54,6 +55,8 @@ export interface ShellProps {
   nav?: readonly NavLink[];
   current?: string;
   banner?: Child;
+  /** False leaves out the enhancement script (06's consent pages run no script at all). */
+  script?: boolean;
   children?: Child;
 }
 
@@ -64,11 +67,13 @@ export function Shell(props: ShellProps) {
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="referrer" content="no-referrer" />
+        {/* same-origin, not no-referrer: under no-referrer a browser sends `Origin: null` on a
+            form POST, which the Origin check refuses (Fetch, request origin serialization). */}
+        <meta name="referrer" content="same-origin" />
         <title>{fullTitle}</title>
         <link rel="stylesheet" href="/console/tokens.css" />
         <link rel="stylesheet" href="/console/console.css" />
-        <script type="module" src="/console/enhance.js" />
+        {props.script !== false && <script type="module" src="/console/enhance.js" />}
       </head>
       <body>
         <a class="skip-link" href="#main">

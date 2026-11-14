@@ -15,7 +15,7 @@
  * Used by:
  * scripts/copy-ui-kit-assets.ts
  * ├── scripts/assemble-deploy-tree.ts
- * └── test/ui-kit.test.tsx
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";

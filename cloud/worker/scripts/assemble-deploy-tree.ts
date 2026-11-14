@@ -24,9 +24,9 @@
  *
  * Used by: entry point (CLI: npm run assemble-deploy-tree, run by Phase 18's release-cloud workflow)
  * scripts/assemble-deploy-tree.ts
- * ├── test/deploy-tree.test.ts
- * ├── test/helpers/tree.ts
- * └── test/update-job.test.ts
+ * ├── test/node/deploy-tree.test.ts
+ * ├── test/node/helpers/tree.ts
+ * └── test/node/update-job.test.ts
  * <module-headers:end>
  */
 import { execFileSync } from "node:child_process";

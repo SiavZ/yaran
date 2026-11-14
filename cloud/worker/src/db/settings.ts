@@ -16,19 +16,25 @@
  * Uses:
  * src/db/settings.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/setup-settings.ts
  * ├── src/db/client.ts
  * └── src/provisioning/settings.ts
  * External: none
  *
  * Used by:
  * src/db/settings.ts
+ * ├── src/admin/scheduled-jobs.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/admin/settings-store.ts
  * ├── src/auth/access-jwt.ts
  * ├── src/http/pipeline.ts
  * ├── src/provisioning/context.ts
  * ├── src/routes/phase06-context.ts
+ * ├── src/routes/phase07-context.ts
  * ├── src/scheduled/purge.ts
  * ├── src/security/data-key.ts
  * ├── test/data-key.test.ts
+ * ├── test/helpers/deps.ts
  * ├── test/helpers/seed.ts
  * ├── test/phase06/fakes.ts
  * ├── test/prov-context.test.ts
@@ -37,6 +43,7 @@
  * <module-headers:end>
  */
 import { validate, type Settings } from "@yaran/protocol";
+import { SETUP_INTERNAL_SETTINGS } from "../admin/setup-settings.ts";
 import { PROV_INTERNAL_SETTINGS } from "../provisioning/settings.ts";
 import { all, run, stmt } from "./client.ts";
 
@@ -65,14 +72,20 @@ export interface InternalSettings {
 /** Phase 05's internal rows, declared in `provisioning/settings.ts`. */
 export type ProvInternalSettings = { [K in keyof typeof PROV_INTERNAL_SETTINGS]: (typeof PROV_INTERNAL_SETTINGS)[K]["default"] };
 
-export type SettingValues = Settings & InternalSettings & ProvInternalSettings;
+/** Phase 07's internal rows, declared in `admin/setup-settings.ts`. */
+export type SetupInternalSettings = {
+  [K in keyof typeof SETUP_INTERNAL_SETTINGS]: (typeof SETUP_INTERNAL_SETTINGS)[K]["validate"] extends (v: unknown) => v is infer T ? T : never;
+};
+
+export type SettingValues = Settings & InternalSettings & ProvInternalSettings & SetupInternalSettings;
 export type SettingKey = keyof SettingValues;
 
 /** 02's defaults for the contract keys (see the `Settings` schema description). */
 export const DEFAULT_SETTINGS: Settings = {
   org_name: "yaran",
   session_duration: "24h",
-  pairing_policy: { mode: "everyone", emails: [], domains: [], access_group_ids: [] },
+  // A fresh org admits only the admins setup lists (07); the admin widens it in Settings.
+  pairing_policy: { mode: "allowlist", emails: [], domains: [], access_group_ids: [] },
   machine_cap_per_user: 10,
   device_cap_per_user: 10,
   push: { enabled: true, detail: "names", ttl_seconds: 3600, relay_allowed: true, allowed_relays: [] },
@@ -96,7 +109,7 @@ const str = (max: number) => (v: unknown) => typeof v === "string" && v.length >
 const int = (min: number, max: number) => (v: unknown) => Number.isInteger(v) && (v as number) >= min && (v as number) <= max;
 const re = (r: RegExp) => (v: unknown) => typeof v === "string" && r.test(v);
 
-const INTERNAL: { [K in keyof InternalSettings | keyof ProvInternalSettings]: Spec } = {
+const INTERNAL: { [K in keyof InternalSettings | keyof ProvInternalSettings | keyof SetupInternalSettings]: Spec } = {
   setup_state: { default: "open", valid: (v) => v === "open" || v === "closed", owner: "04/07" },
   instance_id: { default: null, valid: re(/^[0-9a-f]{8}$/), owner: "07" },
   account_id: { default: null, valid: str(64), owner: "07" },
@@ -120,6 +133,8 @@ const INTERNAL: { [K in keyof InternalSettings | keyof ProvInternalSettings]: Sp
   },
   ...(Object.fromEntries(Object.entries(PROV_INTERNAL_SETTINGS).map(([k, s]) => [k, { default: s.default, valid: s.validate, owner: s.owner }])) as unknown as
     { [K in keyof ProvInternalSettings]: Spec }),
+  ...(Object.fromEntries(Object.entries(SETUP_INTERNAL_SETTINGS).map(([k, s]) => [k, { default: s.default, valid: s.validate, owner: s.owner }])) as unknown as
+    { [K in keyof SetupInternalSettings]: Spec }),
 };
 
 const CONTRACT_KEYS = Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[];

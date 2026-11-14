@@ -16,7 +16,7 @@ from the `cloud-deploy` branch of [SiavZ/yaran](https://github.com/SiavZ/yaran).
 2. **Deploy** with the button, which asks for three secrets:
    - `CF_API_TOKEN`: the token from step 1 (you can also paste it on the setup page);
    - `SETUP_CODE`: at least 24 random characters, for example `openssl rand -base64 24`;
-   - `DATA_KEY`: at least 32 random bytes, for example `openssl rand -hex 32`. It encrypts
+   - `DATA_KEY`: at least 32 random bytes, for example `openssl rand -base64 32`. It encrypts
      the secrets the Worker stores. **Keep a copy**: a lost key means generating new push
      keys and registering every phone again.
 3. **Open `https://<worker>.<your-subdomain>.workers.dev/setup`** and enter the setup code.

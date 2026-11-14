@@ -15,11 +15,13 @@
  * ├── src/admin/ports.ts
  * ├── src/admin/settings-schema.ts
  * ├── src/admin/settings-store.ts
+ * ├── src/cloudflare/errors.ts
  * ├── src/console/route-types.ts
  * ├── src/console/ui/security-headers.ts
  * ├── src/console/ui/shell.tsx
+ * ├── src/http/host-guard.ts
+ * ├── src/security/rate-limit.ts
  * ├── src/setup/capability-probe.ts
- * ├── src/setup/host-lock.ts
  * ├── src/setup/pages-steps.tsx
  * ├── src/setup/pages.tsx
  * ├── src/setup/setup-gate.ts
@@ -40,16 +42,18 @@
  * └── test/setup-flow.test.ts
  * <module-headers:end>
  */
+import { CfApiError } from "../cloudflare/errors.ts";
 import { renderPage } from "../console/ui/shell.tsx";
 import { formOriginOk, htmlResponse, redirect } from "../console/ui/security-headers.ts";
 import type { RouteCtx, RouteRow } from "../console/route-types.ts";
 import { storeToken, storedCf } from "../admin/api-token.ts";
 import { readSettings } from "../admin/settings-schema.ts";
 import { writeKeys } from "../admin/settings-store.ts";
-import { assertNever, isCfApiError } from "../admin/ports.ts";
+import { assertNever } from "../admin/ports.ts";
 import { probeCapabilities, probePassed, resolveAccount } from "./capability-probe.ts";
-import { checkSetupCode, hasSetupSession, isLocked, issueSetupCookie, secretProblems } from "./setup-gate.ts";
-import { scriptNameFromHost } from "./host-lock.ts";
+import { checkSetupCode, hasSetupSession, isLocked, issueSetupCookie, secretProblems, sha256Hex } from "./setup-gate.ts";
+import { scriptNameFromHost } from "../http/host-guard.ts";
+import { setupAttempt } from "../security/rate-limit.ts";
 import { CodePage, LockedPage, SecretsPage, TokenPage } from "./pages.tsx";
 import { AccessPage, ClaimInvalidPage, ClaimPage, DomainPage, DonePage, IdpPage, KeysPage, OrgPage, ZonePage, type StepProblem } from "./pages-steps.tsx";
 import { advance, loadRecord } from "./steps/common.ts";
@@ -108,7 +112,7 @@ async function showStep(ctx: RouteCtx, record: SetupRecord, problem?: StepProble
         return assertNever(record.step);
     }
   } catch (e) {
-    if (isCfApiError(e) && problem !== "cloudflare_error") return showStep(ctx, record, "cloudflare_error");
+    if (e instanceof CfApiError && problem !== "cloudflare_error") return showStep(ctx, record, "cloudflare_error");
     throw e;
   }
 }
@@ -123,8 +127,12 @@ async function getSetup(ctx: RouteCtx): Promise<Response> {
 async function postCode(ctx: RouteCtx): Promise<Response> {
   const g = await gate(ctx, false);
   if (g instanceof Response) return g;
+  // 04's attempt policy (5 per 15 min per IP, 30 a day) runs before the code check, whose
+  // own lockout after 20 wrong codes stays: the stricter of the two always applies.
   const ip = ctx.request.headers.get("CF-Connecting-IP") ?? "unknown";
-  if (!(await ctx.deps.rateLimit("setup", ip))) return page(CodePage({ error: "rate_limited" }), 429);
+  const attempt = await setupAttempt(ctx.deps.db, ip, (await sha256Hex(g.code)).slice(0, 16), Math.floor(ctx.deps.now().getTime() / 1000));
+  if (attempt.kind === "locked") return page(LockedPage(), 403);
+  if (attempt.kind === "limited") return page(CodePage({ error: "rate_limited" }), 429, { "Retry-After": String(Math.max(1, attempt.retryAfter)) });
   const input = String((await ctx.request.formData()).get("code") ?? "");
   const verdict = await checkSetupCode(ctx.deps.db, input, g.code, ctx.deps.now());
   if (verdict === "setup_locked") return page(LockedPage(), 403);
@@ -172,7 +180,7 @@ function stepRoute(path: string, run: StepRun): RouteRow {
       try {
         out = await run(ctx, g.record, await ctx.request.formData());
       } catch (e) {
-        if (!isCfApiError(e)) throw e;
+        if (!(e instanceof CfApiError)) throw e;
         out = { ok: false, problem: "cloudflare_error" };
       }
       if (out.ok === "stay") return redirect("/setup");

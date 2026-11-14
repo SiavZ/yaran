@@ -21,6 +21,7 @@
  *
  * Used by:
  * src/routes/call.ts
+ * ├── src/admin/pairing-service.ts
  * ├── src/cloudflare/access-sessions.ts
  * ├── src/devices/devices-repo.ts
  * ├── src/devices/install-id.ts

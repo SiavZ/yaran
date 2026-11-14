@@ -24,7 +24,7 @@
  * ├── src/console/user-pages.tsx
  * ├── src/setup/pages-steps.tsx
  * ├── src/setup/pages.tsx
- * └── test/ui-kit.test.tsx
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 import type { Child } from "hono/jsx";

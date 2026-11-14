@@ -21,7 +21,7 @@
  * src/setup/pages-steps.tsx
  * ├── src/console/admin-pages-2.tsx
  * ├── src/setup/routes.ts
- * └── test/ui-kit.test.tsx
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 import { Button, Chip, CopyField, Field, LinkButton, Notice, PostForm } from "../console/ui/components.tsx";

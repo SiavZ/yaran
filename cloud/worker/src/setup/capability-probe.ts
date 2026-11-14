@@ -13,6 +13,7 @@
  * Uses:
  * src/setup/capability-probe.ts
  * ├── src/admin/ports.ts
+ * ├── src/cloudflare/errors.ts
  * ├── src/cloudflare/setup-endpoints.ts
  * └── src/setup/token-template.ts
  * External: none
@@ -26,7 +27,8 @@
  * └── test/setup-steps.test.ts
  * <module-headers:end>
  */
-import { assertNever, isCfApiError, type CfTransport } from "../admin/ports.ts";
+import { CfApiError } from "../cloudflare/errors.ts";
+import { assertNever, type CfTransport } from "../admin/ports.ts";
 import { accounts, access, idp, tunnels, workers, zones } from "../cloudflare/setup-endpoints.ts";
 import { PERMISSIONS, type PermissionRow } from "./token-template.ts";
 
@@ -75,8 +77,8 @@ export async function probeCapabilities(cf: CfTransport, accountId: string, scri
       await runProbe(cf, permission.probe as ProbeKey, accountId, scriptName);
       out.push({ permission, outcome: "ok" });
     } catch (e) {
-      if (isCfApiError(e) && e.kind === "auth") out.push({ permission, outcome: "missing" });
-      else out.push({ permission, outcome: "unchecked", reason: isCfApiError(e) ? `${e.kind} (HTTP ${e.status})` : "network error" });
+      if (e instanceof CfApiError && e.kind === "auth") out.push({ permission, outcome: "missing" });
+      else out.push({ permission, outcome: "unchecked", reason: e instanceof CfApiError ? `${e.kind} (HTTP ${e.status})` : "network error" });
     }
   }
   return out;

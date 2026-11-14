@@ -10,7 +10,6 @@
  * <module-headers:begin>
  * Uses:
  * src/setup/steps/common.ts
- * ├── src/admin/ports.ts
  * ├── src/admin/settings-store.ts
  * └── src/setup/wizard-state.ts
  * External: none
@@ -27,13 +26,12 @@
  * └── test/setup-flow.test.ts
  * <module-headers:end>
  */
-import type { D1Like } from "../../admin/ports.ts";
 import { readKey, writeStatements } from "../../admin/settings-store.ts";
 import { INITIAL_SETUP, reduce, type SetupEvent, type SetupRecord } from "../wizard-state.ts";
 
 export const RECORD_KEY = "setup_wizard";
 
-export async function loadRecord(db: D1Like): Promise<SetupRecord> {
+export async function loadRecord(db: D1Database): Promise<SetupRecord> {
   return (await readKey<SetupRecord>(db, RECORD_KEY)) ?? INITIAL_SETUP;
 }
 
@@ -54,7 +52,7 @@ export function mirroredKeys(r: SetupRecord): Record<string, unknown> {
   return out;
 }
 
-export async function advance(db: D1Like, record: SetupRecord, event: SetupEvent, now: Date): Promise<{ ok: true; record: SetupRecord } | { ok: false; reason: string }> {
+export async function advance(db: D1Database, record: SetupRecord, event: SetupEvent, now: Date): Promise<{ ok: true; record: SetupRecord } | { ok: false; reason: string }> {
   const t = reduce(record, event);
   if (!t.ok) return t;
   await db.batch(writeStatements(db, { [RECORD_KEY]: t.record, ...mirroredKeys(t.record) }, "setup", now));

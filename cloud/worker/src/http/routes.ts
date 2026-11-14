@@ -19,6 +19,7 @@
  * src/http/routes.ts
  * ├── src/http/context.ts
  * ├── src/http/responses.ts
+ * ├── src/phase07.ts
  * └── src/routes/pairing-and-sessions.ts
  * External: none
  *
@@ -29,11 +30,14 @@
  * ├── src/http/pipeline.ts
  * ├── src/http/router.ts
  * ├── src/index.ts
+ * ├── src/phase07.ts
  * ├── src/routes/call.ts
  * ├── src/routes/pairing-and-sessions.ts
  * ├── src/routes/phase06-context.ts
+ * ├── src/routes/phase07-context.ts
  * ├── src/security/rate-limit.ts
  * ├── test/body.test.ts
+ * ├── test/helpers/deps.ts
  * ├── test/helpers/matrix.ts
  * ├── test/helpers/worker.ts
  * └── test/no-secret-leak.test.ts
@@ -41,6 +45,7 @@
  */
 import type { RequestContext } from "./context.ts";
 import type { ResponseKind } from "./responses.ts";
+import { PHASE07_ROUTE_TABLE } from "../phase07.ts";
 import { PHASE06_ROUTE_TABLE } from "../routes/pairing-and-sessions.ts";
 
 export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -72,4 +77,4 @@ export interface Route {
 export const DEFAULT_BODY_LIMIT = 64 * 1024;
 
 /** Every production route. Phases 05–08 append one spread line each. */
-export const ROUTES: readonly Route[] = [...PHASE06_ROUTE_TABLE];
+export const ROUTES: readonly Route[] = [...PHASE06_ROUTE_TABLE, ...PHASE07_ROUTE_TABLE];

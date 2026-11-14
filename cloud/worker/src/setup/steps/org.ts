@@ -9,6 +9,7 @@
  * Uses:
  * src/setup/steps/org.ts
  * ├── src/admin/ports.ts
+ * ├── src/cloudflare/errors.ts
  * ├── src/cloudflare/setup-endpoints.ts
  * └── src/setup/wizard-state.ts
  * External: none
@@ -19,7 +20,8 @@
  * └── test/setup-steps.test.ts
  * <module-headers:end>
  */
-import { isCfApiError, type CfTransport } from "../../admin/ports.ts";
+import { CfApiError } from "../../cloudflare/errors.ts";
+import { type CfTransport } from "../../admin/ports.ts";
 import { org } from "../../cloudflare/setup-endpoints.ts";
 import type { SetupEvent } from "../wizard-state.ts";
 
@@ -37,7 +39,7 @@ export async function readOrg(cf: CfTransport, accountId: string): Promise<OrgOu
   try {
     return fromOrg((await org.get(cf, accountId)).auth_domain) ?? { ok: false, problem: "no_org" };
   } catch (e) {
-    if (isCfApiError(e) && e.kind === "not_found") return { ok: false, problem: "no_org" };
+    if (e instanceof CfApiError && e.kind === "not_found") return { ok: false, problem: "no_org" };
     throw e;
   }
 }
@@ -48,7 +50,7 @@ export async function createOrg(cf: CfTransport, accountId: string, teamName: st
     const created = await org.create(cf, accountId, orgName, `${teamName}.cloudflareaccess.com`);
     return fromOrg(created.auth_domain) ?? { ok: false, problem: "onboarding_required" };
   } catch (e) {
-    if (isCfApiError(e) && (e.kind === "auth" || e.kind === "invalid" || e.kind === "conflict")) return { ok: false, problem: "onboarding_required" };
+    if (e instanceof CfApiError && (e.kind === "auth" || e.kind === "invalid" || e.kind === "conflict")) return { ok: false, problem: "onboarding_required" };
     throw e;
   }
 }

@@ -22,19 +22,20 @@
  * <module-headers:end>
  */
 import { b64urlEncode } from "@yaran/protocol";
-import type { DataKeySealer, D1Like } from "../../admin/ports.ts";
+import type { DataKeySealer } from "../../admin/ports.ts";
 import { readKey, writeKeys } from "../../admin/settings-store.ts";
 import type { SetupEvent } from "../wizard-state.ts";
 
 export const VAPID_PUBLIC_KEY = "vapid_public_key";
 export const VAPID_PRIVATE_KEY = "vapid_private_key_enc";
-export const VAPID_AAD = "settings.vapid_private_key_enc:org";
+/** 04's settings AAD rule, so the reseal task can reopen it (08 opens it to sign). */
+export const VAPID_AAD = { table: "settings", column: "value", rowId: VAPID_PRIVATE_KEY } as const;
 
-export async function ensureVapidKey(db: D1Like, sealer: DataKeySealer, now: Date): Promise<SetupEvent> {
+export async function ensureVapidKey(db: D1Database, sealer: DataKeySealer, now: Date): Promise<SetupEvent> {
   const existing = await readKey<string>(db, VAPID_PUBLIC_KEY);
   if (existing && (await readKey<string>(db, VAPID_PRIVATE_KEY))) return { kind: "keys_ready", vapid_public_key: existing };
   const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
-  const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const raw = new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer);
   const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
   const publicKey = b64urlEncode(raw);
   await writeKeys(db, { [VAPID_PUBLIC_KEY]: publicKey, [VAPID_PRIVATE_KEY]: await sealer.seal("vapid", VAPID_AAD, JSON.stringify(jwk)) }, "setup", now);

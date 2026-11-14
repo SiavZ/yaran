@@ -12,6 +12,7 @@
  * ├── scripts/assemble-deploy-tree.ts
  * ├── src/admin/audit-query.ts
  * ├── src/admin/health.ts
+ * ├── src/admin/scheduled-jobs.ts
  * ├── src/admin/users.ts
  * ├── src/setup/steps/claim.ts
  * └── src/update/update-checker.ts

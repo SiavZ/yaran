@@ -2,5 +2,5 @@
 CF_API_TOKEN=
 # Setup code: at least 24 random characters, e.g. `openssl rand -base64 24`. You type it once, on the setup page.
 SETUP_CODE=
-# Data key: at least 32 random bytes, e.g. `openssl rand -hex 32`. Encrypts the secrets the Worker stores; keep a copy.
+# Data key: at least 32 random bytes, e.g. `openssl rand -base64 32`. Encrypts the secrets the Worker stores; keep a copy.
 DATA_KEY=

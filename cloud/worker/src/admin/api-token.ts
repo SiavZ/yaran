@@ -12,6 +12,7 @@
  * src/admin/api-token.ts
  * ├── src/admin/ports.ts
  * ├── src/admin/settings-store.ts
+ * ├── src/admin/setup-settings.ts
  * ├── src/console/route-types.ts
  * └── src/setup/capability-probe.ts
  * External: none
@@ -29,8 +30,7 @@ import type { Phase07Deps } from "../console/route-types.ts";
 import { readKey, writeKeys } from "./settings-store.ts";
 import { probeCapabilities, probePassed, type ProbeRow } from "../setup/capability-probe.ts";
 
-const KEY = "cf_api_token_enc";
-const AAD = "settings.cf_api_token_enc:org";
+import { API_TOKEN_AAD as AAD, API_TOKEN_KEY as KEY } from "./setup-settings.ts";
 
 export async function storeToken(deps: Phase07Deps, token: string, actor: string): Promise<void> {
   await writeKeys(deps.db, { [KEY]: await deps.sealer.seal("cf_api_token", AAD, token) }, actor, deps.now());

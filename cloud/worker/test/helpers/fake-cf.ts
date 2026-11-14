@@ -11,6 +11,7 @@
  * Uses:
  * test/helpers/fake-cf.ts
  * ├── src/admin/ports.ts
+ * ├── src/cloudflare/errors.ts
  * └── src/cloudflare/setup-endpoints.ts
  * External: none
  *
@@ -20,17 +21,10 @@
  * └── test/setup-steps.test.ts
  * <module-headers:end>
  */
-import type { CfErrorKind, CfTransport } from "../../src/admin/ports.ts";
+import type { CfTransport } from "../../src/admin/ports.ts";
+import { CfApiError, type CfErrorKind } from "../../src/cloudflare/errors.ts";
 import type { CfAccessApp, CfIdp, CfPolicy, CfWorkerDomain } from "../../src/cloudflare/setup-endpoints.ts";
 
-export class FakeCfError extends Error {
-  constructor(
-    readonly kind: CfErrorKind,
-    readonly status: number,
-  ) {
-    super(`fake ${kind}`);
-  }
-}
 
 const STATUS: Record<CfErrorKind, number> = { auth: 403, not_found: 404, conflict: 409, invalid: 400, rate_limited: 429, transient: 503 };
 
@@ -66,7 +60,7 @@ export class FakeCloudflare {
     const call = `${method} ${path.split("?")[0]}`;
     this.calls.push(call);
     if (body !== undefined) this.bodies.push({ call, body });
-    for (const [prefix, kind] of this.faults) if (call.startsWith(prefix)) throw new FakeCfError(kind, STATUS[kind]);
+    for (const [prefix, kind] of this.faults) if (call.startsWith(prefix)) throw new CfApiError(kind, STATUS[kind], call);
     const b = (body ?? {}) as Record<string, unknown>;
     const q = new URLSearchParams(path.split("?")[1] ?? "");
     const p = path.split("?")[0]!.replace(/^\/accounts\/[^/]+/, "/acct");
@@ -76,7 +70,7 @@ export class FakeCloudflare {
     if (/^\/zones\/[^/]+\/dns_records$/.test(p)) return this.dns.filter((r) => !q.get("name") || r.name === q.get("name"));
     if (p === "/acct/access/organizations") {
       if (method === "POST") return (this.org = { auth_domain: String(b.auth_domain) });
-      if (!this.org) throw new FakeCfError("not_found", 404);
+      if (!this.org) throw new CfApiError("not_found", 404, call);
       return this.org;
     }
     if (p === "/acct/workers/domains") {
@@ -106,7 +100,7 @@ export class FakeCloudflare {
     if (p.startsWith("/acct/access/apps")) {
       if (method !== "GET") {
         const overrides = (b.destinations as { overrides?: unknown[] }[] | undefined)?.some((d) => d.overrides);
-        if (overrides && this.faults.has("overrides")) throw new FakeCfError("invalid", 400);
+        if (overrides && this.faults.has("overrides")) throw new CfApiError("invalid", 400, call);
       }
       return this.upsert(this.apps, method, p, b, "app");
     }

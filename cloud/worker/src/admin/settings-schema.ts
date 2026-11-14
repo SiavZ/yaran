@@ -14,27 +14,23 @@
  * Uses:
  * src/admin/settings-schema.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/admin/ports.ts
- * └── src/admin/settings-store.ts
+ * └── src/db/settings.ts
  * External: none
  *
  * Used by:
  * src/admin/settings-schema.ts
  * ├── src/admin-api/routes.ts
  * ├── src/admin/health.ts
- * ├── src/admin/scheduled-jobs.ts
  * ├── src/admin/settings-apply.ts
  * ├── src/console/admin-pages-2.tsx
  * ├── src/console/admin-routes.ts
  * ├── src/console/routes.ts
- * ├── src/phase07.ts
  * ├── src/setup/routes.ts
  * └── test/admin-services.test.ts
  * <module-headers:end>
  */
 import { validate, type Settings, type ValidationResult } from "@yaran/protocol";
-import type { D1Like } from "./ports.ts";
-import { readKeys } from "./settings-store.ts";
+import { DEFAULT_SETTINGS } from "../db/settings.ts";
 
 export type FieldKind = "text" | "number" | "nullable_number" | "checkbox" | "select" | "lines";
 
@@ -71,32 +67,10 @@ export const SETTINGS_FIELDS: readonly SettingField[] = [
   { path: "deployer_repo_url", label: "Your deploy repository", hint: "The https URL of the repository the Deploy button created, so Updates can link its update workflow. Empty for none.", kind: "text" },
 ];
 
-/** Defaults for a fresh org; setup overwrites org_name and the allowlist. */
-export function defaultSettings(orgName = "yaran", adminEmail?: string): Settings {
-  return {
-    org_name: orgName,
-    session_duration: "24h",
-    pairing_policy: { mode: "allowlist", emails: adminEmail ? [adminEmail] : [], domains: [], access_group_ids: [] },
-    machine_cap_per_user: 10,
-    device_cap_per_user: 10,
-    push: { enabled: true, detail: "names", ttl_seconds: 3600, relay_allowed: true, allowed_relays: [] },
-    stale_machine_policy: { notify_after_days: 30, revoke_after_days: null },
-    audit_retention_days: 365,
-    quota_limits: { access_apps: 500, access_policies: 500, tunnels: 1000 },
-    orphan_cleanup: "delete",
-    deployer_repo_url: null,
-  };
-}
+export const SETTINGS_KEYS = Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[];
 
-export const SETTINGS_KEYS = Object.keys(defaultSettings()) as (keyof Settings)[];
-
-/** `settings.read()`: the stored contract settings, defaults filling missing rows. */
-export async function readSettings(db: D1Like): Promise<Settings> {
-  const stored = await readKeys(db, SETTINGS_KEYS);
-  const merged: Record<string, unknown> = { ...defaultSettings() };
-  for (const [k, v] of stored) merged[k] = v;
-  return merged as unknown as Settings;
-}
+/** `settings.read()`: 04's stored contract settings, 02's defaults filling missing rows. */
+export { readContractSettings as readSettings } from "../db/settings.ts";
 
 export function getPath(obj: unknown, path: string): unknown {
   return path.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), obj);

@@ -18,7 +18,7 @@
  *
  * Used by: entry point (CLI: npm run update in the deploy tree, and its yaran-cloud-update workflow)
  * scripts/update/update.ts
- * └── test/update-job.test.ts
+ * └── test/node/update-job.test.ts
  * <module-headers:end>
  */
 import { execFileSync } from "node:child_process";

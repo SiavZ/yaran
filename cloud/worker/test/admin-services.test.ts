@@ -16,7 +16,7 @@
  * └── test/helpers/deps.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { describe, expect, test } from "vitest";
@@ -28,7 +28,7 @@ import { getPath, parseSettingsForm, readSettings, SETTINGS_FIELDS, validateSett
 import { writeKeys } from "../src/admin/settings-store.ts";
 import { patchUser } from "../src/admin/users.ts";
 import { advance } from "../src/setup/steps/common.ts";
-import { seedUser, world, type TestWorld } from "./helpers/deps.ts";
+import { closedOrg, DEVICE_ID, MACHINE_ID, seedDevice, seedMachine, seedUser, type TestWorld, world } from "./helpers/deps.ts";
 
 /** The form a browser would submit for a settings object. */
 function formFor(value: unknown): FormData {
@@ -63,18 +63,19 @@ async function setupDone(w: TestWorld) {
 
 describe("saving settings", () => {
   test("validates first, stores, audits, and applies the policy and session side effects", async () => {
-    const w = world();
+    const w = await world();
     await setupDone(w);
     const next: Settings = { ...(await readSettings(w.db)), session_duration: "12h", pairing_policy: { mode: "allowlist", emails: ["bob@example.org"], domains: [], access_group_ids: [] } };
     const out = await saveSettings(w.deps, { user_id: "u1", email: "ada@example.org", role: "admin" }, next);
     expect(out).toEqual({ ok: true, changed: ["session_duration", "pairing_policy"], effects: [{ what: "pairing_policy", ok: true }, { what: "session_duration", ok: true }] });
     expect((await readSettings(w.db)).session_duration).toBe("12h");
-    expect(w.calls).toContain("session 12h");
+    // The session change asks 05 for a reconcile, whose drift pass re-applies the apps.
+    expect((await w.db.prepare("SELECT action FROM audit_log WHERE action = 'machine.reconciled'").all()).results).toHaveLength(1);
     expect(w.cf.policies[0]!.include).toEqual([{ email: { email: "ada@example.org" } }, { email: { email: "bob@example.org" } }]);
     expect(w.audits).toMatchObject([{ action: "settings.updated", detail: { changed: ["session_duration", "pairing_policy"] } }]);
   });
   test("refuses invalid settings and everyone-with-One-time-PIN, saving nothing", async () => {
-    const w = world();
+    const w = await world();
     await setupDone(w);
     expect((await saveSettings(w.deps, { user_id: "u1", email: "a@b.c", role: "admin" }, { org_name: "x" })).ok).toBe(false);
     w.cf.idps.push({ id: "otp", name: "One-time PIN", type: "onetimepin" });
@@ -89,7 +90,7 @@ describe("saving settings", () => {
 describe("users", () => {
   const actor = { user_id: "u-admin", email: "ada@example.org", role: "admin" as const };
   test("refuses demoting or disabling the last active admin", async () => {
-    const w = world();
+    const w = await world();
     const ada = await seedUser(w, "ada@example.org", "admin");
     expect(await patchUser(w.deps, actor, ada, { role: "user" })).toEqual({ ok: false, code: "last_admin" });
     expect(await patchUser(w.deps, actor, ada, { disabled: true })).toEqual({ ok: false, code: "last_admin" });
@@ -98,15 +99,20 @@ describe("users", () => {
     expect(w.audits.map((a) => a.action)).toEqual(["user.role_changed"]);
   });
   test("disable with revoke_all tears down machines, then phones, then sessions", async () => {
-    const w = world();
+    const w = await world();
+    await closedOrg(w);
     const id = await seedUser(w, "ada@example.org");
+    await seedMachine(w);
+    await seedDevice(w);
     const out = await patchUser(w.deps, actor, id, { disabled: true, revoke_all: true });
     expect(out.ok && out.user.disabled).toBe(true);
-    expect(w.calls).toEqual(["teardown 00000000-0000-4000-8000-000000000101 user_disabled", "revoke-all-devices 00000000-0000-4000-8000-0000000000a1", "revoke-sessions ada@example.org"]);
+    expect(await w.db.prepare("SELECT revoke_reason FROM machines WHERE id = ?").bind(MACHINE_ID).first()).toEqual({ revoke_reason: "user_disabled" });
+    expect((await w.db.prepare("SELECT revoked_at FROM devices WHERE id = ?").bind(DEVICE_ID).first<{ revoked_at: number | null }>())!.revoked_at).not.toBeNull();
+    expect(w.cf.calls).toContain("POST /accounts/acc1/access/organizations/revoke_user");
     expect(w.audits).toMatchObject([{ action: "user.disabled", detail: { revoke_all: true } }]);
   });
   test("revoke_all without disabled is refused", async () => {
-    const w = world();
+    const w = await world();
     const id = await seedUser(w, "ada@example.org");
     expect(await patchUser(w.deps, actor, id, { revoke_all: true })).toEqual({ ok: false, code: "validation_failed" });
   });
@@ -126,7 +132,7 @@ describe("audit", () => {
     }
   }
   test("pages newest first with a stable cursor and maps to AuditEntry", async () => {
-    const w = world();
+    const w = await world();
     await seedAudit(w);
     const p1 = await queryAudit(w.db, {}, 2);
     expect(p1.items.map((e) => e.id)).toEqual(["a4", "a3"]);
@@ -137,7 +143,7 @@ describe("audit", () => {
     expect(p2.next_cursor).toBeNull();
   });
   test("filters by actor email, action and date range, and exports the filter as JSON Lines", async () => {
-    const w = world();
+    const w = await world();
     await seedAudit(w);
     expect((await queryAudit(w.db, { actor: "Ada@example.org" }, 10)).items.map((e) => e.id)).toEqual(["a3", "a1"]);
     expect((await queryAudit(w.db, { action: "machine.revoked" }, 10)).items.map((e) => e.id)).toEqual(["a2"]);
@@ -146,16 +152,16 @@ describe("audit", () => {
     expect(lines).toEqual(["a3", "a1"]);
   });
   test("the retention sweep deletes only rows older than the setting", async () => {
-    const w = world();
+    const w = await world();
     await seedAudit(w);
     const now = new Date((300 + 30 * 86_400) * 1000);
-    expect(await sweepAudit(w.db, 30, now)).toBe(2);
+    expect(await sweepAudit(w.db, 30, now, 500)).toBe(2);
     expect((await queryAudit(w.db, {}, 10)).items.map((e) => e.id)).toEqual(["a4", "a3"]);
   });
 });
 
 test("readSettings fills missing rows with defaults", async () => {
-  const w = world();
+  const w = await world();
   await writeKeys(w.db, { org_name: "Acme" }, "t", w.clock.now);
   const s = await readSettings(w.db);
   expect(s.org_name).toBe("Acme");

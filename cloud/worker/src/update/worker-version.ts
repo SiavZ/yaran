@@ -11,7 +11,9 @@
  *
  * Used by:
  * src/update/worker-version.ts
- * └── src/phase07.ts
+ * ├── src/routes/meta.ts
+ * ├── src/routes/phase07-context.ts
+ * └── test/me/meta.test.ts
  * <module-headers:end>
  */
 export const WORKER_VERSION = "0.0.0-dev";

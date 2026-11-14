@@ -16,7 +16,9 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx",
     "allowJs": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs", "worker-configuration.d.ts", "vitest.config.ts", "eslint.config.js"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx", "scripts/**/*.mjs", "scripts/**/*.ts", "worker-configuration.d.ts", "vitest.config.ts", "eslint.config.js"]
 }

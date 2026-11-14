@@ -9,18 +9,21 @@
  * ├── cloud/protocol/fixtures/api/ReleaseManifest.json
  * ├── src/update/release-manifest.ts
  * ├── src/update/update-checker.ts
- * └── test/helpers/d1.ts
- * External: vitest
+ * └── test/helpers/deps.ts
+ * External: cloudflare:test, vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import fixtures from "@yaran/protocol/fixtures/api/ReleaseManifest.json" with { type: "json" };
 import { compareSemver, newestTrainRelease, parseManifest, RAW_MANIFEST_URL, RELEASES_API_URL } from "../src/update/release-manifest.ts";
 import { checkForUpdate, maybeCheckForUpdate, readUpdateStatus } from "../src/update/update-checker.ts";
 import { validate } from "@yaran/protocol";
-import { testDb } from "./helpers/d1.ts";
+import { env } from "cloudflare:test";
+import { wipe } from "./helpers/deps.ts";
+
+beforeEach(wipe);
 
 export const MANIFEST = fixtures.valid[0]!.value;
 
@@ -54,7 +57,7 @@ function fetcher(routes: Record<string, () => Response>, seen: string[] = []): t
   }) as typeof fetch;
 }
 
-const deps = (f: typeof fetch, now = new Date("2026-11-14T12:00:00Z")) => ({ db: testDb(), fetch: f, now: () => now, workerVersion: "1.0.0" });
+const deps = (f: typeof fetch, now = new Date("2026-11-14T12:00:00Z")) => ({ db: env.DB, fetch: f, now: () => now, workerVersion: "1.0.0" });
 
 describe("update checker", () => {
   test("prefers the raw manifest", async () => {
@@ -82,6 +85,7 @@ describe("update checker", () => {
     const s = await checkForUpdate(d);
     expect(s.error).toMatch(/network down/);
     expect(s).toMatchObject({ latest: "1.2.0", update_available: true });
+    await wipe(); // a fresh database
     const fresh = await readUpdateStatus(deps(fetcher({})));
     expect(fresh).toMatchObject({ latest: null, update_available: false, error: "not checked yet" });
   });
@@ -93,7 +97,7 @@ describe("update checker", () => {
   test("checks at most once a day (injected clock)", async () => {
     const seen: string[] = [];
     let now = new Date("2026-11-14T12:00:00Z");
-    const d = { db: testDb(), fetch: fetcher({ [RAW_MANIFEST_URL]: () => Response.json(MANIFEST) }, seen), now: () => now, workerVersion: "1.0.0" };
+    const d = { db: env.DB, fetch: fetcher({ [RAW_MANIFEST_URL]: () => Response.json(MANIFEST) }, seen), now: () => now, workerVersion: "1.0.0" };
     expect(await maybeCheckForUpdate(d)).not.toBeNull();
     now = new Date("2026-11-15T11:59:00Z");
     expect(await maybeCheckForUpdate(d)).toBeNull();

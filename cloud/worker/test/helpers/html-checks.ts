@@ -10,7 +10,7 @@
  * Used by:
  * test/helpers/html-checks.ts
  * ├── test/console.test.ts
- * └── test/ui-kit.test.tsx
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 export function cspViolations(html: string): string[] {

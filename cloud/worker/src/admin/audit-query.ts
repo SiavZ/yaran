@@ -11,21 +11,20 @@
  * Uses:
  * src/admin/audit-query.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/admin/ports.ts
  * └── src/admin/wire-time.ts
  * External: none
  *
  * Used by:
  * src/admin/audit-query.ts
  * ├── src/admin-api/routes.ts
- * ├── src/admin/scheduled-jobs.ts
  * ├── src/console/admin-pages-2.tsx
  * ├── src/console/admin-routes.ts
- * └── test/admin-services.test.ts
+ * ├── src/scheduled/purge.ts
+ * ├── test/admin-services.test.ts
+ * └── test/audit.test.ts
  * <module-headers:end>
  */
 import type { AuditEntry } from "@yaran/protocol";
-import type { D1Like } from "./ports.ts";
 import { wireTime } from "./wire-time.ts";
 
 export interface AuditFilter {
@@ -77,7 +76,7 @@ function splitTarget(target: string | null | undefined): [string | null, string 
   return [kind || null, rest.length ? rest.join(":") : null];
 }
 
-export async function queryAudit(db: D1Like, f: AuditFilter, limit: number, cursor?: string | null): Promise<{ items: AuditEntry[]; next_cursor: string | null }> {
+export async function queryAudit(db: D1Database, f: AuditFilter, limit: number, cursor?: string | null): Promise<{ items: AuditEntry[]; next_cursor: string | null }> {
   const [cAt, cId] = cursor ? [Number(cursor.split(".")[0]), cursor.slice(cursor.indexOf(".") + 1)] : [null, null];
   const [tKind, tId] = splitTarget(f.target);
   const actor = f.actor?.toLowerCase() ?? null;
@@ -100,7 +99,7 @@ export async function queryAudit(db: D1Like, f: AuditFilter, limit: number, curs
 }
 
 /** Every matching entry as JSON Lines, a page at a time; `maxRows` bounds one export. */
-export async function exportAuditJsonl(db: D1Like, f: AuditFilter, maxRows = 50_000): Promise<string> {
+export async function exportAuditJsonl(db: D1Database, f: AuditFilter, maxRows = 50_000): Promise<string> {
   const lines: string[] = [];
   let cursor: string | null = null;
   do {
@@ -111,8 +110,11 @@ export async function exportAuditJsonl(db: D1Like, f: AuditFilter, maxRows = 50_
   return lines.length ? `${lines.join("\n")}\n` : "";
 }
 
-/** The daily retention sweep: deletes rows older than the setting, returns how many. */
-export async function sweepAudit(db: D1Like, retentionDays: number, now: Date): Promise<number> {
+/**
+ * The retention sweep (the body of 04's daily `purge_audit` task): deletes up to `limit`
+ * rows older than the setting, returns how many, so one run stays inside the cron budget.
+ */
+export async function sweepAudit(db: D1Database, retentionDays: number, now: Date, limit: number): Promise<number> {
   const cutoff = Math.floor(now.getTime() / 1000) - retentionDays * 86_400;
-  return (await db.prepare("DELETE FROM audit_log WHERE at < ?").bind(cutoff).run()).meta.changes;
+  return (await db.prepare("DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE at < ? LIMIT ?)").bind(cutoff, limit).run()).meta.changes;
 }

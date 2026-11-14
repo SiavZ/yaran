@@ -20,7 +20,8 @@
  * ├── src/console/ui/components.tsx
  * ├── src/console/ui/confirm.tsx
  * ├── src/console/ui/shell.tsx
- * └── src/console/user-pages.tsx
+ * ├── src/console/user-pages.tsx
+ * └── src/ui/kit.ts
  * <module-headers:end>
  */
 import type { PushState } from "@yaran/protocol";

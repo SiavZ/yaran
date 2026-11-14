@@ -18,7 +18,7 @@
  * src/console/ui/confirm.tsx
  * ├── src/console/admin-pages.tsx
  * ├── src/console/user-pages.tsx
- * └── test/ui-kit.test.tsx
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 import type { Child } from "hono/jsx";

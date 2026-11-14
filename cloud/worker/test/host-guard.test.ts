@@ -21,11 +21,16 @@ const WORKERS_DEV = "yaran-cloud.acme.workers.dev";
 const get = (host: string, path: string) => call(new Request(`https://${host}${path}`, { headers: { "Yaran-Protocol": "1" } }));
 
 describe("setup open", () => {
-  it("serves /setup* and /v1/meta on any Host and refuses everything else with 503 setup_incomplete", async () => {
+  it("serves /v1/meta on any Host, the wizard on workers.dev only, and refuses everything else with 503 setup_incomplete", async () => {
+    await closeSetup();
     await openSetup();
+    expect((await get(WORKERS_DEV, "/setup")).status).toBe(200);
+    for (const host of [CP_HOST, "other.example.org"]) expect(await errorCode(await get(host, "/setup"))).toBe("setup_incomplete");
+    // The admin claim arrives on the control-plane host, behind the Access app setup created.
+    expect(await errorCode(await get(CP_HOST, "/setup/claim"))).not.toBe("setup_incomplete");
+    expect(await errorCode(await get(WORKERS_DEV, "/setup/claim"))).not.toBe("setup_incomplete");
     for (const host of [WORKERS_DEV, CP_HOST, "other.example.org"]) {
       expect((await get(host, "/v1/meta")).status).toBe(200);
-      expect((await get(host, "/setup")).status).toBe(200);
       for (const path of ["/v1/me", "/v1/admin/audit", "/v1/machine/config"]) {
         const res = await get(host, path);
         expect(res.status).toBe(503);

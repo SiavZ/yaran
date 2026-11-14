@@ -20,7 +20,7 @@
  * └── test/helpers/fake-cf.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { describe, expect, test } from "vitest";
@@ -31,7 +31,7 @@ import { controlPlaneAppBody, ensureAccess, everyoneRefused, policyInclude } fro
 import { issueClaim, redeemClaim } from "../src/setup/steps/claim.ts";
 import { attachDomain, checkDomain } from "../src/setup/steps/domain.ts";
 import { addIdp, finishIdp } from "../src/setup/steps/idp.ts";
-import { ensureVapidKey, VAPID_PRIVATE_KEY } from "../src/setup/steps/keys.ts";
+import { ensureVapidKey, VAPID_AAD, VAPID_PRIVATE_KEY } from "../src/setup/steps/keys.ts";
 import { createOrg, readOrg } from "../src/setup/steps/org.ts";
 import { chooseHostname } from "../src/setup/steps/zone.ts";
 import { reduce, type SetupRecord } from "../src/setup/wizard-state.ts";
@@ -180,15 +180,15 @@ test("idp: a Cloudflare-only org cannot finish; One-time PIN and GitHub are adde
 });
 
 test("VAPID: generated, sealed, and the public key round-trips", async () => {
-  const w = world();
+  const w = await world();
   const ev = await ensureVapidKey(w.db, w.deps.sealer, w.clock.now);
   if (ev.kind !== "keys_ready") throw new Error("unexpected event");
   const raw = b64urlDecode(ev.vapid_public_key)!;
   expect(raw).toHaveLength(65);
   expect(raw[0]).toBe(4);
   const sealed = await readKey<string>(w.db, VAPID_PRIVATE_KEY);
-  expect(sealed).toMatch(/^sealed:vapid:/);
-  const jwk = JSON.parse(await w.deps.sealer.open("vapid", "", sealed!));
+  expect(sealed).toMatch(/^k1\./);
+  const jwk = JSON.parse(await w.deps.sealer.open("vapid", VAPID_AAD, sealed!));
   const key = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
   expect(key.type).toBe("private");
   expect(await ensureVapidKey(w.db, w.deps.sealer, w.clock.now)).toEqual(ev);
@@ -199,7 +199,7 @@ describe("claim", () => {
   const codeOf = (url: string) => new URL(url).searchParams.get("c")!;
 
   test("refuses another email, a wrong code and an expired link", async () => {
-    const w = world();
+    const w = await world();
     const code = codeOf(await issueClaim(w.deps, "cp.example.org"));
     const cf = async () => w.cf.transport();
     expect((await redeemClaim(w.deps, record, code, "eve@example.org", cf)).ok).toBe(false);
@@ -211,7 +211,7 @@ describe("claim", () => {
   });
 
   test("succeeds once: admin row, setup closed, workers.dev off, audited; reuse is refused", async () => {
-    const w = world();
+    const w = await world();
     const code = codeOf(await issueClaim(w.deps, "cp.example.org"));
     const out = await redeemClaim(w.deps, record, code, "Ada@Example.org", async () => w.cf.transport());
     expect(out.ok).toBe(true);
@@ -225,7 +225,7 @@ describe("claim", () => {
   });
 
   test("a failed workers.dev disable still closes setup and is recorded for Health", async () => {
-    const w = world();
+    const w = await world();
     w.cf.fault("POST /accounts/acc1/workers/scripts", "auth");
     const code = codeOf(await issueClaim(w.deps, "cp.example.org"));
     const out = await redeemClaim(w.deps, record, code, "ada@example.org", async () => w.cf.transport());

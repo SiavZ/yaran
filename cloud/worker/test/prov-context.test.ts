@@ -48,8 +48,9 @@ describe("provCtx", () => {
     expect(seen[0]!.headers.get("authorization")).toBe(`Bearer ${env.CF_API_TOKEN}`);
   });
 
-  it("splits APP_CALLBACK_URLS on whitespace", () => {
+  it("splits APP_CALLBACK_URLS on whitespace and commas", () => {
     expect(appCallbackUrls(" https://a.example/cb  https://b.example/cb\n")).toEqual(["https://a.example/cb", "https://b.example/cb"]);
+    expect(appCallbackUrls("https://a.example/cb,https://b.example/cb")).toEqual(["https://a.example/cb", "https://b.example/cb"]);
     expect(appCallbackUrls(undefined)).toEqual([]);
   });
 });

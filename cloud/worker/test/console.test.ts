@@ -17,60 +17,48 @@
  * └── test/helpers/html-checks.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { describe, expect, test } from "vitest";
-import { validate } from "@yaran/protocol";
+import { machineKeyFingerprint, validate } from "@yaran/protocol";
 import { ADMIN_API_ROUTES } from "../src/admin-api/routes.ts";
 import { ADMIN_ROUTES } from "../src/console/admin-routes.ts";
-import type { RouteAuth, RouteRow } from "../src/console/route-types.ts";
+import type { RouteRow } from "../src/console/route-types.ts";
 import { USER_ROUTES } from "../src/console/routes.ts";
 import { PHASE07_ROUTES } from "../src/phase07.ts";
 import { advance } from "../src/setup/steps/common.ts";
 import { a11yViolations, cspViolations } from "./helpers/html-checks.ts";
-import { dispatch, seedUser, world, type TestWorld } from "./helpers/deps.ts";
+import { closedOrg, dispatch, MACHINE_ID, seedDevice, seedMachine, seedUser, world, type TestWorld } from "./helpers/deps.ts";
 
 const CP = "https://cp.example.org";
 const ADA = { user_id: "00000000-0000-4000-8000-0000000000a1", email: "ada@example.org", role: "admin" as const };
 const BOB = { user_id: "00000000-0000-4000-8000-0000000000b2", email: "bob@example.org", role: "user" as const };
 
+let machineKey: Uint8Array = new Uint8Array();
+
 async function ready(): Promise<TestWorld> {
-  const w = world();
+  const w = await world();
   await advance(w.db, { step: "token" }, { kind: "probe_ok", account_id: "acc1", admin_email: "ada@example.org", script_name: "yaran-cloud" }, w.clock.now);
-  await w.db.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('control_plane_host', '\"cp.example.org\"', 0), ('zone_name', '\"example.org\"', 0), ('cf_api_token_enc', '\"sealed:x:y:Y2YtdG9rZW4=\"', 0)").run();
+  await closedOrg(w);
   await seedUser(w, "ada@example.org", "admin");
   await seedUser(w, "bob@example.org");
+  machineKey = await seedMachine(w);
+  await seedDevice(w);
   return w;
 }
 
-/** Phase 04's documented authorize rules for each auth class. */
-type Caller = "none" | "service_token" | "disabled" | "user" | "admin";
-function authorize(auth: RouteAuth, caller: Caller): number {
-  switch (auth.kind) {
-    case "public":
-    case "setup":
-      return 200;
-    case "user":
-    case "admin":
-      if (caller === "none") return 401;
-      if (caller === "service_token" || caller === "disabled") return 403;
-      return auth.kind === "admin" && caller !== "admin" ? 403 : 200;
-  }
-}
+const machineRow = (w: TestWorld) => w.db.prepare("SELECT status, revoke_reason FROM machines WHERE id = ?").bind(MACHINE_ID).first<{ status: string; revoke_reason: string | null }>();
 
-describe("authz matrix", () => {
+// Who may call each row is 04's authz matrix (test/authz-matrix.test.ts), which iterates
+// the production table, these rows included.
+describe("route rows", () => {
   test("every row declares the auth class its path family requires", () => {
     for (const r of PHASE07_ROUTES) {
       const want = r.path.startsWith("/setup") ? "setup" : r.path.startsWith("/admin") || r.path.startsWith("/v1/admin") ? "admin" : "user";
       expect(`${r.method} ${r.path} ${r.auth.kind}`).toBe(`${r.method} ${r.path} ${want}`);
       expect(r.kind).toBe(r.path.startsWith("/v1/") ? "json" : "html");
     }
-  });
-  const callers: Caller[] = ["none", "service_token", "disabled", "user", "admin"];
-  test.each(PHASE07_ROUTES.flatMap((r) => callers.map((c) => [`${r.method} ${r.path}`, c, r] as const)))("%s as %s", (_n, caller, row) => {
-    const expected = row.auth.kind === "setup" ? 200 : row.auth.kind === "admin" ? { none: 401, service_token: 403, disabled: 403, user: 403, admin: 200 }[caller] : { none: 401, service_token: 403, disabled: 403, user: 200, admin: 200 }[caller];
-    expect(authorize(row.auth, caller)).toBe(expected);
   });
 });
 
@@ -88,7 +76,8 @@ describe("destructive actions", () => {
     const url = CP + path.replace(":id", "00000000-0000-4000-8000-000000000101");
     const res = await dispatch(html, w, "POST", url, { identity: ADA, headers: { Origin: "https://evil.example" }, body: new URLSearchParams() });
     expect(res.status).toBe(403);
-    expect(w.calls).toEqual([]);
+    expect([w.cf.calls, w.prov.calls]).toEqual([[], []]);
+    expect(await machineRow(w)).toEqual({ status: "active", revoke_reason: null });
   });
   test("a gone target's confirm page says already removed", async () => {
     const w = await ready();
@@ -102,8 +91,9 @@ describe("destructive actions", () => {
     const w = await ready();
     const res = await dispatch(html, w, "POST", `${CP}/admin/machines/00000000-0000-4000-8000-000000000101/revoke`, { identity: ADA, headers: { Origin: CP }, body: new URLSearchParams() });
     expect(res.status).toBe(303);
-    expect(w.calls).toEqual(["teardown 00000000-0000-4000-8000-000000000101 admin_revoke"]);
-    expect(w.audits).toMatchObject([{ action: "machine.revoked", target: { id: "00000000-0000-4000-8000-000000000101" } }]);
+    expect((await machineRow(w))!.revoke_reason).toBe("admin_revoke");
+    const audited = await w.db.prepare("SELECT action, target_id FROM audit_log WHERE action = 'machine.revoked'").all();
+    expect(audited.results).toEqual([{ action: "machine.revoked", target_id: MACHINE_ID }]);
     const cookie = res.headers.get("Set-Cookie")!.split(";")[0]!;
     const page = await (await dispatch(html, w, "GET", `${CP}/admin/machines`, { identity: ADA, headers: { Cookie: cookie } })).text();
     expect(page).toContain('Revoking the machine <code class="chip">laptop</code>');
@@ -111,13 +101,14 @@ describe("destructive actions", () => {
   test("rotate maps kill_connections to evict", async () => {
     const w = await ready();
     await dispatch(html, w, "POST", `${CP}/admin/machines/00000000-0000-4000-8000-000000000101/rotate`, { identity: ADA, headers: { Origin: CP }, body: new URLSearchParams({ kill_connections: "on" }) });
-    expect(w.calls).toEqual(["rotate 00000000-0000-4000-8000-000000000101 true"]);
+    const op = await w.db.prepare("SELECT params FROM provisioning_ops WHERE machine_id = ? AND kind = 'rotate'").bind(MACHINE_ID).first<{ params: string }>();
+    expect(JSON.parse(op!.params)).toMatchObject({ evict: true });
   });
   test("a user cannot unpair someone else's machine", async () => {
     const w = await ready();
     const text = await (await dispatch(html, w, "POST", `${CP}/console/machines/00000000-0000-4000-8000-000000000101/unpair`, { identity: BOB, headers: { Origin: CP }, body: new URLSearchParams() })).text();
     expect(text).toContain("was already removed");
-    expect(w.calls).toEqual([]);
+    expect(await machineRow(w)).toEqual({ status: "active", revoke_reason: null });
   });
 });
 
@@ -147,7 +138,7 @@ describe("pages", () => {
     const w = await ready();
     expect(await (await dispatch(USER_ROUTES, w, "GET", `${CP}/console`, { identity: ADA })).text()).toContain("unpair it and pair it again");
     const admin = await (await dispatch(ADMIN_ROUTES, w, "GET", `${CP}/admin/machines`, { identity: ADA })).text();
-    expect(admin).toContain("ABCD-EFGH-IJKL-MNOP-QRST-UVWX");
+    expect(admin).toContain(await machineKeyFingerprint(machineKey));
     expect(admin).toContain("<td>8080</td>");
   });
 });
@@ -173,10 +164,10 @@ describe("admin API", () => {
     const w = await ready();
     const plain = await send(w, "PATCH", "/v1/admin/users/00000000-0000-4000-8000-0000000000b2", { role: "admin" }, { "Content-Type": "text/plain", Origin: CP });
     expect(plain.status).toBe(415);
-    expect((await plain.json()).error.code).toBe("unsupported_media_type");
+    expect(((await plain.json()) as { error: { code: string } }).error.code).toBe("unsupported_media_type");
     const foreign = await send(w, "PATCH", "/v1/admin/users/00000000-0000-4000-8000-0000000000b2", { role: "admin" }, { "Content-Type": "application/json", Origin: "https://evil.example" });
     expect(foreign.status).toBe(403);
-    expect((await foreign.json()).error.code).toBe("origin_mismatch");
+    expect(((await foreign.json()) as { error: { code: string } }).error.code).toBe("origin_mismatch");
   });
   test("PATCH validates the body, answers AdminUser, and refuses the last admin", async () => {
     const w = await ready();
@@ -186,15 +177,15 @@ describe("admin API", () => {
     await send(w, "PATCH", "/v1/admin/users/00000000-0000-4000-8000-0000000000b2", { role: "user" });
     const last = await send(w, "PATCH", "/v1/admin/users/00000000-0000-4000-8000-0000000000a1", { role: "user" });
     expect(last.status).toBe(409);
-    expect((await last.json()).error.code).toBe("last_admin");
+    expect(((await last.json()) as { error: { code: string } }).error.code).toBe("last_admin");
   });
   test("DELETE machine answers TeardownStarted; rotate validates; device removal 204 then 404", async () => {
     const w = await ready();
+    expect((await send(w, "POST", "/v1/admin/machines/00000000-0000-4000-8000-000000000101/rotate", { kill: true })).status).toBe(400);
+    expect((await send(w, "POST", "/v1/admin/machines/00000000-0000-4000-8000-000000000101/rotate", { kill_connections: false })).status).toBe(202);
     const del = await send(w, "DELETE", "/v1/admin/machines/00000000-0000-4000-8000-000000000101", undefined, { Origin: CP });
     expect(del.status).toBe(202);
     expect(validate("TeardownStarted", await del.json()).valid).toBe(true);
-    expect((await send(w, "POST", "/v1/admin/machines/00000000-0000-4000-8000-000000000101/rotate", { kill: true })).status).toBe(400);
-    expect((await send(w, "POST", "/v1/admin/machines/00000000-0000-4000-8000-000000000101/rotate", { kill_connections: false })).status).toBe(202);
     expect((await send(w, "DELETE", "/v1/admin/devices/00000000-0000-4000-8000-000000000201", undefined, { Origin: CP })).status).toBe(204);
     expect((await send(w, "DELETE", "/v1/admin/devices/00000000-0000-4000-8000-000000000201", undefined, { Origin: CP })).status).toBe(404);
   });

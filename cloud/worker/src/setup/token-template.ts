@@ -22,8 +22,8 @@
  * ├── scripts/token-url.ts
  * ├── src/setup/capability-probe.ts
  * ├── src/setup/pages.tsx
- * ├── test/token-template.test.ts
- * └── test/ui-kit.test.tsx
+ * ├── test/node/token-template.test.ts
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 import manifest from "../../scripts/permissions.json" with { type: "json" };

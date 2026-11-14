@@ -25,7 +25,7 @@
   "observability": { "enabled": true },
   "keep_vars": false,
   "vars": {
-    // Comma-separated https app callbacks the sign-in handoff may redirect to. Set by the
+    // Comma- or space-separated https app callbacks the sign-in handoff may redirect to. Set by the
     // release from the publisher's domain. A fork that publishes its own app adds its own
     // https://<its-domain>/auth/callback. Never list yaranapp://auth/callback: development
     // builds are recognised by build=dev instead.

@@ -8,14 +8,15 @@
  * its expiry under a key derived from `SETUP_CODE` through HKDF, valid for 30 minutes.
  *
  * - Also explains a missing or weak `SETUP_CODE`, or a missing or malformed `DATA_KEY`.
- * - Rate limiting per IP (5 a minute) is 04's limiter, asked through the port.
+ * - Attempts are also counted by 04's `setupAttempt` (5 per 15 min per IP, 30 a day) in
+ *   the code route, before this check; the stricter limit always wins.
  *
  * <module-headers:begin>
  * Uses:
  * src/setup/setup-gate.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/admin/ports.ts
- * └── src/admin/settings-store.ts
+ * ├── src/admin/settings-store.ts
+ * └── src/security/secrets.ts
  * External: none
  *
  * Used by:
@@ -27,10 +28,10 @@
  * <module-headers:end>
  */
 import { b64urlDecode, b64urlEncode, timingSafeEqual } from "@yaran/protocol";
-import type { D1Like } from "../admin/ports.ts";
 import { readKey, writeKeys } from "../admin/settings-store.ts";
 
-export const SETUP_CODE_MIN = 24;
+export { SETUP_CODE_MIN_LENGTH as SETUP_CODE_MIN } from "../security/secrets.ts";
+import { SETUP_CODE_MIN_LENGTH as SETUP_CODE_MIN } from "../security/secrets.ts";
 export const LOCKOUT_AFTER = 20;
 export const COOKIE_NAME = "__Host-yaran-setup";
 export const COOKIE_TTL_S = 30 * 60;
@@ -68,7 +69,7 @@ export async function sha256Hex(text: string): Promise<string> {
 
 /** Constant-time equality of two strings: HMAC both under a random key, compare the MACs. */
 export async function codesMatch(input: string, expected: string): Promise<boolean> {
-  const key = await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const key = (await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, false, ["sign"])) as CryptoKey;
   return compare.equal(await hmac(key, input), await hmac(key, expected));
 }
 
@@ -82,7 +83,7 @@ const FAILURES_KEY = "setup_code_failures";
 export type CodeVerdict = "ok" | "setup_code_invalid" | "setup_locked";
 
 /** Checks a submitted code against `SETUP_CODE`, counting failures and applying the lockout. */
-export async function checkSetupCode(db: D1Like, input: string, setupCode: string, now: Date): Promise<CodeVerdict> {
+export async function checkSetupCode(db: D1Database, input: string, setupCode: string, now: Date): Promise<CodeVerdict> {
   let state = (await readKey<FailureState>(db, FAILURES_KEY)) ?? { count: 0 };
   if (state.locked_code_hash !== undefined) {
     if (state.locked_code_hash === (await sha256Hex(setupCode))) return "setup_locked";
@@ -96,7 +97,7 @@ export async function checkSetupCode(db: D1Like, input: string, setupCode: strin
   return next.locked_code_hash ? "setup_locked" : "setup_code_invalid";
 }
 
-export async function isLocked(db: D1Like, setupCode: string): Promise<boolean> {
+export async function isLocked(db: D1Database, setupCode: string): Promise<boolean> {
   const state = await readKey<FailureState>(db, FAILURES_KEY);
   return state?.locked_code_hash !== undefined && state.locked_code_hash === (await sha256Hex(setupCode));
 }

@@ -23,13 +23,14 @@
  *
  * Used by:
  * src/me/machines-route.ts
+ * ├── src/admin/pairing-service.ts
  * └── src/routes/pairing-and-sessions.ts
  * <module-headers:end>
  */
 import type { MachinePage, TeardownStarted } from "@yaran/protocol";
 import { getOwnedMachine, listOwnedMachines } from "../machines/machine-rows.ts";
 import { machineSummary } from "../machines/machine-view-model.ts";
-import type { RouteCall, RouteRow } from "../routes/call.ts";
+import type { Phase06Ctx, RouteCall, RouteRow } from "../routes/call.ts";
 import { HttpError } from "../http/responses.ts";
 import { nextCursor, pageQuery } from "./cursor.ts";
 
@@ -44,20 +45,27 @@ async function listMachines({ req, ctx, user }: RouteCall): Promise<Response> {
   return Response.json(page, { headers: { "Cache-Control": "no-store" } });
 }
 
-async function deleteMachine({ ctx, user, params }: RouteCall): Promise<Response> {
-  const row = await getOwnedMachine(ctx, params["id"] ?? "", user!.userId);
-  if (!row || row.status === "revoked") throw new HttpError("not_found", "No machine with that id is paired to your account.");
+/** W11's core, shared with 07's console: starts the owner's unpair; false for no such live machine. */
+export async function unpairOwnedMachine(ctx: Phase06Ctx, userId: string, machineId: string): Promise<boolean> {
+  const row = await getOwnedMachine(ctx, machineId, userId);
+  if (!row || row.status === "revoked") return false;
   if (row.status !== "revoking") {
     await ctx.provisioning.startTeardown(row.id, "user_unpair");
     await ctx.audit.record({
       action: "machine.unpaired",
-      actor: { kind: "user", id: user!.userId },
+      actor: { kind: "user", id: userId },
       target: { kind: "machine", id: row.id },
       outcome: "ok",
       detail: { reason: "user_unpair" },
     });
   }
-  const body: TeardownStarted = { machine_id: row.id, state: "tearing_down" };
+  return true;
+}
+
+async function deleteMachine({ ctx, user, params }: RouteCall): Promise<Response> {
+  const id = params["id"] ?? "";
+  if (!(await unpairOwnedMachine(ctx, user!.userId, id))) throw new HttpError("not_found", "No machine with that id is paired to your account.");
+  const body: TeardownStarted = { machine_id: id, state: "tearing_down" };
   return Response.json(body, { status: 202, headers: { "Cache-Control": "no-store" } });
 }
 

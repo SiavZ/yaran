@@ -5,15 +5,18 @@
  * Uses:
  * test/setup-gate.test.ts
  * ├── src/setup/setup-gate.ts
- * └── test/helpers/d1.ts
- * External: vitest
+ * └── test/helpers/deps.ts
+ * External: cloudflare:test, vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { checkSetupCode, compare, hasSetupSession, isLocked, issueSetupCookie, secretProblems } from "../src/setup/setup-gate.ts";
-import { testDb } from "./helpers/d1.ts";
+import { env } from "cloudflare:test";
+import { wipe } from "./helpers/deps.ts";
+
+beforeEach(wipe);
 
 const CODE = "a-long-random-setup-code-123456";
 const NOW = new Date("2026-11-14T12:00:00Z");
@@ -30,13 +33,13 @@ describe("secrets", () => {
 describe("code check", () => {
   test("uses the constant-time comparison", async () => {
     const spy = vi.spyOn(compare, "equal");
-    expect(await checkSetupCode(testDb(), CODE, CODE, NOW)).toBe("ok");
+    expect(await checkSetupCode(env.DB, CODE, CODE, NOW)).toBe("ok");
     expect(spy).toHaveBeenCalledOnce();
     spy.mockRestore();
   });
 
   test("locks after 20 wrong codes and stays locked, even for the right code", async () => {
-    const db = testDb();
+    const db = env.DB;
     for (let i = 1; i < 20; i++) expect(await checkSetupCode(db, `wrong-${i}`, CODE, NOW)).toBe("setup_code_invalid");
     expect(await checkSetupCode(db, "wrong-20", CODE, NOW)).toBe("setup_locked");
     expect(await checkSetupCode(db, CODE, CODE, NOW)).toBe("setup_locked");
@@ -44,7 +47,7 @@ describe("code check", () => {
   });
 
   test("changing SETUP_CODE unlocks and resets the counter", async () => {
-    const db = testDb();
+    const db = env.DB;
     for (let i = 0; i < 20; i++) await checkSetupCode(db, `wrong-${i}`, CODE, NOW);
     const next = `${CODE}-rotated`;
     expect(await isLocked(db, next)).toBe(false);

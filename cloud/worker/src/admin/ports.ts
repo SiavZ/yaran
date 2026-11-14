@@ -1,70 +1,49 @@
 /**
- * The seams Phase 07 consumes from Phases 04, 05 and 06, in one place.
- *
- * The wizard, the consoles and the admin API never reach into another phase's modules
- * directly; they receive these ports in `Phase07Deps`. Each port mirrors the interface the
- * owning phase's plan document specifies (04 storage, sealing, audit and route classes; 05
- * Cloudflare transport and teardown/rotation facade; 06 view models, device revocation and
- * session revocation). Where a document leaves a name unspecified, the name here is this
- * phase's proposal and is listed in the phase report for the integrator.
+ * The services Phase 07's handlers receive in `Phase07Deps`, in one place: sealing, audit
+ * and Access identity (04), a Cloudflare transport and the teardown and rotation facade
+ * (05), and the machine and phone services (06). `routes/phase07-context.ts` builds them
+ * from the real modules; tests use the same builder with only Cloudflare faked.
  *
  * - Types only, plus `assertNever`; no behaviour.
- * - D1 is described structurally so the real binding and the test shim both satisfy it.
  *
  * <module-headers:begin>
  * Uses:
  * src/admin/ports.ts
- * └── @yaran/protocol:src/index.ts
+ * ├── @yaran/protocol:src/index.ts
+ * └── src/security/data-key.ts
  * External: none
  *
  * Used by:
  * src/admin/ports.ts
  * ├── src/admin/api-token.ts
- * ├── src/admin/audit-query.ts
+ * ├── src/admin/pairing-service.ts
  * ├── src/admin/settings-apply.ts
- * ├── src/admin/settings-schema.ts
- * ├── src/admin/settings-store.ts
  * ├── src/admin/users.ts
  * ├── src/cloudflare/setup-endpoints.ts
  * ├── src/console/admin-pages-2.tsx
  * ├── src/console/route-types.ts
+ * ├── src/routes/phase07-context.ts
  * ├── src/setup/capability-probe.ts
  * ├── src/setup/routes.ts
- * ├── src/setup/setup-gate.ts
  * ├── src/setup/steps/access.ts
  * ├── src/setup/steps/claim.ts
- * ├── src/setup/steps/common.ts
  * ├── src/setup/steps/domain.ts
  * ├── src/setup/steps/idp.ts
  * ├── src/setup/steps/keys.ts
  * ├── src/setup/steps/org.ts
  * ├── src/setup/steps/zone.ts
  * ├── src/setup/wizard-state.ts
- * ├── src/update/update-checker.ts
- * ├── test/helpers/d1.ts
  * ├── test/helpers/deps.ts
  * └── test/helpers/fake-cf.ts
  * <module-headers:end>
  */
 import type { AdminDevice, AdminDevicePage, AdminMachine, AdminMachinePage, AuditAction, Role } from "@yaran/protocol";
-
-export interface D1Stmt {
-  bind(...values: unknown[]): D1Stmt;
-  all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
-  first<T = Record<string, unknown>>(): Promise<T | null>;
-  run(): Promise<{ meta: { changes: number } }>;
-}
-
-/** The subset of 04's D1 binding this phase uses. */
-export interface D1Like {
-  prepare(sql: string): D1Stmt;
-  batch(statements: D1Stmt[]): Promise<unknown[]>;
-}
+import type { SealAad, SealPurpose } from "../security/data-key.ts";
 
 /** 04 `security/data-key.ts`: AES-256-GCM sealing under a DATA_KEY-derived purpose key. */
 export interface DataKeySealer {
-  seal(purpose: string, aad: string, plaintext: string): Promise<string>;
-  open(purpose: string, aad: string, sealed: string): Promise<string>;
+  seal(purpose: SealPurpose, aad: SealAad, plaintext: string): Promise<string>;
+  open(purpose: SealPurpose, aad: SealAad, sealed: string): Promise<string>;
 }
 
 export type AuditActorKind = "user" | "admin" | "system" | "setup";
@@ -80,22 +59,6 @@ export interface AuditInput {
 }
 export type AuditWriter = (entry: AuditInput) => Promise<void>;
 
-/** 04 `security/rate-limit.ts`: true when the call is allowed. */
-export type RateLimiter = (bucket: string, key: string) => Promise<boolean>;
-
-/** 05 `cloudflare/errors.ts` `CfApiError.kind`. */
-export type CfErrorKind = "rate_limited" | "transient" | "not_found" | "conflict" | "auth" | "invalid";
-
-export interface CfApiErrorLike {
-  kind: CfErrorKind;
-  status: number;
-  message: string;
-}
-
-export function isCfApiError(e: unknown): e is CfApiErrorLike {
-  return typeof e === "object" && e !== null && "kind" in e && "status" in e;
-}
-
 /** 05 `cloudflare/client.ts`: one authenticated, budgeted, retrying call; returns `result`. */
 export interface CfTransport {
   request<T>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T>;
@@ -108,7 +71,7 @@ export interface ProvisioningPort {
   /** Re-applies `session_duration` to the control-plane app and every machine app (budgeted job). */
   reapplySessionDuration(duration: string): Promise<void>;
   /** 05 `naming.ts` `deriveUserSlug`, for the admin row the claim inserts. */
-  deriveUserSlug(email: string): string;
+  deriveUserSlug(email: string): Promise<string>;
 }
 
 /** 06 view models and services the consoles reuse. */

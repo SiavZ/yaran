@@ -25,6 +25,7 @@
  *
  * Used by:
  * src/devices/devices-repo.ts
+ * ├── src/admin/pairing-service.ts
  * ├── src/me/devices-route.ts
  * └── test/devices/devices-repo.test.ts
  * <module-headers:end>

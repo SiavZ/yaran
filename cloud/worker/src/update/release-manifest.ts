@@ -19,9 +19,9 @@
  * ├── scripts/assemble-deploy-tree.ts
  * ├── scripts/update/fetch-release.ts
  * ├── src/update/update-checker.ts
- * ├── test/deploy-tree.test.ts
- * ├── test/update-checker.test.ts
- * └── test/update-job.test.ts
+ * ├── test/node/deploy-tree.test.ts
+ * ├── test/node/update-job.test.ts
+ * └── test/update-checker.test.ts
  * <module-headers:end>
  */
 import { validate, type ReleaseManifest } from "@yaran/protocol";

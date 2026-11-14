@@ -13,6 +13,7 @@
  * Uses:
  * src/setup/steps/domain.ts
  * ├── src/admin/ports.ts
+ * ├── src/cloudflare/errors.ts
  * ├── src/cloudflare/setup-endpoints.ts
  * └── src/setup/wizard-state.ts
  * External: none
@@ -23,7 +24,8 @@
  * └── test/setup-steps.test.ts
  * <module-headers:end>
  */
-import { isCfApiError, type CfTransport } from "../../admin/ports.ts";
+import { CfApiError } from "../../cloudflare/errors.ts";
+import { type CfTransport } from "../../admin/ports.ts";
 import { workers } from "../../cloudflare/setup-endpoints.ts";
 import type { SetupEvent } from "../wizard-state.ts";
 
@@ -50,7 +52,7 @@ export async function attachDomain(cf: CfTransport, i: DomainInput): Promise<Dom
     await workers.attachDomain(cf, i.accountId, { hostname: i.host, service: i.script, zone_id: i.zoneId });
     return { ok: true, event: { kind: "domain_attached", domain_mode: "api" } };
   } catch (e) {
-    if (isCfApiError(e) && (e.kind === "auth" || e.kind === "invalid")) return { ok: false, problem: "dashboard_required" };
+    if (e instanceof CfApiError && (e.kind === "auth" || e.kind === "invalid")) return { ok: false, problem: "dashboard_required" };
     throw e;
   }
 }

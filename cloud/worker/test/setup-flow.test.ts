@@ -7,16 +7,18 @@
  * Uses:
  * test/setup-flow.test.ts
  * ├── src/admin/settings-store.ts
+ * ├── src/admin/setup-settings.ts
  * ├── src/setup/routes.ts
  * ├── src/setup/steps/common.ts
  * └── test/helpers/deps.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { describe, expect, test } from "vitest";
 import { readKey } from "../src/admin/settings-store.ts";
+import { API_TOKEN_AAD, API_TOKEN_KEY } from "../src/admin/setup-settings.ts";
 import { loadRecord } from "../src/setup/steps/common.ts";
 import { SETUP_ROUTES } from "../src/setup/routes.ts";
 import { dispatch, SETUP_CODE, world, type TestWorld } from "./helpers/deps.ts";
@@ -39,7 +41,7 @@ function client(w: TestWorld) {
 
 describe("the setup wizard end to end", () => {
   test("walks every step in order and closes setup for good", async () => {
-    const w = world();
+    const w = await world();
     const c = client(w);
     expect((await c.get("/setup")).text).toContain("Setup code");
     const wrong = await c.post("/setup/code", { code: "nope" });
@@ -49,7 +51,9 @@ describe("the setup wizard end to end", () => {
     expect((await c.get("/setup")).text).toContain("Open the token template");
     expect((await c.post("/setup/token", { token: "", admin_email: "Ada@Example.org" })).res.status).toBe(303);
     expect((await loadRecord(w.db)).step).toBe("org");
-    expect(await readKey(w.db, "cf_api_token_enc")).toMatch(/^sealed:cf_api_token:/);
+    const sealed = await readKey<string>(w.db, API_TOKEN_KEY);
+    expect(sealed).toMatch(/^k1\./);
+    expect(await w.deps.sealer.open("cf_api_token", API_TOKEN_AAD, sealed!)).toBe(w.env.CF_API_TOKEN);
     await c.post("/setup/org", { action: "check" });
     expect((await c.get("/setup")).text).toContain("example.org");
     await c.post("/setup/zone", { zone_id: "z1", label: "cp" });
@@ -74,12 +78,13 @@ describe("the setup wizard end to end", () => {
     expect(await readKey(w.db, "setup_state")).toBe("closed");
     expect(await readKey(w.db, "control_plane_host")).toBe("cp.example.org");
     expect(w.cf.subdomain.enabled).toBe(false);
-    expect((await c.get("/setup")).res.status).toBe(410);
+    // Once closed, workers.dev is not served at all (D19), and /setup is gone on the control plane.
+    expect((await c.get("/setup")).res.status).toBe(421);
     expect((await anon.get(link)).res.status).toBe(410);
   });
 
   test("a token missing a permission is not stored and the page names the permission", async () => {
-    const w = world();
+    const w = await world();
     w.cf.fault("GET /accounts/acc1/access/identity_providers", "auth");
     const c = client(w);
     await c.post("/setup/code", { code: SETUP_CODE });
@@ -91,7 +96,7 @@ describe("the setup wizard end to end", () => {
   });
 
   test("brute force locks setup and the page says setup_locked", async () => {
-    const w = world();
+    const w = await world();
     const c = client(w);
     for (let i = 0; i < 19; i++) await c.post("/setup/code", { code: `x${i}` });
     const locked = await c.post("/setup/code", { code: "x19" });
@@ -101,8 +106,8 @@ describe("the setup wizard end to end", () => {
   });
 
   test("missing or weak secrets are explained and nothing else happens", async () => {
-    const w = world();
-    w.deps.env = { SETUP_CODE: "short" };
+    const w = await world();
+    w.env = { ...w.env, SETUP_CODE: "short", DATA_KEY: undefined };
     const r = await client(w).get("/setup");
     expect(r.res.status).toBe(503);
     expect(r.text).toContain("shorter than 24 characters");
@@ -110,12 +115,12 @@ describe("the setup wizard end to end", () => {
   });
 
   test("a form posted from another origin is refused", async () => {
-    const w = world();
+    const w = await world();
     expect((await client(w).post("/setup/code", { code: SETUP_CODE }, "https://evil.example")).res.status).toBe(403);
   });
 
   test("steps need the setup cookie", async () => {
-    const w = world();
+    const w = await world();
     const r = await client(w).post("/setup/token", { admin_email: "ada@example.org" });
     expect(r.res.status).toBe(303);
     expect((await loadRecord(w.db)).step).toBe("locked");

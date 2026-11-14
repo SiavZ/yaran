@@ -33,7 +33,8 @@ export function securityHeaders(): Record<string, string> {
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
+    // same-origin, not no-referrer: no-referrer makes a form POST carry `Origin: null`.
+    "Referrer-Policy": "same-origin",
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cache-Control": "no-store",
   };

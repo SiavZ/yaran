@@ -57,12 +57,27 @@
  * ├── @yaran/push:src/definitions.ts
  * ├── @yaran/push:test/guards.test.ts
  * ├── @yaran/qr:src/payload.ts
+ * ├── yaran-cloud:scripts/assemble-deploy-tree.ts
+ * ├── yaran-cloud:scripts/update/fetch-release.ts
+ * ├── yaran-cloud:src/admin-api/routes.ts
+ * ├── yaran-cloud:src/admin/audit-query.ts
+ * ├── yaran-cloud:src/admin/pairing-service.ts
+ * ├── yaran-cloud:src/admin/ports.ts
+ * ├── yaran-cloud:src/admin/settings-apply.ts
+ * ├── yaran-cloud:src/admin/settings-schema.ts
+ * ├── yaran-cloud:src/admin/stale-policy.ts
+ * ├── yaran-cloud:src/admin/users.ts
  * ├── yaran-cloud:src/audit/actions.ts
  * ├── yaran-cloud:src/audit/audit.ts
  * ├── yaran-cloud:src/auth/authorize.ts
  * ├── yaran-cloud:src/auth/machine-signature.ts
  * ├── yaran-cloud:src/auth/nonce-store.ts
  * ├── yaran-cloud:src/cloudflare/errors.ts
+ * ├── yaran-cloud:src/console/admin-pages-2.tsx
+ * ├── yaran-cloud:src/console/admin-pages.tsx
+ * ├── yaran-cloud:src/console/routes.ts
+ * ├── yaran-cloud:src/console/ui/strings.ts
+ * ├── yaran-cloud:src/console/user-pages.tsx
  * ├── yaran-cloud:src/db/settings.ts
  * ├── yaran-cloud:src/devices/device-params.ts
  * ├── yaran-cloud:src/devices/devices-repo.ts
@@ -86,6 +101,7 @@
  * ├── yaran-cloud:src/pairing/pair-requests.ts
  * ├── yaran-cloud:src/pairing/pkce.ts
  * ├── yaran-cloud:src/pairing/qr.ts
+ * ├── yaran-cloud:src/provisioning/context.ts
  * ├── yaran-cloud:src/provisioning/engine.ts
  * ├── yaran-cloud:src/provisioning/index.ts
  * ├── yaran-cloud:src/provisioning/ports.ts
@@ -95,13 +111,22 @@
  * ├── yaran-cloud:src/routes/call.ts
  * ├── yaran-cloud:src/routes/meta.ts
  * ├── yaran-cloud:src/routes/phase06-context.ts
+ * ├── yaran-cloud:src/routes/phase07-context.ts
  * ├── yaran-cloud:src/security/data-key.ts
  * ├── yaran-cloud:src/sessions/handoff-csrf.ts
  * ├── yaran-cloud:src/sessions/handoff-page.ts
  * ├── yaran-cloud:src/sessions/handoff-params.ts
  * ├── yaran-cloud:src/sessions/handoff-remembered.ts
  * ├── yaran-cloud:src/sessions/handoff-route.ts
+ * ├── yaran-cloud:src/setup/setup-gate.ts
+ * ├── yaran-cloud:src/setup/steps/access.ts
+ * ├── yaran-cloud:src/setup/steps/claim.ts
+ * ├── yaran-cloud:src/setup/steps/keys.ts
+ * ├── yaran-cloud:src/update/release-manifest.ts
+ * ├── yaran-cloud:src/update/update-checker.ts
+ * ├── yaran-cloud:test/admin-services.test.ts
  * ├── yaran-cloud:test/audit.test.ts
+ * ├── yaran-cloud:test/console.test.ts
  * ├── yaran-cloud:test/data-key.test.ts
  * ├── yaran-cloud:test/devices/device-fixtures.ts
  * ├── yaran-cloud:test/devices/devices-route.test.ts
@@ -116,6 +141,7 @@
  * ├── yaran-cloud:test/me/me-route.test.ts
  * ├── yaran-cloud:test/me/meta.test.ts
  * ├── yaran-cloud:test/no-secret-leak.test.ts
+ * ├── yaran-cloud:test/node/update-job.test.ts
  * ├── yaran-cloud:test/pairing/authorize-route.test.ts
  * ├── yaran-cloud:test/pairing/pair-helpers.ts
  * ├── yaran-cloud:test/phase06/fakes.ts
@@ -128,7 +154,9 @@
  * ├── yaran-cloud:test/routes.test.ts
  * ├── yaran-cloud:test/sessions/handoff-helpers.ts
  * ├── yaran-cloud:test/sessions/handoff-remembered.test.ts
- * └── yaran-cloud:test/sessions/handoff-route.test.ts
+ * ├── yaran-cloud:test/sessions/handoff-route.test.ts
+ * ├── yaran-cloud:test/setup-steps.test.ts
+ * └── yaran-cloud:test/update-checker.test.ts
  * <module-headers:end>
  */
 export type * from "./generated/types.ts";

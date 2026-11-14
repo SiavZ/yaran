@@ -14,7 +14,8 @@
  * src/routes/meta.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── cloud/protocol/registry/capabilities.json
- * └── src/routes/call.ts
+ * ├── src/routes/call.ts
+ * └── src/update/worker-version.ts
  * External: none
  *
  * Used by:
@@ -24,7 +25,8 @@
  */
 import { PROTOCOL_MAX, PROTOCOL_MIN, type Meta } from "@yaran/protocol";
 import capabilities from "@yaran/protocol/registry/capabilities.json" with { type: "json" };
-import type { Handler, RouteRow } from "../routes/call.ts";
+import { WORKER_VERSION } from "../update/worker-version.ts";
+import type { Handler, RouteRow } from "./call.ts";
 
 const getMeta: Handler = async ({ ctx }) => {
   const internal = await ctx.settings.internal();
@@ -32,7 +34,7 @@ const getMeta: Handler = async ({ ctx }) => {
     service: "yaran-cloud",
     protocol: { min: PROTOCOL_MIN, max: PROTOCOL_MAX },
     setup: internal.setupState,
-    worker: { version: ctx.env.WORKER_VERSION ?? "0.0.0" },
+    worker: { version: WORKER_VERSION },
   };
   if (internal.setupState === "closed" && internal.controlPlaneHost && internal.teamDomain) {
     const settings = await ctx.settings.read();

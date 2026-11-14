@@ -6,14 +6,14 @@
  *
  * <module-headers:begin>
  * Uses:
- * test/deploy-tree.test.ts
+ * test/node/deploy-tree.test.ts
  * ├── scripts/assemble-deploy-tree.ts
  * ├── scripts/update/merge-wrangler.ts
  * ├── src/update/release-manifest.ts
- * └── test/helpers/tree.ts
+ * └── test/node/helpers/tree.ts
  * External: node:child_process, node:fs, node:os, node:path, vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { execFileSync } from "node:child_process";
@@ -21,10 +21,10 @@ import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, statSync, w
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { beforeAll, describe, expect, test } from "vitest";
-import { callbackUrls, writeManifest } from "../scripts/assemble-deploy-tree.ts";
+import { callbackUrls, writeManifest } from "../../scripts/assemble-deploy-tree.ts";
 import { assembleAt, WORKER } from "./helpers/tree.ts";
-import { parseJsonc } from "../scripts/update/merge-wrangler.ts";
-import { parseManifest } from "../src/update/release-manifest.ts";
+import { parseJsonc } from "../../scripts/update/merge-wrangler.ts";
+import { parseManifest } from "../../src/update/release-manifest.ts";
 
 const files = (root: string, dir = root): string[] =>
   readdirSync(dir).flatMap((n) => (statSync(join(dir, n)).isDirectory() ? (n === "node_modules" ? [] : files(root, join(dir, n))) : [relative(root, join(dir, n))]));

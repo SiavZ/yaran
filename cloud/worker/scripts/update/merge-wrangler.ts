@@ -17,8 +17,8 @@
  * Used by:
  * scripts/update/merge-wrangler.ts
  * ├── scripts/update/update.ts
- * ├── test/deploy-tree.test.ts
- * └── test/update-job.test.ts
+ * ├── test/node/deploy-tree.test.ts
+ * └── test/node/update-job.test.ts
  * <module-headers:end>
  */
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";

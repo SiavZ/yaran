@@ -84,11 +84,12 @@ export async function redeemClaim(deps: Phase07Deps, record: SetupRecord, code: 
   if (!t.ok) return { ok: false };
   const email = record.admin_email!;
   const at = Math.floor(now.getTime() / 1000);
+  const slug = await deps.provisioning.deriveUserSlug(email);
   const db = deps.db;
   await db.batch([
     db
       .prepare("INSERT OR IGNORE INTO users (id, email, slug, role, status, created_at) VALUES (?, ?, ?, 'admin', 'active', ?)")
-      .bind(deps.newId(), email, deps.provisioning.deriveUserSlug(email), at),
+      .bind(deps.newId(), email, slug, at),
     db.prepare("UPDATE users SET role = 'admin', status = 'active' WHERE email = ?").bind(email),
     ...writeStatements(
       db,

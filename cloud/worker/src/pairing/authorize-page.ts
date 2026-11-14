@@ -3,7 +3,7 @@
  * Approve or Deny, or Replace and Pair-as on the same-name branch), the provisioning
  * error page with its Retry, and the plain refusal page for a bad callback or state.
  *
- * Built only from the console UI kit seam, so every value is escaped there and every
+ * Built only from the console UI kit (`ui/kit.ts`), so every value is escaped there and every
  * page carries the strict CSP with `form-action 'self' http://127.0.0.1:<port>` and
  * `Referrer-Policy: same-origin` (02 §8).
  *

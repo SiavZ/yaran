@@ -3,18 +3,18 @@
  *
  * <module-headers:begin>
  * Uses:
- * test/token-template.test.ts
+ * test/node/token-template.test.ts
  * ├── cloud/worker/scripts/permissions.json
  * └── src/setup/token-template.ts
  * External: node:fs, vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
-import manifest from "../scripts/permissions.json" with { type: "json" };
-import { PERMISSIONS, permissionGroupKeys, tokenTemplateUrl } from "../src/setup/token-template.ts";
+import manifest from "../../scripts/permissions.json" with { type: "json" };
+import { PERMISSIONS, permissionGroupKeys, tokenTemplateUrl } from "../../src/setup/token-template.ts";
 
 test("the URL round-trips to exactly the manifest's IDs", () => {
   const url = new URL(tokenTemplateUrl());
@@ -43,8 +43,8 @@ test("the short-key fallback leaves out the tunnel row, which has no official sh
 });
 
 test("the deploy README and the CF_API_TOKEN binding description link the generated URL", () => {
-  const readme = readFileSync(new URL("../deploy-template/README.md", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../../deploy-template/README.md", import.meta.url), "utf8");
   expect(readme.match(/https:\/\/dash\.cloudflare\.com\/\?to=[^)\s]*/g)).toEqual([tokenTemplateUrl()]);
-  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
   expect(pkg.cloudflare.bindings.CF_API_TOKEN.description).toContain(tokenTemplateUrl());
 });

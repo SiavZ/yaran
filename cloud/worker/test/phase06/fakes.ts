@@ -140,7 +140,7 @@ export async function makeWorld(o: { now?: number } = {}): Promise<TestWorld> {
   }));
   serveJwks();
   const baseline = (await all<{ n: number | null }>(db, "SELECT max(rowid) AS n FROM audit_log"))[0]?.n ?? 0;
-  const workerEnv: Cloudflare.Env = { ...env, APP_CALLBACK_URLS: APP_CALLBACK, WORKER_VERSION: "1.0.0" };
+  const workerEnv: Cloudflare.Env = { ...env, APP_CALLBACK_URLS: APP_CALLBACK };
   const app: AppContext = {
     env: workerEnv, db, log: createLogger(), now: () => clock.now, requestId: "req-test-1", ip: null, country: null,
     actor: () => ({ kind: "system" }), waitUntil: () => {},

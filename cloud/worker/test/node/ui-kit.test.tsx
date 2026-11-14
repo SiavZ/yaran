@@ -4,7 +4,7 @@
  *
  * <module-headers:begin>
  * Uses:
- * test/ui-kit.test.tsx
+ * test/node/ui-kit.test.tsx
  * ├── scripts/copy-ui-kit-assets.ts
  * ├── src/console/ui/components.tsx
  * ├── src/console/ui/confirm.tsx
@@ -22,14 +22,14 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { copyUiKitAssets, defaultSources } from "../scripts/copy-ui-kit-assets.ts";
-import { Chip, Field, Notice, Table } from "../src/console/ui/components.tsx";
-import { ConfirmBody } from "../src/console/ui/confirm.tsx";
-import { renderPage, Shell } from "../src/console/ui/shell.tsx";
-import { PERMISSIONS } from "../src/setup/token-template.ts";
-import { ClaimInvalidPage, ClaimPage, DomainPage, DonePage, IdpPage, KeysPage, OrgPage, ZonePage, AccessPage } from "../src/setup/pages-steps.tsx";
-import { CodePage, LockedPage, SecretsPage, TokenPage } from "../src/setup/pages.tsx";
-import { a11yViolations, cspViolations } from "./helpers/html-checks.ts";
+import { copyUiKitAssets, defaultSources } from "../../scripts/copy-ui-kit-assets.ts";
+import { Chip, Field, Notice, Table } from "../../src/console/ui/components.tsx";
+import { ConfirmBody } from "../../src/console/ui/confirm.tsx";
+import { renderPage, Shell } from "../../src/console/ui/shell.tsx";
+import { PERMISSIONS } from "../../src/setup/token-template.ts";
+import { ClaimInvalidPage, ClaimPage, DomainPage, DonePage, IdpPage, KeysPage, OrgPage, ZonePage, AccessPage } from "../../src/setup/pages-steps.tsx";
+import { CodePage, LockedPage, SecretsPage, TokenPage } from "../../src/setup/pages.tsx";
+import { a11yViolations, cspViolations } from "../helpers/html-checks.ts";
 
 const page = (node: Parameters<typeof renderPage>[0]) => renderPage(node);
 
@@ -97,7 +97,7 @@ describe("setup pages", () => {
 });
 
 describe("console.css", () => {
-  const css = readFileSync(new URL("../assets/console/console.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = readFileSync(new URL("../../assets/console/console.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   test("uses no colour literal, only ui-kit token variables", () => {
     expect(css).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(css).not.toMatch(/\b(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color-mix)\(/i);
@@ -120,7 +120,7 @@ describe("ui-kit token copy", () => {
   test("fails loudly when ui-kit is missing", () => {
     expect(() => copyUiKitAssets({ tokens: "/nope/tokens.css", font: "/nope/f.woff2" }, tmpdir())).toThrow(/ui-kit tokens not found/);
   });
-  const repoRoot = new URL("../../..", import.meta.url).pathname;
+  const repoRoot = new URL("../../../..", import.meta.url).pathname;
   const kit = defaultSources(repoRoot);
   test.skipIf(!existsSync(kit.tokens) || !existsSync(join(repoRoot, "cloud/worker/assets/console/tokens.css")))("the built tokens.css equals packages/ui-kit/src/tokens.css", () => {
     expect(readFileSync(join(repoRoot, "cloud/worker/assets/console/tokens.css"))).toEqual(readFileSync(kit.tokens));

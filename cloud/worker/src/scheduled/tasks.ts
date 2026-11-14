@@ -12,6 +12,7 @@
  * <module-headers:begin>
  * Uses:
  * src/scheduled/tasks.ts
+ * ├── src/admin/scheduled-jobs.ts
  * ├── src/http/context.ts
  * ├── src/pairing/sweep.ts
  * ├── src/reconcile/tasks.ts
@@ -20,6 +21,7 @@
  *
  * Used by:
  * src/scheduled/tasks.ts
+ * ├── src/admin/scheduled-jobs.ts
  * ├── src/index.ts
  * ├── src/pairing/sweep.ts
  * ├── src/reconcile/tasks.ts
@@ -30,6 +32,7 @@
  * <module-headers:end>
  */
 import type { AppContext } from "../http/context.ts";
+import { PHASE07_TASKS } from "../admin/scheduled-jobs.ts";
 import { PAIR_SWEEP_TASKS } from "../pairing/sweep.ts";
 import { RECONCILE_TASK_DEFS } from "../reconcile/tasks.ts";
 import { PURGE_TASKS } from "./purge.ts";
@@ -59,4 +62,4 @@ export interface TaskDef {
 }
 
 /** Every registered task. Phases 05 and 08 append one spread line each. */
-export const TASKS: readonly TaskDef[] = [...PURGE_TASKS, ...RECONCILE_TASK_DEFS, ...PAIR_SWEEP_TASKS];
+export const TASKS: readonly TaskDef[] = [...PURGE_TASKS, ...RECONCILE_TASK_DEFS, ...PAIR_SWEEP_TASKS, ...PHASE07_TASKS];

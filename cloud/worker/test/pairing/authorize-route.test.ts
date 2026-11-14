@@ -108,7 +108,7 @@ describe("the confirm page", () => {
     expect(html).toContain(`<code class="chip chip-mono" aria-label="Machine key fingerprint">${fx.fingerprint}</code>`);
     expect(html).toContain(`<code class="chip">${pw.user.email}</code>`);
     expect(html).toContain(`<code class="chip">laptop</code>`);
-    expect(html).toMatch(/<html lang="en">/);
+    expect(html).toMatch(/<html lang="en" class="dark">/);
     expect(html).toMatch(/<button type="submit" class="btn btn-primary" name="decision" value="approve" autofocus>Approve<\/button>/);
     expect(html).toMatch(/<form method="post" action="\/v1\/pair\/authorize" aria-label="Pairing decision">/);
     expect(b64urlDecode(fx.public_key)!.length).toBe(32);

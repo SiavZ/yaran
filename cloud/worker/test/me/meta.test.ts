@@ -6,6 +6,7 @@
  * Uses:
  * test/me/meta.test.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── src/update/worker-version.ts
  * ├── test/phase06/fakes.ts
  * └── test/phase06/harness.ts
  * External: vitest
@@ -16,6 +17,7 @@
 import { validate, type Meta } from "@yaran/protocol";
 import { describe, expect, it } from "vitest";
 import { CP_HOST, makeWorld, TEAM } from "../phase06/fakes.ts";
+import { WORKER_VERSION } from "../../src/update/worker-version.ts";
 import { dispatch } from "../phase06/harness.ts";
 
 async function meta(setupState: "open" | "closed", pushEnabled = true): Promise<{ res: Response; body: Meta }> {
@@ -31,7 +33,7 @@ describe("GET /v1/meta", () => {
     const { res, body } = await meta("open");
     expect(res.headers.get("Cache-Control")).toBe("public, max-age=60");
     expect(validate("Meta", body).valid).toBe(true);
-    expect(body).toEqual({ service: "yaran-cloud", protocol: { min: 1, max: 1 }, setup: "open", worker: { version: "1.0.0" } });
+    expect(body).toEqual({ service: "yaran-cloud", protocol: { min: 1, max: 1 }, setup: "open", worker: { version: WORKER_VERSION } });
   });
 
   it("after setup adds org, access, capabilities and push, and nothing else", async () => {

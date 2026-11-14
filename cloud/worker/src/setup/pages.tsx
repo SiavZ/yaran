@@ -23,7 +23,7 @@
  * ├── src/console/admin-pages-2.tsx
  * ├── src/setup/pages-steps.tsx
  * ├── src/setup/routes.ts
- * └── test/ui-kit.test.tsx
+ * └── test/node/ui-kit.test.tsx
  * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
@@ -80,7 +80,7 @@ export function SecretsPage(props: { problems: readonly SecretProblem[] }) {
       ))}
       <p>
         A Worker cannot set its own secrets, so set them in the Cloudflare dashboard: Workers &amp; Pages, this Worker, Settings, Variables and Secrets.
-        Generate a setup code with <Chip>openssl rand -base64 24</Chip> and a data key with <Chip>openssl rand -hex 32</Chip>, keep a copy of the data key
+        Generate a setup code with <Chip>openssl rand -base64 24</Chip> and a data key with <Chip>openssl rand -base64 32</Chip>, keep a copy of the data key
         somewhere safe, then reload this page. Nothing else happens until both are set.
       </p>
     </SetupFrame>

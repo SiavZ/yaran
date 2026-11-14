@@ -13,7 +13,6 @@
  * Uses:
  * src/update/update-checker.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/admin/ports.ts
  * ├── src/admin/settings-store.ts
  * ├── src/admin/wire-time.ts
  * └── src/update/release-manifest.ts
@@ -28,7 +27,6 @@
  * <module-headers:end>
  */
 import type { UpdateStatus } from "@yaran/protocol";
-import type { D1Like } from "../admin/ports.ts";
 import { readKey, writeKeys } from "../admin/settings-store.ts";
 import { wireTime } from "../admin/wire-time.ts";
 import { compareSemver, newestTrainRelease, parseManifest, RAW_MANIFEST_URL, RELEASES_API_URL, type GithubRelease } from "./release-manifest.ts";
@@ -37,7 +35,7 @@ export const STATUS_KEY = "update_status";
 export const CHECK_INTERVAL_MS = 24 * 3_600_000;
 
 export interface CheckerDeps {
-  db: D1Like;
+  db: D1Database;
   fetch: typeof fetch;
   now(): Date;
   workerVersion: string;
@@ -85,7 +83,7 @@ export async function checkForUpdate(deps: CheckerDeps): Promise<UpdateStatus> {
       try {
         return await fromApi(deps);
       } catch (apiError) {
-        throw new Error(`${reason(rawError)}; fallback: ${reason(apiError)}`);
+        throw new Error(`${reason(rawError)}; fallback: ${reason(apiError)}`, { cause: apiError });
       }
     });
   } catch (e) {

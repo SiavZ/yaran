@@ -4,7 +4,7 @@
  *
  * <module-headers:begin>
  * Uses:
- * test/update-job.test.ts
+ * test/node/update-job.test.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── cloud/protocol/fixtures/api/ReleaseManifest.json
  * ├── scripts/assemble-deploy-tree.ts
@@ -12,10 +12,10 @@
  * ├── scripts/update/merge-wrangler.ts
  * ├── scripts/update/update.ts
  * ├── src/update/release-manifest.ts
- * └── test/helpers/tree.ts
+ * └── test/node/helpers/tree.ts
  * External: node:child_process, node:fs, node:os, node:path, vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { execFileSync } from "node:child_process";
@@ -25,17 +25,20 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import fixtures from "@yaran/protocol/fixtures/api/ReleaseManifest.json" with { type: "json" };
 import type { ReleaseManifest } from "@yaran/protocol";
-import { writeManifest } from "../scripts/assemble-deploy-tree.ts";
-import { checkStartingPoint, downloadVerified, sha256Hex } from "../scripts/update/fetch-release.ts";
-import { mergeWrangler, parseJsonc } from "../scripts/update/merge-wrangler.ts";
-import { runUpdate } from "../scripts/update/update.ts";
-import { RAW_MANIFEST_URL } from "../src/update/release-manifest.ts";
+import { writeManifest } from "../../scripts/assemble-deploy-tree.ts";
+import { checkStartingPoint, downloadVerified, sha256Hex } from "../../scripts/update/fetch-release.ts";
+import { mergeWrangler, parseJsonc } from "../../scripts/update/merge-wrangler.ts";
+import { runUpdate } from "../../scripts/update/update.ts";
+import { RAW_MANIFEST_URL } from "../../src/update/release-manifest.ts";
 import { assembleAt } from "./helpers/tree.ts";
 
-const TEMPLATE = readFileSync(new URL("../deploy-template/wrangler.template.jsonc", import.meta.url), "utf8");
+const TEMPLATE = readFileSync(new URL("../../deploy-template/wrangler.template.jsonc", import.meta.url), "utf8");
 const tpl = (cb: string) => TEMPLATE.replace('"__APP_CALLBACK_URLS__"', JSON.stringify(cb));
 const OLD_CB = "https://app.example.org/auth/callback";
 const NEW_CB = "https://app2.example.org/auth/callback";
+
+/** The merged wrangler.jsonc, as far as these tests read it. */
+type Merged = { vars: Record<string, string>; routes: unknown[]; d1_databases: Record<string, unknown>[]; [key: string]: unknown };
 
 describe("merge-wrangler", () => {
   const current = (vars: Record<string, string>, extra: Record<string, unknown> = {}) =>
@@ -43,7 +46,7 @@ describe("merge-wrangler", () => {
 
   test("keeps every deployer-owned value and lists what it kept", () => {
     const out = mergeWrangler({ current: current({ APP_CALLBACK_URLS: OLD_CB, CF_API_BASE_URL: "https://proxy.example/v4", MY_FLAG: "1" }, { limits: { cpu_ms: 50 } }), template: tpl(NEW_CB), previousTemplate: tpl(OLD_CB), setupClosed: false });
-    const w = parseJsonc(out.text, "out") as Record<string, any>;
+    const w = parseJsonc(out.text, "out") as Merged;
     expect(w).toMatchObject({ name: "acme-cp", account_id: "acc1", routes: [{ pattern: "x.example.org/*" }], d1_databases: [{ binding: "DB", database_name: "acme-db", database_id: "uuid-1", migrations_dir: "migrations" }], limits: { cpu_ms: 50 } });
     expect(w.vars).toEqual({ APP_CALLBACK_URLS: NEW_CB, CF_API_BASE_URL: "https://proxy.example/v4", MY_FLAG: "1" });
     expect(out.preserved).toEqual(["name", "account_id", "d1_databases.DB.database_id", "d1_databases.DB.database_name", "routes", "vars.CF_API_BASE_URL"]);
@@ -52,7 +55,7 @@ describe("merge-wrangler", () => {
   });
   test("APP_CALLBACK_URLS: a deployer change from the previous default is kept and listed", () => {
     const out = mergeWrangler({ current: current({ APP_CALLBACK_URLS: `${OLD_CB},https://fork.example/auth/callback` }), template: tpl(NEW_CB), previousTemplate: tpl(OLD_CB), setupClosed: false });
-    expect((parseJsonc(out.text, "o") as any).vars.APP_CALLBACK_URLS).toBe(`${OLD_CB},https://fork.example/auth/callback`);
+    expect((parseJsonc(out.text, "o") as Merged).vars.APP_CALLBACK_URLS).toBe(`${OLD_CB},https://fork.example/auth/callback`);
     expect(out.preserved).toContain("vars.APP_CALLBACK_URLS");
   });
   test("flips workers_dev only once setup is closed, and never allows preview URLs", () => {
@@ -64,7 +67,7 @@ describe("merge-wrangler", () => {
   });
   test("adds no route of its own", () => {
     const out = mergeWrangler({ current: JSON.stringify({ name: "yaran-cloud" }), template: tpl(NEW_CB), previousTemplate: null, setupClosed: true });
-    expect((parseJsonc(out.text, "o") as any).routes).toEqual([]);
+    expect((parseJsonc(out.text, "o") as Merged).routes).toEqual([]);
   });
 });
 
@@ -126,8 +129,8 @@ test("end to end: v1.0.0 → v1.1.0 replaces upstream files, keeps the deployer'
   expect(readFileSync(join(repo, "src/update/worker-version.ts"), "utf8")).toContain('"1.1.0"');
   expect(readFileSync(join(repo, "NOTES.md"), "utf8")).toBe("mine\n");
   expect(existsSync(join(repo, "src/stale-upstream.ts"))).toBe(false);
-  const w = parseJsonc(readFileSync(join(repo, "wrangler.jsonc"), "utf8"), "merged") as any;
-  expect(w.d1_databases[0].database_id).toBe("db-uuid");
+  const w = parseJsonc(readFileSync(join(repo, "wrangler.jsonc"), "utf8"), "merged") as Merged;
+  expect(w.d1_databases[0]!.database_id).toBe("db-uuid");
   expect(w.workers_dev).toBe(false);
   expect(JSON.parse(readFileSync(join(repo, "release.json"), "utf8")).version).toBe("1.1.0");
   expect(out?.body).toContain("Security fix: **yes, merge soon**");

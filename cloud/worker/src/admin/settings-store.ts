@@ -5,13 +5,15 @@
  * internal keys (setup record, control-plane host, sealed token, update status) live beside
  * them. A missing row falls back to the caller's default.
  *
- * - Values are JSON. A row that does not parse is a loud error, never a silent default.
+ * - Every key is one 04's registry declares (`db/settings.ts`, Phase 07's rows in
+ *   `setup-settings.ts`); reads and writes go through its validators, so a stray key or an
+ *   invalid value is a loud error, never a silent default.
  * - Writes are one D1 batch, so a multi-key change lands together or not at all.
  *
  * <module-headers:begin>
  * Uses:
  * src/admin/settings-store.ts
- * └── src/admin/ports.ts
+ * └── src/db/settings.ts
  * External: none
  *
  * Used by:
@@ -19,7 +21,6 @@
  * ├── src/admin/api-token.ts
  * ├── src/admin/health.ts
  * ├── src/admin/settings-apply.ts
- * ├── src/admin/settings-schema.ts
  * ├── src/console/admin-routes.ts
  * ├── src/console/routes.ts
  * ├── src/setup/routes.ts
@@ -29,53 +30,34 @@
  * ├── src/setup/steps/keys.ts
  * ├── src/update/update-checker.ts
  * ├── test/admin-services.test.ts
+ * ├── test/helpers/deps.ts
  * ├── test/setup-flow.test.ts
  * └── test/setup-steps.test.ts
  * <module-headers:end>
  */
-import type { D1Like, D1Stmt } from "./ports.ts";
+import { getStoredSettings, settingStatement, type SettingKey } from "../db/settings.ts";
 
-export async function readKey<T>(db: D1Like, key: string): Promise<T | undefined> {
-  const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first<{ value: string }>();
-  if (!row) return undefined;
-  try {
-    return JSON.parse(row.value) as T;
-  } catch {
-    throw new Error(`settings row ${key} holds invalid JSON`);
-  }
+/** One stored value (validated by 04's registry), or undefined when the row is absent. */
+export async function readKey<T>(db: D1Database, key: string): Promise<T | undefined> {
+  return (await getStoredSettings(db, [key]))[key] as T | undefined;
 }
 
-export async function readKeys(db: D1Like, keys: readonly string[]): Promise<Map<string, unknown>> {
-  const out = new Map<string, unknown>();
-  if (keys.length === 0) return out;
-  const marks = keys.map(() => "?").join(",");
-  const { results } = await db.prepare(`SELECT key, value FROM settings WHERE key IN (${marks})`).bind(...keys).all<{ key: string; value: string }>();
-  for (const row of results) {
-    try {
-      out.set(row.key, JSON.parse(row.value));
-    } catch {
-      throw new Error(`settings row ${row.key} holds invalid JSON`);
-    }
-  }
-  return out;
+export async function readKeys(db: D1Database, keys: readonly string[]): Promise<Map<string, unknown>> {
+  return new Map(Object.entries(await getStoredSettings(db, keys)));
 }
 
-/** Statements that upsert each entry; run them alone or inside a larger batch. */
-export function writeStatements(db: D1Like, entries: Record<string, unknown>, updatedBy: string, now: Date): D1Stmt[] {
+/** Statements that upsert each entry through 04's validating writer; batch them as needed. */
+export function writeStatements(db: D1Database, entries: Record<string, unknown>, updatedBy: string, now: Date): D1PreparedStatement[] {
   const at = Math.floor(now.getTime() / 1000);
-  return Object.entries(entries).map(([key, value]) =>
-    db
-      .prepare("INSERT OR REPLACE INTO settings (key, value, updated_at, updated_by) VALUES (?, ?, ?, ?)")
-      .bind(key, JSON.stringify(value), at, updatedBy),
-  );
+  return Object.entries(entries).map(([key, value]) => settingStatement(db, key as SettingKey, value as never, updatedBy, at));
 }
 
-export async function writeKeys(db: D1Like, entries: Record<string, unknown>, updatedBy: string, now: Date): Promise<void> {
+export async function writeKeys(db: D1Database, entries: Record<string, unknown>, updatedBy: string, now: Date): Promise<void> {
   const statements = writeStatements(db, entries, updatedBy, now);
   if (statements.length > 0) await db.batch(statements);
 }
 
-export async function deleteKeys(db: D1Like, keys: readonly string[]): Promise<void> {
+export async function deleteKeys(db: D1Database, keys: readonly string[]): Promise<void> {
   if (keys.length === 0) return;
   await db.batch(keys.map((k) => db.prepare("DELETE FROM settings WHERE key = ?").bind(k)));
 }
