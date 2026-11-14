@@ -336,6 +336,12 @@ Two defenses do always run, and they're about hostile web pages rather than abou
 
 The rest of `[server]` tunes presentation and limits: console color, the per-request access log, the shutdown grace period, and how many live connections of each kind yaran accepts at once. As ever, each key explains itself inline in your config file.
 
+### Org Control Plane
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/SiavZ/yaran/tree/cloud-deploy/worker)
+
+An organization can run its own yaran control plane on Cloudflare: deploy it with the button, create its API token from the template link the button shows, and finish on the setup page it serves.
+
 ### Configuration
 
 The config file at `~/.config/yaran/config.toml` (Linux, or `$XDG_CONFIG_HOME/yaran/config.toml` when you have set that variable to an absolute path) or `~/.yaran/config.toml` (macOS) is exhaustively commented. Every setting is explained inline, so you should never need to leave the file to understand an option. Every keybinding is rebindable. Every pane width, scrollback limit, default provider, and startup agent reopening behavior is configurable.

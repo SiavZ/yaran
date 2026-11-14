@@ -5,6 +5,26 @@
  * exactly the contract with each field's range as its hint. Health re-reads Cloudflare and
  * re-runs the wiring self-test. Updates shows `UpdateStatus` honestly: a failed check reads
  * "couldn't check", never "up to date".
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/admin-pages-2.tsx
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/audit-query.ts
+ * ├── src/admin/health.ts
+ * ├── src/admin/ports.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/console/admin-pages.tsx
+ * ├── src/console/ui/components.tsx
+ * ├── src/setup/capability-probe.ts
+ * ├── src/setup/pages-steps.tsx
+ * └── src/setup/pages.tsx
+ * External: none
+ *
+ * Used by:
+ * src/console/admin-pages-2.tsx
+ * └── src/console/admin-routes.ts
+ * <module-headers:end>
  */
 import type { AuditEntry, Settings, UpdateStatus } from "@yaran/protocol";
 import { Button, Checkbox, Chip, EmptyState, Field, LinkButton, Notice, PostForm, RelativeTime, Table } from "./ui/components.tsx";

@@ -6,6 +6,20 @@
  * misclick-safe spacing) a destructive-styled confirm button that POSTs to the same URL.
  * `enhance.js` lifts the `[data-confirm-form]` into a native `<dialog>`; Esc there cancels.
  * A target that has vanished renders "already removed" instead of a button.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/ui/confirm.tsx
+ * ├── src/console/ui/components.tsx
+ * └── src/console/ui/strings.ts
+ * External: hono
+ *
+ * Used by:
+ * src/console/ui/confirm.tsx
+ * ├── src/console/admin-pages.tsx
+ * ├── src/console/user-pages.tsx
+ * └── test/ui-kit.test.tsx
+ * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
 import { Chip, LinkButton, Notice, PostForm } from "./components.tsx";

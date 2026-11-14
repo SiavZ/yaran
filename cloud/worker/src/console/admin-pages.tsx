@@ -4,6 +4,24 @@
  * Tables carry the fields of 02's `AdminUser`, `AdminMachine` and `AdminDevice`; actions
  * are small forms for reversible changes (promote, demote, enable) and confirm pages for
  * destructive ones (disable, revoke, rotate, remove). Admin pages show the update banner.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/admin-pages.tsx
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/console/flash-notice.tsx
+ * ├── src/console/flash.ts
+ * ├── src/console/ui/components.tsx
+ * ├── src/console/ui/confirm.tsx
+ * ├── src/console/ui/shell.tsx
+ * └── src/console/ui/strings.ts
+ * External: hono
+ *
+ * Used by:
+ * src/console/admin-pages.tsx
+ * ├── src/console/admin-pages-2.tsx
+ * └── src/console/admin-routes.ts
+ * <module-headers:end>
  */
 import type { AdminDevice, AdminMachine, AdminUser, UpdateStatus } from "@yaran/protocol";
 import type { Child } from "hono/jsx";

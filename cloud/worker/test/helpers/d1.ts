@@ -6,6 +6,19 @@
  * writes runs against real SQLite in Node.
  *
  * - `batch` runs inside one transaction, like D1's.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * test/helpers/d1.ts
+ * └── src/admin/ports.ts
+ * External: node:fs, node:sqlite
+ *
+ * Used by:
+ * test/helpers/d1.ts
+ * ├── test/helpers/deps.ts
+ * ├── test/setup-gate.test.ts
+ * └── test/update-checker.test.ts
+ * <module-headers:end>
  */
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";

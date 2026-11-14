@@ -6,6 +6,26 @@
  * `control_plane_host`, `team_domain`, `control_plane_app_id`, `control_plane_aud`, …).
  *
  * - A refused transition is returned, never thrown, so the page can say why.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/steps/common.ts
+ * ├── src/admin/ports.ts
+ * ├── src/admin/settings-store.ts
+ * └── src/setup/wizard-state.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/steps/common.ts
+ * ├── src/admin/health.ts
+ * ├── src/admin/settings-apply.ts
+ * ├── src/console/admin-routes.ts
+ * ├── src/setup/routes.ts
+ * ├── src/setup/steps/claim.ts
+ * ├── test/admin-services.test.ts
+ * ├── test/console.test.ts
+ * └── test/setup-flow.test.ts
+ * <module-headers:end>
  */
 import type { D1Like } from "../../admin/ports.ts";
 import { readKey, writeStatements } from "../../admin/settings-store.ts";

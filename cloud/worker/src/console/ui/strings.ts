@@ -6,6 +6,22 @@
  * the name inside a string here.
  *
  * - Data only.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/ui/strings.ts
+ * └── @yaran/protocol:src/index.ts
+ * External: none
+ *
+ * Used by:
+ * src/console/ui/strings.ts
+ * ├── src/console/admin-pages.tsx
+ * ├── src/console/routes.ts
+ * ├── src/console/ui/components.tsx
+ * ├── src/console/ui/confirm.tsx
+ * ├── src/console/ui/shell.tsx
+ * └── src/console/user-pages.tsx
+ * <module-headers:end>
  */
 import type { PushState } from "@yaran/protocol";
 

@@ -7,6 +7,13 @@
  * self-test runs where a page asks for it.
  *
  * - Loaded as a same-origin module, so the CSP's `script-src 'self'` holds; no inline handlers.
+ *
+ * <module-headers:begin>
+ * Uses: none
+ * External: none
+ *
+ * Used by: entry point (compiled by npm run build in cloud/worker, loaded by every console page as /console/enhance.js)
+ * <module-headers:end>
  */
 
 function upgradeConfirmLinks(): void {

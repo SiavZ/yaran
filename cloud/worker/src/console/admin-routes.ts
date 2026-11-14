@@ -5,6 +5,33 @@
  * (`admin/*` here, 05's facade, 06's views) and renders the result. Destructive actions are
  * GET confirm + POST act; every outcome is a flash naming the target; every change is
  * audited (by the service, or here where the service is another phase's).
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/admin-routes.ts
+ * ├── src/admin/api-token.ts
+ * ├── src/admin/audit-query.ts
+ * ├── src/admin/health.ts
+ * ├── src/admin/settings-apply.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/admin/settings-store.ts
+ * ├── src/admin/users.ts
+ * ├── src/console/admin-pages-2.tsx
+ * ├── src/console/admin-pages.tsx
+ * ├── src/console/flash.ts
+ * ├── src/console/route-types.ts
+ * ├── src/console/routes.ts
+ * ├── src/console/ui/security-headers.ts
+ * ├── src/console/user-pages.tsx
+ * ├── src/setup/steps/common.ts
+ * └── src/update/update-checker.ts
+ * External: none
+ *
+ * Used by:
+ * src/console/admin-routes.ts
+ * ├── src/phase07.ts
+ * └── test/console.test.ts
+ * <module-headers:end>
  */
 import { exportAuditJsonl, queryAudit, type AuditFilter } from "../admin/audit-query.ts";
 import { replaceToken } from "../admin/api-token.ts";

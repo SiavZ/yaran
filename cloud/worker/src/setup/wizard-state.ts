@@ -9,6 +9,29 @@
  * - Pure: no I/O, no clock. Callers persist the returned record.
  * - One exhaustive switch over the step; an event that does not belong to the current step
  *   is refused, never silently applied.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/wizard-state.ts
+ * └── src/admin/ports.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/wizard-state.ts
+ * ├── src/setup/pages-steps.tsx
+ * ├── src/setup/pages.tsx
+ * ├── src/setup/routes.ts
+ * ├── src/setup/steps/access.ts
+ * ├── src/setup/steps/claim.ts
+ * ├── src/setup/steps/common.ts
+ * ├── src/setup/steps/domain.ts
+ * ├── src/setup/steps/idp.ts
+ * ├── src/setup/steps/keys.ts
+ * ├── src/setup/steps/org.ts
+ * ├── src/setup/steps/zone.ts
+ * ├── test/setup-steps.test.ts
+ * └── test/wizard-state.test.ts
+ * <module-headers:end>
  */
 import { assertNever } from "../admin/ports.ts";
 

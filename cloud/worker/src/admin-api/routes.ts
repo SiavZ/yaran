@@ -6,6 +6,25 @@
  * envelope, and mutating requests must be `application/json` from this origin (04's
  * pipeline enforces that too; it is checked here as well so these rows are safe alone).
  * W28 (reconcile) is 05's.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin-api/routes.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/audit-query.ts
+ * ├── src/admin/settings-apply.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/admin/users.ts
+ * ├── src/console/route-types.ts
+ * ├── src/console/ui/security-headers.ts
+ * └── src/update/update-checker.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin-api/routes.ts
+ * ├── src/phase07.ts
+ * └── test/console.test.ts
+ * <module-headers:end>
  */
 import { buildErrorEnvelope, validate, type AdminUserPatch, type ErrorCode, type Settings } from "@yaran/protocol";
 import { queryAudit } from "../admin/audit-query.ts";

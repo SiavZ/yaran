@@ -4,6 +4,25 @@
  * Each page shows what the step will do before it does it, and each fallback (G8, G10,
  * G14) names the dashboard path and offers Check again. The final page reports the close,
  * whether workers.dev was turned off, and runs the wiring self-test in the browser.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/pages-steps.tsx
+ * ├── src/cloudflare/setup-endpoints.ts
+ * ├── src/console/ui/components.tsx
+ * ├── src/console/ui/shell.tsx
+ * ├── src/setup/pages.tsx
+ * ├── src/setup/steps/idp.ts
+ * ├── src/setup/steps/zone.ts
+ * └── src/setup/wizard-state.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/pages-steps.tsx
+ * ├── src/console/admin-pages-2.tsx
+ * ├── src/setup/routes.ts
+ * └── test/ui-kit.test.tsx
+ * <module-headers:end>
  */
 import { Button, Chip, CopyField, Field, LinkButton, Notice, PostForm } from "../console/ui/components.tsx";
 import { Shell } from "../console/ui/shell.tsx";

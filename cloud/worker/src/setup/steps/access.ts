@@ -10,6 +10,23 @@
  *
  * - `mode: everyone` is refused while a One-time PIN IdP is enabled (it would admit any
  *   address that can receive mail).
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/steps/access.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/ports.ts
+ * ├── src/cloudflare/setup-endpoints.ts
+ * └── src/setup/wizard-state.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/steps/access.ts
+ * ├── src/admin/health.ts
+ * ├── src/admin/settings-apply.ts
+ * ├── src/setup/routes.ts
+ * └── test/setup-steps.test.ts
+ * <module-headers:end>
  */
 import type { Settings } from "@yaran/protocol";
 import { assertNever, isCfApiError, type CfTransport } from "../../admin/ports.ts";

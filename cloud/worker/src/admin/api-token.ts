@@ -6,6 +6,23 @@
  * capability probe on the new token before it overwrites the old one.
  *
  * - Sealed with 04's DATA_KEY helper under purpose `cf_api_token`; never rendered or logged.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/api-token.ts
+ * ├── src/admin/ports.ts
+ * ├── src/admin/settings-store.ts
+ * ├── src/console/route-types.ts
+ * └── src/setup/capability-probe.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/api-token.ts
+ * ├── src/admin/health.ts
+ * ├── src/admin/settings-apply.ts
+ * ├── src/console/admin-routes.ts
+ * └── src/setup/routes.ts
+ * <module-headers:end>
  */
 import type { CfTransport } from "./ports.ts";
 import type { Phase07Deps } from "../console/route-types.ts";

@@ -7,6 +7,31 @@
  *
  * - Values are JSON. A row that does not parse is a loud error, never a silent default.
  * - Writes are one D1 batch, so a multi-key change lands together or not at all.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/settings-store.ts
+ * └── src/admin/ports.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/settings-store.ts
+ * ├── src/admin/api-token.ts
+ * ├── src/admin/health.ts
+ * ├── src/admin/settings-apply.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/console/admin-routes.ts
+ * ├── src/console/routes.ts
+ * ├── src/setup/routes.ts
+ * ├── src/setup/setup-gate.ts
+ * ├── src/setup/steps/claim.ts
+ * ├── src/setup/steps/common.ts
+ * ├── src/setup/steps/keys.ts
+ * ├── src/update/update-checker.ts
+ * ├── test/admin-services.test.ts
+ * ├── test/setup-flow.test.ts
+ * └── test/setup-steps.test.ts
+ * <module-headers:end>
  */
 import type { D1Like, D1Stmt } from "./ports.ts";
 

@@ -10,6 +10,41 @@
  *
  * - Types only, plus `assertNever`; no behaviour.
  * - D1 is described structurally so the real binding and the test shim both satisfy it.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/ports.ts
+ * └── @yaran/protocol:src/index.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/ports.ts
+ * ├── src/admin/api-token.ts
+ * ├── src/admin/audit-query.ts
+ * ├── src/admin/settings-apply.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/admin/settings-store.ts
+ * ├── src/admin/users.ts
+ * ├── src/cloudflare/setup-endpoints.ts
+ * ├── src/console/admin-pages-2.tsx
+ * ├── src/console/route-types.ts
+ * ├── src/setup/capability-probe.ts
+ * ├── src/setup/routes.ts
+ * ├── src/setup/setup-gate.ts
+ * ├── src/setup/steps/access.ts
+ * ├── src/setup/steps/claim.ts
+ * ├── src/setup/steps/common.ts
+ * ├── src/setup/steps/domain.ts
+ * ├── src/setup/steps/idp.ts
+ * ├── src/setup/steps/keys.ts
+ * ├── src/setup/steps/org.ts
+ * ├── src/setup/steps/zone.ts
+ * ├── src/setup/wizard-state.ts
+ * ├── src/update/update-checker.ts
+ * ├── test/helpers/d1.ts
+ * ├── test/helpers/deps.ts
+ * └── test/helpers/fake-cf.ts
+ * <module-headers:end>
  */
 import type { AdminDevice, AdminDevicePage, AdminMachine, AdminMachinePage, AuditAction, Role } from "@yaran/protocol";
 

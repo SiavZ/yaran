@@ -7,6 +7,22 @@
  * because `/releases/latest` is repo-wide and would return the app train.
  *
  * - Pure. The deploy tree's `scripts/update/*` import this same file.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/update/release-manifest.ts
+ * └── @yaran/protocol:src/index.ts
+ * External: none
+ *
+ * Used by:
+ * src/update/release-manifest.ts
+ * ├── scripts/assemble-deploy-tree.ts
+ * ├── scripts/update/fetch-release.ts
+ * ├── src/update/update-checker.ts
+ * ├── test/deploy-tree.test.ts
+ * ├── test/update-checker.test.ts
+ * └── test/update-job.test.ts
+ * <module-headers:end>
  */
 import { validate, type ReleaseManifest } from "@yaran/protocol";
 

@@ -8,10 +8,29 @@
  * the last known latest version kept; it is never stored as "up to date".
  *
  * - The manifest is advisory: authenticity is enforced by the update job, where code changes.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/update/update-checker.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/ports.ts
+ * ├── src/admin/settings-store.ts
+ * ├── src/admin/wire-time.ts
+ * └── src/update/release-manifest.ts
+ * External: none
+ *
+ * Used by:
+ * src/update/update-checker.ts
+ * ├── src/admin-api/routes.ts
+ * ├── src/admin/scheduled-jobs.ts
+ * ├── src/console/admin-routes.ts
+ * └── test/update-checker.test.ts
+ * <module-headers:end>
  */
 import type { UpdateStatus } from "@yaran/protocol";
 import type { D1Like } from "../admin/ports.ts";
 import { readKey, writeKeys } from "../admin/settings-store.ts";
+import { wireTime } from "../admin/wire-time.ts";
 import { compareSemver, newestTrainRelease, parseManifest, RAW_MANIFEST_URL, RELEASES_API_URL, type GithubRelease } from "./release-manifest.ts";
 
 export const STATUS_KEY = "update_status";
@@ -59,7 +78,7 @@ const reason = (e: unknown) => (e instanceof Error ? e.message : String(e)).slic
 /** Checks now, whatever the clock says; stores and returns the status. */
 export async function checkForUpdate(deps: CheckerDeps): Promise<UpdateStatus> {
   const prev = await readKey<UpdateStatus>(deps.db, STATUS_KEY);
-  const checked_at = deps.now().toISOString();
+  const checked_at = wireTime(deps.now());
   let latest: Latest;
   try {
     latest = await fromRaw(deps).catch(async (rawError: unknown) => {
@@ -103,7 +122,7 @@ export async function readUpdateStatus(deps: CheckerDeps): Promise<UpdateStatus>
       notes_url: null,
       update_available: false,
       security: false,
-      checked_at: new Date(0).toISOString(),
+      checked_at: wireTime(0),
       error: "not checked yet",
     }
   );

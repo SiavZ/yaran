@@ -6,9 +6,27 @@
  * documented wire mapping (user/admin → user, setup/system → system, denied/failed →
  * error). The export streams every row matching the current filter as JSON Lines. The
  * retention sweep deletes only rows older than `audit_retention_days`.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/audit-query.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/ports.ts
+ * └── src/admin/wire-time.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/audit-query.ts
+ * ├── src/admin-api/routes.ts
+ * ├── src/admin/scheduled-jobs.ts
+ * ├── src/console/admin-pages-2.tsx
+ * ├── src/console/admin-routes.ts
+ * └── test/admin-services.test.ts
+ * <module-headers:end>
  */
 import type { AuditEntry } from "@yaran/protocol";
 import type { D1Like } from "./ports.ts";
+import { wireTime } from "./wire-time.ts";
 
 export interface AuditFilter {
   actor?: string | null;
@@ -36,7 +54,7 @@ export function toAuditEntry(r: AuditRow): AuditEntry {
   const kind = r.actor_kind === "user" || r.actor_kind === "admin" ? "user" : r.actor_kind === "machine" ? "machine" : "system";
   const entry: AuditEntry = {
     id: r.id,
-    ts: new Date(r.at * 1000).toISOString(),
+    ts: wireTime(r.at),
     actor: { kind },
     action: r.action,
     target: { kind: (r.target_kind ?? "org") as AuditEntry["target"]["kind"] },

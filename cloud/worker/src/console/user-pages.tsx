@@ -4,6 +4,24 @@
  * Built on 06's view models (`MachineSummary`, `Device`) and QR helper. Each destructive
  * action is a confirm page; each outcome comes back as a flash notice naming the target.
  * Machines cannot be renamed, and the page says how to get a new name instead.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/user-pages.tsx
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/console/flash-notice.tsx
+ * ├── src/console/flash.ts
+ * ├── src/console/ui/components.tsx
+ * ├── src/console/ui/confirm.tsx
+ * ├── src/console/ui/shell.tsx
+ * └── src/console/ui/strings.ts
+ * External: hono
+ *
+ * Used by:
+ * src/console/user-pages.tsx
+ * ├── src/console/admin-routes.ts
+ * └── src/console/routes.ts
+ * <module-headers:end>
  */
 import type { AdminDevice, AdminMachine } from "@yaran/protocol";
 import { raw } from "hono/html";

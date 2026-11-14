@@ -8,6 +8,24 @@
  *
  * - Names in prose are always a `Chip`, never a quotation.
  * - Fields wire label, hint and error through `for`/`id` and `aria-describedby`.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/ui/components.tsx
+ * └── src/console/ui/strings.ts
+ * External: hono
+ *
+ * Used by:
+ * src/console/ui/components.tsx
+ * ├── src/console/admin-pages-2.tsx
+ * ├── src/console/admin-pages.tsx
+ * ├── src/console/flash-notice.tsx
+ * ├── src/console/ui/confirm.tsx
+ * ├── src/console/user-pages.tsx
+ * ├── src/setup/pages-steps.tsx
+ * ├── src/setup/pages.tsx
+ * └── test/ui-kit.test.tsx
+ * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
 import { S } from "./strings.ts";

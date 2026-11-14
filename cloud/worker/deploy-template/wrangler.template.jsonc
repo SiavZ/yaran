@@ -1,0 +1,37 @@
+// The yaran org control plane, as deployed by the Deploy to Cloudflare button.
+// This file is yours: the weekly update pull request keeps your values (name, database
+// id, routes, vars you changed) and lists every key it preserved.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Worker script name. Setup learns it from the workers.dev address; rename only before setup.
+  "name": "yaran-cloud",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  // A fetch to a hostname in this zone goes through Cloudflare's front door, Access included.
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  // D19: workers.dev exists only for the first-run setup page. Setup turns it off by API when
+  // it closes, the Worker refuses every workers.dev request after that whatever this says,
+  // and the update pull request sets it to false once your control plane reports setup closed.
+  "workers_dev": true,
+  // Always off: turning workers.dev off does not turn preview URLs off.
+  "preview_urls": false,
+  // Never add the control-plane hostname here: setup attaches it as a custom domain by API.
+  "routes": [],
+  // Created for you by the Deploy button (no database_id needed here).
+  "d1_databases": [{ "binding": "DB", "database_name": "yaran-cloud", "migrations_dir": "migrations" }],
+  // One dispatcher a minute runs every periodic job.
+  "triggers": { "crons": ["* * * * *"] },
+  "assets": { "directory": "assets" },
+  "observability": { "enabled": true },
+  "keep_vars": false,
+  "vars": {
+    // Comma-separated https app callbacks the sign-in handoff may redirect to. Set by the
+    // release from the publisher's domain. A fork that publishes its own app adds its own
+    // https://<its-domain>/auth/callback. Never list yaranapp://auth/callback: development
+    // builds are recognised by build=dev instead.
+    "APP_CALLBACK_URLS": "__APP_CALLBACK_URLS__",
+    // The Cloudflare API base URL the Worker calls. Change it only to put a test proxy in
+    // front of the API in staging; updates keep your value and list it in the pull request.
+    "CF_API_BASE_URL": "https://api.cloudflare.com/client/v4"
+  }
+}

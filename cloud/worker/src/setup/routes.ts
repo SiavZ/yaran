@@ -7,6 +7,38 @@
  * redirects back (post/redirect/get), so a reload never repeats a Cloudflare write.
  *
  * - Cloudflare failures render as a notice on the step, never a stack trace.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/routes.ts
+ * ├── src/admin/api-token.ts
+ * ├── src/admin/ports.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/admin/settings-store.ts
+ * ├── src/console/route-types.ts
+ * ├── src/console/ui/security-headers.ts
+ * ├── src/console/ui/shell.tsx
+ * ├── src/setup/capability-probe.ts
+ * ├── src/setup/host-lock.ts
+ * ├── src/setup/pages-steps.tsx
+ * ├── src/setup/pages.tsx
+ * ├── src/setup/setup-gate.ts
+ * ├── src/setup/steps/access.ts
+ * ├── src/setup/steps/claim.ts
+ * ├── src/setup/steps/common.ts
+ * ├── src/setup/steps/domain.ts
+ * ├── src/setup/steps/idp.ts
+ * ├── src/setup/steps/keys.ts
+ * ├── src/setup/steps/org.ts
+ * ├── src/setup/steps/zone.ts
+ * └── src/setup/wizard-state.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/routes.ts
+ * ├── src/phase07.ts
+ * └── test/setup-flow.test.ts
+ * <module-headers:end>
  */
 import { renderPage } from "../console/ui/shell.tsx";
 import { formOriginOk, htmlResponse, redirect } from "../console/ui/security-headers.ts";
@@ -200,6 +232,7 @@ async function postClaimLink(ctx: RouteCtx): Promise<Response> {
 
 async function getClaim(ctx: RouteCtx): Promise<Response> {
   const record = await loadRecord(ctx.deps.db);
+  if (record.step === "closed") return htmlResponse("Setup is closed.", 410);
   const identity = await ctx.deps.accessIdentity(ctx.request);
   const out = await redeemClaim(ctx.deps, record, ctx.url.searchParams.get("c") ?? "", identity?.email ?? null, () => storedCf(ctx.deps));
   if (!out.ok) return page(ClaimInvalidPage(), 403);

@@ -8,6 +8,20 @@
  *
  * - Certificate readiness is not read from the API (its field is UNVERIFIED, G14); opening
  *   the claim link on the new hostname proves it end to end.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/steps/domain.ts
+ * ├── src/admin/ports.ts
+ * ├── src/cloudflare/setup-endpoints.ts
+ * └── src/setup/wizard-state.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/steps/domain.ts
+ * ├── src/setup/routes.ts
+ * └── test/setup-steps.test.ts
+ * <module-headers:end>
  */
 import { isCfApiError, type CfTransport } from "../../admin/ports.ts";
 import { workers } from "../../cloudflare/setup-endpoints.ts";

@@ -9,6 +9,18 @@
  *
  * - `htmlResponse` is the only way this phase builds an HTML response, so no page can
  *   omit a header. Phase 04's `responses.html()` applies the same set when merged.
+ *
+ * <module-headers:begin>
+ * Uses: none
+ * External: none
+ *
+ * Used by:
+ * src/console/ui/security-headers.ts
+ * ├── src/admin-api/routes.ts
+ * ├── src/console/admin-routes.ts
+ * ├── src/console/routes.ts
+ * └── src/setup/routes.ts
+ * <module-headers:end>
  */
 
 export const CONSOLE_CSP =

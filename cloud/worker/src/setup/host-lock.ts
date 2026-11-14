@@ -10,6 +10,17 @@
  *
  * - Pure. Phase 04's pipeline calls `hostLock` before routing (its `http/host-guard.ts`
  *   documents the same rule; the two must be one function when the phases merge).
+ *
+ * <module-headers:begin>
+ * Uses: none
+ * External: none
+ *
+ * Used by:
+ * src/setup/host-lock.ts
+ * ├── src/phase07.ts
+ * ├── src/setup/routes.ts
+ * └── test/host-lock.test.ts
+ * <module-headers:end>
  */
 
 export type HostLockVerdict = { ok: true } | { ok: false; code: "setup_incomplete" | "misdirected_host" | "setup_closed" };

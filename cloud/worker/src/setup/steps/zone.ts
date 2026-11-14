@@ -6,6 +6,21 @@
  * DNS record or a Worker custom domain is refused with `hostname_conflict`. Recording it
  * as `control_plane_host` is the reservation 05's naming checks against. The zone is fixed
  * once setup closes.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/steps/zone.ts
+ * ├── src/admin/ports.ts
+ * ├── src/cloudflare/setup-endpoints.ts
+ * └── src/setup/wizard-state.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/steps/zone.ts
+ * ├── src/setup/pages-steps.tsx
+ * ├── src/setup/routes.ts
+ * └── test/setup-steps.test.ts
+ * <module-headers:end>
  */
 import type { CfTransport } from "../../admin/ports.ts";
 import { workers, zones, type CfZone } from "../../cloudflare/setup-endpoints.ts";

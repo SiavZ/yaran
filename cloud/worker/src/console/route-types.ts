@@ -7,6 +7,29 @@
  * the verified identity. `Phase07Deps` bundles the ports of 04, 05 and 06 this phase uses.
  *
  * - Types only.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/route-types.ts
+ * └── src/admin/ports.ts
+ * External: none
+ *
+ * Used by:
+ * src/console/route-types.ts
+ * ├── src/admin-api/routes.ts
+ * ├── src/admin/api-token.ts
+ * ├── src/admin/health.ts
+ * ├── src/admin/scheduled-jobs.ts
+ * ├── src/admin/settings-apply.ts
+ * ├── src/admin/users.ts
+ * ├── src/console/admin-routes.ts
+ * ├── src/console/routes.ts
+ * ├── src/phase07.ts
+ * ├── src/setup/routes.ts
+ * ├── src/setup/steps/claim.ts
+ * ├── test/console.test.ts
+ * └── test/helpers/deps.ts
+ * <module-headers:end>
  */
 import type {
   AccessIdentityReader,

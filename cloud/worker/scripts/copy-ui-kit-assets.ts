@@ -7,6 +7,16 @@
  * deploy tree) and the Geist woff2 (OFL-1.1) to `assets/console/fonts/`.
  *
  * - Run by `npm run build`. Fails loudly when a source is missing; never writes a placeholder.
+ *
+ * <module-headers:begin>
+ * Uses: none
+ * External: node:fs, node:path, node:url
+ *
+ * Used by:
+ * scripts/copy-ui-kit-assets.ts
+ * ├── scripts/assemble-deploy-tree.ts
+ * └── test/ui-kit.test.tsx
+ * <module-headers:end>
  */
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

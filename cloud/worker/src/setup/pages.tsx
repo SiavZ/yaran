@@ -6,6 +6,25 @@
  * their 02 error code and the way forward.
  *
  * - Copy is the English baseline in the house voice; names render as chips.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/pages.tsx
+ * ├── src/console/ui/components.tsx
+ * ├── src/console/ui/shell.tsx
+ * ├── src/setup/capability-probe.ts
+ * ├── src/setup/setup-gate.ts
+ * ├── src/setup/token-template.ts
+ * └── src/setup/wizard-state.ts
+ * External: hono
+ *
+ * Used by:
+ * src/setup/pages.tsx
+ * ├── src/console/admin-pages-2.tsx
+ * ├── src/setup/pages-steps.tsx
+ * ├── src/setup/routes.ts
+ * └── test/ui-kit.test.tsx
+ * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
 import { Button, Chip, Field, LinkButton, Notice, PostForm } from "../console/ui/components.tsx";

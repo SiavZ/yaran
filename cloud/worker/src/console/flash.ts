@@ -5,6 +5,19 @@
  * because a row vanishing is too small to trust. The message rides a `__Host-` cookie the
  * server alone sets (HttpOnly, SameSite=Strict, 60 seconds) and the next page clears it, so
  * no outcome text ever comes from a URL a third party could craft.
+ *
+ * <module-headers:begin>
+ * Uses: none
+ * External: none
+ *
+ * Used by:
+ * src/console/flash.ts
+ * ├── src/console/admin-pages.tsx
+ * ├── src/console/admin-routes.ts
+ * ├── src/console/flash-notice.tsx
+ * ├── src/console/routes.ts
+ * └── src/console/user-pages.tsx
+ * <module-headers:end>
  */
 export type FlashKind =
   | "unpaired"

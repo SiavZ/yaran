@@ -7,6 +7,26 @@
  * Side effects run after the save and each is reported on its own, so a Cloudflare hiccup
  * says exactly which effect needs a retry: a new `pairing_policy` rewrites the Access
  * policy, a new `session_duration` asks 05 to re-apply it everywhere.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/settings-apply.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/api-token.ts
+ * ├── src/admin/ports.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/admin/settings-store.ts
+ * ├── src/console/route-types.ts
+ * ├── src/setup/steps/access.ts
+ * └── src/setup/steps/common.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/settings-apply.ts
+ * ├── src/admin-api/routes.ts
+ * ├── src/console/admin-routes.ts
+ * └── test/admin-services.test.ts
+ * <module-headers:end>
  */
 import type { Settings } from "@yaran/protocol";
 import type { Phase07Deps } from "../console/route-types.ts";

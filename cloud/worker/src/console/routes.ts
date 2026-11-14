@@ -5,6 +5,28 @@
  * destructive action has a GET confirm page and a POST that does it and redirects back
  * with a flash naming the target. Auth class `user`: 04's pipeline has already verified
  * the Access JWT and the user row before a handler runs.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/routes.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/admin/settings-store.ts
+ * ├── src/admin/stale-policy.ts
+ * ├── src/console/flash.ts
+ * ├── src/console/route-types.ts
+ * ├── src/console/ui/security-headers.ts
+ * ├── src/console/ui/shell.tsx
+ * ├── src/console/ui/strings.ts
+ * └── src/console/user-pages.tsx
+ * External: none
+ *
+ * Used by:
+ * src/console/routes.ts
+ * ├── src/console/admin-routes.ts
+ * ├── src/phase07.ts
+ * └── test/console.test.ts
+ * <module-headers:end>
  */
 import type { AdminMachine } from "@yaran/protocol";
 import { readSettings } from "../admin/settings-schema.ts";

@@ -8,6 +8,23 @@
  *
  * - Also the account discovery step: `GET /accounts`, falling back to an admin-supplied
  *   account id verified by `tokens/verify` (gate G9 decides which one account tokens get).
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/capability-probe.ts
+ * ├── src/admin/ports.ts
+ * ├── src/cloudflare/setup-endpoints.ts
+ * └── src/setup/token-template.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/capability-probe.ts
+ * ├── src/admin/api-token.ts
+ * ├── src/console/admin-pages-2.tsx
+ * ├── src/setup/pages.tsx
+ * ├── src/setup/routes.ts
+ * └── test/setup-steps.test.ts
+ * <module-headers:end>
  */
 import { assertNever, isCfApiError, type CfTransport } from "../admin/ports.ts";
 import { accounts, access, idp, tunnels, workers, zones } from "../cloudflare/setup-endpoints.ts";

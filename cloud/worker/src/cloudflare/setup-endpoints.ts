@@ -9,6 +9,26 @@
  *
  * - No retries or idempotency here: callers look up by name before creating.
  * - Response shapes marked UNVERIFIED are recorded by gates G8, G10 and G14.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/cloudflare/setup-endpoints.ts
+ * └── src/admin/ports.ts
+ * External: none
+ *
+ * Used by:
+ * src/cloudflare/setup-endpoints.ts
+ * ├── src/admin/health.ts
+ * ├── src/setup/capability-probe.ts
+ * ├── src/setup/pages-steps.tsx
+ * ├── src/setup/steps/access.ts
+ * ├── src/setup/steps/claim.ts
+ * ├── src/setup/steps/domain.ts
+ * ├── src/setup/steps/idp.ts
+ * ├── src/setup/steps/org.ts
+ * ├── src/setup/steps/zone.ts
+ * └── test/helpers/fake-cf.ts
+ * <module-headers:end>
  */
 import type { CfTransport } from "../admin/ports.ts";
 

@@ -9,6 +9,28 @@
  * - `readSettings` is the `settings.read()` 06 and 08 call.
  * - A test walks 02's `fixtures/api/Settings.json` through parse+validate, so the form
  *   cannot drift from the contract.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/settings-schema.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/ports.ts
+ * └── src/admin/settings-store.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/settings-schema.ts
+ * ├── src/admin-api/routes.ts
+ * ├── src/admin/health.ts
+ * ├── src/admin/scheduled-jobs.ts
+ * ├── src/admin/settings-apply.ts
+ * ├── src/console/admin-pages-2.tsx
+ * ├── src/console/admin-routes.ts
+ * ├── src/console/routes.ts
+ * ├── src/phase07.ts
+ * ├── src/setup/routes.ts
+ * └── test/admin-services.test.ts
+ * <module-headers:end>
  */
 import { validate, type Settings, type ValidationResult } from "@yaran/protocol";
 import type { D1Like } from "./ports.ts";

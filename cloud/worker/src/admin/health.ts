@@ -8,6 +8,27 @@
  * "unknown", never "ok".
  *
  * - Read-only; the Disable workers.dev retry lives here too.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/health.ts
+ * ├── src/admin/api-token.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/admin/settings-store.ts
+ * ├── src/admin/wire-time.ts
+ * ├── src/cloudflare/setup-endpoints.ts
+ * ├── src/console/route-types.ts
+ * ├── src/setup/steps/access.ts
+ * ├── src/setup/steps/claim.ts
+ * ├── src/setup/steps/common.ts
+ * └── src/setup/steps/idp.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/health.ts
+ * ├── src/console/admin-pages-2.tsx
+ * └── src/console/admin-routes.ts
+ * <module-headers:end>
  */
 import type { Phase07Deps } from "../console/route-types.ts";
 import { access, idp, workers } from "../cloudflare/setup-endpoints.ts";
@@ -18,6 +39,7 @@ import { usableIdps } from "../setup/steps/idp.ts";
 import { storedCf } from "./api-token.ts";
 import { readSettings } from "./settings-schema.ts";
 import { writeKeys } from "./settings-store.ts";
+import { wireTime } from "./wire-time.ts";
 
 export type CheckId = "access_app" | "public_paths" | "policy" | "custom_domain" | "workers_dev_off" | "idps" | "quota_apps" | "quota_policies" | "quota_tunnels" | "reconcile";
 
@@ -71,7 +93,7 @@ export async function runHealthChecks(deps: Phase07Deps): Promise<HealthCheck[]>
     quota("quota_apps", apps?.length ?? null, s.quota_limits.access_apps, "Access applications"),
     quota("quota_policies", policies?.length ?? null, s.quota_limits.access_policies, "Access policies"),
     quota("quota_tunnels", tunnels ? Number(tunnels.n) : null, s.quota_limits.tunnels, "yaran tunnels"),
-    { id: "reconcile", ok: recon?.at ? true : null, detail: recon?.at ? `Last reconciliation ${new Date(recon.at * 1000).toISOString()}.` : "No reconciliation run recorded yet." },
+    { id: "reconcile", ok: recon?.at ? true : null, detail: recon?.at ? `Last reconciliation ${wireTime(recon.at)}.` : "No reconciliation run recorded yet." },
   ];
 }
 

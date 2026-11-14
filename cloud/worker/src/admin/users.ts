@@ -5,9 +5,26 @@
  * `revoke_all` then tears down every machine (05, reason `user_disabled`), revokes every
  * phone (06) and signs the user out of Access everywhere (06), in that order, so nothing
  * the user owns stays reachable. Each change is audited.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/users.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/ports.ts
+ * ├── src/admin/wire-time.ts
+ * └── src/console/route-types.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/users.ts
+ * ├── src/admin-api/routes.ts
+ * ├── src/console/admin-routes.ts
+ * └── test/admin-services.test.ts
+ * <module-headers:end>
  */
 import type { AdminUser, AdminUserPatch } from "@yaran/protocol";
 import type { Identity } from "./ports.ts";
+import { wireTime } from "./wire-time.ts";
 import type { Phase07Deps } from "../console/route-types.ts";
 
 interface UserRow {
@@ -21,7 +38,7 @@ interface UserRow {
   devices: number;
 }
 
-const iso = (s: number | null, fallback: number) => new Date((s ?? fallback) * 1000).toISOString();
+const iso = (s: number | null, fallback: number) => wireTime(s ?? fallback);
 
 export function toAdminUser(r: UserRow): AdminUser {
   return {

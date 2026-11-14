@@ -9,6 +9,22 @@
  *
  * - Also explains a missing or weak `SETUP_CODE`, or a missing or malformed `DATA_KEY`.
  * - Rate limiting per IP (5 a minute) is 04's limiter, asked through the port.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/setup-gate.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/ports.ts
+ * └── src/admin/settings-store.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/setup-gate.ts
+ * ├── src/setup/pages.tsx
+ * ├── src/setup/routes.ts
+ * ├── src/setup/steps/claim.ts
+ * └── test/setup-gate.test.ts
+ * <module-headers:end>
  */
 import { b64urlDecode, b64urlEncode, timingSafeEqual } from "@yaran/protocol";
 import type { D1Like } from "../admin/ports.ts";

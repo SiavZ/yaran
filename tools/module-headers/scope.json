@@ -205,6 +205,12 @@
     "mobile/plugins/push/android/src/main/kotlin/io/github/siavz/yaran/push/YaranPushService.kt": "UnifiedPush PushService, declared in mobile/plugins/push/android/src/main/AndroidManifest.xml",
     "mobile/android/app/src/play/relay-fcm/kotlin/io/github/siavz/yaran/push/fcmrelay/*.kt": "service and provider declared in mobile/android/app/src/play/relay-fcm/AndroidManifest.xml (relay-fcm builds only)",
     "cloud/worker/test/provisioning/setup.ts": "vitest setupFiles of the provisioning project in cloud/worker/vitest.config.ts",
-    "cloud/worker/test/**/*.test.ts": "vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning)"
+    "cloud/worker/test/**/*.test.ts": "vitest, via npm test in cloud/worker",
+    "cloud/worker/src/phase07.ts": "Phase 07 wiring surface: Phase 04's route table and task registry append PHASE07_ROUTES and PHASE07_TASKS",
+    "cloud/worker/assets/console/enhance.ts": "compiled by npm run build in cloud/worker, loaded by every console page as /console/enhance.js",
+    "cloud/worker/scripts/token-url.ts": "CLI: npm run token-url in cloud/worker and in the deploy tree",
+    "cloud/worker/scripts/assemble-deploy-tree.ts": "CLI: npm run assemble-deploy-tree, run by Phase 18's release-cloud workflow",
+    "cloud/worker/scripts/update/update.ts": "CLI: npm run update in the deploy tree, and its yaran-cloud-update workflow",
+    "cloud/worker/test/**/*.test.tsx": "vitest, via npm test in cloud/worker"
   }
 }

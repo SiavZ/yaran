@@ -2,6 +2,19 @@
  * Renders a one-shot outcome message: what happened, to which named target, in words.
  *
  * - Every kind has its own sentence (an exhaustive table), with the target as a chip.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/flash-notice.tsx
+ * ├── src/console/flash.ts
+ * └── src/console/ui/components.tsx
+ * External: none
+ *
+ * Used by:
+ * src/console/flash-notice.tsx
+ * ├── src/console/admin-pages.tsx
+ * └── src/console/user-pages.tsx
+ * <module-headers:end>
  */
 import { Chip, Notice, type NoticeTone } from "./ui/components.tsx";
 import type { Flash, FlashKind } from "./flash.ts";

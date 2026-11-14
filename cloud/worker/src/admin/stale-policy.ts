@@ -7,6 +7,19 @@
  *
  * - Pure: the caller passes the clock.
  * - A machine never seen (no last_seen_at) counts from when it was paired.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/stale-policy.ts
+ * └── @yaran/protocol:src/index.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/stale-policy.ts
+ * ├── src/admin/scheduled-jobs.ts
+ * ├── src/console/routes.ts
+ * └── test/stale-policy.test.ts
+ * <module-headers:end>
  */
 import type { Settings } from "@yaran/protocol";
 

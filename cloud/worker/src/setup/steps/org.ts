@@ -4,6 +4,20 @@
  * Reads the organization's `auth_domain` as the team domain. With no organization, offers
  * to create one by API (gate G10); when Cloudflare refuses (Zero Trust onboarding needs a
  * payment method even on the Free plan), the page shows the dashboard path and Check again.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/steps/org.ts
+ * ├── src/admin/ports.ts
+ * ├── src/cloudflare/setup-endpoints.ts
+ * └── src/setup/wizard-state.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/steps/org.ts
+ * ├── src/setup/routes.ts
+ * └── test/setup-steps.test.ts
+ * <module-headers:end>
  */
 import { isCfApiError, type CfTransport } from "../../admin/ports.ts";
 import { org } from "../../cloudflare/setup-endpoints.ts";

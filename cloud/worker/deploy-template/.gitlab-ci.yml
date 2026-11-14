@@ -1,0 +1,18 @@
+# Opens a merge request that updates this yaran control plane to the newest yaran-cloud release.
+# Run it from a pipeline schedule (CI/CD > Schedules, weekly). It needs a project access token
+# with write_repository in the masked variable YARAN_UPDATE_TOKEN, and optionally the variable
+# YARAN_CONTROL_PLANE_URL. The SHA-256 is always verified; provenance is verified too when the
+# gh CLI is available in the image (it is not by default, and the job says so).
+yaran-cloud-update:
+  image: node:22
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"
+  script:
+    - npm ci
+    - git config user.name "yaran update"
+    - git config user.email "yaran-update@users.noreply.gitlab.com"
+    - node scripts/update/update.ts --github-output update.env
+    - branch="$(sed -n 's/^branch=//p' update.env)"
+    - title="$(sed -n 's/^title=//p' update.env)"
+    - '[ -z "$branch" ] && exit 0'
+    - git push "https://oauth2:${YARAN_UPDATE_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "$branch" -o merge_request.create -o merge_request.title="$title"

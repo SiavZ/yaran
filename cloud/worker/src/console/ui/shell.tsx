@@ -6,6 +6,23 @@
  * assets, and carries no inline script or style, so the strict CSP holds.
  *
  * - `renderPage` returns the full document string; `htmlResponse` adds the headers.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/console/ui/shell.tsx
+ * └── src/console/ui/strings.ts
+ * External: hono
+ *
+ * Used by:
+ * src/console/ui/shell.tsx
+ * ├── src/console/admin-pages.tsx
+ * ├── src/console/routes.ts
+ * ├── src/console/user-pages.tsx
+ * ├── src/setup/pages-steps.tsx
+ * ├── src/setup/pages.tsx
+ * ├── src/setup/routes.ts
+ * └── test/ui-kit.test.tsx
+ * <module-headers:end>
  */
 import type { Child } from "hono/jsx";
 import { S } from "./strings.ts";

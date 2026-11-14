@@ -10,6 +10,21 @@
  *   `shortKeys: true` it emits the documented short keys instead (gate G9's fallback), and
  *   rows with no official short key are left to the capability probe to name.
  * - Pure: no I/O.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/token-template.ts
+ * └── cloud/worker/scripts/permissions.json
+ * External: none
+ *
+ * Used by:
+ * src/setup/token-template.ts
+ * ├── scripts/token-url.ts
+ * ├── src/setup/capability-probe.ts
+ * ├── src/setup/pages.tsx
+ * ├── test/token-template.test.ts
+ * └── test/ui-kit.test.tsx
+ * <module-headers:end>
  */
 import manifest from "../../scripts/permissions.json" with { type: "json" };
 

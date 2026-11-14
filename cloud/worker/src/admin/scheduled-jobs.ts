@@ -7,6 +7,21 @@
  * `system`; `notify` verdicts are badges computed when the lists render.
  *
  * - The retention sweep is the body of 04's `purge_audit` task, fed with the setting.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/admin/scheduled-jobs.ts
+ * ├── src/admin/audit-query.ts
+ * ├── src/admin/settings-schema.ts
+ * ├── src/admin/stale-policy.ts
+ * ├── src/console/route-types.ts
+ * └── src/update/update-checker.ts
+ * External: none
+ *
+ * Used by:
+ * src/admin/scheduled-jobs.ts
+ * └── src/phase07.ts
+ * <module-headers:end>
  */
 import type { Phase07Deps } from "../console/route-types.ts";
 import { maybeCheckForUpdate } from "../update/update-checker.ts";

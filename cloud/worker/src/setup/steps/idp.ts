@@ -5,6 +5,22 @@
  * the step lists the IdPs, explains that, and offers One-time PIN in one click or a GitHub
  * or Google form (client id and secret, with the callback URL to register). The step can
  * finish only once at least one non-Cloudflare IdP exists (gate G10 verifies the shapes).
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/steps/idp.ts
+ * ├── src/admin/ports.ts
+ * ├── src/cloudflare/setup-endpoints.ts
+ * └── src/setup/wizard-state.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/steps/idp.ts
+ * ├── src/admin/health.ts
+ * ├── src/setup/pages-steps.tsx
+ * ├── src/setup/routes.ts
+ * └── test/setup-steps.test.ts
+ * <module-headers:end>
  */
 import type { CfTransport } from "../../admin/ports.ts";
 import { idp, type CfIdp } from "../../cloudflare/setup-endpoints.ts";

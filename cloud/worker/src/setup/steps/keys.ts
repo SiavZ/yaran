@@ -5,6 +5,21 @@
  * helper (it is never shown or exported again), and stores the 65-byte raw public key,
  * base64url, as `vapid_public_key`, which 06 serves as `Meta.push.vapid_public_key` and 08
  * signs with. Re-running reuses an existing pair.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/setup/steps/keys.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/admin/ports.ts
+ * ├── src/admin/settings-store.ts
+ * └── src/setup/wizard-state.ts
+ * External: none
+ *
+ * Used by:
+ * src/setup/steps/keys.ts
+ * ├── src/setup/routes.ts
+ * └── test/setup-steps.test.ts
+ * <module-headers:end>
  */
 import { b64urlEncode } from "@yaran/protocol";
 import type { DataKeySealer, D1Like } from "../../admin/ports.ts";
