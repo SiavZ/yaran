@@ -1,0 +1,229 @@
+{
+  "type": "MachineConfig",
+  "schema": "machine.schema.json#/$defs/MachineConfig",
+  "valid": [
+    {
+      "name": "config",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token_version": 1
+        },
+        "owner_email": "ada@example.org",
+        "push": {
+          "enabled": true,
+          "detail": "names"
+        },
+        "events": {
+          "max_batch": 16,
+          "min_interval_ms": 1000
+        },
+        "server_time": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "minimal push",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token_version": 1
+        },
+        "owner_email": "ada@example.org",
+        "push": {
+          "enabled": false,
+          "detail": "minimal"
+        },
+        "events": {
+          "max_batch": 16,
+          "min_interval_ms": 1000
+        },
+        "server_time": "2026-11-14T12:00:00Z"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "batch 17",
+      "keyword": "maximum",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token_version": 1
+        },
+        "owner_email": "ada@example.org",
+        "push": {
+          "enabled": true,
+          "detail": "names"
+        },
+        "events": {
+          "max_batch": 17,
+          "min_interval_ms": 1000
+        },
+        "server_time": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "negative interval",
+      "keyword": "minimum",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token_version": 1
+        },
+        "owner_email": "ada@example.org",
+        "push": {
+          "enabled": true,
+          "detail": "names"
+        },
+        "events": {
+          "max_batch": 16,
+          "min_interval_ms": -1
+        },
+        "server_time": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "unknown detail",
+      "keyword": "enum",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token_version": 1
+        },
+        "owner_email": "ada@example.org",
+        "push": {
+          "enabled": true,
+          "detail": "full"
+        },
+        "events": {
+          "max_batch": 16,
+          "min_interval_ms": 1000
+        },
+        "server_time": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "fractional server time",
+      "keyword": "pattern",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token_version": 1
+        },
+        "owner_email": "ada@example.org",
+        "push": {
+          "enabled": true,
+          "detail": "names"
+        },
+        "events": {
+          "max_batch": 16,
+          "min_interval_ms": 1000
+        },
+        "server_time": "2026-11-14T12:00:00.5Z"
+      }
+    },
+    {
+      "name": "token version zero",
+      "keyword": "minimum",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token_version": 0
+        },
+        "owner_email": "ada@example.org",
+        "push": {
+          "enabled": true,
+          "detail": "names"
+        },
+        "events": {
+          "max_batch": 16,
+          "min_interval_ms": 1000
+        },
+        "server_time": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "missing server_time",
+      "keyword": "required",
+      "value": {
+        "machine_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "hostname": "laptop-ada.example.com",
+        "url": "https://laptop-ada.example.com",
+        "origin_port": 3890,
+        "access": {
+          "team_domain": "ada-team.example.com",
+          "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        },
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token_version": 1
+        },
+        "owner_email": "ada@example.org",
+        "push": {
+          "enabled": true,
+          "detail": "names"
+        },
+        "events": {
+          "max_batch": 16,
+          "min_interval_ms": 1000
+        }
+      }
+    }
+  ]
+}

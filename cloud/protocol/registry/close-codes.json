@@ -1,0 +1,17 @@
+{
+  "description": "Design §13 WebSocket close codes. 4001 is pre-existing and listed so cloud codes never collide.",
+  "close_codes": [
+    {
+      "code": 4001,
+      "reason": null,
+      "sent_by": "yaran",
+      "meaning": "Provider gone (existing, unchanged)."
+    },
+    {
+      "code": 4401,
+      "reason": "access session expired",
+      "sent_by": "yaran",
+      "meaning": "PTY and events sockets of a cloud-hostname connection at the Access JWT's exp + skew, when [cloud] close_sockets_at_access_expiry is on."
+    }
+  ]
+}

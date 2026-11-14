@@ -1,0 +1,198 @@
+{
+  "type": "PushPayload",
+  "schema": "push.schema.json#/$defs/PushPayload",
+  "valid": [
+    {
+      "name": "attention",
+      "value": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "fix the flaky test",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "slot tab, minimal detail",
+      "value": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "s": "needs_attention",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "exit",
+      "value": {
+        "v": 1,
+        "k": "agent_exited_badly",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "rapid_clean_exit",
+        "p": "yaran",
+        "l": "fix the flaky test",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "test",
+      "value": {
+        "v": 1,
+        "k": "test",
+        "ts": 1731571200
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "test with m",
+      "keyword": "propertyNames",
+      "value": {
+        "v": 1,
+        "k": "test",
+        "ts": 1731571200,
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "v2",
+      "keyword": "const",
+      "value": {
+        "v": 2,
+        "k": "attention_raised",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "fix the flaky test",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "unknown kind",
+      "keyword": "enum",
+      "value": {
+        "v": 1,
+        "k": "poke",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "fix the flaky test",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "attention without a",
+      "keyword": "required",
+      "value": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "fix the flaky test",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "display text s",
+      "keyword": "pattern",
+      "value": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "Needs you",
+        "p": "yaran",
+        "l": "fix the flaky test",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "25-char p",
+      "keyword": "maxLength",
+      "value": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "needs_attention",
+        "p": "ppppppppppppppppppppppppp",
+        "l": "fix the flaky test",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "empty l",
+      "keyword": "minLength",
+      "value": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "negative ts",
+      "keyword": "minimum",
+      "value": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "fix the flaky test",
+        "ts": -1
+      }
+    },
+    {
+      "name": "uppercase m",
+      "keyword": "pattern",
+      "value": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "3F1C2B4A-5D6E-4F70-8A9B-0C1D2E3F4A5B",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "fix the flaky test",
+        "ts": 1731571200
+      }
+    },
+    {
+      "name": "missing ts",
+      "keyword": "required",
+      "value": {
+        "v": 1,
+        "k": "attention_raised",
+        "m": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "a": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "t": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "s": "needs_attention",
+        "p": "yaran",
+        "l": "fix the flaky test"
+      }
+    }
+  ]
+}

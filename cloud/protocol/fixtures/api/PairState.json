@@ -1,0 +1,22 @@
+{
+  "type": "PairState",
+  "schema": "pairing.schema.json#/$defs/PairState",
+  "valid": [
+    {
+      "name": "22 chars",
+      "value": "aaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "21 chars",
+      "keyword": "pattern",
+      "value": "aaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "plus",
+      "keyword": "pattern",
+      "value": "aaaaaaaaaaaaaaaaaaaaaa+"
+    }
+  ]
+}

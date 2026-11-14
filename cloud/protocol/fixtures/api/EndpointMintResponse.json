@@ -1,0 +1,40 @@
+{
+  "type": "EndpointMintResponse",
+  "schema": "relay.schema.json#/$defs/EndpointMintResponse",
+  "valid": [
+    {
+      "name": "endpoint",
+      "value": {
+        "endpoint": "https://relay.example.com/w/v1.k1.abcdefghijklmnop_-"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "http",
+      "keyword": "pattern",
+      "value": {
+        "endpoint": "http://relay.example.com/w/v1.k1.abcdefghijklmnop"
+      }
+    },
+    {
+      "name": "17-char kid",
+      "keyword": "pattern",
+      "value": {
+        "endpoint": "https://relay.example.com/w/v1.kkkkkkkkkkkkkkkkk.abcdefghijklmnop"
+      }
+    },
+    {
+      "name": "15-char opaque",
+      "keyword": "pattern",
+      "value": {
+        "endpoint": "https://relay.example.com/w/v1.k1.abcdefghijklmno"
+      }
+    },
+    {
+      "name": "missing",
+      "keyword": "required",
+      "value": {}
+    }
+  ]
+}

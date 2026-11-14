@@ -1,0 +1,123 @@
+{
+  "type": "AttentionEvent",
+  "schema": "machine.schema.json#/$defs/AttentionEvent",
+  "valid": [
+    {
+      "name": "raised",
+      "value": {
+        "id": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "kind": "attention_raised",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "tab_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "state": "needs_attention",
+        "project": "yaran",
+        "label": "fix the flaky test"
+      }
+    },
+    {
+      "name": "cleared slot tab",
+      "value": {
+        "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "kind": "attention_cleared",
+        "ts": "2026-11-15T08:30:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "state": "idle"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "raised with idle",
+      "keyword": "const",
+      "value": {
+        "id": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "kind": "attention_raised",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "tab_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "state": "idle",
+        "project": "yaran",
+        "label": "fix the flaky test"
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "kind": "attention_cleared",
+        "ts": "2026-11-15T08:30:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "state": "idle",
+        "ending": "exited"
+      }
+    },
+    {
+      "name": "unknown state",
+      "keyword": "enum",
+      "value": {
+        "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "kind": "attention_cleared",
+        "ts": "2026-11-15T08:30:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "state": "sleeping"
+      }
+    },
+    {
+      "name": "65-char project",
+      "keyword": "maxLength",
+      "value": {
+        "id": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "kind": "attention_raised",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "tab_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "state": "needs_attention",
+        "project": "ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+        "label": "fix the flaky test"
+      }
+    },
+    {
+      "name": "empty agent id",
+      "keyword": "pattern",
+      "value": {
+        "id": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "kind": "attention_raised",
+        "ts": "2026-11-14T12:00:00Z",
+        "agent_id": "",
+        "tab_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "state": "needs_attention",
+        "project": "yaran",
+        "label": "fix the flaky test"
+      }
+    },
+    {
+      "name": "missing ts",
+      "keyword": "required",
+      "value": {
+        "id": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "kind": "attention_raised",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "tab_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "state": "needs_attention",
+        "project": "yaran",
+        "label": "fix the flaky test"
+      }
+    },
+    {
+      "name": "offset ts",
+      "keyword": "pattern",
+      "value": {
+        "id": "c0ffee00-1234-4abc-bdef-0123456789ab",
+        "kind": "attention_raised",
+        "ts": "2026-11-14T12:00:00+00:00",
+        "agent_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "tab_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+        "state": "needs_attention",
+        "project": "yaran",
+        "label": "fix the flaky test"
+      }
+    }
+  ]
+}

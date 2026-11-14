@@ -1,0 +1,42 @@
+{
+  "description": "A valid yaran-handoff+jwe v1 envelope (kind control_plane); seal deterministically with ephemeral_jwk and iv_b64url.",
+  "recipient_jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "ML4l_wXkmnktTuIkUtkfeKCvQ-yfcHlmbZiZ4gKnO8A",
+    "y": "sH4AbkAHS3VXleYUDEuSzWX1DJjNDeBc-Ta6iEcgwQo",
+    "d": "3N0jZo8D4E0rPZiWQY-4KdnkPUMmEhtU6EnImKfmh2I"
+  },
+  "recipient_pk": "BDC-Jf8F5Jp5LU7iJFLZH3igr0Psn3B5Zm2YmeICpzvAsH4AbkAHS3VXleYUDEuSzWX1DJjNDeBc-Ta6iEcgwQo",
+  "ephemeral_jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "7lChPjhTlh6iPKrYM1O3h8_5qmWhsqU7lilDjsZbzAM",
+    "y": "M5-0z2OIPvkLPRDVKpRF5cNUk7GeDD4xk4_TcbfhaoM",
+    "d": "m4NdSZt3RqUTAySLT1kUFSXEAYTlYRvOk93poix_Myg"
+  },
+  "iv_b64url": "TqQnlCLL76IZ-PYg",
+  "expected_host": "cp.example.com",
+  "expected_state": "aGFuZG9mZi1zdGF0ZS1maXh0dXJlLWNvbnRyb2wtcGxhbmU",
+  "expected_kind": "control_plane",
+  "now": 1731571500,
+  "plaintext": {
+    "v": 1,
+    "kind": "control_plane",
+    "host": "cp.example.com",
+    "jwt": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUta2lkIn0.eyJhdWQiOlsiZml4dHVyZS1hdWQiXSwiZW1haWwiOiJhZGFAZXhhbXBsZS5vcmciLCJleHAiOjE3MzE2NTc2MDB9.Zml4dHVyZS1zaWduYXR1cmU",
+    "email": "ada@example.org",
+    "exp": 1731657600,
+    "iat": 1731571200
+  },
+  "plaintext_utf8": "{\"v\":1,\"kind\":\"control_plane\",\"host\":\"cp.example.com\",\"jwt\":\"eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUta2lkIn0.eyJhdWQiOlsiZml4dHVyZS1hdWQiXSwiZW1haWwiOiJhZGFAZXhhbXBsZS5vcmciLCJleHAiOjE3MzE2NTc2MDB9.Zml4dHVyZS1zaWduYXR1cmU\",\"email\":\"ada@example.org\",\"exp\":1731657600,\"iat\":1731571200}",
+  "protected_header_json": "{\"alg\":\"ECDH-ES\",\"enc\":\"A256GCM\",\"typ\":\"yaran-handoff+jwe\",\"cty\":\"yaran-handoff+json\",\"kid\":\"CwbZqqhIIcse9ZVvp4_CwYVl5-3B6Ezpo8g2G9GslT0\",\"epk\":{\"x\":\"7lChPjhTlh6iPKrYM1O3h8_5qmWhsqU7lilDjsZbzAM\",\"crv\":\"P-256\",\"kty\":\"EC\",\"y\":\"M5-0z2OIPvkLPRDVKpRF5cNUk7GeDD4xk4_TcbfhaoM\"},\"apu\":\"Y3AuZXhhbXBsZS5jb20\",\"apv\":\"YUdGdVpHOW1aaTF6ZEdGMFpTMW1hWGgwZFhKbExXTnZiblJ5YjJ3dGNHeGhibVU\"}",
+  "protected_header_b64url": "eyJhbGciOiJFQ0RILUVTIiwiZW5jIjoiQTI1NkdDTSIsInR5cCI6InlhcmFuLWhhbmRvZmYrandlIiwiY3R5IjoieWFyYW4taGFuZG9mZitqc29uIiwia2lkIjoiQ3diWnFxaElJY3NlOVpWdnA0X0N3WVZsNS0zQjZFenBvOGcyRzlHc2xUMCIsImVwayI6eyJ4IjoiN2xDaFBqaFRsaDZpUEtyWU0xTzNoOF81cW1XaHNxVTdsaWxEanNaYnpBTSIsImNydiI6IlAtMjU2Iiwia3R5IjoiRUMiLCJ5IjoiTTUtMHoyT0lQdmtMUFJEVktwUkY1Y05VazdHZURENHhrNF9UY2JmaGFvTSJ9LCJhcHUiOiJZM0F1WlhoaGJYQnNaUzVqYjIwIiwiYXB2IjoiWVVkR2RWcEhPVzFhYVRGNlpFZEdNRnBUTVcxaFdHZ3daRmhLYkV4WFRuWmlibEo1WWpKM2RHTkhlR2hpYlZVIn0",
+  "kid": "CwbZqqhIIcse9ZVvp4_CwYVl5-3B6Ezpo8g2G9GslT0",
+  "z_hex": "ce2660780775e2ac8679f6b179b6f917a21ecb6aee3fc6dbef8cef2a2fef2e19",
+  "other_info_hex": "000000074132353647434d0000000e63702e6578616d706c652e636f6d0000002f614746755a47396d5a69317a644746305a53316d6158683064584a6c4c574e76626e52796232777463477868626d5500000100",
+  "cek_hex": "9a7706e110519144e76c0dea59f94f9607347309b0d7ea81f35b431066c5e03e",
+  "ciphertext_b64url": "SJ_0MD0HEU15rkTVol_zSCjSW4SWJOgS-ydGjs8_YUzGfsGIBkWrkx5FxLah3ibpF71ioUo8nyfunlBuQi1cn6_PbRxLbcv5gpBD34pWmgksuPL5Vs6QFbPptmuNEgvFdKn9wKxfMhn6-q3OeIcAhbYAUkuAN7rby0rNahzytkx3QtJh-thHNTLf1w_mzr6jQhVl2Ay-h0WppuXKqbr-CdYpLVUzjj8Ao3BUqms0fxqoQhLekltR8-xgl1TLDYDxOkGzXUEGl0ZzBqU6T8psmLDplnPrYBGJMLCTFA7dE0_AaOy2ut_-6a0jKME6Tzsy4tVQYKk5IkL-k3LD02KPwcQzMKY8d3YhurX49v8B2p3cJMOM19trCOY5qA",
+  "tag_b64url": "Y6wFTpM_lCz6hXOgSOocKw",
+  "compact_jwe": "eyJhbGciOiJFQ0RILUVTIiwiZW5jIjoiQTI1NkdDTSIsInR5cCI6InlhcmFuLWhhbmRvZmYrandlIiwiY3R5IjoieWFyYW4taGFuZG9mZitqc29uIiwia2lkIjoiQ3diWnFxaElJY3NlOVpWdnA0X0N3WVZsNS0zQjZFenBvOGcyRzlHc2xUMCIsImVwayI6eyJ4IjoiN2xDaFBqaFRsaDZpUEtyWU0xTzNoOF81cW1XaHNxVTdsaWxEanNaYnpBTSIsImNydiI6IlAtMjU2Iiwia3R5IjoiRUMiLCJ5IjoiTTUtMHoyT0lQdmtMUFJEVktwUkY1Y05VazdHZURENHhrNF9UY2JmaGFvTSJ9LCJhcHUiOiJZM0F1WlhoaGJYQnNaUzVqYjIwIiwiYXB2IjoiWVVkR2RWcEhPVzFhYVRGNlpFZEdNRnBUTVcxaFdHZ3daRmhLYkV4WFRuWmlibEo1WWpKM2RHTkhlR2hpYlZVIn0..TqQnlCLL76IZ-PYg.SJ_0MD0HEU15rkTVol_zSCjSW4SWJOgS-ydGjs8_YUzGfsGIBkWrkx5FxLah3ibpF71ioUo8nyfunlBuQi1cn6_PbRxLbcv5gpBD34pWmgksuPL5Vs6QFbPptmuNEgvFdKn9wKxfMhn6-q3OeIcAhbYAUkuAN7rby0rNahzytkx3QtJh-thHNTLf1w_mzr6jQhVl2Ay-h0WppuXKqbr-CdYpLVUzjj8Ao3BUqms0fxqoQhLekltR8-xgl1TLDYDxOkGzXUEGl0ZzBqU6T8psmLDplnPrYBGJMLCTFA7dE0_AaOy2ut_-6a0jKME6Tzsy4tVQYKk5IkL-k3LD02KPwcQzMKY8d3YhurX49v8B2p3cJMOM19trCOY5qA.Y6wFTpM_lCz6hXOgSOocKw"
+}

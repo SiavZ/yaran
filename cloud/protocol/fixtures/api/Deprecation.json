@@ -1,0 +1,38 @@
+{
+  "type": "Deprecation",
+  "schema": "meta.schema.json#/$defs/Deprecation",
+  "valid": [
+    {
+      "name": "entry",
+      "value": {
+        "protocol": 1,
+        "after": "2027-11-14"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing after",
+      "keyword": "required",
+      "value": {
+        "protocol": 1
+      }
+    },
+    {
+      "name": "protocol zero",
+      "keyword": "minimum",
+      "value": {
+        "protocol": 0,
+        "after": "2027-11-14"
+      }
+    },
+    {
+      "name": "not a date",
+      "keyword": "format",
+      "value": {
+        "protocol": 1,
+        "after": "2027-02-30"
+      }
+    }
+  ]
+}

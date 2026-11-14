@@ -1,0 +1,47 @@
+{
+  "type": "RotateRequest",
+  "schema": "machine.schema.json#/$defs/RotateRequest",
+  "valid": [
+    {
+      "name": "user",
+      "value": {
+        "known_token_version": 1,
+        "reason": "user"
+      }
+    },
+    {
+      "name": "sync",
+      "value": {
+        "known_token_version": 3,
+        "reason": "sync"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown reason",
+      "keyword": "enum",
+      "value": {
+        "known_token_version": 1,
+        "reason": "force"
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "known_token_version": 1,
+        "reason": "user",
+        "extra": 1
+      }
+    },
+    {
+      "name": "version zero",
+      "keyword": "minimum",
+      "value": {
+        "known_token_version": 0,
+        "reason": "user"
+      }
+    }
+  ]
+}

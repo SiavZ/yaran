@@ -1,0 +1,68 @@
+{
+  "type": "MachinePage",
+  "schema": "me.schema.json#/$defs/MachinePage",
+  "valid": [
+    {
+      "name": "last page",
+      "value": {
+        "items": [
+          {
+            "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+            "name": "laptop",
+            "hostname": "laptop-ada.example.com",
+            "url": "https://laptop-ada.example.com",
+            "status": "online",
+            "status_checked_at": "2026-11-14T12:00:00Z",
+            "paired_at": "2026-11-14T12:00:00Z"
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "more",
+      "value": {
+        "items": [
+          {
+            "id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+            "name": "laptop",
+            "hostname": "laptop-ada.example.com",
+            "url": "https://laptop-ada.example.com",
+            "status": "online",
+            "status_checked_at": "2026-11-14T12:00:00Z",
+            "paired_at": "2026-11-14T12:00:00Z",
+            "reported_protocol": 1,
+            "last_seen_at": "2026-11-15T08:30:00Z",
+            "yaran_version": "0.42.0"
+          }
+        ],
+        "next_cursor": "abc"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing next_cursor",
+      "keyword": "required",
+      "value": {
+        "items": []
+      }
+    },
+    {
+      "name": "bad cursor",
+      "keyword": "oneOf",
+      "value": {
+        "items": [],
+        "next_cursor": "a/b"
+      }
+    },
+    {
+      "name": "object items",
+      "keyword": "type",
+      "value": {
+        "items": {},
+        "next_cursor": null
+      }
+    }
+  ]
+}

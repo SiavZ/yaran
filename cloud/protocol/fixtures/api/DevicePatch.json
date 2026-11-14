@@ -1,0 +1,51 @@
+{
+  "type": "DevicePatch",
+  "schema": "devices.schema.json#/$defs/DevicePatch",
+  "valid": [
+    {
+      "name": "label",
+      "value": {
+        "label": "New name"
+      }
+    },
+    {
+      "name": "mute",
+      "value": {
+        "mute_all": true
+      }
+    },
+    {
+      "name": "clear timed mute",
+      "value": {
+        "muted_until": null
+      }
+    },
+    {
+      "name": "clear machine mutes",
+      "value": {
+        "muted_machine_ids": []
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "empty",
+      "keyword": "minProperties",
+      "value": {}
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "extra": 1
+      }
+    },
+    {
+      "name": "empty label",
+      "keyword": "minLength",
+      "value": {
+        "label": ""
+      }
+    }
+  ]
+}

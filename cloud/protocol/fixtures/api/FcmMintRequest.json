@@ -1,0 +1,52 @@
+{
+  "type": "FcmMintRequest",
+  "schema": "relay.schema.json#/$defs/FcmMintRequest",
+  "valid": [
+    {
+      "name": "fcm",
+      "value": {
+        "kind": "fcm",
+        "app_id": "com.example.yaran",
+        "fcm_token": "fcm-token:APA91b",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "empty token",
+      "keyword": "minLength",
+      "value": {
+        "kind": "fcm",
+        "app_id": "com.example.yaran",
+        "fcm_token": "",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "kind": "fcm",
+        "app_id": "com.example.yaran",
+        "fcm_token": "fcm-token:APA91b",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "apns_token": "ab"
+      }
+    },
+    {
+      "name": "apns kind",
+      "keyword": "const",
+      "value": {
+        "kind": "apns",
+        "app_id": "com.example.yaran",
+        "fcm_token": "fcm-token:APA91b",
+        "vapid_public_key": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0",
+        "registration_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    }
+  ]
+}

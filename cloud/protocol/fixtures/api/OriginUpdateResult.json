@@ -1,0 +1,30 @@
+{
+  "type": "OriginUpdateResult",
+  "schema": "machine.schema.json#/$defs/OriginUpdateResult",
+  "valid": [
+    {
+      "name": "changed",
+      "value": {
+        "origin_port": 3891,
+        "changed": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "string changed",
+      "keyword": "type",
+      "value": {
+        "origin_port": 3891,
+        "changed": "yes"
+      }
+    },
+    {
+      "name": "missing changed",
+      "keyword": "required",
+      "value": {
+        "origin_port": 3891
+      }
+    }
+  ]
+}

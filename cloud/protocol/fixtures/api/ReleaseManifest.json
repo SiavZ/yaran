@@ -1,0 +1,153 @@
+{
+  "type": "ReleaseManifest",
+  "schema": "release-manifest.schema.json#/$defs/ReleaseManifest",
+  "valid": [
+    {
+      "name": "release",
+      "value": {
+        "train": "yaran-cloud",
+        "version": "1.2.0",
+        "tag": "yaran-cloud-v1.2.0",
+        "released_at": "2026-11-14T12:00:00Z",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "min_update_from": "1.0.0",
+        "security": false,
+        "notes_url": "https://github.com/SiavZ/yaran/releases/tag/yaran-cloud-v1.2.0",
+        "tarball": {
+          "url": "https://github.com/SiavZ/yaran/releases/download/yaran-cloud-v1.2.0/worker.tar.gz",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "wrong train",
+      "keyword": "const",
+      "value": {
+        "train": "yaran",
+        "version": "1.2.0",
+        "tag": "yaran-cloud-v1.2.0",
+        "released_at": "2026-11-14T12:00:00Z",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "min_update_from": "1.0.0",
+        "security": false,
+        "notes_url": "https://github.com/SiavZ/yaran/releases/tag/yaran-cloud-v1.2.0",
+        "tarball": {
+          "url": "https://github.com/SiavZ/yaran/releases/download/yaran-cloud-v1.2.0/worker.tar.gz",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "name": "bad tag",
+      "keyword": "pattern",
+      "value": {
+        "train": "yaran-cloud",
+        "version": "1.2.0",
+        "tag": "v1.2.0",
+        "released_at": "2026-11-14T12:00:00Z",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "min_update_from": "1.0.0",
+        "security": false,
+        "notes_url": "https://github.com/SiavZ/yaran/releases/tag/yaran-cloud-v1.2.0",
+        "tarball": {
+          "url": "https://github.com/SiavZ/yaran/releases/download/yaran-cloud-v1.2.0/worker.tar.gz",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "name": "uppercase sha",
+      "keyword": "pattern",
+      "value": {
+        "train": "yaran-cloud",
+        "version": "1.2.0",
+        "tag": "yaran-cloud-v1.2.0",
+        "released_at": "2026-11-14T12:00:00Z",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "min_update_from": "1.0.0",
+        "security": false,
+        "notes_url": "https://github.com/SiavZ/yaran/releases/tag/yaran-cloud-v1.2.0",
+        "tarball": {
+          "url": "https://github.com/SiavZ/yaran/releases/download/yaran-cloud-v1.2.0/worker.tar.gz",
+          "sha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0123456789ABCDEF0123456789ABCDEF"
+        }
+      }
+    },
+    {
+      "name": "http tarball",
+      "keyword": "pattern",
+      "value": {
+        "train": "yaran-cloud",
+        "version": "1.2.0",
+        "tag": "yaran-cloud-v1.2.0",
+        "released_at": "2026-11-14T12:00:00Z",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "min_update_from": "1.0.0",
+        "security": false,
+        "notes_url": "https://github.com/SiavZ/yaran/releases/tag/yaran-cloud-v1.2.0",
+        "tarball": {
+          "url": "http://example.com/w.tgz",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "name": "missing notes_url",
+      "keyword": "required",
+      "value": {
+        "train": "yaran-cloud",
+        "version": "1.2.0",
+        "tag": "yaran-cloud-v1.2.0",
+        "released_at": "2026-11-14T12:00:00Z",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "min_update_from": "1.0.0",
+        "security": false,
+        "tarball": {
+          "url": "https://github.com/SiavZ/yaran/releases/download/yaran-cloud-v1.2.0/worker.tar.gz",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "name": "string security",
+      "keyword": "type",
+      "value": {
+        "train": "yaran-cloud",
+        "version": "1.2.0",
+        "tag": "yaran-cloud-v1.2.0",
+        "released_at": "2026-11-14T12:00:00Z",
+        "protocol": {
+          "min": 1,
+          "max": 1
+        },
+        "min_update_from": "1.0.0",
+        "security": "yes",
+        "notes_url": "https://github.com/SiavZ/yaran/releases/tag/yaran-cloud-v1.2.0",
+        "tarball": {
+          "url": "https://github.com/SiavZ/yaran/releases/download/yaran-cloud-v1.2.0/worker.tar.gz",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+        }
+      }
+    }
+  ]
+}

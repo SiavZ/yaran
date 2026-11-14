@@ -1,0 +1,127 @@
+{
+  "type": "ValidationErrorDetails",
+  "schema": "error.schema.json#/$defs/ValidationErrorDetails",
+  "valid": [
+    {
+      "name": "one error",
+      "value": {
+        "errors": [
+          {
+            "path": "/events/0/id",
+            "message": "bad uuid"
+          }
+        ]
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "21 errors",
+      "keyword": "maxItems",
+      "value": {
+        "errors": [
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          },
+          {
+            "path": "/",
+            "message": "x"
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing errors",
+      "keyword": "required",
+      "value": {}
+    },
+    {
+      "name": "item missing path",
+      "keyword": "required",
+      "value": {
+        "errors": [
+          {
+            "message": "x"
+          }
+        ]
+      }
+    }
+  ]
+}

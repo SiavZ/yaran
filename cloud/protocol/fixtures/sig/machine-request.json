@@ -1,0 +1,72 @@
+{
+  "description": "Ed25519 machine request signing (Design §7). Signatures are deterministic: a signer must reproduce them byte for byte.",
+  "seed_hex": "37ad6c74405e86315b40ea0d416da2bd7ed5fbeefbefedce54eafa5c08b97c9f",
+  "pkcs8_v1_hex": "302e020100300506032b65700422042037ad6c74405e86315b40ea0d416da2bd7ed5fbeefbefedce54eafa5c08b97c9f",
+  "pkcs8_v2_hex": "3053020101300506032b65700422042037ad6c74405e86315b40ea0d416da2bd7ed5fbeefbefedce54eafa5c08b97c9fa12303210014b4cbaf675097c982b73d9ace341e9b913236cca9e716f790f1650d4f29e02b",
+  "public_key": "FLTLr2dQl8mCtz2azjQem5EyNsyp5xb3kPFlDU8p4Cs",
+  "empty_body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "requests": [
+    {
+      "name": "claim",
+      "method": "POST",
+      "path": "/v1/machine/claim",
+      "host": "cp.example.com",
+      "protocol": "1",
+      "machine_id": null,
+      "timestamp": "1731571200",
+      "nonce": "qo90b-KMsgwTs4iRo4rA2w",
+      "body": "{\"code\":\"IAyv3N0L6jYq-0U_shg68rnNrmwVSx1-WLSiAzeAqRQ\",\"code_verifier\":\"63N8gBVZjVDLE7vOzBixSu7B2BYr6wd9YtY5j26vo-E\",\"yaran_version\":\"0.42.0\",\"origin_port\":3890}",
+      "canonical": "yaran-machine-sig-v1\nPOST\n/v1/machine/claim\ncp.example.com\n1\n-\n1731571200\nqo90b-KMsgwTs4iRo4rA2w\nc434df4795388324c5ab34696108b12f76fc789ddff2e226ede62cea7b246b4a",
+      "body_sha256_hex": "c434df4795388324c5ab34696108b12f76fc789ddff2e226ede62cea7b246b4a",
+      "signature": "ea5NoMXa7gTCrcYWoB9trbobKVIkXbtLD7NjPLEktzGwbl6vSq6AfG3JzCHxC06BVa2jgLRRJktyaEpyYYgcBg",
+      "headers": {
+        "Yaran-Protocol": "1",
+        "Yaran-Timestamp": "1731571200",
+        "Yaran-Nonce": "qo90b-KMsgwTs4iRo4rA2w",
+        "Yaran-Signature": "ea5NoMXa7gTCrcYWoB9trbobKVIkXbtLD7NjPLEktzGwbl6vSq6AfG3JzCHxC06BVa2jgLRRJktyaEpyYYgcBg"
+      }
+    },
+    {
+      "name": "events",
+      "method": "post",
+      "path": "/v1/machine/events",
+      "host": "CP.Example.com:443",
+      "protocol": "1",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "timestamp": "1731571205",
+      "nonce": "TZ0YhS-uA5-osLRgIQiaLg",
+      "body": "{\"events\":[{\"id\":\"0b8e4c1d-2f3a-4b5c-9d6e-7f8091a2b3c4\",\"kind\":\"attention_raised\",\"ts\":\"2024-11-14T08:00:00Z\",\"agent_id\":\"1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f\",\"state\":\"needs_attention\",\"project\":\"yaran\",\"label\":\"fix the tests\"}]}",
+      "canonical": "yaran-machine-sig-v1\nPOST\n/v1/machine/events\ncp.example.com\n1\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n1731571205\nTZ0YhS-uA5-osLRgIQiaLg\n828fef213a4003bdd972c71a9e0632df20e5d0b6fb099c2892aa33dd6b4eff27",
+      "body_sha256_hex": "828fef213a4003bdd972c71a9e0632df20e5d0b6fb099c2892aa33dd6b4eff27",
+      "signature": "ELAg7_6yv0N81XooHG0b53IcANdphfNJr4IsNfbhbhFecsX1mYxdDtRVfWcnPQ6ftgL3qqTAwF4zVl4iyQTIAw",
+      "headers": {
+        "Yaran-Protocol": "1",
+        "Yaran-Timestamp": "1731571205",
+        "Yaran-Nonce": "TZ0YhS-uA5-osLRgIQiaLg",
+        "Yaran-Signature": "ELAg7_6yv0N81XooHG0b53IcANdphfNJr4IsNfbhbhFecsX1mYxdDtRVfWcnPQ6ftgL3qqTAwF4zVl4iyQTIAw",
+        "Yaran-Machine-Id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
+      }
+    },
+    {
+      "name": "config",
+      "method": "GET",
+      "path": "/v1/machine/config",
+      "host": "cp.example.com",
+      "protocol": "1",
+      "machine_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "timestamp": "1731571210",
+      "nonce": "U4R3yqziBY1ynIF7daxIEA",
+      "body": "",
+      "canonical": "yaran-machine-sig-v1\nGET\n/v1/machine/config\ncp.example.com\n1\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n1731571210\nU4R3yqziBY1ynIF7daxIEA\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature": "uoGh_XaJk0_jhUBdTJlwxPr-jEFWQgKSLCnZCBkc317K8yNqnNgCMyhoc39cq__O-ccfbZERUvop0-L6Y1IsAQ",
+      "headers": {
+        "Yaran-Protocol": "1",
+        "Yaran-Timestamp": "1731571210",
+        "Yaran-Nonce": "U4R3yqziBY1ynIF7daxIEA",
+        "Yaran-Signature": "uoGh_XaJk0_jhUBdTJlwxPr-jEFWQgKSLCnZCBkc317K8yNqnNgCMyhoc39cq__O-ccfbZERUvop0-L6Y1IsAQ",
+        "Yaran-Machine-Id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
+      }
+    }
+  ]
+}

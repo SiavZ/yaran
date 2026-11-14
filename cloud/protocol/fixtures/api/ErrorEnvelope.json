@@ -1,0 +1,105 @@
+{
+  "type": "ErrorEnvelope",
+  "schema": "error.schema.json#/$defs/ErrorEnvelope",
+  "valid": [
+    {
+      "name": "plain",
+      "value": {
+        "error": {
+          "code": "signature_expired",
+          "message": "The request timestamp is 412 s away from the server clock.",
+          "retryable": false
+        },
+        "request_id": "8d1f2c3b4a5e6f70-LHR"
+      }
+    },
+    {
+      "name": "with details",
+      "value": {
+        "error": {
+          "code": "signature_expired",
+          "message": "The request timestamp is 412 s away from the server clock.",
+          "retryable": false,
+          "details": {
+            "server_time": "2026-11-14T12:00:00Z"
+          }
+        },
+        "request_id": "8d1f2c3b4a5e6f70-LHR"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing request_id",
+      "keyword": "required",
+      "value": {
+        "error": {
+          "code": "signature_expired",
+          "message": "The request timestamp is 412 s away from the server clock.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "camel code",
+      "keyword": "pattern",
+      "value": {
+        "error": {
+          "code": "BadCode",
+          "message": "The request timestamp is 412 s away from the server clock.",
+          "retryable": false
+        },
+        "request_id": "8d1f2c3b4a5e6f70-LHR"
+      }
+    },
+    {
+      "name": "string retryable",
+      "keyword": "type",
+      "value": {
+        "error": {
+          "code": "signature_expired",
+          "message": "The request timestamp is 412 s away from the server clock.",
+          "retryable": "no"
+        },
+        "request_id": "8d1f2c3b4a5e6f70-LHR"
+      }
+    },
+    {
+      "name": "empty message",
+      "keyword": "minLength",
+      "value": {
+        "error": {
+          "code": "signature_expired",
+          "message": "",
+          "retryable": false
+        },
+        "request_id": "8d1f2c3b4a5e6f70-LHR"
+      }
+    },
+    {
+      "name": "bad request id",
+      "keyword": "pattern",
+      "value": {
+        "error": {
+          "code": "signature_expired",
+          "message": "The request timestamp is 412 s away from the server clock.",
+          "retryable": false
+        },
+        "request_id": "a_b"
+      }
+    },
+    {
+      "name": "array details",
+      "keyword": "type",
+      "value": {
+        "error": {
+          "code": "signature_expired",
+          "message": "The request timestamp is 412 s away from the server clock.",
+          "retryable": false,
+          "details": []
+        },
+        "request_id": "8d1f2c3b4a5e6f70-LHR"
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "type": "P256Point",
+  "schema": "common.schema.json#/$defs/P256Point",
+  "valid": [
+    {
+      "name": "real point",
+      "value": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOck"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "86 chars",
+      "keyword": "pattern",
+      "value": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOc"
+    },
+    {
+      "name": "compressed prefix",
+      "keyword": "pattern",
+      "value": "AKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOck"
+    },
+    {
+      "name": "standard base64",
+      "keyword": "pattern",
+      "value": "BKHgszdqOlpW7vzXxOhie2VWvBVTJDDBvOpoFqj6aGrtSEwZfZsS5I5wUGF5MrhG5WJVRdzcUN0h3YumgGRTOc+"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "type": "RotateResponse",
+  "schema": "machine.schema.json#/$defs/RotateResponse",
+  "valid": [
+    {
+      "name": "rotated",
+      "value": {
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token": "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwifQ",
+          "token_version": 1
+        },
+        "rotated": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing rotated",
+      "keyword": "required",
+      "value": {
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token": "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwifQ",
+          "token_version": 1
+        }
+      }
+    },
+    {
+      "name": "token version zero",
+      "keyword": "minimum",
+      "value": {
+        "tunnel": {
+          "id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+          "token": "eyJhIjoiYWNjb3VudCIsInQiOiJ0dW5uZWwifQ",
+          "token_version": 0
+        },
+        "rotated": false
+      }
+    }
+  ]
+}

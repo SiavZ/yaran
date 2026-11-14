@@ -1,0 +1,49 @@
+name: Cloud protocol
+
+# The @yaran/protocol package (cloud/protocol): the wire contract every cloud and mobile
+# phase codes against. Reusable: Phase 01's gates.yml calls it as its `protocol` job when
+# cloud/protocol/** or crates/yaran-core/src/cloud/** change. The Rust half of the contract
+# (yaran_core::cloud::protocol) is tested by pr.yml's unfiltered Test jobs, which read the
+# same fixtures. workflow_dispatch allows a manual run.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol:
+    name: Protocol package
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: cloud/protocol
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cloud/protocol/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Generated types are current
+        run: npm run gen:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Lint OpenAPI (recommended-strict)
+        run: npm run lint:openapi
+
+      - name: Fixtures reproduce byte for byte
+        run: node scripts/gen-vectors.mjs --check

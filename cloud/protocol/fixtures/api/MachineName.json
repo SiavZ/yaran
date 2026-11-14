@@ -1,0 +1,35 @@
+{
+  "type": "MachineName",
+  "schema": "common.schema.json#/$defs/MachineName",
+  "valid": [
+    {
+      "name": "word",
+      "value": "laptop"
+    },
+    {
+      "name": "one char",
+      "value": "a"
+    },
+    {
+      "name": "32 chars",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "uppercase",
+      "keyword": "pattern",
+      "value": "Laptop"
+    },
+    {
+      "name": "33 chars",
+      "keyword": "pattern",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "leading hyphen",
+      "keyword": "pattern",
+      "value": "-laptop"
+    }
+  ]
+}

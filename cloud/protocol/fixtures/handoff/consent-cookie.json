@@ -1,0 +1,137 @@
+{
+  "description": "Remembered-consent cookie (Design §8.1). verify cases: expect_reason null means the cookie verifies; a failing cookie is ignored, never raised.",
+  "key_hex": "5a44117c444800db9db2f96ac193588850d9ff554c98a9f0cb009266245f6720",
+  "kv": 3,
+  "host": "laptop-ada.example.com",
+  "fp24": "2FEZZST767UQH7OKZXK2PMEA",
+  "iat": 1731571200,
+  "mac_in_utf8": "yaran-handoff-consent-v1\nlaptop-ada.example.com\n2FEZZST767UQH7OKZXK2PMEA\n1731571200\n3\n",
+  "mac_in_hex": "796172616e2d68616e646f66662d636f6e73656e742d76310a6c6170746f702d6164612e6578616d706c652e636f6d0a3246455a5a5354373637555148374f4b5a584b32504d45410a313733313537313230300a330a",
+  "mac": "PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+  "value": "v1.3.2FEZZST767UQH7OKZXK2PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+  "set_cookie": {
+    "machine": "__Secure-yaran-handoff-consent=v1.3.2FEZZST767UQH7OKZXK2PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI; Path=/__yaran/handoff; Max-Age=34560000; Secure; HttpOnly; SameSite=Lax",
+    "control_plane": "__Secure-yaran-handoff-consent=v1.3.2FEZZST767UQH7OKZXK2PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI; Path=/v1/handoff; Max-Age=34560000; Secure; HttpOnly; SameSite=Lax"
+  },
+  "worker_key": {
+    "data_key_b64": "zqRjVcBnSVWV7LfSGmWagKnIeDIIJRGDYvd/VUbBWsU=",
+    "data_key_hex": "cea46355c067495595ecb7d21a659a80a9c878320825118362f77f5546c15ac5",
+    "salt_utf8": "yaran-cloud",
+    "info_utf8": "v1/handoff_consent",
+    "key_hex": "58a93f50a6d3761b0b81ded782c97a303ae8ef82e16c5fa33af88ef004f3f397"
+  },
+  "verify_cases": [
+    {
+      "name": "valid",
+      "value": "v1.3.2FEZZST767UQH7OKZXK2PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": null
+    },
+    {
+      "name": "iat at now + 300 accepted",
+      "value": "v1.3.2FEZZST767UQH7OKZXK2PMEA.1731571500.6Snkwf6ySxxvksglXAN7GlW3QKY0Agy8MJL9DL-WI0E",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": null
+    },
+    {
+      "name": "iat at now - 34560000 accepted",
+      "value": "v1.3.2FEZZST767UQH7OKZXK2PMEA.1697011200.XbV4nBCJuiMVnPyyBz2HRK3cwMOhyZt00SRLoQyIObI",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": null
+    },
+    {
+      "name": "tampered mac",
+      "value": "v1.3.2FEZZST767UQH7OKZXK2PMEA.1731571200.AkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "bad_mac"
+    },
+    {
+      "name": "other host",
+      "value": "v1.3.2FEZZST767UQH7OKZXK2PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+      "host": "other-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "bad_mac"
+    },
+    {
+      "name": "stale kv",
+      "value": "v1.2.2FEZZST767UQH7OKZXK2PMEA.1731571200.yotf7dgZN8fgEyVPmymoUpB0t80LtcdEQ3Bf7Mruxm0",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "stale_kv"
+    },
+    {
+      "name": "iat after now + 300",
+      "value": "v1.3.2FEZZST767UQH7OKZXK2PMEA.1731571501.3Bk-FnotzDep4G-s_3UbM_k3dYYtr_RED2koHBhyaKk",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "iat_future"
+    },
+    {
+      "name": "iat before now - 34560000",
+      "value": "v1.3.2FEZZST767UQH7OKZXK2PMEA.1697011199.qElxUs9PDYeBQKw_MEavS4DLSsSivrIvkiGiNIhHm1c",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "iat_expired"
+    },
+    {
+      "name": "four parts",
+      "value": "3.2FEZZST767UQH7OKZXK2PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "malformed"
+    },
+    {
+      "name": "six parts",
+      "value": "v1.3.2FEZZST767UQH7OKZXK2PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI.x",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "malformed"
+    },
+    {
+      "name": "wrong version tag",
+      "value": "v2.3.2FEZZST767UQH7OKZXK2PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "malformed"
+    },
+    {
+      "name": "fp24 with dashes",
+      "value": "v1.3.2FEZ-ZST7-67UQ-H7OK-ZXK2-PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "malformed"
+    },
+    {
+      "name": "fp24 lowercase",
+      "value": "v1.3.2fezzst767uqh7okzxk2pmea.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "malformed"
+    },
+    {
+      "name": "kv with a leading zero",
+      "value": "v1.03.2FEZZST767UQH7OKZXK2PMEA.1731571200.PkWLBrvBBPGYNIkLulRcb97Nlmk5PmTW2vEJuUBeGuI",
+      "host": "laptop-ada.example.com",
+      "now": 1731571200,
+      "current_kv": 3,
+      "expect_reason": "malformed"
+    }
+  ]
+}

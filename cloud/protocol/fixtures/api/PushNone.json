@@ -1,0 +1,34 @@
+{
+  "type": "PushNone",
+  "schema": "devices.schema.json#/$defs/PushNone",
+  "valid": [
+    {
+      "name": "none",
+      "value": {
+        "kind": "none"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "webpush kind",
+      "keyword": "const",
+      "value": {
+        "kind": "webpush"
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "kind": "none",
+        "extra": 1
+      }
+    },
+    {
+      "name": "missing kind",
+      "keyword": "required",
+      "value": {}
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "type": "HandoffBuild",
+  "schema": "handoff.schema.json#/$defs/HandoffBuild",
+  "valid": [
+    {
+      "name": "release",
+      "value": "release"
+    },
+    {
+      "name": "dev",
+      "value": "dev"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not in the enum",
+      "keyword": "enum",
+      "value": "not_a_value"
+    },
+    {
+      "name": "not a string",
+      "keyword": "enum",
+      "value": 1
+    }
+  ]
+}

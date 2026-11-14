@@ -1,0 +1,40 @@
+{
+  "type": "AdminRotateRequest",
+  "schema": "admin.schema.json#/$defs/AdminRotateRequest",
+  "valid": [
+    {
+      "name": "kill",
+      "value": {
+        "kill_connections": true
+      }
+    },
+    {
+      "name": "keep",
+      "value": {
+        "kill_connections": false
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing",
+      "keyword": "required",
+      "value": {}
+    },
+    {
+      "name": "string",
+      "keyword": "type",
+      "value": {
+        "kill_connections": "yes"
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "kill_connections": true,
+        "extra": 1
+      }
+    }
+  ]
+}

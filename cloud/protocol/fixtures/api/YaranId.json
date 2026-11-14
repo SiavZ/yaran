@@ -1,0 +1,41 @@
+{
+  "type": "YaranId",
+  "schema": "common.schema.json#/$defs/YaranId",
+  "valid": [
+    {
+      "name": "uuid",
+      "value": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+    },
+    {
+      "name": "printable ascii",
+      "value": "agent:1"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "empty",
+      "keyword": "pattern",
+      "value": ""
+    },
+    {
+      "name": "space",
+      "keyword": "pattern",
+      "value": "a b"
+    },
+    {
+      "name": "129 chars",
+      "keyword": "pattern",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "non-ascii",
+      "keyword": "pattern",
+      "value": "agént"
+    },
+    {
+      "name": "number",
+      "keyword": "type",
+      "value": 7
+    }
+  ]
+}

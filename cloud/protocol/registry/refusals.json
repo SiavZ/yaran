@@ -1,0 +1,81 @@
+{
+  "description": "Design §13 Yaran-Refusal header codes (kebab-case, never reused). A 401/403 without the header came from Access, not yaran. access-keys-unavailable is a server problem; any other access-* means sign in again; host-* means the machine is no longer connected.",
+  "header": "Yaran-Refusal",
+  "refusals": [
+    {
+      "code": "access-missing",
+      "status": 401,
+      "meaning": "No Cf-Access-Jwt-Assertion header."
+    },
+    {
+      "code": "access-malformed",
+      "status": 401,
+      "meaning": "Not a 3-segment JWT, bad base64url or JSON, or over 8 KiB."
+    },
+    {
+      "code": "access-bad-algorithm",
+      "status": 401,
+      "meaning": "alg is not exactly RS256, or no kid."
+    },
+    {
+      "code": "access-unknown-kid",
+      "status": 401,
+      "meaning": "kid absent from the JWKS after one refetch."
+    },
+    {
+      "code": "access-bad-signature",
+      "status": 401,
+      "meaning": "The signature does not verify."
+    },
+    {
+      "code": "access-wrong-issuer",
+      "status": 401,
+      "meaning": "iss is not the team domain."
+    },
+    {
+      "code": "access-wrong-audience",
+      "status": 401,
+      "meaning": "aud lacks the machine app's AUD."
+    },
+    {
+      "code": "access-expired",
+      "status": 401,
+      "meaning": "exp is past (with skew)."
+    },
+    {
+      "code": "access-not-yet-valid",
+      "status": 401,
+      "meaning": "nbf is in the future (with skew)."
+    },
+    {
+      "code": "access-not-app-token",
+      "status": 401,
+      "meaning": "type is not app."
+    },
+    {
+      "code": "access-service-token",
+      "status": 401,
+      "meaning": "A service-token JWT (no email, empty sub, or common_name)."
+    },
+    {
+      "code": "access-not-owner",
+      "status": 403,
+      "meaning": "email is not the paired owner_email."
+    },
+    {
+      "code": "access-keys-unavailable",
+      "status": 503,
+      "meaning": "JWKS unreachable and nothing cached; signing in will not help."
+    },
+    {
+      "code": "host-not-served",
+      "status": 403,
+      "meaning": "Host is not bound (cloudflared outlived its binding)."
+    },
+    {
+      "code": "host-missing",
+      "status": 403,
+      "meaning": "No Host header."
+    }
+  ]
+}

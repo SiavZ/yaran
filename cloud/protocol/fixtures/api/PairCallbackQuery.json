@@ -1,0 +1,46 @@
+{
+  "type": "PairCallbackQuery",
+  "schema": "pairing.schema.json#/$defs/PairCallbackQuery",
+  "valid": [
+    {
+      "name": "success",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "state": "s3cr3tStateValue_abcdefGHIJ"
+      }
+    },
+    {
+      "name": "error",
+      "value": {
+        "error": "pair_denied",
+        "state": "s3cr3tStateValue_abcdefGHIJ"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "code and error",
+      "keyword": "oneOf",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "error": "pair_denied",
+        "state": "s3cr3tStateValue_abcdefGHIJ"
+      }
+    },
+    {
+      "name": "missing state",
+      "keyword": "oneOf",
+      "value": {
+        "code": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+      }
+    },
+    {
+      "name": "short code",
+      "keyword": "oneOf",
+      "value": {
+        "code": "abc",
+        "state": "s3cr3tStateValue_abcdefGHIJ"
+      }
+    }
+  ]
+}

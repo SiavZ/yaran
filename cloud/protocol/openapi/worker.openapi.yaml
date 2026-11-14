@@ -1,0 +1,1275 @@
+openapi: 3.1.0
+info:
+  title: yaran org control-plane Worker
+  version: "1"
+  summary: The org Worker's JSON API, browser navigations and HTML surfaces.
+  description: >-
+    Phase 02 Design §5 (W1-W32). /v1 is a path prefix, not the protocol version: clients send
+    Yaran-Protocol on every request (browser navigations use the v query parameter). Every non-2xx
+    JSON response is the §4 ErrorEnvelope; codes are listed per operation in x-error-codes. HTML
+    routes render the same codes on an accessible error page. The API sends no CORS headers.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://{orgControlPlane}
+    description: The org's control-plane hostname (D16 placeholder).
+    variables:
+      orgControlPlane:
+        default: org-control-plane
+tags:
+  - name: admin
+    description: Admin console API (role admin).
+  - name: devices
+    description: The signed-in user's phones.
+  - name: handoff
+    description: Sealed handoff for the control plane.
+  - name: html
+    description: HTML surfaces that are not a JSON contract.
+  - name: machine
+    description: The Ed25519-signed machine API under the public /v1/machine/* override.
+  - name: me
+    description: The signed-in user.
+  - name: meta
+    description: Public metadata.
+  - name: pairing
+    description: Machine pairing in the browser.
+paths:
+  /v1/meta:
+    get:
+      operationId: getMeta
+      summary: W1 · Org metadata and protocol range
+      description: "W1. Org metadata and protocol range; 200 before and after setup (D19). Cache-Control public, max-age=60."
+      tags: [meta]
+      security: []
+      x-error-codes: [misdirected_host, method_not_allowed, rate_limited, internal, unavailable]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/meta.schema.json#/$defs/Meta" }
+        "405": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/pair/authorize:
+    get:
+      operationId: pairAuthorizeStart
+      summary: W2 · Show the pairing confirm page
+      description: "W2. Browser navigation: renders the pairing confirm page showing the machine key fingerprint, or redirects to the loopback callback with error and state."
+      tags: [pairing]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/v"
+        - name: state
+          in: query
+          required: true
+          description: PairAuthorizeQuery.state.
+          schema: { $ref: "../schemas/pairing.schema.json#/$defs/PairAuthorizeQuery/properties/state" }
+        - name: code_challenge
+          in: query
+          required: true
+          description: PairAuthorizeQuery.code_challenge.
+          schema: { $ref: "../schemas/pairing.schema.json#/$defs/PairAuthorizeQuery/properties/code_challenge" }
+        - name: code_challenge_method
+          in: query
+          required: true
+          description: PairAuthorizeQuery.code_challenge_method.
+          schema: { $ref: "../schemas/pairing.schema.json#/$defs/PairAuthorizeQuery/properties/code_challenge_method" }
+        - name: machine_pubkey
+          in: query
+          required: true
+          description: PairAuthorizeQuery.machine_pubkey.
+          schema: { $ref: "../schemas/pairing.schema.json#/$defs/PairAuthorizeQuery/properties/machine_pubkey" }
+        - name: machine_name
+          in: query
+          required: true
+          description: PairAuthorizeQuery.machine_name.
+          schema: { $ref: "../schemas/pairing.schema.json#/$defs/PairAuthorizeQuery/properties/machine_name" }
+        - name: callback
+          in: query
+          required: true
+          description: PairAuthorizeQuery.callback.
+          schema: { $ref: "../schemas/pairing.schema.json#/$defs/PairAuthorizeQuery/properties/callback" }
+        - name: yaran_version
+          in: query
+          required: true
+          description: PairAuthorizeQuery.yaran_version.
+          schema: { $ref: "../schemas/pairing.schema.json#/$defs/PairAuthorizeQuery/properties/yaran_version" }
+        - name: origin_port
+          in: query
+          required: false
+          description: PairAuthorizeQuery.origin_port.
+          schema: { $ref: "../schemas/pairing.schema.json#/$defs/PairAuthorizeQuery/properties/origin_port" }
+      x-error-codes: [pair_request_invalid, pair_callback_invalid, pairing_not_allowed, machine_name_invalid, origin_port_invalid, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      responses:
+        "200": { $ref: "#/components/responses/Html" }
+        "302": { $ref: "#/components/responses/CallbackRedirect" }
+        "400": { $ref: "#/components/responses/HtmlError" }
+        "401": { $ref: "#/components/responses/HtmlError" }
+        "403": { $ref: "#/components/responses/HtmlError" }
+        "421": { $ref: "#/components/responses/HtmlError" }
+        "429": { $ref: "#/components/responses/HtmlError" }
+        "500": { $ref: "#/components/responses/HtmlError" }
+        "503": { $ref: "#/components/responses/HtmlError" }
+    post:
+      operationId: pairAuthorizeConsent
+      summary: W3 · Answer the pairing confirm page
+      description: "W3. Form post from the confirm page; redirects to the callback with code and state, or error and state. The code lives 120 s, single use."
+      tags: [pairing]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/v"
+      x-error-codes: [pair_request_invalid, pair_request_expired, pair_denied, machine_cap_reached, account_quota_reached, hostname_conflict, provisioning_in_progress, provisioning_failed, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, origin_mismatch, unsupported_media_type, payload_too_large, bad_request, validation_failed, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: "../schemas/pairing.schema.json#/$defs/PairConsent" }
+      responses:
+        "302": { $ref: "#/components/responses/CallbackRedirect" }
+        "400": { $ref: "#/components/responses/HtmlError" }
+        "401": { $ref: "#/components/responses/HtmlError" }
+        "403": { $ref: "#/components/responses/HtmlError" }
+        "409": { $ref: "#/components/responses/HtmlError" }
+        "410": { $ref: "#/components/responses/HtmlError" }
+        "413": { $ref: "#/components/responses/HtmlError" }
+        "415": { $ref: "#/components/responses/HtmlError" }
+        "421": { $ref: "#/components/responses/HtmlError" }
+        "429": { $ref: "#/components/responses/HtmlError" }
+        "500": { $ref: "#/components/responses/HtmlError" }
+        "502": { $ref: "#/components/responses/HtmlError" }
+        "503": { $ref: "#/components/responses/HtmlError" }
+  /v1/machine/claim:
+    post:
+      operationId: claimMachine
+      summary: W4 · Claim a paired machine
+      description: "W4. Signed with the key from machine_pubkey; no Yaran-Machine-Id (the key is resolved through the pair code). The response contains the tunnel token."
+      tags: [machine]
+      security: 
+        - machineSignature: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranMachineId"
+        - $ref: "#/components/parameters/YaranTimestamp"
+        - $ref: "#/components/parameters/YaranNonce"
+        - $ref: "#/components/parameters/YaranSignature"
+      x-error-codes: [pair_code_invalid, pkce_mismatch, origin_port_invalid, provisioning_failed, provisioning_in_progress, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, signature_missing, signature_invalid, signature_expired, nonce_replayed, machine_unknown, machine_revoked, protocol_unsupported, payload_too_large, unsupported_media_type, bad_request, validation_failed, misdirected_host, rate_limited, internal, unavailable]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/machine.schema.json#/$defs/ClaimRequest" }
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/machine.schema.json#/$defs/ClaimResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/machine/config:
+    get:
+      operationId: getMachineConfig
+      summary: W5 · Machine configuration
+      description: "W5. The machine's configuration; never contains the token."
+      tags: [machine]
+      security: 
+        - machineSignature: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranMachineId"
+        - $ref: "#/components/parameters/YaranTimestamp"
+        - $ref: "#/components/parameters/YaranNonce"
+        - $ref: "#/components/parameters/YaranSignature"
+      x-error-codes: [machine_not_ready, signature_missing, signature_invalid, signature_expired, nonce_replayed, machine_unknown, machine_revoked, protocol_unsupported, payload_too_large, unsupported_media_type, bad_request, validation_failed, misdirected_host, rate_limited, internal, unavailable]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/machine.schema.json#/$defs/MachineConfig" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/machine/events:
+    post:
+      operationId: postMachineEvents
+      summary: W6 · Report attention and exit events
+      description: "W6. A batch of up to 16 attention/exit events, deduped by id for 24 h. Org push off is still 202 with push_enabled false."
+      tags: [machine]
+      security: 
+        - machineSignature: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranMachineId"
+        - $ref: "#/components/parameters/YaranTimestamp"
+        - $ref: "#/components/parameters/YaranNonce"
+        - $ref: "#/components/parameters/YaranSignature"
+      x-error-codes: [machine_not_ready, signature_missing, signature_invalid, signature_expired, nonce_replayed, machine_unknown, machine_revoked, protocol_unsupported, payload_too_large, unsupported_media_type, bad_request, validation_failed, misdirected_host, rate_limited, internal, unavailable]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/machine.schema.json#/$defs/EventBatch" }
+      responses:
+        "202":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/machine.schema.json#/$defs/EventBatchResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/machine/rotate:
+    post:
+      operationId: rotateMachineToken
+      summary: W7 · Rotate or sync the tunnel token
+      description: "W7. Rotate the tunnel token now (user) or fetch the current one if newer (sync)."
+      tags: [machine]
+      security: 
+        - machineSignature: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranMachineId"
+        - $ref: "#/components/parameters/YaranTimestamp"
+        - $ref: "#/components/parameters/YaranNonce"
+        - $ref: "#/components/parameters/YaranSignature"
+      x-error-codes: [machine_not_ready, provisioning_in_progress, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, signature_missing, signature_invalid, signature_expired, nonce_replayed, machine_unknown, machine_revoked, protocol_unsupported, payload_too_large, unsupported_media_type, bad_request, validation_failed, misdirected_host, rate_limited, internal, unavailable]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/machine.schema.json#/$defs/RotateRequest" }
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/machine.schema.json#/$defs/RotateResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/machine/unpair:
+    post:
+      operationId: unpairMachine
+      summary: W8 · Unpair this machine
+      description: "W8. Empty body. Starts the ordered teardown (D21). yaran deletes its credentials on 202 or 410 machine_revoked."
+      tags: [machine]
+      security: 
+        - machineSignature: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranMachineId"
+        - $ref: "#/components/parameters/YaranTimestamp"
+        - $ref: "#/components/parameters/YaranNonce"
+        - $ref: "#/components/parameters/YaranSignature"
+      x-error-codes: [provisioning_in_progress, signature_missing, signature_invalid, signature_expired, nonce_replayed, machine_unknown, machine_revoked, protocol_unsupported, payload_too_large, unsupported_media_type, bad_request, validation_failed, misdirected_host, rate_limited, internal, unavailable]
+      responses:
+        "202":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/machine.schema.json#/$defs/TeardownStarted" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/machine/origin:
+    put:
+      operationId: updateMachineOrigin
+      summary: W32 · Update the origin port
+      description: "W32. Sent when yaran's serving port changes; the ingress repair runs asynchronously."
+      tags: [machine]
+      security: 
+        - machineSignature: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranMachineId"
+        - $ref: "#/components/parameters/YaranTimestamp"
+        - $ref: "#/components/parameters/YaranNonce"
+        - $ref: "#/components/parameters/YaranSignature"
+      x-error-codes: [origin_port_invalid, machine_not_ready, provisioning_in_progress, signature_missing, signature_invalid, signature_expired, nonce_replayed, machine_unknown, machine_revoked, protocol_unsupported, payload_too_large, unsupported_media_type, bad_request, validation_failed, misdirected_host, rate_limited, internal, unavailable]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/machine.schema.json#/$defs/OriginUpdate" }
+      responses:
+        "202":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/machine.schema.json#/$defs/OriginUpdateResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/me:
+    get:
+      operationId: getMe
+      summary: W9 · The signed-in user
+      description: "W9. The signed-in user."
+      tags: [me]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/me.schema.json#/$defs/Me" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/me/machines:
+    get:
+      operationId: listMyMachines
+      summary: W10 · List my machines
+      description: "W10. The user's machines with live status from the Cloudflare tunnel list."
+      tags: [me]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/me.schema.json#/$defs/MachinePage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/me/machines/{id}:
+    delete:
+      operationId: deleteMyMachine
+      summary: W11 · Unpair one of my machines
+      description: "W11. Unpair one of the user's machines."
+      tags: [me]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/id"
+      x-error-codes: [not_found, conflict, provisioning_in_progress, tunnel_delete_blocked, origin_mismatch, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      responses:
+        "202":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/machine.schema.json#/$defs/TeardownStarted" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/me/devices:
+    post:
+      operationId: registerDevice
+      summary: W12 · Register or update a device
+      description: "W12. Upsert by install_id; the Yaran-Install-Id header must equal install_id, and a different device_key for a known install_id is 409 conflict. 201 on create, 200 on update."
+      tags: [devices]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+      x-error-codes: [device_cap_reached, push_endpoint_invalid, push_relay_disallowed, conflict, origin_mismatch, unsupported_media_type, payload_too_large, bad_request, validation_failed, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/devices.schema.json#/$defs/DeviceRegistration" }
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/devices.schema.json#/$defs/Device" }
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "../schemas/devices.schema.json#/$defs/Device" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    get:
+      operationId: listMyDevices
+      summary: W13 · List my devices
+      description: "W13. The user's registered devices; the push endpoint is never echoed."
+      tags: [devices]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/devices.schema.json#/$defs/DevicePage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/me/devices/{id}:
+    delete:
+      operationId: revokeMyDevice
+      summary: W14 · Revoke one of my devices
+      description: "W14. Clears the subscription and marks the device revoked; sign_out_everywhere=1 also revokes the user's Access sessions."
+      tags: [devices]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/id"
+        - name: sign_out_everywhere
+          in: query
+          required: false
+          description: 1 also revokes the user's Access sessions.
+          schema: { const: "1" }
+      x-error-codes: [not_found, origin_mismatch, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      responses:
+        "204": { description: Accepted. }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateMyDevice
+      summary: W31 · Update a device's mutes or label
+      description: "W31. Changes only the fields present (mutes, label)."
+      tags: [devices]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/id"
+      x-error-codes: [not_found, origin_mismatch, unsupported_media_type, payload_too_large, bad_request, validation_failed, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/devices.schema.json#/$defs/DevicePatch" }
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/devices.schema.json#/$defs/Device" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/me/devices/{id}/test:
+    post:
+      operationId: testMyDevice
+      summary: W15 · Send a test push
+      description: "W15. Sends a test push to the device."
+      tags: [devices]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/id"
+      x-error-codes: [not_found, push_disabled, origin_mismatch, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      responses:
+        "202": { description: Accepted. }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/handoff:
+    get:
+      operationId: controlPlaneHandoffStart
+      summary: W16 · Show the control-plane handoff consent page
+      description: "W16. Browser navigation: validates the handoff query (§8, §8.1) and renders the consent page, skips it under the remembered-consent rule, or redirects to the callback with error."
+      tags: [handoff]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/v"
+        - name: pk
+          in: query
+          required: true
+          description: HandoffQuery.pk (Design §8, §8.1).
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/pk" }
+        - name: state
+          in: query
+          required: true
+          description: HandoffQuery.state (Design §8, §8.1).
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/state" }
+        - name: redirect
+          in: query
+          required: true
+          description: HandoffQuery.redirect (Design §8, §8.1).
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/redirect" }
+        - name: build
+          in: query
+          required: false
+          description: HandoffQuery.build (Design §8, §8.1).
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/build" }
+        - name: mode
+          in: query
+          required: false
+          description: HandoffQuery.mode (Design §8, §8.1).
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/mode" }
+        - name: device
+          in: query
+          required: true
+          description: HandoffQuery.device (Design §8, §8.1).
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/device" }
+        - name: dk
+          in: query
+          required: true
+          description: HandoffQuery.dk (Design §8, §8.1).
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/dk" }
+        - name: dts
+          in: query
+          required: true
+          description: HandoffQuery.dts (Design §8, §8.1).
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/dts" }
+        - name: dsig
+          in: query
+          required: true
+          description: HandoffQuery.dsig (Design §8, §8.1).
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/dsig" }
+      x-error-codes: [handoff_request_invalid, handoff_device_key_invalid, handoff_signature_malformed, handoff_timestamp_skewed, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      responses:
+        "200": { $ref: "#/components/responses/Html" }
+        "302": { $ref: "#/components/responses/CallbackRedirect" }
+        "400": { $ref: "#/components/responses/HtmlError" }
+        "401": { $ref: "#/components/responses/HtmlError" }
+        "403": { $ref: "#/components/responses/HtmlError" }
+        "421": { $ref: "#/components/responses/HtmlError" }
+        "429": { $ref: "#/components/responses/HtmlError" }
+        "500": { $ref: "#/components/responses/HtmlError" }
+        "503": { $ref: "#/components/responses/HtmlError" }
+    post:
+      operationId: controlPlaneHandoffConsent
+      summary: W16b · Answer the control-plane handoff consent page
+      description: "W16b. Form post from the consent page; 303 to the callback with state and jwe, or state and error=handoff_declined. Rate limit 20/min per JWT sub."
+      tags: [handoff]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/v"
+      x-error-codes: [handoff_request_invalid, handoff_declined, origin_mismatch, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffConsent" }
+      responses:
+        "303": { $ref: "#/components/responses/CallbackRedirect" }
+        "400": { $ref: "#/components/responses/HtmlError" }
+        "401": { $ref: "#/components/responses/HtmlError" }
+        "403": { $ref: "#/components/responses/HtmlError" }
+        "421": { $ref: "#/components/responses/HtmlError" }
+        "429": { $ref: "#/components/responses/HtmlError" }
+        "500": { $ref: "#/components/responses/HtmlError" }
+        "503": { $ref: "#/components/responses/HtmlError" }
+  /v1/admin/users:
+    get:
+      operationId: adminListUsers
+      summary: W17 · List users
+      description: "W17. Users, filterable by q."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+        - name: q
+          in: query
+          required: false
+          description: Filter by q.
+          schema: { type: string, maxLength: 254 }
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/admin.schema.json#/$defs/AdminUserPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/users/{id}:
+    patch:
+      operationId: adminUpdateUser
+      summary: W18 · Change a user's role or disable them
+      description: "W18. Change role or disable (revoke_all only with disabled true)."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/id"
+      x-error-codes: [not_found, last_admin, origin_mismatch, unsupported_media_type, payload_too_large, bad_request, validation_failed, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/admin.schema.json#/$defs/AdminUserPatch" }
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/admin.schema.json#/$defs/AdminUser" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: adminDeleteUser
+      summary: W19 · Delete a user
+      description: "W19. Deletes the user and revokes their machines and devices."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/id"
+      x-error-codes: [not_found, last_admin, origin_mismatch, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "202": { description: Accepted. }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/machines:
+    get:
+      operationId: adminListMachines
+      summary: W20 · List machines
+      description: "W20. Every machine with operator fields."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+        - name: owner
+          in: query
+          required: false
+          description: Filter by owner.
+          schema: { type: string, maxLength: 254 }
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/admin.schema.json#/$defs/AdminMachinePage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/machines/{id}:
+    delete:
+      operationId: adminRevokeMachine
+      summary: W21 · Revoke a machine
+      description: "W21. Revoke a machine."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/id"
+      x-error-codes: [not_found, provisioning_in_progress, tunnel_delete_blocked, origin_mismatch, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "202":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/machine.schema.json#/$defs/TeardownStarted" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/machines/{id}/rotate:
+    post:
+      operationId: adminRotateMachine
+      summary: W22 · Rotate a machine's tunnel token
+      description: "W22. Rotate a machine's tunnel token, optionally killing live connections."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/id"
+      x-error-codes: [not_found, provisioning_in_progress, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, origin_mismatch, unsupported_media_type, payload_too_large, bad_request, validation_failed, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/admin.schema.json#/$defs/AdminRotateRequest" }
+      responses:
+        "202": { description: Accepted. }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/devices:
+    get:
+      operationId: adminListDevices
+      summary: W23 · List devices
+      description: "W23. Every device."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+        - name: owner
+          in: query
+          required: false
+          description: Filter by owner.
+          schema: { type: string, maxLength: 254 }
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/admin.schema.json#/$defs/AdminDevicePage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/devices/{id}:
+    delete:
+      operationId: adminRevokeDevice
+      summary: W24 · Revoke a device
+      description: "W24. Revoke a device."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/id"
+      x-error-codes: [not_found, origin_mismatch, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "204": { description: Accepted. }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/audit:
+    get:
+      operationId: adminListAudit
+      summary: W25 · Read the audit trail
+      description: "W25. The audit trail (actions from registry/audit-actions.json)."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+        - name: actor
+          in: query
+          required: false
+          description: Filter by actor.
+          schema: { type: string, maxLength: 254 }
+        - name: action
+          in: query
+          required: false
+          description: Filter by action.
+          schema: { type: string, maxLength: 254 }
+        - name: target
+          in: query
+          required: false
+          description: Filter by target.
+          schema: { type: string, maxLength: 254 }
+        - name: since
+          in: query
+          required: false
+          description: Filter by since.
+          schema: { type: string, maxLength: 254 }
+        - name: until
+          in: query
+          required: false
+          description: Filter by until.
+          schema: { type: string, maxLength: 254 }
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/admin.schema.json#/$defs/AuditPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/settings:
+    get:
+      operationId: adminGetSettings
+      summary: W26 · Read org settings
+      description: "W26. Org settings."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/admin.schema.json#/$defs/Settings" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: adminPutSettings
+      summary: W26 · Replace org settings
+      description: "W26. Replace the whole settings object."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+      x-error-codes: [conflict, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, origin_mismatch, unsupported_media_type, payload_too_large, bad_request, validation_failed, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "../schemas/admin.schema.json#/$defs/Settings" }
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/admin.schema.json#/$defs/Settings" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/update-status:
+    get:
+      operationId: adminUpdateStatus
+      summary: W27 · Worker update status
+      description: "W27. Worker update status; error set means the check failed, never up to date."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "200":
+          description: Success.
+          headers:
+            Yaran-Protocol: { $ref: "#/components/headers/YaranProtocol" }
+            Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "../schemas/admin.schema.json#/$defs/UpdateStatus" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/reconcile:
+    post:
+      operationId: adminReconcile
+      summary: W28 · Force a reconciliation pass
+      description: "W28. Force a reconciliation pass."
+      tags: [admin]
+      security: 
+        - accessJwt: []
+      parameters:
+        - $ref: "#/components/parameters/YaranProtocol"
+        - $ref: "#/components/parameters/YaranInstallId"
+      x-error-codes: [provisioning_in_progress, origin_mismatch, cloudflare_api_failed, cloudflare_unavailable, cloudflare_rate_limited, cloudflare_permission_denied, unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable, forbidden]
+      responses:
+        "202": { description: Accepted. }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "421": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /setup:
+    get:
+      operationId: setupWizard
+      summary: W29 · Setup wizard
+      description: "W29. The setup wizard (HTML, setup code; not a JSON contract). /setup/* sub-pages share these codes."
+      tags: [html]
+      security: []
+      x-error-codes: [setup_code_invalid, setup_locked, setup_claim_invalid, setup_closed, cloudflare_permission_denied, rate_limited]
+      responses:
+        "200": { $ref: "#/components/responses/Html" }
+        "401": { $ref: "#/components/responses/HtmlError" }
+        "403": { $ref: "#/components/responses/HtmlError" }
+        "410": { $ref: "#/components/responses/HtmlError" }
+        "429": { $ref: "#/components/responses/HtmlError" }
+        "502": { $ref: "#/components/responses/HtmlError" }
+  /console:
+    get:
+      operationId: userConsole
+      summary: W30 · User and admin consoles
+      description: "W30. The user and admin consoles over W9-W28 (HTML; /console/* and /admin/* are not a JSON contract)."
+      tags: [html]
+      security: 
+        - accessJwt: []
+      x-error-codes: [unauthenticated, service_token_rejected, user_disabled, device_revoked, identity_unavailable, setup_incomplete, misdirected_host, protocol_unsupported, rate_limited, internal, unavailable]
+      responses:
+        "200": { $ref: "#/components/responses/Html" }
+        "400": { $ref: "#/components/responses/HtmlError" }
+        "401": { $ref: "#/components/responses/HtmlError" }
+        "403": { $ref: "#/components/responses/HtmlError" }
+        "421": { $ref: "#/components/responses/HtmlError" }
+        "429": { $ref: "#/components/responses/HtmlError" }
+        "500": { $ref: "#/components/responses/HtmlError" }
+        "503": { $ref: "#/components/responses/HtmlError" }
+components:
+  securitySchemes:
+    accessJwt:
+      type: apiKey
+      in: header
+      name: Cf-Access-Jwt-Assertion
+      description: The control-plane Access app's user JWT, attached by Access and verified by the Worker (iss, aud, exp, non-empty email, not a service token). Native clients present the app token as both the CF_Authorization cookie and the cf-access-token header.
+    machineSignature:
+      type: apiKey
+      in: header
+      name: Yaran-Signature
+      description: Ed25519 over the Design §7 canonical string, with Yaran-Protocol, Yaran-Machine-Id (absent on claim), Yaran-Timestamp and Yaran-Nonce. Served under the Access public override /v1/machine/*.
+  parameters:
+    YaranProtocol:
+      name: Yaran-Protocol
+      in: header
+      required: true
+      description: The negotiated protocol version (§3).
+      schema: { type: integer, minimum: 1 }
+    YaranInstallId:
+      name: Yaran-Install-Id
+      in: header
+      required: false
+      description: The app's InstallId for this org once registered; a revoked install gets 403 device_revoked.
+      schema: { $ref: "../schemas/common.schema.json#/$defs/InstallId" }
+    YaranMachineId:
+      name: Yaran-Machine-Id
+      in: header
+      required: false
+      description: The machine id; absent only on /v1/machine/claim.
+      schema: { $ref: "../schemas/common.schema.json#/$defs/Uuid" }
+    YaranTimestamp:
+      name: Yaran-Timestamp
+      in: header
+      required: true
+      description: Unix seconds, within 300 s of the server clock.
+      schema: { type: string, pattern: '^(?:0|[1-9][0-9]{0,11})$' }
+    YaranNonce:
+      name: Yaran-Nonce
+      in: header
+      required: true
+      description: 16 random bytes, base64url.
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{21}[AQgw]$' }
+    YaranSignature:
+      name: Yaran-Signature
+      in: header
+      required: true
+      description: The 64-byte Ed25519 signature, base64url.
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{85}[AQgw]$' }
+    v:
+      name: v
+      in: query
+      required: true
+      description: Protocol version for a browser navigation.
+      schema: { type: integer, minimum: 1 }
+    id:
+      name: id
+      in: path
+      required: true
+      description: The resource id.
+      schema: { $ref: "../schemas/common.schema.json#/$defs/Uuid" }
+    limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    cursor:
+      name: cursor
+      in: query
+      required: false
+      description: The next_cursor of the previous page.
+      schema: { $ref: "../schemas/common.schema.json#/$defs/Cursor" }
+  headers:
+    YaranProtocol:
+      description: The protocol version served.
+      schema: { type: integer, minimum: 1 }
+    YaranRequestId:
+      description: The request id (the CF-Ray value when present), equal to the error envelope's request_id.
+      schema: { $ref: "../schemas/common.schema.json#/$defs/RequestId" }
+  responses:
+    Error:
+      description: A §4 error envelope; 429 and 503 carry Retry-After.
+      headers:
+        Yaran-Request-Id: { $ref: "#/components/headers/YaranRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "../schemas/error.schema.json#/$defs/ErrorEnvelope" }
+    HtmlError:
+      description: An accessible HTML error page naming the §4 code.
+      content:
+        text/html:
+          schema: { type: string }
+    Html:
+      description: An HTML page (confirm, consent, wizard or console).
+      content:
+        text/html:
+          schema: { type: string }
+    CallbackRedirect:
+      description: Redirect to the callback (loopback for pairing, the app callback for handoff) with the success or error parameters.
+      headers:
+        Location:
+          description: The callback URL.
+          schema: { type: string }

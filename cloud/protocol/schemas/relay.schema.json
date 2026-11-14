@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "relay.schema.json",
+  "title": "RelaySchemas",
+  "description": "The publisher push relay (Design §9 R1-R3) and the bodies it hands APNs/FCM. The relay stores nothing; endpoints are self-describing.",
+  "$defs": {
+    "RelayMeta": {
+      "title": "RelayMeta",
+      "type": "object",
+      "required": ["service", "protocol", "apps", "channels", "endpoint_key_id"],
+      "properties": {
+        "service": { "const": "yaran-push-relay" },
+        "protocol": { "$ref": "common.schema.json#/$defs/ProtocolRange" },
+        "apps": { "description": "Served bundle ids / Android application ids.", "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 155 } },
+        "channels": { "description": "fcm only when the G5 fallback is deployed.", "type": "array", "items": { "enum": ["apns", "fcm"] } },
+        "endpoint_key_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,16}$" }
+      }
+    },
+    "EndpointMintRequest": {
+      "title": "EndpointMintRequest",
+      "oneOf": [{ "$ref": "#/$defs/ApnsMintRequest" }, { "$ref": "#/$defs/FcmMintRequest" }]
+    },
+    "ApnsMintRequest": {
+      "title": "ApnsMintRequest",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "app_id", "apns_token", "apns_environment", "vapid_public_key", "registration_id"],
+      "properties": {
+        "kind": { "const": "apns" },
+        "app_id": { "description": "Bundle id = apns-topic, must be in RelayMeta.apps.", "type": "string", "minLength": 1, "maxLength": 155 },
+        "apns_token": { "type": "string", "pattern": "^[0-9a-f]{64,200}$" },
+        "apns_environment": { "enum": ["production", "sandbox"] },
+        "vapid_public_key": { "$ref": "common.schema.json#/$defs/P256Point" },
+        "registration_id": { "$ref": "common.schema.json#/$defs/Uuid" }
+      }
+    },
+    "FcmMintRequest": {
+      "title": "FcmMintRequest",
+      "description": "G5 fallback only (channel fcm_relay).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "app_id", "fcm_token", "vapid_public_key", "registration_id"],
+      "properties": {
+        "kind": { "const": "fcm" },
+        "app_id": { "type": "string", "minLength": 1, "maxLength": 155 },
+        "fcm_token": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "vapid_public_key": { "$ref": "common.schema.json#/$defs/P256Point" },
+        "registration_id": { "$ref": "common.schema.json#/$defs/Uuid" }
+      }
+    },
+    "EndpointMintResponse": {
+      "title": "EndpointMintResponse",
+      "type": "object",
+      "required": ["endpoint"],
+      "properties": {
+        "endpoint": { "type": "string", "pattern": "^https://[^/]+/w/v1\\.[A-Za-z0-9_-]{1,16}\\.[A-Za-z0-9_-]{16,1024}$" }
+      }
+    },
+    "RelayFields": {
+      "title": "RelayFields",
+      "description": "v: relay wrapping version; r: registration_id; y: base64url of the full aes128gcm body.",
+      "type": "object",
+      "required": ["v", "r", "y"],
+      "properties": {
+        "v": { "const": 1 },
+        "r": { "$ref": "common.schema.json#/$defs/Uuid" },
+        "y": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_-]+$" }
+      }
+    },
+    "RelayApnsAlert": {
+      "title": "RelayApnsAlert",
+      "description": "APNs body for Urgency high or normal: an alert the NSE rewrites.",
+      "allOf": [{ "$ref": "#/$defs/RelayFields" }],
+      "type": "object",
+      "required": ["aps"],
+      "properties": {
+        "aps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["alert", "mutable-content", "sound", "thread-id"],
+          "properties": {
+            "alert": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["title-loc-key", "loc-key"],
+              "properties": {
+                "title-loc-key": { "const": "PUSH_GENERIC_TITLE" },
+                "loc-key": { "const": "PUSH_GENERIC_BODY" }
+              }
+            },
+            "mutable-content": { "const": 1 },
+            "sound": { "const": "default" },
+            "thread-id": { "type": "string", "pattern": "^(?:[A-Za-z0-9_-]{32}|yaran)$" }
+          }
+        }
+      }
+    },
+    "RelayApnsBackground": {
+      "title": "RelayApnsBackground",
+      "description": "APNs body for Urgency low or very-low: a background push.",
+      "allOf": [{ "$ref": "#/$defs/RelayFields" }],
+      "type": "object",
+      "required": ["aps"],
+      "properties": {
+        "aps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["content-available"],
+          "properties": { "content-available": { "const": 1 } }
+        }
+      }
+    },
+    "RelayFcmMessage": {
+      "title": "RelayFcmMessage",
+      "description": "FCM data message (G5 fallback, channel fcm_relay).",
+      "type": "object",
+      "required": ["data", "android"],
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["v", "r", "y"],
+          "properties": {
+            "v": { "const": "1" },
+            "r": { "$ref": "common.schema.json#/$defs/Uuid" },
+            "y": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_-]+$" }
+          }
+        },
+        "android": {
+          "type": "object",
+          "required": ["priority", "ttl"],
+          "properties": {
+            "priority": { "enum": ["high", "normal"] },
+            "ttl": { "type": "string", "pattern": "^(?:0|[1-9][0-9]{0,7})s$" },
+            "collapse_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{32}$" }
+          }
+        }
+      }
+    }
+  }
+}

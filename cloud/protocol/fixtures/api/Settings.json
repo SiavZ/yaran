@@ -1,0 +1,1377 @@
+{
+  "type": "Settings",
+  "schema": "admin.schema.json#/$defs/Settings",
+  "valid": [
+    {
+      "name": "defaults",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "allowlist",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "15m",
+        "pairing_policy": {
+          "mode": "allowlist",
+          "emails": [
+            "ada@example.org"
+          ],
+          "domains": [
+            "example.org"
+          ],
+          "access_group_ids": [
+            "grp-1"
+          ]
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": [
+            "https://relay.example.com"
+          ]
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": 90
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": "https://github.com/example/yaran"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "zero hours",
+      "keyword": "pattern",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "0h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "seconds",
+      "keyword": "pattern",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "15s",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "machine cap 51",
+      "keyword": "maximum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 51,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "machine cap 0",
+      "keyword": "minimum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 0,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "device cap 21",
+      "keyword": "maximum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 21,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "ttl 59",
+      "keyword": "minimum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 59,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "ttl 86401",
+      "keyword": "maximum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 86401,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "http relay",
+      "keyword": "pattern",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": [
+            "http://relay.example.com"
+          ]
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "21 relays",
+      "keyword": "maxItems",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": [
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com",
+            "https://cp.example.com"
+          ]
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "notify after 0",
+      "keyword": "oneOf",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 0,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "retention 29",
+      "keyword": "minimum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 29,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "retention 3651",
+      "keyword": "maximum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 3651,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "zero tunnels",
+      "keyword": "minimum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 0
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "unknown cleanup",
+      "keyword": "enum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "ignore",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "http repo",
+      "keyword": "oneOf",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": "http://github.com/x"
+      }
+    },
+    {
+      "name": "unknown mode",
+      "keyword": "enum",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "nobody",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "bad allowlist email",
+      "keyword": "format",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [
+            "ada"
+          ],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "501 emails",
+      "keyword": "maxItems",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org",
+            "ada@example.org"
+          ],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null,
+        "extra": 1
+      }
+    },
+    {
+      "name": "unknown push field",
+      "keyword": "additionalProperties",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": [],
+          "extra": 1
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "missing push",
+      "keyword": "required",
+      "value": {
+        "org_name": "Example Org",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    },
+    {
+      "name": "empty org name",
+      "keyword": "minLength",
+      "value": {
+        "org_name": "",
+        "session_duration": "24h",
+        "pairing_policy": {
+          "mode": "everyone",
+          "emails": [],
+          "domains": [],
+          "access_group_ids": []
+        },
+        "machine_cap_per_user": 10,
+        "device_cap_per_user": 10,
+        "push": {
+          "enabled": true,
+          "detail": "names",
+          "ttl_seconds": 3600,
+          "relay_allowed": true,
+          "allowed_relays": []
+        },
+        "stale_machine_policy": {
+          "notify_after_days": 30,
+          "revoke_after_days": null
+        },
+        "audit_retention_days": 365,
+        "quota_limits": {
+          "access_apps": 500,
+          "access_policies": 500,
+          "tunnels": 1000
+        },
+        "orphan_cleanup": "delete",
+        "deployer_repo_url": null
+      }
+    }
+  ]
+}

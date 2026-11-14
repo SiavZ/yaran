@@ -1,0 +1,78 @@
+{
+  "type": "UpdateStatus",
+  "schema": "admin.schema.json#/$defs/UpdateStatus",
+  "valid": [
+    {
+      "name": "could not check",
+      "value": {
+        "current": "1.0.0",
+        "latest": null,
+        "update_available": false,
+        "security": false,
+        "checked_at": "2026-11-14T12:00:00Z",
+        "error": "couldn't reach the release manifest"
+      }
+    },
+    {
+      "name": "update available",
+      "value": {
+        "current": "1.0.0",
+        "latest": "1.1.0",
+        "update_available": true,
+        "security": false,
+        "checked_at": "2026-11-14T12:00:00Z",
+        "error": null,
+        "notes_url": "https://github.com/SiavZ/yaran/releases"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "201-char error",
+      "keyword": "oneOf",
+      "value": {
+        "current": "1.0.0",
+        "latest": null,
+        "update_available": false,
+        "security": false,
+        "checked_at": "2026-11-14T12:00:00Z",
+        "error": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    {
+      "name": "bad current",
+      "keyword": "pattern",
+      "value": {
+        "current": "1.0",
+        "latest": null,
+        "update_available": false,
+        "security": false,
+        "checked_at": "2026-11-14T12:00:00Z",
+        "error": "couldn't reach the release manifest"
+      }
+    },
+    {
+      "name": "missing error",
+      "keyword": "required",
+      "value": {
+        "current": "1.0.0",
+        "latest": null,
+        "update_available": false,
+        "security": false,
+        "checked_at": "2026-11-14T12:00:00Z"
+      }
+    },
+    {
+      "name": "string update_available",
+      "keyword": "type",
+      "value": {
+        "current": "1.0.0",
+        "latest": null,
+        "update_available": "no",
+        "security": false,
+        "checked_at": "2026-11-14T12:00:00Z",
+        "error": "couldn't reach the release manifest"
+      }
+    }
+  ]
+}

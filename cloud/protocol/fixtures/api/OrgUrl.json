@@ -1,0 +1,36 @@
+{
+  "type": "OrgUrl",
+  "schema": "common.schema.json#/$defs/OrgUrl",
+  "valid": [
+    {
+      "name": "origin",
+      "value": "https://cp.example.com"
+    },
+    {
+      "name": "deep name",
+      "value": "https://yaran.cp.example.org"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "http",
+      "keyword": "pattern",
+      "value": "http://cp.example.com"
+    },
+    {
+      "name": "trailing slash",
+      "keyword": "pattern",
+      "value": "https://cp.example.com/"
+    },
+    {
+      "name": "port",
+      "keyword": "pattern",
+      "value": "https://cp.example.com:8443"
+    },
+    {
+      "name": "uppercase",
+      "keyword": "pattern",
+      "value": "https://CP.example.com"
+    }
+  ]
+}

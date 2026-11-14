@@ -51,10 +51,18 @@ ureq = "3.3.0"
 # small seeded RNG for backoff jitter.
 regex = "1"
 rand = { version = "0.8", features = ["small_rng"] }
+# Cloud protocol crypto (Ed25519 signing, ECDH sealing, HMAC, HKDF); already in the
+# lockfile through ureq -> rustls, so this adds no crate.
+ring = "0.17.14"
+# Strict base64url for the cloud protocol; already in the lockfile through axum/ureq.
+base64 = "0.22.1"
 
 [dev-dependencies]
 # AMQ queue expiry tests backdate file mtimes.
 filetime = "0.2"
+# An independent opener for the cloud handoff envelope tests (ring can seal, not open).
+p256 = { version = "0.14", features = ["ecdh"] }
+aes-gcm = "0.11"
 
 # The reload end-to-end test execs itself to play the second generation of a
 # reload, so it needs its own `main` instead of libtest's (which would just run

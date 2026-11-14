@@ -1,0 +1,78 @@
+{
+  "type": "PairConsent",
+  "schema": "pairing.schema.json#/$defs/PairConsent",
+  "valid": [
+    {
+      "name": "approve",
+      "value": {
+        "request_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "approve"
+      }
+    },
+    {
+      "name": "deny",
+      "value": {
+        "request_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "deny"
+      }
+    },
+    {
+      "name": "replace",
+      "value": {
+        "request_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "approve",
+        "replace_machine_id": "9b8a7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unknown decision",
+      "keyword": "enum",
+      "value": {
+        "request_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "maybe"
+      }
+    },
+    {
+      "name": "missing csrf",
+      "keyword": "required",
+      "value": {
+        "request_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "decision": "approve"
+      }
+    },
+    {
+      "name": "short csrf",
+      "keyword": "pattern",
+      "value": {
+        "request_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "csrf": "abc",
+        "decision": "approve"
+      }
+    },
+    {
+      "name": "uppercase request id",
+      "keyword": "pattern",
+      "value": {
+        "request_id": "3F1C2B4A-5D6E-4F70-8A9B-0C1D2E3F4A5B",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "approve"
+      }
+    },
+    {
+      "name": "unknown field",
+      "keyword": "additionalProperties",
+      "value": {
+        "request_id": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "csrf": "csrfTokenValue_0123456789ab",
+        "decision": "approve",
+        "extra": 1
+      }
+    }
+  ]
+}

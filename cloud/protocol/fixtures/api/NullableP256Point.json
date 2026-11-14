@@ -1,0 +1,21 @@
+{
+  "type": "NullableP256Point",
+  "schema": "common.schema.json#/$defs/NullableP256Point",
+  "valid": [
+    {
+      "name": "point",
+      "value": "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
+    },
+    {
+      "name": "null",
+      "value": null
+    }
+  ],
+  "invalid": [
+    {
+      "name": "short",
+      "keyword": "oneOf",
+      "value": "abc"
+    }
+  ]
+}

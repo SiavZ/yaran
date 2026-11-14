@@ -1,0 +1,38 @@
+{
+  "type": "MachineAccess",
+  "schema": "machine.schema.json#/$defs/MachineAccess",
+  "valid": [
+    {
+      "name": "access",
+      "value": {
+        "team_domain": "ada-team.example.com",
+        "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "63-char aud",
+      "keyword": "pattern",
+      "value": {
+        "team_domain": "ada-team.example.com",
+        "aud": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "name": "uppercase aud",
+      "keyword": "pattern",
+      "value": {
+        "team_domain": "ada-team.example.com",
+        "aud": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0123456789ABCDEF0123456789ABCDEF"
+      }
+    },
+    {
+      "name": "missing aud",
+      "keyword": "required",
+      "value": {
+        "team_domain": "ada-team.example.com"
+      }
+    }
+  ]
+}

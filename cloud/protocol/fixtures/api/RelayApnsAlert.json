@@ -1,0 +1,141 @@
+{
+  "type": "RelayApnsAlert",
+  "schema": "relay.schema.json#/$defs/RelayApnsAlert",
+  "valid": [
+    {
+      "name": "topic thread",
+      "value": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "abcdefghijklmnopqrstuvwxyz012345"
+        },
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    },
+    {
+      "name": "test thread",
+      "value": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "yaran"
+        },
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "other loc key",
+      "keyword": "const",
+      "value": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "abcdefghijklmnopqrstuvwxyz012345"
+        },
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    },
+    {
+      "name": "mutable-content 0",
+      "keyword": "const",
+      "value": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 0,
+          "sound": "default",
+          "thread-id": "abcdefghijklmnopqrstuvwxyz012345"
+        },
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    },
+    {
+      "name": "short thread id",
+      "keyword": "pattern",
+      "value": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "abc"
+        },
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    },
+    {
+      "name": "unknown aps field",
+      "keyword": "additionalProperties",
+      "value": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "abcdefghijklmnopqrstuvwxyz012345",
+          "badge": 1
+        },
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    },
+    {
+      "name": "missing y",
+      "keyword": "required",
+      "value": {
+        "aps": {
+          "alert": {
+            "title-loc-key": "PUSH_GENERIC_TITLE",
+            "loc-key": "PUSH_GENERIC_BODY"
+          },
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "abcdefghijklmnopqrstuvwxyz012345"
+        },
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+      }
+    },
+    {
+      "name": "missing aps",
+      "keyword": "required",
+      "value": {
+        "v": 1,
+        "r": "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+        "y": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrd"
+      }
+    }
+  ]
+}

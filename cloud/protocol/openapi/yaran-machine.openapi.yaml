@@ -1,0 +1,193 @@
+openapi: 3.1.0
+info:
+  title: yaran machine-hostname routes
+  version: "1"
+  summary: The routes yaran serves only on its bound cloud hostname, behind the machine's Access app.
+  description: >-
+    Phase 02 Design §5 (Y1, Y1b, Y2), §8 and §13. Every route answers 404 to any Host that is not the
+    bound cloud hostname, so loopback can never mint an envelope; every other /__yaran/* path is 404.
+    A 401/403/503 that yaran itself makes carries a Yaran-Refusal header (registry/refusals.json);
+    one without the header came from Access. Handoff errors use the §4 envelope (or a redirect to the
+    app callback with error=<code> when build, redirect and state are valid).
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://{machineHost}
+    description: The machine's own hostname (<machine>-<user>.<zone>).
+    variables:
+      machineHost:
+        default: machine-host
+tags:
+  - name: handoff
+    description: Sealed handoff and browser sign-in landing.
+paths:
+  /__yaran/handoff:
+    get:
+      operationId: machineHandoffStart
+      summary: Show the handoff consent page
+      description: >-
+        Y1. Validates v, build and redirect (allowlist), state, mode, device, pk (on P-256), then dk,
+        dts, dsig (form and freshness), the Access JWT (owner check), and finally the device signature
+        and the remembered-consent skip rule (§8.1). A skip answers exactly as Continue would.
+      tags: [handoff]
+      security:
+        - accessJwt: []
+      parameters:
+        - { $ref: "#/components/parameters/v" }
+        - { $ref: "#/components/parameters/pk" }
+        - { $ref: "#/components/parameters/state" }
+        - { $ref: "#/components/parameters/redirect" }
+        - { $ref: "#/components/parameters/build" }
+        - { $ref: "#/components/parameters/mode" }
+        - { $ref: "#/components/parameters/device" }
+        - { $ref: "#/components/parameters/dk" }
+        - name: dts
+          in: query
+          required: true
+          description: Unix seconds the app signed at, within 300 s of the server clock.
+          schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffQuery/properties/dts" }
+        - name: dsig
+          in: query
+          required: true
+          description: ES256 raw r||s over the §8.1 canonical string.
+          schema: { $ref: "../schemas/common.schema.json#/$defs/EcdsaP256Sig" }
+      x-error-codes: [protocol_unsupported, handoff_request_invalid, handoff_device_key_invalid, handoff_signature_malformed, handoff_timestamp_skewed, rate_limited, not_found]
+      x-refusal-codes: [access-missing, access-malformed, access-bad-algorithm, access-unknown-kid, access-bad-signature, access-wrong-issuer, access-wrong-audience, access-expired, access-not-yet-valid, access-not-app-token, access-service-token, access-not-owner, access-keys-unavailable, host-not-served, host-missing]
+      responses:
+        "200": { $ref: "#/components/responses/ConsentPage" }
+        "302": { $ref: "#/components/responses/CallbackRedirect" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Refusal" }
+        "403": { $ref: "#/components/responses/Refusal" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Refusal" }
+    post:
+      operationId: machineHandoffConsent
+      summary: Answer the handoff consent page
+      description: >-
+        Y1b. Re-validates every field as the GET did, checks csrf (bound to state, pk and dk, single use,
+        10 minutes) and the Origin rule. cancel redirects with error=handoff_declined; continue rate-limits,
+        seals the Access JWT to pk and redirects with state and jwe, setting the consent cookie only when
+        the GET's device signature verified.
+      tags: [handoff]
+      security:
+        - accessJwt: []
+      x-error-codes: [handoff_request_invalid, handoff_declined, origin_mismatch, rate_limited, protocol_unsupported, not_found]
+      x-refusal-codes: [access-missing, access-not-owner, access-expired, access-keys-unavailable, host-not-served]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffConsent" }
+      responses:
+        "303": { $ref: "#/components/responses/CallbackRedirect" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Refusal" }
+        "403": { $ref: "#/components/responses/Refusal" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/Error" }
+  /__yaran/signed-in:
+    get:
+      operationId: machineSignedIn
+      summary: Browser sign-in landing
+      description: Y2. A script-free page saying this browser is signed in; Phase 13 opens it so Access's login lands somewhere harmless.
+      tags: [handoff]
+      security:
+        - accessJwt: []
+      x-error-codes: [not_found]
+      responses:
+        "200":
+          description: Script-free HTML, Cache-Control no-store.
+          content:
+            text/html:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Refusal" }
+        "404": { $ref: "#/components/responses/NotFound" }
+components:
+  securitySchemes:
+    accessJwt:
+      type: apiKey
+      in: header
+      name: Cf-Access-Jwt-Assertion
+      description: The machine Access app's JWT, attached by Access and verified by yaran (RS256, team JWKS, iss, aud, exp, email equal to the paired owner).
+  parameters:
+    v:
+      name: v
+      in: query
+      required: true
+      description: Protocol version.
+      schema: { type: integer, minimum: 1 }
+    pk:
+      name: pk
+      in: query
+      required: true
+      description: The phone's ephemeral recipient key (raw point, never a JWK).
+      schema: { $ref: "../schemas/common.schema.json#/$defs/P256Point" }
+    state:
+      name: state
+      in: query
+      required: true
+      description: The app's handoff state; echoed as apv and in the callback.
+      schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffState" }
+    redirect:
+      name: redirect
+      in: query
+      required: true
+      description: The app callback, checked byte for byte against the allowlist.
+      schema: { type: string, maxLength: 256 }
+    build:
+      name: build
+      in: query
+      required: false
+      description: release (default) or dev; dev is the only way to ask for the custom scheme.
+      schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffBuild" }
+    mode:
+      name: mode
+      in: query
+      required: false
+      description: query (default) or fragment.
+      schema: { $ref: "../schemas/handoff.schema.json#/$defs/HandoffMode" }
+    device:
+      name: device
+      in: query
+      required: true
+      description: The app's device label, shown as a chip on the consent page.
+      schema: { type: string, minLength: 1, maxLength: 64 }
+    dk:
+      name: dk
+      in: query
+      required: true
+      description: The long-lived device public key (D24).
+      schema: { $ref: "../schemas/common.schema.json#/$defs/P256Point" }
+  responses:
+    ConsentPage:
+      description: The consent interstitial (Referrer-Policy same-origin, CSP form-action 'self' plus the callback origin, frame-ancestors 'none', no-store).
+      content:
+        text/html:
+          schema: { type: string }
+    CallbackRedirect:
+      description: Redirect to the app callback with state and jwe, or state and error (plus min/max or server_time where §8 says).
+      headers:
+        Location:
+          description: The callback URL.
+          schema: { type: string }
+    Error:
+      description: A §4 error envelope (browser navigations get a minimal HTML page with the same code).
+      content:
+        application/json:
+          schema: { $ref: "../schemas/error.schema.json#/$defs/ErrorEnvelope" }
+    Refusal:
+      description: A plain-text refusal yaran made itself, named by the Yaran-Refusal header.
+      headers:
+        Yaran-Refusal:
+          description: A registry/refusals.json code.
+          schema: { type: string, pattern: '^(?:access|host)-[a-z-]+$' }
+      content:
+        text/plain:
+          schema: { type: string }
+    NotFound:
+      description: Not the bound cloud hostname, or not a served /__yaran path.
+      content:
+        text/plain:
+          schema: { type: string }
