@@ -22,8 +22,11 @@ updates:
       patches:
         update-types: ["patch"]
 
+  # "/" covers .github/workflows; the second entry the local composite actions.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -58,11 +61,18 @@ updates:
       - dependency-name: "typescript"
         versions: [">=7"]
 
-  # The cloud wire-contract package (cloud/protocol). Its validators and codecs ship
-  # inside the org Worker, the push relay and the app shell, so updates are reviewed
-  # like any other supply-chain change. TypeScript stays on 6.x, as above.
+  # The phone-app npm packages (Phase 18): the cloud wire contract (cloud/protocol,
+  # whose validators ship inside the Worker, relay and app shell), the org Worker and
+  # the push relay, the app shell and its plugins, the shared UI kit and the
+  # release-train tooling. One entry for all of them, reviewed like any other
+  # supply-chain change. TypeScript stays on 6.x, as above.
   - package-ecosystem: "npm"
-    directory: "/cloud/protocol"
+    directories:
+      - "/cloud/*"
+      - "/mobile/app"
+      - "/mobile/plugins/*"
+      - "/packages/ui-kit"
+      - "/tools/release-trains"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -73,3 +83,28 @@ updates:
     ignore:
       - dependency-name: "typescript"
         versions: [">=7"]
+
+  # The Android project (Phase 14). A bump changes dependency hashes, so the
+  # maintainer regenerates mobile/android/gradle/verification-metadata.xml on Linux
+  # (`--write-verification-metadata sha256` over the Android CI task list) in the same
+  # PR and the diff is reviewed, once that file exists.
+  - package-ecosystem: "gradle"
+    directory: "/mobile/android"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      patches:
+        update-types: ["patch"]
+
+  # fastlane and its gems (mobile/Gemfile.lock), which run with store credentials.
+  - package-ecosystem: "bundler"
+    directory: "/mobile"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      patches:
+        update-types: ["patch"]

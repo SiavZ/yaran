@@ -1,0 +1,39 @@
+# iOS build setup shared by the iOS CI and release jobs (phone-app plan, Phase 18).
+#
+# Loads mobile/toolchain.env, selects the pinned Xcode (failing loudly when the runner
+# image no longer carries it, never falling back to the image default), installs the
+# pinned Node, then builds the web shell and syncs it into the Xcode project.
+name: iOS setup
+description: Toolchain pins, pinned Xcode, web build and cap sync ios.
+runs:
+  using: composite
+  steps:
+    - name: Load toolchain pins
+      shell: bash
+      run: grep -E '^[A-Z0-9_]+=' mobile/toolchain.env >> "$GITHUB_ENV"
+
+    - name: Select the pinned Xcode
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ ! -d "$XCODE_APP" ]; then
+          echo "$XCODE_APP is not on this runner image; update XCODE_APP in mobile/toolchain.env." >&2
+          ls -d /Applications/Xcode_* >&2 || true
+          exit 1
+        fi
+        sudo xcode-select -s "$XCODE_APP"
+        xcodebuild -version
+
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      with:
+        node-version-file: .node-version
+
+    # file: dependencies do not install their own dependencies: link targets go first.
+    - name: Web build and cap sync ios
+      shell: bash
+      run: |
+        set -euo pipefail
+        for d in cloud/protocol packages/ui-kit mobile/plugins/*/ mobile/app; do
+          if [ -f "$d/package-lock.json" ]; then npm ci --prefix "$d"; fi
+        done
+        cd mobile/app && npm run build && npx cap sync ios

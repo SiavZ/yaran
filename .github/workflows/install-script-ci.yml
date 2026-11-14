@@ -6,12 +6,14 @@ on:
       - "install.sh"
       - ".github/workflows/install-script-ci.yml"
       - ".github/scripts/test_install_checksum.sh"
+      - ".github/scripts/test_install_resolve_version.sh"
   push:
     branches: [main]
     paths:
       - "install.sh"
       - ".github/workflows/install-script-ci.yml"
       - ".github/scripts/test_install_checksum.sh"
+      - ".github/scripts/test_install_resolve_version.sh"
 
 concurrency:
   group: install-script-${{ github.ref }}
@@ -35,6 +37,8 @@ jobs:
         run: bash -n install.sh
       - name: Run checksum verification tests
         run: bash .github/scripts/test_install_checksum.sh
+      - name: Run release-tag resolution tests
+        run: bash .github/scripts/test_install_resolve_version.sh
 
   install:
     name: Install ${{ matrix.name }}

@@ -1,0 +1,66 @@
+# iOS CI leg of mobile-ci.yml: unit and UI tests on the pinned simulator, an unsigned
+# archive, SwiftLint and the SwiftPM license gate.
+#
+# Responsibilities: no secrets, nothing is signed (CODE_SIGNING_ALLOWED=NO). Runs the
+# three SwiftPM suites through their test.sh (native core, MachineViewCore,
+# YaranPushCore), then the App scheme's tests (AppTests and YaranCoreTests; there is no
+# XCUITest target yet), then an unsigned archive, then `swiftlint --strict` from its
+# checksummed release (mobile/.swiftlint.yml) and the SwiftPM license map check against
+# the Package.resolved xcodebuild writes.
+# Uses: .github/actions/ios-setup, tools/release-trains/swiftpm-licenses.mjs.
+name: Mobile iOS CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE_RESOLVED: mobile/ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+jobs:
+  ios:
+    name: iOS build and tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ios-setup
+
+      - name: SwiftPM suites (swift test)
+        run: |
+          set -euo pipefail
+          bash mobile/plugins/core/ios/test.sh
+          bash mobile/plugins/machine-view/ios/MachineViewCore/test.sh
+          bash mobile/ios/Shared/YaranPushCore/test.sh
+
+      - name: xcodebuild test (App scheme, AppTests and YaranCoreTests)
+        run: >-
+          xcodebuild test -project mobile/ios/App/App.xcodeproj -scheme App
+          -destination "platform=iOS Simulator,name=$IOS_SIM_DEVICE,OS=$IOS_SIM_OS"
+          CODE_SIGNING_ALLOWED=NO
+
+      # 14's release-config guard refuses the repository's com.example placeholder id in
+      # Release, so the unsigned CI archive names a CI-only bundle id.
+      - name: Unsigned archive
+        run: >-
+          xcodebuild archive -project mobile/ios/App/App.xcodeproj -scheme App
+          -configuration Release -destination generic/platform=iOS
+          -archivePath "$RUNNER_TEMP/App.xcarchive" CODE_SIGNING_ALLOWED=NO
+          APP_ID=io.github.siavz.yaran.ci
+
+      - name: SwiftLint (pinned release, SHA-256 checked)
+        run: |
+          set -euo pipefail
+          url="https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/portable_swiftlint.zip"
+          curl -fsSLo "$RUNNER_TEMP/swiftlint.zip" "$url"
+          echo "${SWIFTLINT_SHA256}  $RUNNER_TEMP/swiftlint.zip" | shasum -a 256 -c -
+          unzip -q -o "$RUNNER_TEMP/swiftlint.zip" -d "$RUNNER_TEMP/swiftlint"
+          (cd mobile && "$RUNNER_TEMP/swiftlint/swiftlint" --strict)
+
+      - name: SwiftPM licenses are mapped and allowed
+        run: >-
+          node tools/release-trains/swiftpm-licenses.mjs
+          --resolved "$PACKAGE_RESOLVED" --map mobile/ios/licenses-swiftpm.json

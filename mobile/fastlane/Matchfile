@@ -1,0 +1,8 @@
+# fastlane match: App Store signing material, read-only on CI (Phase 18, ios-release environment).
+#
+# The certificates repo URL and its credentials arrive as environment secrets
+# (MATCH_GIT_URL, MATCH_PASSWORD, MATCH_GIT_BASIC_AUTHORIZATION); nothing secret is committed.
+git_url(ENV["MATCH_GIT_URL"])
+storage_mode("git")
+type("appstore")
+readonly(true)

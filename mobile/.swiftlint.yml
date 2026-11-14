@@ -1,0 +1,13 @@
+# SwiftLint for the phone app's Swift (Phase 18's iOS leg runs `swiftlint --strict` from
+# mobile/). Default rules, except: generated and dependency trees are skipped, and lines
+# may run to 220 columns: user-facing message tables and Swift Testing names do.
+excluded:
+  - ios/App/CapApp-SPM
+  - ios/App/App/public
+  - ios/App/Pods
+  - "**/.build"
+  - "**/node_modules"
+line_length:
+  warning: 220
+  error: 250
+  ignores_comments: true

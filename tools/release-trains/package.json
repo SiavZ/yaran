@@ -1,0 +1,17 @@
+{
+  "name": "@yaran/release-trains",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Release-train tooling for the yaran-cloud-v* and yaran-mobile-v* trains: tag parsing, version literals, deploy-tree, association and license gates.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "license-checker-rseidelsohn": "5.0.1"
+  }
+}

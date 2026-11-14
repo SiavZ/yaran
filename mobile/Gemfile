@@ -1,0 +1,9 @@
+# Mobile release tooling: fastlane, pinned exactly and run as `bundle exec fastlane`.
+#
+# CI installs it with ruby/setup-ruby at RUBY_VERSION from mobile/toolchain.env
+# (bundler-cache on); Gemfile.lock pins every transitive gem for linux and macOS.
+source "https://rubygems.org"
+
+ruby ">= 3.2"
+
+gem "fastlane", "2.241.2"

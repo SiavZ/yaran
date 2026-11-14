@@ -1,0 +1,70 @@
+# F-Droid build recipe draft for the yaran phone app (fdroiddata metadata format).
+#
+# Owned by Phase 18 for CI: .github/workflows/_fdroid-verify.yml copies this file into a
+# scratch fdroiddata tree as metadata/<appid>.yml, sets the Builds entry's `commit:` to
+# the release tag, rebuilds with fdroidserver and compares the result against the
+# developer-signed foss APK with apksigcopier. Phase 21 submits it to fdroiddata and
+# renames it after the real applicationId (Phase 14's mobile/publisher.properties appId;
+# com.example.yaran is the repo default and is refused for any release).
+#
+# The listing text is read from fastlane/metadata/android/ at the repo root, the one
+# location F-Droid documents for a recipe whose subdir is the Gradle module.
+#
+# UNVERIFIED until gate G7 records a verdict:
+# - whether F-Droid accepts an npm build tree (scandelete of node_modules vs a srclib);
+# - whether Debian's Node produces a Vite bundle byte-identical to CI's (.node-version);
+# - whether fdroidserver scrapes a Kotlin-DSL `versionCode = N` (else Groovy app module).
+# If G7 fails outright, Binaries and AllowedAPKSigningKeys are dropped and F-Droid signs
+# with its own key (fallback 3 in the Phase 18 document; needs a D14 decision change).
+
+Categories:
+  - Development
+License: MIT
+SourceCode: https://github.com/SiavZ/yaran
+IssueTracker: https://github.com/SiavZ/yaran/issues
+
+AutoName: Yaran
+
+RepoType: git
+Repo: https://github.com/SiavZ/yaran.git
+Binaries: https://github.com/SiavZ/yaran/releases/download/yaran-mobile-v%v/yaran-mobile-%v-foss.apk
+
+# Lowercase hex SHA-256 of the app-signing certificate, equal to
+# mobile/android/signing/app-signing-cert.sha256 once the D23 ceremony has run.
+AllowedAPKSigningKeys: <app-signing-cert-sha256>
+
+Builds:
+  - versionName: 1.0.0
+    versionCode: 1000099
+    commit: yaran-mobile-v1.0.0
+    subdir: mobile/android/app
+    # Debian ships no Node 24, so the .node-version release is fetched from nodejs.org
+    # and checked by SHA-256 (fallback ladder step 1; acceptance UNVERIFIED, G7).
+    # Keep the version and hash equal to .node-version on every bump.
+    sudo:
+      - apt-get update
+      - apt-get install -y curl xz-utils
+      - curl -fsSLo /tmp/node.tar.xz https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz
+      - echo '4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb  /tmp/node.tar.xz'
+        | sha256sum -c -
+      - tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+      - sdkmanager 'build-tools;34.0.0'
+    gradle:
+      - foss
+    scandelete:
+      - mobile/app/node_modules
+      - mobile/plugins/machine-view/node_modules
+      - mobile/plugins/push/node_modules
+      - mobile/plugins/qr/node_modules
+      - mobile/plugins/secure-store/node_modules
+      - cloud/protocol/node_modules
+      - packages/ui-kit/node_modules
+    # file: dependencies do not install their own dependencies: link targets go first.
+    prebuild: cd ../../.. && for d in cloud/protocol packages/ui-kit mobile/plugins/*/ mobile/app;
+      do if [ -f "$d/package-lock.json" ]; then npm ci --prefix "$d"; fi; done
+      && cd mobile/app && npm run build && npx cap sync android
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^yaran-mobile-v[0-9]+\.[0-9]+\.[0-9]+$
+CurrentVersion: 1.0.0
+CurrentVersionCode: 1000099

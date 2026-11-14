@@ -60,7 +60,7 @@ fun toPush(result: ApiResult): OrgApiResult =
 private fun errorCode(envelope: String): String =
     try {
         JSONObject(envelope).getJSONObject("error").getString("code")
-    } catch (e: JSONException) {
+    } catch (ignored: JSONException) {
         "unknown"
     }
 
@@ -70,6 +70,10 @@ fun pushAppInfo(): AppInfo =
         flavor = BuildConfig.FLAVOR,
         appVersion = BuildConfig.VERSION_NAME,
         transport =
-            if (BuildConfig.FLAVOR == "play" && BuildConfig.PLAY_PUSH_TRANSPORT == "relay-fcm") PushTransport.RELAY_FCM else PushTransport.UNIFIED_PUSH,
+            if (BuildConfig.FLAVOR == "play" && BuildConfig.PLAY_PUSH_TRANSPORT == "relay-fcm") {
+                PushTransport.RELAY_FCM
+            } else {
+                PushTransport.UNIFIED_PUSH
+            },
         relayBaseUrl = BuildConfig.RELAY_URL.ifEmpty { null },
     )

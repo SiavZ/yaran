@@ -1,0 +1,92 @@
+# F-Droid reproducibility leg: rebuild the foss APK from source the way F-Droid's
+# buildserver does and prove the developer-signed APK carries exactly that build.
+#
+# Responsibilities: no secrets. Copies the recipe draft mobile/fdroid/<appId>.yml into a
+# scratch fdroiddata tree, points its Builds entry at the tag (commit, versionName,
+# versionCode) and the committed signing fingerprint, runs the recipe's `sudo` lines and
+# `fdroid build` plus `fdroid scanner` in the digest-pinned fdroidserver image with the
+# runner's Android SDK mounted, then `apksigcopier compare`s the signed foss APK with the
+# unsigned rebuild. A mismatch fails: nothing ships that F-Droid cannot reproduce.
+# Called by release-mobile.yml (APK from the android-release artifact) and
+# fdroid-watch.yml (APK downloaded from the published release).
+# Uses: tools/release-trains/versions.mjs, mobile/toolchain.env.
+name: F-Droid verify
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      apk-artifact:
+        description: Workflow artifact holding yaran-mobile-<v>-foss.apk; empty downloads it from the release.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: F-Droid rebuild matches the signed APK
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - id: v
+        name: Load pins and parse the tag
+        run: |
+          grep -E '^[A-Z0-9_]+=' mobile/toolchain.env >> "$GITHUB_ENV"
+          node tools/release-trains/versions.mjs "$TAG" >> "$GITHUB_OUTPUT"
+
+      - if: inputs.apk-artifact != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.apk-artifact }}
+          path: ${{ runner.temp }}/signed
+      - if: inputs.apk-artifact == ''
+        name: Download the signed foss APK from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --pattern '*-foss.apk' --dir "$RUNNER_TEMP/signed"
+
+      - name: Scratch fdroiddata tree pointed at the tag
+        env:
+          VN: ${{ steps.v.outputs.version }}
+          VC: ${{ steps.v.outputs.version_code }}
+        run: |
+          set -euo pipefail
+          app="$(sed -n 's/^appId=//p' mobile/publisher.properties)"
+          cert="$(tr -d '[:space:]' < mobile/android/signing/app-signing-cert.sha256)"
+          fd="$RUNNER_TEMP/fdroiddata"; mkdir -p "$fd/metadata"
+          cp "mobile/fdroid/$app.yml" "$fd/metadata/$app.yml"
+          CERT="$cert" yq -i '.Builds[0].commit = strenv(TAG) | .Builds[0].versionName = strenv(VN)
+            | .Builds[0].versionCode = (strenv(VC) | to_number) | .AllowedAPKSigningKeys = strenv(CERT)' "$fd/metadata/$app.yml"
+          yq '.Builds[0].sudo | join("\n")' "$fd/metadata/$app.yml" > "$fd/sudo.sh"
+          { echo "APP=$app"; echo "VC=$VC"; echo "FD=$fd"; } >> "$GITHUB_ENV"
+
+      # Local mode runs no `sudo:` lines, so the recipe's own lines run first, as on the
+      # buildserver. UNVERIFIED (G7): that this matches the buildserver byte for byte.
+      - name: fdroid build and scanner (pinned fdroidserver image)
+        run: >-
+          docker run --rm -v "$FD:/repo" -w /repo -v "$ANDROID_HOME:/opt/android-sdk"
+          -e ANDROID_HOME=/opt/android-sdk
+          -e PATH=/opt/android-sdk/cmdline-tools/latest/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          --entrypoint bash "$FDROIDSERVER_IMAGE" -euo pipefail -c
+          "bash sudo.sh && fdroid build --verbose --no-tarball $APP:$VC && fdroid scanner $APP:$VC"
+
+      - name: apksigcopier compare (signed foss APK vs unsigned rebuild)
+        run: |
+          set -euo pipefail
+          export PATH="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS:$PATH"
+          signed="$(find "$RUNNER_TEMP/signed" -name '*-foss.apk' | head -1)"
+          test -n "$signed"
+          pipx run --spec "apksigcopier==$APKSIGCOPIER_VERSION" apksigcopier compare \
+            "$signed" --unsigned "$FD/unsigned/${APP}_${VC}.apk"
+          echo "OK: F-Droid's rebuild of $TAG matches the developer-signed foss APK."
