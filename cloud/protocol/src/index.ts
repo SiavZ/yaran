@@ -44,12 +44,18 @@
  * ├── @yaran/mobile-shell:src/lib/machinesStore.ts
  * ├── @yaran/mobile-shell:src/lib/openMachine.ts
  * ├── @yaran/mobile-shell:src/lib/protocolCompat.ts
+ * ├── @yaran/mobile-shell:src/push/pushRegistration.ts
+ * ├── @yaran/mobile-shell:src/push/pushTestKit.ts
+ * ├── @yaran/mobile-shell:src/push/pushWiring.test.ts
+ * ├── @yaran/mobile-shell:src/push/pushWiring.ts
  * ├── @yaran/mobile-shell:src/screens/machines/MachineList.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/MachineRow.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/RemoveMachineDialog.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/machines.test.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/ConfirmOrg.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/onboarding.test.tsx
+ * ├── @yaran/push:src/definitions.ts
+ * ├── @yaran/push:test/guards.test.ts
  * └── @yaran/qr:src/payload.ts
  * <module-headers:end>
  */

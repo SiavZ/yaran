@@ -8,5 +8,8 @@ project(':capacitor-app').projectDir = new File('../app/node_modules/@capacitor/
 include ':yaran-machine-view'
 project(':yaran-machine-view').projectDir = new File('../plugins/machine-view/android')
 
+include ':yaran-push'
+project(':yaran-push').projectDir = new File('../plugins/push/android')
+
 include ':yaran-secure-store'
 project(':yaran-secure-store').projectDir = new File('../plugins/secure-store/android')

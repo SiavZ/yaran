@@ -30,6 +30,7 @@
  * ├── @yaran/mobile-shell:src/screens/settings/Diagnostics.tsx
  * ├── @yaran/mobile-shell:src/screens/settings/EraseDialog.tsx
  * ├── @yaran/mobile-shell:src/screens/settings/LockScreen.tsx
+ * ├── @yaran/mobile-shell:src/screens/settings/NotificationSettings.tsx
  * ├── @yaran/mobile-shell:src/screens/settings/Settings.tsx
  * ├── src/dialog.tsx
  * ├── src/sheet.tsx

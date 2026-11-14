@@ -19,7 +19,8 @@
  * src/index.ts
  * ├── @yaran/mobile-shell:src/lib/native/machineView.ts
  * ├── @yaran/mobile-shell:src/lib/openMachine.test.ts
- * └── @yaran/mobile-shell:src/lib/openMachine.ts
+ * ├── @yaran/mobile-shell:src/lib/openMachine.ts
+ * └── @yaran/mobile-shell:src/push/notificationTap.ts
  * <module-headers:end>
  */
 import { registerPlugin } from "@capacitor/core";

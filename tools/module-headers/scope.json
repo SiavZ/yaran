@@ -187,6 +187,18 @@
     "mobile/plugins/machine-view/ios/typecheck-catalyst.sh": "run by hand: `bash mobile/plugins/machine-view/ios/typecheck-catalyst.sh` (no-Xcode type check)",
     "mobile/plugins/machine-view/ios/Sources/MachineView/*Plugin.swift": "Capacitor plugin (CAPBridgedPlugin), registered by the app's Capacitor bridge",
     "mobile/plugins/machine-view/android/src/main/java/io/github/siavz/yaran/machineview/SessionPlugin.kt": "Capacitor plugin (@CapacitorPlugin), registered by the app's Capacitor bridge",
-    "mobile/plugins/machine-view/android/src/main/java/io/github/siavz/yaran/machineview/AuthCallbackActivity.kt": "exported Activity, the AuthCallbackHttps/AuthCallbackDev aliases in the plugin AndroidManifest.xml"
+    "mobile/plugins/machine-view/android/src/main/java/io/github/siavz/yaran/machineview/AuthCallbackActivity.kt": "exported Activity, the AuthCallbackHttps/AuthCallbackDev aliases in the plugin AndroidManifest.xml",
+    "mobile/ios/Shared/YaranPushCore/Package.swift": "read by SwiftPM, by Xcode's local package reference and by mobile/plugins/push/Package.swift",
+    "mobile/ios/Shared/YaranPushCore/Tests/*/*Tests.swift": "swift test / Swift Testing, via mobile/ios/Shared/YaranPushCore/test.sh",
+    "mobile/ios/Shared/YaranPushCore/test.sh": "run by hand or CI: `bash mobile/ios/Shared/YaranPushCore/test.sh`",
+    "mobile/ios/App/NotificationService/NotificationService.swift": "NSExtensionPrincipalClass of the Notification Service Extension target (its Info.plist)",
+    "mobile/plugins/push/Package.swift": "read by SwiftPM through the Capacitor CLI's CapApp-SPM package",
+    "mobile/plugins/push/ios/Sources/PushPlugin/PushPlugin.swift": "Capacitor plugin class, registered by CAPBridgedPlugin under jsName Push",
+    "mobile/plugins/push/ios/Sources/PushPlugin/NotificationRouter+Push.swift": "extension of PushPlugin: Capacitor's NotificationRouter calls it, and the app delegate calls handleBackgroundPush",
+    "mobile/plugins/push/src/index.ts": "package entry of @yaran/push (the \".\" export in mobile/plugins/push/package.json), imported by the shell",
+    "mobile/plugins/push/vitest.config.ts": "loaded by vitest, via npm test in mobile/plugins/push",
+    "mobile/plugins/push/android/src/main/kotlin/io/github/siavz/yaran/push/PushPlugin.kt": "Capacitor plugin class (@CapacitorPlugin name Push), registered by the Capacitor CLI",
+    "mobile/plugins/push/android/src/main/kotlin/io/github/siavz/yaran/push/YaranPushService.kt": "UnifiedPush PushService, declared in mobile/plugins/push/android/src/main/AndroidManifest.xml",
+    "mobile/android/app/src/play/relay-fcm/kotlin/io/github/siavz/yaran/push/fcmrelay/*.kt": "service and provider declared in mobile/android/app/src/play/relay-fcm/AndroidManifest.xml (relay-fcm builds only)"
   }
 }

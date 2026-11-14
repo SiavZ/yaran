@@ -18,6 +18,7 @@
  * ├── @yaran/mobile-shell:src/screens/machines/RemoveMachineDialog.tsx
  * ├── @yaran/mobile-shell:src/screens/orgs/SignOutOrgDialog.tsx
  * ├── @yaran/mobile-shell:src/screens/settings/EraseDialog.tsx
+ * ├── @yaran/mobile-shell:src/screens/settings/NotificationSettings.tsx
  * ├── src/dialog.test.tsx
  * ├── web:src/components/AddProjectDialog.tsx
  * ├── web:src/components/AgentEnvDialog.tsx

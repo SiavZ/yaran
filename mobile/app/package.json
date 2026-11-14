@@ -28,6 +28,7 @@
     "@lingui/react": "6.12.0",
     "@yaran/machine-view": "file:../plugins/machine-view",
     "@yaran/protocol": "file:../../cloud/protocol",
+    "@yaran/push": "file:../plugins/push",
     "@yaran/qr": "file:../plugins/qr",
     "@yaran/secure-store": "file:../plugins/secure-store",
     "@yaran/ui-kit": "file:../../packages/ui-kit",

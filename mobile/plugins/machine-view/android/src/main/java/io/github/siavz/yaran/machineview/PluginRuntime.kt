@@ -28,6 +28,7 @@
  * io.github.siavz.yaran.machineview.PluginRuntime
  * ├── io.github.siavz.yaran.machineview.BrowserLauncher (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
+ * ├── io.github.siavz.yaran.machineview.NativeOrgApi (inferred)
  * └── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
  * <module-headers:end>
  */

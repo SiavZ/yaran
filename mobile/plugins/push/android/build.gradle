@@ -1,0 +1,44 @@
+// @yaran/push Android library (Phase 16): UnifiedPush registration, notification presentation and
+// the relay-held FCM fallback's crypto. The app includes it as :yaran-push (capacitor.settings.gradle);
+// `./gradlew :yaran-push:testDebugUnitTest` in mobile/android runs its suite against 02's fixtures.
+
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+android {
+    namespace = "io.github.siavz.yaran.push"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            all {
+                // 02's shared vectors, read by every suite (00-CONVENTIONS §3).
+                systemProperty 'yaran.protocol', file('../../../../cloud/protocol').absolutePath
+            }
+        }
+    }
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation libs.androidx.core
+    implementation libs.androidx.appcompat
+    // The connector also bundles Tink's fixed_webpush decryptor, which the relay-fcm fallback reuses.
+    implementation "org.unifiedpush.android:connector:3.3.5"
+    // Already the connector's runtime dependency (same version); declared for compile access only.
+    implementation "com.google.crypto.tink:tink:1.23.0"
+    testImplementation libs.junit
+    testImplementation "org.robolectric:robolectric:4.16"
+}

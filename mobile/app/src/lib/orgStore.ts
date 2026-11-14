@@ -21,7 +21,8 @@
  * ├── src/lib/machinesStore.ts
  * ├── src/lib/native/machineView.ts
  * ├── src/lib/settingsStore.ts
- * └── src/lib/store.ts
+ * ├── src/lib/store.ts
+ * └── src/push/pushDeps.ts
  * External: none
  *
  * Used by:
@@ -32,6 +33,8 @@
  * ├── src/lib/lifecycle.ts
  * ├── src/lib/orgStore.test.ts
  * ├── src/main.tsx
+ * ├── src/push/pushWiring.test.ts
+ * ├── src/push/pushWiring.ts
  * ├── src/screens/machines/MachineList.tsx
  * ├── src/screens/machines/machines.test.tsx
  * ├── src/screens/onboarding/ConfirmOrg.tsx
@@ -40,11 +43,13 @@
  * ├── src/screens/orgs/SignOutOrgDialog.tsx
  * ├── src/screens/screens.test.tsx
  * ├── src/screens/settings/EraseDialog.tsx
+ * ├── src/screens/settings/NotificationSettings.tsx
  * └── src/screens/settings/settings.test.tsx
  * <module-headers:end>
  */
 import { SecureStore } from '@yaran/secure-store';
 
+import { unregisterOrgPush } from '../push/pushDeps.ts';
 import { log } from './diagnostics.ts';
 import { forgetOrgMachines, machineHosts, resetMachines } from './machinesStore.ts';
 import { Session } from './native/machineView.ts';
@@ -117,6 +122,8 @@ export async function removeOrgLocal(id: string): Promise<void> {
 
 /** Sign out: Phase 15 deletes sessions, cookies, install id and device key; then local data. */
 export async function signOutOrg(id: string): Promise<void> {
+  // W14 needs the org session, so the device row goes before the sign-out deletes it.
+  await unregisterOrgPush(id);
   await Session.signOut({ orgId: id, hosts: [new URL(id).hostname, ...machineHosts(id)] });
   await removeOrgLocal(id);
 }
@@ -130,6 +137,7 @@ export async function handleDeviceRevoked(id: string): Promise<void> {
 /** Signs out of every org (best effort), then erases the vault and its keys. */
 export async function eraseEverything(): Promise<void> {
   for (const org of orgStore.get().orgs) {
+    await unregisterOrgPush(org.id);
     await Session.signOut({ orgId: org.id, hosts: [new URL(org.id).hostname, ...machineHosts(org.id)] }).catch(() =>
       log('warn', 'sign-out failed during erase; the vault wipe still removes its sessions'),
     );
