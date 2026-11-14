@@ -1,0 +1,15 @@
+{
+  "bundles": [
+    { "bundleName": "Apache-2.0", "licenseName": "Apache-2.0", "licenseUrl": "https://www.apache.org/licenses/LICENSE-2.0" },
+    { "bundleName": "MIT", "licenseName": "MIT", "licenseUrl": "https://opensource.org/licenses/MIT" },
+    { "bundleName": "BSD-2-Clause", "licenseName": "BSD-2-Clause", "licenseUrl": "https://opensource.org/licenses/BSD-2-Clause" },
+    { "bundleName": "BSD-3-Clause", "licenseName": "BSD-3-Clause", "licenseUrl": "https://opensource.org/licenses/BSD-3-Clause" }
+  ],
+  "transformationRules": [
+    { "bundleName": "Apache-2.0", "licenseNamePattern": ".*(The )?Apache (Software )?License,? (Version )?2\\.0.*" },
+    { "bundleName": "Apache-2.0", "licenseUrlPattern": ".*apache\\.org/licenses/LICENSE-2\\.0.*" },
+    { "bundleName": "MIT", "licenseNamePattern": "(The )?MIT( License)?" },
+    { "bundleName": "BSD-2-Clause", "licenseNamePattern": ".*BSD 2-Clause.*" },
+    { "bundleName": "BSD-3-Clause", "licenseNamePattern": ".*(BSD 3-Clause|New BSD|Revised BSD).*" }
+  ]
+}

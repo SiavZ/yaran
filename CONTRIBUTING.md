@@ -12,6 +12,8 @@ the tenet wins.
 - **Node 22.12 or newer** plus npm. The web UI is a React app that is **compiled into
   the `yaran` binary**, so a normal `cargo build` builds it. If you have no Node
   toolchain, see [Building without the web UI](#building-without-the-web-ui).
+  The exact Node release the cloud and mobile CI uses is pinned in `.node-version`
+  at the repo root, the only Node pin (version managers such as `fnm` read it).
 - **`git`**, which yaran is built around.
 - **`gh`** (optional) for the GitHub integration.
 

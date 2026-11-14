@@ -9,7 +9,8 @@
     "crates/yaran-core/src/cloud/**",
     "crates/yaran-web/src/cloud_*.rs",
     "crates/yaran-web/web/src/lib/native/**",
-    "tools/cloudflared-pin/**"
+    "tools/cloudflared-pin/**",
+    "tools/release-trains/**"
   ],
   "optIn": [
     "crates/yaran-core/build.rs",
@@ -91,7 +92,14 @@
     "crates/yaran-web/web/src/lib/store.ts",
     "crates/yaran/src/companion.rs",
     "crates/yaran/src/main.rs",
-    "website/src/lib/cloud-docs-domains.test.ts"
+    "website/src/lib/cloud-docs-domains.test.ts",
+    ".github/scripts/check_workflow_policy.sh",
+    ".github/scripts/test_check_workflow_policy.sh",
+    ".github/scripts/check_apk_cert.sh",
+    ".github/scripts/npm_license_gate.sh",
+    ".github/scripts/publish_deploy_branch.sh",
+    ".github/scripts/test_release_scripts.sh",
+    ".github/scripts/test_install_resolve_version.sh"
   ],
   "exclude": [
     "**/generated/**",
@@ -216,6 +224,22 @@
     "cloud/worker/scripts/assemble-deploy-tree.ts": "CLI: npm run assemble-deploy-tree, run by Phase 18's release-cloud workflow",
     "cloud/worker/scripts/update/update.ts": "CLI: npm run update in the deploy tree, and its yaran-cloud-update workflow",
     "cloud/worker/test/**/*.test.tsx": "vitest, via npm test in cloud/worker",
-    "website/src/lib/cloud-docs-domains.test.ts": "vitest, via npm test in website and website-ci.yml"
+    "website/src/lib/cloud-docs-domains.test.ts": "vitest, via npm test in website and website-ci.yml",
+    "tools/release-trains/versions.mjs": "CLI: node tools/release-trains/versions.mjs <tag> >> $GITHUB_OUTPUT, in release-cloud.yml, release-mobile.yml, _fdroid-verify.yml and mobile-store-promote.yml",
+    "tools/release-trains/check-versions.mjs": "CLI: the first job of release-cloud.yml and release-mobile.yml, the --play gate before every Play upload, and --metadata in mobile-ci.yml and gates.yml",
+    "tools/release-trains/bump.mjs": "CLI: run by a maintainer in the release PR (docs/operations/release-trains.md)",
+    "tools/release-trains/check-deploy-tree.mjs": "CLI: cloud-ci.yml (--config-only cloud/worker) and the release-cloud.yml build",
+    "tools/release-trains/release-manifest.mjs": "CLI: release-cloud.yml build, writes cloud-deploy:worker/release.json",
+    "tools/release-trains/check-association.mjs": "CLI: release-mobile.yml check (--live on stable tags); Phase 22 daily",
+    "tools/release-trains/license-allowlist.mjs": "CLI: .github/scripts/npm_license_gate.sh (--npm) and the Android legs (--jk1)",
+    "tools/release-trains/swiftpm-licenses.mjs": "CLI: _mobile-ios-ci.yml and _mobile-ios-release.yml",
+    "tools/release-trains/test/*.test.mjs": "node --test 'tools/release-trains/test/*.test.mjs', via npm test in tools/release-trains and the gates.yml release-trains job",
+    ".github/scripts/check_workflow_policy.sh": "workflow-policy.yml, and test_check_workflow_policy.sh",
+    ".github/scripts/test_check_workflow_policy.sh": "workflow-policy.yml: bash .github/scripts/test_check_workflow_policy.sh",
+    ".github/scripts/check_apk_cert.sh": "_mobile-android-release.yml and _mobile-android-ci.yml, and test_release_scripts.sh",
+    ".github/scripts/npm_license_gate.sh": "cloud-ci.yml, mobile-ci.yml, ui-kit-ci.yml, cloud-protocol.yml and _mobile-android-release.yml",
+    ".github/scripts/publish_deploy_branch.sh": "release-cloud.yml (deploy-branch, deploy-branch-rc), and test_release_scripts.sh",
+    ".github/scripts/test_release_scripts.sh": "workflow-policy.yml: bash .github/scripts/test_release_scripts.sh",
+    ".github/scripts/test_install_resolve_version.sh": "install-script-ci.yml: bash .github/scripts/test_install_resolve_version.sh"
   }
 }
