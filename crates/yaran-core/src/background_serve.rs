@@ -294,6 +294,18 @@ pub trait BackgroundServeCompanion {
     /// serving; the CONFIG write is the caller's, and happens either way.
     fn set_tailscale_mode(&mut self, engine: &Engine, mode: crate::config::TailscaleMode);
 
+    /// Change `[cloud] mode` on the running serve; the answer arrives as a
+    /// [`crate::worker::WorkerEvent::CloudModeApplied`]. Called only while serving.
+    fn set_cloud_mode(&mut self, engine: &Engine, mode: crate::cloud::leg_seam::CloudMode);
+
+    /// Tell the running serve that `[cloud]` keys other than `mode` changed, so a
+    /// running cloudflared restarts on them.
+    fn cloud_settings_changed(&mut self, settings: crate::cloud::leg_seam::CloudLegSettings);
+
+    /// The cloud leg's snapshot, `None` when not serving. Read once per frame: a lock
+    /// held only to copy.
+    fn cloud_view(&self) -> Option<crate::cloud::view::CloudLegView>;
+
     /// Stop serving and release everything the serve owned. A no-op when not
     /// serving, so a caller never has to check first.
     fn stop(&mut self, engine: &mut Engine);

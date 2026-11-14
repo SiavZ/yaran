@@ -510,6 +510,8 @@ pub(crate) struct ActorLoopEnds {
     /// `[server] tailscale` to the running listener; empty means nothing is
     /// serving and the reload only saved the value.
     tailscale_mode_control: Arc<std::sync::OnceLock<crate::serve_legs::TailscaleModeControl>>,
+    /// The serve's live `[cloud] mode` lane, filled like the Tailscale slot.
+    cloud_mode_control: crate::cloud_mode::CloudControlSlot,
 }
 
 /// Extract the reloaded `Config` from a reload follow-up reaction, consuming it.
@@ -698,6 +700,7 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
     // what a reload on a TUI-only run sees.
     let tailscale_mode_control: Arc<std::sync::OnceLock<crate::serve_legs::TailscaleModeControl>> =
         Arc::new(std::sync::OnceLock::new());
+    let cloud_mode_control: crate::cloud_mode::CloudControlSlot = Arc::default();
     (
         EngineHandle {
             req_tx,
@@ -713,6 +716,7 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
             pty_input_owners: Arc::clone(&pty_input_owners),
             live_limits: Arc::clone(&live_limits),
             tailscale_mode_control: Arc::clone(&tailscale_mode_control),
+            cloud_mode_control: Arc::clone(&cloud_mode_control),
             #[cfg(test)]
             refresh_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
         },
@@ -729,6 +733,7 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
             pty_input_owners,
             live_limits,
             tailscale_mode_control: Arc::clone(&tailscale_mode_control),
+            cloud_mode_control,
         },
     )
 }
@@ -826,6 +831,8 @@ pub struct EngineHandle {
     /// path can hand the actor its live Tailscale-mode handle after the actor is
     /// already running (which it always is on `yaran server`).
     tailscale_mode_control: Arc<std::sync::OnceLock<crate::serve_legs::TailscaleModeControl>>,
+    /// The serve's live `[cloud] mode` lane, filled like the Tailscale slot.
+    cloud_mode_control: crate::cloud_mode::CloudControlSlot,
     #[cfg(test)]
     refresh_requests: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -846,6 +853,11 @@ impl EngineHandle {
         control: crate::serve_legs::TailscaleModeControl,
     ) {
         let _ = self.tailscale_mode_control.set(control);
+    }
+
+    /// Hand the actor this serve's live `[cloud] mode` lane (once per serve).
+    pub(crate) fn set_cloud_mode_control(&self, control: crate::cloud_mode::CloudModeControl) {
+        let _ = self.cloud_mode_control.set(control);
     }
 
     /// The teardown flag PTY forwarders poll. Cloned into each forwarder so a
@@ -2246,6 +2258,8 @@ pub(crate) struct EngineService {
     /// serving. Every serve fills it, background mode included; background mode
     /// simply does not run this loop, so its reload is the terminal UI's.
     tailscale_mode_control: Arc<std::sync::OnceLock<crate::serve_legs::TailscaleModeControl>>,
+    /// The serve's live `[cloud] mode` lane, filled like the Tailscale slot.
+    cloud_mode_control: crate::cloud_mode::CloudControlSlot,
 }
 
 /// How long [`EngineService`]'s drop waits for a sender that already holds a
@@ -2300,6 +2314,7 @@ impl EngineService {
             pty_input_owners,
             live_limits,
             tailscale_mode_control,
+            cloud_mode_control,
         } = ends;
         let spine_check = SpineCheck::new(engine, &pty_input_owners, &workspace_tx);
         Self {
@@ -2318,6 +2333,7 @@ impl EngineService {
             pty_input_owners,
             live_limits,
             tailscale_mode_control,
+            cloud_mode_control,
             pending: Vec::new(),
             last_pr_foregrounded: None,
             spine_check,
@@ -2940,6 +2956,9 @@ pub(crate) fn run_engine_loop(
                 // have their listener stopped and started for nothing.
                 let previous_tailscale = engine.config.server.tailscale_mode();
                 let next_tailscale = config.server.tailscale_mode();
+                let previous_cloud =
+                    yaran_core::cloud::leg_seam::settings_from_config(&engine.config);
+                let next_cloud = yaran_core::cloud::leg_seam::settings_from_config(&config);
                 match engine.apply_reloaded_config(*config) {
                     Ok(()) => {
                         // Memory now matches disk: any pending raw "Save" has been
@@ -2988,6 +3007,17 @@ pub(crate) fn run_engine_loop(
                                 ));
                             });
                         }
+                        // `[cloud] mode` and the restart keys are live too; the same
+                        // one-owner rule applies (background mode never runs this).
+                        let status = svc.status.tx.clone();
+                        crate::cloud_mode::apply_reload(
+                            svc.cloud_mode_control.get(),
+                            &previous_cloud,
+                            &next_cloud,
+                            move |update| {
+                                let _ = status.send(WireStatus::from_update(&update));
+                            },
+                        );
                     }
                     Err(e) => {
                         let _ = svc.status.send(WireStatus::from_update(

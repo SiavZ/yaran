@@ -190,6 +190,7 @@ pub(crate) fn exit_because_wedged() {
          next start.",
         QUIT_WATCHDOG_GRACE.as_secs()
     ));
+    yaran_core::cloud::cloudflared::child_registry::kill_all_now();
     std::process::exit(129);
 }
 

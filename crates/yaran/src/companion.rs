@@ -118,6 +118,24 @@ impl BackgroundServeCompanion for WebCompanion {
         }
     }
 
+    fn set_cloud_mode(&mut self, engine: &Engine, mode: yaran_core::cloud::leg_seam::CloudMode) {
+        if let Some(server) = self.server.as_ref() {
+            server.set_cloud_mode(mode, engine.worker_tx.clone());
+        }
+    }
+
+    fn cloud_settings_changed(&mut self, settings: yaran_core::cloud::leg_seam::CloudLegSettings) {
+        if let Some(server) = self.server.as_ref() {
+            server.cloud_mode().settings_changed(settings);
+        }
+    }
+
+    fn cloud_view(&self) -> Option<yaran_core::cloud::view::CloudLegView> {
+        self.server
+            .as_ref()
+            .map(|server| server.cloud_mode().view())
+    }
+
     fn is_serving(&self) -> bool {
         self.server.is_some()
     }

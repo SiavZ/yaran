@@ -192,7 +192,9 @@ impl Run<'_> {
         };
         let child = supervisor::spawn(&spec, &self.machine.tunnel_token)?;
         self.record(&child, port, "starting");
-        (self.sink)(CloudLegEvent::Starting);
+        (self.sink)(CloudLegEvent::Starting {
+            token_version: self.machine.token_version,
+        });
         Ok((child, port))
     }
 

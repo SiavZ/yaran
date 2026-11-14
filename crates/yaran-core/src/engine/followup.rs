@@ -212,6 +212,7 @@ pub fn owner_of_reaction(ops: &impl WebFollowupOpsView, reaction: &EventReaction
             // op waiting on it; the browsers on that serve learn about the mode
             // from the `config.changed` refetch the write already fired.
             | EventReaction::TailscaleModeApplied { .. }
+            | EventReaction::CloudModeApplied { .. }
             // GitHub availability flipping. The web half is a peek in
             // `fanout_reaction` that only nudges browsers to refetch the
             // bootstrap document carrying `gh_available`; the terminal UI reads

@@ -33,6 +33,10 @@ async fn get_bootstrap(State(state): State<AppState>) -> Response {
             // line, not to the engine's config, so it is injected here for the
             // same reason the first-load screen is.
             view.tailscale_forced_no = state.tailscale_forced_no;
+            // The live cloud leg belongs to the serve, not the engine.
+            if let Some(cloud) = state.cloud.as_ref() {
+                view.cloud = Some(cloud.view());
+            }
             Json(view).into_response()
         }
         None => (

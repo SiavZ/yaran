@@ -205,6 +205,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         // entry, because a preference is a row and never a menu item.
     },
     PaletteCommand {
+        action: Action::SetCloudMode,
+        name: "set-cloud-mode",
+        description: "Choose whether yaran runs its Cloudflare tunnel for remote access, and apply it now",
+        // GLOBAL, like set-tailscale-mode: the web counterpart is the Preferences
+        // dialog's cloud row, because a preference is a row and never a menu item.
+    },
+    PaletteCommand {
         action: Action::ToggleProjectAutoReopenAgents,
         name: "toggle-project-auto-reopen-agents",
         description: "Opt the selected project in or out of startup agent reopening",

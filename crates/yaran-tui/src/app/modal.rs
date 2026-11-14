@@ -246,6 +246,7 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // Three modes, the saved one marked, and picking one applies it. Rows and
         // nothing else, so no buttons and no focus concept.
         | PromptState::SetTailscaleMode(_)
+        | PromptState::SetCloudMode(_)
         // The board's Assign: one row per person, and picking one assigns the
         // card. Rows and nothing else.
         | PromptState::AssignBoardCard(_)
@@ -356,6 +357,7 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::ChangeDefaultProvider(_)
         | PromptState::ChangeProjectDefaultProvider(_)
         | PromptState::SetTailscaleMode(_)
+        | PromptState::SetCloudMode(_)
         | PromptState::AssignBoardCard(_)
         | PromptState::WatchRules(_) => Vec::new(),
 
@@ -422,6 +424,7 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
         | OverlayMouseLayout::ChangeDefaultProvider { .. }
         | OverlayMouseLayout::ChangeProjectDefaultProvider { .. }
         | OverlayMouseLayout::SetTailscaleMode { .. }
+        | OverlayMouseLayout::SetCloudMode { .. }
         | OverlayMouseLayout::AssignBoardCard { .. }
         | OverlayMouseLayout::AddProjectFailed { .. }
         | OverlayMouseLayout::AgentInfo { .. }
@@ -920,6 +923,18 @@ mod tests {
                     current: yaran_core::config::TailscaleMode::Auto,
                     options: vec![crate::app::SetTailscaleModeOption {
                         mode: yaran_core::config::TailscaleMode::Auto,
+                        is_current: true,
+                    }],
+                    selected: 0,
+                    serving: false,
+                }),
+            ),
+            (
+                "SetCloudMode",
+                PromptState::SetCloudMode(crate::app::SetCloudModePrompt {
+                    current: yaran_core::cloud::leg_seam::CloudMode::Auto,
+                    options: vec![crate::app::cloud_mode::SetCloudModeOption {
+                        mode: yaran_core::cloud::leg_seam::CloudMode::Auto,
                         is_current: true,
                     }],
                     selected: 0,

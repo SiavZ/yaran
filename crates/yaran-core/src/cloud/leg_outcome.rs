@@ -235,7 +235,7 @@ pub fn leg_status(
             }
         }
         CloudLegEvent::Warning(text) => leg(StatusTone::Warning, text.clone().into()),
-        CloudLegEvent::Starting | CloudLegEvent::Healing => None,
+        CloudLegEvent::Starting { .. } | CloudLegEvent::Healing => None,
         CloudLegEvent::Stopped(stop) => stop_status(stop, hostname).map(sticky_if_yes),
     }
 }

@@ -255,6 +255,12 @@ pub enum WireCommand {
     SetTailscaleMode {
         mode: String,
     },
+    /// Save `[cloud] mode` (`auto` | `yes` | `no`): the `set-cloud-mode` palette
+    /// command and the web Preferences row. The config write only; the serve loop
+    /// moves the tunnel afterwards. An unrecognized value is refused.
+    SetCloudMode {
+        mode: String,
+    },
     /// Set explicit values for the Preferences dialog's `[ui]`/`[capabilities]`
     /// knobs in one request. The payload and the field-by-field semantics live on
     /// [`SettingsPatch`]; `server.title` and `server.favicon` are deliberately
@@ -892,6 +898,7 @@ impl WireCommand {
                 | WireCommand::ToggleAlwaysShowTabStrip {}
                 | WireCommand::ToggleTabReachesAgent {}
                 | WireCommand::SetTailscaleMode { .. }
+                | WireCommand::SetCloudMode { .. }
         )
     }
 }
@@ -1861,6 +1868,11 @@ impl Engine {
                 Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
                     status,
                 )))
+            }
+            WireCommand::SetCloudMode { mode } => {
+                self.set_cloud_mode(&mode)?;
+                // The serve layer reports what the tunnel did.
+                Ok(WireDispatch::Handled(WireCommandOutcome::quiet()))
             }
             WireCommand::SetTailscaleMode { mode } => {
                 self.set_tailscale_mode(&mode)?;
@@ -4918,6 +4930,7 @@ impl Engine {
             | WireCommand::ToggleAlwaysShowTabStrip {}
             | WireCommand::ToggleTabReachesAgent {}
             | WireCommand::SetTailscaleMode { .. }
+            | WireCommand::SetCloudMode { .. }
             | WireCommand::KillSessionPty { .. }
             | WireCommand::DetachAgent { .. }
             | WireCommand::RecreateWorkingCopy { .. }

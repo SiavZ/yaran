@@ -4863,6 +4863,7 @@ mod tests {
             companion_followup_ran: false,
             pending_background_server_start: None,
             pending_tailscale_mode_op: None,
+            pending_cloud_mode_op: None,
             server_flip_preflight_pending: false,
             pending_persist_ops: std::collections::HashMap::new(),
             configure_save_op: None,

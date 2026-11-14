@@ -76,7 +76,10 @@ pub enum CloudLegEvent {
     Acquired {
         version: String,
     },
-    Starting,
+    /// A child was spawned on the credentials' `token_version`.
+    Starting {
+        token_version: i64,
+    },
     Ready {
         connections: u32,
     },
@@ -205,8 +208,8 @@ pub(crate) fn sleep_unless_stopped(stop: &AtomicBool, total: Duration) -> bool {
     }
 }
 
-/// Polls the credentials revision and the revocation signal; calls `on_change` when
-/// either moves. Stops when dropped.
+/// Polls the credentials revision and the revocation signal; calls `on_change` once at
+/// start and again whenever either moves. Stops when dropped.
 pub struct CredentialsWatch {
     stop: Arc<AtomicBool>,
 }
@@ -226,6 +229,7 @@ impl CredentialsWatch {
             .name("yaran-cloud-credentials".into())
             .spawn(move || {
                 let mut last = (identity.revision(), identity.revoked());
+                on_change();
                 while !sleep_unless_stopped(&flag, period) {
                     let now = (identity.revision(), identity.revoked());
                     if now != last {

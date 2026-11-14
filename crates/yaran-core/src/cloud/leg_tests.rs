@@ -255,7 +255,13 @@ fn a_failed_origin_update_stops_as_a_mismatch_and_410_as_revoked() {
             }
             other => panic!("unexpected {other:?}"),
         }
-        assert!(!h.events.lock().unwrap().contains(&CloudLegEvent::Starting));
+        assert!(
+            !h.events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e, CloudLegEvent::Starting { .. }))
+        );
     }
 }
 

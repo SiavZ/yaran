@@ -336,6 +336,10 @@ pub struct BootstrapView {
     /// server injects it per request, as it does `pending_first_load`. Without it
     /// the Preferences row offers a mode the run will refuse.
     pub tailscale_forced_no: bool,
+    /// The cloud leg as the Preferences row and Phase 13 read it. The engine
+    /// projects the saved mode with state `not_serving`; the web server's bootstrap
+    /// route replaces it with the serve's live snapshot.
+    pub cloud: Option<crate::cloud::view::CloudLegView>,
 }
 
 /// One numbered getting-started step, projected from
@@ -1470,6 +1474,11 @@ impl Engine {
             // Always `false` here: `--no-tailscale` is the serving process's own
             // fact, and the bootstrap ROUTE injects it. See the field's doc.
             tailscale_forced_no: false,
+            cloud: Some(crate::cloud::view::CloudLegView {
+                mode: crate::cloud::leg_seam::settings_from_config(&self.config).mode,
+                state: crate::cloud::view::CloudLegState::NotServing,
+                ..Default::default()
+            }),
             agent_sort: self.config.ui.agent_sort.clone(),
             agent_scrollback_lines: self.config.ui.agent_scrollback_lines,
             show_changes_pane: self.config.ui.show_changes_pane,
@@ -3326,6 +3335,7 @@ mod tests {
             "file_drop_max_bytes",
             "tailscale_mode",
             "tailscale_forced_no",
+            "cloud",
             "replay_wait_seconds",
             "reconnect_backoff_cap_seconds",
             "heartbeat_seconds",

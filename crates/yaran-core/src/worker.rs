@@ -722,6 +722,12 @@ pub enum WorkerEvent {
         mode: crate::config::TailscaleMode,
         outcome: crate::config::TailscaleModeOutcome,
     },
+    /// A live `[cloud] mode` change the BACKGROUND web server carried out, on this
+    /// lane for the same reason as `TailscaleModeApplied`.
+    CloudModeApplied {
+        mode: crate::cloud::leg_seam::CloudMode,
+        outcome: crate::cloud::leg_outcome::CloudModeOutcome,
+    },
     /// A provider conversation id was captured for an agent (the UUID a fresh
     /// Claude launch was given, or the rollout a fresh Codex launch wrote), or
     /// the capture failed closed. Persisting it is the engine's job.

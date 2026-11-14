@@ -6,6 +6,7 @@
 
 pub mod amq;
 pub mod backup;
+mod cloud_mode;
 pub mod command;
 mod companion;
 pub mod config_saver;

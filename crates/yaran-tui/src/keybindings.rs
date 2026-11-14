@@ -372,6 +372,14 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         hint_contexts: &[],
     },
     BindingDef {
+        // No default key, for the same reason as the Tailscale mode.
+        action: Action::SetCloudMode,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
         action: Action::ToggleProjectAutoReopenAgents,
         default_keys: &[],
         scopes: &[],
@@ -3515,6 +3523,7 @@ mod tests {
             "resource-monitor",
             "resume-pull-request-autodetection",
             "session-settings",
+            "set-cloud-mode",
             "set-tailscale-mode",
             "show-agent",
             "show-release-notes",

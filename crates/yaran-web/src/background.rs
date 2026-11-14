@@ -113,6 +113,7 @@ impl BackgroundServer {
             handle,
             listeners,
             &engine.config,
+            &engine.paths.root,
             console,
             // The access log would print to a console that writes nowhere, and it
             // is never wanted over a terminal UI's frame regardless.
@@ -182,6 +183,26 @@ impl BackgroundServer {
                 let _ = worker_tx
                     .send(yaran_core::worker::WorkerEvent::TailscaleModeApplied { mode, outcome });
             });
+    }
+
+    /// Ask this serve to change `[cloud] mode`, reporting through the terminal UI's
+    /// worker event lane (never blocks, like `set_tailscale_mode`).
+    pub fn set_cloud_mode(
+        &self,
+        mode: yaran_core::cloud::leg_seam::CloudMode,
+        worker_tx: std::sync::mpsc::Sender<yaran_core::worker::WorkerEvent>,
+    ) {
+        self.core
+            .cloud_mode()
+            .set_mode_detached(mode, move |outcome| {
+                let _ = worker_tx
+                    .send(yaran_core::worker::WorkerEvent::CloudModeApplied { mode, outcome });
+            });
+    }
+
+    /// This serve's cloud lane (view snapshot, settings changes).
+    pub fn cloud_mode(&self) -> &crate::cloud_mode::CloudModeControl {
+        self.core.cloud_mode()
     }
 
     /// Stop serving and release everything, bounded. Returns the first listener

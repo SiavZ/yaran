@@ -390,6 +390,11 @@ pub enum EventReaction {
         mode: crate::config::TailscaleMode,
         outcome: crate::config::TailscaleModeOutcome,
     },
+    /// The background web server finished applying a live `[cloud] mode` change.
+    CloudModeApplied {
+        mode: crate::cloud::leg_seam::CloudMode,
+        outcome: crate::cloud::leg_outcome::CloudModeOutcome,
+    },
     /// Whether GitHub features work has CHANGED (a probe answered differently
     /// from the state yaran held). Emitted only on the transition, never once per
     /// re-check, so the surfaces can act on it without de-duplicating.
@@ -3934,6 +3939,9 @@ impl Engine {
             WorkerEvent::TailscaleModeApplied { mode, outcome } => {
                 EventReaction::TailscaleModeApplied { mode, outcome }
             }
+            WorkerEvent::CloudModeApplied { mode, outcome } => {
+                EventReaction::CloudModeApplied { mode, outcome }
+            }
             WorkerEvent::ProviderSessionCaptured {
                 session_id,
                 provider,
@@ -5174,6 +5182,7 @@ mod tests {
             EventReaction::Status(_) => "Status",
             EventReaction::ClearStatus(_) => "ClearStatus",
             EventReaction::TailscaleModeApplied { .. } => "TailscaleModeApplied",
+            EventReaction::CloudModeApplied { .. } => "CloudModeApplied",
             EventReaction::GhAvailabilityChanged { .. } => "GhAvailabilityChanged",
             EventReaction::Multi(_) => "Multi",
             EventReaction::RebuildLeftItems => "RebuildLeftItems",
