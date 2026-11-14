@@ -75,6 +75,36 @@ pub fn patch_cloud(doc: &mut DocumentMut, cloud: &CloudConfig) {
         cloud.request_timeout_seconds,
     );
     patch_table_string_array(doc, S, "app_callback_urls", &cloud.app_callback_urls);
+    patch_table_u64(
+        doc,
+        S,
+        "access_clock_skew_seconds",
+        cloud.access_clock_skew_seconds,
+    );
+    patch_table_u64(
+        doc,
+        S,
+        "access_jwks_refresh_seconds",
+        cloud.access_jwks_refresh_seconds,
+    );
+    patch_table_u64(
+        doc,
+        S,
+        "access_jwks_retry_cooldown_seconds",
+        cloud.access_jwks_retry_cooldown_seconds,
+    );
+    patch_table_u64(
+        doc,
+        S,
+        "handoff_requests_per_minute",
+        u64::from(cloud.handoff_requests_per_minute),
+    );
+    patch_table_bool(
+        doc,
+        S,
+        "close_sockets_at_access_expiry",
+        cloud.close_sockets_at_access_expiry,
+    );
 }
 
 #[cfg(test)]
@@ -102,6 +132,11 @@ mod tests {
             login_timeout_seconds: 8,
             request_timeout_seconds: 6,
             app_callback_urls: vec!["https://a.example/auth/callback".into()],
+            access_clock_skew_seconds: 31,
+            access_jwks_refresh_seconds: 32,
+            access_jwks_retry_cooldown_seconds: 33,
+            handoff_requests_per_minute: 34,
+            close_sockets_at_access_expiry: false,
         };
         patch_cloud(&mut doc, &cloud);
         let text = doc.to_string();

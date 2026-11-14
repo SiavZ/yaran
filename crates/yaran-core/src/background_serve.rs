@@ -18,6 +18,7 @@
 //! <module-headers:begin>
 //! Uses:
 //! background_serve.rs
+//! ├── cloud::config
 //! ├── cloud::leg_identity
 //! ├── cloud::view
 //! ├── config
@@ -329,9 +330,13 @@ pub trait BackgroundServeCompanion {
     /// [`crate::worker::WorkerEvent::CloudModeApplied`]. Called only while serving.
     fn set_cloud_mode(&mut self, engine: &Engine, mode: crate::cloud::leg_identity::CloudMode);
 
-    /// Tell the running serve that `[cloud]` keys other than `mode` changed, so a
-    /// running cloudflared restarts on them.
-    fn cloud_settings_changed(&mut self, settings: crate::cloud::leg_identity::CloudLegSettings);
+    /// Tell the running serve that `[cloud]` keys changed: the ingress keys apply live and
+    /// a changed key other than `mode` restarts a running cloudflared.
+    fn cloud_settings_changed(
+        &mut self,
+        previous: &crate::cloud::config::CloudConfig,
+        next: &crate::cloud::config::CloudConfig,
+    );
 
     /// The cloud leg's snapshot, `None` when not serving. Read once per frame: a lock
     /// held only to copy.

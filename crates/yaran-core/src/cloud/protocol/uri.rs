@@ -18,7 +18,7 @@
 //! Used by:
 //! cloud/protocol/uri.rs
 //! ├── cloud::protocol
-//! └── cloud::qr
+//! ├── cloud::qr
 //! └── yaran-web::cloud_handoff_request
 //! <module-headers:end>
 

@@ -9,7 +9,11 @@
 //! ├── cloud_ingress
 //! ├── cloud_test_support
 //! ├── yaran-core::cloud::access_jwt
-//! └── yaran-core::cloud::protocol
+//! ├── yaran-core::cloud::config
+//! ├── yaran-core::cloud::paths
+//! ├── yaran-core::cloud::protocol
+//! ├── yaran-core::cloud::test_support
+//! └── yaran-core::test_scratch
 //! External: axum, futures_util, std, tokio, tokio_tungstenite
 //!
 //! Used by:
@@ -367,4 +371,35 @@ fn the_ingress_clock_defaults_to_the_wall_clock() {
         .unwrap()
         .as_secs() as i64;
     assert!((now - wall).abs() < 5);
+}
+
+#[test]
+fn production_reads_the_consent_key_and_settings_from_yaran_cloud() {
+    use crate::cloud_ingress::ConsentKeySource;
+    use yaran_core::cloud::config::CloudConfig;
+    use yaran_core::cloud::paths::CloudPaths;
+    use yaran_core::cloud::test_support::{SAMPLE_ORG, pair_sample};
+
+    let tmp = yaran_core::test_scratch::ScratchDir::new();
+    let paths = CloudPaths::from_root(tmp.path());
+    assert!(paths.read_handoff_consent_key().unwrap().is_none());
+    let creds = pair_sample(&paths, SAMPLE_ORG);
+    let key = paths.read_handoff_consent_key().unwrap().expect("paired");
+    assert_eq!(key, creds.consent_key().unwrap());
+
+    let cloud = CloudConfig {
+        handoff_requests_per_minute: 3,
+        close_sockets_at_access_expiry: false,
+        ..CloudConfig::default()
+    };
+    let s = IngressSettings::from(&cloud);
+    assert_eq!(
+        (s.handoff_per_minute, s.close_sockets_at_access_expiry),
+        (3, false)
+    );
+    assert_eq!(s.app_callback_urls, cloud.app_callback_urls);
+    assert_eq!(
+        IngressSettings::default(),
+        IngressSettings::from(&CloudConfig::default())
+    );
 }

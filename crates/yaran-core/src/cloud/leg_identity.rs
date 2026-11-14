@@ -35,7 +35,6 @@
 //! ├── engine::events
 //! ├── viewmodel
 //! ├── worker
-//! ├── yaran-tui::app
 //! ├── yaran-tui::app::background_server
 //! ├── yaran-tui::app::cloud_crumb
 //! ├── yaran-tui::app::cloud_mode
@@ -44,7 +43,6 @@
 //! ├── yaran-web::cloud_loop::live_cloud_mode_tests
 //! ├── yaran-web::cloud_mode
 //! ├── yaran-web::cloud_mode_routes
-//! ├── yaran-web::engine_actor
 //! └── yaran[bin yaran]::companion
 //! <module-headers:end>
 

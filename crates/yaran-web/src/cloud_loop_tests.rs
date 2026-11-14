@@ -7,8 +7,8 @@
 //! Uses:
 //! cloud_loop_tests.rs
 //! ├── cloud_loop
+//! ├── cloud_test_support
 //! ├── yaran-core::cloud::cloudflared::ready
-//! ├── yaran-core::cloud::ingress_cell
 //! ├── yaran-core::cloud::leg_identity
 //! └── yaran-core::cloud::protocol::machine
 //! External: std, tempfile, tokio
@@ -23,7 +23,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use yaran_core::cloud::cloudflared::ready::Readiness;
-use yaran_core::cloud::ingress_cell::LiveCloudIngress;
 use yaran_core::cloud::leg_identity::{
     CloudMode, CredentialsRevision, MachineApiError, RotateReason,
 };
@@ -112,8 +111,8 @@ async fn rig(
         machine: Mutex::new(paired.then(|| machine(port))),
         rev: Default::default(),
     });
-    let (writer, reader) = LiveCloudIngress::new();
-    let (control, rx) = CloudModeControl::new(tokio::runtime::Handle::current(), reader);
+    let ingress = crate::cloud_test_support::offline_ingress();
+    let (control, rx) = CloudModeControl::new(tokio::runtime::Handle::current(), ingress);
     let settings = CloudLegSettings {
         mode,
         cloudflared_path: bin.to_str().unwrap().into(),
@@ -125,7 +124,6 @@ async fn rig(
     let mut cloud = CloudLoop::new(
         rx,
         control.clone(),
-        writer,
         fake.clone(),
         settings,
         port,
@@ -179,18 +177,19 @@ async fn wait_state(control: &CloudModeControl, want: CloudLegState) {
 async fn a_paired_machine_reaches_ready_and_shutdown_leaves_no_child() {
     let (rig, task, stop) = rig(true, CloudMode::Auto).await;
     wait_state(&rig.control, CloudLegState::Ready).await;
-    let ingress = rig.control.ingress().current().expect("set on Ready");
-    assert_eq!(ingress.hostname, "laptop.example.com");
+    let binding = rig.control.ingress().binding().expect("bound on Ready");
+    assert_eq!(binding.hostname, "laptop.example.com");
+    assert_eq!(binding.owner_email, "me@example.com");
     let pid = rig.fake.read_leg_state().expect("recorded").pid;
     rig.ready.store(0, Ordering::SeqCst);
     wait_state(&rig.control, CloudLegState::Reconnecting).await;
     assert!(
-        rig.control.ingress().current().is_none(),
+        rig.control.ingress().binding().is_none(),
         "cleared when not Ready"
     );
     stop.send(()).unwrap();
     task.await.unwrap();
-    assert!(rig.control.ingress().current().is_none());
+    assert!(rig.control.ingress().binding().is_none());
     assert_eq!(rig.control.view().state, CloudLegState::NotServing);
     // `child_registry::wait_all` is process-global, so tests running beside this one
     // would be swept too; wait on this child alone.
@@ -224,7 +223,7 @@ async fn every_mode_request_is_answered() {
         CloudModeOutcome::Stopped
     );
     wait_state(&rig.control, CloudLegState::Off).await;
-    assert!(rig.control.ingress().current().is_none());
+    assert!(rig.control.ingress().binding().is_none());
     assert_eq!(
         rig.control.set_mode(CloudMode::Auto).await,
         CloudModeOutcome::Starting {
@@ -262,7 +261,7 @@ async fn a_login_and_logout_start_and_stop_the_leg() {
     *rig.fake.machine.lock().unwrap() = None;
     rig.fake.rev.fetch_add(1, Ordering::SeqCst);
     wait_state(&rig.control, CloudLegState::Unpaired).await;
-    assert!(rig.control.ingress().current().is_none());
+    assert!(rig.control.ingress().binding().is_none());
     stop.send(()).unwrap();
     task.await.unwrap();
 }

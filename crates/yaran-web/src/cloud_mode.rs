@@ -13,7 +13,9 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud_mode.rs
-//! ├── yaran-core::cloud::ingress_cell
+//! ├── cloud_ingress
+//! ├── cloud_test_support
+//! ├── yaran-core::cloud::config
 //! ├── yaran-core::cloud::leg
 //! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
@@ -28,16 +30,19 @@
 //! ├── cloud_mode_routes
 //! ├── crate
 //! ├── engine_actor
-//! └── server
+//! ├── server
+//! └── yaran[bin yaran]::companion
 //! <module-headers:end>
 
 use std::time::Duration;
 
-use yaran_core::cloud::ingress_cell::CloudIngressReader;
+use yaran_core::cloud::config::CloudConfig;
 use yaran_core::cloud::leg::CloudLegEvent;
 use yaran_core::cloud::leg_identity::{CloudLegSettings, CloudMode, PairedMachine};
 use yaran_core::cloud::leg_outcome::CloudModeOutcome;
 use yaran_core::cloud::view::{CloudLegView, SharedCloudView};
+
+use crate::cloud_ingress::{CloudIngress, IngressSettings};
 
 /// Depth of the lane. Mode changes are human-paced; the leg reports a few events a
 /// second at most while downloading.
@@ -75,7 +80,7 @@ pub struct CloudModeControl {
     tx: tokio::sync::mpsc::Sender<CloudInput>,
     runtime: tokio::runtime::Handle,
     view: SharedCloudView,
-    ingress: CloudIngressReader,
+    ingress: CloudIngress,
     changed: tokio::sync::broadcast::Sender<()>,
 }
 
@@ -83,7 +88,7 @@ impl CloudModeControl {
     /// Build the control and the receiving end the serve loop owns.
     pub(crate) fn new(
         runtime: tokio::runtime::Handle,
-        ingress: CloudIngressReader,
+        ingress: CloudIngress,
     ) -> (Self, tokio::sync::mpsc::Receiver<CloudInput>) {
         let (tx, rx) = tokio::sync::mpsc::channel(INPUT_QUEUE);
         let (changed, _) = tokio::sync::broadcast::channel(8);
@@ -112,9 +117,10 @@ impl CloudModeControl {
         self.view.clone()
     }
 
-    /// The live ingress rule (Phase 11's host rule and JWT check read it).
-    pub fn ingress(&self) -> CloudIngressReader {
-        self.ingress.clone()
+    /// The tunnel ingress this loop binds and unbinds (the Host guard and the Access
+    /// check read it).
+    pub fn ingress(&self) -> &CloudIngress {
+        &self.ingress
     }
 
     /// Fires `()` on every view change (the `cloud.changed` event).
@@ -172,19 +178,30 @@ pub(crate) type CloudControlSlot = std::sync::Arc<std::sync::OnceLock<CloudModeC
 /// answers on `cloud-mode`; a changed restart key restarts a running child.
 pub fn apply_reload(
     control: Option<&CloudModeControl>,
-    previous: &CloudLegSettings,
-    next: &CloudLegSettings,
+    previous: &CloudConfig,
+    next: &CloudConfig,
     post: impl FnOnce(yaran_core::engine::StatusUpdate) + Send + 'static,
 ) {
     let Some(control) = control else {
         return;
     };
-    if previous.restart_keys_differ(next) {
-        control.settings_changed(next.clone());
-    }
-    if previous.mode != next.mode {
-        let mode = next.mode;
+    apply_settings(control, previous, next);
+    let mode = next.mode();
+    if previous.mode() != mode {
         control.set_mode_detached(mode, move |outcome| post(outcome.status(mode)));
+    }
+}
+
+/// The non-mode half of a reload: the ingress keys apply at once, and a changed restart
+/// key restarts a running child.
+pub fn apply_settings(control: &CloudModeControl, previous: &CloudConfig, next: &CloudConfig) {
+    let ingress = IngressSettings::from(next);
+    if IngressSettings::from(previous) != ingress {
+        control.ingress().update_settings(ingress);
+    }
+    let leg = CloudLegSettings::from(next);
+    if CloudLegSettings::from(previous).restart_keys_differ(&leg) {
+        control.settings_changed(leg);
     }
 }
 
@@ -194,15 +211,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_reload_asks_only_for_what_changed() {
-        let (writer, reader) = yaran_core::cloud::ingress_cell::LiveCloudIngress::new();
-        drop(writer);
-        let (control, mut rx) = CloudModeControl::new(tokio::runtime::Handle::current(), reader);
-        let base = CloudLegSettings::default();
+        let ingress = crate::cloud_test_support::offline_ingress();
+        let (control, mut rx) = CloudModeControl::new(tokio::runtime::Handle::current(), ingress);
+        let base = CloudConfig::default();
         apply_reload(Some(&control), &base, &base.clone(), |_| {
             panic!("nothing changed")
         });
         assert!(rx.try_recv().is_err());
-        let port = CloudLegSettings {
+        let skew = CloudConfig {
+            access_clock_skew_seconds: 99,
+            ..base.clone()
+        };
+        apply_reload(Some(&control), &base, &skew, |_| panic!("no mode change"));
+        assert!(rx.try_recv().is_err(), "an ingress key restarts nothing");
+        assert_eq!(control.ingress().settings().clock_skew.as_secs(), 99);
+        let port = CloudConfig {
             metrics_port: 20241,
             ..base.clone()
         };
@@ -210,8 +233,8 @@ mod tests {
         assert!(
             matches!(rx.recv().await, Some(CloudInput::Settings(s)) if s.metrics_port == 20241)
         );
-        let off = CloudLegSettings {
-            mode: CloudMode::No,
+        let off = CloudConfig {
+            mode: "no".into(),
             ..base.clone()
         };
         let (said_tx, said_rx) = tokio::sync::oneshot::channel();
@@ -231,8 +254,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_dropped_loop_answers_not_serving() {
-        let (_writer, reader) = yaran_core::cloud::ingress_cell::LiveCloudIngress::new();
-        let (control, rx) = CloudModeControl::new(tokio::runtime::Handle::current(), reader);
+        let ingress = crate::cloud_test_support::offline_ingress();
+        let (control, rx) = CloudModeControl::new(tokio::runtime::Handle::current(), ingress);
         drop(rx);
         assert_eq!(
             control.set_mode(CloudMode::Yes).await,

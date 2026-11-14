@@ -48,6 +48,7 @@
 //! ├── yaran-core[test cloud_login]
 //! ├── yaran-core[test cloud_machine_api]
 //! ├── yaran-tui::app::cloud_commands
+//! ├── yaran-web::cloud_ingress
 //! └── yaran-web::cloud_routes::tests
 //! <module-headers:end>
 

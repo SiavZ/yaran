@@ -26,10 +26,6 @@
 //! ├── build_routes
 //! ├── changes
 //! ├── changes_routes
-//! ├── cloud_loop
-//! ├── cloud_mode
-//! ├── cloud_mode_routes
-//! ├── cloud_routes
 //! ├── cloud_consent_tests
 //! ├── cloud_handoff
 //! ├── cloud_handoff_request
@@ -37,6 +33,10 @@
 //! ├── cloud_ingress
 //! ├── cloud_ingress_tests
 //! ├── cloud_jwks_cache
+//! ├── cloud_loop
+//! ├── cloud_mode
+//! ├── cloud_mode_routes
+//! ├── cloud_routes
 //! ├── cloud_test_support
 //! ├── compressible_exts
 //! ├── config_routes
@@ -47,9 +47,9 @@
 //! ├── file_routes
 //! ├── first_load_routes
 //! ├── git_routes
-//! ├── host_guard
 //! ├── handoff_consent_page
 //! ├── handoff_csrf
+//! ├── host_guard
 //! ├── origin_match
 //! ├── ownership_publish
 //! ├── project_actions
@@ -96,10 +96,6 @@ pub mod browse_routes;
 pub mod build_routes;
 pub mod changes;
 pub mod changes_routes;
-pub(crate) mod cloud_loop;
-pub mod cloud_mode;
-pub mod cloud_mode_routes;
-pub mod cloud_routes;
 #[cfg(test)]
 mod cloud_consent_tests;
 pub(crate) mod cloud_handoff;
@@ -110,6 +106,10 @@ pub mod cloud_ingress;
 #[cfg(test)]
 mod cloud_ingress_tests;
 pub(crate) mod cloud_jwks_cache;
+pub(crate) mod cloud_loop;
+pub mod cloud_mode;
+pub mod cloud_mode_routes;
+pub mod cloud_routes;
 #[cfg(test)]
 mod cloud_test_support;
 pub mod compressible_exts;
@@ -595,8 +595,6 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             console.clone(),
         );
         handle.set_cloud_mode_control(cloud_control.clone());
-        // The cloud leg's ingress, unbound until Phase 10's leg binds it.
-        let cloud_ingress = cloud_ingress::CloudIngress::default();
         let shutdown = ServeShutdown::new(mode_control.watched());
         // Collect the IPs the server actually bound to (for the host allowlist).
         // Uses the bound addresses captured above, BEFORE the listeners move into
@@ -627,8 +625,8 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             .with_tailscale_host_literals(tailscale.wants_tailscale())
             .with_live_tailscale_host_literals(mode_control.host_literals())
             .with_tailscale_mode_control(mode_control.clone(), forced_no)
-            .with_cloud_mode_control(cloud_control)
-            .with_cloud_ingress(cloud_ingress.clone()),
+            .with_cloud_ingress(cloud_control.ingress().clone())
+            .with_cloud_mode_control(cloud_control),
         );
 
         // Translate a SIGINT/SIGTERM into a watch trip so every listener winds
@@ -1697,8 +1695,6 @@ impl ServeCore {
             )
         };
         handle.set_cloud_mode_control(cloud_control.clone());
-        // The cloud leg's ingress, unbound until Phase 10's leg binds it.
-        let cloud_ingress = cloud_ingress::CloudIngress::default();
 
         // The shared shutdown primitive: the SAME [`ServeShutdown`] the CLI serve
         // path uses. Its watch is the graceful-shutdown lane every serve task and
@@ -1717,8 +1713,8 @@ impl ServeCore {
                 router_params(config, console.clone(), access_log, bound_ips, hooks)
                     .with_live_tailscale_host_literals(mode_control.host_literals())
                     .with_tailscale_mode_control(mode_control.clone(), false)
-                    .with_cloud_mode_control(cloud_control.clone())
-                    .with_cloud_ingress(cloud_ingress.clone()),
+                    .with_cloud_ingress(cloud_control.ingress().clone())
+                    .with_cloud_mode_control(cloud_control.clone()),
             )
         };
 

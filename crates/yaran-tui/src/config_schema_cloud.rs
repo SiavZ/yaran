@@ -168,6 +168,49 @@ pub(super) fn entries() -> Vec<ConfigEntry> {
             )),
             value_fn: |c| FieldValue::StrList(c.cloud.app_callback_urls.clone()),
         },
+        ConfigEntry::Field {
+            key: "access_clock_skew_seconds",
+            comment: Some(CommentSource::Static(
+                "# How far this machine's clock may disagree with Cloudflare's when yaran\n\
+                 # checks a phone's Cloudflare Access sign-in. Raise it on a machine with poor\n\
+                 # time sync. Default 30. Read on every request.",
+            )),
+            value_fn: |c| FieldValue::U64(c.cloud.access_clock_skew_seconds),
+        },
+        ConfigEntry::Field {
+            key: "access_jwks_refresh_seconds",
+            comment: Some(CommentSource::Static(
+                "# The longest yaran keeps Cloudflare Access's signing keys before fetching\n\
+                 # them again. Default 14400 (4 hours). Read on every request.",
+            )),
+            value_fn: |c| FieldValue::U64(c.cloud.access_jwks_refresh_seconds),
+        },
+        ConfigEntry::Field {
+            key: "access_jwks_retry_cooldown_seconds",
+            comment: Some(CommentSource::Static(
+                "# The least time between two key fetches when a sign-in names a key yaran\n\
+                 # has not seen. Default 30. Read on every request.",
+            )),
+            value_fn: |c| FieldValue::U64(c.cloud.access_jwks_retry_cooldown_seconds),
+        },
+        ConfigEntry::Field {
+            key: "handoff_requests_per_minute",
+            comment: Some(CommentSource::Static(
+                "# How many phone sign-in handoffs this machine answers per minute, across\n\
+                 # every phone. Raise it for a household or team renewing at once. Default\n\
+                 # 12. Read on every handoff.",
+            )),
+            value_fn: |c| FieldValue::U32(c.cloud.handoff_requests_per_minute),
+        },
+        ConfigEntry::Field {
+            key: "close_sockets_at_access_expiry",
+            comment: Some(CommentSource::Static(
+                "# Close a phone's live connections when its Cloudflare Access sign-in\n\
+                 # expires, so the app signs in again. Default true; set false only if\n\
+                 # your phone keeps being disconnected mid-session. Read on every connection.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.cloud.close_sockets_at_access_expiry),
+        },
     ]
 }
 

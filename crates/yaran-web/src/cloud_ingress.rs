@@ -28,6 +28,9 @@
 //! ├── rate_window
 //! ├── yaran-core::cloud::access_jwks
 //! ├── yaran-core::cloud::access_jwt
+//! ├── yaran-core::cloud::config
+//! ├── yaran-core::cloud::credentials
+//! ├── yaran-core::cloud::paths
 //! ├── yaran-core::cloud::protocol
 //! ├── yaran-core::cloud::protocol::rules
 //! ├── yaran-core::cloud::protocol::signals
@@ -39,6 +42,8 @@
 //! ├── cloud_consent_tests
 //! ├── cloud_handoff
 //! ├── cloud_ingress_tests
+//! ├── cloud_loop
+//! ├── cloud_mode
 //! ├── cloud_test_support
 //! ├── crate
 //! ├── host_guard
@@ -57,6 +62,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use yaran_core::cloud::access_jwks::TeamDomain;
 use yaran_core::cloud::access_jwt::{AccessRejection, Expectations, VerifiedAccess, verify};
+use yaran_core::cloud::config::CloudConfig;
+use yaran_core::cloud::paths::CloudPaths;
 use yaran_core::cloud::protocol::{
     REFUSAL_HEADER, RefusalCode, SESSION_EXPIRED_CLOSE_CODE, rules,
     signals::SESSION_EXPIRED_CLOSE_REASON,
@@ -71,7 +78,7 @@ use crate::rate_window::RateWindow;
 /// to authorize a request.
 pub const ACCESS_JWT_HEADER: &str = "cf-access-jwt-assertion";
 
-/// The pairing-derived inputs of a binding (Phase 09's credentials).
+/// The pairing-derived inputs of a binding (from the credentials).
 #[derive(Debug, Clone)]
 pub struct CloudBindingInput {
     pub hostname: String,
@@ -127,46 +134,53 @@ pub struct IngressSettings {
     pub app_callback_urls: Vec<String>,
 }
 
-impl Default for IngressSettings {
-    /// Phase 11 §9 defaults; `app_callback_urls` is empty until Phase 09's config supplies
-    /// the compiled-in callback, so a release handoff fails closed meanwhile.
-    fn default() -> Self {
+impl From<&CloudConfig> for IngressSettings {
+    fn from(c: &CloudConfig) -> Self {
         Self {
-            clock_skew: Duration::from_secs(30),
-            jwks_refresh_ceiling: Duration::from_secs(14_400),
-            jwks_retry_cooldown: Duration::from_secs(30),
-            handoff_per_minute: 12,
-            close_sockets_at_access_expiry: true,
-            app_callback_urls: Vec::new(),
+            clock_skew: Duration::from_secs(c.access_clock_skew_seconds),
+            jwks_refresh_ceiling: Duration::from_secs(c.access_jwks_refresh_seconds),
+            jwks_retry_cooldown: Duration::from_secs(c.access_jwks_retry_cooldown_seconds),
+            handoff_per_minute: c.handoff_requests_per_minute,
+            close_sockets_at_access_expiry: c.close_sockets_at_access_expiry,
+            app_callback_urls: c.app_callback_urls.clone(),
         }
     }
 }
 
-/// The pre-warm result `bind` reports, for Phase 10's keyed status.
+impl Default for IngressSettings {
+    /// The `[cloud]` defaults, so `app_callback_urls` is the compiled-in release callback.
+    fn default() -> Self {
+        Self::from(&CloudConfig::default())
+    }
+}
+
+/// The pre-warm result `bind` reports, for the cloud loop's keyed status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JwksOutcome {
     Ready { keys: usize },
     Unavailable(String),
 }
 
-/// The D24 consent key, in the shape of Phase 09's `credentials::HandoffConsentKey`.
-#[derive(Clone)]
-pub struct ConsentKey {
-    pub key: [u8; 32],
-    pub version: u32,
-}
+/// The D24 consent key (the credentials store's own type).
+pub use yaran_core::cloud::credentials::HandoffConsentKey as ConsentKey;
 
-/// Seam over Phase 09's `credentials::read_handoff_consent_key(&CloudPaths)`. BLOCKING;
-/// called per handoff on a blocking task, never cached. `Ok(None)` means unpaired.
+/// Where the D24 consent key comes from. BLOCKING; called per handoff on a blocking task,
+/// never cached. `Ok(None)` means unpaired. Production reads the credentials file.
 pub trait ConsentKeySource: Send + Sync + 'static {
     fn read_handoff_consent_key(&self) -> Result<Option<ConsentKey>, String>;
 }
 
-/// The source to use until Phase 09's credentials store is wired in: no key, so no
-/// consent is ever remembered (every handoff shows the consent page).
-pub struct NoConsentKey;
+impl ConsentKeySource for CloudPaths {
+    fn read_handoff_consent_key(&self) -> Result<Option<ConsentKey>, String> {
+        yaran_core::cloud::credentials::read_handoff_consent_key(self).map_err(|e| e.to_string())
+    }
+}
 
-impl ConsentKeySource for NoConsentKey {
+/// The source of a router built without a cloud lane: its ingress is never bound, so the
+/// tunnelled routes refuse before any key would be read.
+struct NeverPaired;
+
+impl ConsentKeySource for NeverPaired {
     fn read_handoff_consent_key(&self) -> Result<Option<ConsentKey>, String> {
         Ok(None)
     }
@@ -197,8 +211,10 @@ impl std::fmt::Debug for CloudIngress {
 }
 
 impl Default for CloudIngress {
+    /// The never-bound ingress of a router with no cloud lane (every serve constructor
+    /// builds a real one through `cloud_loop::build`).
     fn default() -> Self {
-        Self::new(Arc::new(NoConsentKey))
+        Self::new(Arc::new(NeverPaired))
     }
 }
 

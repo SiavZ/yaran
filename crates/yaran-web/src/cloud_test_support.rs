@@ -24,6 +24,8 @@
 //! ├── cloud_consent_tests
 //! ├── cloud_handoff_tests
 //! ├── cloud_ingress_tests
+//! ├── cloud_loop::live_cloud_mode_tests
+//! ├── cloud_mode
 //! └── crate
 //! <module-headers:end>
 
@@ -136,6 +138,16 @@ pub(crate) fn harness_with(host: Option<&str>, jwks: Result<Jwks, String>) -> Ha
         clock,
         consent,
     }
+}
+
+/// An unbound ingress whose key fetches answer from the fixture, so a test that binds it
+/// never reaches the network.
+pub(crate) fn offline_ingress() -> CloudIngress {
+    CloudIngress::with_parts(
+        FakeSource::new(vec![Ok((fixture_jwks("jwks.json"), None))]),
+        Arc::new(FakeConsent::default()),
+        Arc::new(std::time::SystemTime::now),
+    )
 }
 
 pub(crate) fn harness() -> Harness {

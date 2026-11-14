@@ -18,13 +18,20 @@
 //!
 //! Used by:
 //! cloud/config.rs
+//! ├── background_serve
 //! ├── cloud
 //! ├── cloud::cli
 //! ├── cloud::config_patch
 //! ├── cloud::leg_identity
 //! ├── cloud::status
 //! ├── config
-//! └── yaran-web::cloud_routes
+//! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::cloud_mode
+//! ├── yaran-web::cloud_ingress
+//! ├── yaran-web::cloud_ingress_tests
+//! ├── yaran-web::cloud_mode
+//! ├── yaran-web::cloud_routes
+//! └── yaran[bin yaran]::companion
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};
@@ -134,6 +141,12 @@ pub struct CloudConfig {
     pub request_timeout_seconds: u64,
     /// https callbacks the handoff route may redirect a phone to (Phase 11 enforces).
     pub app_callback_urls: Vec<String>,
+    /// Phase 11 §9: the Access JWT check and the handoff route, all read live.
+    pub access_clock_skew_seconds: u64,
+    pub access_jwks_refresh_seconds: u64,
+    pub access_jwks_retry_cooldown_seconds: u64,
+    pub handoff_requests_per_minute: u32,
+    pub close_sockets_at_access_expiry: bool,
 }
 
 impl Default for CloudConfig {
@@ -154,6 +167,11 @@ impl Default for CloudConfig {
             login_timeout_seconds: 900,
             request_timeout_seconds: 15,
             app_callback_urls: callback_urls_for_domain(PUBLISHER_DOMAIN),
+            access_clock_skew_seconds: 30,
+            access_jwks_refresh_seconds: 14_400,
+            access_jwks_retry_cooldown_seconds: 30,
+            handoff_requests_per_minute: 12,
+            close_sockets_at_access_expiry: true,
         }
     }
 }
