@@ -1,0 +1,30 @@
+{
+  "name": "yaran-module-headers",
+  "private": true,
+  "description": "Generates and checks the module-headers Uses/Used-by block in every in-scope file, and runs the 500-line gate",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "bin": {
+    "module-headers": "bin/module-headers.mjs"
+  },
+  "scripts": {
+    "check": "node bin/module-headers.mjs --check",
+    "write": "node bin/module-headers.mjs --write",
+    "lines": "node bin/module-headers.mjs --lines --check",
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "fetch-grammars": "node scripts/fetch-grammars.mjs"
+  },
+  "dependencies": {
+    "@tree-sitter-grammars/tree-sitter-kotlin": "1.1.0",
+    "tree-sitter-bash": "0.25.1",
+    "tree-sitter-rust": "0.24.0",
+    "typescript": "6.0.3",
+    "web-tree-sitter": "0.27.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5"
+  }
+}

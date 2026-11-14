@@ -1,0 +1,21 @@
+{
+  "roots": [
+    "cloud/**",
+    "mobile/**",
+    "packages/**",
+    "tools/module-headers/**",
+    "tools/cloud-gates/**",
+    "docs/plans/phoneapp/evidence/**",
+    "crates/yaran-core/src/cloud/**",
+    "crates/yaran-web/src/cloud_*.rs",
+    "crates/yaran-web/web/src/lib/native/**"
+  ],
+  "optIn": [],
+  "exclude": ["**/generated/**", "**/fixtures/**", "**/node_modules/**", "mobile/ios/Pods/**", "**/CapApp-SPM/**", "**/gradlew"],
+  "entryPoints": {
+    "tools/module-headers/bin/module-headers.mjs": "CLI: node tools/module-headers/bin/module-headers.mjs, via npm run check / write / lines, make headers-check and gates.yml",
+    "tools/module-headers/test/*.test.mjs": "node --test, via npm test in tools/module-headers",
+    "tools/module-headers/pre-commit.sh": "opt-in git hook, run by tools/module-headers/hooks/pre-commit",
+    "tools/module-headers/hooks/pre-commit": "git pre-commit hook, enabled with git config core.hooksPath tools/module-headers/hooks"
+  }
+}

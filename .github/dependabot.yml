@@ -40,3 +40,20 @@ updates:
     groups:
       patches:
         update-types: ["patch"]
+
+  # tools/module-headers: the header and 500-line gate run by gates.yml.
+  # TypeScript stays on 6.x: TypeScript 7 ships no compiler API, which this tool
+  # needs (docs/plans/phoneapp/01-conventions-and-enforcement-tooling.md, Risks).
+  # Every new package of the phone-app plan carries the same ignore.
+  - package-ecosystem: "npm"
+    directory: "/tools/module-headers"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      patches:
+        update-types: ["patch"]
+    ignore:
+      - dependency-name: "typescript"
+        versions: [">=7"]

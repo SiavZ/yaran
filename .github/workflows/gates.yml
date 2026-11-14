@@ -1,0 +1,171 @@
+name: gates
+
+# The one always-running workflow whose `Required gates` job is the single required
+# check for every gate that is path-filtered (phone-app plan, Phase 01).
+#
+# Why this shape: a workflow skipped by a `paths:` filter leaves its required check
+# "Pending" forever and blocks the merge, while a JOB skipped by `if:` reports success.
+# So this workflow has no `paths:` filter. The `changes` job decides which suites a PR
+# touches, each suite job is gated by `if:`, and `Required gates` (if: always()) turns
+# the whole set into one verdict with re-actors/alls-green: green when every job that
+# ran passed and every skip was allowed, red when any job failed or was cancelled.
+#
+# Path-filtered suites join HERE, through the seam block below; they are never added to
+# branch protection directly (see .github/BRANCH_PROTECTION.md).
+#
+# Local mirror: `make headers-check` and `make lines-check`.
+
+on:
+  pull_request:
+  # Push runs only for main: the PR run already covers feature branches.
+  push:
+    branches: [main]
+
+# Least privilege: every job only reads source. `changes` additionally lists a PR's
+# files through the API, which needs pull-requests: read on that job alone.
+permissions:
+  contents: read
+
+concurrency:
+  group: gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      headers: ${{ steps.filter.outputs.headers }}
+      protocol: ${{ steps.filter.outputs.protocol }}
+      cloud: ${{ steps.filter.outputs.cloud }}
+      mobile: ${{ steps.filter.outputs.mobile }}
+      ui-kit: ${{ steps.filter.outputs.ui-kit }}
+    steps:
+      # Needed on push, where paths-filter diffs against the previous commit with git.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # `headers` is "any code file": a change anywhere can alter some in-scope file's
+      # Used by tree. Extensionless scripts are only seen under bin/, hooks/ or scripts/.
+      # A suite's filter includes the local packages it imports by `file:` dependency.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            headers:
+              - '**/*.{rs,ts,tsx,mts,cts,js,mjs,cjs,kt,kts,swift,sh,bash,bats}'
+              - '**/{bin,hooks,scripts}/**'
+              - '**/Cargo.toml'
+              - '**/package.json'
+              - '**/tsconfig*.json'
+              - 'tools/module-headers/**'
+              - '.github/workflows/gates.yml'
+            protocol:
+              - 'cloud/protocol/**'
+              - 'crates/yaran-core/src/cloud/**'
+            cloud:
+              - 'cloud/**'
+              - 'packages/ui-kit/**'
+            mobile:
+              - 'mobile/**'
+              - 'cloud/protocol/**'
+              - 'packages/ui-kit/**'
+            ui-kit:
+              - 'packages/ui-kit/**'
+
+  headers:
+    name: Module headers
+    needs: changes
+    if: needs.changes.outputs.headers == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: tools/module-headers
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Node 22 until Phase 18 adds the root .node-version and switches this to
+      # node-version-file, like every new workflow.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tools/module-headers/package-lock.json
+
+      - name: Install the tool (lockfile, no install scripts)
+        run: npm ci
+
+      - name: Fetch the Swift grammar (pinned release, SHA-256 checked)
+        run: npm run fetch-grammars
+
+      - name: Typecheck the tool
+        run: npm run typecheck
+
+      - name: Test the tool
+        run: npm test
+
+      - name: Check module-header blocks
+        run: node bin/module-headers.mjs --check
+
+  lines:
+    name: File length
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The line gate imports no npm dependency, so there is no npm ci here.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: 500-line gate against the oversize baseline
+        run: node tools/module-headers/bin/module-headers.mjs --lines --check
+
+  # ── Seam for path-filtered suites ────────────────────────────────────────────
+  # Phase 02 fills in `protocol`; Phase 18 fills in `cloud`, `mobile` and `ui-kit`.
+  # Each is a reusable workflow (`on: workflow_call`) gated on its filter output. When
+  # one is uncommented, add its job id to `required.needs` AND to `allowed-skips`, or a
+  # PR that does not touch it turns `Required gates` red (or, if only in `needs`, a
+  # failure in it is ignored).
+  #
+  # protocol:
+  #   name: Protocol
+  #   needs: changes
+  #   if: needs.changes.outputs.protocol == 'true'
+  #   uses: ./.github/workflows/cloud-protocol.yml
+  #
+  # cloud:
+  #   name: Cloud
+  #   needs: changes
+  #   if: needs.changes.outputs.cloud == 'true'
+  #   uses: ./.github/workflows/cloud-ci.yml
+  #
+  # mobile:
+  #   name: Mobile
+  #   needs: changes
+  #   if: needs.changes.outputs.mobile == 'true'
+  #   uses: ./.github/workflows/mobile-ci.yml
+  #
+  # ui-kit:
+  #   name: UI kit
+  #   needs: changes
+  #   if: needs.changes.outputs.ui-kit == 'true'
+  #   uses: ./.github/workflows/ui-kit-ci.yml
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  required:
+    # BRANCH-PROTECTION CONTRACT: `Required gates` is a required status check on main
+    # (see .github/BRANCH_PROTECTION.md). Renaming this job, or the workflow skipping
+    # it, leaves the required context unreported and blocks every PR. It must keep
+    # `if: always()` so it reports even when a job it needs failed or was skipped.
+    name: Required gates
+    if: always()
+    needs: [changes, headers, lines]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
+        with:
+          allowed-skips: headers
+          jobs: ${{ toJSON(needs) }}

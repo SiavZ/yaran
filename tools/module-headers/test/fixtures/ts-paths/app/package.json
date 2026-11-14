@@ -1,0 +1,8 @@
+{
+  "name": "app",
+  "private": true,
+  "dependencies": {
+    "@yaran/ui-kit": "file:../kit",
+    "react": "^19.0.0"
+  }
+}

@@ -21,12 +21,27 @@ GitHub UI (Settings → Branches → Protection rules → main).
     `.github/workflows/pr.yml` and `.github/workflows/test.yml`, pinned to
     `ubuntu-24.04`
   - `Test (macos-14)`: the `clippy-test-macos` job in the same two files.
-    It runs clippy with `--all-targets` on `macos-latest` as upstream does
-    (not yet proven on a macos-14 runner). `cargo test` is not run on macOS
-    in CI yet, see the note at the end of that job
+    It runs clippy with `--all-targets` and then `cargo test` on
+    `macos-latest`, as upstream does (not yet proven on a macos-14 runner)
   - `Security`: `cargo audit` + `cargo deny check`, in pr.yml and test.yml
   - `shell`: `shellcheck` + `bats` from `.github/workflows/overlay-ci.yml`
+  - `Required gates`: the always-reporting aggregator job in
+    `.github/workflows/gates.yml`. It carries the `BRANCH-PROTECTION
+    CONTRACT` comment, runs on every PR (docs-only ones included) and on
+    pushes to `main`, and fails when any job it gathers fails: today
+    `Module headers` (`tools/module-headers --check`, skipped when no code
+    file changed) and `File length` (the 500-line gate against
+    `tools/module-headers/baseline-oversize.json`)
   - `Strict mode (require branches up to date before merging)`: yes
+- **Path-filtered suites are never required directly.** A workflow skipped
+  by a `paths:` filter leaves its check "Pending" forever, which blocks the
+  merge. Such a suite (the cloud, mobile, protocol and UI-kit suites of the
+  phone-app plan) is a reusable workflow called from the seam in
+  `.github/workflows/gates.yml`, gated there by `if:` on its filter, and it
+  reaches branch protection only through `Required gates`.
+- **Admins can bypass the required checks** while `enforce_admins` is
+  `false`. Turning it on is an owner decision and is deliberately left off
+  here.
 - **Recommended (not currently required) but run on every PR**:
   - `Format`, `Clippy`, `Web lint`, `Web build and unit tests`,
     `yaran-web dependency isolation`, `Reject YARAN_DISABLE_UI_BUILD`, and
@@ -66,6 +81,7 @@ gh api -X PUT \
   -f 'required_status_checks[contexts][]=Test (macos-14)' \
   -f 'required_status_checks[contexts][]=Security' \
   -f 'required_status_checks[contexts][]=shell' \
+  -f 'required_status_checks[contexts][]=Required gates' \
   -f required_pull_request_reviews[required_approving_review_count]=1 \
   -f required_pull_request_reviews[dismiss_stale_reviews]=true \
   -f required_pull_request_reviews[require_code_owner_reviews]=true \
@@ -79,4 +95,10 @@ gh api -X PUT \
 **Verify after applying:**
 ```bash
 gh api /repos/SiavZ/yaran/branches/main/protection | jq .
+gh api /repos/SiavZ/yaran/branches/main/protection \
+  --jq '.required_status_checks.contexts'   # must list "Required gates"
 ```
+
+Apply the `Required gates` context only after `gates.yml` has landed on
+`main` and reported once: a required context that no workflow reports leaves
+every open PR blocked on "Expected — Waiting for status to be reported".
