@@ -6,40 +6,38 @@
  *
  * <module-headers:begin>
  * Uses:
- * consumer.test.ts
+ * test/push/consumer.test.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── cloud/worker/src/push/consumer.ts
- * ├── cloud/worker/src/push/seams.ts
- * ├── cloud/worker/src/push/send.ts
- * ├── cloud/worker/src/push/store.ts
- * ├── helpers/d1.ts
- * └── helpers/fakes.ts
+ * ├── src/push/consumer.ts
+ * ├── src/push/send.ts
+ * ├── src/push/store.ts
+ * ├── src/push/types.ts
+ * └── test/push/helpers/fakes.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker/test/push)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { b64urlDecode, decryptWebPush, parsePushPayload, verifyVapid, type PushPayload } from "@yaran/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { consumePushBatch, MAX_RETRIES } from "../../src/push/consumer.ts";
 import { classify, parseRetryAfter, VapidCache } from "../../src/push/send.ts";
-import type { PushJob } from "../../src/push/seams.ts";
+import type { PushJob } from "../../src/push/types.ts";
 import { markOk } from "../../src/push/store.ts";
-import { migrated, type TestD1 } from "./helpers/d1.ts";
 import { deviceRow, fixture, harness, MACHINE, message, muteMachine, NOW, OWNER, seedDevice, seedUser, SELF_ORIGIN, settingsWith, type Harness, type SeededDevice } from "./helpers/fakes.ts";
 
 const payload: PushPayload = { v: 1, k: "attention_raised", m: MACHINE, a: "1d2e3f40-5a6b-4c7d-8e9f-0a1b2c3d4e5f", s: "needs_attention", p: "secret-project", l: "secret-label", ts: NOW };
 const job = (over: Partial<PushJob> = {}): PushJob => ({ device_id: "d1", payload, urgency: "high", topic: "ymz4wvfQl4P7VBQ1dIz_qZ4g7zOVj7re", ttl: 3600, enqueued_at: NOW, ...over });
 
-let db: TestD1;
+let db: D1Database;
 let h: Harness;
 let dev: SeededDevice;
 let consoleSpy: ReturnType<typeof vi.spyOn>[];
 beforeEach(async () => {
-  db = migrated();
-  h = harness(db);
+  h = await harness();
+  db = h.db;
   await seedUser(db, OWNER);
-  dev = await seedDevice(db, { id: "d1" });
+  dev = await seedDevice(h, { id: "d1" });
   consoleSpy = (["log", "info", "warn", "error", "debug"] as const).map((k) => vi.spyOn(console, k).mockImplementation(() => {}));
 });
 afterEach(() => {
@@ -81,12 +79,9 @@ describe("a delivered push", () => {
   });
 
   it("writes state only on change and the success time at most hourly", async () => {
-    const changes = async () => Number((await db.raw.prepare("SELECT total_changes() AS n").get() as { n: number }).n);
     await markOk(db, "d1", NOW);
-    const before = await changes();
-    await markOk(db, "d1", NOW + 60);
-    expect(await changes()).toBe(before);
-    await markOk(db, "d1", NOW + 3600);
+    expect(await markOk(db, "d1", NOW + 60)).toBe(0);
+    expect(await markOk(db, "d1", NOW + 3600)).toBe(1);
     expect((await deviceRow(db, "d1")).last_push_ok_at).toBe(NOW + 3600);
   });
 });
@@ -192,17 +187,17 @@ describe("re-checks at send", () => {
   });
 
   it("drops when push was turned off, the device went gone or was revoked", async () => {
-    h.settings.value = settingsWith({ enabled: false });
+    await h.setPush(settingsWith({ enabled: false }));
     await run();
-    h.settings.value = undefined;
+    await h.setPush(undefined);
     await db.prepare("UPDATE devices SET revoked_at = ? WHERE id = 'd1'").bind(NOW).run();
     await run();
     expect(h.fetchCalls).toHaveLength(0);
   });
 
   it("drops a relay push once relays are disallowed", async () => {
-    await seedDevice(db, { id: "d-ios", channel: "apns_relay", endpoint: `https://relay.example.com/w/v1.k1.${"A".repeat(40)}` });
-    h.settings.value = settingsWith({ relay_allowed: false });
+    await seedDevice(h, { id: "d-ios", channel: "apns_relay", endpoint: `https://relay.example.com/w/v1.k1.${"A".repeat(40)}` });
+    await h.setPush(settingsWith({ relay_allowed: false }));
     expect((await run(job({ device_id: "d-ios" }))).acked).toBe(true);
     expect(h.fetchCalls).toHaveLength(0);
   });
@@ -214,7 +209,7 @@ describe("re-checks at send", () => {
   });
 
   it("batches several devices with one read and sends each", async () => {
-    await seedDevice(db, { id: "d2" });
+    await seedDevice(h, { id: "d2" });
     const ms = [message(job()), message(job({ device_id: "d2" }))];
     await consumePushBatch(h.deps, ms, new VapidCache());
     expect(ms.every((m) => m.acked)).toBe(true);

@@ -64,7 +64,8 @@ export function serializePushPayload(payload: PushPayload): Uint8Array {
  * drops the push. Ids are never cut: `a` and `t` are where a tap lands.
  */
 export function fitPushPayload(payload: PushPayload): Uint8Array | null {
-  for (const candidate of [payload, { ...payload, p: undefined, l: undefined }]) {
+  const { p: _p, l: _l, ...minimal } = payload;
+  for (const candidate of [payload, minimal as PushPayload]) {
     try {
       return serializePushPayload(candidate);
     } catch {

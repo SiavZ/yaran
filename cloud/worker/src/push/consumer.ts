@@ -17,22 +17,23 @@
  *
  * <module-headers:begin>
  * Uses:
- * cloud/worker/src/push/consumer.ts
- * ├── cloud/worker/src/push/seams.ts
- * ├── cloud/worker/src/push/send.ts
- * ├── cloud/worker/src/push/settings.ts
- * └── cloud/worker/src/push/store.ts
- * External: @yaran/protocol
+ * src/push/consumer.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/push/send.ts
+ * ├── src/push/settings.ts
+ * ├── src/push/store.ts
+ * └── src/push/types.ts
+ * External: none
  *
  * Used by:
- * cloud/worker/src/push/consumer.ts
- * ├── cloud/worker/src/push/index.ts
- * └── yaran-worker-push-tests:consumer.test.ts
+ * src/push/consumer.ts
+ * ├── src/index.ts
+ * └── test/push/consumer.test.ts
  * <module-headers:end>
  */
 import { b64urlDecode, encryptWebPush, fitPushPayload } from "@yaran/protocol";
 import { classify, postPush, VapidCache, backoffSeconds, type PushResponse } from "./send.ts";
-import type { PushDeps, PushJob, PushSettings, QueueMessage } from "./seams.ts";
+import type { PushDeps, PushJob, PushSettings, QueueMessage } from "./types.ts";
 import { assertNever, isMuted, pushSettings, relayVerdict } from "./settings.ts";
 import { bumpStats, loadSendDevices, markAuthFailed, markGone, markOk, recordExhausted, type SendDevice } from "./store.ts";
 

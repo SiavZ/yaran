@@ -49,7 +49,7 @@ export async function importVapidPrivateJwk(jwk: JsonWebKey): Promise<VapidSigne
     throw new Error("the VAPID private key is not a P-256 private JWK");
   }
   const { kty, crv, x, y, d } = jwk;
-  const privateKey = await crypto.subtle.importKey("jwk", { kty, crv, x, y, d }, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const privateKey = await crypto.subtle.importKey("jwk", { kty, crv, x, y, d } as JsonWebKey, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   return { privateKey, publicRaw };
 }
 

@@ -4,13 +4,13 @@
  *
  * <module-headers:begin>
  * Uses:
- * endpoint_policy.test.ts
+ * test/push/endpoint_policy.test.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── cloud/worker/src/push/endpoint_policy.ts
- * └── helpers/fakes.ts
+ * ├── src/push/endpoint_policy.ts
+ * └── test/push/helpers/fakes.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker/test/push)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { b64urlEncode, generateEcdhKeyPair, type PushChannel } from "@yaran/protocol";

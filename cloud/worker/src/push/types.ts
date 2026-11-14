@@ -1,56 +1,36 @@
 /**
- * The seams the push module needs from Phase 04 (D1, settings, data-key sealing, audit,
- * logging, rate limiting, router) and from the Cloudflare runtime (Queues), as narrow
- * structural interfaces.
- *
- * Every type here is structurally satisfied by the real thing: `D1Like` by a `D1Database`,
- * `PushQueue` by a `Queue<PushJob>` binding, `QueueMessage` by a Queues `Message`,
- * `RateLimiter` by a Rate Limiting binding. The rest (`PushDeps`) is the adapter 04's
- * wiring builds once per request or batch from its own modules; tests pass fakes.
- *
- * - No runtime code beyond `toBytes`; nothing here touches the network or D1.
+ * The push module's own types: the queued job, the dependencies 04's wiring builds
+ * (`push/deps.ts`), and a route outcome `push/routes.ts` turns into a response. Bindings
+ * are Cloudflare's own types (D1, Queue, Message, RateLimit).
  *
  * <module-headers:begin>
- * Uses: none
- * External: @yaran/protocol
+ * Uses:
+ * src/push/types.ts
+ * ├── @yaran/protocol:src/index.ts
+ * └── src/log/logger.ts
+ * External: none
  *
  * Used by:
- * cloud/worker/src/push/seams.ts
- * ├── cloud/worker/src/push/consumer.ts
- * ├── cloud/worker/src/push/endpoint_policy.ts
- * ├── cloud/worker/src/push/events_route.ts
- * ├── cloud/worker/src/push/fanout.ts
- * ├── cloud/worker/src/push/index.ts
- * ├── cloud/worker/src/push/send.ts
- * ├── cloud/worker/src/push/settings.ts
- * ├── cloud/worker/src/push/store.ts
- * ├── cloud/worker/src/push/test_route.ts
- * ├── yaran-worker-push-tests:consumer.test.ts
- * ├── yaran-worker-push-tests:helpers/d1.ts
- * └── yaran-worker-push-tests:helpers/fakes.ts
+ * src/push/types.ts
+ * ├── src/index.ts
+ * ├── src/push/consumer.ts
+ * ├── src/push/deps.ts
+ * ├── src/push/endpoint_policy.ts
+ * ├── src/push/events_route.ts
+ * ├── src/push/fanout.ts
+ * ├── src/push/routes.ts
+ * ├── src/push/send.ts
+ * ├── src/push/settings.ts
+ * ├── src/push/store.ts
+ * ├── src/push/test_route.ts
+ * ├── test/push/consumer.test.ts
+ * └── test/push/helpers/fakes.ts
  * <module-headers:end>
  */
 import type { ErrorCode, PushPayload, Settings, Urgency } from "@yaran/protocol";
+import type { Logger } from "../log/logger.ts";
 
 export type PushSettings = Settings["push"];
-
-export interface D1Meta {
-  changes: number;
-}
-export interface D1Result<T> {
-  results: T[];
-  meta: D1Meta;
-}
-export interface D1Stmt {
-  bind(...values: unknown[]): D1Stmt;
-  first<T = Record<string, unknown>>(): Promise<T | null>;
-  all<T = Record<string, unknown>>(): Promise<D1Result<T>>;
-  run(): Promise<D1Result<unknown>>;
-}
-export interface D1Like {
-  prepare(sql: string): D1Stmt;
-  batch(statements: D1Stmt[]): Promise<D1Result<unknown>[]>;
-}
 
 /** One push for one device, the body of a PUSH_QUEUE message. */
 export interface PushJob {
@@ -64,36 +44,21 @@ export interface PushJob {
   enqueued_at: number;
 }
 
+/** The queue producer, as far as the module uses it (a `Queue<PushJob>` binding satisfies it). */
 export interface PushQueue {
   sendBatch(messages: { body: PushJob }[]): Promise<unknown>;
 }
-
-export interface QueueMessage<T> {
-  readonly body: T;
-  /** 1 on first delivery. */
-  readonly attempts: number;
-  ack(): void;
-  retry(options?: { delaySeconds?: number }): void;
-}
-
-export interface RateLimiter {
-  limit(options: { key: string }): Promise<{ success: boolean }>;
-}
-
-export interface Logger {
-  info(event: string, fields?: Record<string, unknown>): void;
-  warn(event: string, fields?: Record<string, unknown>): void;
-  error(event: string, fields?: Record<string, unknown>): void;
-}
+export type QueueMessage<T> = Pick<Message<T>, "body" | "attempts" | "ack" | "retry">;
+export type RateLimiter = Pick<RateLimit, "limit">;
 
 /** The registry actions this module records (registry/audit-actions.json). */
 export type PushAuditAction = "device.push_gone" | "device.push_auth_failed" | "device.push_failing" | "device.test_push";
 
 /** What 04's wiring hands the push module. */
 export interface PushDeps {
-  db: D1Like;
+  db: D1Database;
   queue: PushQueue;
-  log: Logger;
+  log: Pick<Logger, "info" | "warn" | "error">;
   /** 04's validated `push` settings row; undefined when never written (defaults apply). */
   readSettings(): Promise<unknown>;
   /** 04's data-key open for a sealed `devices` column, AAD `devices.<column>:<device id>`; UTF-8 text. */

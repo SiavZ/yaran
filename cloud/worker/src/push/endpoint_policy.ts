@@ -14,19 +14,20 @@
  *
  * <module-headers:begin>
  * Uses:
- * cloud/worker/src/push/endpoint_policy.ts
- * ├── cloud/worker/src/push/seams.ts
- * └── cloud/worker/src/push/settings.ts
- * External: @yaran/protocol
+ * src/push/endpoint_policy.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/push/settings.ts
+ * └── src/push/types.ts
+ * External: none
  *
  * Used by:
- * cloud/worker/src/push/endpoint_policy.ts
- * ├── cloud/worker/src/push/index.ts
- * └── yaran-worker-push-tests:endpoint_policy.test.ts
+ * src/push/endpoint_policy.ts
+ * ├── src/devices/device-params.ts
+ * └── test/push/endpoint_policy.test.ts
  * <module-headers:end>
  */
 import { b64urlDecode, decodeP256Point, importP256Public, utf8, type PushWebpush } from "@yaran/protocol";
-import type { PushSettings } from "./seams.ts";
+import type { PushSettings } from "./types.ts";
 import { assertNever, relayVerdict } from "./settings.ts";
 
 export const ENDPOINT_MAX_BYTES = 2048;
@@ -51,6 +52,8 @@ const invalid = (message: string): EndpointVerdict => ({ ok: false, code: "push_
 function hostRefusal(host: string, ctx: EndpointContext): string | null {
   if (host.startsWith("[") || /^[0-9.]+$/.test(host) || /^0x/i.test(host)) return "The push endpoint host is an IP address; a DNS name is required.";
   if (!host.includes(".") || host === "localhost") return "The push endpoint host is not a public DNS name.";
+  // A trailing dot names the same host and would slip past the suffix and zone rules.
+  if (host.endsWith(".")) return "The push endpoint host must not end with a dot.";
   if (host === "workers.dev" || BLOCKED_SUFFIXES.some((s) => host.endsWith(s))) return "The push endpoint host is not a public push service.";
   const zone = ctx.zoneName?.toLowerCase();
   if (host === ctx.controlPlaneHost?.toLowerCase() || (zone && (host === zone || host.endsWith(`.${zone}`)))) {

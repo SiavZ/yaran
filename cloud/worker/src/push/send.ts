@@ -11,18 +11,19 @@
  *
  * <module-headers:begin>
  * Uses:
- * cloud/worker/src/push/send.ts
- * └── cloud/worker/src/push/seams.ts
- * External: @yaran/protocol
+ * src/push/send.ts
+ * ├── @yaran/protocol:src/index.ts
+ * └── src/push/types.ts
+ * External: none
  *
  * Used by:
- * cloud/worker/src/push/send.ts
- * ├── cloud/worker/src/push/consumer.ts
- * └── yaran-worker-push-tests:consumer.test.ts
+ * src/push/send.ts
+ * ├── src/push/consumer.ts
+ * └── test/push/consumer.test.ts
  * <module-headers:end>
  */
 import { importVapidPrivateJwk, signVapid, type VapidSigner } from "@yaran/protocol";
-import type { PushDeps, PushJob } from "./seams.ts";
+import type { PushDeps, PushJob } from "./types.ts";
 
 export const VAPID_TTL_S = 12 * 3600;
 const VAPID_REFRESH_BEFORE_S = 3600;

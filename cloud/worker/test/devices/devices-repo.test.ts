@@ -1,13 +1,14 @@
 /**
  * Device repository tests: upsert, cap, revocation and delivery outcomes.
  *
- * Covers the D24 device key rules, the sealed endpoint, setPushOutcome's 02 §9 outcomes and the last_seen throttle under an injected clock.
+ * Covers the D24 device key rules, the sealed endpoint, revocation and the last_seen throttle under an injected clock.
  *
  * <module-headers:begin>
  * Uses:
  * test/devices/devices-repo.test.ts
  * ├── src/devices/device-params.ts
  * ├── src/devices/devices-repo.ts
+ * ├── src/push/store.ts
  * ├── test/devices/device-fixtures.ts
  * └── test/phase06/fakes.ts
  * External: vitest
@@ -17,7 +18,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { checkRegistration } from "../../src/devices/device-params.ts";
-import { revokeDevice, setPushOutcome, toDevice, upsertDevice, type DeviceRow } from "../../src/devices/devices-repo.ts";
+import { revokeDevice, upsertDevice, type DeviceRow } from "../../src/devices/devices-repo.ts";
+import { markOk } from "../../src/push/store.ts";
 import { makeWorld, seedUser, type TestWorld } from "../phase06/fakes.ts";
 import { DEVICE_KEYS, registration } from "./device-fixtures.ts";
 
@@ -44,28 +46,6 @@ describe("devices repository", () => {
     await expect(w.ctx.dataKey.open("device_endpoint", { table: "devices", column: "endpoint_enc", rowId: "other" }, stored.endpoint_enc!)).rejects.toThrow();
   });
 
-  it("setPushOutcome: gone clears the subscription and keeps the row; auth_failed and failing mark; delivered restores", async () => {
-    const w = await makeWorld();
-    const { u, reg, row } = await registered(w);
-    await setPushOutcome(w.ctx, row.id, { kind: "gone", errorCode: "push_endpoint_gone" });
-    let s = (await read(w, row.id))!;
-    expect(s).toMatchObject({ push_state: "gone", endpoint_enc: null, auth_enc: null, p256dh: null, endpoint_host: null, revoked_at: null });
-    expect(toDevice({ ...s, muted_machine_ids: "[]" }, null).push_state).toBe("gone");
-
-    // Re-registration (the app's answer to gone) restores active.
-    await upsertDevice(w.ctx, u.id, await checkRegistration(reg, scope, w.settings.push));
-    expect((await read(w, row.id))!.push_state).toBe("active");
-
-    await setPushOutcome(w.ctx, row.id, { kind: "auth_failed", errorCode: "relay_vapid_mismatch" });
-    expect((await read(w, row.id))!.push_state).toBe("auth_failed");
-    await setPushOutcome(w.ctx, row.id, { kind: "failing", errorCode: "relay_upstream_failed" });
-    expect((await read(w, row.id))!.push_state).toBe("failing");
-    w.clock.now += 10;
-    await setPushOutcome(w.ctx, row.id, { kind: "delivered" });
-    s = (await read(w, row.id))!;
-    expect(s).toMatchObject({ push_state: "active", last_push_ok_at: w.clock.now });
-  });
-
   it("revocation by an admin (W24) needs no owner, audits the actor, and only applies once", async () => {
     const w = await makeWorld();
     const { row } = await registered(w);
@@ -75,8 +55,8 @@ describe("devices repository", () => {
     expect((await read(w, row.id))!).toMatchObject({ revoked_by: "admin-1", device_key_fingerprint: DEVICE_KEYS[0]!.fingerprint });
     await w.refresh();
     expect(w.audit.map((a) => [a.action, a.actor.kind])).toEqual([["device.revoked", "admin"]]);
-    // A push outcome never resurrects a revoked device.
-    await setPushOutcome(w.ctx, row.id, { kind: "delivered" });
+    // A delivery never resurrects a revoked device (08's writer guards on push_state).
+    await markOk(w.ctx.db, row.id, w.clock.now);
     expect((await read(w, row.id))!.push_state).toBe("none");
   });
 });

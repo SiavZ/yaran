@@ -4,47 +4,34 @@
  *
  * <module-headers:begin>
  * Uses:
- * migration.test.ts
- * ├── cloud/worker/src/push/settings.ts
- * ├── helpers/d1.ts
- * └── helpers/fakes.ts
- * External: vitest
+ * test/push/migration.test.ts
+ * ├── src/push/settings.ts
+ * ├── test/helpers/deps.ts
+ * └── test/push/helpers/fakes.ts
+ * External: cloudflare:test, vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker/test/push)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
-import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:test";
+import { beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_PUSH_SETTINGS, isMuted, isRelayChannel, pushSettings, relayVerdict } from "../../src/push/settings.ts";
-import { migrated, PUSH_MIGRATION } from "./helpers/d1.ts";
-import { deviceRow, NOW, OWNER, seedUser, settingsWith } from "./helpers/fakes.ts";
+import { wipe } from "../helpers/deps.ts";
+import { NOW, OWNER, seedUser, settingsWith } from "./helpers/fakes.ts";
 
-describe("0008_push.sql", () => {
-  it("applies on an empty database", async () => {
-    const db = migrated();
-    const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all<{ name: string }>();
+describe("0006 and 0008 device columns", () => {
+  beforeEach(wipe);
+
+  it("give the devices table every delivery column, and add the dedupe and stats tables", async () => {
+    const tables = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all<{ name: string }>();
     expect(tables.results.map((t) => t.name)).toEqual(expect.arrayContaining(["device_machine_mutes", "event_ids", "push_stats"]));
-  });
-
-  it("applies on a database 06 already populated, activating live subscriptions only", async () => {
-    const db = migrated(false);
-    await seedUser(db, OWNER);
-    const insert = `INSERT INTO devices (id, user_id, install_id, platform, flavor, form_factor, push_kind, endpoint_enc, endpoint_host,
-      device_key, device_key_fingerprint, app_version, label, created_at, revoked_at)
-      VALUES (?, ?, ?, 'ios', 'appstore', 'phone', ?, ?, ?, zeroblob(65), ?, '1.0.0', 'p', ?, ?)`;
-    const f = "x".repeat(29);
-    await db.prepare(insert).bind("d-live", OWNER, "i1", "apns_relay", "sealed", "relay.example.com", f, NOW, null).run();
-    await db.prepare(insert).bind("d-none", OWNER, "i2", "none", null, null, f, NOW, null).run();
-    await db.prepare(insert).bind("d-revoked", OWNER, "i3", "unifiedpush", "sealed", "up.example.com", f, NOW, NOW).run();
-    db.exec(PUSH_MIGRATION);
-    expect(await deviceRow(db, "d-live")).toMatchObject({ push_state: "active", mute_all: 0, muted_until: null, consecutive_failures: 0 });
-    expect((await deviceRow(db, "d-none")).push_state).toBe("none");
-    expect((await deviceRow(db, "d-revoked")).push_state).toBe("none");
+    const cols = (await env.DB.prepare("SELECT name FROM pragma_table_info('devices')").all<{ name: string }>()).results.map((c) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(["push_state", "last_push_ok_at", "consecutive_failures", "mute_all", "muted_until"]));
   });
 
   it("refuses an unknown push_state", async () => {
-    const db = migrated();
-    await seedUser(db, OWNER);
-    const insert = db.prepare(
+    await seedUser(env.DB, OWNER);
+    const insert = env.DB.prepare(
       `INSERT INTO devices (id, user_id, install_id, platform, flavor, form_factor, push_kind, device_key, device_key_fingerprint, app_version, label, created_at, push_state)
        VALUES ('d', ?, 'i', 'ios', 'dev', 'phone', 'none', zeroblob(65), ?, '1', 'p', ?, 'ok')`,
     );

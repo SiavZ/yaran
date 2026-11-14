@@ -1,29 +1,14 @@
 -- Phase 08: push delivery state, mutes, event dedupe and daily push counters.
 -- Semantics are 08's (04 §12 devices comment); 06 writes push_state on registration and the
 -- mutes on PATCH /v1/me/devices/{id}, the push module writes the delivery outcome.
+-- Append-only after the first yaran-cloud-v* tag; applied once by the migrations table.
 
--- active | gone (subscription cleared, row kept) | auth_failed (VAPID mismatch) |
--- failing (5 exhausted pushes in a row) | none (no subscription).
-ALTER TABLE devices ADD COLUMN push_state TEXT NOT NULL DEFAULT 'none'
-  CHECK (push_state IN ('active','gone','auth_failed','failing','none'));
--- Last 2xx from the push service, written at most hourly; served as Device.push.last_success_at.
-ALTER TABLE devices ADD COLUMN last_push_ok_at INTEGER;
+-- push_state, last_push_ok_at, mute_all, muted_until and device_machine_mutes are added by
+-- 0006_pairing.sql (06 registers devices before this phase delivers to them), in this
+-- phase's design; this migration adds only what delivery alone uses.
+
 -- Exhausted pushes since the last success; 5 turns the device failing.
 ALTER TABLE devices ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
--- Per-org mutes (02 DevicePatch): indefinite, and timed (Unix seconds, NULL = not muted).
-ALTER TABLE devices ADD COLUMN mute_all INTEGER NOT NULL DEFAULT 0 CHECK (mute_all IN (0, 1));
-ALTER TABLE devices ADD COLUMN muted_until INTEGER;
-
--- A device registered before this migration with a live subscription is active.
-UPDATE devices SET push_state = 'active'
-  WHERE push_kind <> 'none' AND endpoint_enc IS NOT NULL AND revoked_at IS NULL;
-
--- Per-machine mutes (02 muted_machine_ids, at most 100 per device, enforced by 06).
-CREATE TABLE device_machine_mutes (
-  device_id   TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-  machine_id  TEXT NOT NULL,
-  PRIMARY KEY (device_id, machine_id)
-) WITHOUT ROWID;
 
 -- W6 event id dedupe for 24 h, purged by the push_purge_event_ids dispatcher task.
 CREATE TABLE event_ids (

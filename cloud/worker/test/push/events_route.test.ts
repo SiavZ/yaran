@@ -4,22 +4,20 @@
  *
  * <module-headers:begin>
  * Uses:
- * events_route.test.ts
+ * test/push/events_route.test.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── cloud/worker/src/push/events_route.ts
- * ├── cloud/worker/src/push/test_route.ts
- * ├── helpers/d1.ts
- * └── helpers/fakes.ts
+ * ├── src/push/events_route.ts
+ * ├── src/push/test_route.ts
+ * └── test/push/helpers/fakes.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in cloud/worker/test/push)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import type { Event } from "@yaran/protocol";
 import { beforeEach, describe, expect, it } from "vitest";
 import { handleEvents } from "../../src/push/events_route.ts";
 import { handleTestPush } from "../../src/push/test_route.ts";
-import { migrated, type TestD1 } from "./helpers/d1.ts";
 import { fixture, harness, MACHINE, muteMachine, NOW, OTHER_USER, OWNER, seedDevice, seedUser, settingsWith, type Harness } from "./helpers/fakes.ts";
 
 const machine = { id: MACHINE, ownerUserId: OWNER };
@@ -32,11 +30,11 @@ let n = 0;
 const ev = (over: Partial<Event> = {}): Event =>
   ({ id: `0b8e4c1d-2f3a-4b5c-9d6e-${(++n).toString(16).padStart(12, "0")}`, kind: "attention_raised", ts: "2024-11-14T08:00:00Z", agent_id: slot.a, state: "needs_attention", project: "yaran", label: "fix the tests", ...over }) as Event;
 
-let db: TestD1;
+let db: D1Database;
 let h: Harness;
 beforeEach(async () => {
-  db = migrated();
-  h = harness(db);
+  h = await harness();
+  db = h.db;
   await seedUser(db, OWNER);
   await seedUser(db, OTHER_USER);
 });
@@ -46,8 +44,8 @@ const accepted = (r: Awaited<ReturnType<typeof post>>) => (r.kind === "json" ? (
 
 describe("W6 intake", () => {
   it("queues one push per eligible device with 02's Topic and Urgency", async () => {
-    await seedDevice(db, { id: "d-up" });
-    await seedDevice(db, { id: "d-ios", channel: "apns_relay", endpoint: RELAY });
+    await seedDevice(h, { id: "d-up" });
+    await seedDevice(h, { id: "d-ios", channel: "apns_relay", endpoint: RELAY });
     const raised = ev();
     const cleared = ev({ kind: "attention_cleared", state: "idle", tab_id: tab.t! });
     const r = await post([raised, cleared]);
@@ -69,7 +67,7 @@ describe("W6 intake", () => {
   });
 
   it("lands a repeated event id in duplicates and queues nothing for it", async () => {
-    await seedDevice(db, { id: "d-up" });
+    await seedDevice(h, { id: "d-up" });
     const e = ev();
     await post([e]);
     h.queued.length = 0;
@@ -78,50 +76,50 @@ describe("W6 intake", () => {
   });
 
   it("with push off answers push_enabled false and queues nothing", async () => {
-    await seedDevice(db, { id: "d-up" });
-    h.settings.value = settingsWith({ enabled: false });
+    await seedDevice(h, { id: "d-up" });
+    await h.setPush(settingsWith({ enabled: false }));
     const e = ev();
     expect(await post([e])).toEqual({ kind: "json", status: 202, body: { accepted: [e.id], duplicates: [], push_enabled: false } });
     expect(h.queued).toHaveLength(0);
   });
 
   it("honours mute_all, an unexpired muted_until and a muted machine, and not an expired muted_until", async () => {
-    await seedDevice(db, { id: "d-all", muteAll: true });
-    await seedDevice(db, { id: "d-until", mutedUntil: NOW + 60 });
-    await seedDevice(db, { id: "d-expired", mutedUntil: NOW });
-    await seedDevice(db, { id: "d-machine" });
+    await seedDevice(h, { id: "d-all", muteAll: true });
+    await seedDevice(h, { id: "d-until", mutedUntil: NOW + 60 });
+    await seedDevice(h, { id: "d-expired", mutedUntil: NOW });
+    await seedDevice(h, { id: "d-machine" });
     await muteMachine(db, "d-machine", MACHINE);
-    await seedDevice(db, { id: "d-other-machine" });
+    await seedDevice(h, { id: "d-other-machine" });
     await muteMachine(db, "d-other-machine", "7f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b");
     await post([ev()]);
     expect(h.queued.map((j) => j.device_id).sort()).toEqual(["d-expired", "d-other-machine"]);
   });
 
   it("skips gone, auth_failed, revoked and other users' devices", async () => {
-    await seedDevice(db, { id: "d-gone", state: "gone" });
-    await seedDevice(db, { id: "d-auth", state: "auth_failed" });
-    await seedDevice(db, { id: "d-revoked", revoked: true });
-    await seedDevice(db, { id: "d-theirs", userId: OTHER_USER });
-    await seedDevice(db, { id: "d-failing", state: "failing" });
+    await seedDevice(h, { id: "d-gone", state: "gone" });
+    await seedDevice(h, { id: "d-auth", state: "auth_failed" });
+    await seedDevice(h, { id: "d-revoked", revoked: true });
+    await seedDevice(h, { id: "d-theirs", userId: OTHER_USER });
+    await seedDevice(h, { id: "d-failing", state: "failing" });
     await post([ev()]);
     expect(h.queued.map((j) => j.device_id)).toEqual(["d-failing"]);
   });
 
   it("skips relay devices while relays are disallowed or not allowlisted", async () => {
-    await seedDevice(db, { id: "d-up" });
-    await seedDevice(db, { id: "d-ios", channel: "apns_relay", endpoint: RELAY });
-    h.settings.value = settingsWith({ relay_allowed: false });
+    await seedDevice(h, { id: "d-up" });
+    await seedDevice(h, { id: "d-ios", channel: "apns_relay", endpoint: RELAY });
+    await h.setPush(settingsWith({ relay_allowed: false }));
     await post([ev()]);
     expect(h.queued.map((j) => j.device_id)).toEqual(["d-up"]);
     h.queued.length = 0;
-    h.settings.value = settingsWith({ allowed_relays: ["https://relay.other.com"] });
+    await h.setPush(settingsWith({ allowed_relays: ["https://relay.other.com"] }));
     await post([ev()]);
     expect(h.queued.map((j) => j.device_id)).toEqual(["d-up"]);
   });
 
   it("strips p and l when detail is minimal", async () => {
-    await seedDevice(db, { id: "d-up" });
-    h.settings.value = settingsWith({ detail: "minimal" });
+    await seedDevice(h, { id: "d-up" });
+    await h.setPush(settingsWith({ detail: "minimal" }));
     await post([ev()]);
     expect(h.queued[0]!.payload).not.toHaveProperty("p");
     expect(h.queued[0]!.payload).not.toHaveProperty("l");
@@ -140,7 +138,7 @@ describe("W6 intake", () => {
   });
 
   it("releases the event ids and answers 503 when the queue refuses, so the retry is not a duplicate", async () => {
-    await seedDevice(db, { id: "d-up" });
+    await seedDevice(h, { id: "d-up" });
     h.queueFails.value = true;
     const e = ev();
     expect(await post([e])).toMatchObject({ kind: "error", code: "unavailable" });
@@ -150,7 +148,7 @@ describe("W6 intake", () => {
   });
 
   it("drops an event whose payload cannot fit even without p and l, and logs it", async () => {
-    await seedDevice(db, { id: "d-up" });
+    await seedDevice(h, { id: "d-up" });
     const long = "x".repeat(128);
     await post([ev({ agent_id: long, tab_id: long }), ev()]);
     expect(h.queued).toHaveLength(1);
@@ -160,19 +158,19 @@ describe("W6 intake", () => {
 
 describe("W15 test push", () => {
   it("queues a test push for the caller's own device and audits it", async () => {
-    await seedDevice(db, { id: "d-up" });
+    await seedDevice(h, { id: "d-up" });
     expect(await handleTestPush(h.deps, OWNER, "d-up")).toEqual({ kind: "empty", status: 202 });
     expect(h.queued).toEqual([{ device_id: "d-up", payload: { v: 1, k: "test", ts: NOW }, urgency: "normal", topic: null, ttl: 300, enqueued_at: NOW }]);
     expect(h.audits).toEqual([{ action: "device.test_push", deviceId: "d-up" }]);
   });
   it("answers 404 for another user's device", async () => {
-    await seedDevice(db, { id: "d-theirs", userId: OTHER_USER });
+    await seedDevice(h, { id: "d-theirs", userId: OTHER_USER });
     expect(await handleTestPush(h.deps, OWNER, "d-theirs")).toMatchObject({ kind: "error", code: "not_found" });
     expect(h.queued).toHaveLength(0);
   });
   it("answers 409 push_disabled with push off", async () => {
-    await seedDevice(db, { id: "d-up" });
-    h.settings.value = settingsWith({ enabled: false });
+    await seedDevice(h, { id: "d-up" });
+    await h.setPush(settingsWith({ enabled: false }));
     expect(await handleTestPush(h.deps, OWNER, "d-up")).toMatchObject({ kind: "error", code: "push_disabled" });
   });
 });

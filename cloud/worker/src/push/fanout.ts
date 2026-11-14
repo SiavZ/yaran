@@ -14,19 +14,20 @@
  *
  * <module-headers:begin>
  * Uses:
- * cloud/worker/src/push/fanout.ts
- * ├── cloud/worker/src/push/seams.ts
- * ├── cloud/worker/src/push/settings.ts
- * └── cloud/worker/src/push/store.ts
- * External: @yaran/protocol
+ * src/push/fanout.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/push/settings.ts
+ * ├── src/push/store.ts
+ * └── src/push/types.ts
+ * External: none
  *
  * Used by:
- * cloud/worker/src/push/fanout.ts
- * └── cloud/worker/src/push/events_route.ts
+ * src/push/fanout.ts
+ * └── src/push/events_route.ts
  * <module-headers:end>
  */
 import { eventToPayload, fitPushPayload, pushDelivery, pushTopic, type Event, type PushPayload } from "@yaran/protocol";
-import type { PushDeps, PushJob, PushSettings } from "./seams.ts";
+import type { PushDeps, PushJob, PushSettings } from "./types.ts";
 import { isMuted, relayVerdict } from "./settings.ts";
 import { fanoutCandidates } from "./store.ts";
 

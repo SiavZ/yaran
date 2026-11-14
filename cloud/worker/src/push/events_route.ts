@@ -12,22 +12,23 @@
  *
  * <module-headers:begin>
  * Uses:
- * cloud/worker/src/push/events_route.ts
- * ├── cloud/worker/src/push/fanout.ts
- * ├── cloud/worker/src/push/seams.ts
- * ├── cloud/worker/src/push/settings.ts
- * └── cloud/worker/src/push/store.ts
- * External: @yaran/protocol
+ * src/push/events_route.ts
+ * ├── @yaran/protocol:src/index.ts
+ * ├── src/push/fanout.ts
+ * ├── src/push/settings.ts
+ * ├── src/push/store.ts
+ * └── src/push/types.ts
+ * External: none
  *
  * Used by:
- * cloud/worker/src/push/events_route.ts
- * ├── cloud/worker/src/push/index.ts
- * └── yaran-worker-push-tests:events_route.test.ts
+ * src/push/events_route.ts
+ * ├── src/push/routes.ts
+ * └── test/push/events_route.test.ts
  * <module-headers:end>
  */
 import { validate, type EventBatch, type EventBatchResult } from "@yaran/protocol";
 import { fanOut, type MachineIdentity } from "./fanout.ts";
-import type { PushDeps, RateLimiter, RouteResult } from "./seams.ts";
+import type { PushDeps, RateLimiter, RouteResult } from "./types.ts";
 import { pushSettings } from "./settings.ts";
 import { bumpStats, claimEventIds, releaseEventIds } from "./store.ts";
 

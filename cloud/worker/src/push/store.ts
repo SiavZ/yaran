@@ -9,43 +9,50 @@
  *
  * <module-headers:begin>
  * Uses:
- * cloud/worker/src/push/store.ts
- * └── cloud/worker/src/push/seams.ts
- * External: @yaran/protocol
+ * src/push/store.ts
+ * ├── @yaran/protocol:src/index.ts
+ * └── src/push/types.ts
+ * External: none
  *
  * Used by:
- * cloud/worker/src/push/store.ts
- * ├── cloud/worker/src/push/consumer.ts
- * ├── cloud/worker/src/push/events_route.ts
- * ├── cloud/worker/src/push/fanout.ts
- * ├── cloud/worker/src/push/index.ts
- * ├── cloud/worker/src/push/test_route.ts
- * └── yaran-worker-push-tests:consumer.test.ts
+ * src/push/store.ts
+ * ├── src/push/consumer.ts
+ * ├── src/push/events_route.ts
+ * ├── src/push/fanout.ts
+ * ├── src/push/routes.ts
+ * ├── src/push/test_route.ts
+ * ├── test/devices/devices-repo.test.ts
+ * ├── test/push/consumer.test.ts
+ * └── test/push/routes.test.ts
  * <module-headers:end>
  */
 import type { PushChannel } from "@yaran/protocol";
-import { toBytes, type D1Like } from "./seams.ts";
+import { toBytes } from "./types.ts";
 
 export const EVENT_DEDUPE_S = 24 * 3600;
 export const FAILING_AFTER = 5;
 const OK_WRITE_INTERVAL_S = 3600;
 
 /** Records event ids for a machine; returns the ids seen for the first time. */
-export async function claimEventIds(db: D1Like, machineId: string, ids: string[], now: number): Promise<Set<string>> {
+export async function claimEventIds(db: D1Database, machineId: string, ids: string[], now: number): Promise<Set<string>> {
   const stmt = "INSERT OR IGNORE INTO event_ids (machine_id, id, seen_at) VALUES (?, ?, ?)";
   const results = await db.batch(ids.map((id) => db.prepare(stmt).bind(machineId, id, now)));
   return new Set(ids.filter((_, i) => results[i]!.meta.changes === 1));
 }
 
 /** Forgets ids whose pushes could not be queued, so the machine's retry is not a duplicate. */
-export async function releaseEventIds(db: D1Like, machineId: string, ids: string[]): Promise<void> {
+export async function releaseEventIds(db: D1Database, machineId: string, ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   await db.batch(ids.map((id) => db.prepare("DELETE FROM event_ids WHERE machine_id = ? AND id = ?").bind(machineId, id)));
 }
 
 /** Drops dedupe rows older than 24 h; returns how many went. */
-export async function purgeEventIds(db: D1Like, now: number): Promise<number> {
-  const r = await db.prepare("DELETE FROM event_ids WHERE seen_at < ?").bind(now - EVENT_DEDUPE_S).run();
+/** Deletes up to `limit` event ids older than the dedupe window. */
+export async function purgeEventIds(db: D1Database, now: number, limit = 500): Promise<number> {
+  const r = await db
+    .prepare("DELETE FROM event_ids WHERE (machine_id, id) IN (SELECT machine_id, id FROM event_ids WHERE seen_at < ? LIMIT ?)")
+    .bind(now - EVENT_DEDUPE_S, limit)
+    .run();
   return r.meta.changes;
 }
 
@@ -62,7 +69,7 @@ export interface FanoutDevice extends MuteFields {
 }
 
 /** The owner's subscribed, healthy devices with their mute fields for one machine. */
-export async function fanoutCandidates(db: D1Like, userId: string, machineId: string): Promise<FanoutDevice[]> {
+export async function fanoutCandidates(db: D1Database, userId: string, machineId: string): Promise<FanoutDevice[]> {
   const { results } = await db
     .prepare(
       `SELECT d.id, d.push_kind, d.endpoint_host, d.mute_all, d.muted_until,
@@ -85,7 +92,7 @@ export async function fanoutCandidates(db: D1Like, userId: string, machineId: st
 }
 
 /** The device id when it belongs to the user and is not revoked. */
-export async function ownedDevice(db: D1Like, userId: string, deviceId: string): Promise<string | null> {
+export async function ownedDevice(db: D1Database, userId: string, deviceId: string): Promise<string | null> {
   const row = await db.prepare("SELECT id FROM devices WHERE id = ? AND user_id = ? AND revoked_at IS NULL").bind(deviceId, userId).first<{ id: string }>();
   return row?.id ?? null;
 }
@@ -103,7 +110,7 @@ export interface SendDevice extends MuteFields {
 }
 
 /** One read for a consumer batch: the devices and their per-machine mutes. */
-export async function loadSendDevices(db: D1Like, ids: string[]): Promise<Map<string, SendDevice>> {
+export async function loadSendDevices(db: D1Database, ids: string[]): Promise<Map<string, SendDevice>> {
   const out = new Map<string, SendDevice>();
   if (ids.length === 0) return out;
   const marks = ids.map(() => "?").join(", ");
@@ -136,19 +143,21 @@ export async function loadSendDevices(db: D1Like, ids: string[]): Promise<Map<st
 }
 
 /** 2xx: active with no failures (written only on change), success time at most hourly. */
-export async function markOk(db: D1Like, id: string, now: number): Promise<void> {
-  await db.batch([
+/** Records a 2xx; returns the rows written, so a test can see the write budget is kept. */
+export async function markOk(db: D1Database, id: string, now: number): Promise<number> {
+  const results = await db.batch([
     db
-      .prepare("UPDATE devices SET push_state = 'active', consecutive_failures = 0 WHERE id = ? AND (push_state <> 'active' OR consecutive_failures <> 0)")
+      .prepare("UPDATE devices SET push_state = 'active', consecutive_failures = 0 WHERE id = ? AND revoked_at IS NULL AND (push_state <> 'active' OR consecutive_failures <> 0)")
       .bind(id),
     db
       .prepare("UPDATE devices SET last_push_ok_at = ? WHERE id = ? AND (last_push_ok_at IS NULL OR last_push_ok_at <= ?)")
       .bind(now, id, now - OK_WRITE_INTERVAL_S),
   ]);
+  return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
 }
 
 /** 404/410: clears the subscription and marks gone, keeping the row; true when it changed. */
-export async function markGone(db: D1Like, id: string): Promise<boolean> {
+export async function markGone(db: D1Database, id: string): Promise<boolean> {
   const r = await db
     .prepare(
       `UPDATE devices SET endpoint_enc = NULL, endpoint_host = NULL, p256dh = NULL, auth_enc = NULL, push_state = 'gone'
@@ -160,13 +169,13 @@ export async function markGone(db: D1Like, id: string): Promise<boolean> {
 }
 
 /** 401/403: the subscription was made for another VAPID key; true when it changed. */
-export async function markAuthFailed(db: D1Like, id: string): Promise<boolean> {
+export async function markAuthFailed(db: D1Database, id: string): Promise<boolean> {
   const r = await db.prepare("UPDATE devices SET push_state = 'auth_failed' WHERE id = ? AND push_state IN ('active', 'failing')").bind(id).run();
   return r.meta.changes === 1;
 }
 
 /** An exhausted push: counts it and returns true when this one turned the device failing. */
-export async function recordExhausted(db: D1Like, id: string): Promise<boolean> {
+export async function recordExhausted(db: D1Database, id: string): Promise<boolean> {
   const [, turned] = await db.batch([
     db.prepare("UPDATE devices SET consecutive_failures = consecutive_failures + 1 WHERE id = ?").bind(id),
     db.prepare("UPDATE devices SET push_state = 'failing' WHERE id = ? AND push_state = 'active' AND consecutive_failures >= ?").bind(id, FAILING_AFTER),
@@ -187,7 +196,7 @@ export function statDay(now: number): string {
 }
 
 /** Adds to today's counters (two statements, no upsert syntax). */
-export async function bumpStats(db: D1Like, now: number, d: StatDeltas): Promise<void> {
+export async function bumpStats(db: D1Database, now: number, d: StatDeltas): Promise<void> {
   const v = [d.accepted ?? 0, d.delivered ?? 0, d.failed ?? 0, d.gone ?? 0];
   if (v.every((n) => n === 0)) return;
   const day = statDay(now);

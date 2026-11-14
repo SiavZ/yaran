@@ -11,24 +11,24 @@
  *
  * <module-headers:begin>
  * Uses:
- * cloud/worker/src/push/settings.ts
- * └── cloud/worker/src/push/seams.ts
- * External: @yaran/protocol
+ * src/push/settings.ts
+ * ├── @yaran/protocol:src/index.ts
+ * └── src/push/types.ts
+ * External: none
  *
  * Used by:
- * cloud/worker/src/push/settings.ts
- * ├── cloud/worker/src/push/consumer.ts
- * ├── cloud/worker/src/push/endpoint_policy.ts
- * ├── cloud/worker/src/push/events_route.ts
- * ├── cloud/worker/src/push/fanout.ts
- * ├── cloud/worker/src/push/index.ts
- * ├── cloud/worker/src/push/test_route.ts
- * ├── yaran-worker-push-tests:helpers/fakes.ts
- * └── yaran-worker-push-tests:migration.test.ts
+ * src/push/settings.ts
+ * ├── src/push/consumer.ts
+ * ├── src/push/endpoint_policy.ts
+ * ├── src/push/events_route.ts
+ * ├── src/push/fanout.ts
+ * ├── src/push/test_route.ts
+ * ├── test/push/helpers/fakes.ts
+ * └── test/push/migration.test.ts
  * <module-headers:end>
  */
 import type { PushChannel } from "@yaran/protocol";
-import type { PushSettings } from "./seams.ts";
+import type { PushSettings } from "./types.ts";
 
 export const DEFAULT_PUSH_SETTINGS: PushSettings = Object.freeze({
   enabled: true,

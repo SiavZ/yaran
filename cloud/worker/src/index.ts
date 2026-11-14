@@ -15,11 +15,15 @@
  * ├── @yaran/protocol:src/index.ts
  * ├── src/db/migrate-runtime.ts
  * ├── src/env.ts
+ * ├── src/http/context.ts
  * ├── src/http/pipeline.ts
  * ├── src/http/responses.ts
  * ├── src/http/routes.ts
  * ├── src/log/logger.ts
  * ├── src/pairing/pair-requests.ts
+ * ├── src/push/consumer.ts
+ * ├── src/push/deps.ts
+ * ├── src/push/types.ts
  * ├── src/scheduled/dispatcher.ts
  * └── src/scheduled/tasks.ts
  * External: none
@@ -38,7 +42,11 @@ import { createFetchHandler } from "./http/pipeline.ts";
 import { errorResponse, finalize, HttpError } from "./http/responses.ts";
 import { ROUTES } from "./http/routes.ts";
 import { createLogger } from "./log/logger.ts";
+import type { AppContext } from "./http/context.ts";
 import { pairCodeKey } from "./pairing/pair-requests.ts";
+import { consumePushBatch } from "./push/consumer.ts";
+import { pushDeps } from "./push/deps.ts";
+import type { PushJob } from "./push/types.ts";
 import { dispatch } from "./scheduled/dispatcher.ts";
 import { TASKS } from "./scheduled/tasks.ts";
 
@@ -66,5 +74,16 @@ export default {
   },
   async scheduled(controller, env) {
     if (await schemaReady(env)) await dispatch(env, TASKS, controller.scheduledTime);
+  },
+  // The PUSH_QUEUE consumer (08): one batch of Web Push deliveries.
+  async queue(batch, env, exec) {
+    if (!(await schemaReady(env))) return batch.retryAll({ delaySeconds: 30 });
+    const now = () => Math.floor(Date.now() / 1000);
+    const requestId = `queue-${now()}`;
+    const ctx: AppContext = {
+      env, db: env.DB, log: createLogger({ request_id: requestId, event_source: "push_queue" }), now, requestId,
+      ip: null, country: null, actor: () => ({ kind: "system" }), waitUntil: (p) => exec.waitUntil(p),
+    };
+    await consumePushBatch(await pushDeps(ctx), batch.messages as readonly Message<PushJob>[]);
   },
 } satisfies ExportedHandler<Env>;

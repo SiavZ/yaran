@@ -72,13 +72,13 @@ export async function webPushKeys(
 
 async function ecdh(privateKey: CryptoKey, peerRaw: Uint8Array): Promise<Uint8Array> {
   const peer = await importP256Public(peerRaw, "ECDH");
-  return new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: peer }, privateKey, 256));
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: peer } as Parameters<SubtleCrypto["deriveBits"]>[0], privateKey, 256));
 }
 
 /** A fresh extractable-public P-256 ECDH key pair. */
 export async function generateEcdhKeyPair(): Promise<EcdhKeyPair> {
   const pair = (await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"])) as CryptoKeyPair;
-  return { privateKey: pair.privateKey, publicRaw: new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)) };
+  return { privateKey: pair.privateKey, publicRaw: new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer) };
 }
 
 /** Imports a P-256 private scalar (32 bytes) and its public point for ECDH (tests, tooling). */

@@ -113,7 +113,7 @@ describe("production entry", () => {
     const names = (await all<{ task: string }>(env.DB, "SELECT task FROM scheduled_tasks")).map((r) => r.task);
     for (const t of TASKS) expect(names).toContain(t.name);
     expect(TASKS.map((t) => t.name)).toEqual(expect.arrayContaining(["purge_nonces", "purge_pair_requests", "purge_audit", "purge_rate_counters", "reseal_data",
-      "cf_status", "cf_drift", "cf_orphans", "drive_ops"]));
+      "cf_status", "cf_drift", "cf_orphans", "drive_ops", "pair_sweep", "update_check", "stale_machines", "push_purge_event_ids"]));
     expect(new Set(TASKS.map((t) => t.name)).size).toBe(TASKS.length);
   });
 });

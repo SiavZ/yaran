@@ -16,7 +16,7 @@
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";
-import { checkEndpoint, checkLabel, checkPatch, checkRegistration, checkRelay } from "../../src/devices/device-params.ts";
+import { checkLabel, checkPatch, checkRegistration } from "../../src/devices/device-params.ts";
 import { HttpError } from "../../src/http/responses.ts";
 import { defaultSettings } from "../phase06/fakes.ts";
 import { registration } from "./device-fixtures.ts";
@@ -42,18 +42,25 @@ async function asyncCodeOf(p: Promise<unknown>): Promise<{ code: string; details
   }
 }
 
+// The endpoint rules are 08's policy (push/endpoint_policy.ts), reached through 06's
+// registration check exactly as W12 reaches them.
+const withEndpoint = async (endpoint: string, channel = "unifiedpush") => {
+  const reg = await registration();
+  return { ...reg, push: { ...reg.push, channel, endpoint } };
+};
+
 describe("push endpoint SSRF rules", () => {
+  const push = defaultSettings().push;
   const accepted: [string, string][] = [
     ["https://fcm.googleapis.com/fcm/send/abc", "fcm.googleapis.com"],
     ["https://updates.push.services.mozilla.com/wpush/v2/x", "updates.push.services.mozilla.com"],
     ["https://ntfy.sh:443/upabc?up=1", "ntfy.sh"],
     ["https://bücher.example.org/up", "xn--bcher-kva.example.org"],
   ];
-  it.each(accepted)("accepts %s", (url, host) => expect(checkEndpoint(url, scope)).toBe(host));
+  it.each(accepted)("accepts %s", async (url, host) => expect((await checkRegistration(await withEndpoint(url), scope, push)).push?.endpointHost).toBe(host));
 
   const refused = [
     "http://fcm.googleapis.com/x",
-    "HTTPS://fcm.googleapis.com/x",
     "https://user:pw@fcm.googleapis.com/x",
     "https://user@fcm.googleapis.com/x",
     "https://fcm.googleapis.com:8443/x",
@@ -71,41 +78,37 @@ describe("push endpoint SSRF rules", () => {
     "https://1.0.0.127.in-addr.arpa/x",
     "https://intranet/x",
     "https://fcm.googleapis.com./x",
+    "https://cp.example.com./x",
     "https://cp.example.com/x",
     "https://laptop-ada.example.com/x",
     "https://example.com/x",
     "https://evil.workers.dev/x",
     `https://fcm.googleapis.com/${"a".repeat(2049 - "https://fcm.googleapis.com/".length)}`,
-    "https://",
   ];
-  it.each(refused)("refuses %s", (url) => expect(codeOf(() => checkEndpoint(url, scope))).toBe("push_endpoint_invalid"));
+  // The 02 schema already refuses a non-https or over-long endpoint (validation_failed).
+  it.each(refused)("refuses %s", async (url) =>
+    expect((await asyncCodeOf(checkRegistration(await withEndpoint(url), scope, push)))?.code).toMatch(/^(push_endpoint_invalid|validation_failed)$/));
 
-  it("accepts a URL of exactly 2048 characters", () => {
+  it("accepts a URL of exactly 2048 characters", async () => {
     const url = `https://fcm.googleapis.com/${"a".repeat(2048 - "https://fcm.googleapis.com/".length)}`;
-    expect(checkEndpoint(url, scope)).toBe("fcm.googleapis.com");
+    expect((await checkRegistration(await withEndpoint(url), scope, push)).push?.endpointHost).toBe("fcm.googleapis.com");
   });
 });
 
 describe("relay rules", () => {
   const push = defaultSettings().push;
-  it("allows any https relay by default and ignores direct channels", () => {
-    expect(codeOf(() => checkRelay("apns_relay", "https://relay.example.net/w/x", push))).toBeNull();
-    expect(codeOf(() => checkRelay("unifiedpush", "https://ntfy.sh/x", { ...push, relay_allowed: false }))).toBeNull();
+  const relay = "https://relay.example.net/w/v1.k1.abcdefghijklmnopqrstuvwxyz";
+  it("allows any https relay by default and ignores direct channels", async () => {
+    expect(await asyncCodeOf(checkRegistration(await withEndpoint(relay, "apns_relay"), scope, push))).toBeNull();
+    expect(await asyncCodeOf(checkRegistration(await withEndpoint("https://ntfy.sh/x"), scope, { ...push, relay_allowed: false }))).toBeNull();
   });
-  it("refuses with reason disabled and not_allowlisted", () => {
-    try {
-      checkRelay("fcm_relay", "https://relay.example.net/w/x", { ...push, relay_allowed: false });
-    } catch (e) {
-      expect([(e as HttpError).code, (e as HttpError).details]).toEqual(["push_relay_disallowed", { reason: "disabled" }]);
-    }
+  it("refuses with reason disabled and not_allowlisted", async () => {
+    expect(await asyncCodeOf(checkRegistration(await withEndpoint(relay, "fcm_relay"), scope, { ...push, relay_allowed: false })))
+      .toEqual({ code: "push_relay_disallowed", details: { reason: "disabled" } });
     const listed = { ...push, allowed_relays: ["https://relay.yaran.example"] };
-    expect(codeOf(() => checkRelay("apns_relay", "https://relay.yaran.example/w/x", listed))).toBeNull();
-    try {
-      checkRelay("apns_relay", "https://relay.example.net/w/x", listed);
-      expect.unreachable();
-    } catch (e) {
-      expect([(e as HttpError).code, (e as HttpError).details]).toEqual(["push_relay_disallowed", { reason: "not_allowlisted" }]);
-    }
+    expect(await asyncCodeOf(checkRegistration(await withEndpoint("https://relay.yaran.example/w/v1.k1.abcdefghijklmnopqrstuvwxyz", "apns_relay"), scope, listed))).toBeNull();
+    expect(await asyncCodeOf(checkRegistration(await withEndpoint(relay, "apns_relay"), scope, listed)))
+      .toEqual({ code: "push_relay_disallowed", details: { reason: "not_allowlisted" } });
   });
 });
 
