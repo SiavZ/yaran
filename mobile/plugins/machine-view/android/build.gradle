@@ -1,0 +1,87 @@
+// machine-view plugin module: MachineView (bridge-less machine WebView) and Session (sealed
+// handoff client, per-host sessions, native org API client). Works standalone and as the
+// app's :yaran-machine-view module. Placeholders default to a dev (no publisher domain) build;
+// Phase 14's app sets publisherDomain, publisherCallbackEnabled, devCallbackEnabled and
+// e2eWebViewDebug for the merged manifest.
+ext {
+    junitVersion = project.hasProperty('junitVersion') ? rootProject.ext.junitVersion : '4.13.2'
+    androidxAppCompatVersion = project.hasProperty('androidxAppCompatVersion') ? rootProject.ext.androidxAppCompatVersion : '1.7.1'
+    androidxActivityVersion = project.hasProperty('androidxActivityVersion') ? rootProject.ext.androidxActivityVersion : '1.11.0'
+}
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.13.0'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.21'
+    }
+}
+
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+def fixturesDir = file('../fixtures').absolutePath
+def protocolDir = file('../../../../cloud/protocol').absolutePath
+
+android {
+    namespace = "io.github.siavz.yaran.machineview"
+    compileSdk = project.hasProperty('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 36
+    defaultConfig {
+        minSdkVersion project.hasProperty('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
+        targetSdkVersion project.hasProperty('targetSdkVersion') ? rootProject.ext.targetSdkVersion : 36
+        manifestPlaceholders = [
+            publisherDomain: '',
+            publisherCallbackEnabled: 'false',
+            devCallbackEnabled: 'true',
+            e2eWebViewDebug: 'false',
+        ]
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            all {
+                systemProperty 'machineview.fixtures', fixturesDir
+                systemProperty 'machineview.protocol', protocolDir
+                systemProperty 'machineview.manifest', file('src/main/AndroidManifest.xml').absolutePath
+            }
+        }
+    }
+    lint {
+        abortOnError = false
+    }
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.activity:activity:$androidxActivityVersion"
+    implementation "androidx.browser:browser:1.10.0"
+    implementation "androidx.webkit:webkit:1.15.0"
+    testImplementation "junit:junit:$junitVersion"
+    testImplementation "org.json:json:20250517"
+    testImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
+    testImplementation "com.squareup.okhttp3:okhttp-tls:4.12.0"
+    testImplementation "org.robolectric:robolectric:4.16"
+    testImplementation "androidx.test:core:1.7.0"
+}

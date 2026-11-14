@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application>
+        <!-- Read at runtime: an empty domain means a dev build (custom-scheme callback, D8). -->
+        <meta-data
+            android:name="io.github.siavz.yaran.machineview.publisherDomain"
+            android:value="${publisherDomain}" />
+        <meta-data
+            android:name="io.github.siavz.yaran.machineview.e2eWebViewDebug"
+            android:value="${e2eWebViewDebug}" />
+
+        <activity
+            android:name=".MachineViewActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|density|keyboard|keyboardHidden|navigation"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" />
+
+        <activity
+            android:name=".AuthCallbackActivity"
+            android:exported="true"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Release builds only: the verified App Link callback on the publisher domain. -->
+        <activity-alias
+            android:name=".AuthCallbackHttps"
+            android:targetActivity=".AuthCallbackActivity"
+            android:exported="true"
+            android:enabled="${publisherCallbackEnabled}">
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="${publisherDomain}" android:path="/auth/callback" />
+                <data android:scheme="https" android:host="${publisherDomain}" android:path="/oauth/callback" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- Builds without a publisher domain only: the custom-scheme callback (build=dev). -->
+        <activity-alias
+            android:name=".AuthCallbackDev"
+            android:targetActivity=".AuthCallbackActivity"
+            android:exported="true"
+            android:enabled="${devCallbackEnabled}">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="yaranapp" android:host="auth" android:path="/callback" />
+                <data android:scheme="yaranapp" android:host="oauth" android:path="/callback" />
+            </intent-filter>
+        </activity-alias>
+    </application>
+</manifest>
