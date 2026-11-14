@@ -196,7 +196,8 @@ mod tests {
     #[test]
     fn refuses_every_other_shape() {
         type Member<'a> = (&'a str, u8, &'a [u8]);
-        let cases: [(&[Member], fn(&TarError) -> bool); 5] = [
+        type Case<'a> = (&'a [Member<'a>], fn(&TarError) -> bool);
+        let cases: [Case; 5] = [
             (
                 &[("cloudflared", b'0', b"a"), ("cloudflared", b'0', b"b")],
                 |e| matches!(e, TarError::UnexpectedEntry(_)),
