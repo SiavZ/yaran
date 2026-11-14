@@ -68,7 +68,7 @@ when:
 
 - this phone is removed from the org, or revoked;
 - the app is reinstalled, or the org is removed and added again;
-- the machine is paired again;
+- the machine is paired again, or its owner runs `yaran cloud rotate --consent-key` on it;
 - your admin rotates the control plane's data key;
 - the browser's cookies are cleared;
 - about 400 days have passed since you last confirmed.
@@ -81,19 +81,21 @@ when:
 > [!WARNING]
 > **A build of the app made without a publisher domain**, such as a fork or a
 > development build, hands sign-ins back through a custom link that any app on the
-> phone can claim. Such builds show a banner on every screen that says so, and the
-> confirmation page warns that the request comes from a development build. Use them
-> only with test orgs. Builds from the channels above never show the banner.
+> phone can claim. Such builds show a banner on every screen: "Development build:
+> sign-in replies use a link any app on this phone can claim. Use it only with test
+> orgs." The confirmation page warns that the request comes from a development build of
+> the yaran app. Builds from the channels above never show the banner.
 
 ## Machines
 
 The machines list shows every machine you paired in each org you added: its name, its
-status (online, degraded, offline, never connected, provisioning, or tearing down), and
-when it was last seen. It refreshes when you return to the app, when you pull down, and
-every 30 seconds while you look at it.
+status (Online, Degraded, Offline, Never connected, Setting up, Being removed, or
+Status unknown), and when it was last seen. It refreshes when you return to the app, when
+you tap Refresh, and every 30 seconds while you look at it.
 
 Tap a machine to open its yaran web UI. Links that lead off the machine open in your
-browser. Downloads are not supported in the app. Inside a machine, the cog menu adds
+browser. Downloads are not supported in the app: open the file in the yaran web UI on
+your computer. Inside a machine, the cog menu adds
 **Switch machine** and **Phone app settings**.
 
 The `⋯` on a row has **Remove…**, which asks first and then unpairs that machine, so
@@ -103,18 +105,22 @@ yaran on it stops its cloud connection.
 
 - **Notifications**: see [Push notifications](/docs/push-notifications).
 - **Security**:
-  - **App lock** with your fingerprint or face, optionally falling back to the
-    device passcode, after **Immediately**, **1 min** (the default), **5 min** or
-    **15 min** in the background. Enrolling a new fingerprint or face signs you out of
-    every org, and the app says so.
-  - **Hide screen content**: on Android this blocks screenshots and screen recording; on
-    iPhone it covers the app in the app switcher and while the screen is recorded.
+  - **App lock** asks for your fingerprint or face before showing yaran, after
+    **Immediately**, **1 minute**, **5 minutes** or **15 minutes** in the background
+    (1 minute is the default). **Allow device passcode** lets the phone's passcode unlock
+    it when biometrics fail; change it while the lock is off. If the fingerprints or
+    faces enrolled on the phone change, yaran deletes its sign-ins and says so; your orgs
+    stay listed and you sign in to each one again.
+  - **Hide screen content**: on Android this blocks screenshots and screen recording and
+    blanks yaran in the app switcher; on iPhone it covers the app in the app switcher and
+    while the screen is recorded or mirrored.
 - **Reopen last machine on launch**.
 - **Language**.
-- **Diagnostics**: a local log you can view and export. Tokens and cookies are removed,
-  but the file contains hostnames and machine names, and the export screen says so.
-  Nothing is sent anywhere unless you send it.
-- **About & licenses**.
+- **Diagnostics**: a local log you can view and export. It never includes sign-in
+  tokens, cookies or link parameters, but it does include org and machine host names
+  and machine names, and the screen says so. Nothing is sent anywhere unless you share
+  it.
+- **About and licenses**.
 - **Erase everything on this phone…**
 
 ## Signing out and removing the phone

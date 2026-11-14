@@ -26,22 +26,22 @@ a copy of it in your own GitHub account, and that copy is what your Worker runs.
 Have all three ready before you press the button. The deploy stores them as Worker
 secrets, never echoes them, and the admin console never shows them.
 
-**1. A Cloudflare API token.** Create it from the pre-filled token template the setup
-page links. It needs exactly these permissions:
+**1. A Cloudflare API token.** Create it from the pre-filled token template, linked from
+your copy's README and from the setup page. It needs exactly these permissions:
 
 | Permission | Scope | What it is for |
 |---|---|---|
-| Cloudflare Tunnel: Edit | Account | Create, configure, rotate and delete each machine's tunnel; read tunnel status |
-| Access: Apps and Policies: Edit | Account | The control plane's own Access app, and one app and policy per machine |
-| Access: Organizations, Identity Providers, and Groups: Edit | Account | Read the team domain, add One-time PIN, GitHub or Google sign-in, list groups, revoke sessions |
-| Workers Scripts: Edit | Account | Attach the custom domain and turn the `workers.dev` address off |
-| DNS: Edit | Your chosen zone only | One proxied DNS record per machine |
-| Zone: Read | Your chosen zone only | List zones and find the one you pick |
+| Cloudflare Tunnel Edit | Account | Create, configure, rotate and delete one tunnel per machine; read each tunnel's status |
+| Access: Apps and Policies Edit | Account | The control plane's own Access application and one per machine, and keeping the **yaran users** policy in step with who may pair |
+| Access: Organizations, Identity Providers, and Groups Edit | Account | Read your team domain, add One-time PIN, GitHub or Google sign-in, list Access groups, and sign a user out everywhere |
+| Workers Scripts Edit | Account | Attach the custom domain, turn the `workers.dev` address off once setup closes, and confirm the Worker's name |
+| DNS Edit | Your chosen zone only | One proxied DNS record per machine |
+| Zone Read | Your chosen zone only | List your zones so you can pick one |
 
 It deliberately cannot mint other tokens, create service tokens, or touch your other
 zones. If you skip it at deploy time you can paste it on the setup page instead. Once
-setup finishes, the control plane keeps its own encrypted copy, and the setup page tells
-you that you may delete the Worker secret.
+the setup page has checked it, the control plane keeps its own encrypted copy and uses
+that from then on; you replace it later on the console's **Health** page.
 
 **2. A setup code.** At least 24 random characters. You type it once, on the setup page,
 to prove you are the person who deployed:
@@ -50,24 +50,29 @@ to prove you are the person who deployed:
 openssl rand -base64 24
 ```
 
-**3. A data key.** At least 32 random bytes. It encrypts the secrets the control plane
-generates and stores, such as its push signing key and each phone's push address:
+**3. A data key.** At least 32 random bytes, base64-encoded. It encrypts the secrets the
+control plane stores, such as its push signing key, its copy of the API token, and each
+phone's push address:
 
 ```bash
-openssl rand -hex 32
+openssl rand -base64 32
 ```
+
+Setup refuses to start while the setup code is shorter than 24 characters or the data key
+is missing or not base64 of at least 32 bytes, and says which.
 
 > [!CAUTION]
 > **Keep a copy of the data key somewhere safe.** If it is lost, the secrets it
-> protects cannot be read again. The control plane then has to generate a new push key,
-> every phone has to register for push again, and every phone sees the sign-in
-> confirmation page once more on its next sign-in.
+> protects cannot be read again: you have to paste the API token again on **Health**,
+> push notifications stop for the whole org, and every phone sees the sign-in
+> confirmation page once more on its next sign-in. The console has no way yet to
+> generate a new push key, so a lost data key means push stays off.
 
 ### Rotating the data key
 
 Set the old value as a secret named `DATA_KEY_PREVIOUS` and the new value as
-`DATA_KEY`, then redeploy. The control plane re-encrypts everything it stored under the
-new key, and its log then says it is safe to remove `DATA_KEY_PREVIOUS`. A rotation makes
+`DATA_KEY`. The control plane re-encrypts everything it stored under the new key in the
+background, and its log then says it is safe to remove `DATA_KEY_PREVIOUS`. A rotation makes
 every phone meet the sign-in confirmation page once more, the next time it signs in.
 
 ## Running setup
@@ -79,88 +84,130 @@ nothing without the setup code.
 
 The page walks you through these steps, and you can reload and resume at any point:
 
-1. **Setup code.** Repeated wrong codes lock setup until you redeploy with a new code.
-2. **API token.** The page checks what the token can do and lists any missing permission
-   with a link back to the template.
+1. **Setup code.** Type the setup code. Each network address gets five tries every 15
+   minutes, and 20 wrong codes, or 30 tries in one day, lock setup until you change the
+   `SETUP_CODE` secret in the dashboard.
+2. **API token.** Paste the token, or leave the field empty to use the one you gave at
+   deploy time, and type **Your email**: the address you sign in with, which becomes the
+   first admin. The page checks every permission the token needs and lists any that is
+   missing, with a link back to the template.
 3. **Zero Trust organization.** If your account has none, the page offers to create it.
    If Cloudflare asks you to do it in the dashboard (Zero Trust, then the Free plan;
    a payment method is required but not charged), do that and press **Check again**.
-4. **Zone and address.** Pick the zone, and a label for the control plane's own address
-   (default `cp`), giving `<org-control-plane>`. The zone cannot change after setup;
-   moving to another zone means deploying a new control plane.
-5. **Access.** The page creates an Access policy called **yaran users** and the control
-   plane's Access application.
-6. **Custom domain.** The page attaches `<org-control-plane>` to the Worker and waits for
-   its certificate, for up to ten minutes. If attaching fails, it shows the dashboard path
-   to do it by hand.
-7. **Sign-in methods.** If Cloudflare's own sign-in is the only one, nobody else can sign
-   in yet. Add **One-time PIN**, or GitHub or Google; the page shows the callback address
-   to paste into their OAuth app settings, in the form
+4. **Hostname.** Pick the zone, and a label for the control plane's own address
+   (default `cp`; letters and digits only, no hyphen), giving `<org-control-plane>`. The
+   zone cannot change after setup; moving to another zone means deploying a new control
+   plane.
+5. **Access.** The page creates an Access policy called **yaran users**, admitting just
+   your email until you widen it in Settings, and the control plane's Access
+   application. This happens before the address exists, so it is never reachable
+   unprotected.
+6. **Custom domain.** The page attaches `<org-control-plane>` to the Worker; Cloudflare
+   creates its DNS record and certificate, which can take a few minutes. If Cloudflare
+   refuses to do it by API, the page shows the dashboard path to do it by hand and
+   **Check again**.
+7. **Sign-in methods.** A new Zero Trust organization lets in only members of your
+   Cloudflare account, so the page will not continue until you add another method:
+   **Add One-time PIN**, or GitHub or Google with the client ID and secret of an OAuth app
+   you create. The page shows the callback URL to paste into that OAuth app, in the form
    `https://<team-domain>/cdn-cgi/access/callback`.
-8. **Keys.** The page generates the push signing key, encrypted with your data key.
-9. **Claim.** Open the claim link it gives you on `<org-control-plane>`, sign in through
-   Access, and you become the first admin. The link works once, for 30 minutes.
+8. **Push keys.** The page generates the org's push key pair; the private half is
+   encrypted with your data key and never shown.
+9. **Claim admin.** Open the claim link it gives you, which goes through
+   `<org-control-plane>` and Access, and sign in with the email you typed in step 2. You
+   become the first admin. The link works once, for 30 minutes; **Make a new link** gives
+   you another.
 
 When the claim succeeds, setup closes for good. The `workers.dev` address is turned
-off, and from then on only `<org-control-plane>` answers. The setup page itself answers
-"setup closed" forever.
+off, and from then on only `<org-control-plane>` answers; any other address is refused,
+even if a later deploy turns `workers.dev` back on. The setup page itself answers
+"setup closed" forever, and there is no way to reopen it.
 
 > [!NOTE]
 > If turning `workers.dev` off fails, setup still closes, the Worker still refuses every
 > request on that address, and the console's **Health** page offers
 > **Disable workers.dev** to try again.
 
-The last page also asks you to set a repository variable, `YARAN_CONTROL_PLANE_URL`, in
-your copy of the repository, so the update job can keep `workers.dev` off on later
-deploys.
+The last page also asks you to set an Actions variable, `YARAN_CONTROL_PLANE_URL`, to
+`https://<org-control-plane>` in your copy of the repository, so the update job turns
+`workers.dev` off in your Wrangler config too.
 
 ## The admin console
 
-`<org-control-plane>` is the admin console, behind Access:
+`<org-control-plane>` is the console, behind Access. Everyone who signs in gets **My
+machines** (with **Unpair…**), **My phones** (with **Remove…**) and **Connect**, which
+shows the QR code for the phone app and the command that pairs a machine. Admins also
+get:
 
-- **Users**: who has signed in, and who is an admin.
-- **Machines**: each machine's owner, key fingerprint and last contact, with
-  **Revoke…** and **Rotate tunnel token…**.
-- **Devices**: every phone, its push state, and **Remove…**.
-- **Audit log**: every change anyone made, filterable, with **Export** as JSON Lines.
+- **Users**: who has signed in, with **Make admin** or **Make user**, and
+  **Disable…** or **Enable**.
+- **Machines**: every machine with its owner, status, key fingerprint, port,
+  provisioning state and when it was paired, with **Revoke…** and
+  **Rotate tunnel token…**.
+- **Phones**: every phone with its owner, platform, push state, app version and when it
+  was last seen, with **Remove…**.
+- **Audit log**: every change anyone made, filterable by actor, action, target and time,
+  with **Export JSON Lines**.
 - **Settings**: see below.
-- **Health**: the checks setup ran, **Re-run checks**, **Disable workers.dev** and
-  **Replace API token…**.
+- **Health**: each check with "ok" or "needs attention", the wiring self-test,
+  **Re-run checks**, **Disable workers.dev** while that address is still on, and
+  **Replace the API token**, which checks every permission before the old token is
+  overwritten.
 - **Updates**: the running version against the latest release, and **Check now**.
 
 Every destructive action asks first, with Cancel focused.
 
 ### Settings
 
+Every field carries its own hint on the page.
+
 | Setting | Default | What it does |
 |---|---|---|
-| Session length | 24 hours (15 minutes to 30 days) | How long an Access sign-in lasts, for browsers and phones alike |
-| Who may pair | Allowlist: just you | Which people may pair machines. **Everyone** cannot be saved while One-time PIN is on, because One-time PIN lets in any address that can receive email |
+| Organization name | `yaran` | Shown on every console page and to phones |
+| Sign-in session length | `24h` (15m to 720h) | How long an Access sign-in lasts. Saving re-applies it to the control plane and every machine |
+| Who may sign in and pair | allowlist, with just your email | **allowlist** admits only the emails, email domains and Access groups listed below it; **everyone** admits anyone your sign-in methods accept, and cannot be saved while One-time PIN is on, because One-time PIN lets in any address that can receive email |
 | Machines per user | 10 (1 to 50) | Pairing beyond this is refused |
-| Phones per user | 10 (1 to 20) | Signing in another phone beyond this is refused |
-| Push notifications | On | Off stops every push from this org |
-| Push detail | Names | **Minimal** leaves agent names and project names out of notifications |
-| Allow the iPhone relay | On | Off means iPhone users get no push at all; the console says so |
-| Stale machines | Notify after 30 days; never revoke | When a machine that has not checked in is flagged, and optionally revoked |
-| Audit retention | 365 days | How long the audit log keeps entries |
+| Phones per user | 10 (1 to 20) | Adding another phone beyond this is refused |
+| Push notifications | On | Off stops every push to every phone |
+| Push detail | names | **minimal** leaves agent names and project names out of notifications |
+| Push lifetime (seconds) | 3600 (60 to 86400) | How long an undelivered push waits |
+| Allow push relays | On | Off refuses relayed push, which turns push off on iPhones |
+| Allowed relays | empty | One https relay address per line; empty allows any https relay |
+| Flag machines offline for (days) | 30 | Badges machines offline this long; empty turns it off |
+| Revoke machines offline for (days) | empty (never) | Revokes machines offline this long |
+| Keep audit log for (days) | 365 (30 to 3650) | Older entries are deleted daily |
+| Access application, Access policy and Tunnel limits | 500, 500, 1000 | Raise them only after Cloudflare raises your account's limits |
+| Orphaned Cloudflare objects | delete | **delete** removes objects the control plane created but no longer tracks; **report** only lists them on Health |
+| Your deploy repository | empty | Your copy's address, so **Updates** can link its update job |
 
 ## Updating
 
-The console checks for new `yaran-cloud-v*` releases once a day and shows a red banner
-for a security release. If it cannot check, it says when it last managed to and why,
-never "up to date".
+The console checks for new `yaran-cloud-v*` releases once a day and shows a banner on
+every admin page when one is out, in red for a security release. If it cannot check, it
+says when it tried and why, and that this does not mean you are up to date.
 
-Your copy of the repository includes an update job that runs weekly or on demand. It
-verifies the release, keeps your own settings, and opens a pull request titled "Update
-yaran control plane to vX.Y.Z". Read the diff and the changelog, then merge it to deploy.
-The job needs GitHub Actions to be allowed to create pull requests in your copy.
+Your copy of the repository includes an update job, `yaran-cloud-update`, that runs
+weekly or on demand. It verifies the release's checksum and provenance, replaces only the
+files yaran owns, keeps your values in `wrangler.jsonc`, and opens a pull request titled
+"Update yaran control plane to vX.Y.Z". Read the diff and the release notes, then merge
+it: merging deploys the update, database migrations first.
+
+> [!IMPORTANT]
+> The job needs **Allow GitHub Actions to create and approve pull requests** turned on in
+> your copy's Actions settings, or it fails and says so. On GitLab, schedule the
+> `yaran-cloud-update` job instead.
+
+> [!NOTE]
+> `wrangler.jsonc` is yours to edit. Edits to any other file are overwritten by the next
+> update.
 
 To update by hand, from your copy:
 
 ```bash
-npm run update -- --version X.Y.Z
-git push
+npm ci && npm run update -- --version X.Y.Z
 ```
+
+Then push the branch it creates and merge it.
 
 ## Removing everything
 
@@ -168,7 +215,7 @@ Do it in this order, so no machine is ever reachable without its Access protecti
 
 1. In the console, revoke every machine. Each revocation removes the machine's DNS
    record first, then its tunnel, then its Access application and policy.
-2. Remove every phone under **Devices**.
+2. Remove every phone under **Phones**.
 3. Delete the Worker and its D1 database in the Cloudflare dashboard.
 4. Delete the control plane's own Access application and the **yaran users** policy
    under Zero Trust, then the DNS record for `<org-control-plane>`.

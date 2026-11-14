@@ -223,9 +223,11 @@ tag pushes.
 
 The threat model gives every Cloud Connect and phone-app surface a numbered row (T25
 onward) in `SECURITY.md` and a section in `docs/operations/threat-model.md`. Those rows
-were drafted before the code. A pull request that builds or changes one of those
-surfaces edits its own row in the same change: replace the design-stage mitigation with
-what the code actually does, with symbols and file paths. A surface with no row gets the
+were drafted before the code and then reconciled with it; each mitigation opens with its
+status (implemented, partly implemented, or not implemented yet), and no row is yet
+verified against live services. A pull request that builds or changes one of those
+surfaces edits its own row in the same change: describe what the code actually does,
+with symbols and file paths, and update the status. A surface with no row gets the
 next free ID at the end. Say in the pull request description which rows you edited:
 
 ```markdown

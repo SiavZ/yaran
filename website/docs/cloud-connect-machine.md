@@ -25,14 +25,14 @@ yaran prints the org's name, the machine name it will use, the sign-in address, 
 waits.
 
 In the browser, sign in with your org's identity provider. The confirm page shows the
-machine name, your email and a fingerprint.
+machine name, your email and a fingerprint, with **Approve** and **Deny**.
 
 > [!IMPORTANT]
 > **Check that the fingerprint in the browser is exactly the one the terminal
-> printed** before you confirm. A different fingerprint means the request did not come
-> from this machine. Press Cancel.
+> printed** before you approve. A different fingerprint means the request did not come
+> from this machine, or you did not just run the command. Choose **Deny**.
 
-After you confirm, the tab says the machine is paired and the terminal prints the
+After you approve, the tab says the machine is paired and the terminal prints the
 machine's address. If a yaran is already serving, it picks the pairing up and comes
 online within seconds; if not, the terminal tells you to start one.
 
@@ -41,8 +41,8 @@ online within seconds; if not, the terminal tells you to start one.
 > `start-web-server` palette flip, or `serve_while_tui = true`. It adds no listener of
 > its own. yaran runs `cloudflared`, which dials out to Cloudflare and forwards requests
 > to yaran's own loopback address, so nothing on this machine opens a port to the
-> internet. Serve on the same port you paired on, or yaran says which port the pairing
-> expects.
+> internet. If you later serve on a different port, yaran tells the control plane the new
+> port by itself.
 
 Some details:
 
@@ -50,12 +50,13 @@ Some details:
   that is not a letter, digit or hyphen turned into a hyphen; at most 32 characters.
   Choose another with `--name`.
 - The org address must be `https`.
-- If the browser cannot open, or cannot reach back to this machine, `--no-browser`
-  prints the sign-in address. Open it anywhere, and if the browser ends on a page that
+- yaran always prints the sign-in address; `--no-browser` only skips opening a browser.
+  Open the address on any device (handy over SSH), and if the browser ends on a page that
   fails to load, paste that page's address into the terminal.
 - yaran waits up to 15 minutes for the browser (`login_timeout_seconds`).
-- A machine name you already paired asks whether to **Replace** it or pair as a new
-  name such as `<name>-2`.
+- If you already have a machine with that name, the confirm page offers **Replace
+  `<name>`** (the same computer paired again; the old one is removed only after this one
+  connects) or **Pair as `<name>-2`**.
 - A machine paired with a different org is refused until you log out of the first one.
 
 ## The commands
@@ -64,21 +65,24 @@ Some details:
 |---|---|
 | `yaran cloud login [<url>] [--name <n>] [--no-browser]` | Pairs this machine with an org |
 | `yaran cloud status [--json] [--offline]` | Shows the pairing, the connection state, and what the control plane says; `--offline` skips asking it |
-| `yaran cloud rotate [--yes]` | Replaces this machine's tunnel token and drops its connections |
+| `yaran cloud rotate [--yes]` | Replaces this machine's tunnel token; a running yaran reconnects with the new one by itself |
 | `yaran cloud rotate --consent-key [--yes]` | Makes every phone confirm sign-in again on this machine |
 | `yaran cloud pair-phone [--org <url>]` | Prints a QR code your phone app can scan to add the org |
 | `yaran cloud logout [--yes] [--local-only]` | Unpairs this machine and deletes its credentials |
 
 `yaran cloud status` exits 0 when the machine is paired and online, 3 when it is paired
 but the connection is not running, 4 when it is not paired, 5 when it was revoked, and 1
-on any other error, so scripts can tell them apart.
+on any other error, so scripts can tell them apart. Every `yaran cloud` command exits 2
+on a usage mistake. `logout` and `rotate` ask first on a terminal; off a terminal they
+need `--yes`.
 
 The same actions are reachable from both front ends, named differently on each:
 
 - **In the terminal UI**, the command palette has `cloud-login`, `cloud-logout`,
   `cloud-rotate-token`, `cloud-status`, `cloud-pair-phone` and `set-cloud-mode`. The
   header shows `☁ <hostname>` while the machine is online, `☁ connecting…` while it
-  comes up, and `☁ revoked` or `☁ failed` when something needs you.
+  comes up, `☁ downloading…` while it fetches `cloudflared`, and `☁ revoked` or
+  `☁ failed` when something needs you (and `☁ not paired` with `mode = "yes"`).
 - **In the browser**, the cog menu's **Yaran Cloud…** opens a dialog with **Connect**,
   **Rotate token…** and **Disconnect…**, and **Connect a phone…** shows the QR code. The
   cloud mode is a row in **Preferences…**.
@@ -112,7 +116,8 @@ listeners are unaffected. Run `yaran cloud login` again to pair it, if your admi
 ## Where your credentials live
 
 The pairing, the tunnel token, the machine's private signing key and its consent key
-live in `cloud/credentials.json` inside your yaran directory (`~/.yaran/` on macOS,
+live in `cloud/credentials.json` inside your yaran directory, with a copy of the tunnel
+token that `cloudflared` reads beside it (`~/.yaran/` on macOS,
 `~/.config/yaran/` on Linux). The `cloud` folder is readable by you only, and the file
 is too. None of it is ever written to `config.toml` or `[env]`, so the raw-config editor
 and `yaran config diff --raw` never show it.
@@ -142,13 +147,16 @@ loopback only.
 ## The `[cloud]` config keys
 
 Every key carries a full inline comment in your `config.toml`, and every key applies
-live, without a restart.
+without restarting yaran. The `cloudflared` settings take effect the next time the
+connection starts.
 
 | Key | Default | What it does |
 |---|---|---|
 | `mode` | `"auto"` | `"auto"` runs the connection whenever this machine is paired and yaran is serving, and follows login and logout live. `"yes"` is the same, but warns when yaran serves while unpaired and keeps failures on screen. `"no"` never runs it and keeps the credentials |
 | `org_url` | `""` | The org address `yaran cloud login` and `pair-phone` use when you give none |
 | `push_notifications` | `true` | Send phone notifications when an agent needs you. Independent of `[ui] attention_indicator`. Turning it off withdraws nothing already delivered |
+| `push_coalesce_seconds` | `2` | An agent that stops needing you within this many seconds sends nothing. `0` sends every change at once; at most 300 |
+| `push_offline_ttl_seconds` | `600` | How long notifications wait while the control plane is unreachable before they are dropped (30 to 86400) |
 | `cloudflared_path` | `""` | Empty: yaran downloads its pinned, checksum-verified `cloudflared`. A path: use that binary (2026.11.0 or newer) |
 | `metrics_port` | `0` | The loopback port for `cloudflared`'s metrics. `0` picks a free port at each start |
 | `grace_period_seconds` | `5` | How long `cloudflared` gets to finish requests when it stops (at most 180) |
@@ -166,8 +174,6 @@ live, without a restart.
 | `access_jwks_retry_cooldown_seconds` | `30` | How long yaran waits before retrying a failed key fetch |
 | `handoff_requests_per_minute` | `12` | How many phone sign-ins this machine accepts per minute |
 | `close_sockets_at_access_expiry` | `true` | Close open terminal connections when the Access sign-in behind them expires |
-| `push_coalesce_seconds` | `2` | An agent that stops needing you within this many seconds sends nothing. `0` sends every change at once |
-| `push_offline_ttl_seconds` | `600` | How long notifications wait while the control plane is unreachable before they are dropped (30 to 86400) |
 
 ## Where to go next
 

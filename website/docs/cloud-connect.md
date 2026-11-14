@@ -7,8 +7,9 @@ order: 70
 
 Cloud Connect puts each of your machines on its own HTTPS address, behind your
 organization's single sign-on, so you can open yaran from anywhere and from the yaran
-phone app. It runs on your organization's own Cloudflare account. There is no yaran-run
-service in the middle and no yaran account to make.
+phone app. It runs on your organization's own Cloudflare account, and there is no yaran
+account to make. Nothing the project runs sits between you and your machines; the one
+piece it runs is the relay that forwards encrypted notifications to iPhones.
 
 > [!WARNING]
 > **Cloudflare terminates TLS and can read everything that crosses it.** Terminal

@@ -55,7 +55,11 @@ deploy time. Tunnel tokens are never stored there at all; each machine keeps its
   machine's next call is refused, its DNS record is removed first, and then its tunnel
   and Access application are deleted. yaran on that machine stops its connection and
   tells its owner.
-- **Rotating a machine's tunnel token** drops the tunnel's live connections.
+- **Rotating a machine's tunnel token** replaces the secret at once. When the owner
+  rotates it, the running connection stays up until yaran reconnects with the new token
+  by itself. When an admin rotates it in the console, ticking the option to drop
+  connections cuts the live connections immediately; use that when you suspect the token
+  leaked.
 - **Removing a phone** stops its notifications and refuses it at the control plane at
   once.
 - **Access sign-ins already issued keep working until they expire.** Cloudflare Access
@@ -88,7 +92,8 @@ the phone's secure hardware and cannot export. No other app can produce that sig
 so a sign-in started by anything else always meets the page.
 
 It comes back when the phone is removed or revoked, the app is reinstalled, the org is
-added again, the machine is paired again, the admin rotates the data key, the browser's
+added again, the machine is paired again, the machine's owner runs
+`yaran cloud rotate --consent-key`, the admin rotates the data key (for the control plane), the browser's
 cookies are cleared, or after about 400 days.
 
 > [!IMPORTANT]
@@ -106,8 +111,9 @@ cookies are cleared, or after about 400 days.
   backups.
 - The keys that decrypt notifications.
 - The device key that signs sign-in requests, in secure hardware.
-- A local diagnostics log, with tokens and cookies removed, that leaves the phone only
-  if you export it.
+- A local diagnostics log that leaves the phone only if you export it. It never holds
+  sign-in tokens, cookies or link parameters, but it does name your orgs' and machines'
+  host names and machine names.
 
 Signing out of an org deletes that org's data. Erasing everything deletes all of it and
 the app's keys. The app has no analytics and no crash reporting service.

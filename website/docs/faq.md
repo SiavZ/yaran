@@ -171,8 +171,10 @@ or loopback, nothing passes through Cloudflare. See
 
 ### Can I self-host the push relay?
 
-Android needs no relay: Play builds use Google's push service directly, and F-Droid and
-GitHub `foss` builds use whatever UnifiedPush distributor you install. iPhones get push
+Android normally needs no relay: Play builds use Google's push service through Google
+Play services, and F-Droid and GitHub `foss` builds use whatever UnifiedPush distributor
+you install. (A Play build made with the publisher's fallback push setup sends through
+the publisher relay too.) iPhones get push
 through the publisher relay, because only the app's publisher can send to Apple's push
 service for this app. The relay is open source, and it only ever sees encrypted
 notifications. See [Push notifications](/docs/push-notifications).
