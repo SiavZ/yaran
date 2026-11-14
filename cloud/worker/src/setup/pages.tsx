@@ -12,6 +12,7 @@
  * src/setup/pages.tsx
  * ├── src/console/ui/components.tsx
  * ├── src/console/ui/shell.tsx
+ * ├── src/security/rate-limit.ts
  * ├── src/setup/capability-probe.ts
  * ├── src/setup/setup-gate.ts
  * ├── src/setup/token-template.ts
@@ -30,6 +31,7 @@ import type { Child } from "hono/jsx";
 import { Button, Chip, Field, LinkButton, Notice, PostForm } from "../console/ui/components.tsx";
 import { Shell } from "../console/ui/shell.tsx";
 import type { ProbeRow } from "./capability-probe.ts";
+import type { SetupLockReason } from "../security/rate-limit.ts";
 import type { SecretProblem } from "./setup-gate.ts";
 import { tokenTemplateUrl } from "./token-template.ts";
 import { SETUP_STEPS, type SetupStep } from "./wizard-state.ts";
@@ -87,26 +89,41 @@ export function SecretsPage(props: { problems: readonly SecretProblem[] }) {
   );
 }
 
-export function LockedPage() {
+export function LockedPage(props: { reason: SetupLockReason }) {
+  const why =
+    props.reason === "failures"
+      ? "after 20 wrong setup codes from your address"
+      : "because your address entered a wrong setup code after more than 100 wrong codes from many addresses today, which looks like someone guessing";
   return (
     <SetupFrame step="locked">
       <Notice tone="error">
-        Setup is locked (<Chip>setup_locked</Chip>) after 20 wrong setup codes. Change the SETUP_CODE secret in the dashboard (Workers &amp; Pages, this
-        Worker, Settings, Variables and Secrets) to unlock it, then reload this page.
+        Setup is locked for your address (<Chip>setup_locked</Chip>) {why}. An address that has not entered a wrong code can still start setup
+        with the right one. To unlock this address, change the SETUP_CODE secret in the dashboard (Workers &amp; Pages, this Worker, Settings, Variables
+        and Secrets), then reload this page.
       </Notice>
     </SetupFrame>
   );
 }
 
-export function CodePage(props: { error?: "setup_code_invalid" | "rate_limited" }) {
+function limitText(limit: "window" | "day", retryAfter: number): string {
+  if (limit === "window") {
+    const minutes = Math.ceil(retryAfter / 60);
+    return `Too many tries from your address: setup accepts 5 setup codes per 15 minutes from one address, right or wrong. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
+  }
+  const hours = Math.ceil(retryAfter / 3600);
+  return `Your address has used its 30 setup-code tries for today, right or wrong. Try again in ${hours} ${hours === 1 ? "hour" : "hours"}.`;
+}
+
+export function CodePage(props: { error?: "setup_code_invalid" | "rate_limited"; limit?: "window" | "day"; retryAfter?: number }) {
   return (
     <SetupFrame step="locked">
       {props.error === "setup_code_invalid" && (
         <Notice tone="error">
-          That setup code is wrong (<Chip>setup_code_invalid</Chip>). Type the SETUP_CODE you set when you deployed; after 20 wrong codes setup locks.
+          That setup code is wrong (<Chip>setup_code_invalid</Chip>). Type the SETUP_CODE you set when you deployed; after 20 wrong codes setup locks for your
+          address.
         </Notice>
       )}
-      {props.error === "rate_limited" && <Notice tone="warn">Too many attempts from your address. Wait a minute and try again.</Notice>}
+      {props.error === "rate_limited" && <Notice tone="warn">{limitText(props.limit ?? "window", props.retryAfter ?? 60)}</Notice>}
       <p>Until setup finishes this page is the only thing the Worker serves. Enter the setup code you chose at deploy time to start.</p>
       <PostForm action="/setup/code">
         <Field id="code" label="Setup code" type="password" autocomplete="off" required />

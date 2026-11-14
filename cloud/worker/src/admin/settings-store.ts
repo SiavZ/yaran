@@ -24,7 +24,6 @@
  * ├── src/console/admin-routes.ts
  * ├── src/console/routes.ts
  * ├── src/setup/routes.ts
- * ├── src/setup/setup-gate.ts
  * ├── src/setup/steps/claim.ts
  * ├── src/setup/steps/common.ts
  * ├── src/setup/steps/keys.ts

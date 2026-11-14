@@ -71,8 +71,10 @@ test("the confirm pattern puts Cancel first and autofocused, then the destructiv
 const record = { step: "claim" as const, admin_email: "ada@example.org", cp_host: "cp.example.org", team_domain: "t.cloudflareaccess.com", workers_dev_disabled: false };
 const SETUP_PAGES = {
   secrets: SecretsPage({ problems: ["setup_code_short", "data_key_missing"] }),
-  locked: LockedPage(),
+  locked: LockedPage({ reason: "failures" }),
+  lockedBackstop: LockedPage({ reason: "backstop" }),
   code: CodePage({ error: "setup_code_invalid" }),
+  codeDayLimit: CodePage({ error: "rate_limited", limit: "day", retryAfter: 7200 }),
   token: TokenPage({ envToken: false, probe: PERMISSIONS.map((permission) => ({ permission, outcome: "missing" as const })), accountProblem: "several" }),
   org: OrgPage({ problem: "no_org" }),
   zone: ZonePage({ zones: [{ id: "z1", name: "example.org" }], problem: "hostname_conflict" }),

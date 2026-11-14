@@ -3,19 +3,20 @@
  *
  * Before Access exists the setup code is the only thing guarding the wizard, so:
  * the comparison is constant-time over HMACs under a fresh random key; every wrong code
- * counts in D1 and the twentieth locks the wizard until `SETUP_CODE` changes (detected by
- * the code's hash stored at lockout); and success issues `__Host-yaran-setup`, an HMAC over
- * its expiry under a key derived from `SETUP_CODE` through HKDF, valid for 30 minutes.
+ * counts against the client address through 04's `setupFailure`, which locks that address
+ * (never the wizard) until `SETUP_CODE` changes; and success issues `__Host-yaran-setup`,
+ * an HMAC over its expiry under a key derived from `SETUP_CODE` through HKDF, valid for 30
+ * minutes.
  *
  * - Also explains a missing or weak `SETUP_CODE`, or a missing or malformed `DATA_KEY`.
- * - Attempts are also counted by 04's `setupAttempt` (5 per 15 min per IP, 30 a day) in
- *   the code route, before this check; the stricter limit always wins.
+ * - 04's `setupAttempt` (5 tries per 15 min and 30 a day per address) runs in the code
+ *   route before this check.
  *
  * <module-headers:begin>
  * Uses:
  * src/setup/setup-gate.ts
  * ├── @yaran/protocol:src/index.ts
- * ├── src/admin/settings-store.ts
+ * ├── src/security/rate-limit.ts
  * └── src/security/secrets.ts
  * External: none
  *
@@ -28,11 +29,10 @@
  * <module-headers:end>
  */
 import { b64urlDecode, b64urlEncode, timingSafeEqual } from "@yaran/protocol";
-import { readKey, writeKeys } from "../admin/settings-store.ts";
+import { setupFailure, setupLock, type SetupLockReason } from "../security/rate-limit.ts";
 
 export { SETUP_CODE_MIN_LENGTH as SETUP_CODE_MIN } from "../security/secrets.ts";
 import { SETUP_CODE_MIN_LENGTH as SETUP_CODE_MIN } from "../security/secrets.ts";
-export const LOCKOUT_AFTER = 20;
 export const COOKIE_NAME = "__Host-yaran-setup";
 export const COOKIE_TTL_S = 30 * 60;
 
@@ -73,33 +73,23 @@ export async function codesMatch(input: string, expected: string): Promise<boole
   return compare.equal(await hmac(key, input), await hmac(key, expected));
 }
 
-interface FailureState {
-  count: number;
-  locked_code_hash?: string;
+/** Identifies the `SETUP_CODE` in force to 04's counters, so a new code starts every address over. */
+export async function codeId(setupCode: string): Promise<string> {
+  return (await sha256Hex(setupCode)).slice(0, 16);
 }
 
-const FAILURES_KEY = "setup_code_failures";
+export type CodeVerdict = { kind: "ok" } | { kind: "setup_code_invalid" } | { kind: "setup_locked"; reason: SetupLockReason };
 
-export type CodeVerdict = "ok" | "setup_code_invalid" | "setup_locked";
-
-/** Checks a submitted code against `SETUP_CODE`, counting failures and applying the lockout. */
-export async function checkSetupCode(db: D1Database, input: string, setupCode: string, now: Date): Promise<CodeVerdict> {
-  let state = (await readKey<FailureState>(db, FAILURES_KEY)) ?? { count: 0 };
-  if (state.locked_code_hash !== undefined) {
-    if (state.locked_code_hash === (await sha256Hex(setupCode))) return "setup_locked";
-    state = { count: 0 }; // SETUP_CODE changed since the lockout: start over.
-    await writeKeys(db, { [FAILURES_KEY]: state }, "setup", now);
-  }
-  if (await codesMatch(input, setupCode)) return "ok";
-  const count = state.count + 1;
-  const next: FailureState = count >= LOCKOUT_AFTER ? { count, locked_code_hash: await sha256Hex(setupCode) } : { count };
-  await writeKeys(db, { [FAILURES_KEY]: next }, "setup", now);
-  return next.locked_code_hash ? "setup_locked" : "setup_code_invalid";
+/** Checks a code submitted from `ip` against `SETUP_CODE`, counting a wrong one against that address. */
+export async function checkSetupCode(db: D1Database, input: string, setupCode: string, ip: string, nowS: number): Promise<CodeVerdict> {
+  if (await codesMatch(input, setupCode)) return { kind: "ok" };
+  const failure = await setupFailure(db, ip, await codeId(setupCode), nowS);
+  return failure.kind === "locked" ? { kind: "setup_locked", reason: failure.reason } : { kind: "setup_code_invalid" };
 }
 
-export async function isLocked(db: D1Database, setupCode: string): Promise<boolean> {
-  const state = await readKey<FailureState>(db, FAILURES_KEY);
-  return state?.locked_code_hash !== undefined && state.locked_code_hash === (await sha256Hex(setupCode));
+/** Why `ip` is locked out of setup under the current code, or null. */
+export async function lockReason(db: D1Database, setupCode: string, ip: string): Promise<SetupLockReason | null> {
+  return setupLock(db, ip, await codeId(setupCode));
 }
 
 async function cookieKey(setupCode: string): Promise<CryptoKey> {

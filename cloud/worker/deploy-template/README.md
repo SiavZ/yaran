@@ -28,7 +28,8 @@ from the `cloud-deploy` branch of [SiavZ/yaran](https://github.com/SiavZ/yaran).
 
 > [!WARNING]
 > Until setup closes, the setup code is the only thing guarding the setup page. Use a long
-> random code and finish setup soon after deploying. Twenty wrong codes lock setup until
+> random code and finish setup soon after deploying. Each address gets 5 tries per 15
+> minutes and 30 a day, and twenty wrong codes lock that address (never the others) until
 > you change `SETUP_CODE`.
 
 ## Updating

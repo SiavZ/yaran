@@ -97,7 +97,9 @@ export async function redeemClaim(deps: Phase07Deps, record: SetupRecord, code: 
       "setup",
       now,
     ),
-    db.prepare("DELETE FROM settings WHERE key IN (?, ?)").bind(CLAIM_KEY, "setup_code_failures"),
+    db.prepare("DELETE FROM settings WHERE key = ?").bind(CLAIM_KEY),
+    // The per-address setup-code counters and locks mean nothing once setup is closed.
+    db.prepare("DELETE FROM rate_counters WHERE key LIKE 'setup:%'"),
   ]);
   await deps.audit({ actor: { kind: "setup" }, action: "setup.completed", target: { kind: "org" }, outcome: "ok", detail: { workers_dev_disabled: disabled } });
   return { ok: true, record: t.record };

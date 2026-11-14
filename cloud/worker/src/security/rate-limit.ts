@@ -33,7 +33,9 @@
  * ├── src/http/pipeline.ts
  * ├── src/routes/phase06-context.ts
  * ├── src/scheduled/purge.ts
+ * ├── src/setup/pages.tsx
  * ├── src/setup/routes.ts
+ * ├── src/setup/setup-gate.ts
  * └── test/rate-limit.test.ts
  * <module-headers:end>
  */

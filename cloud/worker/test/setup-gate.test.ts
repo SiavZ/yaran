@@ -1,5 +1,6 @@
 /**
- * The setup code gate: secret checks, constant-time comparison, lockout and unlock, cookie.
+ * The setup code gate: secret checks, constant-time comparison, per-address lockout and
+ * unlock, cookie.
  *
  * <module-headers:begin>
  * Uses:
@@ -12,7 +13,7 @@
  * <module-headers:end>
  */
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { checkSetupCode, compare, hasSetupSession, isLocked, issueSetupCookie, secretProblems } from "../src/setup/setup-gate.ts";
+import { checkSetupCode, compare, hasSetupSession, issueSetupCookie, lockReason, secretProblems } from "../src/setup/setup-gate.ts";
 import { env } from "cloudflare:test";
 import { wipe } from "./helpers/deps.ts";
 
@@ -31,28 +32,32 @@ describe("secrets", () => {
 });
 
 describe("code check", () => {
+  const IP = "198.51.100.1";
+  const NOW_S = Math.floor(NOW.getTime() / 1000);
+
   test("uses the constant-time comparison", async () => {
     const spy = vi.spyOn(compare, "equal");
-    expect(await checkSetupCode(env.DB, CODE, CODE, NOW)).toBe("ok");
+    expect(await checkSetupCode(env.DB, CODE, CODE, IP, NOW_S)).toEqual({ kind: "ok" });
     expect(spy).toHaveBeenCalledOnce();
     spy.mockRestore();
   });
 
-  test("locks after 20 wrong codes and stays locked, even for the right code", async () => {
+  test("locks the address after 20 wrong codes, even for the right code, and only that address", async () => {
     const db = env.DB;
-    for (let i = 1; i < 20; i++) expect(await checkSetupCode(db, `wrong-${i}`, CODE, NOW)).toBe("setup_code_invalid");
-    expect(await checkSetupCode(db, "wrong-20", CODE, NOW)).toBe("setup_locked");
-    expect(await checkSetupCode(db, CODE, CODE, NOW)).toBe("setup_locked");
-    expect(await isLocked(db, CODE)).toBe(true);
+    for (let i = 1; i < 20; i++) expect(await checkSetupCode(db, `wrong-${i}`, CODE, IP, NOW_S)).toEqual({ kind: "setup_code_invalid" });
+    expect(await checkSetupCode(db, "wrong-20", CODE, IP, NOW_S)).toEqual({ kind: "setup_locked", reason: "failures" });
+    expect(await lockReason(db, CODE, IP)).toBe("failures");
+    expect(await lockReason(db, CODE, "198.51.100.2")).toBeNull();
+    expect(await checkSetupCode(db, CODE, CODE, "198.51.100.2", NOW_S)).toEqual({ kind: "ok" });
   });
 
   test("changing SETUP_CODE unlocks and resets the counter", async () => {
     const db = env.DB;
-    for (let i = 0; i < 20; i++) await checkSetupCode(db, `wrong-${i}`, CODE, NOW);
+    for (let i = 0; i < 20; i++) await checkSetupCode(db, `wrong-${i}`, CODE, IP, NOW_S);
     const next = `${CODE}-rotated`;
-    expect(await isLocked(db, next)).toBe(false);
-    expect(await checkSetupCode(db, "nope", next, NOW)).toBe("setup_code_invalid");
-    expect(await checkSetupCode(db, next, next, NOW)).toBe("ok");
+    expect(await lockReason(db, next, IP)).toBeNull();
+    expect(await checkSetupCode(db, "nope", next, IP, NOW_S)).toEqual({ kind: "setup_code_invalid" });
+    expect(await checkSetupCode(db, next, next, IP, NOW_S)).toEqual({ kind: "ok" });
   });
 });
 

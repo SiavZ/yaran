@@ -25,10 +25,11 @@ import { dispatch, SETUP_CODE, world, type TestWorld } from "./helpers/deps.ts";
 
 const WD = "https://yaran-cloud.acme.workers.dev";
 
-function client(w: TestWorld) {
+function client(w: TestWorld, ip?: string) {
   let cookie = "";
   const send = async (method: string, path: string, form?: Record<string, string>, origin = WD) => {
     const headers: Record<string, string> = { Cookie: cookie, Origin: origin };
+    if (ip) headers["CF-Connecting-IP"] = ip;
     const init: RequestInit = { headers };
     if (form) init.body = new URLSearchParams(form);
     const res = await dispatch(SETUP_ROUTES, w, method, path.startsWith("http") ? path : WD + path, init);
@@ -95,14 +96,46 @@ describe("the setup wizard end to end", () => {
     expect(await readKey(w.db, "cf_api_token_enc")).toBeUndefined();
   });
 
-  test("brute force locks setup and the page says setup_locked", async () => {
+  // Five tries per 15 minutes per address: a brute force has to wait between bursts.
+  const later = (w: TestWorld) => (w.clock.now = new Date(w.clock.now.getTime() + 15 * 60 * 1000));
+
+  test("brute force locks the address it came from, and the page says why", async () => {
     const w = await world();
-    const c = client(w);
-    for (let i = 0; i < 19; i++) await c.post("/setup/code", { code: `x${i}` });
+    // The auth bucket's binding counts in real time; its D1 fallback follows the test clock.
+    w.env = { ...w.env, RL_AUTH: undefined } as unknown as typeof w.env;
+    const c = client(w, "198.51.100.7");
+    for (let i = 0; i < 19; i++) {
+      if (i > 0 && i % 5 === 0) later(w);
+      expect((await c.post("/setup/code", { code: `x${i}` })).res.status).toBe(401);
+    }
     const locked = await c.post("/setup/code", { code: "x19" });
     expect(locked.res.status).toBe(403);
     expect(locked.text).toContain("setup_locked");
+    expect(locked.text).toContain("20 wrong setup codes from your address");
     expect((await c.get("/setup")).text).toContain("setup_locked");
+    expect((await c.post("/setup/code", { code: SETUP_CODE })).res.status).toBe(403);
+    expect((await client(w, "198.51.100.8").post("/setup/code", { code: SETUP_CODE })).res.status).toBe(303);
+  });
+
+  test("a stranger guessing from many addresses cannot lock out the admin", async () => {
+    const w = await world();
+    for (let ip = 0; ip < 8; ip++) {
+      const stranger = client(w, `192.0.2.${ip + 1}`);
+      for (let i = 0; i < 5; i++) await stranger.post("/setup/code", { code: `guess-${ip}-${i}` });
+    }
+    const admin = client(w, "198.51.100.20");
+    expect((await admin.post("/setup/code", { code: SETUP_CODE })).res.status).toBe(303);
+  });
+
+  test("the sixth try in 15 minutes is refused with the reason and the wait", async () => {
+    const w = await world();
+    const c = client(w, "198.51.100.9");
+    for (let i = 0; i < 5; i++) await c.post("/setup/code", { code: `x${i}` });
+    const limited = await c.post("/setup/code", { code: SETUP_CODE });
+    expect(limited.res.status).toBe(429);
+    expect(limited.res.headers.get("Retry-After")).toBe("900");
+    expect(limited.text).toContain("5 setup codes per 15 minutes");
+    expect(limited.text).toContain("15 minutes");
   });
 
   test("missing or weak secrets are explained and nothing else happens", async () => {

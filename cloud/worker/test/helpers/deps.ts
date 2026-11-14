@@ -161,7 +161,7 @@ export async function dispatch(_rows: readonly RouteRow[], w: TestWorld, method:
     }));
   }
   if (!headers.has("Yaran-Protocol")) headers.set("Yaran-Protocol", "1");
-  headers.set("CF-Connecting-IP", `203.0.113.${Math.floor(Math.random() * 250) + 1}`);
+  if (!headers.has("CF-Connecting-IP")) headers.set("CF-Connecting-IP", `203.0.113.${Math.floor(Math.random() * 250) + 1}`);
   const request = new Request(url, { ...init, method, headers, redirect: "manual" });
   return handler({ now: () => Math.floor(w.clock.now.getTime() / 1000) }, ROUTES)(request, w.env);
 }

@@ -51,7 +51,7 @@ import { readSettings } from "../admin/settings-schema.ts";
 import { writeKeys } from "../admin/settings-store.ts";
 import { assertNever } from "../admin/ports.ts";
 import { probeCapabilities, probePassed, resolveAccount } from "./capability-probe.ts";
-import { checkSetupCode, hasSetupSession, isLocked, issueSetupCookie, secretProblems, sha256Hex } from "./setup-gate.ts";
+import { checkSetupCode, codeId, hasSetupSession, issueSetupCookie, lockReason, secretProblems } from "./setup-gate.ts";
 import { scriptNameFromHost } from "../http/host-guard.ts";
 import { setupAttempt } from "../security/rate-limit.ts";
 import { CodePage, LockedPage, SecretsPage, TokenPage } from "./pages.tsx";
@@ -71,6 +71,8 @@ type Node = Parameters<typeof renderPage>[0];
 const page = async (node: Node, status = 200, headers: Record<string, string> = {}) => htmlResponse(await renderPage(node), status, headers);
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+const clientIp = (ctx: RouteCtx) => ctx.request.headers.get("CF-Connecting-IP") ?? "unknown";
+
 /** Secrets, lockout, session and origin checks shared by every setup route. */
 async function gate(ctx: RouteCtx, needSession: boolean): Promise<Response | { record: SetupRecord; code: string }> {
   const { deps } = ctx;
@@ -79,7 +81,8 @@ async function gate(ctx: RouteCtx, needSession: boolean): Promise<Response | { r
   const code = deps.env.SETUP_CODE!;
   const record = await loadRecord(deps.db);
   if (record.step === "closed") return htmlResponse("Setup is closed.", 410);
-  if (await isLocked(deps.db, code)) return page(LockedPage(), 403);
+  const locked = await lockReason(deps.db, code, clientIp(ctx));
+  if (locked) return page(LockedPage({ reason: locked }), 403);
   if (ctx.request.method === "POST" && !formOriginOk(ctx.request, ctx.url.origin)) return htmlResponse("This form was submitted from another site.", 403);
   if (needSession && !(await hasSetupSession(ctx.request, code, deps.now()))) return redirect("/setup");
   return { record, code };
@@ -127,16 +130,20 @@ async function getSetup(ctx: RouteCtx): Promise<Response> {
 async function postCode(ctx: RouteCtx): Promise<Response> {
   const g = await gate(ctx, false);
   if (g instanceof Response) return g;
-  // 04's attempt policy (5 per 15 min per IP, 30 a day) runs before the code check, whose
-  // own lockout after 20 wrong codes stays: the stricter of the two always applies.
-  const ip = ctx.request.headers.get("CF-Connecting-IP") ?? "unknown";
-  const attempt = await setupAttempt(ctx.deps.db, ip, (await sha256Hex(g.code)).slice(0, 16), Math.floor(ctx.deps.now().getTime() / 1000));
-  if (attempt.kind === "locked") return page(LockedPage(), 403);
-  if (attempt.kind === "limited") return page(CodePage({ error: "rate_limited" }), 429, { "Retry-After": String(Math.max(1, attempt.retryAfter)) });
+  // 04's per-address policy: 5 tries per 15 min and 30 a day, right or wrong, then the
+  // code check, whose wrong answers count toward locking this address (never the wizard).
+  const ip = clientIp(ctx);
+  const nowS = Math.floor(ctx.deps.now().getTime() / 1000);
+  const attempt = await setupAttempt(ctx.deps.db, ip, await codeId(g.code), nowS);
+  if (attempt.kind === "locked") return page(LockedPage({ reason: attempt.reason }), 403);
+  if (attempt.kind === "limited") {
+    const retryAfter = Math.max(1, attempt.retryAfter);
+    return page(CodePage({ error: "rate_limited", limit: attempt.reason, retryAfter }), 429, { "Retry-After": String(retryAfter) });
+  }
   const input = String((await ctx.request.formData()).get("code") ?? "");
-  const verdict = await checkSetupCode(ctx.deps.db, input, g.code, ctx.deps.now());
-  if (verdict === "setup_locked") return page(LockedPage(), 403);
-  if (verdict === "setup_code_invalid") return page(CodePage({ error: "setup_code_invalid" }), 401);
+  const verdict = await checkSetupCode(ctx.deps.db, input, g.code, ip, nowS);
+  if (verdict.kind === "setup_locked") return page(LockedPage({ reason: verdict.reason }), 403);
+  if (verdict.kind === "setup_code_invalid") return page(CodePage({ error: "setup_code_invalid" }), 401);
   if (g.record.step === "locked") await advance(ctx.deps.db, g.record, { kind: "code_ok" }, ctx.deps.now());
   return redirect("/setup", { "Set-Cookie": await issueSetupCookie(g.code, ctx.deps.now()) });
 }
