@@ -16,6 +16,7 @@
 //! ├── config_queue
 //! ├── config_write
 //! ├── engine::amq
+//! ├── engine::attention_decision
 //! ├── engine::backup
 //! ├── engine::cloud_mode
 //! ├── engine::command
@@ -28,6 +29,7 @@
 //! ├── engine::limits
 //! ├── engine::pr_sync_control
 //! ├── engine::provider_sessions
+//! ├── engine::push_hook
 //! ├── engine::resume_fallback
 //! ├── engine::shared_workspace
 //! ├── engine::spawn_worker
@@ -67,9 +69,11 @@
 //! ├── changes_status
 //! ├── cloud::leg_outcome
 //! ├── cloud::outcome
+//! ├── cloud::push_runner
 //! ├── config_reload_status
 //! ├── crate
 //! ├── engine::amq
+//! ├── engine::attention_decision
 //! ├── engine::backup
 //! ├── engine::cloud_mode
 //! ├── engine::command
@@ -79,6 +83,8 @@
 //! ├── engine::lifecycle
 //! ├── engine::limits
 //! ├── engine::provider_sessions
+//! ├── engine::push_hook
+//! ├── engine::push_hook::tests
 //! ├── engine::resume_fallback
 //! ├── engine::shared_workspace
 //! ├── engine::spawn_worker
@@ -131,6 +137,7 @@
 //! <module-headers:end>
 
 pub mod amq;
+pub(crate) mod attention_decision;
 pub mod backup;
 mod cloud_mode;
 pub mod command;
@@ -143,6 +150,7 @@ mod lifecycle;
 pub mod limits;
 mod pr_sync_control;
 mod provider_sessions;
+mod push_hook;
 mod resume_fallback;
 mod shared_workspace;
 mod spawn_worker;
@@ -177,6 +185,7 @@ pub use lifecycle::{
     detach_status_key, detached_agent_notice, format_shutdown_result, format_shutdown_start,
 };
 pub use pr_sync_control::PrSyncControl;
+pub use push_hook::PushHook;
 pub use resume_fallback::ResumeFallbackOutcome;
 pub use shared_workspace::{SharedMultiWriterSummary, project_link_allowed};
 pub use spawn_worker::{
@@ -212,6 +221,7 @@ use crate::worker::{
     BranchSyncEntry, PrSyncEntry, ProjectPersistenceAction, ResourceKind, ResourceTarget,
     WorkerEvent,
 };
+use attention_decision::{apply_attention_decision, attention_engaged};
 
 /// Engine-side state of the `gh` host probe.
 ///
@@ -397,6 +407,8 @@ pub struct Engine {
     /// `Shutdown` that the writer obeys even while paused, so a `QuiesceGuard`
     /// in `reload_guard` can outlive it without deadlocking.
     pub config_writer: ConfigWriteQueue,
+    /// Phone notifications: the push-only attention set and the `cloud-push` emitter.
+    pub push: PushHook,
     /// Front-end-specific config concerns the Engine cannot own itself: reload
     /// (validation + project-sync) and recover rendering. The TUI plugs in a
     /// `RuntimeBindings`-aware impl; the web a plain one.
@@ -1393,64 +1405,6 @@ pub const PROGRESS_AUTHORITY_WINDOW: Duration = Duration::from_secs(10);
 /// ([`AGENT_INPUT_SUPPRESSION_WINDOW`]). Wall-clock, per the design tenet.
 pub const ATTENTION_ENGAGED_WINDOW: Duration = Duration::from_secs(3);
 
-/// Whether the user is currently "engaged" with a tab and so should not be
-/// nagged about it: they either looked at it within [`ATTENTION_ENGAGED_WINDOW`]
-/// (`viewed`) or typed into it within [`AGENT_INPUT_SUPPRESSION_WINDOW`]
-/// (`typed`). A free function so [`Engine::poll_agent_signals`] can call it while
-/// holding a disjoint mutable borrow of `needs_attention`, and so the windowing
-/// is unit-testable without a live PTY.
-fn attention_engaged(
-    viewed: &HashMap<TabId, Instant>,
-    // `pty_input` spans the whole PTY keyspace (tabs AND companion terminals),
-    // so it stays string-keyed and is probed with the tab id's raw string.
-    typed: &HashMap<String, Instant>,
-    tab_id: &TabIdRef,
-    now: Instant,
-) -> bool {
-    viewed
-        .get(tab_id)
-        .is_some_and(|t| now.duration_since(*t) < ATTENTION_ENGAGED_WINDOW)
-        || typed
-            .get(tab_id.as_str())
-            .is_some_and(|t| now.duration_since(*t) < AGENT_INPUT_SUPPRESSION_WINDOW)
-}
-
-/// The pure per-tick attention decision behind [`Engine::poll_agent_signals`].
-/// Given the tabs whose attention signal fired this tick (`fired`, already gated by the
-/// `attention_on_bell` preference at drain time), whether the feature is enabled,
-/// and an `engaged` predicate, it updates `needs_attention` in place:
-///
-/// - Feature off: clear everything (never accumulate; drop anything left over
-///   from before a runtime toggle).
-/// - Otherwise: clear the flag on any tab the user is now engaged with, then set
-///   it for each freshly-fired tab the user is NOT engaged with. Each outcome is
-///   logged at debug level so the whole pipeline is diagnosable from `yaran.log`
-///   without adding default-level noise.
-fn apply_attention_decision(
-    needs_attention: &mut HashSet<TabId>,
-    fired: &[TabId],
-    enabled: bool,
-    engaged: impl Fn(&TabIdRef) -> bool,
-) {
-    if !enabled {
-        needs_attention.clear();
-        return;
-    }
-    // Looking at (or typing into) a tab clears its flag.
-    needs_attention.retain(|tab| !engaged(tab));
-    // A newly-fired signal sets the flag unless the user is engaged with it.
-    for tab in fired {
-        if engaged(tab) {
-            crate::logger::debug(&format!(
-                "attention signal for tab {tab} suppressed: user is engaged"
-            ));
-        } else {
-            crate::logger::debug(&format!("attention flagged for tab {tab}"));
-            needs_attention.insert(tab.clone());
-        }
-    }
-}
-
 /// How often [`Engine::refresh_terminal_foregrounds`] actually probes companion
 /// terminals for their foreground command. Calls more frequent than this are
 /// no-ops, so every surface can invoke the refresh once per (sub-second) tick
@@ -2117,7 +2071,8 @@ impl Engine {
             }
             // Always drain (consume) the flag so a toggle can't replay a stale
             // signal; only record the hit while the feature is enabled.
-            if provider.take_attention(count_bell) && enabled {
+            // The push set needs the hit even when the indicator is off (D12).
+            if provider.take_attention(count_bell) {
                 fired.push(tab_id.clone());
             }
         }
@@ -2132,6 +2087,7 @@ impl Engine {
         let typed = &self.pty_input;
         let engaged = |tab: &TabIdRef| attention_engaged(viewed, typed, tab, now);
         apply_attention_decision(&mut self.needs_attention, &fired, enabled, engaged);
+        self.observe_push_tick(&fired, now);
     }
 
     /// Drain every provider's captured passthrough ring and return the bytes to
@@ -2267,6 +2223,7 @@ impl Engine {
         ending: crate::tab_verdict::TabRunEnding,
         excerpt: Vec<String>,
     ) {
+        self.observe_push_bad_exit(tab_id, &ending);
         self.failed_tab_runs.insert(
             tab_id.to_owned(),
             crate::tab_verdict::TabRunVerdict::new(ending, excerpt),
@@ -2642,6 +2599,9 @@ impl Engine {
         );
         self.spawn_branch_sync_worker();
         self.retune_limits();
+        self.push
+            .emitter
+            .retune(push_hook::push_settings(&self.config));
     }
 
     /// Re-resolve the in-memory `default_provider` for each project against
@@ -6317,7 +6277,8 @@ pub struct ChangeAgentProviderOutcome {
 mod tests {
     use super::*;
     use crate::engine::test_support::{
-        sample_project, sample_session, sample_standalone_session, test_engine,
+        sample_project, sample_session, sample_standalone_session, seed_signaling_provider,
+        test_engine,
     };
 
     /// Both surfaces print this confirmation word for word (the browser's copy
@@ -7871,53 +7832,6 @@ mod tests {
     }
 
     #[test]
-    fn attention_engaged_covers_viewing_and_typing() {
-        let now = Instant::now();
-        let mut viewed = HashMap::new();
-        let mut typed = HashMap::new();
-
-        // Nothing recorded → not engaged.
-        assert!(!attention_engaged(
-            &viewed,
-            &typed,
-            TabIdRef::new("s1"),
-            now
-        ));
-
-        // Fresh view → engaged.
-        viewed.insert(TabId::new("s1"), now);
-        assert!(attention_engaged(&viewed, &typed, TabIdRef::new("s1"), now));
-
-        // Stale view → not engaged.
-        viewed.insert(
-            TabId::new("s1"),
-            now - (ATTENTION_ENGAGED_WINDOW + Duration::from_millis(50)),
-        );
-        assert!(!attention_engaged(
-            &viewed,
-            &typed,
-            TabIdRef::new("s1"),
-            now
-        ));
-
-        // Fresh typing alone → engaged.
-        typed.insert("s1".to_string(), now);
-        assert!(attention_engaged(&viewed, &typed, TabIdRef::new("s1"), now));
-
-        // Stale typing → not engaged.
-        typed.insert(
-            "s1".to_string(),
-            now - (AGENT_INPUT_SUPPRESSION_WINDOW + Duration::from_millis(50)),
-        );
-        assert!(!attention_engaged(
-            &viewed,
-            &typed,
-            TabIdRef::new("s1"),
-            now
-        ));
-    }
-
-    #[test]
     fn clear_tab_runtime_drops_attention_and_progress() {
         let (mut engine, _tmp) = test_engine();
         engine.needs_attention.insert(TabId::new("s1"));
@@ -7954,95 +7868,6 @@ mod tests {
         engine.note_agent_viewed_if_known("s1-slot");
         assert!(engine.agent_viewed.contains_key(TabIdRef::new("s1-slot")));
         assert!(!engine.tab_needs_attention("s1-slot"));
-    }
-
-    #[test]
-    fn apply_attention_decision_sets_flag_when_not_engaged() {
-        let mut set = HashSet::new();
-        apply_attention_decision(&mut set, &[TabId::new("s1")], true, |_| false);
-        assert!(
-            set.contains(TabIdRef::new("s1")),
-            "a fired, unengaged tab must be flagged"
-        );
-    }
-
-    #[test]
-    fn apply_attention_decision_suppresses_and_clears_when_engaged() {
-        let mut set = HashSet::new();
-        set.insert(TabId::new("s1"));
-        // Engaged: the fired signal is suppressed AND the existing flag is cleared.
-        apply_attention_decision(&mut set, &[TabId::new("s1")], true, |_| true);
-        assert!(
-            !set.contains(TabIdRef::new("s1")),
-            "engagement must both suppress the new signal and clear the old flag"
-        );
-    }
-
-    #[test]
-    fn apply_attention_decision_clears_stale_flag_without_a_new_signal() {
-        let mut set = HashSet::new();
-        set.insert(TabId::new("s1"));
-        // No new signal this tick, but the user is now engaged → clear.
-        apply_attention_decision(&mut set, &[], true, |tab| tab.as_str() == "s1");
-        assert!(!set.contains(TabIdRef::new("s1")));
-    }
-
-    #[test]
-    fn apply_attention_decision_retains_flag_while_unengaged() {
-        let mut set = HashSet::new();
-        set.insert(TabId::new("s1"));
-        apply_attention_decision(&mut set, &[], true, |_| false);
-        assert!(
-            set.contains(TabIdRef::new("s1")),
-            "an unviewed flag must persist across ticks"
-        );
-    }
-
-    #[test]
-    fn apply_attention_decision_disabled_clears_everything() {
-        let mut set = HashSet::new();
-        set.insert(TabId::new("s1"));
-        apply_attention_decision(&mut set, &[TabId::new("s2")], false, |_| false);
-        assert!(set.is_empty(), "the feature being off must drop every flag");
-    }
-
-    // A one-shot child that emits, in stream order: a bell, an OSC 9 notification,
-    // then an OSC 9;4 working progress report (progress LAST so observing it means
-    // the earlier signals were already scanned). Used by the real-PTY smoke tests.
-    const EMIT_SIGNALS: &str = "printf '\\007\\033]9;hi\\007\\033]9;4;1;50\\007X'";
-
-    /// Spawn a tracked PTY that emits all three signals under `tab` and block until
-    /// its progress report lands (proving the reader thread scanned the payload).
-    fn seed_signaling_provider(engine: &mut Engine, tab: &str) -> tempfile::TempDir {
-        let tmp = tempfile::tempdir().expect("worktree dir");
-        let args = vec!["-c".to_string(), EMIT_SIGNALS.to_string()];
-        let client = PtyClient::spawn_with_env_opts(
-            "/bin/sh",
-            &args,
-            tmp.path(),
-            5,
-            40,
-            100,
-            crate::pty::PtySpawnOptions {
-                env: &[],
-                track_agent_signals: true,
-                identity: &crate::term_identity::TerminalIdentity::default(),
-            },
-        )
-        .expect("spawn signaling pty");
-        engine.providers.insert(TabId::new(tab), client);
-        for _ in 0..200 {
-            if engine
-                .providers
-                .get(TabIdRef::new(tab))
-                .and_then(|p| p.progress_report())
-                .is_some()
-            {
-                return tmp;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("timed out waiting for a progress report on {tab}");
     }
 
     #[test]

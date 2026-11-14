@@ -31,6 +31,8 @@
 //! ├── add_project_plan
 //! ├── agent_env
 //! ├── agent_job
+//! ├── cloud::push_emitter
+//! ├── cloud::push_runner
 //! ├── config_queue
 //! ├── crate
 //! ├── engine
@@ -42,6 +44,7 @@
 //! ├── engine::lifecycle
 //! ├── engine::limits
 //! ├── engine::provider_sessions
+//! ├── engine::push_hook
 //! ├── engine::resume_fallback
 //! ├── engine::shared_workspace
 //! ├── engine::spawn_worker
@@ -55,6 +58,7 @@
 //! ├── viewmodel
 //! ├── wire
 //! ├── worktree_manager
+//! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-tui::app
 //! ├── yaran-tui::app::background_server
 //! ├── yaran-tui::app::input

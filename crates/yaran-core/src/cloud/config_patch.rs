@@ -10,6 +10,7 @@
 //! Uses:
 //! cloud/config_patch.rs
 //! ├── cloud::config
+//! ├── cloud::push_config
 //! └── config_write
 //! External: toml, toml_edit
 //!
@@ -105,6 +106,18 @@ pub fn patch_cloud(doc: &mut DocumentMut, cloud: &CloudConfig) {
         "close_sockets_at_access_expiry",
         cloud.close_sockets_at_access_expiry,
     );
+    patch_table_u64(
+        doc,
+        S,
+        "push_coalesce_seconds",
+        u64::from(cloud.push.push_coalesce_seconds),
+    );
+    patch_table_u64(
+        doc,
+        S,
+        "push_offline_ttl_seconds",
+        u64::from(cloud.push.push_offline_ttl_seconds),
+    );
 }
 
 #[cfg(test)]
@@ -137,6 +150,10 @@ mod tests {
             access_jwks_retry_cooldown_seconds: 33,
             handoff_requests_per_minute: 34,
             close_sockets_at_access_expiry: false,
+            push: crate::cloud::push_config::PushKeys {
+                push_coalesce_seconds: 35,
+                push_offline_ttl_seconds: 36,
+            },
         };
         patch_cloud(&mut doc, &cloud);
         let text = doc.to_string();

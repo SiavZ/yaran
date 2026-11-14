@@ -1,6 +1,47 @@
 //! Headless `Engine` bootstrap for the web server: the TUI's field-by-field
 //! assembly with a read-only `load_config` (defaults on a missing or malformed
 //! file) and a `WebConfigSurface`. Sessions and projects come from SQLite.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! bootstrap.rs
+//! ├── yaran-core::config
+//! ├── yaran-core::config_queue
+//! ├── yaran-core::config_sync
+//! ├── yaran-core::config_write
+//! ├── yaran-core::engine
+//! ├── yaran-core::ids
+//! ├── yaran-core::lockfile
+//! ├── yaran-core::model
+//! ├── yaran-core::project_browser
+//! ├── yaran-core::statusline
+//! ├── yaran-core::storage
+//! ├── yaran-core::term_identity
+//! └── yaran-core::worker
+//! External: anyhow, std, tempfile
+//!
+//! Used by:
+//! bootstrap.rs
+//! ├── crate
+//! ├── test_support
+//! ├── yaran-web[test add_project_base_branch]
+//! ├── yaran-web[test background_serve_claims]
+//! ├── yaran-web[test changes_events]
+//! ├── yaran-web[test file_move_and_info_routes]
+//! ├── yaran-web[test file_tree_routes]
+//! ├── yaran-web[test first_load_routes]
+//! ├── yaran-web[test live_server_limits]
+//! ├── yaran-web[test missing_working_copy]
+//! ├── yaran-web[test project_worktrees_routes]
+//! ├── yaran-web[test pull_request_resolution]
+//! ├── yaran-web[test serve_with_engine]
+//! ├── yaran-web[test session_branch_routes]
+//! ├── yaran-web[test static_serving]
+//! ├── yaran-web[test tab_routes]
+//! ├── yaran-web[test terminal_file_routes]
+//! ├── yaran-web[test workspace_push]
+//! └── yaran-web[test ws_transport]
+//! <module-headers:end>
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -106,6 +147,7 @@ pub fn bootstrap_engine(paths: &YaranPaths) -> Result<Engine> {
     let github_integration_enabled = config.ui.github_integration;
     let config_writer =
         ConfigWriteQueue::with_status_lane(paths.config_path.clone(), worker_tx.clone());
+    let push = yaran_core::engine::PushHook::new(&config, paths, worker_tx.clone());
 
     let mut engine = Engine {
         config,
@@ -124,6 +166,7 @@ pub fn bootstrap_engine(paths: &YaranPaths) -> Result<Engine> {
         worker_tx,
         worker_rx,
         config_writer,
+        push,
         surface: Box::new(WebConfigSurface),
         reloading: false,
         command_applies: 0,

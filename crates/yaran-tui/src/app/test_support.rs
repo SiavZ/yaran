@@ -226,6 +226,7 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         worker_tx,
         worker_rx,
         config_writer,
+        push: yaran_core::engine::PushHook::off(),
         surface: Box::new(crate::TuiConfigSurface),
         reloading: false,
         command_applies: 0,

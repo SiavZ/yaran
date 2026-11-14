@@ -41,9 +41,11 @@
 //! ├── cloud::login
 //! ├── cloud::login_session
 //! ├── cloud::machine_api::tests
+//! ├── cloud::push_link
 //! ├── cloud::status
 //! ├── yaran-core[test cloud_login]
 //! ├── yaran-core[test cloud_machine_api]
+//! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-tui::app::cloud_commands
 //! ├── yaran-tui::app::cloud_tests
 //! ├── yaran-web::cloud_routes

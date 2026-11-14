@@ -1,4 +1,51 @@
 //! Shared test fixtures for engine submodule unit tests. Test-only.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! engine/test_support.rs
+//! ├── config
+//! ├── config_queue
+//! ├── engine
+//! ├── ids
+//! ├── lockfile
+//! ├── model
+//! ├── pty
+//! ├── statusline
+//! ├── storage
+//! ├── term_identity
+//! ├── test_provider
+//! ├── test_scratch
+//! └── worker
+//! External: chrono, std, tempfile
+//!
+//! Used by:
+//! engine/test_support.rs
+//! ├── agent_env
+//! ├── background_serve
+//! ├── engine
+//! ├── engine::amq
+//! ├── engine::backup
+//! ├── engine::cloud_mode
+//! ├── engine::command
+//! ├── engine::companion
+//! ├── engine::events
+//! ├── engine::followup
+//! ├── engine::lifecycle
+//! ├── engine::limits
+//! ├── engine::provider_sessions
+//! ├── engine::push_hook::tests
+//! ├── engine::resume_fallback
+//! ├── engine::shared_workspace
+//! ├── engine::status_op
+//! ├── engine::watch_tick
+//! ├── engine::worktree_link
+//! ├── flat_list
+//! ├── project_order
+//! ├── sidebar
+//! ├── test_provider
+//! ├── viewmodel
+//! └── wire
+//! <module-headers:end>
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -64,6 +111,7 @@ pub(crate) fn test_engine() -> (Engine, ScratchDir) {
         worker_tx,
         worker_rx,
         config_writer,
+        push: crate::engine::PushHook::off(),
         surface: Box::new(crate::engine::NoopConfigSurface),
         reloading: false,
         command_applies: 0,
@@ -277,4 +325,43 @@ pub(crate) fn recv_changed_files_ready(engine: &mut Engine) -> crate::worker::Wo
         engine.process_worker_event(event);
     }
     panic!("the changed-files refresh never reported");
+}
+
+// A one-shot child that emits, in stream order: a bell, an OSC 9 notification,
+// then an OSC 9;4 working progress report (progress LAST so observing it means
+// the earlier signals were already scanned). Used by the real-PTY smoke tests.
+pub(crate) const EMIT_SIGNALS: &str = "printf '\\007\\033]9;hi\\007\\033]9;4;1;50\\007X'";
+
+/// Spawn a tracked PTY that emits all three signals under `tab` and block until
+/// its progress report lands (proving the reader thread scanned the payload).
+pub(crate) fn seed_signaling_provider(engine: &mut Engine, tab: &str) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().expect("worktree dir");
+    let args = vec!["-c".to_string(), EMIT_SIGNALS.to_string()];
+    let client = crate::pty::PtyClient::spawn_with_env_opts(
+        "/bin/sh",
+        &args,
+        tmp.path(),
+        5,
+        40,
+        100,
+        crate::pty::PtySpawnOptions {
+            env: &[],
+            track_agent_signals: true,
+            identity: &crate::term_identity::TerminalIdentity::default(),
+        },
+    )
+    .expect("spawn signaling pty");
+    engine.providers.insert(crate::ids::TabId::new(tab), client);
+    for _ in 0..200 {
+        if engine
+            .providers
+            .get(crate::ids::TabIdRef::new(tab))
+            .and_then(|p| p.progress_report())
+            .is_some()
+        {
+            return tmp;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("timed out waiting for a progress report on {tab}");
 }

@@ -32,6 +32,12 @@
 //! ├── cloud
 //! ├── cloud::login
 //! ├── cloud::machine_api
+//! ├── cloud::push_emitter::tests
+//! ├── cloud::push_link
+//! ├── cloud::push_queue
+//! ├── cloud::push_runner
+//! ├── engine::push_hook::tests
+//! ├── yaran-core[test cloud_push_emitter]::mock_worker
 //! ├── yaran-web::cloud_handoff
 //! ├── yaran-web::cloud_handoff_request
 //! ├── yaran-web::cloud_ingress

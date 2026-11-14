@@ -67,6 +67,24 @@ pub(super) fn entries() -> Vec<ConfigEntry> {
             value_fn: |c| FieldValue::Bool(c.cloud.push_notifications),
         },
         ConfigEntry::Field {
+            key: "push_coalesce_seconds",
+            comment: Some(CommentSource::Static(
+                "# Seconds a \"needs you\" waits before it is sent, so one that clears inside\n\
+                 # that window sends nothing at all. 0 sends every change at once; at most\n\
+                 # 300. Default 2. Read live.",
+            )),
+            value_fn: |c| FieldValue::U32(c.cloud.push.push_coalesce_seconds),
+        },
+        ConfigEntry::Field {
+            key: "push_offline_ttl_seconds",
+            comment: Some(CommentSource::Static(
+                "# Seconds an unsent notification is kept while the control plane cannot be\n\
+                 # reached; older ones are dropped rather than arriving late. Between 30 and\n\
+                 # 86400. Default 600. Read live.",
+            )),
+            value_fn: |c| FieldValue::U32(c.cloud.push.push_offline_ttl_seconds),
+        },
+        ConfigEntry::Field {
             key: "cloudflared_path",
             comment: Some(CommentSource::Static(
                 "# Empty (the default): yaran downloads its own pinned, checksum-verified\n\

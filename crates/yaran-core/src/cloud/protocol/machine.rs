@@ -11,9 +11,9 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/protocol/machine.rs
+//! ├── cloud::protocol::machine::tests
 //! ├── cloud::protocol::meta
-//! ├── cloud::protocol::rules
-//! └── cloud::protocol::test_fixtures
+//! └── cloud::protocol::rules
 //! External: serde, std
 //!
 //! Used by:
@@ -25,9 +25,19 @@
 //! ├── cloud::login
 //! ├── cloud::machine_api
 //! ├── cloud::protocol
+//! ├── cloud::protocol::machine::tests
+//! ├── cloud::push_emitter
+//! ├── cloud::push_emitter::tests
+//! ├── cloud::push_link
+//! ├── cloud::push_queue
+//! ├── cloud::push_runner
 //! ├── cloud::signed_request
 //! ├── cloud::test_support
+//! ├── engine::push_hook
+//! ├── engine::push_hook::tests
 //! ├── yaran-core[test cloud_machine_api]
+//! ├── yaran-core[test cloud_push_emitter]
+//! ├── yaran-core[test cloud_push_emitter]::mock_worker
 //! └── yaran-web::cloud_loop::live_cloud_mode_tests
 //! <module-headers:end>
 
@@ -460,36 +470,5 @@ impl Validate for OriginUpdateResult {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::cloud::protocol::test_fixtures::assert_api_type;
-
-    #[test]
-    fn machine_types_match_the_schema_fixtures() {
-        assert_api_type::<TunnelCredentials>("TunnelCredentials");
-        assert_api_type::<MachineAccess>("MachineAccess");
-        assert_api_type::<ClaimRequest>("ClaimRequest");
-        assert_api_type::<ClaimResponse>("ClaimResponse");
-        assert_api_type::<MachineConfig>("MachineConfig");
-        assert_api_type::<EventBatch>("EventBatch");
-        assert_api_type::<Event>("Event");
-        assert_api_type::<AttentionEvent>("AttentionEvent");
-        assert_api_type::<ExitEvent>("ExitEvent");
-        assert_api_type::<EventBatchResult>("EventBatchResult");
-        assert_api_type::<RotateRequest>("RotateRequest");
-        assert_api_type::<RotateResponse>("RotateResponse");
-        assert_api_type::<TeardownStarted>("TeardownStarted");
-        assert_api_type::<OriginUpdate>("OriginUpdate");
-        assert_api_type::<OriginUpdateResult>("OriginUpdateResult");
-    }
-
-    #[test]
-    fn the_tunnel_token_never_reaches_debug_output() {
-        let creds = TunnelCredentials {
-            id: "x".into(),
-            token: "secret-token".into(),
-            token_version: 1,
-        };
-        assert!(!format!("{creds:?}").contains("secret-token"));
-    }
-}
+#[path = "machine_tests.rs"]
+mod tests;

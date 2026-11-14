@@ -50,6 +50,8 @@
 //! ├── engine::lifecycle
 //! ├── engine::limits
 //! ├── engine::provider_sessions
+//! ├── engine::push_hook
+//! ├── engine::push_hook::tests
 //! ├── engine::resume_fallback
 //! ├── engine::shared_workspace
 //! ├── engine::test_support

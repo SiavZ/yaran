@@ -3,6 +3,10 @@
 //!
 //! Each concern (input, rendering, sessions, workers, modals) lives in a sibling
 //! submodule as its own `impl App` block; this file holds the data model they share.
+//! The TUI application: the `App` struct, its types, bootstrap and run loop.
+//! Each sibling submodule adds one `impl App` block for a concern (input, render,
+//! sessions, workers); this file owns the data model and the state helpers they share.
+//! - Runs on the TUI thread and owns the `Engine`, which is `!Send`.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -4335,6 +4339,7 @@ impl App {
             paths.config_path.clone(),
             worker_tx.clone(),
         );
+        let push = yaran_core::engine::PushHook::new(&config, &paths, worker_tx.clone());
         let engine = Engine {
             config,
             paths,
@@ -4352,6 +4357,7 @@ impl App {
             worker_tx,
             worker_rx,
             config_writer,
+            push,
             surface: Box::new(crate::TuiConfigSurface),
             reloading: false,
             command_applies: 0,

@@ -3,6 +3,9 @@
 //!
 //! The `impl App` block for session lifecycle; blocking git and provider work is handed
 //! to background workers.
+//! Project and agent-session CRUD for the TUI: create, delete, reconnect, refresh, and
+//! the project browser.
+//! - An `impl App` block; blocking git and provider work goes to background workers.
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -4656,6 +4659,7 @@ mod tests {
             worker_tx,
             worker_rx,
             config_writer,
+            push: yaran_core::engine::PushHook::off(),
             surface: Box::new(crate::TuiConfigSurface),
             reloading: false,
             command_applies: 0,
@@ -5022,6 +5026,7 @@ mod tests {
             worker_tx,
             worker_rx,
             config_writer,
+            push: yaran_core::engine::PushHook::off(),
             surface: Box::new(crate::TuiConfigSurface),
             reloading: false,
             command_applies: 0,

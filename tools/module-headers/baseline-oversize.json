@@ -28,8 +28,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-core/src/config.rs": {
-    "lines": 6666,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: cloud leg wiring stacked on the phase 09 wiring"
+    "lines": 6668,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 12: push wiring stacked on the phase 09 to 11 wiring"
   },
   "crates/yaran-core/src/config_migrate.rs": {
     "lines": 526,
@@ -228,12 +228,12 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-core/src/wire.rs": {
-    "lines": 13822,
-    "reason": "baseline 2026-11-14; phase 10: the SetCloudMode wire command arms; phase 10: the generated module-headers block required now that this file is in optIn"
+    "lines": 13827,
+    "reason": "baseline 2026-11-14; phase 10: the SetCloudMode wire command arms; phase 10: the generated module-headers block required now that this file is in optIn; phase 12: module header (now opted in) plus the push emitter's one-line Engine wiring; phase 12: push wiring stacked on the phase 09 to 11 wiring"
   },
   "crates/yaran-core/src/worker.rs": {
-    "lines": 958,
-    "reason": "baseline 2026-11-14; phase 10: the CloudModeApplied worker event; phase 10: the generated module-headers block required now that this file is in optIn"
+    "lines": 962,
+    "reason": "baseline 2026-11-14; phase 10: the CloudModeApplied worker event; phase 10: the generated module-headers block required now that this file is in optIn; phase 12: push wiring stacked on the phase 09 to 11 wiring"
   },
   "crates/yaran-core/src/working_copy.rs": {
     "lines": 922,
@@ -308,8 +308,8 @@
     "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring"
   },
   "crates/yaran-tui/src/app/mod.rs": {
-    "lines": 10649,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring"
+    "lines": 10652,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 12: module header (now opted in) plus the push emitter's one-line Engine wiring; phase 12: push wiring stacked on the phase 09 to 11 wiring"
   },
   "crates/yaran-tui/src/app/modal.rs": {
     "lines": 1986,
@@ -352,12 +352,12 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/app/sessions.rs": {
-    "lines": 9412,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring"
+    "lines": 9417,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 12: module header (now opted in) plus the push emitter's one-line Engine wiring; phase 12: push wiring stacked on the phase 09 to 11 wiring"
   },
   "crates/yaran-tui/src/app/test_support.rs": {
-    "lines": 759,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring"
+    "lines": 760,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 12: module header (now opted in) plus the push emitter's one-line Engine wiring; phase 12: push wiring stacked on the phase 09 to 11 wiring"
   },
   "crates/yaran-tui/src/app/text_input.rs": {
     "lines": 1918,

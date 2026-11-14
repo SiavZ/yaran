@@ -13,7 +13,8 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/config.rs
-//! └── cloud::protocol::rules
+//! ├── cloud::protocol::rules
+//! └── cloud::push_config
 //! External: serde, toml
 //!
 //! Used by:
@@ -25,6 +26,7 @@
 //! ├── cloud::leg_identity
 //! ├── cloud::status
 //! ├── config
+//! ├── engine::push_hook
 //! ├── yaran-tui::app::background_server
 //! ├── yaran-tui::app::cloud_mode
 //! ├── yaran-web::cloud_ingress
@@ -147,6 +149,9 @@ pub struct CloudConfig {
     pub access_jwks_retry_cooldown_seconds: u64,
     pub handoff_requests_per_minute: u32,
     pub close_sockets_at_access_expiry: bool,
+    /// Phase 12: `push_coalesce_seconds` and `push_offline_ttl_seconds`.
+    #[serde(flatten)]
+    pub push: crate::cloud::push_config::PushKeys,
 }
 
 impl Default for CloudConfig {
@@ -172,6 +177,7 @@ impl Default for CloudConfig {
             access_jwks_retry_cooldown_seconds: 30,
             handoff_requests_per_minute: 12,
             close_sockets_at_access_expiry: true,
+            push: Default::default(),
         }
     }
 }

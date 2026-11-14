@@ -41,6 +41,8 @@
 //! ├── cloud::protocol::uri
 //! ├── cloud::test_support
 //! ├── yaran-core[test cloud_login]
+//! ├── yaran-core[test cloud_push_emitter]
+//! ├── yaran-core[test cloud_push_emitter]::mock_worker
 //! ├── yaran-web::cloud_handoff
 //! ├── yaran-web::cloud_handoff_request
 //! ├── yaran-web::cloud_handoff_tests

@@ -33,12 +33,14 @@
 //!
 //! Used by:
 //! wire.rs
+//! ├── cloud::push_runner
 //! ├── config_reload_status
 //! ├── crate
 //! ├── engine
 //! ├── engine::events
 //! ├── engine::shared_workspace
 //! ├── statusline
+//! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-tui::app::sessions
 //! ├── yaran-web::cloud_mode_routes
 //! ├── yaran-web::config_routes
@@ -71,6 +73,9 @@ pub mod status_keys {
     /// Push key prefix. Parameterised by worktree path at call sites:
     /// `format!("{PUSH_PREFIX}:{worktree_path}")`.
     pub const PUSH_PREFIX: &str = "push";
+    /// Phone-notification emitter warnings (and its one recovery info). Singleton:
+    /// one emitter per process.
+    pub const CLOUD_PUSH: &str = "cloud-push";
 
     /// Push operation key, parameterised by worktree path.
     pub fn push(worktree_path: &str) -> String {
