@@ -6,20 +6,20 @@
  * Uses:
  * test/identity.test.ts
  * ├── src/auth/identity.ts
- * ├── src/auth/user-slug.ts
  * ├── src/db/users.ts
+ * ├── src/provisioning/naming.ts
  * ├── test/helpers/access.ts
  * ├── test/helpers/seed.ts
  * └── test/helpers/worker.ts
  * External: cloudflare:test, vitest
  *
- * Used by: entry point (vitest inside workerd, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { pickSlug, resolveUser } from "../src/auth/identity.ts";
-import { deriveUserSlug } from "../src/auth/user-slug.ts";
+import { deriveUserSlug } from "../src/provisioning/naming.ts";
 import { getUserByEmail, touchUserSeen } from "../src/db/users.ts";
 import { mintJwt, serveJwks } from "./helpers/access.ts";
 import { closeSetup, CP_HOST, NOW, seedUser } from "./helpers/seed.ts";

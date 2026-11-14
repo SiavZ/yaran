@@ -12,7 +12,7 @@
  * └── test/helpers/seed.ts
  * External: cloudflare:test, vitest
  *
- * Used by: entry point (vitest inside workerd, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { env } from "cloudflare:test";
@@ -50,11 +50,11 @@ describe("settings", () => {
     await expect(getSetting(env.DB, "nope" as SettingKey)).rejects.toThrow(/unknown settings key nope/);
   });
   it("compare-and-set writes only over the expected value", async () => {
-    expect(await compareAndSetSetting(env.DB, "orphan_grace_minutes", null, 5, NOW)).toBe(true);
-    expect(await compareAndSetSetting(env.DB, "orphan_grace_minutes", null, 6, NOW)).toBe(false);
-    expect(await compareAndSetSetting(env.DB, "orphan_grace_minutes", 4, 6, NOW)).toBe(false);
-    expect(await compareAndSetSetting(env.DB, "orphan_grace_minutes", 5, 6, NOW)).toBe(true);
-    expect(await getSetting(env.DB, "orphan_grace_minutes")).toBe(6);
+    expect(await compareAndSetSetting(env.DB, "orphan_grace_minutes", null, 15, NOW)).toBe(true);
+    expect(await compareAndSetSetting(env.DB, "orphan_grace_minutes", null, 16, NOW)).toBe(false);
+    expect(await compareAndSetSetting(env.DB, "orphan_grace_minutes", 14, 16, NOW)).toBe(false);
+    expect(await compareAndSetSetting(env.DB, "orphan_grace_minutes", 15, 16, NOW)).toBe(true);
+    expect(await getSetting(env.DB, "orphan_grace_minutes")).toBe(16);
   });
 });
 

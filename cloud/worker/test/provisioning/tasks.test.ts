@@ -12,7 +12,7 @@
  * └── test/provisioning/helpers/world.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm run test:provisioning in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { describe, expect, it } from "vitest";
@@ -62,7 +62,8 @@ describe("reconcile tasks", () => {
     expect(w.cf.calls).toHaveLength(0);
   });
 
-  it("stays within 40 D1 queries and 40 subrequests per run", async () => {
+  it("stays within its declared cost (at most 40 D1 queries and 40 subrequests) per run", async () => {
+    for (const t of RECONCILE_TASKS) expect(t.cost.queries <= 40 && t.cost.subrequests <= 40, t.task).toBe(true);
     const w = makeWorld();
     setSetting(w, "drift_machines_per_run", 8);
     for (let i = 0; i < 9; i++) await active(w);
@@ -77,9 +78,9 @@ describe("reconcile tasks", () => {
       for (let run = 0; run < 4; run++) {
         const counted = countQueries(w.fresh());
         const before = w.cf.calls.length;
-        await t.run(counted.ctx, { subrequests: 40, queries: 40 });
-        expect(counted.queries(), `${t.task} queries`).toBeLessThanOrEqual(40);
-        expect(w.cf.calls.length - before, `${t.task} subrequests`).toBeLessThanOrEqual(40);
+        await t.run(counted.ctx, t.cost);
+        expect(counted.queries(), `${t.task} queries`).toBeLessThanOrEqual(t.cost.queries);
+        expect(w.cf.calls.length - before, `${t.task} subrequests`).toBeLessThanOrEqual(t.cost.subrequests);
       }
     }
   });

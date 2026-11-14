@@ -49,6 +49,8 @@ export interface DispatchReport {
   deferred: string[];
 }
 
+const starved = (t: { row: TaskRow; def: TaskDef }, now: number) => (now - t.row.next_run_at >= t.def.intervalS ? 0 : 1);
+
 /** Runs one dispatcher pass at `nowMs` (the scheduled time). */
 export async function dispatch(env: Env, tasks: readonly TaskDef[], nowMs: number): Promise<DispatchReport> {
   const now = Math.floor(nowMs / 1000);
@@ -67,7 +69,9 @@ export async function dispatch(env: Env, tasks: readonly TaskDef[], nowMs: numbe
       const def = byName.get(row.task);
       return def ? [{ row, def }] : [];
     })
-    .sort((a, b) => a.def.priority - b.def.priority || a.row.next_run_at - b.row.next_run_at);
+    // A task overdue by a whole interval was deferred: it goes first, so the every-minute
+    // tasks cannot starve a heavier one by always fitting ahead of it.
+    .sort((a, b) => starved(a, now) - starved(b, now) || a.def.priority - b.def.priority || a.row.next_run_at - b.row.next_run_at);
 
   for (const { row, def } of due) {
     const need = def.cost.queries + OVERHEAD_PER_TASK;
@@ -88,10 +92,11 @@ export async function dispatch(env: Env, tasks: readonly TaskDef[], nowMs: numbe
     };
     try {
       const result = (await def.run(ctx)) ?? {};
-      const cursor = result.cursor === undefined ? row.cursor : result.cursor;
+      // An absent cursor leaves the column alone: some tasks (05) keep their own cursor there.
+      const keep = result.cursor === undefined ? 1 : 0;
       await run(env.DB,
-        "UPDATE scheduled_tasks SET next_run_at = ?, cursor = ?, lease_until = NULL, last_ok_at = ?, last_error = NULL WHERE task = ?",
-        result.more ? now : now + def.intervalS, cursor, now, def.name);
+        "UPDATE scheduled_tasks SET next_run_at = ?, cursor = CASE WHEN ? THEN cursor ELSE ? END, lease_until = NULL, last_ok_at = ?, last_error = NULL WHERE task = ?",
+        result.more ? now : now + def.intervalS, keep, result.cursor ?? null, now, def.name);
       report.ran.push(def.name);
     } catch (err) {
       const text = truncate(err instanceof Error ? err.message : String(err), 1024);

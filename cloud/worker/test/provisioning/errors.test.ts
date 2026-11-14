@@ -9,7 +9,7 @@
  * └── test/provisioning/helpers/world.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm run test:provisioning in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { errorEntry } from "@yaran/protocol";
@@ -62,7 +62,7 @@ describe("permission naming and sanitizing", () => {
   it("sanitizes Cloudflare's message text", () => {
     const e = new CfApiError("auth", 403, "GET /zones/z/dns_records", [{ code: 1, message: "evil \u001b]0;title\u0007" }]);
     const d = safeErrorDetail(e, sanitize);
-    expect(JSON.stringify(d)).not.toMatch(/\u001b|\u0007/);
+    expect(JSON.stringify(d)).not.toMatch(/\u001b|\u0007/); // eslint-disable-line no-control-regex
     expect(d["permission"]).toBe("DNS Edit");
   });
 });

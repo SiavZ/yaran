@@ -16,22 +16,26 @@
  * Uses:
  * src/db/settings.ts
  * ├── @yaran/protocol:src/index.ts
- * └── src/db/client.ts
+ * ├── src/db/client.ts
+ * └── src/provisioning/settings.ts
  * External: none
  *
  * Used by:
  * src/db/settings.ts
  * ├── src/auth/access-jwt.ts
  * ├── src/http/pipeline.ts
+ * ├── src/provisioning/context.ts
  * ├── src/scheduled/purge.ts
  * ├── src/security/data-key.ts
  * ├── test/data-key.test.ts
  * ├── test/helpers/seed.ts
+ * ├── test/prov-context.test.ts
  * ├── test/purge.test.ts
  * └── test/settings.test.ts
  * <module-headers:end>
  */
 import { validate, type Settings } from "@yaran/protocol";
+import { PROV_INTERNAL_SETTINGS } from "../provisioning/settings.ts";
 import { all, run, stmt } from "./client.ts";
 
 export interface DataKeyState {
@@ -51,13 +55,15 @@ export interface InternalSettings {
   control_plane_app_id: string;
   control_plane_aud: string;
   jwt_clock_tolerance_s: number;
-  orphan_grace_minutes: number;
   vapid_public_key: string;
   vapid_private_key_enc: string;
   data_key_state: DataKeyState;
 }
 
-export type SettingValues = Settings & InternalSettings;
+/** Phase 05's internal rows, declared in `provisioning/settings.ts`. */
+export type ProvInternalSettings = { [K in keyof typeof PROV_INTERNAL_SETTINGS]: (typeof PROV_INTERNAL_SETTINGS)[K]["default"] };
+
+export type SettingValues = Settings & InternalSettings & ProvInternalSettings;
 export type SettingKey = keyof SettingValues;
 
 /** 02's defaults for the contract keys (see the `Settings` schema description). */
@@ -88,7 +94,7 @@ const str = (max: number) => (v: unknown) => typeof v === "string" && v.length >
 const int = (min: number, max: number) => (v: unknown) => Number.isInteger(v) && (v as number) >= min && (v as number) <= max;
 const re = (r: RegExp) => (v: unknown) => typeof v === "string" && r.test(v);
 
-const INTERNAL: { [K in keyof InternalSettings]: Spec } = {
+const INTERNAL: { [K in keyof InternalSettings | keyof ProvInternalSettings]: Spec } = {
   setup_state: { default: "open", valid: (v) => v === "open" || v === "closed", owner: "04/07" },
   instance_id: { default: null, valid: re(/^[0-9a-f]{8}$/), owner: "07" },
   account_id: { default: null, valid: str(64), owner: "07" },
@@ -99,7 +105,6 @@ const INTERNAL: { [K in keyof InternalSettings]: Spec } = {
   control_plane_app_id: { default: null, valid: str(64), owner: "07" },
   control_plane_aud: { default: null, valid: str(128), owner: "07" },
   jwt_clock_tolerance_s: { default: 60, valid: int(0, 300), owner: "04" },
-  orphan_grace_minutes: { default: 120, valid: int(1, 100_000), owner: "05" },
   vapid_public_key: { default: null, valid: re(/^[A-Za-z0-9_-]{87}$/), owner: "08" },
   vapid_private_key_enc: { default: null, valid: re(/^k[1-9][0-9]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/), owner: "08" },
   data_key_state: {
@@ -111,6 +116,8 @@ const INTERNAL: { [K in keyof InternalSettings]: Spec } = {
     },
     owner: "04",
   },
+  ...(Object.fromEntries(Object.entries(PROV_INTERNAL_SETTINGS).map(([k, s]) => [k, { default: s.default, valid: s.validate, owner: s.owner }])) as unknown as
+    { [K in keyof ProvInternalSettings]: Spec }),
 };
 
 const CONTRACT_KEYS = Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[];
@@ -152,6 +159,19 @@ export async function getSettings<K extends SettingKey>(db: D1Database, keys: re
   const out: Record<string, unknown> = {};
   for (const k of keys) out[k] = decode(k, byKey.get(k));
   return out as { [P in K]: SettingValues[P] | null };
+}
+
+/**
+ * The stored, validated values of `keys`; a key with no row is omitted rather than
+ * defaulted (Phase 05's `SettingsPort.getMany`). One query.
+ */
+export async function getStoredSettings(db: D1Database, keys: readonly string[]): Promise<Record<string, unknown>> {
+  if (keys.length === 0) return {};
+  for (const k of keys) specOf(k);
+  const rows = await all<{ key: string; value: string }>(
+    db, `SELECT key, value FROM settings WHERE key IN (${keys.map(() => "?").join(",")})`, ...keys,
+  );
+  return Object.fromEntries(rows.map((r) => [r.key, decode(r.key, r.value)]));
 }
 
 export async function getSetting<K extends SettingKey>(db: D1Database, key: K): Promise<SettingValues[K] | null> {

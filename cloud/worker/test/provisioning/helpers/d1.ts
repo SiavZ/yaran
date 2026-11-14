@@ -5,7 +5,7 @@
  * - `batch()` is one transaction; `failNextBatch()` makes the next batch throw before it
  *   commits, which is how the crash matrix simulates a Worker dying after an API call.
  * - Binding `undefined` throws, as D1 does.
- * - The schema is 04's `migrations/*.sql` when present, else the mirror in `schema.sql`.
+ * - The schema is the Worker's own `migrations/*.sql`, applied in order.
  *
  * <module-headers:begin>
  * Uses:
@@ -21,24 +21,21 @@
  * └── test/provisioning/paginate.test.ts
  * <module-headers:end>
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import type { D1Like, D1Result, D1Stmt } from "../../../src/provisioning/ports.ts";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS = join(here, "../../../migrations");
+const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), "../../../migrations");
 
+/** The Worker's own D1 migrations, in apply order: the stand-in runs the real schema. */
 export function schemaSql(): string {
-  if (existsSync(MIGRATIONS)) {
-    return readdirSync(MIGRATIONS)
-      .filter((f) => f.endsWith(".sql"))
-      .sort()
-      .map((f) => readFileSync(join(MIGRATIONS, f), "utf8"))
-      .join("\n");
-  }
-  return readFileSync(join(here, "schema.sql"), "utf8");
+  return readdirSync(MIGRATIONS)
+    .filter((f) => f.endsWith(".sql"))
+    .sort()
+    .map((f) => readFileSync(join(MIGRATIONS, f), "utf8"))
+    .join("\n");
 }
 
 type Param = string | number | bigint | null | Uint8Array;

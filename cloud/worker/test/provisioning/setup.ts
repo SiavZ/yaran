@@ -8,7 +8,7 @@
  * └── test/provisioning/helpers/world.ts
  * External: vitest
  *
- * Used by: entry point (vitest setupFiles, from cloud/worker/vitest.provisioning.config.ts)
+ * Used by: entry point (vitest setupFiles of the provisioning project in cloud/worker/vitest.config.ts)
  * <module-headers:end>
  */
 import { afterEach } from "vitest";

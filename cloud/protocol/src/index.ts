@@ -62,11 +62,18 @@
  * ├── yaran-cloud:src/auth/authorize.ts
  * ├── yaran-cloud:src/auth/machine-signature.ts
  * ├── yaran-cloud:src/auth/nonce-store.ts
+ * ├── yaran-cloud:src/cloudflare/errors.ts
  * ├── yaran-cloud:src/db/settings.ts
  * ├── yaran-cloud:src/http/body.ts
  * ├── yaran-cloud:src/http/pipeline.ts
  * ├── yaran-cloud:src/http/responses.ts
  * ├── yaran-cloud:src/index.ts
+ * ├── yaran-cloud:src/provisioning/engine.ts
+ * ├── yaran-cloud:src/provisioning/index.ts
+ * ├── yaran-cloud:src/provisioning/ports.ts
+ * ├── yaran-cloud:src/provisioning/provision-error.ts
+ * ├── yaran-cloud:src/provisioning/quota.ts
+ * ├── yaran-cloud:src/provisioning/settings.ts
  * ├── yaran-cloud:src/security/data-key.ts
  * ├── yaran-cloud:test/audit.test.ts
  * ├── yaran-cloud:test/data-key.test.ts
@@ -74,7 +81,12 @@
  * ├── yaran-cloud:test/error-codes.test.ts
  * ├── yaran-cloud:test/helpers/machine.ts
  * ├── yaran-cloud:test/machine-signature.test.ts
- * └── yaran-cloud:test/no-secret-leak.test.ts
+ * ├── yaran-cloud:test/no-secret-leak.test.ts
+ * ├── yaran-cloud:test/provisioning/errors.test.ts
+ * ├── yaran-cloud:test/provisioning/origin-port.test.ts
+ * ├── yaran-cloud:test/provisioning/registry.test.ts
+ * ├── yaran-cloud:test/provisioning/rotate.test.ts
+ * └── yaran-cloud:test/provisioning/teardown.test.ts
  * <module-headers:end>
  */
 export type * from "./generated/types.ts";

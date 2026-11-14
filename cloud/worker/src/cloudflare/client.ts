@@ -24,6 +24,7 @@
  * ├── src/cloudflare/dns.ts
  * ├── src/cloudflare/paginate.ts
  * ├── src/cloudflare/tunnels.ts
+ * ├── src/provisioning/context.ts
  * ├── src/provisioning/ports.ts
  * ├── test/provisioning/budget.test.ts
  * ├── test/provisioning/client.test.ts
@@ -138,7 +139,7 @@ export class CfClient {
       clearTimeout(timer);
     }
     this.budget.observe(res.headers, res.status);
-    let env: Envelope<T> | null = null;
+    let env: Envelope<T> | null;
     try {
       env = JSON.parse(text) as Envelope<T>;
     } catch {

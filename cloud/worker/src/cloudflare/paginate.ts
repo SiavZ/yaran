@@ -42,7 +42,6 @@ export interface ListResult<T> {
 
 export async function listAll<T>(cf: CfClient, path: string, o: ListOptions): Promise<ListResult<T>> {
   const items: T[] = [];
-  let total = 0;
   for (let page = 1; ; page++) {
     if (page > o.maxPages) {
       throw new CfApiError("invalid", null, `GET ${path}`, [], null, `GET ${path} needs more than ${o.maxPages} pages; refusing to list further`);
@@ -54,7 +53,7 @@ export async function listAll<T>(cf: CfClient, path: string, o: ListOptions): Pr
     const pageItems = Array.isArray(env.result) ? env.result : [];
     items.push(...pageItems);
     const info = env.result_info ?? {};
-    total = info.total_count ?? items.length;
+    const total = info.total_count ?? items.length;
     const lastPage = info.total_pages !== undefined && page >= info.total_pages;
     if (o.maxPages === 1 || pageItems.length < o.perPage || items.length >= total || lastPage) return { items, total };
   }

@@ -133,7 +133,10 @@ export async function checkMachine(ctx: ProvCtx, s: ProvSettings, m: MachineRow)
       const r = appDrift(want, app);
       if (r.length) await replaceApp(ctx.cf, s.accountId, app.id, want, p);
       reasons.push(...r);
-      if (app.aud !== m.access_app_aud) (patch.access_app_aud = app.aud), (aud = app.aud);
+      if (app.aud !== m.access_app_aud) {
+        patch.access_app_aud = app.aud;
+        aud = app.aud;
+      }
     }
     const config = await orNull(() => getTunnelConfig(ctx.cf, s.accountId, m.tunnel_id as string, p));
     if (!config) missing = true;

@@ -1,10 +1,14 @@
 /**
- * Vitest configuration for the control-plane Worker: every test runs inside workerd.
+ * Vitest configuration for the control-plane Worker: one `npm test` runs two projects.
  *
- * The Cloudflare Vitest plugin starts Miniflare from `wrangler.jsonc`, so the tests see
- * the same D1, rate-limit and compatibility settings a deploy does. The D1 migrations are
- * read here (in Node) and handed to the tests as the `TEST_MIGRATIONS` binding, which
- * `test/setup.ts` applies to each test file's isolated database.
+ * - `workers`: every test under `test/` except `test/provisioning/`, inside workerd. The
+ *   Cloudflare Vitest plugin starts Miniflare from `wrangler.jsonc`, so the tests see the
+ *   same D1, rate-limit and compatibility settings a deploy does. The D1 migrations are read
+ *   here (in Node) and handed to the tests as the `TEST_MIGRATIONS` binding, which
+ *   `test/setup.ts` applies to each test file's isolated database.
+ * - `provisioning`: `test/provisioning/` in Node (05). It drives the saga against a
+ *   `node:sqlite` D1 stand-in built from the same migrations, whose synchronous seeding and
+ *   crash injection the workers pool cannot offer, and a fake Cloudflare `fetch`.
  *
  * - Secrets are fixed test values bound here, never real credentials.
  *
@@ -28,15 +32,31 @@ export const TEST_SECRETS = {
 export default defineConfig(async () => {
   const migrations = await readD1Migrations("./migrations");
   return {
-    plugins: [
-      cloudflareTest({
-        wrangler: { configPath: "./wrangler.jsonc" },
-        miniflare: { bindings: { ...TEST_SECRETS, TEST_MIGRATIONS: migrations } },
-      }),
-    ],
     test: {
-      include: ["test/**/*.test.ts"],
-      setupFiles: ["./test/setup.ts"],
+      projects: [
+        {
+          plugins: [
+            cloudflareTest({
+              wrangler: { configPath: "./wrangler.jsonc" },
+              miniflare: { bindings: { ...TEST_SECRETS, TEST_MIGRATIONS: migrations } },
+            }),
+          ],
+          test: {
+            name: "workers",
+            include: ["test/**/*.test.ts"],
+            exclude: ["test/provisioning/**"],
+            setupFiles: ["./test/setup.ts"],
+          },
+        },
+        {
+          test: {
+            name: "provisioning",
+            include: ["test/provisioning/**/*.test.ts"],
+            environment: "node",
+            setupFiles: ["./test/provisioning/setup.ts"],
+          },
+        },
+      ],
     },
   };
 });

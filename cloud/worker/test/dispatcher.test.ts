@@ -11,7 +11,7 @@
  * └── src/scheduled/tasks.ts
  * External: cloudflare:test, vitest
  *
- * Used by: entry point (vitest inside workerd, via npm test in cloud/worker)
+ * Used by: entry point (vitest, via npm test in cloud/worker (workerd, or Node for test/provisioning))
  * <module-headers:end>
  */
 import { createScheduledController, env } from "cloudflare:test";
@@ -78,6 +78,24 @@ describe("dispatch", () => {
     expect((await row(tooMuch.name))!.next_run_at).toBe(T0 / 1000);
   });
 
+  it("leaves a cursor the task wrote itself alone when the result names none", async () => {
+    const t = task({});
+    t.run = async (ctx) => { await ctx.db.prepare("UPDATE scheduled_tasks SET cursor = 'own' WHERE task = ?").bind(t.name).run(); };
+    await dispatch(env, [t], T0);
+    expect((await row(t.name))!.cursor).toBe("own");
+  });
+
+  it("runs a task deferred for a whole interval ahead of higher-priority ones", async () => {
+    const log: string[] = [];
+    const busy = task({ log, priority: 1, cost: { queries: RUN_BUDGET.queries - 10, subrequests: 0 } });
+    const heavy = task({ log, priority: 2, intervalS: 300, cost: { queries: 20, subrequests: 0 } });
+    for (let minute = 0; minute < 5; minute++) await dispatch(env, [busy, heavy], T0 + minute * 60_000);
+    expect(log).toEqual([busy.name, busy.name, busy.name, busy.name, busy.name]);
+    log.length = 0;
+    await dispatch(env, [busy, heavy], T0 + 300_000);
+    expect(log).toEqual([heavy.name]);
+  });
+
   it("records a sanitized last_error and keeps running the others", async () => {
     const log: string[] = [];
     const bad = task({ priority: 1, run: async () => { throw new Error("kaboom \u001b[2J"); } });
@@ -94,7 +112,8 @@ describe("production entry", () => {
     await worker.scheduled(controller, env);
     const names = (await all<{ task: string }>(env.DB, "SELECT task FROM scheduled_tasks")).map((r) => r.task);
     for (const t of TASKS) expect(names).toContain(t.name);
-    expect(TASKS.map((t) => t.name)).toEqual(expect.arrayContaining(["purge_nonces", "purge_pair_requests", "purge_audit", "purge_rate_counters", "reseal_data"]));
+    expect(TASKS.map((t) => t.name)).toEqual(expect.arrayContaining(["purge_nonces", "purge_pair_requests", "purge_audit", "purge_rate_counters", "reseal_data",
+      "cf_status", "cf_drift", "cf_orphans", "drive_ops"]));
     expect(new Set(TASKS.map((t) => t.name)).size).toBe(TASKS.length);
   });
 });
