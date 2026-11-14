@@ -22,6 +22,13 @@ name, and yaran on a private network where nothing but the proxy can see it.
 > [Tailscale](/docs/tailscale) puts the same workspace on a private network with
 > nothing to publish and nothing to configure, and it is what the maintainer uses.
 
+> [!TIP]
+> If your organization uses Cloudflare, [Cloud Connect](/docs/cloud-connect) is this
+> page packaged: your org's single sign-on through Cloudflare Access in front of one
+> address per machine, set up by code, plus the yaran phone app. yaran has no login of
+> its own; with Cloud Connect, Cloudflare Access is the login for that address, and
+> yaran double-checks it. The cost is that Cloudflare decrypts the traffic at its edge.
+
 > [!IMPORTANT]
 > Nothing about the Host allowlist or the same-origin check is access control. They
 > stop a hostile web page tricking *your* browser into driving your server, which is a
@@ -330,12 +337,21 @@ shell to the internet.
 carries no client identity: it records only the timestamp, method, path, status and
 latency. Your audit trail lives in the proxy's logs, not in yaran's.
 
+The one exception is a [Cloud Connect](/docs/cloud-connect) machine address. There,
+yaran reads the person's identity from the Cloudflare Access sign-in to check that it is
+the machine's owner. It still reads no `X-Forwarded-*` header, and the setup on this page
+is unaffected.
+
 > [!CAUTION]
 > Do not use Tailscale Funnel, `ngrok`, `cloudflared` in its no-authentication mode, or
 > anything else that publishes the port to the anonymous internet, as a shortcut around
 > this page. The point of every paragraph above is that something has to ask who you are
 > before yaran answers. A tunnel that skips that step has not made this easier, it has
 > made it public.
+>
+> The authenticated way to use `cloudflared` is [Cloud Connect](/docs/cloud-connect),
+> which puts a Cloudflare Access application in front of the tunnel before the address
+> exists, and has yaran check the sign-in as well.
 
 ## When it does not work
 
@@ -428,5 +444,7 @@ for every client. Use the proxy's logs to know who did something.
   key with its default, the startup banner, and graceful shutdown.
 - [Reaching yaran over Tailscale](/docs/tailscale): the private-network answer, which
   needs none of this page and is what the maintainer actually uses.
+- [Cloud Connect](/docs/cloud-connect): the packaged answer on Cloudflare, with your
+  org's sign-in and the phone app.
 - [The workspace in the browser](/docs/web-workspace): what you get once you are in,
   including the phone shell.
