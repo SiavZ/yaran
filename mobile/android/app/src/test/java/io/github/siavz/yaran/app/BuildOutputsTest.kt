@@ -69,7 +69,10 @@ class BuildOutputsTest {
         // The core bindings are installed by the Application, before any plugin activity runs.
         assertEquals("io.github.siavz.yaran.app.YaranApplication", application.getAttributeNS(android, "name"))
         // A build without a publisher domain gets the custom-scheme callback and not the App Link.
-        val aliases = elements(root, "activity-alias").associate { it.getAttributeNS(android, "name").substringAfterLast('.') to it.getAttributeNS(android, "enabled") }
+        val aliases =
+            elements(root, "activity-alias").associate {
+                it.getAttributeNS(android, "name").substringAfterLast('.') to it.getAttributeNS(android, "enabled")
+            }
         assertEquals(mapOf("AuthCallbackHttps" to "false", "AuthCallbackDev" to "true"), aliases)
         val flavor = elements(application, "meta-data").single { it.getAttributeNS(android, "name") == "io.github.siavz.yaran.FLAVOR" }
         assertEquals("foss", flavor.getAttributeNS(android, "value"))

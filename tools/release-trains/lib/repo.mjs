@@ -18,7 +18,6 @@
  * ├── check-versions.mjs
  * ├── lib/gates.mjs
  * ├── license-allowlist.mjs
- * ├── release-manifest.mjs
  * └── test/association.test.mjs
  * <module-headers:end>
  */

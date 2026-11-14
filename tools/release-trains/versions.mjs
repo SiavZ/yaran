@@ -19,7 +19,6 @@
  * ├── bump.mjs
  * ├── check-deploy-tree.mjs
  * ├── check-versions.mjs
- * ├── release-manifest.mjs
  * └── test/versions.test.mjs
  * <module-headers:end>
  */

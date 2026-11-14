@@ -1,12 +1,16 @@
 # Android CI leg of mobile-ci.yml: lint, unit and UI tests, license and SBOM gates,
-# dependency verification, the FOSS classpath guard and a reproducibility proof.
+# the FOSS classpath guards, the generated license lists and a reproducibility proof.
 #
-# Responsibilities: no secrets; builds are unsigned. Gradle enforces
-# mobile/android/gradle/verification-metadata.xml itself; this leg refuses to run
-# without it. The jk1 license gate reads the deny.toml allowlist written into
+# Responsibilities: no secrets; builds are unsigned. Release builds take
+# -PappIdOverride (14's test-build switch), because 14's release guard refuses the
+# repository's com.example placeholder id. App unit tests run as
+# :app:testFossDebugUnitTest (the variant 14 wires its build-output inputs to); the
+# library modules run testDebugUnitTest, and buildSrc's own tests run with -p buildSrc.
+# The jk1 license gate reads the deny.toml allowlist written into
 # mobile/android/build/allowed-licenses.json. The unsigned foss APK is built in two
 # clean checkouts at different paths and compared with cmp (diffoscope on a mismatch).
-# A debug-signed APK must fail the release signer gate.
+# A debug-signed APK must fail the release signer gate. Gradle dependency verification
+# metadata is not committed yet (see docs/operations/release-trains.md).
 # Uses: .github/actions/android-setup, .github/scripts/check_apk_cert.sh,
 # tools/release-trains/license-allowlist.mjs.
 name: Mobile Android CI
@@ -27,21 +31,29 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/android-setup
 
-      - name: Dependency verification metadata is committed
-        run: test -f mobile/android/gradle/verification-metadata.xml
-
       - name: License allowlist for jk1 (from deny.toml)
         run: node tools/release-trains/license-allowlist.mjs --jk1 mobile/android/build/allowed-licenses.json
 
-      # verifyFossDependencies is Phase 14's (and 16's) assertion that the foss release
-      # classpath holds no Firebase, GMS or embedded-FCM artifact.
+      # verifyFossDependencies (14) and verifyFossPushClasspath (16) assert that the foss
+      # release classpath holds no Firebase, GMS or embedded-FCM artifact.
       - name: Gradle checks and unsigned builds
         working-directory: mobile/android
         run: >-
-          ./gradlew --no-daemon
-          lintFossRelease lintPlayRelease testFossDebugUnitTest testPlayDebugUnitTest
-          ktlintCheck detekt checkLicense cyclonedxBom :app:verifyFossDependencies
+          ./gradlew --no-daemon -PappIdOverride=io.github.siavz.yaran.ci
+          lintFossRelease lintPlayRelease
+          :app:testFossDebugUnitTest :yaran-core:testDebugUnitTest
+          :yaran-machine-view:testDebugUnitTest :yaran-push:testDebugUnitTest
+          :yaran-secure-store:testDebugUnitTest
+          ktlintCheck detekt checkLicense cyclonedxBom
+          :app:verifyFossDependencies :app:verifyFossPushClasspath
           assembleFossDebug assembleFossRelease bundlePlayRelease
+
+      - name: buildSrc tests (release guards)
+        working-directory: mobile/android
+        run: ./gradlew --no-daemon -p buildSrc test
+
+      - name: Generated license lists match the dependency tree (Phase 14)
+        run: bash mobile/scripts/licenses.sh --check
 
       - name: The release signer gate refuses a debug-signed APK
         run: |
@@ -75,7 +87,7 @@ jobs:
         run: |
           set -euo pipefail
           for root in a b/elsewhere; do
-            (cd "$root/mobile/android" && ./gradlew --no-daemon assembleFossRelease)
+            (cd "$root/mobile/android" && ./gradlew --no-daemon -PappIdOverride=io.github.siavz.yaran.ci assembleFossRelease)
           done
           first="$(find a/mobile/android/app/build/outputs/apk/foss/release -name '*.apk' | head -1)"
           second="$(find b/elsewhere/mobile/android/app/build/outputs/apk/foss/release -name '*.apk' | head -1)"
@@ -86,6 +98,7 @@ jobs:
             exit 1
           fi
 
+  # Only the native core (:yaran-core) has instrumented tests so far.
   ui-tests:
     name: Android UI tests (API 36 emulator)
     runs-on: ubuntu-24.04
@@ -105,4 +118,4 @@ jobs:
           arch: x86_64
           target: google_apis
           working-directory: mobile/android
-          script: ./gradlew --no-daemon connectedFossDebugAndroidTest
+          script: ./gradlew --no-daemon :yaran-core:connectedDebugAndroidTest

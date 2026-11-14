@@ -1,10 +1,12 @@
 # iOS CI leg of mobile-ci.yml: unit and UI tests on the pinned simulator, an unsigned
 # archive, SwiftLint and the SwiftPM license gate.
 #
-# Responsibilities: no secrets, nothing is signed (CODE_SIGNING_ALLOWED=NO). Runs
-# YaranPushCore's SwiftPM tests (Phase 16), then the App scheme's tests (App, plugin and
-# NotificationService unit tests and XCUITest), then an unsigned archive, then
-# `swiftlint --strict` from its checksummed release and the SwiftPM license map check.
+# Responsibilities: no secrets, nothing is signed (CODE_SIGNING_ALLOWED=NO). Runs the
+# three SwiftPM suites through their test.sh (native core, MachineViewCore,
+# YaranPushCore), then the App scheme's tests (AppTests and YaranCoreTests; there is no
+# XCUITest target yet), then an unsigned archive, then `swiftlint --strict` from its
+# checksummed release (mobile/.swiftlint.yml) and the SwiftPM license map check against
+# the Package.resolved xcodebuild writes.
 # Uses: .github/actions/ios-setup, tools/release-trains/swiftpm-licenses.mjs.
 name: Mobile iOS CI
 
@@ -27,21 +29,27 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/ios-setup
 
-      - name: YaranPushCore (swift test)
-        working-directory: mobile/ios/Shared/YaranPushCore
-        run: swift test
+      - name: SwiftPM suites (swift test)
+        run: |
+          set -euo pipefail
+          bash mobile/plugins/core/ios/test.sh
+          bash mobile/plugins/machine-view/ios/MachineViewCore/test.sh
+          bash mobile/ios/Shared/YaranPushCore/test.sh
 
-      - name: xcodebuild test (App, plugins, NotificationService, XCUITest)
+      - name: xcodebuild test (App scheme, AppTests and YaranCoreTests)
         run: >-
           xcodebuild test -project mobile/ios/App/App.xcodeproj -scheme App
           -destination "platform=iOS Simulator,name=$IOS_SIM_DEVICE,OS=$IOS_SIM_OS"
           CODE_SIGNING_ALLOWED=NO
 
+      # 14's release-config guard refuses the repository's com.example placeholder id in
+      # Release, so the unsigned CI archive names a CI-only bundle id.
       - name: Unsigned archive
         run: >-
           xcodebuild archive -project mobile/ios/App/App.xcodeproj -scheme App
           -configuration Release -destination generic/platform=iOS
           -archivePath "$RUNNER_TEMP/App.xcarchive" CODE_SIGNING_ALLOWED=NO
+          APP_ID=io.github.siavz.yaran.ci
 
       - name: SwiftLint (pinned release, SHA-256 checked)
         run: |

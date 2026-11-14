@@ -120,6 +120,14 @@ test("--publisher refuses the placeholder in publisher.json", () => {
   assert.match(text, /FAIL  publisher.json publisher_domain is "<publisher-domain>"/);
 });
 
+test("--publisher expects the empty mobile domain publisher-config.mjs writes for the placeholder", () => {
+  const files = publisherFiles("<publisher-domain>", { propsDomain: "", xcDomain: "" });
+  const { status, text } = runCheck(bumped({ ...mobileFiles(), ...files }), TAG, "--publisher");
+  assert.equal(status, 1);
+  assert.match(text, /FAIL  publisher.json publisher_domain is "<publisher-domain>"/);
+  assert.doesNotMatch(text, /publisherDomain is "", expected|PUBLISHER_DOMAIN is "", expected/);
+});
+
 test("--publisher passes when every publisher value agrees", () => {
   const root = bumped({ ...mobileFiles(), ...publisherFiles() });
   const { status, text } = runCheck(root, TAG, "--publisher");

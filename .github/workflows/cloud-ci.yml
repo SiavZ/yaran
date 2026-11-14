@@ -2,11 +2,13 @@
 # (cloud/push-relay, Phase 08), one matrix leg each.
 #
 # Responsibilities: called by gates.yml's `cloud` seam job (filter `cloud`) and by
-# release-cloud.yml's check stage; no secrets, read-only token. Each package must expose
-# the npm scripts typecheck, lint, test and build (a contract on 04 and 08). Beyond them:
-# npm audit, the deny.toml license gate, a deterministic wrangler bundle (built twice,
-# diff -r), and for the Worker the D19 wrangler-config check and the "no vendored
-# protocol on main" check (D18). cloud/protocol's own suite is cloud-protocol.yml.
+# release-cloud.yml's check stage; no secrets, read-only token. Runs each package's
+# typecheck, lint, test and build scripts (the relay defines no lint or build, so those
+# run --if-present), npm audit, the deny.toml license gate and a deterministic wrangler
+# bundle (built twice into the same path, diff -r). The Worker leg also checks its
+# generated types, applies its D1 migrations locally, runs the deploy-tree dry-run test
+# (YARAN_DEPLOY_DRY_RUN=1), the D19 wrangler-config check and the "no vendored protocol
+# on main" check (D18). cloud/protocol's own suite is cloud-protocol.yml.
 # Uses: .github/scripts/npm_license_gate.sh, tools/release-trains/check-deploy-tree.mjs.
 name: Cloud CI
 
@@ -40,22 +42,47 @@ jobs:
           cache-dependency-path: |
             ${{ matrix.package }}/package-lock.json
             cloud/protocol/package-lock.json
+            cloud/worker/package-lock.json
+            crates/yaran-web/web/package-lock.json
 
-      # The Worker resolves @yaran/protocol through its file:../protocol dependency (R4),
-      # whose own dependencies live in cloud/protocol/node_modules.
+      # Both packages resolve @yaran/protocol through a file:../protocol dependency (R4),
+      # which does not install the protocol's own dependencies: they must already be in
+      # cloud/protocol/node_modules. The relay has no wrangler of its own and is bundled
+      # with the Worker's locked one. The Worker's console font comes from the web UI's
+      # @fontsource dependency (07's `npm run assets:ui-kit`).
       - name: Install (protocol first, for the file dependency)
         run: |
+          set -euo pipefail
           npm ci --prefix ../protocol
           npm ci
+          if [ "$PACKAGE" = cloud/push-relay ]; then npm ci --prefix ../worker; fi
+          if [ "$PACKAGE" = cloud/worker ]; then npm ci --prefix ../../crates/yaran-web/web --ignore-scripts; fi
+        env:
+          PACKAGE: ${{ matrix.package }}
+
+      - name: Copy the ui-kit tokens and font into the console assets
+        if: matrix.package == 'cloud/worker'
+        run: npm run assets:ui-kit
+      - name: Generated wrangler types are current
+        if: matrix.package == 'cloud/worker'
+        run: npm run types:check
 
       - name: Typecheck
         run: npm run typecheck
       - name: Lint
-        run: npm run lint
+        run: npm run lint --if-present
+      # YARAN_DEPLOY_DRY_RUN=1 turns on 07's test that assembles the deploy tree, copies it
+      # outside the checkout and runs npm ci, build and wrangler deploy --dry-run there.
       - name: Test
         run: npm test
+        env:
+          YARAN_DEPLOY_DRY_RUN: ${{ matrix.package == 'cloud/worker' && '1' || '' }}
       - name: Build
-        run: npm run build
+        run: npm run build --if-present
+
+      - name: D1 migrations apply to a local database
+        if: matrix.package == 'cloud/worker'
+        run: npm run db:migrations:local
 
       - name: npm audit (production dependencies)
         run: npm audit --omit=dev --audit-level=high
@@ -63,12 +90,16 @@ jobs:
       - name: Licenses within the deny.toml allowlist
         run: bash "$GITHUB_WORKSPACE/.github/scripts/npm_license_gate.sh" .
 
+      # Same output path both times: the source map's sourceRoot names it. README.md
+      # carries wrangler's build timestamp and is not part of the bundle.
       - name: Bundle is deterministic (two wrangler dry runs, diff -r)
         run: |
           set -euo pipefail
-          npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/bundle-a"
-          npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/bundle-b"
-          diff -r "$RUNNER_TEMP/bundle-a" "$RUNNER_TEMP/bundle-b"
+          wrangler="$GITHUB_WORKSPACE/cloud/worker/node_modules/.bin/wrangler"
+          "$wrangler" deploy --dry-run --outdir "$RUNNER_TEMP/bundle"
+          mv "$RUNNER_TEMP/bundle" "$RUNNER_TEMP/bundle-first"
+          "$wrangler" deploy --dry-run --outdir "$RUNNER_TEMP/bundle"
+          diff -r -x README.md "$RUNNER_TEMP/bundle-first" "$RUNNER_TEMP/bundle"
 
       - name: Worker config ships workers_dev on, preview_urls off, no route (D19)
         if: matrix.package == 'cloud/worker'

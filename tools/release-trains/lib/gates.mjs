@@ -57,6 +57,8 @@ export function checkPublisher(root, train, r) {
     r.ok(`${PATHS.publisherJson} publisher_domain = ${domain}`);
   }
   if (train !== "mobile") return;
+  // mobile/scripts/publisher-config.mjs writes an empty domain for the placeholder.
+  const mobileDomain = PLACEHOLDER.test(domain) ? "" : domain;
 
   const props = readKeyValue(path.join(root, PATHS.publisherProps));
   if (props === null) {
@@ -67,11 +69,11 @@ export function checkPublisher(root, train, r) {
       if (!value || PLACEHOLDER.test(value)) r.fail(`${PATHS.publisherProps} ${key} is empty or a placeholder`);
     }
     if ((props.appId ?? "").startsWith("com.example.")) r.fail(`${PATHS.publisherProps} appId ${props.appId} is the repo default, not the publisher's`);
-    r.expect(`${PATHS.publisherProps} publisherDomain`, props.publisherDomain ?? null, domain);
+    r.expect(`${PATHS.publisherProps} publisherDomain`, props.publisherDomain ?? null, mobileDomain);
   }
 
   const xcconfig = readKeyValue(path.join(root, PATHS.xcconfig));
-  if (xcconfig !== null) r.expect(`${PATHS.xcconfig} PUBLISHER_DOMAIN`, xcconfig.PUBLISHER_DOMAIN ?? null, domain);
+  if (xcconfig !== null) r.expect(`${PATHS.xcconfig} PUBLISHER_DOMAIN`, xcconfig.PUBLISHER_DOMAIN ?? null, mobileDomain);
 }
 
 const length = (text) => [...text.replace(/\r?\n$/, "")].length;

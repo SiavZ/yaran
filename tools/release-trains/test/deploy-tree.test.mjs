@@ -116,9 +116,9 @@ test("a placeholder APP_CALLBACK_URLS fails for a stable tag, and a mismatch alw
   assert.match(scheme.text, /lists a yaranapp:\/\/ callback/);
 });
 
-test("--config-only checks the worker config and Phase 07's template only", () => {
+test("--config-only checks the worker config (dev database_id allowed) and Phase 07's template", () => {
   const root = makeTree({
-    "cloud/worker/wrangler.jsonc": wrangler(),
+    "cloud/worker/wrangler.jsonc": wrangler({ d1_databases: [{ binding: "DB", database_name: "yaran-cloud", database_id: "00000000-0000-0000-0000-000000000000" }] }),
     "cloud/worker/deploy-template/wrangler.template.jsonc": wrangler({ preview_urls: true }),
   });
   const out = capture();

@@ -9,7 +9,8 @@
  * `release-cloud.yml` on `<out>/worker` after Phase 07's assembler.
  *
  * - Config: `workers_dev: true`, `preview_urls: false`, no route/routes or custom
- *   domain, no D1 `database_id`, in the top level and every `env.*` block.
+ *   domain, no D1 `database_id` (allowed in cloud/worker's dev config under `--config-only`),
+ *   in the top level and every `env.*` block.
  * - Self-contained: no `link:`, `workspace:` or `file:` dependency resolving outside the
  *   tree; the protocol is vendored at `vendor/cloud-protocol/`.
  * - Callbacks: `vars.APP_CALLBACK_URLS` equals `https://<publisher_domain>/auth/callback`.
@@ -45,7 +46,7 @@ import { createReport } from "./lib/report.mjs";
 const TEMPLATE = "deploy-template/wrangler.template.jsonc";
 const DEP_SECTIONS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
 
-function checkBlock(block, label, r) {
+function checkBlock(block, label, r, devDatabaseId) {
   if (block.workers_dev !== true) r.fail(`${label}: workers_dev must be true (D19 setup bootstrap), found ${JSON.stringify(block.workers_dev)}`);
   if (block.preview_urls !== false) r.fail(`${label}: preview_urls must be false (D19), found ${JSON.stringify(block.preview_urls)}`);
   if (block.route !== undefined) r.fail(`${label}: a "route" is set; the deploy tree ships no route or custom domain (D19)`);
@@ -55,16 +56,18 @@ function checkBlock(block, label, r) {
     r.fail(`${label}: "routes" must be empty${custom ? " (it holds a custom_domain entry)" : ""} (D19)`);
   }
   for (const db of block.d1_databases ?? []) {
-    if (db.database_id !== undefined) r.fail(`${label}: D1 binding ${db.binding ?? "?"} carries a database_id; the deployer's account creates its own`);
+    if (db.database_id !== undefined && !devDatabaseId) r.fail(`${label}: D1 binding ${db.binding ?? "?"} carries a database_id; the deployer's account creates its own`);
   }
 }
 
 /** Checks one parsed wrangler config, top level and every `env.*` block. */
-export function checkWranglerConfig(config, label, r) {
+// `devDatabaseId`: cloud/worker's own config is the local-dev one (miniflare needs an id); the
+// deployer gets the template, so only there and in the generated tree is a database_id refused.
+export function checkWranglerConfig(config, label, r, { devDatabaseId = false } = {}) {
   const before = r.failures.length;
-  checkBlock(config, label, r);
-  for (const [name, block] of Object.entries(config.env ?? {})) checkBlock({ workers_dev: config.workers_dev, preview_urls: config.preview_urls, ...block }, `${label} env.${name}`, r);
-  if (r.failures.length === before) r.ok(`${label}: workers_dev true, preview_urls false, no route or custom domain, no database_id`);
+  checkBlock(config, label, r, devDatabaseId);
+  for (const [name, block] of Object.entries(config.env ?? {})) checkBlock({ workers_dev: config.workers_dev, preview_urls: config.preview_urls, ...block }, `${label} env.${name}`, r, devDatabaseId);
+  if (r.failures.length === before) r.ok(`${label}: workers_dev true, preview_urls false, no route or custom domain${devDatabaseId ? "" : ", no database_id"}`);
 }
 
 function outside(dir, spec) {
@@ -162,7 +165,7 @@ export function run(argv, log = console.log) {
   const r = createReport({ log });
 
   const main = readConfig(path.join(dir, "wrangler.jsonc"), r);
-  if (main) checkWranglerConfig(main, "wrangler.jsonc", r);
+  if (main) checkWranglerConfig(main, "wrangler.jsonc", r, { devDatabaseId: !!values["config-only"] });
 
   if (values["config-only"]) {
     if (fs.existsSync(path.join(dir, TEMPLATE))) {

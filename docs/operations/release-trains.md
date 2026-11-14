@@ -81,7 +81,11 @@ with the committed literals fails before anything is built.
      `database_id`, and the correct callback.
    - The Worker and relay tarballs are packed twice and compared, like the binary
      archives. `release.json` is written next to the tree rather than inside the
-     Worker tarball, because it names the tarball's hash.
+     Worker tarball, because it names the tarball's hash; the assembler's own
+     `--write-manifest` writes it, so the tarball is named
+     `yaran-cloud-worker-v<version>.tar.gz` (every cloud asset carries the `v`).
+   - The assembler refuses the `<publisher-domain>` placeholder, so a release
+     candidate needs the real domain in `publisher.json` too.
 3. **Release candidates**: `deploy-branch-rc` appends the tree to the
    `cloud-deploy-rc` branch, and the release is published as a prerelease.
    Phase 19's staging runs use
@@ -89,8 +93,9 @@ with the committed literals fails before anything is built.
 4. **Stable tags**:
    - The release is published.
    - The production relay is deployed after a reviewer approves the
-     `push-relay-production` environment. A smoke check then expects `/healthz`
-     to report the tag version.
+     `push-relay-production` environment. A smoke check then expects
+     `GET <relayUrl>/v1/meta` to answer as the relay with this release's protocol
+     range (the relay has no `/healthz` and does not report its version).
    - The tree is appended to `cloud-deploy` under `worker/`.
    - The job then waits until
      `https://raw.githubusercontent.com/SiavZ/yaran/cloud-deploy/worker/release.json`
@@ -209,8 +214,10 @@ its publisher-infrastructure record.
       the relay.
 - [ ] Association files committed under `publisher-site/.well-known/` and served from
       the publisher domain.
-- [ ] `mobile/android/gradle/verification-metadata.xml` generated and committed once
-      Phase 14's Android project exists.
+- [ ] `mobile/android/gradle/verification-metadata.xml` generated and committed. Generate
+      it on Linux (`./gradlew --write-verification-metadata sha256` over the Android CI
+      task list), because aapt2 resolves a per-OS artifact and a file written on macOS
+      fails every Linux job; Gradle enforces it as soon as it exists.
 
 ## Android signing ceremony and Play App Signing enrollment (D23)
 

@@ -23,11 +23,12 @@ import { parseAllowlist, readAllowlist, run as allowlist } from "../license-allo
 import { run as swiftpm, swiftpmInventory } from "../swiftpm-licenses.mjs";
 import { capture, makeTree } from "./helpers.mjs";
 
-// The real deny.toml [licenses] allow array (deny.toml:70-96), in file order.
+// The real deny.toml [licenses] allow array, in file order.
 const EXPECTED = [
   "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib",
   "Unicode-DFS-2016", "Unicode-3.0", "MPL-2.0", "CC0-1.0", "0BSD", "OFL-1.1", "Bitstream-Vera", "BSL-1.0",
   "CDLA-Permissive-2.0",
+  "CC-BY-4.0",
 ];
 
 test("the repo's deny.toml parses to its allow list", () => {

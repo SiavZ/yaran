@@ -93,6 +93,10 @@ allow = [
   # CA root list in `webpki-roots`, pulled by upstream's `ureq` release-notes
   # fetch in yaran-core. Data, not code; the allowlist predates that dependency.
   "CDLA-Permissive-2.0",
+  # Attribution-only data license on caniuse-lite's browser-support tables, which
+  # the phone shell's production npm tree pulls through @lingui/core's macro plugin
+  # (babel -> browserslist). Data, not code; no crate uses it.
+  "CC-BY-4.0",
 ]
 # Confidence threshold for the license detector. The default 0.8 catches
 # almost all real licenses without false positives.

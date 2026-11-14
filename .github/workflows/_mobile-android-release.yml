@@ -96,8 +96,7 @@ jobs:
       - name: SBOMs and license inventory parts
         run: |
           set -euo pipefail
-          bom="$(find mobile/android/app/build/reports -name 'bom.json' | head -1)"
-          test -n "$bom"
+          bom=mobile/android/app/build/reports/cyclonedx/bom.json
           cp "$bom" "$RUNNER_TEMP/dist/yaran-mobile-$V-android-sbom.cdx.json"
           (cd mobile/app && npm sbom --sbom-format cyclonedx --omit dev) > "$RUNNER_TEMP/dist/yaran-mobile-$V-js-sbom.cdx.json"
           mkdir -p "$RUNNER_TEMP/licenses"

@@ -13,8 +13,7 @@
  * ├── test/association.test.mjs
  * ├── test/check-versions.test.mjs
  * ├── test/deploy-tree.test.mjs
- * ├── test/licenses.test.mjs
- * └── test/release-manifest.test.mjs
+ * └── test/licenses.test.mjs
  * <module-headers:end>
  */
 

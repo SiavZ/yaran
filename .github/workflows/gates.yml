@@ -72,6 +72,7 @@ jobs:
               - 'packages/ui-kit/**'
               - '.node-version'
               - 'publisher.json'
+              - 'crates/yaran-web/web/package-lock.json'
               - '.github/workflows/cloud-ci.yml'
             mobile:
               - 'mobile/**'
@@ -95,7 +96,6 @@ jobs:
               - 'publisher.json'
               - 'fastlane/**'
               - '.node-version'
-              - 'cloud/protocol/schemas/**'
 
   headers:
     name: Module headers
@@ -195,7 +195,10 @@ jobs:
         run: |
           set -euo pipefail
           version="$(sed -nE 's/.*PINNED_VERSION[^"]*"([^"]+)".*/\1/p' "$PINS" | head -1)"
-          sha="$(awk '/"cloudflared-linux-amd64"/ { f = 1 } f && /asset_sha256/ { print; exit }' "$PINS" | grep -oE '[0-9a-f]{64}' | head -1 || true)"
+          row="$(awk '/"cloudflared-linux-amd64"/ { f = 1 } f && /asset_sha256/ { print; exit }' "$PINS")"
+          # UNPINNED is pins.rs's all-zero sentinel: bump.sh has not hashed this release yet.
+          case "$row" in *UNPINNED*) echo "The linux-amd64 pin for $version is UNPINNED; run tools/cloudflared-pin/bump.sh $version (network) and commit pins.rs." >&2; exit 1 ;; esac
+          sha="$(printf '%s\n' "$row" | grep -oE '[0-9a-f]{64}' | head -1 || true)"
           [ -n "$version" ] && [ -n "$sha" ] || { echo "Could not read PINNED_VERSION and the linux-amd64 asset_sha256 from $PINS." >&2; exit 1; }
           { echo "version=$version"; echo "sha=$sha"; echo "path=$HOME/.cache/yaran-ci/cloudflared-$version"; } >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -234,9 +237,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-      # release-manifest.mjs validates with @yaran/protocol's own validator.
-      - name: Install the protocol package
-        run: npm ci --prefix cloud/protocol
       # A glob, not the directory: Node 24 reads node --test arguments as file globs.
       - name: Release-train tooling tests
         run: node --test 'tools/release-trains/test/*.test.mjs'

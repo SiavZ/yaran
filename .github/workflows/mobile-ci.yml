@@ -5,8 +5,10 @@
 # release-mobile.yml's check stage; no secrets, read-only token. The shell
 # (mobile/app, Phase 14) runs typecheck, lint, test and build, a double `vite build`
 # compared with diff -r, npm audit and the deny.toml license gate; each plugin under
-# mobile/plugins/ runs the same; 14's generated license lists must match the tree; the
-# F-Droid listing stays within its length limits; `fastlane lanes` loads.
+# mobile/plugins/ runs whichever of those scripts it defines (none defines lint or build)
+# plus the same audit and license gate. Then the publisher-config drift check, the
+# mobile/scripts and iOS release-config tests, the F-Droid listing limits and
+# `fastlane lanes`. The generated license lists need Gradle, so the Android leg checks them.
 # Uses: .github/scripts/npm_license_gate.sh, tools/release-trains/check-versions.mjs,
 # _mobile-android-ci.yml, _mobile-ios-ci.yml.
 name: Mobile CI
@@ -31,14 +33,25 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-          cache-dependency-path: mobile/**/package-lock.json
+          cache-dependency-path: |
+            mobile/**/package-lock.json
+            cloud/protocol/package-lock.json
+            packages/ui-kit/package-lock.json
+
+      # file: dependencies do not install their own dependencies, so every local package
+      # the shell or a plugin links to is installed before the packages that link to it.
+      - name: Install (protocol, ui-kit, plugins, then the shell)
+        run: |
+          set -euo pipefail
+          for d in cloud/protocol packages/ui-kit mobile/plugins/*/ mobile/app; do
+            if [ -f "$d/package-lock.json" ]; then npm ci --prefix "$d"; fi
+          done
 
       - name: Shell (mobile/app)
         working-directory: mobile/app
         run: |
           set -euo pipefail
-          npm ci
-          npx tsc --noEmit
+          npm run typecheck
           npm run lint
           npm test
           npm run build
@@ -53,24 +66,29 @@ jobs:
           npm run build
           diff -r "$RUNNER_TEMP/dist-first" dist
 
-      # Plugin script sets differ (Capacitor's template has no test script), so only
-      # build is mandatory; every script a plugin does define must pass.
+      # Plugin script sets differ (core has no JS package; none defines lint or build), so
+      # every script a plugin does define must pass.
       - name: Plugins (mobile/plugins/*)
         run: |
           set -euo pipefail
-          shopt -s nullglob
           for dir in mobile/plugins/*/; do
             [ -f "$dir/package.json" ] || continue
             echo "::group::$dir"
-            (cd "$dir" && npm ci && npm run --if-present typecheck && npm run --if-present lint \
-              && npm run --if-present test && npm run build \
+            (cd "$dir" && npm run --if-present typecheck && npm run --if-present lint \
+              && npm run --if-present test && npm run --if-present build \
               && npm audit --omit=dev --audit-level=high \
               && bash "$GITHUB_WORKSPACE/.github/scripts/npm_license_gate.sh" .)
             echo "::endgroup::"
           done
 
-      - name: Generated license lists match the dependency tree (Phase 14)
-        run: bash mobile/scripts/licenses.sh --check
+      - name: iOS publisher xcconfig matches publisher.properties and publisher.json
+        run: node mobile/scripts/publisher-config.mjs --check
+
+      - name: mobile/scripts tests
+        run: node --test 'mobile/scripts/*.test.mjs'
+
+      - name: iOS release-config check tests
+        run: bash mobile/ios/scripts/check-release-config_test.sh
 
       - name: F-Droid listing within its length limits
         run: node tools/release-trains/check-versions.mjs --metadata

@@ -229,7 +229,6 @@
     "tools/release-trains/check-versions.mjs": "CLI: the first job of release-cloud.yml and release-mobile.yml, the --play gate before every Play upload, and --metadata in mobile-ci.yml and gates.yml",
     "tools/release-trains/bump.mjs": "CLI: run by a maintainer in the release PR (docs/operations/release-trains.md)",
     "tools/release-trains/check-deploy-tree.mjs": "CLI: cloud-ci.yml (--config-only cloud/worker) and the release-cloud.yml build",
-    "tools/release-trains/release-manifest.mjs": "CLI: release-cloud.yml build, writes cloud-deploy:worker/release.json",
     "tools/release-trains/check-association.mjs": "CLI: release-mobile.yml check (--live on stable tags); Phase 22 daily",
     "tools/release-trains/license-allowlist.mjs": "CLI: .github/scripts/npm_license_gate.sh (--npm) and the Android legs (--jk1)",
     "tools/release-trains/swiftpm-licenses.mjs": "CLI: _mobile-ios-ci.yml and _mobile-ios-release.yml",

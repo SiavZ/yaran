@@ -38,7 +38,13 @@ runs:
         [ -x "$bt/apksigner" ] || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;$ANDROID_BUILD_TOOLS"
         echo "$bt" >> "$GITHUB_PATH"
 
+    # file: dependencies do not install their own dependencies: link targets go first.
     - name: Web build and cap sync android
       shell: bash
-      working-directory: ${{ inputs.root }}/mobile/app
-      run: npm ci && npm run build && npx cap sync android
+      working-directory: ${{ inputs.root }}
+      run: |
+        set -euo pipefail
+        for d in cloud/protocol packages/ui-kit mobile/plugins/*/ mobile/app; do
+          if [ -f "$d/package-lock.json" ]; then npm ci --prefix "$d"; fi
+        done
+        cd mobile/app && npm run build && npx cap sync android

@@ -85,9 +85,9 @@ updates:
         versions: [">=7"]
 
   # The Android project (Phase 14). A bump changes dependency hashes, so the
-  # maintainer regenerates mobile/android/gradle/verification-metadata.xml
-  # (`./gradlew --write-verification-metadata sha256 help`) in the same PR and the
-  # diff is reviewed.
+  # maintainer regenerates mobile/android/gradle/verification-metadata.xml on Linux
+  # (`--write-verification-metadata sha256` over the Android CI task list) in the same
+  # PR and the diff is reviewed, once that file exists.
   - package-ecosystem: "gradle"
     directory: "/mobile/android"
     schedule:

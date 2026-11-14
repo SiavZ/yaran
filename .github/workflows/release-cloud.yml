@@ -10,8 +10,9 @@
 # release itself, never "latest" (R17), so release.yml does not run.
 # Per-release values ride on the annotated tag as trailers: `Min-Update-From: X.Y.Z`
 # (default 0.0.0) and `Security: true` (default false), both copied into release.json.
-# Uses: tools/release-trains/{versions,check-versions,check-deploy-tree,release-manifest}.mjs,
-# cloud/worker's `npm run assemble-deploy-tree` (07), .github/scripts/publish_deploy_branch.sh,
+# Asset names carry `v<version>` because 07's manifest writer names the Worker tarball so.
+# Uses: tools/release-trains/{versions,check-versions,check-deploy-tree}.mjs, cloud/worker's
+# `npm run assemble-deploy-tree` (07, also its --write-manifest), .github/scripts/publish_deploy_branch.sh,
 # cloud-ci.yml, cloud-protocol.yml, _publish-train-release.yml.
 name: Release (cloud)
 
@@ -80,10 +81,12 @@ jobs:
         with:
           node-version-file: .node-version
 
+      # The assembler copies the console font from the web UI's @fontsource dependency.
       - name: Install packages
         run: |
           set -euo pipefail
           for p in protocol worker push-relay; do npm ci --prefix "cloud/$p"; done
+          npm ci --prefix crates/yaran-web/web --ignore-scripts
           {
             echo "DIST=$RUNNER_TEMP/dist"
             echo "TREE_OUT=$RUNNER_TEMP/tree"
@@ -96,7 +99,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd cloud/protocol && npm pack --pack-destination "$DIST")
-          mv "$DIST"/yaran-protocol-*.tgz "$DIST/yaran-cloud-protocol-$V.tgz"
+          mv "$DIST"/yaran-protocol-*.tgz "$DIST/yaran-cloud-protocol-v$V.tgz"
 
       - name: Assemble the deploy tree (Phase 07's assembler)
         working-directory: cloud/worker
@@ -105,10 +108,13 @@ jobs:
       - name: Deploy tree is self-contained, D19-clean and carries the publisher callback
         run: node tools/release-trains/check-deploy-tree.mjs "$TREE_OUT/worker" --tag "$TAG" --publisher publisher.json --isolated-build
 
+      # The relay has no wrangler of its own; the Worker's locked one bundles it. README.md
+      # only carries wrangler's build timestamp.
       - name: Relay bundle
         run: |
           set -euo pipefail
-          (cd cloud/push-relay && npx wrangler deploy --dry-run --outdir "$RELAY_OUT/dist")
+          (cd cloud/push-relay && ../worker/node_modules/.bin/wrangler deploy --dry-run --outdir "$RELAY_OUT/dist")
+          rm -f "$RELAY_OUT/dist/README.md"
           cp cloud/push-relay/wrangler.jsonc "$RELAY_OUT/"
 
       # release.yml's recipe: epoch-pinned metadata, sorted, gzip -n, packed twice
@@ -128,11 +134,14 @@ jobs:
             rm "$1.first"
           }
           # The manifest names the tarball's own hash, so it stays outside it.
-          twice "$DIST/yaran-cloud-worker-$V.tar.gz" "$TREE_OUT" --exclude=worker/release.json worker
-          (cd "$DIST" && sha256sum "yaran-cloud-worker-$V.tar.gz" > "yaran-cloud-worker-$V.tar.gz.sha256")
-          twice "$DIST/yaran-cloud-relay-$V.tar.gz" "$RELAY_OUT" dist wrangler.jsonc
+          twice "$DIST/yaran-cloud-worker-v$V.tar.gz" "$TREE_OUT" --exclude=worker/release.json worker
+          (cd "$DIST" && sha256sum "yaran-cloud-worker-v$V.tar.gz" > "yaran-cloud-worker-v$V.tar.gz.sha256")
+          twice "$DIST/yaran-cloud-relay-v$V.tar.gz" "$RELAY_OUT" dist wrangler.jsonc
 
+      # 07's writer validates against 02's ReleaseManifest schema and names the tarball
+      # https://github.com/SiavZ/yaran/releases/download/<tag>/yaran-cloud-worker-v<version>.tar.gz.
       - name: release.json (02's ReleaseManifest, schema-validated)
+        working-directory: cloud/worker
         run: |
           set -euo pipefail
           # checkout leaves the tag lightweight; fetch the annotated tag object itself.
@@ -141,11 +150,9 @@ jobs:
           min="$(printf '%s\n' "$trailers" | sed -n 's/^Min-Update-From: *//p' | tail -1)"
           security=()
           printf '%s\n' "$trailers" | grep -qix 'Security: *true' && security=(--security)
-          node tools/release-trains/release-manifest.mjs --tag "$TAG" \
-            --tarball "$DIST/yaran-cloud-worker-$V.tar.gz" \
-            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/yaran-cloud-worker-$V.tar.gz" \
-            --notes-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" \
-            --min-update-from "${min:-0.0.0}" "${security[@]}" --out "$TREE_OUT/worker/release.json"
+          sha="$(cut -d' ' -f1 "$DIST/yaran-cloud-worker-v$V.tar.gz.sha256")"
+          npm run assemble-deploy-tree -- --write-manifest "$TREE_OUT/worker" --tag "$TAG" \
+            --tarball-sha256 "$sha" --min-update-from "${min:-0.0.0}" "${security[@]}"
           cat "$TREE_OUT/worker/release.json"
 
       - name: SBOMs (CycloneDX, production dependencies)
@@ -153,7 +160,7 @@ jobs:
           set -euo pipefail
           for p in protocol worker push-relay; do
             name="${p#push-}"
-            (cd "cloud/$p" && npm sbom --sbom-format cyclonedx --omit dev) > "$DIST/yaran-cloud-$name-$V.cdx.json"
+            (cd "cloud/$p" && npm sbom --sbom-format cyclonedx --omit dev) > "$DIST/yaran-cloud-$name-v$V.cdx.json"
           done
 
       - name: Release notes
@@ -227,13 +234,13 @@ jobs:
       checksums-file: yaran-cloud-checksums.txt
       prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
       expected-files: |
-        yaran-cloud-protocol-${{ needs.check.outputs.version }}.tgz
-        yaran-cloud-worker-${{ needs.check.outputs.version }}.tar.gz
-        yaran-cloud-worker-${{ needs.check.outputs.version }}.tar.gz.sha256
-        yaran-cloud-relay-${{ needs.check.outputs.version }}.tar.gz
-        yaran-cloud-protocol-${{ needs.check.outputs.version }}.cdx.json
-        yaran-cloud-worker-${{ needs.check.outputs.version }}.cdx.json
-        yaran-cloud-relay-${{ needs.check.outputs.version }}.cdx.json
+        yaran-cloud-protocol-v${{ needs.check.outputs.version }}.tgz
+        yaran-cloud-worker-v${{ needs.check.outputs.version }}.tar.gz
+        yaran-cloud-worker-v${{ needs.check.outputs.version }}.tar.gz.sha256
+        yaran-cloud-relay-v${{ needs.check.outputs.version }}.tar.gz
+        yaran-cloud-protocol-v${{ needs.check.outputs.version }}.cdx.json
+        yaran-cloud-worker-v${{ needs.check.outputs.version }}.cdx.json
+        yaran-cloud-relay-v${{ needs.check.outputs.version }}.cdx.json
 
   deploy-relay:
     name: Deploy the push relay
@@ -241,8 +248,6 @@ jobs:
     if: needs.check.outputs.prerelease == 'false' && vars.RELAY_RUNTIME != 'vm'
     runs-on: ubuntu-24.04
     environment: push-relay-production
-    env:
-      V: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -252,18 +257,29 @@ jobs:
           node-version-file: .node-version
       - name: Install
         run: npm ci --prefix cloud/protocol && npm ci --prefix cloud/push-relay
+      # The relay has no wrangler dependency; pin the action to the Worker's locked one.
+      - name: Wrangler version from cloud/worker's lockfile
+        id: wrangler
+        run: echo "version=$(jq -r '.packages["node_modules/wrangler"].version' cloud/worker/package-lock.json)" >> "$GITHUB_OUTPUT"
       # RELAY_RUNTIME=container uses the same deploy; wrangler builds the image here.
       - uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
+          wranglerVersion: ${{ steps.wrangler.outputs.version }}
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: cloud/push-relay
           command: deploy
-      - name: Smoke check reports the tag version
+      # The relay has no /healthz and reports no version (08's RelayMeta), so the smoke
+      # check asserts GET /v1/meta answers as the relay with this tag's protocol range.
+      - name: Smoke check (GET /v1/meta)
         run: |
           set -euo pipefail
           relay="$(sed -n 's/^relayUrl=//p' mobile/publisher.properties)"
-          curl -fsS --retry 5 --retry-all-errors "$relay/healthz" | jq -e --arg v "$V" '.version == $v'
+          [ -n "$relay" ] || { echo "relayUrl is empty in mobile/publisher.properties." >&2; exit 1; }
+          range() { sed -nE "s/^export const $1 = ([0-9]+);/\1/p" cloud/protocol/src/version.ts; }
+          curl -fsS --retry 5 --retry-all-errors "$relay/v1/meta" | jq -e \
+            --argjson min "$(range PROTOCOL_MIN)" --argjson max "$(range PROTOCOL_MAX)" \
+            '.service == "yaran-push-relay" and .protocol.min == $min and .protocol.max == $max'
 
   relay-image:
     name: Relay OCI image (RELAY_RUNTIME=vm)
@@ -289,7 +305,7 @@ jobs:
           set -euo pipefail
           image="ghcr.io/${GITHUB_REPOSITORY,,}/push-relay"
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker build -f cloud/push-relay/container/Dockerfile -t "$image:$V" cloud/push-relay
+          docker build -f cloud/push-relay/container/Dockerfile -t "$image:$V" .
           docker push "$image:$V"
           digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$image:$V")"
           { echo "name=$image"; echo "digest=${digest#*@}"; } >> "$GITHUB_OUTPUT"
