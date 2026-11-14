@@ -50,6 +50,7 @@ pub mod palette;
 pub mod peer;
 pub mod poller_status;
 pub mod pr_reference;
+pub mod private_file;
 pub mod project_browser;
 pub mod project_order;
 pub mod project_prose;

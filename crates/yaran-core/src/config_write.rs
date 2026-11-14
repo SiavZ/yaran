@@ -776,6 +776,7 @@ fn apply_patches(doc: &mut DocumentMut, config: &Config) {
         "news_close_hours",
         config.board.news_close_hours,
     );
+    crate::cloud::config_patch::patch_cloud(doc, &config.cloud);
 }
 
 fn patch_limits(doc: &mut DocumentMut, limits: &crate::config::LimitsConfig) {
@@ -832,7 +833,7 @@ pub fn ensure_table<'a>(doc: &'a mut DocumentMut, section: &str) -> &'a mut Tabl
         .unwrap()
 }
 
-fn patch_table_str(doc: &mut DocumentMut, section: &str, key: &str, value: &str) {
+pub(crate) fn patch_table_str(doc: &mut DocumentMut, section: &str, key: &str, value: &str) {
     let table = ensure_table(doc, section);
     table[key] = toml_edit::value(value);
 }
@@ -842,7 +843,7 @@ fn patch_table_opt_str(doc: &mut DocumentMut, section: &str, key: &str, value: O
     table[key] = toml_edit::value(value.unwrap_or(""));
 }
 
-fn patch_table_u16(doc: &mut DocumentMut, section: &str, key: &str, value: u16) {
+pub(crate) fn patch_table_u16(doc: &mut DocumentMut, section: &str, key: &str, value: u16) {
     let table = ensure_table(doc, section);
     table[key] = toml_edit::value(i64::from(value));
 }
@@ -871,12 +872,12 @@ fn patch_table_usize(doc: &mut DocumentMut, section: &str, key: &str, value: usi
     table[key] = toml_edit::value(value as i64);
 }
 
-fn patch_table_bool(doc: &mut DocumentMut, section: &str, key: &str, value: bool) {
+pub(crate) fn patch_table_bool(doc: &mut DocumentMut, section: &str, key: &str, value: bool) {
     let table = ensure_table(doc, section);
     table[key] = toml_edit::value(value);
 }
 
-fn patch_table_u64(doc: &mut DocumentMut, section: &str, key: &str, value: u64) {
+pub(crate) fn patch_table_u64(doc: &mut DocumentMut, section: &str, key: &str, value: u64) {
     let table = ensure_table(doc, section);
     table[key] = toml_edit::value(value as i64);
 }
@@ -894,7 +895,12 @@ pub fn remove_table_key_item(doc: &mut DocumentMut, section: &str, key: &str) ->
         .and_then(|table| table.remove(key))
 }
 
-fn patch_table_string_array(doc: &mut DocumentMut, section: &str, key: &str, values: &[String]) {
+pub(crate) fn patch_table_string_array(
+    doc: &mut DocumentMut,
+    section: &str,
+    key: &str,
+    values: &[String],
+) {
     let table = ensure_table(doc, section);
     let mut arr = Array::new();
     for v in values {

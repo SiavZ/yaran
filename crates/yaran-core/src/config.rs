@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use crate::amq::config::{AmqConfig, AmqInjectConfig, AmqOrchestratorConfig};
+pub use crate::cloud::config::{CloudConfig, CloudMode};
 
 /// Which surface(s) a macro is available on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -3101,6 +3102,9 @@ pub struct Config {
     /// watchdog. See [`crate::amq`].
     #[serde(default)]
     pub amq: AmqConfig,
+    /// Yaran Cloud intent (`[cloud]`); secrets live in the credentials file.
+    #[serde(default)]
+    pub cloud: CloudConfig,
 }
 
 /// Tunables for startup relaunches: `defaults.auto_resume_on_start` and
@@ -3224,6 +3228,7 @@ impl Default for Config {
             board: BoardConfig::default(),
             workspace: Some(WorkspaceConfig::default()),
             amq: AmqConfig::default(),
+            cloud: CloudConfig::default(),
         }
     }
 }
@@ -3845,6 +3850,9 @@ pub fn load_config(paths: &YaranPaths) -> Config {
     if let Some(warning) = tailscale_load_warning(&config) {
         crate::logger::warn(&warning);
         config.server.tailscale = TailscaleMode::Auto.as_str().to_string();
+    }
+    if let Some(warning) = crate::cloud::config::correct_cloud_mode(&mut config.cloud) {
+        crate::logger::warn(&warning);
     }
     config
 }

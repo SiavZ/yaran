@@ -14,6 +14,27 @@ fn main() {
     println!("cargo:rustc-env=YARAN_DISPLAY_VERSION={display_version}");
 
     stamp_git_commit();
+    stamp_publisher_domain();
+}
+
+/// Expose the repo-root `publisher.json`'s `publisher_domain` (Phase 18's one home
+/// for it) as `YARAN_PUBLISHER_DOMAIN`, raw; `cloud::config::callback_urls_for_domain`
+/// turns a missing file, the `<publisher-domain>` placeholder or junk into no callback.
+fn stamp_publisher_domain() {
+    let dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
+    let path = std::path::Path::new(&dir).join("../../publisher.json");
+    println!("cargo:rerun-if-changed={}", path.display());
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    // shortcut: a string scan rather than a JSON parser (no build-dependency); the
+    // value is validated as a hostname where it is used.
+    let domain = raw
+        .split_once("\"publisher_domain\"")
+        .and_then(|(_, rest)| rest.split_once(':'))
+        .and_then(|(_, rest)| rest.trim_start().strip_prefix('"'))
+        .and_then(|rest| rest.split_once('"'))
+        .map(|(value, _)| value.trim().to_string())
+        .unwrap_or_default();
+    println!("cargo:rustc-env=YARAN_PUBLISHER_DOMAIN={domain}");
 }
 
 /// Embed the short git commit the binary was built from as `YARAN_GIT_COMMIT`,

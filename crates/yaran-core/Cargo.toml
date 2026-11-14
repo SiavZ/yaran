@@ -56,8 +56,13 @@ rand = { version = "0.8", features = ["small_rng"] }
 ring = "0.17.14"
 # Strict base64url for the cloud protocol; already in the lockfile through axum/ureq.
 base64 = "0.22.1"
+# The add-org QR code (CLI, TUI, web). No default features: no image crates; `svg`
+# adds no dependency.
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
+# Integration tests (tests/cloud_*.rs) use the cloud mock Worker behind `test-support`.
+yaran-core = { path = ".", features = ["test-support"] }
 # AMQ queue expiry tests backdate file mtimes.
 filetime = "0.2"
 # An independent opener for the cloud handoff envelope tests (ring can seal, not open).
