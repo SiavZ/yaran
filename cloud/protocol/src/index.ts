@@ -56,7 +56,7 @@
  * ├── @yaran/mobile-shell:src/screens/onboarding/onboarding.test.tsx
  * ├── @yaran/push:src/definitions.ts
  * ├── @yaran/push:test/guards.test.ts
- * └── @yaran/qr:src/payload.ts
+ * ├── @yaran/qr:src/payload.ts
  * ├── yaran-cloud:src/audit/actions.ts
  * ├── yaran-cloud:src/audit/audit.ts
  * ├── yaran-cloud:src/auth/authorize.ts
