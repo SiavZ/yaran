@@ -7,7 +7,7 @@
  * └── src/lib/native/nativeShell.ts
  * External: node:fs, node:path, node:url, vitest
  *
- * Used by: entry point (vitest, via npm test in crates/yaran-web/web)
+ * Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
  * <module-headers:end>
  */
 import { readFileSync } from "node:fs"

@@ -24,6 +24,7 @@
  * ├── src/components/ConfirmRecreateWorkingCopyDialog.tsx
  * ├── src/components/ConfirmUseExistingBranchDialog.tsx
  * ├── src/components/ConfirmVanishedEditorDialog.tsx
+ * ├── src/components/ConnectPhoneDialog.tsx
  * ├── src/components/CreateAgentDialog.tsx
  * ├── src/components/CustomizeWebappDialog.tsx
  * ├── src/components/DeleteProjectDialog.tsx

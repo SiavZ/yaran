@@ -19,7 +19,7 @@
 //! cloud/protocol/uri.rs
 //! ├── cloud::protocol
 //! ├── cloud::qr
-//! └── yaran-web::cloud_handoff_request
+//! ├── yaran-web::cloud_handoff_request
 //! └── yaran-web::cloud_phone_routes
 //! <module-headers:end>
 

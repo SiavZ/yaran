@@ -383,7 +383,7 @@ describe("findSubmenu", () => {
 })
 
 // Phase 13: the device group. Gated on real reasons (02 §11 token, a paired
-// machine), placed between the Task Manager and the about entries.
+// machine), placed between Yaran Cloud… and the about entries.
 describe("appMenuModel device group", () => {
   beforeEach(() => vi.clearAllMocks())
   const top = (c: Partial<typeof ctx>) =>
@@ -394,8 +394,9 @@ describe("appMenuModel device group", () => {
   })
 
   it("shows Connect a phone… on a paired machine in a browser", () => {
-    expect(top({ phonePairing: true }).slice(8, 11)).toEqual([
+    expect(top({ phonePairing: true }).slice(8, 12)).toEqual([
       "task-manager",
+      "yaran-cloud",
       "sep-device",
       "connect-phone",
     ])
@@ -403,8 +404,9 @@ describe("appMenuModel device group", () => {
   })
 
   it("shows the native entries inside the app, in order", () => {
-    expect(top({ nativeShell: true }).slice(8, 13)).toEqual([
+    expect(top({ nativeShell: true }).slice(8, 14)).toEqual([
       "task-manager",
+      "yaran-cloud",
       "sep-device",
       "switch-machine",
       "phone-app-settings",

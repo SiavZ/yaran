@@ -36,6 +36,7 @@
 //! ├── cloud_loop
 //! ├── cloud_mode
 //! ├── cloud_mode_routes
+//! ├── cloud_phone_routes
 //! ├── cloud_routes
 //! ├── cloud_test_support
 //! ├── compressible_exts
@@ -43,6 +44,7 @@
 //! ├── console
 //! ├── engine_actor
 //! ├── event_bus
+//! ├── events_beat
 //! ├── file_drop_routes
 //! ├── file_routes
 //! ├── first_load_routes
@@ -109,10 +111,10 @@ pub(crate) mod cloud_jwks_cache;
 pub(crate) mod cloud_loop;
 pub mod cloud_mode;
 pub mod cloud_mode_routes;
+pub mod cloud_phone_routes;
 pub mod cloud_routes;
 #[cfg(test)]
 mod cloud_test_support;
-pub mod cloud_phone_routes;
 pub mod compressible_exts;
 pub mod config_routes;
 pub mod console;

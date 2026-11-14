@@ -15,6 +15,7 @@
 // <module-headers:begin>
 // Uses:
 // src/lib/appMenu.ts
+// ├── @yaran/protocol:src/uri.ts
 // ├── src/lib/configApi.ts
 // ├── src/lib/creationMenus.ts
 // ├── src/lib/notify.ts
@@ -28,7 +29,8 @@
 // ├── src/components/AppMenuSheet.test.tsx
 // ├── src/components/AppMenuSheet.tsx
 // ├── src/components/TheaterPill.test.tsx
-// └── src/lib/appMenu.test.ts
+// ├── src/lib/appMenu.test.ts
+// └── src/lib/useAppMenuContext.ts
 // <module-headers:end>
 
 import {

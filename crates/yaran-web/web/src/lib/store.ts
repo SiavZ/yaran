@@ -30,6 +30,7 @@
  * ├── src/lib/git.ts
  * ├── src/lib/instanceTitle.ts
  * ├── src/lib/macros.ts
+ * ├── src/lib/native/accessSession.ts
  * ├── src/lib/notify.ts
  * ├── src/lib/pageLifecycle.ts
  * ├── src/lib/paneDivider.ts
@@ -75,8 +76,6 @@
  * ├── src/components/AgentStartupCommandDialog.tsx
  * ├── src/components/AgentTabsStrip.test.tsx
  * ├── src/components/AgentTabsStrip.tsx
- * ├── src/components/AppMenu.tsx
- * ├── src/components/AppMenuSheet.tsx
  * ├── src/components/AttachPullRequestDialog.test.tsx
  * ├── src/components/AttachPullRequestDialog.tsx
  * ├── src/components/ChangeProviderDialog.tsx
@@ -106,6 +105,8 @@
  * ├── src/components/ConfirmVanishedEditorDialog.test.tsx
  * ├── src/components/ConfirmVanishedEditorDialog.tsx
  * ├── src/components/ConnDot.tsx
+ * ├── src/components/ConnectPhoneDialog.test.tsx
+ * ├── src/components/ConnectPhoneDialog.tsx
  * ├── src/components/CreateAgentDialog.test.tsx
  * ├── src/components/CreateAgentDialog.tsx
  * ├── src/components/CreationOverflowMenuItems.tsx
@@ -142,6 +143,7 @@
  * ├── src/components/MobileShell.tsx
  * ├── src/components/NewAgentPickerDialog.test.tsx
  * ├── src/components/NewAgentPickerDialog.tsx
+ * ├── src/components/OfflineOverlay.dom.test.tsx
  * ├── src/components/OfflineOverlay.test.tsx
  * ├── src/components/OfflineOverlay.tsx
  * ├── src/components/PaneActionCluster.tsx
@@ -242,6 +244,7 @@
  * ├── src/lib/storeTheater.test.ts
  * ├── src/lib/storeWorkspacePush.test.ts
  * ├── src/lib/theater.ts
+ * ├── src/lib/useAppMenuContext.ts
  * ├── yaran-website:src/figure/WebUIFigure.tsx
  * └── yaran-website:src/figure/seed.ts
  * <module-headers:end>
@@ -1407,6 +1410,8 @@ function routeEvent(event: EventsServerMessage): void {
     case "status_cleared":
       dismissNotification(event.key ?? ANON_TOAST_ID)
       return
+    // The cloud leg's live snapshot rides the bootstrap too (pairing, tunnel state).
+    case "cloud.changed":
     case "config.changed":
       loadBootstrap()
       return

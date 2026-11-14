@@ -19,11 +19,13 @@
  * <module-headers:begin>
  * Uses:
  * src/lib/cloudApi.ts
- * └── src/lib/connection.ts
+ * ├── src/lib/connection.ts
+ * └── src/lib/jsonRequest.ts
  * External: none
  *
  * Used by:
  * src/lib/cloudApi.ts
+ * ├── src/components/ConnectPhoneDialog.tsx
  * ├── src/components/CustomizeWebappDialog.test.tsx
  * ├── src/components/CustomizeWebappDialog.tsx
  * ├── src/components/cloud/CloudDialog.test.tsx

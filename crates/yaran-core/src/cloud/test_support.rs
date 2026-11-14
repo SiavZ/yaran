@@ -33,6 +33,7 @@
 //! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-tui::app::cloud_tests
 //! ├── yaran-web::cloud_ingress_tests
+//! ├── yaran-web::cloud_phone_routes
 //! └── yaran-web::cloud_routes::tests
 //! <module-headers:end>
 

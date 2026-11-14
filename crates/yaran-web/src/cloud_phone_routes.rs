@@ -6,17 +6,22 @@
 //! rendered as SVG by the one encoder the CLI and TUI use (Phase 09), so the three
 //! codes cannot differ. 409 with a sentence when the machine is not paired.
 //!
-//! - The org URL and the renderer come through [`PhoneQrSource`], installed once by the
-//!   serve path that owns the credentials. Until something installs one, the machine
-//!   reads as not paired.
-//! - Read-only and cheap: no remote call, `no-store`.
+//! - The org URL and the renderer come through [`PhoneQrSource`]: the credentials store
+//!   and the shared encoder in production, a fake in tests. A revoked pairing reads as
+//!   not paired.
+//! - Read-only and cheap: no remote call, `no-store`; the file read runs off the runtime.
 //!
 //! <module-headers:begin>
 //! Uses:
 //! cloud_phone_routes.rs
 //! ├── server
-//! └── yaran-core::cloud::protocol::uri
-//! External: axum, serde, serde_json, std, tokio
+//! ├── yaran-core::cloud::credentials
+//! ├── yaran-core::cloud::paths
+//! ├── yaran-core::cloud::protocol::uri
+//! ├── yaran-core::cloud::qr
+//! ├── yaran-core::cloud::test_support
+//! └── yaran-core::test_scratch
+//! External: axum, serde, serde_json, tokio
 //!
 //! Used by:
 //! cloud_phone_routes.rs
@@ -24,16 +29,18 @@
 //! └── server
 //! <module-headers:end>
 
-use std::sync::{Arc, OnceLock};
-
 use axum::{
     Json, Router,
+    extract::State,
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Serialize;
+use yaran_core::cloud::credentials;
+use yaran_core::cloud::paths::CloudPaths;
 use yaran_core::cloud::protocol::uri::add_org_uri;
+use yaran_core::cloud::qr::Qr;
 
 use crate::server::AppState;
 
@@ -45,19 +52,42 @@ pub trait PhoneQrSource: Send + Sync {
     fn render_svg(&self, payload: &str) -> Option<String>;
 }
 
-static SOURCE: OnceLock<Arc<dyn PhoneQrSource>> = OnceLock::new();
+/// Pixels per QR module in the SVG (the browser scales it to fit).
+const MODULE_PX: u32 = 4;
 
-/// Install the process's source. The first install wins; returns false after that.
-pub fn install_phone_qr_source(source: Arc<dyn PhoneQrSource>) -> bool {
-    SOURCE.set(source).is_ok()
+impl PhoneQrSource for CloudPaths {
+    fn org_url(&self) -> Option<String> {
+        credentials::read(self)
+            .ok()
+            .flatten()
+            .filter(|c| !c.is_revoked())
+            .map(|c| c.org_url)
+    }
+    fn render_svg(&self, payload: &str) -> Option<String> {
+        Qr::encode(payload).ok().map(|qr| qr.to_svg(MODULE_PX))
+    }
 }
 
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/v1/cloud/phone-qr", get(get_phone_qr))
 }
 
-async fn get_phone_qr() -> Response {
-    phone_qr_response(SOURCE.get().map(|s| s.as_ref()))
+async fn get_phone_qr(State(state): State<AppState>) -> Response {
+    let Some(inputs) = state.engine.cloud_inputs().await else {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The engine is unavailable, so yaran cannot read this machine's pairing; try again shortly.",
+        );
+    };
+    let paths = inputs.paths;
+    tokio::task::spawn_blocking(move || phone_qr_response(Some(&paths)))
+        .await
+        .unwrap_or_else(|_| {
+            refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "yaran could not read this machine's pairing. Run yaran cloud pair-phone in a terminal on this machine to show the phone code there.",
+            )
+        })
 }
 
 #[derive(Serialize, Debug)]
@@ -133,6 +163,28 @@ mod tests {
             assert_eq!(status, StatusCode::CONFLICT);
             assert!(text.contains("yaran cloud login"), "{text}");
         }
+    }
+
+    #[tokio::test]
+    async fn production_reads_the_credentials_and_draws_with_the_shared_encoder() {
+        use yaran_core::cloud::test_support::{SAMPLE_ORG, pair_sample};
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let paths = CloudPaths::from_root(tmp.path());
+        let (status, _) = body(phone_qr_response(Some(&paths))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "unpaired");
+        pair_sample(&paths, SAMPLE_ORG);
+        let (status, text) = body(phone_qr_response(Some(&paths))).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let (uri, qr) = Qr::add_org(SAMPLE_ORG).unwrap();
+        assert_eq!(
+            (v["url"].as_str(), v["uri"].as_str()),
+            (Some(SAMPLE_ORG), Some(uri.as_str()))
+        );
+        assert_eq!(v["svg"], qr.to_svg(MODULE_PX));
+        credentials::stamp_revoked(&paths).unwrap();
+        let (status, _) = body(phone_qr_response(Some(&paths))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "revoked reads as unpaired");
     }
 
     /// The payload is Phase 02's `add_org_uri` for every case in its fixture.
