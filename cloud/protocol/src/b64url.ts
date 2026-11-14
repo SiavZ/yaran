@@ -37,7 +37,7 @@ const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 const LOOKUP = new Map<string, number>([...ALPHABET].map((c, i) => [c, i]));
 
 export const utf8 = new TextEncoder();
-const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
 /** Encodes bytes as base64url without padding. */
 export function b64urlEncode(bytes: Uint8Array): string {

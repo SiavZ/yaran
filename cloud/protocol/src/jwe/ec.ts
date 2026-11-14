@@ -90,6 +90,6 @@ export async function jwkThumbprint(jwk: P256Jwk): Promise<string> {
 
 /** Imports a validated raw point as a WebCrypto public key. */
 export function importP256Public(raw: Uint8Array, use: "ECDH" | "ECDSA"): Promise<CryptoKey> {
-  const usages: KeyUsage[] = use === "ECDSA" ? ["verify"] : [];
+  const usages: "verify"[] = use === "ECDSA" ? ["verify"] : [];
   return crypto.subtle.importKey("raw", raw as BufferSource, { name: use, namedCurve: "P-256" }, true, usages);
 }

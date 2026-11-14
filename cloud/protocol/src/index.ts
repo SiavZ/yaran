@@ -56,7 +56,25 @@
  * ├── @yaran/mobile-shell:src/screens/onboarding/onboarding.test.tsx
  * ├── @yaran/push:src/definitions.ts
  * ├── @yaran/push:test/guards.test.ts
- * └── @yaran/qr:src/payload.ts
+ * ├── @yaran/qr:src/payload.ts
+ * ├── yaran-cloud:src/audit/actions.ts
+ * ├── yaran-cloud:src/audit/audit.ts
+ * ├── yaran-cloud:src/auth/authorize.ts
+ * ├── yaran-cloud:src/auth/machine-signature.ts
+ * ├── yaran-cloud:src/auth/nonce-store.ts
+ * ├── yaran-cloud:src/db/settings.ts
+ * ├── yaran-cloud:src/http/body.ts
+ * ├── yaran-cloud:src/http/pipeline.ts
+ * ├── yaran-cloud:src/http/responses.ts
+ * ├── yaran-cloud:src/index.ts
+ * ├── yaran-cloud:src/security/data-key.ts
+ * ├── yaran-cloud:test/audit.test.ts
+ * ├── yaran-cloud:test/data-key.test.ts
+ * ├── yaran-cloud:test/ed25519.test.ts
+ * ├── yaran-cloud:test/error-codes.test.ts
+ * ├── yaran-cloud:test/helpers/machine.ts
+ * ├── yaran-cloud:test/machine-signature.test.ts
+ * └── yaran-cloud:test/no-secret-leak.test.ts
  * <module-headers:end>
  */
 export type * from "./generated/types.ts";

@@ -1292,4 +1292,5 @@ export type AuditAction =
   | "drift.repaired"
   | "orphan.found"
   | "orphan.deleted"
-  | "cloudflare.rate_limited";
+  | "cloudflare.rate_limited"
+  | "access.denied";

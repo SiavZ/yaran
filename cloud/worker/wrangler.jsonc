@@ -1,0 +1,51 @@
+// The yaran org control-plane Worker (Phase 04). Every field is commented, because this
+// file is what a deployer reads when the Deploy to Cloudflare button clones it.
+{
+  // Worker script name. The Deploy button may let the deployer change it; nothing in the
+  // code depends on it.
+  "name": "yaran-cloud",
+  "main": "src/index.ts",
+  // Bumped deliberately in a reviewed change, never set to "today" by CI. From 2026-08-04
+  // on, nodejs_compat is on by default.
+  "compatibility_date": "2026-11-01",
+  // Any fetch to a hostname in this Worker's own zone goes through Cloudflare's front door,
+  // Access included, so a same-zone fetch to a machine hostname can never bypass Access.
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  // D19: the workers.dev URL exists only to bootstrap setup. The code serves just /setup*
+  // and /v1/meta there while setup is open and answers 421 misdirected_host to every
+  // workers.dev Host once setup closes, whatever this flag says after a redeploy.
+  "workers_dev": true,
+  // Always off: disabling workers.dev does not disable preview URLs.
+  "preview_urls": false,
+  // Never a custom_domain here: a redeploy would overwrite the deployer's DNS. The setup
+  // wizard attaches the custom domain through the API.
+  "routes": [],
+  // The one D1 database. The binding name DB is stable; database_id is filled by the deploy.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "yaran-cloud",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Exactly one cron expression: the Free plan allows five per account, so the Worker runs
+  // one dispatcher every minute that picks the due tasks itself.
+  "triggers": { "crons": ["* * * * *"] },
+  // Rate Limiting bindings (tier 1). Bindings that share a namespace_id share counters, so
+  // change an id only if another Worker in the account already uses it. Plan availability
+  // is UNVERIFIED: if a deploy refuses this block, delete it; each missing binding falls
+  // back to the strict D1 counters.
+  "ratelimits": [
+    // Per client IP, every route.
+    { "name": "RL_IP", "namespace_id": "7701", "simple": { "limit": 300, "period": 60 } },
+    // Per client IP, setup, authorize and handoff routes.
+    { "name": "RL_AUTH", "namespace_id": "7702", "simple": { "limit": 20, "period": 60 } },
+    // Per machine id, the signed machine API.
+    { "name": "RL_MACHINE", "namespace_id": "7703", "simple": { "limit": 120, "period": 60 } }
+  ],
+  // Workers Logs: the structured JSON log lines are indexed by field.
+  "observability": { "enabled": true },
+  // Plain vars set in the dashboard are not kept across deploys: this file is the truth.
+  "keep_vars": false
+}

@@ -171,7 +171,8 @@ export async function openHandoff(input: OpenInput): Promise<OpenResult> {
   try {
     const peer = await importP256Public(epkPoint, "ECDH");
     const z = new Uint8Array(
-      await crypto.subtle.deriveBits({ name: "ECDH", public: peer }, input.recipientPrivateKey, 256),
+      // Cast: Workers' type names the field `$public`; the runtime reads `public` (WebCrypto).
+      await crypto.subtle.deriveBits({ name: "ECDH", public: peer } as Parameters<SubtleCrypto["deriveBits"]>[0], input.recipientPrivateKey, 256),
     );
     const cek = await concatKdf(z, HANDOFF_ENC, apu, apv, 256);
     const key = await crypto.subtle.importKey("raw", cek as BufferSource, "AES-GCM", false, ["decrypt"]);
