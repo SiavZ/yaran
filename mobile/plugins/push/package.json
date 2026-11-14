@@ -1,0 +1,44 @@
+{
+  "name": "@yaran/push",
+  "version": "0.1.0",
+  "private": true,
+  "description": "First-party Capacitor push plugin: UnifiedPush and the embedded FCM distributor on Android, APNs through the publisher relay on iOS (Phase 16).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@capacitor/core": "~8.6.2"
+  },
+  "dependencies": {
+    "@yaran/protocol": "file:../../../cloud/protocol"
+  },
+  "devDependencies": {
+    "@capacitor/android": "8.6.2",
+    "@capacitor/core": "8.6.2",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "22.20.5",
+    "@types/react": "19.2.18",
+    "jsdom": "29.1.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  }
+}

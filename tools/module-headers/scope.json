@@ -194,6 +194,11 @@
     "mobile/ios/App/NotificationService/NotificationService.swift": "NSExtensionPrincipalClass of the Notification Service Extension target (its Info.plist)",
     "mobile/plugins/push/Package.swift": "read by SwiftPM through the Capacitor CLI's CapApp-SPM package",
     "mobile/plugins/push/ios/Sources/PushPlugin/PushPlugin.swift": "Capacitor plugin class, registered by CAPBridgedPlugin under jsName Push",
-    "mobile/plugins/push/ios/Sources/PushPlugin/NotificationRouter+Push.swift": "extension of PushPlugin: Capacitor's NotificationRouter calls it, and the app delegate calls handleBackgroundPush"
+    "mobile/plugins/push/ios/Sources/PushPlugin/NotificationRouter+Push.swift": "extension of PushPlugin: Capacitor's NotificationRouter calls it, and the app delegate calls handleBackgroundPush",
+    "mobile/plugins/push/src/index.ts": "package entry of @yaran/push (the \".\" export in mobile/plugins/push/package.json), imported by the shell",
+    "mobile/plugins/push/test/*.test.ts": "vitest, via npm test in mobile/plugins/push",
+    "mobile/plugins/push/vitest.config.ts": "loaded by vitest, via npm test in mobile/plugins/push",
+    "mobile/app/src/push/*.test.ts": "vitest, via npm test in mobile/plugins/push until Phase 14's mobile/app runs them",
+    "mobile/app/src/push/*.test.tsx": "vitest (jsdom), via npm test in mobile/plugins/push until Phase 14's mobile/app runs them"
   }
 }
