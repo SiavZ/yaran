@@ -532,12 +532,12 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/web/src/components/CustomizeWebappDialog.test.tsx": {
-    "lines": 958,
-    "reason": "baseline 2026-11-14"
+    "lines": 1008,
+    "reason": "baseline 2026-11-14; phase 10: the cloud row endpoint test and its generated header"
   },
   "crates/yaran-web/web/src/components/CustomizeWebappDialog.tsx": {
-    "lines": 750,
-    "reason": "baseline 2026-11-14"
+    "lines": 840,
+    "reason": "baseline 2026-11-14; phase 10: the cloudMode write-target branch and its generated header"
   },
   "crates/yaran-web/web/src/components/DeleteSessionDialog.test.tsx": {
     "lines": 639,

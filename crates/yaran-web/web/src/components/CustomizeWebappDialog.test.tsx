@@ -1,4 +1,21 @@
 // @vitest-environment jsdom
+//
+// Tests for the Preferences dialog: rendering, write targets and reply toasts.
+//
+// <module-headers:begin>
+// Uses:
+// src/components/CustomizeWebappDialog.test.tsx
+// ├── src/components/CustomizeWebappDialog.tsx
+// ├── src/lib/bootstrapApi.ts
+// ├── src/lib/cloudLegApi.ts
+// ├── src/lib/configApi.ts
+// ├── src/lib/notify.ts
+// ├── src/lib/settingsDescriptors.ts
+// └── src/lib/store.ts
+// External: @testing-library/react, react, vitest
+//
+// Used by: entry point (vitest, via npm test in crates/yaran-web/web)
+// <module-headers:end>
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
@@ -27,6 +44,9 @@ vi.mock("@/lib/store", async (importOriginal) => {
 vi.mock("@/lib/configApi", () => ({
   configApi: { toggleGithubIntegration: vi.fn(), setTailscaleMode: vi.fn() },
 }))
+
+// The cloud row has its own endpoint for the same reason as the Tailscale one.
+vi.mock("@/lib/cloudLegApi", () => ({ setCloudMode: vi.fn() }))
 
 // The Tailscale row's reply is a sentence, and its tone decides which raiser
 // it goes to. `lib/notify` is the one place a toast is raised, so it is the one
@@ -88,6 +108,7 @@ const setChangesPaneVisibility = vi.mocked(store.setChangesPaneVisibility)
 const { configApi } = await import("@/lib/configApi")
 const toggleGithubIntegration = vi.mocked(configApi.toggleGithubIntegration)
 const setTailscaleMode = vi.mocked(configApi.setTailscaleMode)
+const setCloudMode = vi.mocked((await import("@/lib/cloudLegApi")).setCloudMode)
 const notify = await import("@/lib/notify")
 const notifyInfo = vi.mocked(notify.notifyInfo)
 const notifyWarning = vi.mocked(notify.notifyWarning)
@@ -189,10 +210,10 @@ describe("CustomizeWebappDialog", () => {
     seed()
     render(<CustomizeWebappDialog />)
 
-    // Four select rows: pr_banner_position, compose_bar and server.tailscale
-    // (static enums), and defaults.provider (enum-dynamic, sourced from
-    // available_providers).
-    expect(screen.getAllByRole("combobox").length).toBe(4)
+    // Five select rows: pr_banner_position, compose_bar, server.tailscale and
+    // cloud.mode (static enums), and defaults.provider (enum-dynamic, sourced
+    // from available_providers).
+    expect(screen.getAllByRole("combobox").length).toBe(5)
   })
 
   it("shows the documented default for each row", () => {
@@ -664,6 +685,35 @@ describe("CustomizeWebappDialog", () => {
     expect(setTailscaleMode).toHaveBeenCalledWith("no")
     for (const [patch] of saveSettings.mock.calls) {
       expect(patch.ui ?? {}).not.toHaveProperty("tailscale")
+    }
+  })
+
+  it("saves the cloud mode through its own endpoint and keeps a sticky reply up", async () => {
+    setCloudMode.mockClear().mockResolvedValue({
+      mode: "yes",
+      warning: true,
+      sticky: true,
+      message: "This machine is not paired with Yaran Cloud",
+    })
+    seed({ cloud: { mode: "auto" } } as unknown as Partial<Bootstrap>)
+    render(<CustomizeWebappDialog />)
+
+    const trigger = screen.getByLabelText("Remote access through Yaran Cloud")
+    fireEvent.click(trigger)
+    await waitFor(() => expect(trigger.getAttribute("aria-expanded")).toBe("true"))
+    const option = await screen.findByRole("option", { name: "Yes" })
+    fireEvent.pointerDown(option, { pointerType: "mouse" })
+    fireEvent.click(option)
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+    await waitFor(() => expect(closeCustomizeWebapp).toHaveBeenCalled())
+    expect(setCloudMode).toHaveBeenCalledWith("yes")
+    expect(notifyWarning).toHaveBeenCalledWith(
+      "This machine is not paired with Yaran Cloud",
+      { sticky: true },
+    )
+    for (const [patch] of saveSettings.mock.calls) {
+      expect(patch.ui ?? {}).not.toHaveProperty("mode")
     }
   })
 

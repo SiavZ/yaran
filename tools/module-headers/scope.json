@@ -61,6 +61,8 @@
     "crates/yaran-web/web/src/App.tsx",
     "crates/yaran-web/web/src/components/AppMenu.test.tsx",
     "crates/yaran-web/web/src/components/AppMenuSheet.test.tsx",
+    "crates/yaran-web/web/src/components/CustomizeWebappDialog.test.tsx",
+    "crates/yaran-web/web/src/components/CustomizeWebappDialog.tsx",
     "crates/yaran-web/web/src/components/cloud/CloudDialog.test.tsx",
     "crates/yaran-web/web/src/components/cloud/CloudDialog.tsx",
     "crates/yaran-web/web/src/components/cloud/CloudLogoutDialog.tsx",
@@ -68,7 +70,13 @@
     "crates/yaran-web/web/src/lib/appMenu.test.ts",
     "crates/yaran-web/web/src/lib/appMenu.ts",
     "crates/yaran-web/web/src/lib/appMenuBindings.test.tsx",
+    "crates/yaran-web/web/src/lib/bootstrapApi.ts",
     "crates/yaran-web/web/src/lib/cloudApi.ts",
+    "crates/yaran-web/web/src/lib/cloudLegApi.ts",
+    "crates/yaran-web/web/src/lib/settingsDescriptors.test.ts",
+    "crates/yaran-web/web/src/lib/settingsDescriptors.ts",
+    "crates/yaran-web/web/src/lib/settingsDescriptorsCloud.test.ts",
+    "crates/yaran-web/web/src/lib/settingsDescriptorsCloud.ts",
     "crates/yaran-web/web/src/lib/store.ts",
     "crates/yaran/src/companion.rs",
     "crates/yaran/src/main.rs"
@@ -119,6 +127,9 @@
     "crates/yaran-core/tests/upgrade_config.rs": "cargo test -p yaran-core --test upgrade_config (integration test)",
     "crates/yaran/src/main.rs": "the yaran binary's main",
     "crates/yaran-web/web/src/**/*.test.ts": "vitest, via npx vitest run in crates/yaran-web/web",
-    "crates/yaran-web/web/src/**/*.test.tsx": "vitest, via npx vitest run in crates/yaran-web/web"
+    "crates/yaran-web/web/src/**/*.test.tsx": "vitest, via npx vitest run in crates/yaran-web/web",
+    "crates/yaran-web/web/src/lib/settingsDescriptorsCloud.test.ts": "vitest, via npm test in crates/yaran-web/web",
+    "crates/yaran-web/web/src/lib/settingsDescriptors.test.ts": "vitest, via npm test in crates/yaran-web/web",
+    "crates/yaran-web/web/src/components/CustomizeWebappDialog.test.tsx": "vitest, via npm test in crates/yaran-web/web"
   }
 }
