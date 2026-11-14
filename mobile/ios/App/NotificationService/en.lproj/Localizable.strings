@@ -1,0 +1,25 @@
+/* Push notification words for the Notification Service Extension (Phase 16).
+   Keys and English values mirror PushPhrase in YaranPushCore/NotificationContentBuilder.swift;
+   the app target's Localizable.strings (Phase 14) needs PUSH_GENERIC_TITLE and PUSH_GENERIC_BODY
+   too, because the relay's generic alert names them. */
+
+"PUSH_GENERIC_TITLE" = "An agent needs attention";
+"PUSH_GENERIC_BODY" = "Open yaran to see which agent.";
+"PUSH_NEEDS_YOU" = "%@ needs you";
+"PUSH_NEEDS_YOU_ANON" = "An agent needs you";
+"PUSH_CLEARED" = "%@ no longer needs you";
+"PUSH_CLEARED_ANON" = "An agent no longer needs you";
+"PUSH_EXIT_LAUNCH_FAILED" = "%@ failed to start";
+"PUSH_EXIT_LAUNCH_FAILED_ANON" = "An agent failed to start";
+"PUSH_EXIT_ERROR" = "%@ stopped with an error";
+"PUSH_EXIT_ERROR_ANON" = "An agent stopped with an error";
+"PUSH_EXIT_UNKNOWN" = "%@ stopped unexpectedly";
+"PUSH_EXIT_UNKNOWN_ANON" = "An agent stopped unexpectedly";
+"PUSH_EXIT_RAPID" = "%@ exited right after starting";
+"PUSH_EXIT_RAPID_ANON" = "An agent exited right after starting";
+"PUSH_TEST_TITLE" = "Test notification from %@";
+"PUSH_TEST_BODY" = "Notifications from this organization reach this phone.";
+"PUSH_BODY_PROJECT_MACHINE" = "%1$@ · %2$@";
+"PUSH_UNKNOWN_MACHINE" = "A machine not on this phone";
+"PUSH_UNKNOWN_ORG" = "your organization";
+"PUSH_ACTION_MUTE_MACHINE" = "Mute this machine";
