@@ -4,6 +4,75 @@
 //! without limit (see [`REQ_CHANNEL_CAPACITY`]); replies over tokio oneshots. The
 //! engine thread `try_recv`s on a tick, so it also drains worker events and fires
 //! the coarse spine-change, status and commit signals.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! engine_actor.rs
+//! ├── cloud_routes
+//! ├── crate
+//! ├── serve_legs
+//! ├── test_support
+//! ├── yaran-core
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::config
+//! ├── yaran-core::config_reload_status
+//! ├── yaran-core::config_write
+//! ├── yaran-core::engine
+//! ├── yaran-core::file_drop
+//! ├── yaran-core::gh
+//! ├── yaran-core::git
+//! ├── yaran-core::ids
+//! ├── yaran-core::logger
+//! ├── yaran-core::model
+//! ├── yaran-core::poller_status
+//! ├── yaran-core::project_browser
+//! ├── yaran-core::provider
+//! ├── yaran-core::pty
+//! ├── yaran-core::sidebar
+//! ├── yaran-core::status_text
+//! ├── yaran-core::statusline
+//! ├── yaran-core::storage
+//! ├── yaran-core::tab_verdict
+//! ├── yaran-core::tailscale
+//! ├── yaran-core::viewmodel
+//! ├── yaran-core::wire
+//! └── yaran-core::worker
+//! External: chrono, serde_json, std, tempfile, tokio
+//!
+//! Used by:
+//! engine_actor.rs
+//! ├── background
+//! ├── browse_routes
+//! ├── changes
+//! ├── cloud_routes
+//! ├── crate
+//! ├── file_drop_routes
+//! ├── file_routes
+//! ├── first_load_routes
+//! ├── git_routes
+//! ├── project_actions
+//! ├── resource_routes
+//! ├── rest_common
+//! ├── serve_legs
+//! ├── server
+//! ├── session_actions
+//! ├── test_support
+//! ├── yaran-web[test add_project_base_branch]
+//! ├── yaran-web[test changes_events]
+//! ├── yaran-web[test file_move_and_info_routes]
+//! ├── yaran-web[test file_tree_routes]
+//! ├── yaran-web[test first_load_routes]
+//! ├── yaran-web[test live_server_limits]
+//! ├── yaran-web[test missing_working_copy]
+//! ├── yaran-web[test project_worktrees_routes]
+//! ├── yaran-web[test pull_request_resolution]
+//! ├── yaran-web[test session_branch_routes]
+//! ├── yaran-web[test static_serving]
+//! ├── yaran-web[test tab_routes]
+//! ├── yaran-web[test terminal_file_routes]
+//! ├── yaran-web[test workspace_push]
+//! └── yaran-web[test ws_transport]
+//! <module-headers:end>
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -278,6 +347,10 @@ pub enum EngineRequest {
     /// "cursor"/"vscode"/"zed"). Instant clone; the detect + launch I/O for the
     /// "open in editor" action runs off-thread in the server handler.
     EditorDefault(oneshot::Sender<String>),
+    /// What the Yaran Cloud routes need from the engine: the cloud paths, the
+    /// live `[cloud]` section, the serving port and the status liveness set.
+    /// Instant clones; the routes do their network and file work off-thread.
+    CloudInputs(oneshot::Sender<crate::cloud_routes::CloudInputs>),
     /// Resolve the directory the add-project picker opens at from
     /// `defaults.start_directory` in the live config, so a reload changes the answer
     /// and a raw save that has not been reloaded does not. An instant clone; the
@@ -1529,6 +1602,16 @@ impl EngineHandle {
         rx.await.unwrap_or_default()
     }
 
+    /// The inputs the Yaran Cloud routes read; `None` when the engine is gone.
+    pub async fn cloud_inputs(&self) -> Option<crate::cloud_routes::CloudInputs> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::CloudInputs(tx))
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
     /// The directory the add-project picker should open at, resolved from the
     /// live config. `None` if the engine is gone, in which case the browse handler falls
     /// back to `$HOME` on its own.
@@ -1929,6 +2012,7 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         | EngineRequest::SessionStartupLogContext(..)
         | EngineRequest::ProjectStartupLogContext(..)
         | EngineRequest::EditorDefault(..)
+        | EngineRequest::CloudInputs(..)
         | EngineRequest::BrowseStartDir(..) => false,
 
         // Attach to an ALREADY-RUNNING PTY, or push bytes at one. Deliberately
@@ -3914,6 +3998,9 @@ fn handle_request(
         }
         EngineRequest::EditorDefault(reply) => {
             let _ = reply.send(engine.config.editor.default.clone());
+        }
+        EngineRequest::CloudInputs(reply) => {
+            let _ = reply.send(crate::cloud_routes::CloudInputs::from_engine(engine));
         }
         EngineRequest::BrowseStartDir(reply) => {
             let dir = yaran_core::project_browser::resolve_start_dir(&engine.config)
@@ -7296,6 +7383,11 @@ mod tests {
                 false,
             ),
             (
+                "CloudInputs",
+                EngineRequest::CloudInputs(dead_reply()),
+                false,
+            ),
+            (
                 "RegisteredProjectPaths",
                 EngineRequest::RegisteredProjectPaths(dead_reply()),
                 false,
@@ -7448,7 +7540,7 @@ mod tests {
         // through with a copied-from-its-neighbour `false` that nothing reads.
         assert_eq!(
             request_kind_answers().len(),
-            44,
+            45,
             "every EngineRequest kind needs a row in request_kind_answers; \
              update the count deliberately when adding one"
         );

@@ -10,6 +10,94 @@
 //! hijacking, allowing same-host origins only. A client that sends no `Origin` is
 //! allowed, a documented tradeoff: a CLI or test client is trusted not to be a
 //! hijacked browser tab.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! server.rs
+//! ├── bootstrap_routes
+//! ├── browse_routes
+//! ├── build_routes
+//! ├── changes
+//! ├── changes_routes
+//! ├── cloud_routes
+//! ├── config_routes
+//! ├── console
+//! ├── crate
+//! ├── engine_actor
+//! ├── event_bus
+//! ├── file_drop_routes
+//! ├── file_routes
+//! ├── first_load_routes
+//! ├── git_routes
+//! ├── host_guard
+//! ├── ownership_publish
+//! ├── project_actions
+//! ├── project_reads
+//! ├── pty_log
+//! ├── pty_sizes
+//! ├── resource_routes
+//! ├── rest_common
+//! ├── serve_legs
+//! ├── session_actions
+//! ├── startup_logs
+//! ├── tab_actions
+//! ├── terminal_actions
+//! ├── test_support
+//! ├── web_assets
+//! ├── workspace_routes
+//! ├── yaran-core::activity
+//! ├── yaran-core::background_serve
+//! ├── yaran-core::config
+//! ├── yaran-core::logger
+//! ├── yaran-core::model
+//! ├── yaran-core::prose
+//! ├── yaran-core::status_text
+//! ├── yaran-core::statusline
+//! ├── yaran-core::storage
+//! ├── yaran-core::test_scratch
+//! ├── yaran-core::urls
+//! └── yaran-core::wire
+//! External: axum, chrono, futures_util, serde, serde_json, std, tempfile, tokio, tower, uuid
+//!
+//! Used by:
+//! server.rs
+//! ├── bootstrap_routes
+//! ├── browse_routes
+//! ├── build_routes
+//! ├── changes_routes
+//! ├── cloud_routes
+//! ├── config_routes
+//! ├── crate
+//! ├── file_drop_routes
+//! ├── file_routes
+//! ├── first_load_routes
+//! ├── git_routes
+//! ├── ownership_publish
+//! ├── project_actions
+//! ├── project_reads
+//! ├── resource_routes
+//! ├── session_actions
+//! ├── startup_logs
+//! ├── tab_actions
+//! ├── terminal_actions
+//! ├── test_support
+//! ├── workspace_routes
+//! ├── yaran-web[test add_project_base_branch]
+//! ├── yaran-web[test changes_events]
+//! ├── yaran-web[test file_move_and_info_routes]
+//! ├── yaran-web[test file_tree_routes]
+//! ├── yaran-web[test first_load_routes]
+//! ├── yaran-web[test live_server_limits]
+//! ├── yaran-web[test missing_working_copy]
+//! ├── yaran-web[test project_worktrees_routes]
+//! ├── yaran-web[test pull_request_resolution]
+//! ├── yaran-web[test session_branch_routes]
+//! ├── yaran-web[test static_serving]
+//! ├── yaran-web[test tab_routes]
+//! ├── yaran-web[test terminal_file_routes]
+//! ├── yaran-web[test workspace_push]
+//! └── yaran-web[test ws_transport]
+//! <module-headers:end>
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -805,6 +893,7 @@ pub fn build_app(
         .merge(crate::startup_logs::routes())
         .merge(crate::terminal_actions::routes())
         .merge(crate::file_drop_routes::routes(&state))
+        .merge(crate::cloud_routes::routes(&state))
         .merge(crate::tab_actions::routes())
         .merge(crate::browse_routes::routes())
         .merge(crate::config_routes::routes())

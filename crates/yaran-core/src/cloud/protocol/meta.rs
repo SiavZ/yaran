@@ -16,8 +16,11 @@
 //!
 //! Used by:
 //! cloud/protocol/meta.rs
+//! ├── cloud::login
+//! ├── cloud::machine_api
 //! ├── cloud::protocol
-//! └── cloud::protocol::machine
+//! ├── cloud::protocol::machine
+//! └── cloud::test_support
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};

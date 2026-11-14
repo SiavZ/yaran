@@ -4,6 +4,56 @@
 //! helper as the input tests, so those fixtures live here rather than being
 //! duplicated. Compiled only under `#[cfg(test)]` (see the module declaration
 //! in `mod.rs`).
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/test_support.rs
+//! ├── app
+//! ├── app::human_board
+//! ├── clipboard
+//! ├── config
+//! ├── crate
+//! ├── diff
+//! ├── keybindings
+//! ├── raw_input
+//! ├── theme
+//! ├── yaran-core::config
+//! ├── yaran-core::config_queue
+//! ├── yaran-core::engine
+//! ├── yaran-core::ids
+//! ├── yaran-core::model
+//! ├── yaran-core::term_identity
+//! ├── yaran-core::test_git
+//! └── yaran-core::test_provider
+//! External: chrono, std, tempfile
+//!
+//! Used by:
+//! app/test_support.rs
+//! ├── app
+//! ├── app::background_server
+//! ├── app::cloud_tests
+//! ├── app::first_load
+//! ├── app::grouped_sidebar_tests
+//! ├── app::human_board::tests
+//! ├── app::input
+//! ├── app::input::host_click_regression_tests
+//! ├── app::input::host_selection_regression_tests
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::new_agent_settings
+//! ├── app::orphan_worktrees
+//! ├── app::overlay_dismiss
+//! ├── app::presize
+//! ├── app::pty_ownership
+//! ├── app::redraw
+//! ├── app::render
+//! ├── app::session_settings
+//! ├── app::sessions
+//! ├── app::shared_workspace_tests
+//! ├── app::ui_audit_tests
+//! ├── app::workers
+//! └── app::worktree_manager
+//! <module-headers:end>
 
 use crate::app::{
     App, CenterMode, ChangeAgentProviderMode, ChangeAgentProviderOption, ChangeAgentProviderPrompt,
@@ -285,6 +335,7 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         unpushed_count_rx: None,
         notes_fetch_rx: None,
         orphan_worktrees_rx: None,
+        cloud: Default::default(),
         deferred_first_load_notes: None,
         notes_fetch_explicit_request: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
             false,

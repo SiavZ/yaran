@@ -15,6 +15,63 @@
 //!
 //! This crate depends on `yaran-core`, never `yaran-tui`. The `dep-isolation` CI job
 //! runs `cargo tree -p yaran-web` and fails if any TUI-only crate appears.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! lib.rs
+//! ├── background
+//! ├── bootstrap
+//! ├── bootstrap_routes
+//! ├── browse_routes
+//! ├── build_routes
+//! ├── changes
+//! ├── changes_routes
+//! ├── cloud_routes
+//! ├── compressible_exts
+//! ├── config_routes
+//! ├── console
+//! ├── engine_actor
+//! ├── event_bus
+//! ├── file_drop_routes
+//! ├── file_routes
+//! ├── first_load_routes
+//! ├── git_routes
+//! ├── host_guard
+//! ├── ownership_publish
+//! ├── project_actions
+//! ├── project_reads
+//! ├── pty_log
+//! ├── pty_sizes
+//! ├── resource_routes
+//! ├── rest_common
+//! ├── serve_legs
+//! ├── server
+//! ├── session_actions
+//! ├── startup_logs
+//! ├── tab_actions
+//! ├── terminal_actions
+//! ├── test_support
+//! ├── web_assets
+//! ├── workspace_routes
+//! ├── yaran-core::activity
+//! ├── yaran-core::config
+//! ├── yaran-core::config_write
+//! ├── yaran-core::engine
+//! ├── yaran-core::logger
+//! ├── yaran-core::peer
+//! ├── yaran-core::pty_owners
+//! ├── yaran-core::tailscale
+//! └── yaran-core::worker
+//! External: anyhow, axum, std, tempfile, tokio
+//!
+//! Used by:
+//! lib.rs
+//! ├── background
+//! ├── engine_actor
+//! ├── server
+//! ├── yaran-web[test serve_with_engine]
+//! └── yaran[bin yaran]
+//! <module-headers:end>
 
 pub mod background;
 pub mod bootstrap;
@@ -23,6 +80,7 @@ pub mod browse_routes;
 pub mod build_routes;
 pub mod changes;
 pub mod changes_routes;
+pub mod cloud_routes;
 pub mod compressible_exts;
 pub mod config_routes;
 pub mod console;

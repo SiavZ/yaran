@@ -14,10 +14,26 @@
 //! atomic rename. A folder change rewrites only the notes of the cards it
 //! changed, so two machines editing different cards never touch the same
 //! file.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! human_board/store.rs
+//! ├── human_board
+//! ├── human_board::id
+//! ├── human_board::markdown
+//! └── private_file
+//! External: anyhow, chrono, serde_json, std, tempfile
+//!
+//! Used by:
+//! human_board/store.rs
+//! ├── human_board
+//! ├── human_board::seen
+//! └── human_board::sync
+//! <module-headers:end>
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::fs::{self, File};
+use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -148,23 +164,8 @@ impl BoardStore {
     }
 
     fn lock(&self) -> Result<File> {
-        use rustix::fs::{FlockOperation, flock};
-        if let Some(parent) = self.lock_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("could not create {}", parent.display()))?;
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(&self.lock_path)
-            .with_context(|| format!("could not open {}", self.lock_path.display()))?;
-        crate::io_retry::retry_on_interrupt_errno(|| flock(&file, FlockOperation::LockExclusive))
-            .with_context(|| format!("could not lock {}", self.lock_path.display()))?;
         // The lock is released when the returned file is dropped.
-        Ok(file)
+        crate::private_file::lock_exclusive(&self.lock_path)
     }
 }
 
@@ -329,46 +330,8 @@ fn write_folder(dir: &Path, before: &Board, after: &Board) -> Result<()> {
     Ok(())
 }
 
-/// Replace `path` with `body` through a temporary sibling and a rename.
-/// `mode` is the new file's permission bits; `None` leaves them to the umask.
-/// The temporary file is hidden (a leading dot), so a notes app or a folder
-/// watcher that happens to look mid-write does not take it for a note.
 fn write_atomic(path: &Path, body: &[u8], mode: Option<u32>) -> Result<()> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = dir.join(format!(
-        ".{name}.tmp.{}.{}",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
-    let result = (|| {
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        if let Some(mode) = mode {
-            options.mode(mode);
-        }
-        let mut file = options
-            .open(&tmp)
-            .with_context(|| format!("could not create {}", tmp.display()))?;
-        file.write_all(body)
-            .with_context(|| format!("could not write {}", tmp.display()))?;
-        file.sync_all()
-            .with_context(|| format!("could not sync {}", tmp.display()))?;
-        fs::rename(&tmp, path).with_context(|| {
-            format!(
-                "could not replace {} with {}",
-                path.display(),
-                tmp.display()
-            )
-        })
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
+    crate::private_file::write_atomic(path, body, mode)
 }
 
 /// The board as last read, or why it could not be read. What the watcher

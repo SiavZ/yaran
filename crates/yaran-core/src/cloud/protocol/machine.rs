@@ -18,7 +18,14 @@
 //!
 //! Used by:
 //! cloud/protocol/machine.rs
-//! └── cloud::protocol
+//! ├── cloud::actions
+//! ├── cloud::credentials
+//! ├── cloud::login
+//! ├── cloud::machine_api
+//! ├── cloud::protocol
+//! ├── cloud::signed_request
+//! ├── cloud::test_support
+//! └── yaran-core[test cloud_machine_api]
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};

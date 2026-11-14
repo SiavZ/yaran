@@ -1,3 +1,35 @@
+//! The terminal UI's theme engine: every color and style the TUI paints comes from here.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! theme.rs
+//! ├── config
+//! ├── crate
+//! ├── yaran-core::theme
+//! └── yaran-core::working_cue
+//! External: anyhow, opaline, ratatui, std, tempfile
+//!
+//! Used by:
+//! theme.rs
+//! ├── app
+//! ├── app::cloud_tests
+//! ├── app::components::button
+//! ├── app::components::checkbox
+//! ├── app::components::hint_bar
+//! ├── app::components::name_chip
+//! ├── app::components::wrap_lines
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::redraw
+//! ├── app::render
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── crate
+//! ├── diff
+//! └── server_screen
+//! <module-headers:end>
+
 #![allow(dead_code)]
 
 use std::path::Path;
@@ -269,6 +301,11 @@ pub struct Theme {
     pub help_banner_fg: Color,
     pub help_banner_bg: Color,
     pub help_body_fg: Color,
+    /// The QR code's dark and light modules (the phone-pairing modal). Black
+    /// and white by default in every theme, because a scanner needs that
+    /// contrast; no other token means "scanner contrast".
+    pub qr_dark: Color,
+    pub qr_light: Color,
 }
 
 /// Load a theme by name.
@@ -621,6 +658,11 @@ fn register_yaran_defaults(theme: &mut OpalineTheme) {
     theme.register_default_token("yaran.pr_open_label", GITHUB_PR_OPEN_LABEL);
     theme.register_default_token("yaran.pr_merged_label", GITHUB_PR_MERGED_LABEL);
     theme.register_default_token("yaran.pr_closed_label", GITHUB_PR_CLOSED_LABEL);
+
+    // The QR code stays black on white whatever the theme: a scanner reads
+    // contrast, not taste. Overridable like every `yaran.*` token.
+    theme.register_default_token("yaran.qr_dark", OpalineColor::BLACK);
+    theme.register_default_token("yaran.qr_light", OpalineColor::WHITE);
 }
 
 /// Convert an [`OpalineColor`] (always RGB) into a [`ratatui::style::Color`],
@@ -752,6 +794,8 @@ impl Theme {
             help_banner_fg: pick("yaran.help_banner_fg"),
             help_banner_bg: pick("yaran.help_banner_bg"),
             help_body_fg: pick("yaran.help_body_fg"),
+            qr_dark: pick("yaran.qr_dark"),
+            qr_light: pick("yaran.qr_light"),
         }
     }
 
@@ -1263,6 +1307,8 @@ mod tests {
             help_banner_fg: Color::Rgb(20, 20, 20),
             help_banner_bg: Color::Cyan,
             help_body_fg: Color::Rgb(180, 180, 180),
+            qr_dark: Color::Black,
+            qr_light: Color::White,
         }
     }
 
@@ -1372,6 +1418,8 @@ mod tests {
         assert_field!(help_banner_fg);
         assert_field!(help_banner_bg);
         assert_field!(help_body_fg);
+        assert_field!(qr_dark);
+        assert_field!(qr_light);
     }
 
     /// The fallback path must always produce a valid Theme: it is what the

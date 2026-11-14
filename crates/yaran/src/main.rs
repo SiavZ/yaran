@@ -1,3 +1,27 @@
+//! The yaran binary: dispatches `server`, `peer`, `board`, `cloud` and `--version`, else runs the TUI.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! main.rs
+//! ├── companion
+//! ├── yaran-core
+//! ├── yaran-core::activity
+//! ├── yaran-core::cloud::cli
+//! ├── yaran-core::config
+//! ├── yaran-core::engine
+//! ├── yaran-core::human_board::cli
+//! ├── yaran-core::logger
+//! ├── yaran-core::peer
+//! ├── yaran-core::reload_handoff
+//! ├── yaran-core::reload_policy
+//! ├── yaran-core::tailscale
+//! ├── yaran-tui
+//! └── yaran-web
+//! External: anyhow, std
+//!
+//! Used by: entry point (the yaran binary's main)
+//! <module-headers:end>
+
 mod companion;
 
 use anyhow::Result;
@@ -34,6 +58,7 @@ fn main() -> Result<()> {
         }
         Some("peer") => run_peer(args),
         Some("board") => run_board(args),
+        Some("cloud") => run_cloud(args),
         _ => run_tui_with_flip(),
     }
 }
@@ -56,6 +81,18 @@ fn run_board(args: impl Iterator<Item = String>) -> Result<()> {
     let args = args.collect::<Vec<_>>();
     let paths = yaran_core::config::YaranPaths::discover()?;
     yaran_core::human_board::cli::run_board(&args, &paths)
+}
+
+/// `yaran cloud ...`: pair this machine with Yaran Cloud, or manage the pairing.
+/// Dispatched early for the same reasons as `yaran board`: no lock, no engine, and
+/// its own `--help`. Never writes `config.toml` (a running yaran owns that file).
+fn run_cloud(args: impl Iterator<Item = String>) -> Result<()> {
+    let args = args.collect::<Vec<_>>();
+    let paths = yaran_core::config::YaranPaths::discover()?;
+    match yaran_core::cloud::cli::run_cloud(&args, &paths) {
+        0 => Ok(()),
+        code => std::process::exit(code),
+    }
 }
 
 /// Write the handoff and replace this process with the newer yaran binary.

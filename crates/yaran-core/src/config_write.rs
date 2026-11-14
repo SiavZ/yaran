@@ -9,6 +9,33 @@
 //! Both the TUI and the web surface share this patch path so a save from either
 //! preserves the same on-disk shape. The TUI keeps its own pretty
 //! first-creation renderer; the web uses [`save_config`] for a plain fallback.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! config_write.rs
+//! ├── cloud::config_patch
+//! ├── config
+//! ├── file_modes
+//! └── logger
+//! External: anyhow, std, tempfile, toml, toml_edit
+//!
+//! Used by:
+//! config_write.rs
+//! ├── cloud::config_patch
+//! ├── config
+//! ├── config_migrate
+//! ├── config_queue
+//! ├── crate
+//! ├── engine
+//! ├── engine::command
+//! ├── engine::config_saver
+//! ├── yaran-core[test upgrade_config]
+//! ├── yaran-tui::cli
+//! ├── yaran-tui::config
+//! ├── yaran-web
+//! ├── yaran-web::bootstrap
+//! └── yaran-web::engine_actor
+//! <module-headers:end>
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -776,6 +803,7 @@ fn apply_patches(doc: &mut DocumentMut, config: &Config) {
         "news_close_hours",
         config.board.news_close_hours,
     );
+    crate::cloud::config_patch::patch_cloud(doc, &config.cloud);
 }
 
 fn patch_limits(doc: &mut DocumentMut, limits: &crate::config::LimitsConfig) {
@@ -832,7 +860,7 @@ pub fn ensure_table<'a>(doc: &'a mut DocumentMut, section: &str) -> &'a mut Tabl
         .unwrap()
 }
 
-fn patch_table_str(doc: &mut DocumentMut, section: &str, key: &str, value: &str) {
+pub(crate) fn patch_table_str(doc: &mut DocumentMut, section: &str, key: &str, value: &str) {
     let table = ensure_table(doc, section);
     table[key] = toml_edit::value(value);
 }
@@ -842,7 +870,7 @@ fn patch_table_opt_str(doc: &mut DocumentMut, section: &str, key: &str, value: O
     table[key] = toml_edit::value(value.unwrap_or(""));
 }
 
-fn patch_table_u16(doc: &mut DocumentMut, section: &str, key: &str, value: u16) {
+pub(crate) fn patch_table_u16(doc: &mut DocumentMut, section: &str, key: &str, value: u16) {
     let table = ensure_table(doc, section);
     table[key] = toml_edit::value(i64::from(value));
 }
@@ -871,12 +899,12 @@ fn patch_table_usize(doc: &mut DocumentMut, section: &str, key: &str, value: usi
     table[key] = toml_edit::value(value as i64);
 }
 
-fn patch_table_bool(doc: &mut DocumentMut, section: &str, key: &str, value: bool) {
+pub(crate) fn patch_table_bool(doc: &mut DocumentMut, section: &str, key: &str, value: bool) {
     let table = ensure_table(doc, section);
     table[key] = toml_edit::value(value);
 }
 
-fn patch_table_u64(doc: &mut DocumentMut, section: &str, key: &str, value: u64) {
+pub(crate) fn patch_table_u64(doc: &mut DocumentMut, section: &str, key: &str, value: u64) {
     let table = ensure_table(doc, section);
     table[key] = toml_edit::value(value as i64);
 }
@@ -894,7 +922,12 @@ pub fn remove_table_key_item(doc: &mut DocumentMut, section: &str, key: &str) ->
         .and_then(|table| table.remove(key))
 }
 
-fn patch_table_string_array(doc: &mut DocumentMut, section: &str, key: &str, values: &[String]) {
+pub(crate) fn patch_table_string_array(
+    doc: &mut DocumentMut,
+    section: &str,
+    key: &str,
+    values: &[String],
+) {
     let table = ensure_table(doc, section);
     let mut arr = Array::new();
     for v in values {

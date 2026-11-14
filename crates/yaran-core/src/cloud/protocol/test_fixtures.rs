@@ -14,6 +14,7 @@
 //!
 //! Used by:
 //! cloud/protocol/test_fixtures.rs
+//! ├── cloud::machine_api_error
 //! ├── cloud::protocol
 //! ├── cloud::protocol::concat_kdf
 //! ├── cloud::protocol::errors
@@ -27,7 +28,9 @@
 //! ├── cloud::protocol::signals
 //! ├── cloud::protocol::signing
 //! ├── cloud::protocol::ua
-//! └── cloud::protocol::uri
+//! ├── cloud::protocol::uri
+//! ├── cloud::qr
+//! └── cloud::signed_request
 //! <module-headers:end>
 
 use std::path::{Path, PathBuf};

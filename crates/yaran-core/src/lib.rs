@@ -2,6 +2,126 @@
 //!
 //! This crate must not depend on `ratatui`, `crossterm`, or any web/server
 //! crate. Surfaces (TUI, web) depend on `yaran-core`, never the reverse.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! lib.rs
+//! ├── action
+//! ├── activity
+//! ├── add_project_plan
+//! ├── add_project_prose
+//! ├── agent_env
+//! ├── agent_job
+//! ├── agent_search
+//! ├── agent_tabs
+//! ├── amq
+//! ├── atomic_update
+//! ├── attention
+//! ├── auto_resume
+//! ├── background_serve
+//! ├── bidi
+//! ├── bounded_command
+//! ├── brand_env
+//! ├── browser
+//! ├── changes_status
+//! ├── cloud
+//! ├── config
+//! ├── config_migrate
+//! ├── config_queue
+//! ├── config_reload_status
+//! ├── config_sync
+//! ├── config_write
+//! ├── device_label
+//! ├── diff
+//! ├── editor
+//! ├── engine
+//! ├── file_drop
+//! ├── file_modes
+//! ├── first_load
+//! ├── flat_list
+//! ├── focus
+//! ├── gh
+//! ├── git
+//! ├── gitignore_seed
+//! ├── home_path
+//! ├── human_board
+//! ├── ids
+//! ├── io_retry
+//! ├── lockfile
+//! ├── logger
+//! ├── macros
+//! ├── model
+//! ├── orphan_worktrees
+//! ├── palette
+//! ├── peer
+//! ├── poller_status
+//! ├── pr_reference
+//! ├── private_file
+//! ├── project_browser
+//! ├── project_order
+//! ├── project_prose
+//! ├── prose
+//! ├── provider
+//! ├── pty
+//! ├── pty_adopt_child
+//! ├── pty_owners
+//! ├── pty_reattach
+//! ├── purge
+//! ├── purge_amq
+//! ├── purge_encoding
+//! ├── quiet_tail
+//! ├── release_notes
+//! ├── reload_handoff
+//! ├── reload_policy
+//! ├── resource_stats
+//! ├── resume_recovery
+//! ├── row_state
+//! ├── sanitize
+//! ├── scroll_hint
+//! ├── scroll_margins
+//! ├── session_settings
+//! ├── shell_quote
+//! ├── sidebar
+//! ├── startup
+//! ├── status_text
+//! ├── statusline
+//! ├── storage
+//! ├── tab_verdict
+//! ├── tailscale
+//! ├── term_identity
+//! ├── terminal_title
+//! ├── test_git
+//! ├── test_provider
+//! ├── test_scratch
+//! ├── text
+//! ├── theme
+//! ├── urls
+//! ├── version
+//! ├── viewmodel
+//! ├── watch
+//! ├── welcome
+//! ├── welcome_screen
+//! ├── wire
+//! ├── worker
+//! ├── working_copy
+//! ├── working_cue
+//! ├── worktree_file
+//! └── worktree_manager
+//! External: std
+//!
+//! Used by:
+//! lib.rs
+//! ├── brand_env
+//! ├── config
+//! ├── startup
+//! ├── viewmodel
+//! ├── yaran-tui::app::first_load
+//! ├── yaran-web::build_routes
+//! ├── yaran-web::engine_actor
+//! ├── yaran-web::first_load_routes
+//! ├── yaran-web[test first_load_routes]
+//! └── yaran[bin yaran]
+//! <module-headers:end>
 
 pub mod action;
 pub mod activity;
@@ -50,6 +170,7 @@ pub mod palette;
 pub mod peer;
 pub mod poller_status;
 pub mod pr_reference;
+pub mod private_file;
 pub mod project_browser;
 pub mod project_order;
 pub mod project_prose;

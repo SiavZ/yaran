@@ -1,3 +1,27 @@
+//! The `yaran config` subcommands (path, diff, reset, regenerate) and their config-diff engine.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! cli.rs
+//! ├── config
+//! ├── crate
+//! ├── keybindings
+//! ├── yaran-core::config_write
+//! ├── yaran-core::model
+//! ├── yaran-core::project_browser
+//! ├── yaran-core::purge
+//! ├── yaran-core::purge_amq
+//! ├── yaran-core::sanitize
+//! ├── yaran-core::storage
+//! ├── yaran-core::test_git
+//! └── yaran-core::text
+//! External: anyhow, chrono, serde_json, similar, std, tempfile, toml
+//!
+//! Used by:
+//! cli.rs
+//! └── crate
+//! <module-headers:end>
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1735,6 +1759,16 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn config_diff_reports_the_cloud_mode() {
+        let mut config = Config::default();
+        config.cloud.mode = "no".to_string();
+        assert_eq!(
+            collect_config_changes(&config),
+            vec!["cloud.mode: auto -> no".to_string()]
+        );
     }
 
     #[test]

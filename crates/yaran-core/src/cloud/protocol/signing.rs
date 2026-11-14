@@ -18,7 +18,10 @@
 //!
 //! Used by:
 //! cloud/protocol/signing.rs
-//! └── cloud::protocol
+//! ├── cloud::machine_api
+//! ├── cloud::protocol
+//! ├── cloud::signed_request
+//! └── cloud::test_support
 //! <module-headers:end>
 
 use std::fmt;

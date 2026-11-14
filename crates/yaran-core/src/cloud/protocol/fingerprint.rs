@@ -15,6 +15,7 @@
 //!
 //! Used by:
 //! cloud/protocol/fingerprint.rs
+//! ├── cloud::identity
 //! ├── cloud::protocol
 //! └── cloud::protocol::handoff_consent
 //! <module-headers:end>

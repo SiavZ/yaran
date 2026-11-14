@@ -1,3 +1,67 @@
+//! Rendering for the terminal UI: every pane, header and overlay, plus shared render helpers.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! app/render.rs
+//! ├── app
+//! ├── app::background_server
+//! ├── app::components
+//! ├── app::components::name_chip
+//! ├── app::components::pane_card
+//! ├── app::components::wrap_lines
+//! ├── app::first_load
+//! ├── app::human_board
+//! ├── app::input
+//! ├── app::new_agent_settings
+//! ├── app::pty_ownership
+//! ├── app::reorder
+//! ├── app::test_support
+//! ├── app::text_input
+//! ├── config
+//! ├── crate
+//! ├── diff
+//! ├── keybindings
+//! ├── theme
+//! ├── tui_color
+//! ├── yaran-core::add_project_plan
+//! ├── yaran-core::add_project_prose
+//! ├── yaran-core::agent_search
+//! ├── yaran-core::config
+//! ├── yaran-core::engine
+//! ├── yaran-core::git
+//! ├── yaran-core::home_path
+//! ├── yaran-core::human_board
+//! ├── yaran-core::ids
+//! ├── yaran-core::model
+//! ├── yaran-core::project_prose
+//! ├── yaran-core::prose
+//! ├── yaran-core::row_state
+//! ├── yaran-core::statusline
+//! ├── yaran-core::tab_verdict
+//! ├── yaran-core::terminal_title
+//! ├── yaran-core::text
+//! ├── yaran-core::version
+//! ├── yaran-core::watch
+//! ├── yaran-core::welcome
+//! ├── yaran-core::worker
+//! ├── yaran-core::working_copy
+//! └── yaran-core::working_cue
+//! External: chrono, crokey, crossterm, home, ratatui, std
+//!
+//! Used by:
+//! app/render.rs
+//! ├── app
+//! ├── app::cloud_render
+//! ├── app::first_load
+//! ├── app::human_board_dialog
+//! ├── app::input
+//! ├── app::overlay_dismiss
+//! ├── app::presize
+//! ├── app::session_settings
+//! ├── app::sessions
+//! └── app::workers
+//! <module-headers:end>
+
 use super::components::pane_card::CardPlan;
 use super::components::wrap_lines::{char_display_width, display_width};
 use super::components::{
@@ -12519,6 +12583,7 @@ impl App {
             PromptState::ConfirmSharedWriter { .. } => {
                 self.render_confirm_shared_writer_prompt(frame)
             }
+            PromptState::Cloud(_) => self.render_cloud_prompt(frame),
             _ => return false,
         }
         true
@@ -14579,7 +14644,7 @@ fn single_line_caret_column(text: &str, cursor: usize, prefix_width: u16) -> u16
 ///
 /// The caret offset is a byte offset and is clamped to a character boundary
 /// before any slicing, so a name holding an accent or an emoji cannot panic.
-fn render_single_line_cursor_input(
+pub(super) fn render_single_line_cursor_input(
     prefix: &str,
     text: &str,
     cursor: usize,

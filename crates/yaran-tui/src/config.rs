@@ -1,3 +1,39 @@
+//! The canonical, fully commented `config.toml` renderer and the TUI's config load/save orchestration.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! config.rs
+//! ├── config::config_schema_cloud
+//! ├── crate
+//! ├── keybindings
+//! ├── yaran-core::config
+//! ├── yaran-core::config_migrate
+//! ├── yaran-core::config_write
+//! ├── yaran-core::logger
+//! └── yaran-core::watch
+//! External: anyhow, crokey, crossterm, indexmap, std, tempfile, toml, toml_edit
+//!
+//! Used by:
+//! config.rs
+//! ├── app
+//! ├── app::grouped_sidebar_tests
+//! ├── app::human_board::tests
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::overlay_dismiss
+//! ├── app::render
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── app::workers
+//! ├── cli
+//! ├── config::config_schema_cloud
+//! ├── config_saver
+//! ├── crate
+//! ├── keybindings
+//! └── theme
+//! <module-headers:end>
+
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs;
@@ -7,6 +43,9 @@ use anyhow::{Context, Result};
 use toml_edit::{DocumentMut, Item};
 
 use crate::keybindings;
+
+#[path = "config_schema_cloud.rs"]
+mod config_schema_cloud;
 
 pub use yaran_core::config::*;
 
@@ -339,7 +378,7 @@ enum ConfigEntry {
 /// changing here needs the matching entry there checked, and vice versa; there
 /// is no codegen linking the two.
 fn config_schema() -> Vec<ConfigEntry> {
-    vec![
+    let mut schema = vec![
         ConfigEntry::Comment("# yaran configuration"),
         ConfigEntry::Comment(
             "# Every value is materialized here so the file doubles as documentation.",
@@ -1835,7 +1874,9 @@ fn config_schema() -> Vec<ConfigEntry> {
             )),
             value_fn: |c| FieldValue::U32(c.board.news_close_hours),
         },
-    ]
+    ];
+    schema.extend(config_schema_cloud::entries());
+    schema
 }
 
 fn render_config(config: &Config, bindings: &crate::keybindings::RuntimeBindings) -> String {

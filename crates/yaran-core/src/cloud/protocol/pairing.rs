@@ -17,6 +17,7 @@
 //!
 //! Used by:
 //! cloud/protocol/pairing.rs
+//! ├── cloud::login
 //! └── cloud::protocol
 //! <module-headers:end>
 
