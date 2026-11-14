@@ -1,0 +1,55 @@
+{
+  "description": "HandoffSignature DER -> raw r||s (each integer left-padded to 32 bytes) -> base64url (EcdsaP256Sig). error: the input must be refused. Values are encodings only; only the committed dsig is a real signature (02 fixtures/sig/handoff-device-signature.json).",
+  "cases": [
+    {
+      "name": "committed dsig",
+      "der_hex": "3046022100cc26bcafaae2f31b5924172a8ad0a3dd5c747245327331a5d2f723dce5fd658c022100fc5996b6ab2e31cc91216235b87dd96494e0ee3e472d60700eb594a781aaa9d6",
+      "raw_b64url": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYz8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+    },
+    {
+      "name": "high bit r gets a zero pad in DER",
+      "der_hex": "3046022100800102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f022100fc5996b6ab2e31cc91216235b87dd96494e0ee3e472d60700eb594a781aaa9d6",
+      "raw_b64url": "gAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh_8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+    },
+    {
+      "name": "short r is left padded",
+      "der_hex": "3043021e02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f022100fc5996b6ab2e31cc91216235b87dd96494e0ee3e472d60700eb594a781aaa9d6",
+      "raw_b64url": "AAACAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh_8WZa2qy4xzJEhYjW4fdlklODuPkctYHAOtZSngaqp1g"
+    },
+    {
+      "name": "short s is left padded",
+      "der_hex": "3043022100cc26bcafaae2f31b5924172a8ad0a3dd5c747245327331a5d2f723dce5fd658c021e02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "raw_b64url": "zCa8r6ri8xtZJBcqitCj3Vx0ckUyczGl0vcj3OX9ZYwAAAIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHw"
+    },
+    {
+      "name": "not a sequence",
+      "der_hex": "3146022100cc26bcafaae2f31b5924172a8ad0a3dd5c747245327331a5d2f723dce5fd658c022100fc5996b6ab2e31cc91216235b87dd96494e0ee3e472d60700eb594a781aaa9d6",
+      "error": true
+    },
+    {
+      "name": "truncated",
+      "der_hex": "3046022100cc26bcafaae2f31b5924172a8ad0a3dd5c747245327331a5d2f723dce5fd658c022100fc5996b6ab2e31cc91216235b87dd96494e0ee3e472d60700eb594a781aa",
+      "error": true
+    },
+    {
+      "name": "trailing bytes",
+      "der_hex": "3046022100cc26bcafaae2f31b5924172a8ad0a3dd5c747245327331a5d2f723dce5fd658c022100fc5996b6ab2e31cc91216235b87dd96494e0ee3e472d60700eb594a781aaa9d600",
+      "error": true
+    },
+    {
+      "name": "integer over 32 bytes",
+      "der_hex": "3046022101cc26bcafaae2f31b5924172a8ad0a3dd5c747245327331a5d2f723dce5fd658c022100fc5996b6ab2e31cc91216235b87dd96494e0ee3e472d60700eb594a781aaa9d6",
+      "error": true
+    },
+    {
+      "name": "negative integer",
+      "der_hex": "30060201ff020101",
+      "error": true
+    },
+    {
+      "name": "empty",
+      "der_hex": "",
+      "error": true
+    }
+  ]
+}

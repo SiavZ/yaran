@@ -71,6 +71,7 @@ vi.mock('../lib/native/machineView.ts', async (importOriginal) => {
       status: vi.fn(async () => ({ signedIn: true })),
       request: vi.fn(async () => ({ kind: 'offline' })),
       installId: vi.fn(async () => ({ installId: 'test-install' })),
+      deviceKey: vi.fn(async () => ({ deviceKey: 'test-device-key' })),
       callbackMode: vi.fn(async () => ({ mode: 'https', domain: 'apps.example.org' })),
       signOut: vi.fn(async () => {}),
     },
@@ -78,6 +79,7 @@ vi.mock('../lib/native/machineView.ts', async (importOriginal) => {
       open: vi.fn(async () => {}),
       close: vi.fn(async () => {}),
       addListener: vi.fn(async () => ({ remove: async () => {} })),
+      removeAllListeners: vi.fn(async () => {}),
     },
   };
 });

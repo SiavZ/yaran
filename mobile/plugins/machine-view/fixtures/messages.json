@@ -1,0 +1,35 @@
+{
+  "description": "The one failure table (Phase 15 Failure matrix and Navigation/Refusal overlays). sign_in keys are SignInOutcome kinds the shell renders; overlay keys are what the native machine window shows. Placeholders: {host} {machine} {email} {domain} {code}. Every surface reads its own copy and a test pins it to this file, word for word.",
+  "sign_in": {
+    "cancelled": { "message": "Sign-in was cancelled.", "action": "try_again" },
+    "declined": { "message": "You chose Cancel on the sign-in page, so this phone wasn't signed in.", "action": "try_again" },
+    "interrupted": { "message": "The app was closed while you were signing in, so that sign-in can't finish. Start it again.", "action": "try_again" },
+    "verification_failed": { "message": "This copy of the app couldn't prove it owns the sign-in link for {domain}. Install the app from an official channel, or try again later.", "action": "try_again" },
+    "rate_limited": { "message": "Too many sign-ins in a short time. Wait a minute and try again.", "action": "try_again" },
+    "protocol_unsupported": { "message": "This app and {host} don't speak the same protocol version. Update whichever side is older, then try again.", "action": "back" },
+    "clock_skewed": { "message": "This phone's clock is more than five minutes off from {host}, so the sign-in was refused. Set the clock automatically and try again.", "action": "try_again" },
+    "device_key_rejected": { "message": "The sign-in page refused this request ({code}). Update the app.", "action": "back" },
+    "refused": { "message": "The sign-in page refused this request ({code}). Update the app.", "action": "back" },
+    "no_browser": { "message": "Install or enable a browser (Chrome, Firefox, Brave, Vanadium…) to sign in.", "action": "open_settings" },
+    "mismatch": { "message": "That sign-in reply didn't match a sign-in from this phone, so it was ignored.", "action": "try_again" },
+    "decrypt_failed": { "message": "The sign-in reply couldn't be decrypted. Update the app and yaran on the machine.", "action": "try_again" },
+    "envelope_expired": { "message": "The sign-in reply had already expired. Check that this phone's clock is right, then try again.", "action": "try_again" },
+    "not_owner": { "message": "{email} isn't the owner of {machine}.", "action": "back_to_machines" },
+    "offline": { "message": "No connection. Check your network and try again.", "action": "retry" },
+    "tls_error": { "message": "The connection to {host} isn't secure, so the app stopped.", "action": "back" },
+    "vault_locked": { "message": "Unlock the app to sign in.", "action": "unlock" }
+  },
+  "overlay": {
+    "reauth": { "message": "Sign-in needed for {machine}", "actions": ["sign_in", "back_to_machines"] },
+    "not_owner": { "message": "{email} isn't the owner of {machine}.", "actions": ["back_to_machines"] },
+    "keys_unavailable": { "message": "yaran on {machine} can't reach Cloudflare's key service, so signing in again won't help. Try again in a minute.", "actions": ["retry"] },
+    "unavailable": { "message": "yaran on {machine} is temporarily unavailable, so signing in again won't help. Try again in a minute.", "actions": ["retry"] },
+    "host_disconnected": { "message": "{machine} is no longer connected to the cloud. Check yaran cloud status on the machine.", "actions": ["retry", "back_to_machines"] },
+    "code_overlay": { "message": "yaran on {machine} refused this page ({code}).", "actions": ["retry", "back_to_machines"] },
+    "offline": { "message": "{machine} is offline or its tunnel isn't connected", "actions": ["retry"] },
+    "tls_error": { "message": "The connection to {host} isn't secure, so the app stopped.", "actions": ["back_to_machines"] },
+    "banner": { "message": "Your session for {machine} ends in 10 minutes", "actions": ["renew"] },
+    "download_refused": { "message": "Downloads aren't supported in the app. Open it in the yaran web UI on your computer.", "actions": [] },
+    "renderer_crashed": { "message": "The page crashed and was reloaded", "actions": [] }
+  }
+}

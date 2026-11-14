@@ -9,6 +9,7 @@ android {
 
 dependencies {
     implementation project(':capacitor-app')
+    implementation project(':yaran-machine-view')
     implementation project(':yaran-secure-store')
 
 }

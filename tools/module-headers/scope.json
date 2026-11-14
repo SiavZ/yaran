@@ -164,6 +164,7 @@
     "mobile/plugins/*/android/build.gradle.kts": "Gradle build script, included from mobile/android/settings.gradle",
     "mobile/android/buildSrc/src/main/kotlin/**/AndroidGuardsPlugin.kt": "Gradle plugin applied by mobile/android/app/build.gradle.kts",
     "mobile/android/app/src/main/java/**/MainActivity.kt": "launcher Activity, mobile/android/app/src/main/AndroidManifest.xml",
+    "mobile/android/app/src/main/java/**/YaranApplication.kt": "the Application class, android:name in mobile/android/app/src/main/AndroidManifest.xml",
     "mobile/{android,plugins}/**/src/test/**/*Test.kt": "JUnit/Robolectric, via ./gradlew test in mobile/android",
     "mobile/plugins/*/android/src/androidTest/**/*Test.kt": "instrumented test, via ./gradlew connectedAndroidTest in mobile/android",
     "mobile/plugins/secure-store/android/src/main/java/**/*Plugin.kt": "Capacitor plugin class, listed in capacitor.plugins.json by the Capacitor CLI sync",
@@ -176,6 +177,16 @@
     "mobile/ios/App/App/AppDelegate.swift": "@main, the iOS app entry of mobile/ios/App/App.xcodeproj",
     "mobile/ios/App/AppTests/*Tests.swift": "XCTest, hosted AppTests target of mobile/ios/App/App.xcodeproj",
     "mobile/ios/scripts/check-release-config.sh": "Run Script build phase Check release config in mobile/ios/App/App.xcodeproj",
-    "mobile/ios/scripts/check-release-config_test.sh": "run by hand or CI: bash mobile/ios/scripts/check-release-config_test.sh"
+    "mobile/ios/scripts/check-release-config_test.sh": "run by hand or CI: bash mobile/ios/scripts/check-release-config_test.sh",
+    "mobile/plugins/machine-view/src/index.ts": "package entry of @yaran/machine-view, the \".\" export in mobile/plugins/machine-view/package.json",
+    "mobile/plugins/machine-view/vitest.config.ts": "loaded by vitest, via npm test in mobile/plugins/machine-view",
+    "mobile/plugins/machine-view/Package.swift": "read by SwiftPM and by the Capacitor CLI's CapApp-SPM package (plugin root)",
+    "mobile/plugins/machine-view/ios/MachineViewCore/Package.swift": "read by SwiftPM, a local dependency of mobile/plugins/machine-view/Package.swift",
+    "mobile/plugins/machine-view/ios/MachineViewCore/Tests/MachineViewCoreTests/*Tests.swift": "Swift Testing, via bash ios/MachineViewCore/test.sh",
+    "mobile/plugins/machine-view/ios/MachineViewCore/test.sh": "run by hand or CI: `bash mobile/plugins/machine-view/ios/MachineViewCore/test.sh`",
+    "mobile/plugins/machine-view/ios/typecheck-catalyst.sh": "run by hand: `bash mobile/plugins/machine-view/ios/typecheck-catalyst.sh` (no-Xcode type check)",
+    "mobile/plugins/machine-view/ios/Sources/MachineView/*Plugin.swift": "Capacitor plugin (CAPBridgedPlugin), registered by the app's Capacitor bridge",
+    "mobile/plugins/machine-view/android/src/main/java/io/github/siavz/yaran/machineview/SessionPlugin.kt": "Capacitor plugin (@CapacitorPlugin), registered by the app's Capacitor bridge",
+    "mobile/plugins/machine-view/android/src/main/java/io/github/siavz/yaran/machineview/AuthCallbackActivity.kt": "exported Activity, the AuthCallbackHttps/AuthCallbackDev aliases in the plugin AndroidManifest.xml"
   }
 }

@@ -15,6 +15,7 @@
  * ├── @yaran/protocol:src/index.ts
  * ├── @yaran/ui-kit:src/button.tsx
  * ├── @yaran/ui-kit:src/inline-code.tsx
+ * ├── src/lib/api.ts
  * ├── src/lib/hostRules.ts
  * ├── src/lib/machinesStore.ts
  * ├── src/lib/native/machineView.ts
@@ -42,7 +43,8 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { orgUrl } from '../../lib/hostRules.ts';
 import { refreshMachines } from '../../lib/machinesStore.ts';
-import { Session, rejectionCode, type MetaFailure, type SignInOutcome } from '../../lib/native/machineView.ts';
+import { getMeta, type MetaFailure } from '../../lib/api.ts';
+import { Session, type SignInOutcome } from '../../lib/native/machineView.ts';
 import { addOrg } from '../../lib/orgStore.ts';
 import { protocolVerdict } from '../../lib/protocolCompat.ts';
 import { navigate } from '../../lib/route.ts';
@@ -54,8 +56,6 @@ import { SignInResult } from './SignInResult.tsx';
 
 type MetaState = { kind: 'loading' } | { kind: 'ready'; meta: Meta } | { kind: 'failed'; code: MetaFailure };
 type SignInState = { kind: 'idle' } | { kind: 'running' } | { kind: 'failed'; outcome: Exclude<SignInOutcome, { kind: 'signed_in' }> };
-
-const META_FAILURES: readonly MetaFailure[] = ['offline', 'tls_error', 'not_json', 'access_redirect', 'invalid', 'refused'];
 
 function MetaError({ code, host, onRetry }: { code: MetaFailure; host: string; onRetry: () => void }) {
   if (code === 'offline') return <Offline onRetry={onRetry} />;
@@ -105,12 +105,9 @@ export function ConfirmOrg({ url }: { url: string }) {
   useEffect(() => {
     if (org === null) return;
     let live = true;
-    Session.meta({ orgUrl: org }).then(
-      (m) => live && setMeta({ kind: 'ready', meta: m }),
-      (err: unknown) => {
-        const code = rejectionCode(err);
-        if (live) setMeta({ kind: 'failed', code: (META_FAILURES as readonly string[]).includes(code ?? '') ? (code as MetaFailure) : 'invalid' });
-      },
+    getMeta(org).then(
+      (got) => live && setMeta(got.ok ? { kind: 'ready', meta: got.meta } : { kind: 'failed', code: got.code }),
+      () => live && setMeta({ kind: 'failed', code: 'invalid' }),
     );
     return () => {
       live = false;
@@ -188,7 +185,7 @@ export function ConfirmOrg({ url }: { url: string }) {
             <Trans>Your browser opens next and asks "Sign this device in to {host}?". Tap Continue there.</Trans>
           </p>
           {signIn.kind === 'failed' ? (
-            <SignInResult outcome={signIn.outcome} onRetry={() => void startSignIn(meta.meta)} />
+            <SignInResult outcome={signIn.outcome} host={host} onRetry={() => void startSignIn(meta.meta)} />
           ) : (
             <Button className="h-10" disabled={signIn.kind === 'running'} onClick={() => void startSignIn(meta.meta)}>
               <Trans>Sign in</Trans>

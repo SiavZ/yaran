@@ -1,0 +1,274 @@
+{
+  "description": "RenewalPolicy. context open|resume: renew_before_load when exp - now < margin, margin = min(7200, floor((exp - iat) / 4)) when iat is known and exp > iat, else 7200; otherwise none with next_check_at = exp - 600. context view: hidden -> none/null; now >= exp -> overlay/null; exp - now <= 600 -> banner/next exp; else none/next exp - 600. Times are Unix seconds (wall clock).",
+  "constants": {
+    "pre_open_max_s": 7200,
+    "pre_open_divisor": 4,
+    "banner_s": 600
+  },
+  "cases": [
+    {
+      "name": "open fresh 24h",
+      "now": 1731571200,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "none",
+        "next_check_at": 1731657000
+      }
+    },
+    {
+      "name": "open 3h left",
+      "now": 1731646800,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "none",
+        "next_check_at": 1731657000
+      }
+    },
+    {
+      "name": "open exactly 2h left",
+      "now": 1731650400,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "none",
+        "next_check_at": 1731657000
+      }
+    },
+    {
+      "name": "open 2h minus 1s left",
+      "now": 1731650401,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "renew_before_load",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "open expired",
+      "now": 1731657605,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "renew_before_load",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "resume 1h left",
+      "now": 1731654000,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "resume",
+      "visible": true,
+      "expect": {
+        "action": "renew_before_load",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "resume 5h left",
+      "now": 1731639600,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "resume",
+      "visible": true,
+      "expect": {
+        "action": "none",
+        "next_check_at": 1731657000
+      }
+    },
+    {
+      "name": "open short session fresh",
+      "now": 1731571200,
+      "iat": 1731571200,
+      "exp": 1731572100,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "none",
+        "next_check_at": 1731571500
+      }
+    },
+    {
+      "name": "open short session at 25pct",
+      "now": 1731571875,
+      "iat": 1731571200,
+      "exp": 1731572100,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "none",
+        "next_check_at": 1731571500
+      }
+    },
+    {
+      "name": "open short session under 25pct",
+      "now": 1731571876,
+      "iat": 1731571200,
+      "exp": 1731572100,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "renew_before_load",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "open unknown iat uses 2h",
+      "now": 1731650401,
+      "iat": null,
+      "exp": 1731657600,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "renew_before_load",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "open unknown iat fresh",
+      "now": 1731650400,
+      "iat": null,
+      "exp": 1731657600,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "none",
+        "next_check_at": 1731657000
+      }
+    },
+    {
+      "name": "open iat after exp uses 2h",
+      "now": 1731650600,
+      "iat": 1731657610,
+      "exp": 1731657600,
+      "context": "open",
+      "visible": true,
+      "expect": {
+        "action": "renew_before_load",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "view fresh",
+      "now": 1731571200,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "view",
+      "visible": true,
+      "expect": {
+        "action": "none",
+        "next_check_at": 1731657000
+      }
+    },
+    {
+      "name": "view 11 min left",
+      "now": 1731656940,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "view",
+      "visible": true,
+      "expect": {
+        "action": "none",
+        "next_check_at": 1731657000
+      }
+    },
+    {
+      "name": "view exactly 10 min left",
+      "now": 1731657000,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "view",
+      "visible": true,
+      "expect": {
+        "action": "banner",
+        "next_check_at": 1731657600
+      }
+    },
+    {
+      "name": "view 1 min left",
+      "now": 1731657540,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "view",
+      "visible": true,
+      "expect": {
+        "action": "banner",
+        "next_check_at": 1731657600
+      }
+    },
+    {
+      "name": "view at exp socket open",
+      "now": 1731657600,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "view",
+      "visible": true,
+      "expect": {
+        "action": "overlay",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "view past exp",
+      "now": 1731661200,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "view",
+      "visible": true,
+      "expect": {
+        "action": "overlay",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "view hidden",
+      "now": 1731657540,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "view",
+      "visible": false,
+      "expect": {
+        "action": "none",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "view hidden past exp",
+      "now": 1731657660,
+      "iat": 1731571200,
+      "exp": 1731657600,
+      "context": "view",
+      "visible": false,
+      "expect": {
+        "action": "none",
+        "next_check_at": null
+      }
+    },
+    {
+      "name": "short session banner right away",
+      "now": 1731571500,
+      "iat": 1731571200,
+      "exp": 1731572100,
+      "context": "view",
+      "visible": true,
+      "expect": {
+        "action": "banner",
+        "next_check_at": 1731572100
+      }
+    }
+  ]
+}

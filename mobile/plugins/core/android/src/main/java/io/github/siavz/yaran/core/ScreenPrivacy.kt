@@ -16,6 +16,7 @@
  * Used by:
  * io.github.siavz.yaran.core.ScreenPrivacy
  * ├── io.github.siavz.yaran.app.MainActivity
+ * ├── io.github.siavz.yaran.machineview.CoreAdapters
  * └── io.github.siavz.yaran.securestore.ScreenPrivacyPlugin
  * <module-headers:end>
  */

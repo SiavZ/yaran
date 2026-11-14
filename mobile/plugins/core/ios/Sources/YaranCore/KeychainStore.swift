@@ -16,6 +16,7 @@
 /// Used by:
 /// YaranCore/KeychainStore
 /// ├── AppTests/KeychainAccessTests (inferred)
+/// ├── MachineViewCoreTests/CoreAdaptersTests (inferred)
 /// ├── YaranCore/AppLock (inferred)
 /// ├── YaranCore/Vault (inferred)
 /// ├── YaranCoreTests/PluginArgumentsTests (inferred)

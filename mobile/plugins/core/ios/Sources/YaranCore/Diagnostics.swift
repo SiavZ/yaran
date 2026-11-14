@@ -16,6 +16,7 @@
 ///
 /// Used by:
 /// YaranCore/Diagnostics
+/// ├── MachineViewCore/CoreAdapters (inferred)
 /// ├── YaranCore/PluginArguments (inferred)
 /// ├── YaranCoreTests/PluginArgumentsTests (inferred)
 /// ├── YaranSecureStorePlugin/DiagnosticsPlugin (inferred)

@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { protocolVerdict } from './protocolCompat.ts';
+import { protocolVerdict, updateFor } from './protocolCompat.ts';
 
 const app = { min: 1, max: 2 };
 
@@ -32,5 +32,15 @@ describe('protocolVerdict', () => {
       version: 2,
       deprecatedAfter: '2027-06-01',
     });
+  });
+});
+
+describe('updateFor', () => {
+  it('reads the server range a native protocol_unsupported carries', () => {
+    expect(updateFor({ min: 3, max: 4 }, { min: 1, max: 2 })).toBe('client');
+    expect(updateFor({ min: 1, max: 1 }, { min: 2, max: 3 })).toBe('server');
+  });
+  it('asks for an app update when the server sent no range', () => {
+    expect(updateFor({})).toBe('client');
   });
 });

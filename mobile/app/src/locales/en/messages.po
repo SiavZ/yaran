@@ -5,10 +5,8 @@ msgstr ""
 msgid "{name} was already removed."
 msgstr "{name} was already removed."
 
-#. placeholder {0}: o.email
-#. placeholder {1}: o.machine
-msgid "<0>{0}</0> isn't the owner of <1>{1}</1>."
-msgstr "<0>{0}</0> isn't the owner of <1>{1}</1>."
+msgid "<0>{email}</0> isn't the owner of <1>{host}</1>."
+msgstr "<0>{email}</0> isn't the owner of <1>{host}</1>."
 
 msgid "<0>{host}</0> answered, but not like a yaran control plane. Check the address."
 msgstr "<0>{host}</0> answered, but not like a yaran control plane. Check the address."
@@ -340,6 +338,9 @@ msgstr "That sign-in reply didn't match a sign-in from this phone, so it was ign
 msgid "That yaran code doesn't contain a valid org address."
 msgstr "That yaran code doesn't contain a valid org address."
 
+msgid "The account you signed in with isn't the owner of <0>{host}</0>."
+msgstr "The account you signed in with isn't the owner of <0>{host}</0>."
+
 msgid "The app refused to contact <0>{host}</0> because the address broke a safety rule."
 msgstr "The app refused to contact <0>{host}</0> because the address broke a safety rule."
 
@@ -360,10 +361,6 @@ msgstr "The camera permission is off. Turn it on for yaran in the phone's settin
 
 msgid "The connection to {host} isn't secure, so the app stopped."
 msgstr "The connection to {host} isn't secure, so the app stopped."
-
-#. placeholder {0}: o.host
-msgid "The connection to <0>{0}</0> isn't secure, so the app stopped."
-msgstr "The connection to <0>{0}</0> isn't secure, so the app stopped."
 
 msgid "The connection to <0>{host}</0> isn't secure, so the app stopped."
 msgstr "The connection to <0>{host}</0> isn't secure, so the app stopped."
@@ -448,9 +445,8 @@ msgstr "This phone was removed from <0>{org}</0> (by you or an admin), so its si
 msgid "This phone was removed from the org, so its sign-ins were deleted. Add the org again to keep using it."
 msgstr "This phone was removed from the org, so its sign-ins were deleted. Add the org again to keep using it."
 
-#. placeholder {0}: o.host
-msgid "This phone's clock is more than five minutes off from <0>{0}</0>, so the sign-in was refused. Set the clock automatically and try again."
-msgstr "This phone's clock is more than five minutes off from <0>{0}</0>, so the sign-in was refused. Set the clock automatically and try again."
+msgid "This phone's clock is more than five minutes off from <0>{host}</0>, so the sign-in was refused. Set the clock automatically and try again."
+msgstr "This phone's clock is more than five minutes off from <0>{host}</0>, so the sign-in was refused. Set the clock automatically and try again."
 
 msgid "This signs the phone out of every org, removes every org and setting, and deletes the keys that protect them. You'll have to add your orgs again."
 msgstr "This signs the phone out of every org, removes every org and setting, and deletes the keys that protect them. You'll have to add your orgs again."

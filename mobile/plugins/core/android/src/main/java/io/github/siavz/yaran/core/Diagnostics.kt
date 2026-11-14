@@ -19,6 +19,7 @@
  * Used by:
  * io.github.siavz.yaran.core.Diagnostics
  * ├── io.github.siavz.yaran.core.DiagnosticsTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.CoreAdapters
  * ├── io.github.siavz.yaran.securestore.DiagnosticsPlugin
  * ├── io.github.siavz.yaran.securestore.Validation
  * └── io.github.siavz.yaran.securestore.ValidationTest

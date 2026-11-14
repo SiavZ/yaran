@@ -1,0 +1,66 @@
+// machine-view plugin module (:yaran-machine-view in mobile/android): MachineView (bridge-less
+// machine WebView) and Session (sealed handoff client, per-host sessions, native org API
+// client). Placeholders default to a dev (no publisher domain) build; the app sets
+// publisherDomain, publisherCallbackEnabled, devCallbackEnabled and e2eWebViewDebug from
+// mobile/publisher.properties for the merged manifest.
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+def fixturesDir = file('../fixtures').absolutePath
+def protocolDir = file('../../../../cloud/protocol').absolutePath
+
+android {
+    namespace = "io.github.siavz.yaran.machineview"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        manifestPlaceholders = [
+            publisherDomain: '',
+            publisherCallbackEnabled: 'false',
+            devCallbackEnabled: 'true',
+            e2eWebViewDebug: 'false',
+        ]
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            all {
+                systemProperty 'machineview.fixtures', fixturesDir
+                systemProperty 'machineview.protocol', protocolDir
+                systemProperty 'machineview.manifest', file('src/main/AndroidManifest.xml').absolutePath
+            }
+        }
+    }
+    lint {
+        abortOnError = false
+    }
+}
+
+dependencies {
+    implementation project(':yaran-core')
+    implementation project(':capacitor-android')
+    implementation libs.androidx.appcompat
+    implementation libs.androidx.activity
+    implementation "androidx.browser:browser:1.10.0"
+    implementation "androidx.webkit:webkit:1.15.0"
+    testImplementation libs.junit
+    testImplementation libs.json
+    testImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
+    testImplementation "com.squareup.okhttp3:okhttp-tls:4.12.0"
+    testImplementation "org.robolectric:robolectric:4.16"
+    testImplementation "androidx.test:core:1.7.0"
+}

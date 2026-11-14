@@ -2,19 +2,21 @@
 ///
 /// The app uses the scene lifecycle, so UIKit sends resign, background and foreground events
 /// to `SceneDelegate`, which is where the screen-privacy cover and the lock gate live; this
-/// delegate only hands every scene to it.
+/// delegate hands every scene to it and, at launch, binds the machine-view plugin to the core.
 ///
 /// - Main thread only; keeps no state of its own.
 ///
 /// <module-headers:begin>
 /// Uses:
 /// App/AppDelegate
-/// └── App/SceneDelegate (inferred)
+/// ├── App/SceneDelegate (inferred)
+/// └── MachineViewCore/CoreAdapters (inferred)
 /// External: UIKit
 ///
 /// Used by: entry point (@main, the iOS app entry of mobile/ios/App/App.xcodeproj)
 /// <module-headers:end>
 
+import MachineViewCore
 import UIKit
 
 @main
@@ -23,7 +25,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        true
+        CoreAdapters.installDefault()
+        return true
     }
 
     func application(_ application: UIApplication,

@@ -93,6 +93,7 @@ android {
                 "publisherDomain" to publisherDomain,
                 "publisherCallbackEnabled" to "${!isDevelopmentBuild}",
                 "devCallbackEnabled" to "$isDevelopmentBuild",
+                "e2eWebViewDebug" to "false",
                 "yaranE2e" to "false",
                 "yaranE2eControlPlaneUrl" to "",
             )
@@ -139,6 +140,7 @@ android {
             buildConfigField("String", "E2E_CONTROL_PLANE_URL", javaString(publisherValue("e2e.controlPlaneUrl")))
             buildConfigField("String", "E2E_RELAY_URL", javaString(publisherValue("e2e.relayUrl")))
             manifestPlaceholders["yaranE2e"] = "true"
+            manifestPlaceholders["e2eWebViewDebug"] = "true"
             manifestPlaceholders["yaranE2eControlPlaneUrl"] = publisherValue("e2e.controlPlaneUrl")
         }
     }

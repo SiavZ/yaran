@@ -13,6 +13,7 @@
  * ├── @yaran/ui-kit:src/inline-code.tsx
  * ├── src/lib/assertNever.ts
  * ├── src/lib/native/machineView.ts
+ * ├── src/lib/protocolCompat.ts
  * └── src/lib/route.ts
  * External: @lingui/react, react
  *
@@ -28,17 +29,19 @@ import type { ReactNode } from 'react';
 
 import { assertNever } from '../../lib/assertNever.ts';
 import type { SignInOutcome } from '../../lib/native/machineView.ts';
+import { updateFor } from '../../lib/protocolCompat.ts';
 import { navigate } from '../../lib/route.ts';
 
 type Failure = Exclude<SignInOutcome, { kind: 'signed_in' }>;
 
-function sentence(o: Failure): { text: ReactNode; retry: boolean } {
+// The 15 failure matrix, in the shell's catalog; `host` is the org being signed in to.
+function sentence(o: Failure, host: string): { text: ReactNode; retry: boolean } {
   switch (o.kind) {
     case 'cancelled':
       return { text: <Trans>Sign-in was cancelled.</Trans>, retry: true };
     case 'declined':
       return { text: <Trans>You chose Cancel on the sign-in page, so this phone wasn't signed in.</Trans>, retry: true };
-    case 'app_closed':
+    case 'interrupted':
       return { text: <Trans>The app was closed while you were signing in, so that sign-in can't finish. Start it again.</Trans>, retry: true };
     case 'verification_failed':
       return {
@@ -53,53 +56,58 @@ function sentence(o: Failure): { text: ReactNode; retry: boolean } {
     case 'rate_limited':
       return { text: <Trans>Too many sign-ins in a short time. Wait a minute and try again.</Trans>, retry: true };
     case 'protocol_unsupported':
-      return o.update === 'client'
+      return updateFor(o) === 'client'
         ? { text: <Trans>This app is too old for the org's control plane. Update the app.</Trans>, retry: false }
         : { text: <Trans>The org's control plane is too old for this app. Ask your admin to update it.</Trans>, retry: false };
     case 'clock_skewed':
       return {
         text: (
           <Trans>
-            This phone's clock is more than five minutes off from <InlineCode>{o.host}</InlineCode>, so the sign-in was
+            This phone's clock is more than five minutes off from <InlineCode>{host}</InlineCode>, so the sign-in was
             refused. Set the clock automatically and try again.
           </Trans>
         ),
         retry: true,
       };
-    case 'request_refused':
+    case 'device_key_rejected':
+    case 'refused':
       return { text: <Trans>The sign-in page refused this request (<InlineCode>{o.code}</InlineCode>). Update the app.</Trans>, retry: false };
     case 'no_browser':
       return { text: <Trans>Install or enable a browser (Chrome, Firefox, Brave, Vanadium…) to sign in.</Trans>, retry: true };
-    case 'reply_mismatch':
+    case 'mismatch':
       return { text: <Trans>That sign-in reply didn't match a sign-in from this phone, so it was ignored.</Trans>, retry: true };
     case 'decrypt_failed':
       return { text: <Trans>The sign-in reply couldn't be decrypted. Update the app and yaran on the machine.</Trans>, retry: true };
-    case 'reply_expired':
+    case 'envelope_expired':
       return { text: <Trans>The sign-in reply had already expired. Check that this phone's clock is right, then try again.</Trans>, retry: true };
-    case 'not_owner':
+    case 'not_owner': {
+      const email = o.email;
       return {
-        text: (
+        text: email ? (
           <Trans>
-            <InlineCode>{o.email}</InlineCode> isn't the owner of <InlineCode>{o.machine}</InlineCode>.
+            <InlineCode>{email}</InlineCode> isn't the owner of <InlineCode>{host}</InlineCode>.
+          </Trans>
+        ) : (
+          <Trans>
+            The account you signed in with isn't the owner of <InlineCode>{host}</InlineCode>.
           </Trans>
         ),
         retry: false,
       };
-    case 'device_revoked':
-      return { text: <Trans>This phone was removed from the org, so its sign-ins were deleted. Add the org again to keep using it.</Trans>, retry: false };
+    }
     case 'offline':
       return { text: <Trans>No connection. Check your network and try again.</Trans>, retry: true };
     case 'tls_error':
-      return { text: <Trans>The connection to <InlineCode>{o.host}</InlineCode> isn't secure, so the app stopped.</Trans>, retry: false };
-    case 'locked':
+      return { text: <Trans>The connection to <InlineCode>{host}</InlineCode> isn't secure, so the app stopped.</Trans>, retry: false };
+    case 'vault_locked':
       return { text: <Trans>Unlock the app first, then sign in.</Trans>, retry: true };
     default:
       return assertNever(o);
   }
 }
 
-export function SignInResult({ outcome, onRetry }: { outcome: Failure; onRetry: () => void }) {
-  const { text, retry } = sentence(outcome);
+export function SignInResult({ outcome, host, onRetry }: { outcome: Failure; host: string; onRetry: () => void }) {
+  const { text, retry } = sentence(outcome, host);
   return (
     <div role="alert" className="flex flex-col items-start gap-3 rounded-lg border border-border p-4">
       <p>{text}</p>

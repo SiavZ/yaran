@@ -16,7 +16,7 @@
  * ├── src/lib/deepLinks.ts
  * ├── src/lib/diagnostics.ts
  * ├── src/lib/machinesStore.ts
- * ├── src/lib/native/machineView.ts
+ * ├── src/lib/openMachine.ts
  * ├── src/lib/orgStore.ts
  * └── src/lib/settingsStore.ts
  * External: @capacitor/app
@@ -32,8 +32,8 @@ import { AppLock } from '@yaran/secure-store';
 
 import { installDeepLinks } from './deepLinks.ts';
 import { log } from './diagnostics.ts';
-import { refreshMachines } from './machinesStore.ts';
-import { MachineView } from './native/machineView.ts';
+import { machinesStore, refreshMachines } from './machinesStore.ts';
+import { openMachine } from './openMachine.ts';
 import { orgStore } from './orgStore.ts';
 import { settingsStore } from './settingsStore.ts';
 
@@ -47,8 +47,11 @@ export async function reopenLastMachine(): Promise<boolean> {
   if (!reopenLastMachine || lastMachine === null) return false;
   if (!orgStore.get().orgs.some((o) => o.id === lastMachine.orgId)) return false;
   try {
-    await MachineView.open(lastMachine);
-    return true;
+    // The host comes from a fresh authenticated list, never from the saved setting.
+    if (!machinesStore.get()[lastMachine.orgId]?.machines.length) await refreshMachines(lastMachine.orgId);
+    const opened = await openMachine(lastMachine.orgId, lastMachine.machineId);
+    if (!opened.ok) log('warn', `did not reopen the last machine: ${opened.reason}`);
+    return opened.ok;
   } catch (err) {
     log('warn', `could not reopen the last machine: ${err instanceof Error ? err.message : String(err)}`);
     return false;

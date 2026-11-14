@@ -37,10 +37,12 @@
  *
  * Used by: entry point (package entry of @yaran/protocol, the "." export in cloud/protocol/package.json)
  * src/index.ts
+ * ├── @yaran/machine-view:src/outcomes.ts
  * ├── @yaran/mobile-shell:src/lib/api.ts
  * ├── @yaran/mobile-shell:src/lib/deepLinks.ts
+ * ├── @yaran/mobile-shell:src/lib/lifecycle.test.ts
  * ├── @yaran/mobile-shell:src/lib/machinesStore.ts
- * ├── @yaran/mobile-shell:src/lib/native/machineView.ts
+ * ├── @yaran/mobile-shell:src/lib/openMachine.ts
  * ├── @yaran/mobile-shell:src/lib/protocolCompat.ts
  * ├── @yaran/mobile-shell:src/screens/machines/MachineList.tsx
  * ├── @yaran/mobile-shell:src/screens/machines/MachineRow.tsx

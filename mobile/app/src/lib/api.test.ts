@@ -69,7 +69,7 @@ describe('removeMachine', () => {
     expect(request.mock.calls[0]![0]).toMatchObject({ method: 'DELETE', path: '/v1/me/machines/3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b' });
   });
   it('treats 404 as already gone', async () => {
-    answer({ kind: 'api_error', status: 404, body: { error: { code: 'not_found', message: 'gone', retryable: false }, request_id: 'r' } });
+    answer({ kind: 'api_error', status: 404, error: { error: { code: 'not_found', message: 'gone', retryable: false }, request_id: 'r' } });
     expect(await removeMachine('o', 'm')).toEqual({ ok: true, value: 'already_gone' });
   });
 });
@@ -77,24 +77,25 @@ describe('removeMachine', () => {
 describe('error envelopes', () => {
   it('maps every valid envelope fixture to a sentence that is not empty', async () => {
     for (const v of envelopes.valid) {
-      answer({ kind: 'api_error', status: 401, body: v.value });
+      answer({ kind: 'api_error', status: 401, error: v.value });
       const got = await getMe('o');
       expect(got.ok).toBe(false);
       if (!got.ok) expect(sentence(got.failure).length).toBeGreaterThan(10);
     }
   });
   it('a known code gets its own sentence', async () => {
-    answer({ kind: 'api_error', status: 429, body: { error: { code: 'rate_limited', message: 'slow', retryable: true }, request_id: 'r' } });
+    answer({ kind: 'api_error', status: 429, error: { error: { code: 'rate_limited', message: 'slow', retryable: true }, request_id: 'r' } });
     const got = await getMe('o');
     expect(!got.ok && sentence(got.failure)).toMatch(/Too many requests/);
   });
   it('an unknown code still names the code', async () => {
-    answer({ kind: 'api_error', status: 400, body: { error: { code: 'brand_new_code', message: 'x', retryable: false }, request_id: 'r' } });
+    answer({ kind: 'api_error', status: 400, error: { error: { code: 'brand_new_code', message: 'x', retryable: false }, request_id: 'r' } });
     const got = await getMe('o');
     expect(!got.ok && sentence(got.failure)).toContain('brand_new_code');
   });
   it('a body that is no envelope names the status', async () => {
-    answer({ kind: 'api_error', status: 502, body: '<html>' });
+    // The native client never sends this; the shell still degrades to the status if it did.
+    answer({ kind: 'api_error', status: 502, error: '<html>' as never });
     const got = await getMe('o');
     expect(!got.ok && sentence(got.failure)).toContain('HTTP 502');
   });

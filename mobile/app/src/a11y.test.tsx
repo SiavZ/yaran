@@ -52,7 +52,7 @@ beforeEach(() => {
     status: 200,
     body: { items: [{ id: '3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b', name: 'laptop', hostname: 'laptop.example.com', url: 'https://laptop.example.com', status: 'online', status_checked_at: '2026-11-14T12:00:00Z', paired_at: '2026-11-14T12:00:00Z' }], next_cursor: null },
   });
-  vi.mocked(Session.meta).mockResolvedValue({ service: 'yaran-cloud', protocol: { min: 1, max: 1 }, setup: 'closed', worker: { version: '1.0.0' }, org: { name: 'Ada Org', url: 'https://cp.example.com' } });
+  vi.mocked(Session.meta).mockResolvedValue({ kind: 'ok', status: 200, body: { service: 'yaran-cloud', protocol: { min: 1, max: 1 }, setup: 'closed', worker: { version: '1.0.0' }, org: { name: 'Ada Org', url: 'https://cp.example.com' }, capabilities: [], push: { enabled: false, vapid_public_key: null } } });
 });
 
 describe('accessibility', () => {

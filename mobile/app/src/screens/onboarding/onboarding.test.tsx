@@ -51,8 +51,11 @@ const META: Meta = {
   worker: { version: '1.0.0' },
   org: { name: 'Ada Org', url: 'https://cp.example.com' },
   access: { team_domain: 'ada.example.com' },
+  capabilities: ['pairing.v1', 'handoff.v1'],
+  push: { enabled: false, vapid_public_key: null },
 };
 const meta = vi.mocked(Session.meta);
+const ok = (body: Meta) => ({ kind: 'ok' as const, status: 200, body });
 const signIn = vi.mocked(Session.signIn);
 const route = () => parseRoute(window.location.hash);
 
@@ -106,12 +109,13 @@ describe('ScanQr', () => {
 
 describe('ConfirmOrg', () => {
   const cases: [string, () => void, RegExp][] = [
-    ['offline', () => meta.mockRejectedValueOnce({ code: 'offline' }), /No connection/],
-    ['non-JSON', () => meta.mockRejectedValueOnce({ code: 'not_json' }), /not like a yaran control plane/],
-    ['Access redirect', () => meta.mockRejectedValueOnce({ code: 'access_redirect' }), /Access bypass/],
-    ['app too old', () => meta.mockResolvedValueOnce({ ...META, protocol: { min: 2, max: 3 } }), /newer than this app/],
-    ['control plane too old', () => meta.mockResolvedValueOnce({ ...META, protocol: { min: 0, max: 0 } }), /too old for this app/],
-    ['setup open', () => meta.mockResolvedValueOnce({ ...META, setup: 'open' }), /hasn't finished setup/],
+    ['offline', () => meta.mockResolvedValueOnce({ kind: 'offline' }), /No connection/],
+    ['non-JSON', () => meta.mockResolvedValueOnce({ kind: 'refused', reason: 'not_json' }), /not like a yaran control plane/],
+    ['Access redirect', () => meta.mockResolvedValueOnce({ kind: 'session_expired' }), /Access bypass/],
+    ['app too old', () => meta.mockResolvedValueOnce(ok({ ...META, protocol: { min: 2, max: 3 } })), /newer than this app/],
+    // Protocol 1 is the first, so a too-old control plane fails Meta validation (protocolCompat.test covers the verdict).
+    ['an invalid Meta', () => meta.mockResolvedValueOnce(ok({ ...META, protocol: { min: 0, max: 0 } })), /not like a yaran control plane/],
+    ['setup open', () => meta.mockResolvedValueOnce(ok({ ...META, setup: 'open' })), /hasn't finished setup/],
   ];
   for (const [name, arrange, text] of cases) {
     it(`stops on ${name} without offering sign-in`, async () => {
@@ -123,7 +127,7 @@ describe('ConfirmOrg', () => {
   }
 
   it('shows the URL as a chip, the org, the edge disclosure and the consent hint', async () => {
-    meta.mockResolvedValueOnce(META);
+    meta.mockResolvedValueOnce(ok(META));
     const { container } = renderShell(<ConfirmOrg url="https://cp.example.com" />);
     await screen.findByRole('button', { name: 'Sign in' });
     expect(container.querySelector('[data-slot="inline-code"]')?.textContent).toBe('https://cp.example.com');
@@ -136,7 +140,7 @@ describe('ConfirmOrg', () => {
     [{ kind: 'cancelled' } as const, /Sign-in was cancelled/],
     [{ kind: 'declined' } as const, /You chose Cancel on the sign-in page/],
   ])('explains %o and does not add the org', async (outcome, text) => {
-    meta.mockResolvedValueOnce(META);
+    meta.mockResolvedValueOnce(ok(META));
     signIn.mockResolvedValueOnce(outcome);
     renderShell(<ConfirmOrg url="https://cp.example.com" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
@@ -145,7 +149,7 @@ describe('ConfirmOrg', () => {
   });
 
   it('adds the org after a successful sign-in and opens Machines', async () => {
-    meta.mockResolvedValueOnce(META);
+    meta.mockResolvedValueOnce(ok(META));
     renderShell(<ConfirmOrg url="https://cp.example.com" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(route()).toEqual({ name: 'machines' }));

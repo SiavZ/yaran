@@ -42,6 +42,11 @@
       "license": "Apache-2.0"
     },
     {
+      "name": "androidx.browser:browser",
+      "version": "1.10.0",
+      "license": "Apache-2.0"
+    },
+    {
       "name": "androidx.collection:collection",
       "version": "1.4.2",
       "license": "Apache-2.0"
@@ -198,7 +203,7 @@
     },
     {
       "name": "androidx.webkit:webkit",
-      "version": "1.14.0",
+      "version": "1.15.0",
       "license": "Apache-2.0"
     },
     {
