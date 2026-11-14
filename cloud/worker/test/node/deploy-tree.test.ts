@@ -76,6 +76,8 @@ describe("assembled tree", () => {
   test("bundles the protocol as built JS and the ui-kit tokens, and stamps the version", () => {
     expect(existsSync(join(tree, "vendor/cloud-protocol/dist/src/index.js"))).toBe(true);
     expect(existsSync(join(tree, "vendor/cloud-protocol/dist/schemas/admin.schema.json"))).toBe(true);
+    expect(existsSync(join(tree, "vendor/cloud-protocol/registry/capabilities.json"))).toBe(true);
+    expect(existsSync(join(tree, "vendor/cloud-protocol/registry/audit-actions.json"))).toBe(true);
     expect(readFileSync(join(tree, "assets/console/tokens.css"), "utf8")).toBe(":root { --background: x; }\n");
     expect(readFileSync(join(tree, "src/update/worker-version.ts"), "utf8")).toContain('"1.2.3"');
   });

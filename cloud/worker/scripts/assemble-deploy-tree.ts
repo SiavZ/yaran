@@ -95,6 +95,8 @@ function vendorProtocol(protocolDir: string, dest: string, workerDir: string): v
   );
   execFileSync(process.execPath, [join(workerDir, "node_modules/typescript/bin/tsc"), "-p", config], { stdio: "inherit" });
   rmSync(config);
+  // The Worker imports registries by subpath (`@yaran/protocol/registry/<name>.json`), which tsc does not emit.
+  cpSync(join(protocolDir, "registry"), join(dest, "registry"), { recursive: true });
   const pkg = JSON.parse(readFileSync(join(protocolDir, "package.json"), "utf8")) as { name: string; version: string; license: string; dependencies: Record<string, string> };
   const vendored = {
     name: pkg.name,
@@ -103,7 +105,7 @@ function vendorProtocol(protocolDir: string, dest: string, workerDir: string): v
     description: "Bundled copy of the yaran cloud wire contract, generated for the deploy tree. Do not edit.",
     license: pkg.license,
     type: "module",
-    exports: { ".": { types: "./dist/src/index.d.ts", default: "./dist/src/index.js" } },
+    exports: { ".": { types: "./dist/src/index.d.ts", default: "./dist/src/index.js" }, "./registry/*": "./registry/*" },
     dependencies: pkg.dependencies,
   };
   writeFileSync(join(dest, "package.json"), `${JSON.stringify(vendored, null, 2)}\n`);
