@@ -66,22 +66,26 @@ export function classify(status: number, retryAfter: string | null, attempts: nu
   return { kind: "bug", status };
 }
 
-/** Per-isolate VAPID signer and token cache. */
+/** Per-isolate VAPID signer and token cache; concurrent sends to one origin share one token. */
 export class VapidCache {
-  private signer: { publicKey: string; signer: VapidSigner } | null = null;
-  private tokens = new Map<string, { header: string; refreshAt: number }>();
+  private signer: { publicKey: string; signer: Promise<VapidSigner> } | null = null;
+  private tokens = new Map<string, { header: Promise<string>; refreshAt: number }>();
 
   async header(deps: Pick<PushDeps, "vapidKey" | "selfOrigin">, origin: string, now: number): Promise<string> {
     const key = await deps.vapidKey();
     if (this.signer?.publicKey !== key.publicKey) {
-      this.signer = { publicKey: key.publicKey, signer: await importVapidPrivateJwk(key.privateJwk) };
+      this.signer = { publicKey: key.publicKey, signer: importVapidPrivateJwk(key.privateJwk) };
       this.tokens.clear();
     }
     const cached = this.tokens.get(origin);
     if (cached && now < cached.refreshAt) return cached.header;
     const exp = now + VAPID_TTL_S;
-    const header = await signVapid(this.signer.signer, { aud: origin, exp, sub: deps.selfOrigin });
+    const header = this.signer.signer.then((signer) => signVapid(signer, { aud: origin, exp, sub: deps.selfOrigin }));
     this.tokens.set(origin, { header, refreshAt: exp - VAPID_REFRESH_BEFORE_S });
+    header.catch(() => {
+      this.tokens.delete(origin);
+      this.signer = null;
+    });
     return header;
   }
 }

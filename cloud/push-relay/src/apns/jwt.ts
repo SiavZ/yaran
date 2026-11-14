@@ -33,7 +33,8 @@ export function pemToDer(pem: string): Uint8Array {
 
 export class ProviderTokenCache {
   private key: Promise<CryptoKey> | null = null;
-  private cached: { iat: number; token: string } | null = null;
+  /** Per bucket; concurrent requests share one signing, so one isolate presents one token. */
+  private cached: { iat: number; token: Promise<string> } | null = null;
   private readonly cfg: { teamId: string; keyId: string; p8: string };
 
   constructor(cfg: { teamId: string; keyId: string; p8: string }) {
@@ -45,15 +46,23 @@ export class ProviderTokenCache {
     return now - (now % TOKEN_BUCKET_S);
   }
 
-  async token(now: number): Promise<string> {
+  token(now: number): Promise<string> {
     const iat = ProviderTokenCache.bucket(now);
     if (this.cached?.iat === iat) return this.cached.token;
+    const token = this.sign(iat);
+    this.cached = { iat, token };
+    token.catch(() => {
+      if (this.cached?.token === token) this.cached = null;
+      this.key = null;
+    });
+    return token;
+  }
+
+  private async sign(iat: number): Promise<string> {
     this.key ??= crypto.subtle.importKey("pkcs8", pemToDer(this.cfg.p8) as BufferSource, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
     const enc = (v: unknown) => b64urlEncode(utf8.encode(JSON.stringify(v)));
     const input = `${enc({ alg: "ES256", kid: this.cfg.keyId })}.${enc({ iss: this.cfg.teamId, iat })}`;
     const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, await this.key, utf8.encode(input) as BufferSource);
-    const token = `${input}.${b64urlEncode(new Uint8Array(sig))}`;
-    this.cached = { iat, token };
-    return token;
+    return `${input}.${b64urlEncode(new Uint8Array(sig))}`;
   }
 }
