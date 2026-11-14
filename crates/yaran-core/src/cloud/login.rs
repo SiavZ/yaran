@@ -20,6 +20,7 @@
 //! ├── cloud::machine_api_error
 //! ├── cloud::org_url
 //! ├── cloud::outcome
+//! ├── cloud::pair_refusal
 //! ├── cloud::paths
 //! ├── cloud::pkce
 //! ├── cloud::protocol
@@ -49,6 +50,7 @@ use crate::cloud::machine_api::{ApiFactory, MachineApiError};
 use crate::cloud::machine_api_error::server_text;
 use crate::cloud::org_url::normalize_org_url;
 use crate::cloud::outcome::CloudActionOutcome;
+use crate::cloud::pair_refusal::pair_refusal_reason;
 use crate::cloud::paths::CloudPaths;
 use crate::cloud::pkce::Pkce;
 use crate::cloud::protocol::machine::ClaimRequest;
@@ -238,8 +240,8 @@ pub fn run_login(params: LoginParams, io: &mut dyn LoginIo) -> LoginOutcome {
         CallbackResult::Code(code) => code,
         CallbackResult::Denied(code) => {
             return CloudActionOutcome::ClaimRefused {
+                message: pair_refusal_reason(&code).into(),
                 code,
-                message: "the pairing was not approved in the browser".into(),
             };
         }
     };

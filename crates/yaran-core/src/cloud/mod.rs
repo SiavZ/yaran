@@ -23,6 +23,7 @@
 //! ├── cloud::machine_api_error
 //! ├── cloud::org_url
 //! ├── cloud::outcome
+//! ├── cloud::pair_refusal
 //! ├── cloud::paths
 //! ├── cloud::pkce
 //! ├── cloud::protocol
@@ -52,6 +53,7 @@ pub mod machine_api;
 pub mod machine_api_error;
 pub mod org_url;
 pub mod outcome;
+pub mod pair_refusal;
 pub mod paths;
 pub mod pkce;
 pub mod protocol;

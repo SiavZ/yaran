@@ -339,6 +339,10 @@ fn a_refused_claim_leaves_the_old_credentials_and_consent_key() {
     assert!(
         matches!(denied, CloudActionOutcome::ClaimRefused { ref code, .. } if code == "pair_denied")
     );
+    // The loopback page promises the terminal says why, so the code alone is not enough.
+    let said = denied.report().message().to_string();
+    assert!(said.contains("pressed Deny"), "{said}");
+    assert!(said.contains("start the login again"), "{said}");
 }
 
 #[test]
