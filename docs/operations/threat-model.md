@@ -1115,40 +1115,6 @@ is running without the channel.
 
 ---
 
-## T36, T37, T42, T50, T51, T60, T63 — Phone app foundation (Phase 14 share)
-
-These IDs are allocated by the phone-app plan's Phase 17, which owns the consolidated prose.
-This section records what the app foundation (`mobile/`, `packages/ui-kit/`) implements.
-
-**Attack scenario.** Script injected into the bundled shell reaches the native bridge (T60);
-a link, QR code or another app hands the shell an attacker's org URL (T42); a lost or backed-up
-phone leaks the vault (T37); a shared diagnostics log carries tokens (T51); a `foss` build is
-tricked into installing a fake update (T50); a build without a publisher domain is shipped and
-its claimable custom-scheme callback is hijacked (T36), or its associated domains drift (T63).
-
-**Mitigation in code.** The shell is bundled, served from the Capacitor scheme, and pinned to a
-strict CSP by `mobile/app/src/csp.test.ts`; `noNetwork.test.ts` forbids any JS network API, so
-every request goes through the native client and no bearer credential reaches JS. The
-secure-store plugin validates every argument and refuses the `session`, `handoff`, `install`
-and `push` namespaces. Every org URL, whatever its source, passes the host rules (a fixture
-shared by the Kotlin, Swift and TS suites) and stops on Confirm org, which adds nothing before a
-successful sign-in. The vault keeps AES-256-GCM blobs under an AndroidKeyStore key or
-`ThisDeviceOnly` Keychain items, backups are disabled and excluded, and the optional app lock
-wraps the locked class with a biometric-bound key whose invalidation wipes it out loud. The
-diagnostics sanitizer runs natively on every line; export is an explicit action after a
-preview. `foss` About carries one static releases link and no update check. Release builds
-refuse the `com.example.` placeholder id and, with `requirePublisherDomain` /
-`REQUIRE_PUBLISHER_DOMAIN`, an empty publisher domain; builds without one show a banner.
-
-**Residual risk.** A development build (no publisher domain) still uses the claimable custom
-scheme; the banner makes it visible. On-device behaviour of the Keystore, Keychain and backup
-exclusion is verified in Phase 19, not by unit tests.
-
-**Detection.** The local diagnostics log records refused links, dropped vault records and
-`device_revoked` removals.
-
----
-
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must
