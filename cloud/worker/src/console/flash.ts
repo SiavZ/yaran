@@ -34,6 +34,7 @@ export type FlashKind =
   | "workers_dev_disabled"
   | "workers_dev_failed"
   | "token_replaced"
+  | "push_keys_rotated"
   | "update_checked";
 
 export interface Flash {

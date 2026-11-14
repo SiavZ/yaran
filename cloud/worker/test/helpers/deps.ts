@@ -37,7 +37,8 @@
  * ├── test/setup-flow.test.ts
  * ├── test/setup-gate.test.ts
  * ├── test/setup-steps.test.ts
- * └── test/update-checker.test.ts
+ * ├── test/update-checker.test.ts
+ * └── test/vapid-rotate.test.ts
  * <module-headers:end>
  */
 import { env } from "cloudflare:test";

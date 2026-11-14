@@ -1,5 +1,6 @@
 /**
- * Admin console pages, part two: audit log, settings, health and updates.
+ * Admin console pages, part two: audit log, settings, health (with the push key rotation
+ * confirm) and updates.
  *
  * The settings form is generated from `SETTINGS_FIELDS` (02's `Settings`), so it renders
  * exactly the contract with each field's range as its hint. Health re-reads Cloudflare and
@@ -16,6 +17,7 @@
  * ├── src/admin/settings-schema.ts
  * ├── src/console/admin-pages.tsx
  * ├── src/console/ui/components.tsx
+ * ├── src/console/ui/confirm.tsx
  * ├── src/setup/capability-probe.ts
  * ├── src/setup/pages-steps.tsx
  * └── src/setup/pages.tsx
@@ -36,6 +38,7 @@ import type { HealthCheck } from "../admin/health.ts";
 import type { AuditFilter } from "../admin/audit-query.ts";
 import { assertNever } from "../admin/ports.ts";
 import { AdminShell, type AdminBase } from "./admin-pages.tsx";
+import { ConfirmBody } from "./ui/confirm.tsx";
 
 const enc = encodeURIComponent;
 
@@ -171,6 +174,28 @@ export function HealthPage(p: AdminBase & { checks: readonly HealthCheck[]; prob
           <Button variant="outline">Check and replace</Button>
         </div>
       </PostForm>
+      <h2>Rotate the push keys</h2>
+      <p>Do this if the push private key may have leaked, or after a lost DATA_KEY made it unreadable. Every phone then has to register again.</p>
+      <div class="row">
+        <LinkButton href="/admin/push-keys/rotate" variant="outline">
+          Rotate push keys…
+        </LinkButton>
+      </div>
+    </AdminShell>
+  );
+}
+
+export function PushKeysConfirm(p: AdminBase) {
+  return (
+    <AdminShell {...p} title="Rotate push keys" current="/admin/health">
+      <ConfirmBody
+        lead="Rotate the push keys of"
+        target={p.orgName}
+        consequence="A new key pair replaces the old one, which cannot be brought back. Every phone stops getting notifications until its app registers again with the new key, which it does by itself the next time it opens."
+        action="/admin/push-keys/rotate"
+        cancelHref="/admin/health"
+        confirmLabel="Rotate"
+      />
     </AdminShell>
   );
 }

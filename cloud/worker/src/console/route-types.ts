@@ -23,6 +23,7 @@
  * ├── src/admin/scheduled-jobs.ts
  * ├── src/admin/settings-apply.ts
  * ├── src/admin/users.ts
+ * ├── src/admin/vapid-rotate.ts
  * ├── src/console/admin-routes.ts
  * ├── src/console/routes.ts
  * ├── src/phase07.ts

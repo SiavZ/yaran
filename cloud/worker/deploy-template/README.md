@@ -18,7 +18,7 @@ from the `cloud-deploy` branch of [SiavZ/yaran](https://github.com/SiavZ/yaran).
    - `SETUP_CODE`: at least 24 random characters, for example `openssl rand -base64 24`;
    - `DATA_KEY`: at least 32 random bytes, for example `openssl rand -base64 32`. It encrypts
      the secrets the Worker stores. **Keep a copy**: a lost key means generating new push
-     keys and registering every phone again.
+     keys (admin console, Health, Rotate push keys) and every phone registering again.
 3. **Open `https://<worker>.<your-subdomain>.workers.dev/setup`** and enter the setup code.
    The wizard checks the token, reads your Zero Trust team domain, creates the Access
    application, attaches your control-plane hostname, helps you add a sign-in method,

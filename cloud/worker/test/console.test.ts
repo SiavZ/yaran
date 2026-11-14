@@ -68,7 +68,7 @@ describe("destructive actions", () => {
   const html = [...USER_ROUTES, ...ADMIN_ROUTES];
   test("every destructive POST has a GET confirm page at the same path", () => {
     const posts = html.filter((r) => r.method === "POST" && DESTRUCTIVE.test(r.path));
-    expect(posts.length).toBe(6);
+    expect(posts.length).toBe(7);
     for (const p of posts) expect(html.some((r) => r.method === "GET" && r.path === p.path)).toBe(true);
   });
   test.each(html.filter((r) => r.method === "POST").map((r) => [r.path, r] as const))("POST %s refuses a foreign Origin", async (path, _r) => {
@@ -117,7 +117,7 @@ describe("pages", () => {
     ["/console", ADA], ["/console/phones", ADA], ["/console/connect", ADA], ["/console/machines/00000000-0000-4000-8000-000000000101/unpair", ADA], ["/console/phones/00000000-0000-4000-8000-000000000201/remove", ADA],
     ["/admin/users", ADA], ["/admin/users/00000000-0000-4000-8000-0000000000b2/disable", ADA], ["/admin/machines", ADA], ["/admin/machines/00000000-0000-4000-8000-000000000101/revoke", ADA],
     ["/admin/machines/00000000-0000-4000-8000-000000000101/rotate", ADA], ["/admin/devices", ADA], ["/admin/devices/00000000-0000-4000-8000-000000000201/remove", ADA], ["/admin/audit", ADA],
-    ["/admin/settings", ADA], ["/admin/health", ADA], ["/admin/updates", ADA],
+    ["/admin/settings", ADA], ["/admin/health", ADA], ["/admin/push-keys/rotate", ADA], ["/admin/updates", ADA],
   ];
   test.each(pages)("%s passes the CSP and accessibility checks", async (path, who) => {
     const w = await ready();

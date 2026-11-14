@@ -16,6 +16,7 @@
  * ├── src/admin/settings-schema.ts
  * ├── src/admin/settings-store.ts
  * ├── src/admin/users.ts
+ * ├── src/admin/vapid-rotate.ts
  * ├── src/console/admin-pages-2.tsx
  * ├── src/console/admin-pages.tsx
  * ├── src/console/flash.ts
@@ -30,7 +31,8 @@
  * Used by:
  * src/console/admin-routes.ts
  * ├── src/phase07.ts
- * └── test/console.test.ts
+ * ├── test/console.test.ts
+ * └── test/vapid-rotate.test.ts
  * <module-headers:end>
  */
 import { exportAuditJsonl, queryAudit, type AuditFilter } from "../admin/audit-query.ts";
@@ -40,10 +42,11 @@ import { saveSettings } from "../admin/settings-apply.ts";
 import { parseSettingsForm, readSettings } from "../admin/settings-schema.ts";
 import { readKey } from "../admin/settings-store.ts";
 import { getUser, listUsers, patchUser } from "../admin/users.ts";
+import { rotateVapidKey } from "../admin/vapid-rotate.ts";
 import { loadRecord } from "../setup/steps/common.ts";
 import { checkForUpdate, readUpdateStatus } from "../update/update-checker.ts";
 import { AdminDevicesPage, AdminMachinesPage, DisableUserConfirm, MachineConfirm, UsersPage, type AdminBase } from "./admin-pages.tsx";
-import { AuditPage, HealthPage, SettingsPage, UpdatesPage } from "./admin-pages-2.tsx";
+import { AuditPage, HealthPage, PushKeysConfirm, SettingsPage, UpdatesPage } from "./admin-pages-2.tsx";
 import { readFlash, type Flash } from "./flash.ts";
 import type { RouteCtx, RouteRow } from "./route-types.ts";
 import { done, orgName, originRefusal, page, staleIds } from "./routes.ts";
@@ -166,6 +169,12 @@ export const ADMIN_ROUTES: readonly RouteRow[] = [
     const out = await replaceToken(ctx.deps, String(form.get("token") ?? "").trim(), r.account_id!, r.script_name!, ctx.identity!.user_id);
     if (!out.stored) return page(ctx, HealthPage({ ...(await base(ctx)), checks: await runHealthChecks(ctx.deps), probe: out.rows }), 400);
     return done("/admin/health", { kind: "token_replaced" });
+  }),
+
+  get("/admin/push-keys/rotate", async (ctx) => page(ctx, PushKeysConfirm(await base(ctx)))),
+  post("/admin/push-keys/rotate", async (ctx) => {
+    const { phones } = await rotateVapidKey(ctx.deps, ctx.identity!.user_id);
+    return done("/admin/health", { kind: "push_keys_rotated", extra: [`${phones} ${phones === 1 ? "phone was" : "phones were"} receiving notifications and must register again.`] });
   }),
 
   get("/admin/updates", async (ctx) => page(ctx, UpdatesPage({ ...(await base(ctx)), status: await readUpdateStatus(ctx.deps), settings: await readSettings(ctx.deps.db) }))),

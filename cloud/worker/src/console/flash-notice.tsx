@@ -34,6 +34,7 @@ const TEXT: Record<FlashKind, [NoticeTone, string, string]> = {
   workers_dev_disabled: ["success", "Turned off the workers.dev address", ""],
   workers_dev_failed: ["error", "Cloudflare refused to turn off the workers.dev address", "It still refuses every request. Check the token's Workers Scripts permission and retry."],
   token_replaced: ["success", "Replaced the Cloudflare API token", "Every permission passed the check before the old token was overwritten."],
+  push_keys_rotated: ["success", "Rotated the push keys", "Each phone registers again with the new key by itself the next time its app opens, and gets no notifications until then."],
   update_checked: ["info", "Checked for updates", ""],
 };
 
