@@ -32,6 +32,15 @@
 //! ├── cloud::signed_request
 //! ├── cloud::status
 //! └── cloud::test_support
+//! ├── cloud::cloudflared
+//! ├── cloud::ingress_cell
+//! ├── cloud::leg
+//! ├── cloud::leg_outcome
+//! ├── cloud::leg_run
+//! ├── cloud::leg_seam
+//! ├── cloud::leg_start
+//! ├── cloud::planner
+//! └── cloud::view
 //! External: none
 //!
 //! Used by:
@@ -63,3 +72,12 @@ pub mod signed_request;
 pub mod status;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod cloudflared;
+pub mod ingress_cell;
+pub mod leg;
+pub mod leg_outcome;
+mod leg_run;
+pub mod leg_seam;
+mod leg_start;
+pub mod planner;
+pub mod view;

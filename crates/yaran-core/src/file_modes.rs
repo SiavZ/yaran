@@ -30,6 +30,10 @@ pub const PRIVATE_FILE_MODE: u32 = 0o600;
 /// inside.
 pub const PRIVATE_DIR_MODE: u32 = 0o700;
 
+/// An executable yaran keeps for itself (the managed cloudflared): owner
+/// read/write/execute, `0700`.
+pub const PRIVATE_EXEC_MODE: u32 = 0o700;
+
 /// The group and other bits, the ones yaran always clears from its own files.
 const GROUP_AND_OTHER: u32 = 0o077;
 

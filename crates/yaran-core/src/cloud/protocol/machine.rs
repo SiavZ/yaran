@@ -26,6 +26,9 @@
 //! ├── cloud::signed_request
 //! ├── cloud::test_support
 //! └── yaran-core[test cloud_machine_api]
+//! ├── cloud::leg::tests
+//! ├── cloud::leg_seam
+//! └── cloud::protocol
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};
