@@ -8,7 +8,8 @@
     "docs/plans/phoneapp/evidence/**",
     "crates/yaran-core/src/cloud/**",
     "crates/yaran-web/src/cloud_*.rs",
-    "crates/yaran-web/web/src/lib/native/**"
+    "crates/yaran-web/web/src/lib/native/**",
+    "tools/cloudflared-pin/**"
   ],
   "optIn": [
     "crates/yaran-core/build.rs",
@@ -130,6 +131,8 @@
     "crates/yaran-web/web/src/**/*.test.tsx": "vitest, via npx vitest run in crates/yaran-web/web",
     "crates/yaran-web/web/src/lib/settingsDescriptorsCloud.test.ts": "vitest, via npm test in crates/yaran-web/web",
     "crates/yaran-web/web/src/lib/settingsDescriptors.test.ts": "vitest, via npm test in crates/yaran-web/web",
-    "crates/yaran-web/web/src/components/CustomizeWebappDialog.test.tsx": "vitest, via npm test in crates/yaran-web/web"
+    "crates/yaran-web/web/src/components/CustomizeWebappDialog.test.tsx": "vitest, via npm test in crates/yaran-web/web",
+    "tools/cloudflared-pin/bump.sh": "maintainer CLI: tools/cloudflared-pin/bump.sh <version> | --check; Phase 18's pin-freshness workflow runs --check",
+    "tools/cloudflared-pin/tests/*_test.sh": "bash tools/cloudflared-pin/tests/<name>_test.sh; Phase 10 Validation"
   }
 }
