@@ -400,6 +400,7 @@ impl CloudLoop {
         let view = CloudLegView {
             mode: self.settings.mode,
             state,
+            paired: machine.is_some_and(|m| !m.revoked),
             hostname: machine.map(|m| m.hostname.clone()),
             org_url: machine.map(|m| m.org_url.clone()),
             org_name: machine.map(|m| m.org_name.clone()),

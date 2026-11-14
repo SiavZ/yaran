@@ -50,19 +50,31 @@ describe("the lifecycle table", () => {
 })
 
 describe("the wiring", () => {
-  it("drives every registered socket from the real window events", () => {
+  // `pagehide`/`pageshow` fire at window; `freeze`/`resume` fire at the Document
+  // and do not bubble (Page Lifecycle §5.4.2: "Fire an event named freeze at
+  // doc"), so the wiring must listen where each event is actually dispatched.
+  it("drives every registered socket from the real events, at their real targets", () => {
     const a = spy()
     const b = spy()
     const offA = registerPageLifecycle(a)
     const offB = registerPageLifecycle(b)
     window.dispatchEvent(new Event("pagehide"))
     window.dispatchEvent(new Event("pageshow"))
-    window.dispatchEvent(new Event("freeze"))
-    window.dispatchEvent(new Event("resume"))
+    document.dispatchEvent(new Event("freeze"))
+    document.dispatchEvent(new Event("resume"))
     expect(a.calls).toEqual(["close", "resumeNow", "park", "resumeNow"])
     expect(b.calls).toEqual(a.calls)
     offA()
     offB()
+  })
+
+  it("does not rely on a window dispatch for freeze and resume", () => {
+    const pane = spy()
+    const off = registerPageLifecycle(pane)
+    window.dispatchEvent(new Event("freeze"))
+    window.dispatchEvent(new Event("resume"))
+    expect(pane.calls).toEqual([])
+    off()
   })
 
   it("stops driving a socket that unregistered, which every pane's does on unmount", () => {

@@ -12,7 +12,8 @@
  * Used by:
  * src/ua.ts
  * ├── src/index.ts
- * └── test/ua.test.ts
+ * ├── test/ua.test.ts
+ * └── web:src/lib/native/nativeShell.ts
  * <module-headers:end>
  */
 

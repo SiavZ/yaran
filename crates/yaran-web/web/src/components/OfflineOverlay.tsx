@@ -1,9 +1,15 @@
-import { Loader2, RefreshCw } from "lucide-react"
+import { Loader2, LogIn, RefreshCw } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
 
-import { Button } from "@/components/ui/button"
+import { reauthUri } from "@yaran/protocol/uri"
+
+import { Button, buttonVariants } from "@/components/ui/button"
 import type { ReconnectPlanEvent } from "@/lib/reconnectingSocket"
+import { renderProse } from "@/lib/prose"
+import { accessFaceFor } from "@/lib/native/accessFace"
+import { accessSession, useAccessSession } from "@/lib/native/accessSession"
+import { isNativeShell } from "@/lib/native/nativeShell"
 import { reconnect, useYaran } from "@/lib/store"
 
 // The same ASCII "yaran" wordmark `public/offline.html` shows, so the modal and the
@@ -124,17 +130,61 @@ function copyFor(plan: ReconnectPlanEvent | null): OverlayFace {
   }
 }
 
+// Sign in. In a browser, a link to `/__yaran/signed-in` in a new tab: Access
+// intercepts that navigation, the user signs in there, and this tab's probe sees
+// `ok` with no reload. Inside the app, `yaranapp://reauth?host=<hostname>`, which
+// machine-view intercepts before navigation and answers with its sealed handoff.
+function SignInControl({ native, hostname }: { native: boolean; hostname: string }) {
+  const className = buttonVariants({ className: "max-md:min-h-11" })
+  if (native) {
+    return (
+      <button
+        type="button"
+        className={className}
+        onClick={() => location.assign(reauthUri(hostname))}
+      >
+        <LogIn aria-hidden />
+        Sign in
+      </button>
+    )
+  }
+  // A link, not window.open: a user-clicked link is never popup-blocked, and with
+  // `noopener` window.open returns null even on success, so a fallback could not
+  // tell the two apart.
+  return (
+    <a
+      className={className}
+      href={new URL("/__yaran/signed-in", location.origin).href}
+      target="_blank"
+      rel="noopener"
+    >
+      <LogIn aria-hidden />
+      Sign in
+    </a>
+  )
+}
+
 // The sticky offline state avoids flicker between retries. Reconnection is
 // budgeted while visible and parked while hidden; the button resets the budget
 // and attempts at once, in every face.
 export function OfflineOverlay() {
-  const { offline, reconnectPlan } = useYaran()
+  const { offline, reconnectPlan, bootstrap } = useYaran()
   const reconnectButton = useRef<HTMLButtonElement>(null)
   const face = copyFor(reconnectPlan)
+  // An expired sign-in or a refusing server outranks the reconnect faces: they
+  // would count attempts against a budget that signing in, not waiting, fixes.
+  // Off-browser (the marketing site's static render) there is no location.
+  const hostname = typeof location === "undefined" ? "" : location.hostname
+  const native = isNativeShell()
+  const access = accessFaceFor(useAccessSession(), {
+    hostname,
+    onCloudHostname: hostname === bootstrap?.cloud?.hostname,
+    native,
+  })
 
   return (
     <DialogPrimitive.Root
-      open={offline}
+      open={offline || access !== null}
       disablePointerDismissal
       // Connectivity owns this dialog. Escape cannot make the workspace usable.
       onOpenChange={(_, details) => details.cancel()}
@@ -157,14 +207,42 @@ export function OfflineOverlay() {
           id="offline-overlay-title"
           className="mb-1.5 flex items-center justify-center gap-2 text-lg font-semibold"
         >
-          {face.spinner ? (
+          {face.spinner && access === null ? (
             <Loader2
               className="size-4 motion-safe:animate-spin text-muted-foreground"
               aria-hidden
             />
           ) : null}
-          {face.title}
+          {access?.title ?? face.title}
         </DialogPrimitive.Title>
+        {access !== null ? (
+          <>
+            <DialogPrimitive.Description
+              id="offline-overlay-desc"
+              className="mb-6 text-sm leading-relaxed text-muted-foreground"
+            >
+              {renderProse(access.body)}
+            </DialogPrimitive.Description>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              {access.signIn ? <SignInControl native={native} hostname={hostname} /> : null}
+              {access.reconnect ? (
+                <Button
+                  ref={reconnectButton}
+                  variant={access.signIn ? "outline" : "default"}
+                  onClick={() => {
+                    reconnect()
+                    accessSession.recheck()
+                  }}
+                  className="max-md:min-h-11"
+                >
+                  <RefreshCw aria-hidden />
+                  Reconnect
+                </Button>
+              ) : null}
+            </div>
+          </>
+        ) : (
+        <>
         <div className="mb-6 space-y-1 text-sm leading-relaxed text-muted-foreground">
           {face.counter !== null && face.counter.at !== null ? (
             <CountdownLine
@@ -195,6 +273,8 @@ export function OfflineOverlay() {
           <RefreshCw aria-hidden />
           {face.button}
         </Button>
+        </>
+        )}
         </DialogPrimitive.Popup>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>

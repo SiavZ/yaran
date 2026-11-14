@@ -10,7 +10,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { appMenuModel, findSubmenu, type AppMenuEntry } from "@/lib/appMenu"
-import { useYaran } from "@/lib/store"
+import { useAppMenuContext } from "@/lib/useAppMenuContext"
 
 // The mobile app menu: the same `appMenuModel()` the desktop flyout renders,
 // presented as a bottom sheet with drill-down, because a hover flyout cannot
@@ -148,13 +148,7 @@ export function AppMenuSheet({
     }
   }
 
-  // The model's one context input: gh availability gates the from-PR agent
-  // variant, exactly as the launcher corner's ⋯ menu gates its copy.
-  const { bootstrap } = useYaran()
-  const ghAvailable = bootstrap?.gh_available ?? false
-  const githubIntegrationEnabled = bootstrap?.github_integration ?? false
-
-  const model = appMenuModel({ ghAvailable, githubIntegrationEnabled })
+  const model = appMenuModel(useAppMenuContext())
   const submenu = drilled ? findSubmenu(model, drilled) : null
   // Fall back to the root if a drilled id ever goes missing, so the sheet can
   // never strand the user on an empty list with no way back.

@@ -15,6 +15,7 @@
 // <module-headers:begin>
 // Uses:
 // src/lib/appMenu.ts
+// ├── @yaran/protocol:src/uri.ts
 // ├── src/lib/configApi.ts
 // ├── src/lib/creationMenus.ts
 // ├── src/lib/notify.ts
@@ -28,12 +29,14 @@
 // ├── src/components/AppMenuSheet.test.tsx
 // ├── src/components/AppMenuSheet.tsx
 // ├── src/components/TheaterPill.test.tsx
-// └── src/lib/appMenu.test.ts
+// ├── src/lib/appMenu.test.ts
+// └── src/lib/useAppMenuContext.ts
 // <module-headers:end>
 
 import {
   Activity,
   ArrowDownAZ,
+  ArrowLeftRight,
   PartyPopper,
   ArrowUpDown,
   CalendarPlus,
@@ -46,11 +49,14 @@ import {
   Plus,
   RefreshCw,
   Rocket,
+  Settings2,
   SlidersHorizontal,
+  Smartphone,
   SquarePen,
   Wrench,
   type LucideIcon,
 } from "lucide-react"
+import { HOME_URI, SETTINGS_URI } from "@yaran/protocol/uri"
 import { notifyError } from "./notify"
 
 import { configApi } from "@/lib/configApi"
@@ -64,6 +70,7 @@ import {
   openTaskManager,
   openMacrosDialog,
   openCloudDialog,
+  openConnectPhone,
   sortAgents,
 } from "@/lib/store"
 
@@ -102,6 +109,49 @@ export interface AppMenuContext {
    *  `gh` works. It gates "Re-check GitHub", which exists for when `gh` does
    *  not work and so must never be gated on `ghAvailable`. */
   githubIntegrationEnabled: boolean
+  /** Whether the page runs inside the yaran phone app (its User-Agent token).
+   *  Gates "Switch machine" and "Phone app settings", which only the app can
+   *  answer: a browser cannot open the `yaranapp:` scheme. */
+  nativeShell: boolean
+  /** Whether this machine is paired with an org and the page is NOT in the app.
+   *  Gates "Connect a phone…": there is no QR code to show otherwise. */
+  phonePairing: boolean
+}
+
+// The device group: present only when it has an entry, so its separator never
+// stands alone. The native entries navigate to an app screen and open no dialog,
+// so they carry no ellipsis. machine-view intercepts both control URLs before
+// navigation; they never leave the app's own WebView.
+function deviceEntries(ctx: AppMenuContext): AppMenuEntry[] {
+  const items: AppMenuEntry[] = []
+  if (ctx.phonePairing) {
+    items.push({
+      kind: "item",
+      id: "connect-phone",
+      title: "Connect a phone…",
+      icon: Smartphone,
+      run: () => openConnectPhone(),
+    })
+  }
+  if (ctx.nativeShell) {
+    items.push(
+      {
+        kind: "item",
+        id: "switch-machine",
+        title: "Switch machine",
+        icon: ArrowLeftRight,
+        run: () => location.assign(HOME_URI),
+      },
+      {
+        kind: "item",
+        id: "phone-app-settings",
+        title: "Phone app settings",
+        icon: Settings2,
+        run: () => location.assign(SETTINGS_URI),
+      },
+    )
+  }
+  return items.length > 0 ? [{ kind: "separator", id: "sep-device" }, ...items] : []
 }
 
 /**
@@ -272,6 +322,7 @@ export function appMenuModel(ctx: AppMenuContext): AppMenuEntry[] {
       icon: Cloud,
       run: () => openCloudDialog(),
     },
+    ...deviceEntries(ctx),
     { kind: "separator", id: "sep-about" },
     // Actions rather than preferences: their `ui.disable_*` counterparts are
     // Preferences rows, and those flags suppress only the automatic screens, so

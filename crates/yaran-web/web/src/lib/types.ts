@@ -338,6 +338,8 @@ export interface ResourceEvent {
 // handler can switch on `event` and read only what that frame carries.
 export interface EventsServerMessage {
   event: string
+  /** The beat number a `beat` answer echoes. */
+  n?: number
   /** Resource id (`session.changes`)
    *  OR the per-connection id (`connected`). */
   id?: string
@@ -389,6 +391,8 @@ export interface EventsServerMessage {
 export interface EventsClientMessage {
   subscribe?: string[]
   unsubscribe?: string[]
+  /** The application-level beat; the server echoes `{"event":"beat","n":N}`. */
+  beat?: number
 }
 
 // The `202 Accepted` body of a create the server stopped waiting on: the id of

@@ -30,6 +30,7 @@
  * ├── src/lib/git.ts
  * ├── src/lib/instanceTitle.ts
  * ├── src/lib/macros.ts
+ * ├── src/lib/native/accessSession.ts
  * ├── src/lib/notify.ts
  * ├── src/lib/pageLifecycle.ts
  * ├── src/lib/paneDivider.ts
@@ -75,8 +76,6 @@
  * ├── src/components/AgentStartupCommandDialog.tsx
  * ├── src/components/AgentTabsStrip.test.tsx
  * ├── src/components/AgentTabsStrip.tsx
- * ├── src/components/AppMenu.tsx
- * ├── src/components/AppMenuSheet.tsx
  * ├── src/components/AttachPullRequestDialog.test.tsx
  * ├── src/components/AttachPullRequestDialog.tsx
  * ├── src/components/ChangeProviderDialog.tsx
@@ -106,6 +105,8 @@
  * ├── src/components/ConfirmVanishedEditorDialog.test.tsx
  * ├── src/components/ConfirmVanishedEditorDialog.tsx
  * ├── src/components/ConnDot.tsx
+ * ├── src/components/ConnectPhoneDialog.test.tsx
+ * ├── src/components/ConnectPhoneDialog.tsx
  * ├── src/components/CreateAgentDialog.test.tsx
  * ├── src/components/CreateAgentDialog.tsx
  * ├── src/components/CreationOverflowMenuItems.tsx
@@ -142,6 +143,7 @@
  * ├── src/components/MobileShell.tsx
  * ├── src/components/NewAgentPickerDialog.test.tsx
  * ├── src/components/NewAgentPickerDialog.tsx
+ * ├── src/components/OfflineOverlay.dom.test.tsx
  * ├── src/components/OfflineOverlay.test.tsx
  * ├── src/components/OfflineOverlay.tsx
  * ├── src/components/PaneActionCluster.tsx
@@ -242,6 +244,7 @@
  * ├── src/lib/storeTheater.test.ts
  * ├── src/lib/storeWorkspacePush.test.ts
  * ├── src/lib/theater.ts
+ * ├── src/lib/useAppMenuContext.ts
  * ├── yaran-website:src/figure/WebUIFigure.tsx
  * └── yaran-website:src/figure/seed.ts
  * <module-headers:end>
@@ -397,6 +400,7 @@ import type {
   TerminalView,
 } from "./types"
 import { workspaceProjectId } from "@/lib/agentWorkspace"
+import { accessSession, configureAccessSession } from "@/lib/native/accessSession"
 
 // Who a companion terminal belongs to, defined in `lib/terminalOwner.ts`
 // alongside the exhaustive switches that consume it and re-exported here for
@@ -793,6 +797,8 @@ export interface YaranState {
   // The Yaran Cloud dialog (the app menu's "Yaran Cloud…"). It fetches its own
   // status while open, so the store holds only this gate.
   cloudDialogOpen: boolean
+  // The app menu's "Connect a phone…" dialog (the phone QR code of a paired machine).
+  connectPhoneOpen: boolean
   // Whether the "Force stop everything…" confirmation (nested inside the Task
   // Manager) is up.
   // Every stop confirms, the bulk one most of all: it ends every agent and
@@ -1227,6 +1233,7 @@ let state: YaranState = {
   createAgentPrInput: "",
   taskManagerOpen: false,
   cloudDialogOpen: false,
+  connectPhoneOpen: false,
   stopAllOpen: false,
   configEditorOpen: false,
   configEditorContent: "",
@@ -1349,6 +1356,13 @@ eventsSocket.subscribe(["sessions", "projects", "config"])
 // does, so the registration is never retired.
 registerPageLifecycle(eventsSocket)
 
+// A recognised sign-in resumes the events socket (refilling a spent budget, never
+// touching a live socket); the cloud hostname gates the overlay's Access wording.
+configureAccessSession({
+  resume: () => eventsSocket.resumeNow(),
+  cloudHostname: () => state.bootstrap?.cloud?.hostname,
+})
+
 function handleStatusEvent(event: EventsServerMessage): void {
   if (event.tone === "error") setState({ ...clearPendingClientIntent() })
   if (!statusToastAllowed(event.scope, state.standaloneEditor)) return
@@ -1396,6 +1410,8 @@ function routeEvent(event: EventsServerMessage): void {
     case "status_cleared":
       dismissNotification(event.key ?? ANON_TOAST_ID)
       return
+    // The cloud leg's live snapshot rides the bootstrap too (pairing, tunnel state).
+    case "cloud.changed":
     case "config.changed":
       loadBootstrap()
       return
@@ -2234,6 +2250,8 @@ eventsSocket.onConn = (conn) => {
   // the server may have been replaced in the gap. The next `onOpen`'s probe
   // re-publishes it.
   if (conn === "closed" || conn === "failed") clearServerValidated()
+  // A failed attempt may be an expired Access session rather than an outage.
+  if (conn === "closed" || conn === "failed") accessSession.noteConnectionTrouble()
   // The per-session changed-files subscription re-establishes on reconnect in
   // `eventsSocket.onOpen` (which also refetches); nothing to re-arm here.
 }
@@ -6287,6 +6305,14 @@ export function openCloudDialog(): void {
 
 export function closeCloudDialog(): void {
   setState({ cloudDialogOpen: false })
+}
+
+export function openConnectPhone(): void {
+  setState({ connectPhoneOpen: true })
+}
+
+export function closeConnectPhone(): void {
+  setState({ connectPhoneOpen: false })
 }
 
 // The "Force stop everything…" confirmation nested inside the Task Manager.

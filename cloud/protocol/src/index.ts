@@ -4,7 +4,9 @@
  * Re-exports the generated wire types, the validators, the error registry helpers, the
  * sealed-envelope and signature codecs, the push payload helpers and the URI/UA helpers.
  * Consumers import from "@yaran/protocol" only; deep imports are not part of the contract
- * (the schemas, registries and fixtures are exported as data paths instead).
+ * (the schemas, registries and fixtures are exported as data paths instead). The two
+ * exceptions are `@yaran/protocol/ua` and `@yaran/protocol/uri`: dependency-free subpaths
+ * for a bundle (the yaran web UI) that must not resolve `jose` or the schema validator.
  *
  * - No side effects at import time beyond building lookup tables.
  *

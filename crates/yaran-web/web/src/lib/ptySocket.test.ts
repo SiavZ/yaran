@@ -939,3 +939,29 @@ describe("while the app socket has given up", () => {
     sock.dispose()
   })
 })
+
+// Phase 13: an expired Access session is an ordinary retry, never the 4001 stop
+// and never `onGone`. The registry pin is in native/accessSession.test.ts.
+describe("PtySocket 4401", () => {
+  it("retries without onGone or a failed state, and notes the expiry", async () => {
+    const { accessSession, ACCESS_SESSION_EXPIRED_CLOSE } = await import(
+      "./native/accessSession"
+    )
+    const spy = vi.spyOn(accessSession, "noteSessionExpired").mockImplementation(() => {})
+    vi.useFakeTimers()
+    const sock = new PtySocket("ws://x/pty")
+    let gone = 0
+    const states: ConnState[] = []
+    sock.onGone = () => gone++
+    sock.onConn = (s) => states.push(s)
+    sock.connect()
+    last().open()
+    last().triggerClose(ACCESS_SESSION_EXPIRED_CLOSE)
+    vi.advanceTimersByTime(600)
+    expect(FakeWS.instances.length).toBe(2)
+    expect(gone).toBe(0)
+    expect(states).not.toContain("failed")
+    expect(spy).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
+  })
+})

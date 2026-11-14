@@ -15,6 +15,7 @@
 //! Used by:
 //! cloud/protocol/ua.rs
 //! ├── cloud::protocol
+//! ├── device_label
 //! └── yaran-web::handoff_consent_page
 //! <module-headers:end>
 

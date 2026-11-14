@@ -144,6 +144,7 @@
     "crates/yaran-web/web/src/components/CustomizeWebappDialog.test.tsx": "vitest, via npm test in crates/yaran-web/web",
     "tools/cloudflared-pin/bump.sh": "maintainer CLI: tools/cloudflared-pin/bump.sh <version> | --check; Phase 18's pin-freshness workflow runs --check",
     "tools/cloudflared-pin/tests/*_test.sh": "bash tools/cloudflared-pin/tests/<name>_test.sh; Phase 10 Validation",
-    "crates/yaran-core/tests/cloud_push_emitter.rs": "cargo test -p yaran-core --test cloud_push_emitter"
+    "crates/yaran-core/tests/cloud_push_emitter.rs": "cargo test -p yaran-core --test cloud_push_emitter",
+    "crates/yaran-web/web/src/lib/native/*.test.ts": "vitest, via npm test in crates/yaran-web/web"
   }
 }

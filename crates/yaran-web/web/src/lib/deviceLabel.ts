@@ -4,6 +4,25 @@
 //
 // An iPad in desktop mode carries no iPad token and so reads as macOS; there is no
 // reliable UA-only way to tell it apart, and the miss is benign for this label.
+// The yaran phone app is the exception: its `YaranApp/…` token names the form
+// factor, so it is read before any OS check. The fixture both this and
+// `device_label.rs` run is `yaran-core/tests/fixtures/device_label_cross_language.json`.
+
+import { assertNever } from "./assertNever"
+import { parseNativeShell } from "./native/nativeShell"
+
+function appLabel(ua: string): string | null {
+  const app = parseNativeShell(ua)
+  if (app === null) return null
+  switch (app.os) {
+    case "ios":
+      return app.form === "phone" ? "yaran on iPhone" : "yaran on iPad"
+    case "android":
+      return app.form === "phone" ? "yaran on Android phone" : "yaran on Android tablet"
+    default:
+      return assertNever(app.os)
+  }
+}
 
 // Detect the operating system. ORDER MATTERS: Android UA strings also contain
 // "Linux", and iOS UA strings also contain "like Mac OS X", so the more specific
@@ -47,6 +66,8 @@ export function deviceLabel(
   const ua = userAgent.trim()
   if (ua === "") return null
   if (ua === TUI_DEVICE_LABEL) return ua
+  const app = appLabel(ua)
+  if (app !== null) return app
 
   const os = detectOs(ua)
   if (os === null) return null

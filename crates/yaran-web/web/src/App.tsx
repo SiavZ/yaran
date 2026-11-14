@@ -24,6 +24,7 @@
  * ├── src/components/ConfirmRecreateWorkingCopyDialog.tsx
  * ├── src/components/ConfirmUseExistingBranchDialog.tsx
  * ├── src/components/ConfirmVanishedEditorDialog.tsx
+ * ├── src/components/ConnectPhoneDialog.tsx
  * ├── src/components/CreateAgentDialog.tsx
  * ├── src/components/CustomizeWebappDialog.tsx
  * ├── src/components/DeleteProjectDialog.tsx
@@ -98,6 +99,7 @@ import { ConfirmRecreateWorkingCopyDialog } from "@/components/ConfirmRecreateWo
 import { ConfirmUseExistingBranchDialog } from "@/components/ConfirmUseExistingBranchDialog"
 import { TaskManagerDialog } from "@/components/TaskManagerDialog"
 import { CloudDialog } from "@/components/cloud/CloudDialog"
+import { ConnectPhoneDialog } from "@/components/ConnectPhoneDialog"
 import { ConfirmDiscardFileDialog } from "@/components/ConfirmDiscardFileDialog"
 import { ConfirmCloseEditorTabDialog } from "@/components/ConfirmCloseEditorTabDialog"
 import { ConfirmVanishedEditorDialog } from "@/components/ConfirmVanishedEditorDialog"
@@ -175,6 +177,7 @@ function GlobalOverlays() {
       <ConfirmUseExistingBranchDialog />
       <TaskManagerDialog />
       <CloudDialog />
+      <ConnectPhoneDialog />
       <ConfigEditorDialog />
       <CustomizeWebappDialog />
       <FirstLoadDialog />
