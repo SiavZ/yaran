@@ -12,14 +12,14 @@
 ///
 /// <module-headers:begin>
 /// Uses:
-/// App/AuthSpike.swift
-/// ├── GateSpikeCore/Handoff.swift
-/// └── App/MachineViewSpike.swift   (gateLog)
+/// App/AuthSpike
+/// ├── App/MachineViewSpike (inferred)   (gateLog)
+/// └── GateSpikeCore/Handoff (inferred)
 /// External: AuthenticationServices, Capacitor, UIKit
 ///
 /// Used by:
-/// App/AuthSpike.swift
-/// └── App/GateSpikeViewController.swift
+/// App/AuthSpike
+/// └── App/GateSpikeViewController (inferred)
 /// <module-headers:end>
 import AuthenticationServices
 import Capacitor

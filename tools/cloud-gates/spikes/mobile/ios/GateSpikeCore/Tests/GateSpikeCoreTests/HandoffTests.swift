@@ -8,13 +8,11 @@
 ///
 /// <module-headers:begin>
 /// Uses:
-/// GateSpikeCoreTests/HandoffTests.swift
-/// └── GateSpikeCore/Handoff.swift
-/// External: Testing, Foundation
+/// GateSpikeCoreTests/HandoffTests
+/// └── GateSpikeCore/Handoff (inferred)
+/// External: Foundation, Testing
 ///
-/// Used by:
-/// GateSpikeCoreTests/HandoffTests.swift
-/// └── entry point (swift test / Swift Testing)
+/// Used by: entry point (swift test / Swift Testing)
 /// <module-headers:end>
 import Foundation
 import Testing

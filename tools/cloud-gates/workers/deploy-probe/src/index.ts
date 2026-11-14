@@ -13,12 +13,9 @@
  * Uses:
  * src/index.ts
  * └── src/meta.ts
- *     └── vendor/gate-protocol/index.js
- * External: (none)
+ * External: none
  *
- * Used by:
- * src/index.ts
- * └── entry point (Cloudflare Worker, deployed by the Deploy to Cloudflare button for tools/cloud-gates/g11-deploy-button.sh)
+ * Used by: entry point (Cloudflare Worker, deployed by the Deploy to Cloudflare button for tools/cloud-gates/g11-deploy-button.sh)
  * <module-headers:end>
  */
 import { buildMeta, type MetaRow, type SecretEnv } from './meta';

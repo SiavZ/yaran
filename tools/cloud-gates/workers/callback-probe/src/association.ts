@@ -11,12 +11,12 @@
  * - Pure: returns plain objects, unit-tested in Node.
  *
  * <module-headers:begin>
- * Uses:
- * src/association.ts
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * src/association.ts
+ * ├── src/handoff.ts
  * ├── src/index.ts
  * └── test/association.test.ts
  * <module-headers:end>

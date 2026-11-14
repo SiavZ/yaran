@@ -18,13 +18,12 @@
  * <module-headers:begin>
  * Uses:
  * io.github.siavz.yaran.gatespike.PushSpike
- * ├── io.github.siavz.yaran.gatespike.BuildConfig
- * └── io.github.siavz.yaran.gatespike.MachineViewSpike   (TAG)
- * External: org.unifiedpush.android.connector, com.getcapacitor
+ * └── io.github.siavz.yaran.gatespike.MachineViewSpike (inferred)  (TAG)
+ * External: android.net, android.util, com.getcapacitor, com.getcapacitor.annotation, java.lang.ref, org.unifiedpush.android.connector, org.unifiedpush.android.connector.data
  *
  * Used by:
  * io.github.siavz.yaran.gatespike.PushSpike
- * └── io.github.siavz.yaran.gatespike.MainActivity
+ * └── io.github.siavz.yaran.gatespike.MainActivity (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.gatespike

@@ -12,11 +12,9 @@
  * Uses:
  * test/echo-origin.test.mjs
  * └── echo-origin.mjs
- * External: ws, node:test, node:assert/strict, node:crypto, node:child_process, node:fs, node:url
+ * External: node:assert/strict, node:child_process, node:crypto, node:fs, node:test, node:url, ws
  *
- * Used by:
- * test/echo-origin.test.mjs
- * └── entry point (node --test)
+ * Used by: entry point (node --test, via npm test in tools/cloud-gates/origin)
  * <module-headers:end>
  */
 import { test, before, after } from 'node:test';

@@ -7,13 +7,10 @@
  * - Build-time only; nothing here ships as runtime code.
  *
  * <module-headers:begin>
- * Uses:
- * vite.config.mjs
+ * Uses: none
  * External: vite
  *
- * Used by:
- * vite.config.mjs
- * └── entry point (read by `vite build`)
+ * Used by: entry point (read by `vite build`)
  * <module-headers:end>
  */
 import { defineConfig } from 'vite';

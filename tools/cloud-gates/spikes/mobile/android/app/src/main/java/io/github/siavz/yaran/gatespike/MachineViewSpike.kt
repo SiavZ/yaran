@@ -15,17 +15,15 @@
  * - `CookieManager` calls run on the main thread; the Activity owns its WebView's lifecycle.
  *
  * <module-headers:begin>
- * Uses:
- * io.github.siavz.yaran.gatespike.MachineViewSpike
- * └── io.github.siavz.yaran.gatespike.BuildConfig
- * External: android.webkit, androidx.activity, androidx.appcompat, androidx.core, com.getcapacitor
+ * Uses: none
+ * External: android.content, android.net, android.os, android.util, android.webkit, android.widget, androidx.activity.result.contract, androidx.appcompat.app, androidx.core.view, com.getcapacitor, com.getcapacitor.annotation, java.io, java.text, java.util
  *
  * Used by:
  * io.github.siavz.yaran.gatespike.MachineViewSpike
- * ├── io.github.siavz.yaran.gatespike.MainActivity
- * ├── io.github.siavz.yaran.gatespike.AuthSpike           (TAG)
- * ├── io.github.siavz.yaran.gatespike.PushSpike           (TAG)
- * └── io.github.siavz.yaran.gatespike.AccessCookieTest
+ * ├── io.github.siavz.yaran.gatespike.AccessCookieTest (inferred)
+ * ├── io.github.siavz.yaran.gatespike.AuthSpike (inferred)         (TAG)
+ * ├── io.github.siavz.yaran.gatespike.MainActivity (inferred)
+ * └── io.github.siavz.yaran.gatespike.PushSpike (inferred)         (TAG)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.gatespike

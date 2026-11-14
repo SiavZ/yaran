@@ -9,13 +9,11 @@
 ///
 /// <module-headers:begin>
 /// Uses:
-/// GateSpikeCoreTests/AccessCookieTests.swift
-/// └── GateSpikeCore/AccessCookie.swift
-/// External: Testing, Foundation
+/// GateSpikeCoreTests/AccessCookieTests
+/// └── GateSpikeCore/AccessCookie (inferred)
+/// External: Foundation, Testing
 ///
-/// Used by:
-/// GateSpikeCoreTests/AccessCookieTests.swift
-/// └── entry point (swift test / Swift Testing)
+/// Used by: entry point (swift test / Swift Testing)
 /// <module-headers:end>
 import Foundation
 import Testing

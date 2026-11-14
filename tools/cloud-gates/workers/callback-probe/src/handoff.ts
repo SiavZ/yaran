@@ -16,7 +16,7 @@
  * Uses:
  * src/handoff.ts
  * └── src/association.ts
- * External: (none)
+ * External: none
  *
  * Used by:
  * src/handoff.ts

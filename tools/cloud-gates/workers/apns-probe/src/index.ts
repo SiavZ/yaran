@@ -15,11 +15,9 @@
  * Uses:
  * src/index.ts
  * └── src/apns-jwt.ts
- * External: (none)
+ * External: none
  *
- * Used by:
- * src/index.ts
- * └── entry point (Cloudflare Worker, deployed by tools/cloud-gates/g04-apns.sh)
+ * Used by: entry point (Cloudflare Worker, deployed by tools/cloud-gates/g04-apns.sh)
  * <module-headers:end>
  */
 import { signProviderJwt } from './apns-jwt';

@@ -15,11 +15,9 @@
  * src/index.ts
  * ├── src/host-lock.ts
  * └── src/setup.ts
- * External: (none)
+ * External: none
  *
- * Used by:
- * src/index.ts
- * └── entry point (Cloudflare Worker, deployed by tools/cloud-gates/g14-custom-domain.sh)
+ * Used by: entry point (Cloudflare Worker, deployed by tools/cloud-gates/g14-custom-domain.sh)
  * <module-headers:end>
  */
 import { hostLock, parseSetupState } from './host-lock';

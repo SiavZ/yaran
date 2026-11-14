@@ -23,15 +23,14 @@
 # Run directly as a filter: `some-command | tools/cloud-gates/lib/redact.sh`.
 #
 # <module-headers:begin>
-# Uses:
-# tools/cloud-gates/lib/redact.sh
-# External: perl
+# Uses: none
+# External: none
 #
 # Used by:
 # tools/cloud-gates/lib/redact.sh
+# ├── docs/plans/phoneapp/evidence/check-evidence.sh
 # ├── tools/cloud-gates/lib/common.sh
-# ├── tools/cloud-gates/tests/redact_test.sh
-# └── docs/plans/phoneapp/evidence/check-evidence.sh
+# └── tools/cloud-gates/tests/redact_test.sh
 # <module-headers:end>
 
 # The perl program is kept in a variable so the filter is one process per

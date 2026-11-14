@@ -1,3 +1,19 @@
+/// AppDelegate: the iOS gate spike's application delegate, from the Capacitor template.
+///
+/// Forwards the APNs registration result to PushSpike (G4) through Capacitor's
+/// notifications, and hands every scene to SceneDelegate.
+///
+/// - Main thread only; keeps no state of its own.
+///
+/// <module-headers:begin>
+/// Uses:
+/// App/AppDelegate
+/// └── App/SceneDelegate (inferred)
+/// External: Capacitor, UIKit
+///
+/// Used by: entry point (@UIApplicationMain, the iOS app entry)
+/// <module-headers:end>
+
 import UIKit
 import Capacitor
 

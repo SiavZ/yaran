@@ -16,13 +16,12 @@
  * <module-headers:begin>
  * Uses:
  * io.github.siavz.yaran.gatespike.AuthSpike
- * ├── io.github.siavz.yaran.gatespike.BuildConfig
- * └── io.github.siavz.yaran.gatespike.MachineViewSpike   (TAG)
- * External: androidx.browser, androidx.appcompat, android.content.pm.verify.domain, com.getcapacitor
+ * └── io.github.siavz.yaran.gatespike.MachineViewSpike (inferred)  (TAG)
+ * External: android.content, android.content.pm, android.content.pm.verify.domain, android.net, android.os, android.util, android.widget, androidx.activity.result, androidx.appcompat.app, androidx.browser.auth, androidx.browser.customtabs, com.getcapacitor, com.getcapacitor.annotation, java.lang.ref, java.security
  *
  * Used by:
  * io.github.siavz.yaran.gatespike.AuthSpike
- * └── io.github.siavz.yaran.gatespike.MainActivity
+ * └── io.github.siavz.yaran.gatespike.MainActivity (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.gatespike

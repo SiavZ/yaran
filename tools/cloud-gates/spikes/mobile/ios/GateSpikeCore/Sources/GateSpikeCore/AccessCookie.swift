@@ -10,14 +10,13 @@
 /// - The JWT is decoded only to read `exp`; it is never verified here (the server verifies).
 ///
 /// <module-headers:begin>
-/// Uses:
-/// GateSpikeCore/AccessCookie.swift
+/// Uses: none
 /// External: Foundation
 ///
 /// Used by:
-/// GateSpikeCore/AccessCookie.swift
-/// ├── App/MachineViewSpike.swift
-/// └── GateSpikeCoreTests/AccessCookieTests.swift
+/// GateSpikeCore/AccessCookie
+/// ├── App/MachineViewSpike (inferred)
+/// └── GateSpikeCoreTests/AccessCookieTests (inferred)
 /// <module-headers:end>
 import Foundation
 

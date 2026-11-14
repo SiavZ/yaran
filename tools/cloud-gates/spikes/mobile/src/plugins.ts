@@ -10,8 +10,7 @@
  * - Event payloads carry parameter NAMES and booleans, never the `jwe` value.
  *
  * <module-headers:begin>
- * Uses:
- * src/plugins.ts
+ * Uses: none
  * External: @capacitor/core
  *
  * Used by:

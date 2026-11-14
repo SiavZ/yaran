@@ -15,12 +15,9 @@
  * src/index.ts
  * ├── src/association.ts
  * └── src/handoff.ts
- *     └── src/association.ts
- * External: (none)
+ * External: none
  *
- * Used by:
- * src/index.ts
- * └── entry point (Cloudflare Worker, deployed by tools/cloud-gates/g13-system-browser-auth.sh)
+ * Used by: entry point (Cloudflare Worker, deployed by tools/cloud-gates/g13-system-browser-auth.sh)
  * <module-headers:end>
  */
 import { appleAppSiteAssociation, assetLinks, CALLBACK_PATHS } from './association';

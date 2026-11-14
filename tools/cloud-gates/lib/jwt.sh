@@ -9,17 +9,16 @@
 # - Decoding needs only `base64 --decode` and jq, so it runs on macOS and Linux.
 #
 # <module-headers:begin>
-# Uses:
-# tools/cloud-gates/lib/jwt.sh
-# External: base64, jq
+# Uses: none
+# External: none
 #
 # Used by:
 # tools/cloud-gates/lib/jwt.sh
-# ├── tools/cloud-gates/tests/lib_test.sh
 # ├── tools/cloud-gates/g01-cookie-injection.sh
 # ├── tools/cloud-gates/g02-cloudflared-origin.sh
 # ├── tools/cloud-gates/g03-access-responses.sh
-# └── tools/cloud-gates/g12-session-expiry.sh
+# ├── tools/cloud-gates/g12-session-expiry.sh
+# └── tools/cloud-gates/tests/lib_test.sh
 # <module-headers:end>
 
 # b64url_decode <segment>: base64url (unpadded) to raw bytes.

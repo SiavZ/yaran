@@ -9,13 +9,10 @@
  * - No network, no storage; a plain platform Activity with no AndroidX dependency.
  *
  * <module-headers:begin>
- * Uses:
- * io.github.siavz.yaran.gatespike.hijack.HijackActivity
- * External: android.app, android.widget
+ * Uses: none
+ * External: android.app, android.content, android.os, android.util, android.widget
  *
- * Used by:
- * io.github.siavz.yaran.gatespike.hijack.HijackActivity
- * └── entry point (launcher and VIEW intent filters, hijack/src/main/AndroidManifest.xml)
+ * Used by: entry point (launcher and VIEW intent filters, hijack/src/main/AndroidManifest.xml)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.gatespike.hijack

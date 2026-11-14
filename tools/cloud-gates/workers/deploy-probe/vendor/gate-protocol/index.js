@@ -10,13 +10,10 @@
  * - metaBody carries booleans for secrets, never values.
  *
  * <module-headers:begin>
- * Uses:
- * index.js
- * External: (none)
+ * Uses: none
+ * External: none
  *
- * Used by:
- * index.js
- * └── ../../src/meta.ts
+ * Used by: entry point (runtime half of the vendored package; src/meta.ts imports it, and TypeScript resolves the import to index.d.ts)
  * <module-headers:end>
  */
 

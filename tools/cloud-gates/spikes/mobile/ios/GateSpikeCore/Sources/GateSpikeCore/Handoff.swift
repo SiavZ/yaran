@@ -10,14 +10,13 @@
 ///   `yaranapp` install).
 ///
 /// <module-headers:begin>
-/// Uses:
-/// GateSpikeCore/Handoff.swift
+/// Uses: none
 /// External: Foundation
 ///
 /// Used by:
-/// GateSpikeCore/Handoff.swift
-/// ├── App/AuthSpike.swift
-/// └── GateSpikeCoreTests/HandoffTests.swift
+/// GateSpikeCore/Handoff
+/// ├── App/AuthSpike (inferred)
+/// └── GateSpikeCoreTests/HandoffTests (inferred)
 /// <module-headers:end>
 import Foundation
 

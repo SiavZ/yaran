@@ -8,13 +8,10 @@
 # - Read-only apart from SwiftPM's own .build directory.
 #
 # <module-headers:begin>
-# Uses:
-# GateSpikeCore/test.sh
-# External: swift, xcode-select
+# Uses: none
+# External: none
 #
-# Used by:
-# GateSpikeCore/test.sh
-# └── entry point (run by hand or CI: `bash test.sh`)
+# Used by: entry point (run by hand or CI: `bash test.sh`)
 # <module-headers:end>
 set -euo pipefail
 cd "$(dirname "$0")"

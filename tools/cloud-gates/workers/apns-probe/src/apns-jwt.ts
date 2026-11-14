@@ -11,9 +11,8 @@
  * - Pure: no logging, no network; the caller decides what to do with the token.
  *
  * <module-headers:begin>
- * Uses:
- * src/apns-jwt.ts
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * src/apns-jwt.ts

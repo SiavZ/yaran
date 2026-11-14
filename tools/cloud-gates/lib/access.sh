@@ -17,13 +17,12 @@
 # <module-headers:begin>
 # Uses:
 # tools/cloud-gates/lib/access.sh
-# ├── tools/cloud-gates/lib/common.sh
-# └── tools/cloud-gates/lib/cf.sh
-# External: curl, jq, cloudflared, node
+# ├── tools/cloud-gates/lib/cf.sh
+# └── tools/cloud-gates/lib/common.sh
+# External: none
 #
 # Used by:
 # tools/cloud-gates/lib/access.sh
-# ├── tools/cloud-gates/tests/lib_test.sh
 # ├── tools/cloud-gates/g01-cookie-injection.sh
 # ├── tools/cloud-gates/g02-cloudflared-origin.sh
 # ├── tools/cloud-gates/g03-access-responses.sh
@@ -34,7 +33,8 @@
 # ├── tools/cloud-gates/g11-deploy-button.sh
 # ├── tools/cloud-gates/g12-session-expiry.sh
 # ├── tools/cloud-gates/g13-system-browser-auth.sh
-# └── tools/cloud-gates/g14-custom-domain.sh
+# ├── tools/cloud-gates/g14-custom-domain.sh
+# └── tools/cloud-gates/tests/lib_test.sh
 # <module-headers:end>
 
 # shellcheck source=tools/cloud-gates/lib/common.sh

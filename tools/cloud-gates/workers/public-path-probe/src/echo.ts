@@ -10,9 +10,8 @@
  * - Pure: builds a plain object from its inputs, so it is unit-testable in Node.
  *
  * <module-headers:begin>
- * Uses:
- * src/echo.ts
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * src/echo.ts

@@ -18,13 +18,11 @@
 # <module-headers:begin>
 # Uses:
 # tools/cloud-gates/g11-deploy-button.sh
-# ├── tools/cloud-gates/lib/common.sh
-# └── tools/cloud-gates/lib/access.sh
-# External: curl, git, jq, npx (wrangler)
+# ├── tools/cloud-gates/lib/access.sh
+# └── tools/cloud-gates/lib/common.sh
+# External: none
 #
-# Used by:
-# tools/cloud-gates/g11-deploy-button.sh
-# └── entry point (tools/cloud-gates/run.sh G11)
+# Used by: entry point (tools/cloud-gates/run.sh G<NN>; G02, G03, G08, G09, G12 and G14 also via run.sh --recheck)
 # <module-headers:end>
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

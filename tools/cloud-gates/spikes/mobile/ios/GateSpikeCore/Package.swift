@@ -8,13 +8,10 @@
 /// - Foundation only; no UIKit, WebKit or Capacitor, so macOS can run the tests.
 ///
 /// <module-headers:begin>
-/// Uses:
-/// GateSpikeCore/Package.swift
+/// Uses: none
 /// External: PackageDescription
 ///
-/// Used by:
-/// GateSpikeCore/Package.swift
-/// └── entry point (read by SwiftPM and by Xcode's local package reference)
+/// Used by: entry point (read by SwiftPM and by Xcode's local package reference)
 /// <module-headers:end>
 import PackageDescription
 

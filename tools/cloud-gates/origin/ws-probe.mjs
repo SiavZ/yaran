@@ -13,13 +13,10 @@
  * - Output is flushed before exit, because stdout to a pipe is asynchronous on macOS.
  *
  * <module-headers:begin>
- * Uses:
- * ws-probe.mjs
- * External: ws, node:fs, node:crypto
+ * Uses: none
+ * External: node:crypto, node:fs, ws
  *
- * Used by:
- * ws-probe.mjs
- * └── entry point (node ws-probe.mjs, run by the tools/cloud-gates gate scripts and test/echo-origin.test.mjs)
+ * Used by: entry point (node ws-probe.mjs, run by the tools/cloud-gates gate scripts and test/echo-origin.test.mjs)
  * <module-headers:end>
  */
 import { readFileSync } from 'node:fs';

@@ -13,15 +13,15 @@
 ///
 /// <module-headers:begin>
 /// Uses:
-/// App/MachineViewSpike.swift
-/// └── GateSpikeCore/AccessCookie.swift
+/// App/MachineViewSpike
+/// └── GateSpikeCore/AccessCookie (inferred)
 /// External: Capacitor, UIKit, WebKit, os
 ///
 /// Used by:
-/// App/MachineViewSpike.swift
-/// ├── App/GateSpikeViewController.swift
-/// ├── App/AuthSpike.swift          (gateLog)
-/// └── App/PushSpike.swift          (gateLog)
+/// App/MachineViewSpike
+/// ├── App/AuthSpike (inferred)                (gateLog)
+/// ├── App/GateSpikeViewController (inferred)
+/// └── App/PushSpike (inferred)                (gateLog)
 /// <module-headers:end>
 import Capacitor
 import GateSpikeCore

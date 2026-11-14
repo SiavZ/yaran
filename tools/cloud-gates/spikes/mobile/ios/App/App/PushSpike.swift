@@ -10,13 +10,13 @@
 ///
 /// <module-headers:begin>
 /// Uses:
-/// App/PushSpike.swift
-/// └── App/MachineViewSpike.swift   (gateLog)
+/// App/PushSpike
+/// └── App/MachineViewSpike (inferred)  (gateLog)
 /// External: Capacitor, UIKit, UserNotifications
 ///
 /// Used by:
-/// App/PushSpike.swift
-/// └── App/GateSpikeViewController.swift
+/// App/PushSpike
+/// └── App/GateSpikeViewController (inferred)
 /// <module-headers:end>
 import Capacitor
 import UIKit

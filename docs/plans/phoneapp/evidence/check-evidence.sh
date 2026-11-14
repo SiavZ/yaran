@@ -15,11 +15,9 @@
 # Uses:
 # docs/plans/phoneapp/evidence/check-evidence.sh
 # └── tools/cloud-gates/lib/redact.sh
-# External: diff, find, grep
+# External: none
 #
-# Used by:
-# docs/plans/phoneapp/evidence/check-evidence.sh
-# └── entry point (CI and tools/cloud-gates/tests/redact_test.sh)
+# Used by: entry point (CI and tools/cloud-gates/tests/redact_test.sh)
 # <module-headers:end>
 set -euo pipefail
 

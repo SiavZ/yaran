@@ -15,9 +15,7 @@
  * └── src/plugins.ts
  * External: @capacitor/core
  *
- * Used by:
- * src/main.ts
- * └── entry point (loaded by index.html inside the Capacitor WebView)
+ * Used by: entry point (loaded by index.html inside the Capacitor WebView)
  * <module-headers:end>
  */
 import { Capacitor } from '@capacitor/core';

@@ -15,13 +15,10 @@
 # - Gate scripts are executed, not sourced, so each keeps its own EXIT trap.
 #
 # <module-headers:begin>
-# Uses:
-# tools/cloud-gates/run.sh
-# External: bash, jq
+# Uses: none
+# External: none
 #
-# Used by:
-# tools/cloud-gates/run.sh
-# └── entry point (operator shell; Phase 19 nightly drift check via --recheck)
+# Used by: entry point (operator shell; Phase 19 nightly drift check via --recheck)
 # <module-headers:end>
 set -euo pipefail
 

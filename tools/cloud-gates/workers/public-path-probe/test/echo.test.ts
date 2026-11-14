@@ -14,9 +14,7 @@
  * └── src/echo.ts
  * External: vitest
  *
- * Used by:
- * test/echo.test.ts
- * └── entry point (vitest)
+ * Used by: entry point (vitest, via npm test in the Worker directory)
  * <module-headers:end>
  */
 import { describe, expect, it } from 'vitest';

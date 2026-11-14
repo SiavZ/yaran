@@ -16,12 +16,12 @@
 # Uses:
 # tools/cloud-gates/lib/cf.sh
 # └── tools/cloud-gates/lib/common.sh
-# External: curl, jq
+# External: none
 #
 # Used by:
 # tools/cloud-gates/lib/cf.sh
-# ├── tools/cloud-gates/lib/access.sh
-# └── tools/cloud-gates/g09-token-template.sh
+# ├── tools/cloud-gates/g09-token-template.sh
+# └── tools/cloud-gates/lib/access.sh
 # <module-headers:end>
 
 # shellcheck source=tools/cloud-gates/lib/common.sh

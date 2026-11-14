@@ -14,11 +14,9 @@
 # Uses:
 # tools/cloud-gates/tests/redact_test.sh
 # └── tools/cloud-gates/lib/redact.sh
-# External: base64, perl
+# External: none
 #
-# Used by:
-# tools/cloud-gates/tests/redact_test.sh
-# └── entry point (bash tools/cloud-gates/tests/redact_test.sh; Phase 03 Validation)
+# Used by: entry point (bash tools/cloud-gates/tests/<name>_test.sh; Phase 03 Validation)
 # <module-headers:end>
 set -euo pipefail
 

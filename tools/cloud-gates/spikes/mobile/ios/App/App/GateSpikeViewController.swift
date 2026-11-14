@@ -8,15 +8,15 @@
 ///
 /// <module-headers:begin>
 /// Uses:
-/// App/GateSpikeViewController.swift
-/// ├── App/MachineViewSpike.swift
-/// ├── App/AuthSpike.swift
-/// └── App/PushSpike.swift
+/// App/GateSpikeViewController
+/// ├── App/AuthSpike (inferred)
+/// ├── App/MachineViewSpike (inferred)
+/// └── App/PushSpike (inferred)
 /// External: Capacitor, UIKit
 ///
 /// Used by:
-/// App/GateSpikeViewController.swift
-/// └── App/SceneDelegate.swift
+/// App/GateSpikeViewController
+/// └── App/SceneDelegate (inferred)
 /// <module-headers:end>
 import Capacitor
 import UIKit

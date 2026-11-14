@@ -8,13 +8,10 @@
  * - Reads the source manifest from the module directory, Gradle's unit-test working directory.
  *
  * <module-headers:begin>
- * Uses:
- * io.github.siavz.yaran.gatespike.MachineViewManifestTest
- * External: junit, javax.xml.parsers
+ * Uses: none
+ * External: java.io, javax.xml.parsers, org.junit, org.junit.Assert, org.w3c.dom
  *
- * Used by:
- * io.github.siavz.yaran.gatespike.MachineViewManifestTest
- * └── entry point (JUnit)
+ * Used by: entry point (JUnit, via ./gradlew test)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.gatespike

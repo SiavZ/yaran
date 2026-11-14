@@ -14,14 +14,12 @@
  * - Listens only when run as the main module, so tests can drive createEchoServer().
  *
  * <module-headers:begin>
- * Uses:
- * echo-origin.mjs
- * External: ws, node:http, node:crypto, node:url
+ * Uses: none
+ * External: node:crypto, node:http, node:url, ws
  *
  * Used by:
  * echo-origin.mjs
- * ├── test/echo-origin.test.mjs
- * └── entry point (node echo-origin.mjs, started by the tools/cloud-gates gate scripts)
+ * └── test/echo-origin.test.mjs
  * <module-headers:end>
  */
 import http from 'node:http';

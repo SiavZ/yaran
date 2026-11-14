@@ -12,8 +12,8 @@
  * <module-headers:begin>
  * Uses:
  * src/meta.ts
- * └── vendor/gate-protocol/index.js
- * External: (none)
+ * └── gate-protocol:index.d.ts
+ * External: none
  *
  * Used by:
  * src/meta.ts

@@ -13,11 +13,9 @@
  * Uses:
  * src/index.ts
  * └── src/echo.ts
- * External: (none)
+ * External: none
  *
- * Used by:
- * src/index.ts
- * └── entry point (Cloudflare Worker, deployed by tools/cloud-gates/g08-public-paths.sh)
+ * Used by: entry point (Cloudflare Worker, deployed by tools/cloud-gates/g08-public-paths.sh)
  * <module-headers:end>
  */
 import { echoBody } from './echo';

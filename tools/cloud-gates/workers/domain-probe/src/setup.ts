@@ -12,9 +12,8 @@
  * - Cloudflare's messages are truncated to 300 characters; a non-JSON answer is reported, not thrown.
  *
  * <module-headers:begin>
- * Uses:
- * src/setup.ts
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * src/setup.ts

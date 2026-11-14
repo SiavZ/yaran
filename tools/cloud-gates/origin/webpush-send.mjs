@@ -12,13 +12,10 @@
  * - Exit 0 on a 2xx answer, 1 on any other answer or failure, 2 on missing configuration.
  *
  * <module-headers:begin>
- * Uses:
- * webpush-send.mjs
+ * Uses: none
  * External: web-push
  *
- * Used by:
- * webpush-send.mjs
- * └── entry point (node webpush-send.mjs, run by tools/cloud-gates/g05-embedded-fcm.sh)
+ * Used by: entry point (node webpush-send.mjs, run by tools/cloud-gates/g05-embedded-fcm.sh)
  * <module-headers:end>
  */
 import webpush from 'web-push';

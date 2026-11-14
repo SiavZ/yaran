@@ -10,14 +10,12 @@
  * <module-headers:begin>
  * Uses:
  * io.github.siavz.yaran.gatespike.MainActivity
- * ├── io.github.siavz.yaran.gatespike.MachineViewSpike
- * ├── io.github.siavz.yaran.gatespike.AuthSpike
- * └── io.github.siavz.yaran.gatespike.PushSpike
- * External: com.getcapacitor
+ * ├── io.github.siavz.yaran.gatespike.AuthSpike (inferred)
+ * ├── io.github.siavz.yaran.gatespike.MachineViewSpike (inferred)
+ * └── io.github.siavz.yaran.gatespike.PushSpike (inferred)
+ * External: android.os, com.getcapacitor
  *
- * Used by:
- * io.github.siavz.yaran.gatespike.MainActivity
- * └── entry point (launcher Activity, AndroidManifest.xml)
+ * Used by: entry point (launcher Activity, AndroidManifest.xml)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.gatespike

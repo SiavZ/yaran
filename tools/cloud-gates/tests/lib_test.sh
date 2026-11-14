@@ -12,14 +12,12 @@
 # <module-headers:begin>
 # Uses:
 # tools/cloud-gates/tests/lib_test.sh
-# ├── tools/cloud-gates/lib/common.sh
 # ├── tools/cloud-gates/lib/access.sh
+# ├── tools/cloud-gates/lib/common.sh
 # └── tools/cloud-gates/lib/jwt.sh
-# External: jq, base64
+# External: none
 #
-# Used by:
-# tools/cloud-gates/tests/lib_test.sh
-# └── entry point (bash tools/cloud-gates/tests/lib_test.sh; Phase 03 Validation)
+# Used by: entry point (bash tools/cloud-gates/tests/<name>_test.sh; Phase 03 Validation)
 # <module-headers:end>
 set -euo pipefail
 

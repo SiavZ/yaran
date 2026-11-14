@@ -10,12 +10,10 @@
  * <module-headers:begin>
  * Uses:
  * io.github.siavz.yaran.gatespike.AccessCookieTest
- * └── io.github.siavz.yaran.gatespike.MachineViewSpike   (buildAccessCookie, jwtExp)
- * External: junit, java.util.Base64
+ * └── io.github.siavz.yaran.gatespike.MachineViewSpike (inferred)  (buildAccessCookie, jwtExp)
+ * External: java.util, org.junit, org.junit.Assert
  *
- * Used by:
- * io.github.siavz.yaran.gatespike.AccessCookieTest
- * └── entry point (JUnit)
+ * Used by: entry point (JUnit, via ./gradlew test)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.gatespike

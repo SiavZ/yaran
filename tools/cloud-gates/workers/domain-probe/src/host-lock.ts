@@ -13,9 +13,8 @@
  * - Pure: no I/O, unit-tested in Node.
  *
  * <module-headers:begin>
- * Uses:
- * src/host-lock.ts
- * External: (none)
+ * Uses: none
+ * External: none
  *
  * Used by:
  * src/host-lock.ts
