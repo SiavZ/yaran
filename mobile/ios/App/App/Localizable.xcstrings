@@ -1,0 +1,20 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "lock.prompt" : {
+      "comment" : "Reason shown in the Face ID / Touch ID / passcode prompt when App Lock unlocks.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unlock yaran" } }
+      }
+    },
+    "lock.unlock" : {
+      "comment" : "Button on the native lock cover that starts the unlock prompt.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unlock" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}
