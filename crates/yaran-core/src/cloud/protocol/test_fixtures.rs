@@ -14,6 +14,8 @@
 //!
 //! Used by:
 //! cloud/protocol/test_fixtures.rs
+//! ├── cloud::access_jwks::tests
+//! ├── cloud::access_jwt::tests
 //! ├── cloud::leg::tests
 //! ├── cloud::machine_api_error
 //! ├── cloud::protocol

@@ -24,7 +24,9 @@
 //! ├── cloud::protocol
 //! ├── cloud::protocol::handoff::tests
 //! ├── cloud::protocol::handoff_consent
-//! └── cloud::protocol::uri
+//! ├── cloud::protocol::uri
+//! ├── yaran-web::cloud_handoff
+//! └── yaran-web::cloud_handoff_request
 //! <module-headers:end>
 
 use std::fmt;

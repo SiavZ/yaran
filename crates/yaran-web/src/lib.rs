@@ -26,10 +26,18 @@
 //! ├── build_routes
 //! ├── changes
 //! ├── changes_routes
+//! ├── cloud_consent_tests
+//! ├── cloud_handoff
+//! ├── cloud_handoff_request
+//! ├── cloud_handoff_tests
+//! ├── cloud_ingress
+//! ├── cloud_ingress_tests
+//! ├── cloud_jwks_cache
 //! ├── cloud_loop
 //! ├── cloud_mode
 //! ├── cloud_mode_routes
 //! ├── cloud_routes
+//! ├── cloud_test_support
 //! ├── compressible_exts
 //! ├── config_routes
 //! ├── console
@@ -39,12 +47,16 @@
 //! ├── file_routes
 //! ├── first_load_routes
 //! ├── git_routes
+//! ├── handoff_consent_page
+//! ├── handoff_csrf
 //! ├── host_guard
+//! ├── origin_match
 //! ├── ownership_publish
 //! ├── project_actions
 //! ├── project_reads
 //! ├── pty_log
 //! ├── pty_sizes
+//! ├── rate_window
 //! ├── resource_routes
 //! ├── rest_common
 //! ├── serve_legs
@@ -84,10 +96,22 @@ pub mod browse_routes;
 pub mod build_routes;
 pub mod changes;
 pub mod changes_routes;
+#[cfg(test)]
+mod cloud_consent_tests;
+pub(crate) mod cloud_handoff;
+pub(crate) mod cloud_handoff_request;
+#[cfg(test)]
+mod cloud_handoff_tests;
+pub mod cloud_ingress;
+#[cfg(test)]
+mod cloud_ingress_tests;
+pub(crate) mod cloud_jwks_cache;
 pub(crate) mod cloud_loop;
 pub mod cloud_mode;
 pub mod cloud_mode_routes;
 pub mod cloud_routes;
+#[cfg(test)]
+mod cloud_test_support;
 pub mod compressible_exts;
 pub mod config_routes;
 pub mod console;
@@ -97,11 +121,15 @@ pub mod file_drop_routes;
 pub mod file_routes;
 pub mod first_load_routes;
 pub mod git_routes;
+pub(crate) mod handoff_consent_page;
+pub(crate) mod handoff_csrf;
 pub mod host_guard;
+pub(crate) mod origin_match;
 pub(crate) mod ownership_publish;
 pub mod project_actions;
 pub mod project_reads;
 pub mod pty_log;
+pub(crate) mod rate_window;
 /// The PTY input-ownership registry, re-exported from `yaran-core`: a rule two
 /// surfaces obey belongs in the crate both can see. A glob rather than a named
 /// list, because some names are used only by this crate's test modules and naming
@@ -597,6 +625,7 @@ fn run_plain_http(paths: YaranPaths, plan: ServerPlan, version: String) -> Resul
             .with_tailscale_host_literals(tailscale.wants_tailscale())
             .with_live_tailscale_host_literals(mode_control.host_literals())
             .with_tailscale_mode_control(mode_control.clone(), forced_no)
+            .with_cloud_ingress(cloud_control.ingress().clone())
             .with_cloud_mode_control(cloud_control),
         );
 
@@ -1684,6 +1713,7 @@ impl ServeCore {
                 router_params(config, console.clone(), access_log, bound_ips, hooks)
                     .with_live_tailscale_host_literals(mode_control.host_literals())
                     .with_tailscale_mode_control(mode_control.clone(), false)
+                    .with_cloud_ingress(cloud_control.ingress().clone())
                     .with_cloud_mode_control(cloud_control.clone()),
             )
         };

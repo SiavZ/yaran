@@ -14,20 +14,22 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud_loop.rs
+//! ├── cloud_ingress
 //! ├── cloud_loop::live_cloud_mode_tests
 //! ├── cloud_mode
 //! ├── console
 //! ├── engine_actor
 //! ├── yaran-core::cloud::cloudflared::child_registry
 //! ├── yaran-core::cloud::cloudflared::command
-//! ├── yaran-core::cloud::ingress_cell
 //! ├── yaran-core::cloud::leg
 //! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
+//! ├── yaran-core::cloud::paths
 //! ├── yaran-core::cloud::planner
 //! ├── yaran-core::cloud::view
 //! ├── yaran-core::config
-//! └── yaran-core::engine
+//! ├── yaran-core::engine
+//! └── yaran-core::statusline
 //! External: chrono, std, tokio
 //!
 //! Used by:
@@ -39,7 +41,6 @@
 use std::sync::Arc;
 
 use yaran_core::cloud::cloudflared::child_registry;
-use yaran_core::cloud::ingress_cell::{CloudIngress, CloudIngressWriter};
 use yaran_core::cloud::leg::{
     CloudLeg, CloudLegEvent, CredentialsWatch, LegParams, LegStop, ReadyProbe,
 };
@@ -50,13 +51,19 @@ use yaran_core::cloud::planner::{
 };
 use yaran_core::cloud::view::{CloudLegState, CloudLegView};
 
+use yaran_core::engine::StatusUpdate;
+use yaran_core::statusline::StatusTone;
+
+use crate::cloud_ingress::{CloudBindingInput, CloudIngress, JwksOutcome};
 use crate::cloud_mode::{CloudInput, CloudModeControl, CredentialsSnapshot};
+
+/// The keyed status for the tunnel's Access check (a refused binding, unreachable keys).
+const CLOUD_ACCESS_KEY: &str = "cloud-access";
 use crate::console::Console;
 
 pub(crate) struct CloudLoop {
     rx: tokio::sync::mpsc::Receiver<CloudInput>,
     control: CloudModeControl,
-    writer: CloudIngressWriter,
     identity: Arc<dyn CloudIdentity>,
     settings: CloudLegSettings,
     serving_port: u16,
@@ -78,7 +85,6 @@ impl CloudLoop {
     pub(crate) fn new(
         rx: tokio::sync::mpsc::Receiver<CloudInput>,
         control: CloudModeControl,
-        writer: CloudIngressWriter,
         identity: Arc<dyn CloudIdentity>,
         settings: CloudLegSettings,
         serving_port: u16,
@@ -88,7 +94,6 @@ impl CloudLoop {
         Self {
             rx,
             control,
-            writer,
             identity,
             settings,
             serving_port,
@@ -245,7 +250,7 @@ impl CloudLoop {
 
     fn stop_leg(&mut self) {
         self.generation += 1;
-        self.writer.clear();
+        self.ingress().unbind();
         self.running_token_version = None;
         if let Some(leg) = self.leg.take() {
             leg.request_stop();
@@ -284,18 +289,11 @@ impl CloudLoop {
             CloudLegEvent::Acquired { .. } | CloudLegEvent::Warning(_) => {}
             CloudLegEvent::Starting { token_version } => {
                 self.running_token_version = Some(*token_version);
-                self.writer.clear();
+                self.ingress().unbind();
                 self.set_state(CloudLegState::Starting, None);
             }
             CloudLegEvent::Ready { .. } => {
-                if let Some(m) = self.machine() {
-                    self.writer.set(CloudIngress {
-                        hostname: m.hostname.clone(),
-                        team_domain: m.team_domain.clone(),
-                        aud: m.aud.clone(),
-                        owner_email: m.owner_email.clone(),
-                    });
-                }
+                self.bind_ingress();
                 self.set_state(CloudLegState::Ready, None);
                 self.console.leg_changed(&format!(
                     "[cloud] remote access is live at https://{hostname}"
@@ -307,7 +305,7 @@ impl CloudLoop {
             }
             CloudLegEvent::NotReady | CloudLegEvent::Restarting { .. } => {
                 let was_ready = self.control.view().state == CloudLegState::Ready;
-                self.writer.clear();
+                self.ingress().unbind();
                 self.set_state(CloudLegState::Reconnecting, None);
                 if was_ready {
                     self.console.bind_degraded(&format!(
@@ -316,11 +314,11 @@ impl CloudLoop {
                 }
             }
             CloudLegEvent::Healing => {
-                self.writer.clear();
+                self.ingress().unbind();
                 self.set_state(CloudLegState::Healing, None);
             }
             CloudLegEvent::Stopped(stop) => {
-                self.writer.clear();
+                self.ingress().unbind();
                 self.leg = None;
                 self.running_token_version = None;
                 self.leg_stopped(stop);
@@ -360,6 +358,38 @@ impl CloudLoop {
         }
     }
 
+    fn ingress(&self) -> &CloudIngress {
+        self.control.ingress()
+    }
+
+    /// cloudflared is ready: put the Access check in front of the tunnel hostname. A
+    /// refused binding keeps the hostname closed and says why on both surfaces.
+    fn bind_ingress(&self) {
+        let Some(m) = self.machine() else {
+            return;
+        };
+        let input = CloudBindingInput {
+            hostname: m.hostname.clone(),
+            team_domain: m.team_domain.clone(),
+            aud: m.aud.clone(),
+            owner_email: m.owner_email.clone(),
+        };
+        let status = self.status.clone();
+        let team = m.team_domain.clone();
+        let report = Box::new(move |outcome| {
+            if let (JwksOutcome::Unavailable(why), Some(handle)) = (outcome, status) {
+                handle.post_status(jwks_unavailable(&team, &why));
+            }
+        });
+        if let Err(refusal) = self.ingress().bind(input, report) {
+            let sentence = format!("Remote access stays closed: {}.", refusal.sentence());
+            self.console.bind_degraded(&format!("[cloud] {sentence}"));
+            self.post(
+                StatusUpdate::keyed(CLOUD_ACCESS_KEY, StatusTone::Warning, sentence).sticky(),
+            );
+        }
+    }
+
     fn set_state(&self, state: CloudLegState, detail: Option<String>) {
         let current = self.control.view();
         if current.state == state && current.mode == self.settings.mode && current.detail == detail
@@ -381,7 +411,7 @@ impl CloudLoop {
         }
     }
 
-    fn post(&self, update: yaran_core::engine::StatusUpdate) {
+    fn post(&self, update: StatusUpdate) {
         if let Some(handle) = &self.status {
             handle.post_status(update);
         }
@@ -392,7 +422,7 @@ impl CloudLoop {
     /// `child_registry::wait_all`.
     pub(crate) fn shutdown(&mut self) {
         self.watch = None;
-        self.writer.clear();
+        self.ingress().unbind();
         self.generation += 1;
         for leg in [self.leg.take(), self.stopping.take()]
             .into_iter()
@@ -405,7 +435,20 @@ impl CloudLoop {
     }
 }
 
-/// Build this serve's cloud lane and loop, and start watching the credentials.
+/// The pre-warm could not fetch the Access keys: sign-ins fail until a later fetch works.
+fn jwks_unavailable(team: &str, why: &str) -> StatusUpdate {
+    StatusUpdate::keyed(
+        CLOUD_ACCESS_KEY,
+        StatusTone::Warning,
+        format!(
+            "yaran could not fetch the Cloudflare Access signing keys for {team} ({}), so phone \
+             sign-ins are refused until it can; it tries again on the next sign-in.",
+            yaran_core::sanitize::truncate(why, 200)
+        ),
+    )
+}
+
+/// Build this serve's cloud lane, its ingress and loop, and start watching the credentials.
 /// `serving_port` is the loopback listener's port (the tunnel's origin).
 pub(crate) fn build(
     runtime: tokio::runtime::Handle,
@@ -415,13 +458,16 @@ pub(crate) fn build(
     status: Option<crate::engine_actor::EngineHandle>,
     console: Console,
 ) -> (CloudModeControl, CloudLoop) {
-    let (writer, reader) = yaran_core::cloud::ingress_cell::LiveCloudIngress::new();
-    let (control, rx) = CloudModeControl::new(runtime, reader);
+    // The tunnel's Access check: unbound until the leg reports ready, its settings live.
+    let ingress = CloudIngress::new(Arc::new(yaran_core::cloud::paths::CloudPaths::from_root(
+        config_root,
+    )));
+    ingress.update_settings(crate::cloud_ingress::IngressSettings::from(&config.cloud));
+    let (control, rx) = CloudModeControl::new(runtime, ingress);
     let settings = yaran_core::cloud::leg_identity::settings_from_config(config);
     let mut cloud = CloudLoop::new(
         rx,
         control.clone(),
-        writer,
         yaran_core::cloud::leg_identity::production_identity(config_root, &settings),
         settings,
         serving_port.unwrap_or(0),

@@ -20,7 +20,8 @@
 //! ├── cloud::machine_api_error
 //! ├── cloud::pair_refusal
 //! ├── cloud::protocol
-//! └── cloud::protocol::handoff_consent
+//! ├── cloud::protocol::handoff_consent
+//! └── yaran-web::cloud_handoff_request
 //! <module-headers:end>
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

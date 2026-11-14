@@ -15,7 +15,6 @@
 //! ├── test_support
 //! ├── yaran-core
 //! ├── yaran-core::background_serve
-//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::config
 //! ├── yaran-core::config_reload_status
 //! ├── yaran-core::config_write
@@ -2959,9 +2958,8 @@ pub(crate) fn run_engine_loop(
                 // have their listener stopped and started for nothing.
                 let previous_tailscale = engine.config.server.tailscale_mode();
                 let next_tailscale = config.server.tailscale_mode();
-                let previous_cloud =
-                    yaran_core::cloud::leg_identity::settings_from_config(&engine.config);
-                let next_cloud = yaran_core::cloud::leg_identity::settings_from_config(&config);
+                let previous_cloud = engine.config.cloud.clone();
+                let next_cloud = config.cloud.clone();
                 match engine.apply_reloaded_config(*config) {
                     Ok(()) => {
                         // Memory now matches disk: any pending raw "Save" has been
@@ -3010,8 +3008,8 @@ pub(crate) fn run_engine_loop(
                                 ));
                             });
                         }
-                        // `[cloud] mode` and the restart keys are live too; the same
-                        // one-owner rule applies (background mode never runs this).
+                        // `[cloud]` is live too (mode, restart keys, ingress keys); the
+                        // same one-owner rule applies (background mode never runs this).
                         let status = svc.status.tx.clone();
                         crate::cloud_mode::apply_reload(
                             svc.cloud_mode_control.get(),

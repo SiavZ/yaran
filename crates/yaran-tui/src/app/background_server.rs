@@ -17,6 +17,7 @@
 //! ├── app::test_support
 //! ├── crate
 //! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::config
 //! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::view
 //! ├── yaran-core::config
@@ -1079,7 +1080,8 @@ pub(crate) mod tests {
 
         fn cloud_settings_changed(
             &mut self,
-            _settings: yaran_core::cloud::leg_identity::CloudLegSettings,
+            _previous: &yaran_core::cloud::config::CloudConfig,
+            _next: &yaran_core::cloud::config::CloudConfig,
         ) {
         }
 

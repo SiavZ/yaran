@@ -17,6 +17,9 @@
 //!
 //! Used by:
 //! cloud/protocol/rules.rs
+//! ├── cloud::access_jwks
+//! ├── cloud::access_jwks::tests
+//! ├── cloud::access_jwt
 //! ├── cloud::config
 //! ├── cloud::credentials
 //! ├── cloud::identity
@@ -37,7 +40,14 @@
 //! ├── cloud::protocol::test_fixtures
 //! ├── cloud::protocol::uri
 //! ├── cloud::test_support
-//! └── yaran-core[test cloud_login]
+//! ├── yaran-core[test cloud_login]
+//! ├── yaran-web::cloud_handoff
+//! ├── yaran-web::cloud_handoff_request
+//! ├── yaran-web::cloud_handoff_tests
+//! ├── yaran-web::cloud_ingress
+//! ├── yaran-web::cloud_test_support
+//! ├── yaran-web::handoff_consent_page
+//! └── yaran-web::handoff_csrf
 //! <module-headers:end>
 
 use std::fmt;

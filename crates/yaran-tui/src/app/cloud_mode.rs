@@ -15,6 +15,7 @@
 //! ├── app
 //! ├── app::render
 //! ├── app::test_support
+//! ├── yaran-core::cloud::config
 //! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
 //! ├── yaran-core::engine
@@ -28,7 +29,8 @@
 
 use super::*;
 use crate::app::render::{active_provider_marker_span, centered_rect};
-use yaran_core::cloud::leg_identity::{CloudLegSettings, CloudMode};
+use yaran_core::cloud::config::CloudConfig;
+use yaran_core::cloud::leg_identity::CloudMode;
 use yaran_core::cloud::leg_outcome::CloudModeOutcome;
 
 /// One row of the cloud-mode picker.
@@ -159,23 +161,24 @@ impl App {
 
     /// The background-mode reload owner: a changed mode goes through the companion (only
     /// when a serve ran both before and after the reload, so it is never applied twice),
-    /// a changed restart key restarts the running child.
+    /// every other changed key goes to the serve, which applies the ingress keys live and
+    /// restarts the running child on a changed restart key.
     pub(crate) fn apply_cloud_reload(
         &mut self,
         serving_before: bool,
-        previous: &CloudLegSettings,
-        next: &CloudLegSettings,
+        previous: &CloudConfig,
+        next: &CloudConfig,
     ) {
         if !(serving_before && self.background_server_is_serving()) {
             return;
         }
-        if previous.restart_keys_differ(next)
+        if previous != next
             && let Some(companion) = self.companion.as_mut()
         {
-            companion.cloud_settings_changed(next.clone());
+            companion.cloud_settings_changed(previous, next);
         }
-        if previous.mode != next.mode {
-            self.ask_companion_for_cloud_mode(next.mode);
+        if previous.mode() != next.mode() {
+            self.ask_companion_for_cloud_mode(next.mode());
         }
     }
 

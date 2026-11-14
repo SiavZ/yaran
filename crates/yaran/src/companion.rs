@@ -14,12 +14,14 @@
 //! Uses:
 //! companion.rs
 //! ├── yaran-core::background_serve
+//! ├── yaran-core::cloud::config
 //! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::view
 //! ├── yaran-core::config
 //! ├── yaran-core::engine
 //! ├── yaran-core::logger
-//! └── yaran-web::background
+//! ├── yaran-web::background
+//! └── yaran-web::cloud_mode
 //! External: std
 //!
 //! Used by:
@@ -147,10 +149,11 @@ impl BackgroundServeCompanion for WebCompanion {
 
     fn cloud_settings_changed(
         &mut self,
-        settings: yaran_core::cloud::leg_identity::CloudLegSettings,
+        previous: &yaran_core::cloud::config::CloudConfig,
+        next: &yaran_core::cloud::config::CloudConfig,
     ) {
         if let Some(server) = self.server.as_ref() {
-            server.cloud_mode().settings_changed(settings);
+            yaran_web::cloud_mode::apply_settings(server.cloud_mode(), previous, next);
         }
     }
 

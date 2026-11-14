@@ -53,7 +53,6 @@
 //! ├── yaran-core::agent_tabs
 //! ├── yaran-core::background_serve
 //! ├── yaran-core::browser
-//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
 //! ├── yaran-core::config
 //! ├── yaran-core::config_queue
@@ -6225,8 +6224,7 @@ impl App {
         // Captured BEFORE the swap, because the comparison is against what the
         // running serve was told, not against what the file now says.
         let tailscale_before = self.engine.config.server.tailscale_mode();
-        let cloud_before =
-            yaran_core::cloud::leg_identity::settings_from_config(&self.engine.config);
+        let cloud_before = self.engine.config.cloud.clone();
         self.engine.config = config;
         self.engine.retune_after_config_swap();
         self.sync_view_state_from_config();
@@ -6279,8 +6277,7 @@ impl App {
             let mode = self.engine.config.server.tailscale_mode();
             self.ask_companion_for_tailscale_mode(mode);
         }
-        let cloud_after =
-            yaran_core::cloud::leg_identity::settings_from_config(&self.engine.config);
+        let cloud_after = self.engine.config.cloud.clone();
         self.apply_cloud_reload(serving_before, &cloud_before, &cloud_after);
         // A config file can hand Tab to the agent while every `focus_next` and
         // `focus_prev` key is one the typeable pane types, and nobody toggled

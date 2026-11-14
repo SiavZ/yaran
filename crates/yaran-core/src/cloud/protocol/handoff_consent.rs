@@ -25,7 +25,9 @@
 //! Used by:
 //! cloud/protocol/handoff_consent.rs
 //! ├── cloud::protocol
-//! └── cloud::protocol::handoff_consent::tests
+//! ├── cloud::protocol::handoff_consent::tests
+//! ├── yaran-web::cloud_handoff
+//! └── yaran-web::cloud_test_support
 //! <module-headers:end>
 
 use ring::{hkdf, hmac, signature};

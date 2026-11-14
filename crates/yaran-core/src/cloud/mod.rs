@@ -10,6 +10,8 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/mod.rs
+//! ├── cloud::access_jwks
+//! ├── cloud::access_jwt
 //! ├── cloud::actions
 //! ├── cloud::cli
 //! ├── cloud::cloudflared
@@ -17,7 +19,6 @@
 //! ├── cloud::config_patch
 //! ├── cloud::credentials
 //! ├── cloud::identity
-//! ├── cloud::ingress_cell
 //! ├── cloud::leg
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_outcome
@@ -49,6 +50,8 @@
 //! └── crate
 //! <module-headers:end>
 
+pub mod access_jwks;
+pub mod access_jwt;
 pub mod actions;
 pub mod cli;
 pub mod cloudflared;
@@ -56,7 +59,6 @@ pub mod config;
 pub mod config_patch;
 pub mod credentials;
 pub mod identity;
-pub mod ingress_cell;
 pub mod leg;
 pub mod leg_identity;
 pub mod leg_outcome;

@@ -268,8 +268,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-tui/src/app/background_server.rs": {
-    "lines": 2570,
-    "reason": "baseline 2026-11-14; phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn"
+    "lines": 2572,
+    "reason": "baseline 2026-11-14; phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; phase 11: ingress wiring stacked on the phase 09 and 10 wiring"
   },
   "crates/yaran-tui/src/app/components/pane_card.rs": {
     "lines": 695,
@@ -444,12 +444,12 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/src/host_guard.rs": {
-    "lines": 535,
-    "reason": "baseline 2026-11-14"
+    "lines": 573,
+    "reason": "baseline 2026-11-14; phase 11: live cloud-hostname rule, Yaran-Refusal headers, and the opt-in header block"
   },
   "crates/yaran-web/src/lib.rs": {
-    "lines": 3659,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: cloud lane construction, the serve loop's cloud arm and the wind-down waits; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring"
+    "lines": 3689,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: cloud lane construction, the serve loop's cloud arm and the wind-down waits; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 11: cloud module lines, CloudIngress creation in both serve constructors, and the opt-in header block; phase 11: ingress wiring stacked on the phase 09 and 10 wiring"
   },
   "crates/yaran-web/src/project_actions.rs": {
     "lines": 1006,
@@ -468,8 +468,8 @@
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-web/src/server.rs": {
-    "lines": 6714,
-    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: the cloud control in AppState and RouterParams, the route merge and the cloud.changed topic; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring"
+    "lines": 6749,
+    "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: the cloud control in AppState and RouterParams, the route merge and the cloud.changed topic; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; phase 11: cloud ingress layer, handoff route merge, 4401 select arms, and the opt-in header block; phase 11: ingress wiring stacked on the phase 09 and 10 wiring"
   },
   "crates/yaran-web/src/session_actions.rs": {
     "lines": 1726,
