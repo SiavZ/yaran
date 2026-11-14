@@ -1,0 +1,5 @@
+# Local only: the Deploy-button clone of this directory has no repository-root .gitignore.
+node_modules/
+.wrangler/
+.dev.vars
+dist/

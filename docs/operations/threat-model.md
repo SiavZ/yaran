@@ -1115,6 +1115,247 @@ is running without the channel.
 
 ---
 
+## T28 — Machine signing key theft or signed-request replay against `/v1/machine/*`
+
+**Attack scenario.** Someone who captures a machine's signed request (a proxy log, a
+compromised network path, a debug dump) sends it again, or sends it later, to the org
+control-plane Worker: re-posting attention events, re-fetching machine config, replaying
+`POST /v1/machine/unpair`, or replaying `PUT /v1/machine/origin` to point the tunnel's
+ingress at another local port. A stolen Ed25519 key lets the thief sign new requests.
+Path tricks (`/v1/MACHINE/claim`, `/v1/machine/%2e%2e/me`, an encoded `/`) try to carry a
+request through the Access public override for `/v1/machine/*` to a protected route.
+
+**Mitigation in code.** `cloud/worker/src/auth/machine-signature.ts` verifies every
+machine route with `@yaran/protocol`'s `verifyMachineRequest`: the signature covers the
+method, the exact path with no query, the lowercase Host, the protocol version, the
+machine id (or `-` on the claim route), the timestamp, the nonce and the body's SHA-256.
+Requests outside ±300 s of the Worker's clock are `401 signature_expired`. Each 16-byte
+nonce is recorded once per machine (`claim:<code>` on the claim route) in D1
+(`nonce-store.ts`, `INSERT OR IGNORE`) and kept for 600 s past its timestamp, so a replay
+inside the window is `401 nonce_replayed`; nothing is written before the signature
+verifies. Revoked machines keep their key row and get `410 machine_revoked`, but only after
+a valid signature, so strangers learn nothing. `http/router.ts` refuses any non-canonical
+path with `404` before a route is matched. Covered by `machine-signature.test.ts` (the
+Phase 02 signature fixtures plus the skew, replay and revocation cases) and the
+authorization matrix.
+
+**Residual risk.** A stolen key signs freely until the machine is revoked. The nonce store
+relies on every D1 query reaching the primary; enabling D1 read replication (the Sessions
+API) for that table would weaken it, and `db/client.ts` says so.
+
+**Detection.** Revoked-machine calls are audited as `access.denied` (coalesced per machine
+per minute); every refusal is a structured `request` log line with its status, route and
+request id in Workers Logs.
+
+---
+
+## T31 — Org Worker reached on a hostname other than the control plane
+
+**Attack scenario.** The Worker holds `CF_API_TOKEN`. Its `*.workers.dev` URL exists for
+first-run setup, and a later redeploy (Workers Builds with `workers_dev: true`), a preview
+URL or a stray route can bring a second hostname back after setup, one the control-plane
+Access application does not cover.
+
+**Mitigation in code.** `cloud/worker/src/http/host-guard.ts` runs first on every request.
+Once `settings.setup_state` is `closed`, only the recorded `control_plane_host` is served:
+every other Host, every `*.workers.dev` host included, gets `421 misdirected_host` with a
+body that names no host, whatever the subdomain setting says. `wrangler.jsonc` ships
+`preview_urls: false` and no custom-domain route, so a redeploy never rewrites DNS.
+`host-guard.test.ts` and the authorization matrix cover open and closed setup across the
+control-plane, workers.dev and foreign hosts.
+
+**Residual risk.** The guard trusts the stored `control_plane_host`; an attacker who can
+write D1 (account-level access) can change it, and already owns the account.
+
+**Detection.** 421 responses are logged with their request id; Phase 07's admin console
+shows the recorded control-plane host.
+
+---
+
+## T32 — Same-zone `fetch` from the Worker bypassing Access on machine hostnames
+
+**Attack scenario.** Code in the Worker (a bug, a future feature, a compromised dependency)
+fetches a machine hostname in the same zone, and the request reaches the origin without
+passing through Cloudflare Access.
+
+**Mitigation in code.** `cloud/worker/wrangler.jsonc` sets the
+`global_fetch_strictly_public` compatibility flag, so every `fetch` to a hostname in the
+Worker's own zone goes through Cloudflare's front door, Access included. The Worker never
+proxies to machines (D1), and cloudflared's per-route `access.required` is the second gate.
+
+**Residual risk.** The flag is configuration: a deployer who removes it loses this layer.
+
+**Detection.** The flag is visible in the deployed version's settings and in the committed
+`wrangler.jsonc`.
+
+---
+
+## T33 — Setup takeover during the workers.dev setup window
+
+**Attack scenario.** Before setup closes, the Worker answers on its `*.workers.dev` URL. An
+attacker who finds it tries to guess the setup code, or to use any other route there, to
+make themselves the org's first admin.
+
+**Mitigation in code.** While setup is open `cloud/worker/src/http/host-guard.ts` serves only
+`setup` and `public` routes (`/setup*` and `/v1/meta`); every `user`, `admin` and `machine`
+route is `503 setup_incomplete`. `SETUP_CODE` is a deploy-time secret of at least 12
+characters (`security/secrets.ts`), compared in constant time (SHA-256 of both sides, then
+`timingSafeEqual`). `security/rate-limit.ts` limits attempts to 5 per 15 minutes per IP and
+30 per day overall in D1, after which setup locks until the deployer sets a new
+`SETUP_CODE`. Once setup closes, `/setup*` answers `410 setup_closed` forever.
+
+**Residual risk.** The setup code is chosen by the deployer; a short or reused one weakens
+the gate (Phase 07's wizard owns the guidance and the close transaction).
+
+**Detection.** Setup-code lockouts and the `setup.completed` audit row (Phase 07).
+
+---
+
+## T34 — Cross-user authorization flaws in the Worker
+
+**Attack scenario.** A route reachable with the wrong kind of identity (a user on an admin
+route, a machine on a user route, no identity at all) because a handler forgot a check.
+
+**Mitigation in code.** Every route is one row in `cloud/worker/src/http/routes.ts` and must
+declare an `auth` class (`public`, `setup`, `machine`, `user`, `admin`) or `tsc` fails;
+`auth/authorize.ts` is the one exhaustive switch over it, and the role comes only from D1.
+`authz-matrix.test.ts` iterates the route table (so rows added by later phases are covered
+automatically) against eleven identity kinds, both hosts and both setup states, deriving
+each expectation from the row's class. Per-object ownership checks (IDOR) belong to the
+handlers that Phases 05–08 add.
+
+**Residual risk.** The matrix proves the class gate, not the ownership scoping inside a
+handler; each phase's own tests carry that.
+
+**Detection.** Denied admin-route attempts are audited as `access.denied`.
+
+---
+
+## T41 — Org VAPID private key read from D1
+
+**Attack scenario.** Someone with read access to the org's D1 database (an account member, an
+export, a backup) copies the org VAPID private key and signs push requests to the org's
+devices.
+
+**Mitigation in code.** Secrets the Worker generates are stored only sealed by
+`cloud/worker/src/security/data-key.ts`: AES-256-GCM under an HKDF-SHA256 key per purpose
+(`vapid` for this key) derived from the `DATA_KEY` deploy secret, with row-bound AAD
+(`settings.value:vapid_private_key_enc`), so the ciphertext is useless without the secret
+and cannot be moved to another row. Push payloads stay end-to-end encrypted to device keys.
+
+**Residual risk.** Whoever holds both the D1 contents and `DATA_KEY` can open it; key
+generation and rotation are Phase 07's and 08's.
+
+**Detection.** A failed open is a loud error naming the purpose; the reseal task logs when
+the previous key is safe to remove.
+
+---
+
+## T47 — Deploy secrets leak (`CF_API_TOKEN`, `SETUP_CODE`, `DATA_KEY`)
+
+**Attack scenario.** A deploy secret appears in a log line, an error body, a response
+header or a test fixture, and is read by anyone with log or browser access.
+
+**Mitigation in code.** `cloud/worker/src/security/secrets.ts` validates the three secrets
+and, when one is missing or malformed, refuses every route but `/v1/meta` with
+`503 unavailable` and logs the secret's name, never its value. `log/logger.ts` sanitizes
+every string and replaces deny-listed keys (`token`, `jwt`, `cookie`, `authorization`,
+`signature`, `secret`, `private_key`, `endpoint`, `p256dh`, `auth`, `code`,
+`code_verifier`, `state`) at any depth; bodies are never logged, and an unexpected
+exception's text goes only to the log. `no-secret-leak.test.ts` replays the whole
+authorization-matrix corpus with sentinel secrets, JWTs, signatures and a sealed push
+endpoint, and fails if any appears in console output or a response. `.dev.vars` is
+gitignored.
+
+**Residual risk.** A future log call that puts a secret under a key not on the deny-list is
+caught only if the sentinel test exercises that path.
+
+**Detection.** The `secret_unusable` log line names the missing secret once per isolate.
+
+---
+
+## T48 — Repudiation or tampering of control-plane actions
+
+**Attack scenario.** An admin denies having revoked a machine or changed a policy, or a
+hostile client floods denied attempts to bury real entries or exhaust the D1 write budget.
+
+**Mitigation in code.** `cloud/worker/src/audit/audit.ts` is the one writer: it appends rows
+to `audit_log` (never updates them), with the actor from the request identity, the
+request id, IP and country, an action from the generated registry union, and scrubbed
+`detail` capped at 2 KiB. Denied attempts are coalesced to one row per actor, action and
+minute through a deterministic id, and only the retention purge (`audit_retention_days`,
+default 365) deletes rows.
+
+**Residual risk.** Anyone with write access to the account's D1 can edit the table.
+
+**Detection.** The audit page (W25, Phase 07) and the `purge_audit` task's schedule.
+
+---
+
+## T49 — Quota or D1 budget exhaustion through the Worker
+
+**Attack scenario.** A client sends a flood of requests (signed or not) to spend the Free
+plan's 100,000 D1 row writes per day or the Worker's CPU, so legitimate pairing and
+machine calls fail until midnight UTC.
+
+**Mitigation in code.** Nonce rows are written only after a valid signature
+(`auth/machine-signature.ts`); `last_seen_at` is written at most every five minutes per
+user and every minute per machine; denied audits are coalesced; `security/rate-limit.ts`
+applies a per-IP bucket to every request plus stricter `auth` and `machine` buckets
+(Rate Limiting bindings, falling back to D1 counters where a binding is missing). The cron
+dispatcher (`scheduled/dispatcher.ts`) runs every task inside a per-run budget of 40 D1
+queries, 40 subrequests and 20 s, and the purge tasks keep the nonce, rate and audit tables
+small.
+
+**Residual risk.** The binding counters are per location and permissive; a distributed
+flood still costs reads.
+
+**Detection.** `tasks_deferred` warnings, 429 counts in Workers Logs.
+
+---
+
+## T54 — Control-plane Worker reached without a valid identity
+
+**Attack scenario.** The control-plane Access application is missing, mis-scoped or
+deleted, or a request carries a JWT that is not a person's token for this application: a
+service token, a token for another application's AUD (such as a machine app), an expired
+token, or one for a disabled user.
+
+**Mitigation in code.** `cloud/worker/src/auth/access-jwt.ts` reads only the
+`Cf-Access-Jwt-Assertion` header, pins RS256, checks `iss` exactly against the team domain,
+`aud` against the control-plane AUD, and `exp`/`nbf` with a configurable tolerance, and then
+requires an app token with an email and subject. A service-token JWT is
+`403 service_token_rejected`; a disabled user is `403 user_disabled`
+(`auth/identity.ts`); an unreachable JWKS is `503 identity_unavailable`, never a pass. The
+team domain must match the cloudflared rule before any JWKS fetch.
+
+**Residual risk.** Group membership is decided by the Access policy (Phase 07); the Worker
+cannot see groups.
+
+**Detection.** A request with no JWT at all is logged at warn level (`access_jwt_missing`)
+with its route and CF-Ray, because it means Access is not in front of a route it should
+cover.
+
+---
+
+## T55 — D1 contents exposed
+
+**Attack scenario.** Someone who can read the account's D1 database (an account member, an
+export, a leaked API token with D1 read) reads its contents.
+
+**Mitigation in code.** Every secret the Worker generates is stored only
+`DATA_KEY`-sealed with row-bound AAD (`cloud/worker/src/security/data-key.ts`); the key
+version is recorded in `settings.data_key_state` as a one-way check, never key material.
+Tunnel tokens are never written to D1 (Phase 05 fetches them on demand), and pairing codes
+and states are stored as SHA-256 hashes (`pair_requests`, Phase 06).
+
+**Residual risk.** Emails, machine names and hostnames, IPs in the audit log and device
+metadata remain readable to whoever can read the database.
+
+**Detection.** Cloudflare account audit logs record D1 exports.
+
+---
+
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must

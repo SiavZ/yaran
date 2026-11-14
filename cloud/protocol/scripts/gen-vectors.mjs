@@ -22,6 +22,7 @@
  * ├── scripts/vectors/jwe.mjs
  * ├── scripts/vectors/misc.mjs
  * ├── scripts/vectors/push.mjs
+ * ├── scripts/vectors/sanitize.mjs
  * ├── scripts/vectors/sig.mjs
  * └── scripts/vectors/webpush.mjs
  * External: node:fs, node:path, node:url
@@ -38,6 +39,7 @@ import * as consent from "./vectors/consent.mjs";
 import * as jwe from "./vectors/jwe.mjs";
 import * as misc from "./vectors/misc.mjs";
 import * as push from "./vectors/push.mjs";
+import * as sanitize from "./vectors/sanitize.mjs";
 import * as sig from "./vectors/sig.mjs";
 import * as webpush from "./vectors/webpush.mjs";
 
@@ -52,7 +54,7 @@ const ctx = {
 };
 
 const files = {};
-for (const gen of [api, jwe, sig, consent, push, webpush, misc, accessJwt]) {
+for (const gen of [api, jwe, sig, consent, push, webpush, misc, accessJwt, sanitize]) {
   for (const [path, value] of Object.entries(await gen.generate(ctx))) {
     if (files[path]) throw new Error(`two generators write ${path}`);
     files[path] = `${JSON.stringify(value, null, 2)}\n`;

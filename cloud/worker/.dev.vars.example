@@ -1,0 +1,9 @@
+# Local development secrets for `wrangler dev`. Copy to .dev.vars (never commit it).
+# The Deploy to Cloudflare button prompts for the same three; Phase 07 refines the wording.
+
+# Cloudflare API token the Worker uses to provision tunnels, DNS records and Access apps.
+CF_API_TOKEN=
+# One-time setup code gating the first-run wizard: at least 12 characters.
+SETUP_CODE=
+# Root key for encryption at rest: base64 of at least 32 random bytes (openssl rand -base64 32).
+DATA_KEY=
