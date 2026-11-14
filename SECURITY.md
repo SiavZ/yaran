@@ -24,9 +24,17 @@ acknowledge reports within 72 hours.
 - The configuration and on-disk state under
   `$STATE_ROOT` (default `/data/state` on persistent-disk VMs,
   `~/.config/yaran` on Linux laptops, `~/.yaran` on macOS).
+- Cloud Connect: the org control-plane Worker under `cloud/worker`,
+  the publisher push relay under `cloud/push-relay`, the shared
+  protocol under `cloud/protocol`, and yaran's supervision of
+  `cloudflared` and its own Access check on the cloud hostname.
+- The phone apps under `mobile/`.
 
 Out of scope: configured upstream provider binaries (including `ntl`) and
-the `amq` binary; cloud-provider IAM; the host kernel.
+the `amq` binary; cloud-provider IAM; the host kernel; the Cloudflare
+platform itself (its edge, Access, Tunnel and D1); Apple's and Google's
+push services; UnifiedPush distributors; and the org's identity
+provider.
 
 ## Trust model summary
 
@@ -38,6 +46,17 @@ between panes. One compromised pane = one compromised user account.
 That assumption is **load-bearing** for every other mitigation in
 this document. Do not deploy `yaran` in a multi-tenant context where
 multiple humans share the same Linux account.
+
+**Cloud Connect** does not change this. Each machine's workspace is
+still single-tenant: the one remote principal is the paired owner,
+whom yaran verifies from the Cloudflare Access token on every request
+for the machine's cloud hostname, so remote access equals owner
+access. The org admin who deploys the control plane is trusted with
+the org's Cloudflare account and everything the deploy token can
+reach. Cloudflare terminates TLS and can read all tunneled traffic
+(T43). The publisher relay is trusted for availability of iOS push
+only, never for content: payloads are end-to-end encrypted to the
+phone.
 
 ## STRIDE threat model
 
@@ -73,6 +92,46 @@ into source, residual risk, and detection signals, see
 | T22 | A shared board folder brings in card notes from other machines or people, and its opt-in git sync commits, merges and pushes on its own schedule | S,T,I,D | Operator attention, the folder's repository | Notes get the same sanitizing and length bounds as posts; oversized notes and symlinks are not read; unreadable or duplicate notes are reported, never rewritten, and their ids never reused. The sync commits only the board folder's paths, holds the board lock while committing or merging, skips a repository mid merge/rebase/cherry-pick, never rebases or forces, lets git refuse merges over uncommitted work, auto-settles only conflicts confined to board notes (newer `updated` wins) and aborts anything else, pushes only to the configured upstream with a qualified refspec, and runs every git call time-limited with prompts disabled and sanitized errors. The board inherits the trust of the vault or remote it lives in; off by default. | shared human board |
 | T23 | Another person's words on a shared board card are passed to this machine's agents (`[board] relay`) | S,T,E | The agent that posted the card, or `relay_to` | Off by default; only messages written on another side, only to the agent of this yaran that posted the card or to the configured `relay_to` for a card assigned to `me`; text sanitized and length-bounded; sent with `yaran peer send` (one argument, no shell, time-limited), never typed into a terminal; each message passed once and recorded on the card. Writer and side are labels: the relay trusts the shared folder exactly as T22 does. | board relay |
 | T24 | Claude Code's self-relaunch runs through `claude-peers-launcher` (`CLAUDE_CODE_PROCESS_WRAPPER`), a script yaran installs | T,E | Every Claude process re-exec'd from a yaran pane | Installed beside `claude-amq` with the same mode and ownership advice and referenced by absolute path; always `exec`s what it was given with the environment unchanged; appends only the claude-peers development-channel flag, and only for an interactive relaunch on the pane's own terminal that lacks it, so daemon-hosted sessions and spares run as asked; an operator-set launcher is left alone with a warning. | claude-peers across restarts |
+| T25 | The unauthenticated web API reachable from the internet through the tunnel | S,E | Whole workspace: PTY input, filesystem, config rewrite | One Access app and owner-only reusable policy per machine, created policy → app → tunnel → ingress → DNS and torn down DNS → connections → tunnel → app → policy; per-rule `originRequest.access` (`required` + `audTag`) with cloudflared ≥ 2026.11.0; yaran verifies the JWT itself (T26); reconciliation repairs drift. Design-stage draft. | phoneapp 05, 10, 11 |
+| T26 | Access JWT forgery, confusion or replay at yaran | S | Workspace | RS256 against the team JWKS cached by `kid`; `iss`, `aud`, `exp`, `nbf`; email equals the paired owner; service-token JWTs rejected; fails closed without JWKS; every request and upgrade on the cloud Host. Design-stage draft. | phoneapp 11 |
+| T27 | Tunnel token stolen from the developer machine | S,I | Tunnel identity and the requests it carries | Owner-only credentials file under the 0700 config root, never in config or `[env]`; reaches cloudflared by token file, never argv; `yaran cloud rotate` replaces the secret and drops connections. Design-stage draft. | phoneapp 09, 10, 05 |
+| T28 | Machine signing key theft or signed-request replay | S,R,T | Machine identity: events, config fetch, origin port, unpair | Ed25519 signature over the protocol's canonical string; nonce store and ±300 s window; revocation invalidates the key; the origin-port route is signed like every machine route. Design-stage draft. | phoneapp 09, 04, 05 |
+| T29 | cloudflared supply chain | T,E | Code running as the developer | Pinned version with compiled-in SHA-256 hashes, re-checked on every start, fails closed; minimum 2026.11.0 for user-supplied binaries too; `--no-autoupdate`; owner-only storage; pin-bump process. Design-stage draft. | phoneapp 10, 18 |
+| T30 | cloudflared's metrics endpoint reached by another local user or a page | I | Tunnel config | `--metrics 127.0.0.1:<port>` always explicit, port configurable; remote management diagnostics off by default. Design-stage draft. | phoneapp 10 |
+| T31 | Org Worker compromise or a malicious `cloud-deploy` change | E,T | The org's Cloudflare account and every machine policy | Least-privilege token template with each permission's blast radius documented; `workers.dev` answers only setup and the service-info check until setup closes, then is disabled and other Hosts refused; no preview URLs; console behind Access with no third-party scripts; verified update checker; audit log. Design-stage draft. | phoneapp 04, 05, 07 |
+| T32 | Same-zone `fetch` from the Worker bypassing Access | E | Machine origins | No Worker proxying to machines; `global_fetch_strictly_public`; cloudflared `access.required` as the second gate. Design-stage draft. | phoneapp 04, 05 |
+| T33 | Setup takeover before setup closes | E | Org control plane | Deploy-time `SETUP_CODE` of ≥ 24 characters; rate limit, lockout, constant-time compare; only setup routes on `workers.dev` in the window; setup closes in one transaction, then `410 setup_closed` and `workers.dev` disabled. Design-stage draft. | phoneapp 04, 07 |
+| T34 | Cross-user authorization flaws in the Worker | E,I | Other users' machines and phones | Every query scoped by the authenticated email; role from the Worker's settings only; authorization matrix test over every route × role × owner, device mute routes included. Design-stage draft. | phoneapp 04, 06, 08 |
+| T35 | Pairing hijack | S | Machine enrolment | PKCE and `state`; confirm page shows the machine name and key fingerprint the terminal also prints; short-lived single-use code; claim needs the machine signature and the PKCE verifier. Design-stage draft. | phoneapp 06, 09 |
+| T36 | Sealed-handoff interception | S,I | Access JWTs for the control plane and machines | JWE ECDH-ES + A256GCM to an app-held ephemeral key; verified https callback on `<publisher-domain>` (iOS 17.4+); custom scheme only for declared dev builds, which warn on screen; one-tap consent page on both handoff pages, remembered only with this install's device signature (T64); single-use `state`; no unauthenticated exchange endpoint. Design-stage draft. | phoneapp 02, 06, 11, 14, 15 |
+| T37 | Phone token theft at rest or on device loss | I,S | Control-plane and machine JWTs, push keys | Keychain `ThisDeviceOnly` and an Android Keystore AES-GCM key; backups off; diagnostics redact tokens; optional key-bound biometric lock; device removal from the console. Design-stage draft. | phoneapp 14, 15, 06 |
+| T38 | `machine-view` WebView escape | E | Phone and app secrets | No JS bridge in the machine WebView; exact-host navigation; file and content access off; external links to the system browser; debugging off in release. Design-stage draft. | phoneapp 15 |
+| T39 | Push content exposed to Google, Apple, the distributor or the relay | I | Agent labels and project names | RFC 8291 end-to-end encryption to device keys; minimal payload, labels droppable by the org; decrypted on device; generic fallback text. Design-stage draft. | phoneapp 08, 12, 16 |
+| T40 | Publisher relay abused or compromised | D,S,E | APNs key; every iOS user's notifications | Endpoints bound to the org VAPID key and verified against it; per-key and per-device rate limits; no token logging; APNs key only in the relay environment; key-compromise playbook. Design-stage draft. | phoneapp 08, 21 |
+| T41 | Org VAPID private key compromise | S | Notification integrity | Generated at setup and sealed with `DATA_KEY`; rotation re-registers devices; payloads still end-to-end encrypted to device keys. Design-stage draft. | phoneapp 04, 07, 08 |
+| T42 | Malicious deep links or QR codes | S,T | User's SSO credentials, trust in the app | Adding an org shows its name and team domain and needs a confirm before sign-in; QR built only from the canonical control-plane host; deep links open only added orgs; notification taps checked against the machine list. Design-stage draft. | phoneapp 06, 14, 15, 16 |
+| T43 | Cloudflare sees all tunneled traffic in plaintext at its edge | I | Terminal I/O, file contents | **Accepted risk** (see below). Stated in the docs, onboarding, the server console and the store listing. | phoneapp 17 |
+| T44 | Raw config and `[env]` reachable by the remote owner | I | Env secrets, config | Decision record: remote identity equals the paired owner; bounded by T26, T37 and the session duration; docs say to keep secrets out of `[env]`. Design-stage draft. | phoneapp 11 |
+| T45 | Revocation lag | E | Workspace | Short configurable Access sessions; teardown removes DNS first and invalidates the tunnel secret before deleting connections; rotation drops connections; yaran closes sockets with 4401 at expiry plus skew; sign-out-everywhere. Design-stage draft. | phoneapp 05, 06, 11 |
+| T46 | Android signing key or App Store credentials compromised | T,E | Every installed app | One maintainer-held app-signing key; Play App Signing with a separate upload key; protected GitHub environments; CODEOWNERS on release workflows; playbook. Design-stage draft. | phoneapp 18, 21 |
+| T47 | Deploy secrets leaked | I,E | Org Cloudflare account; every `DATA_KEY`-sealed secret | Prompted as secrets and never echoed; `.dev.vars` gitignored; never shown in the console; secret-leak sentinel test over logs and responses; rotation procedure for each. Design-stage draft. | phoneapp 04, 07 |
+| T48 | Repudiation or tampering of admin actions | R | Audit trail | Append-only `audit_log` for every mutating route, exportable from the console. Design-stage draft. | phoneapp 04 |
+| T49 | Quota or budget exhaustion | D | Org's ability to pair | Per-user machine cap; quota guard with clear refusals; rate-limit binding; list-based reconciliation; per-run budgets for scheduled work. Design-stage draft. | phoneapp 04, 05, 06 |
+| T50 | Spoofed update notice leading to a malicious APK | T | Phone | No in-app update check or installer; the only link is to `github.com/SiavZ/yaran` releases; checksums and provenance on releases. Design-stage draft. | phoneapp 14, 18 |
+| T51 | Diagnostics or crash logs leak tokens or hostnames | I | Tokens, infrastructure names | Local-only diagnostics; redaction tested with fixtures; export only on explicit action and says what it contains; no third-party crash SDK. Design-stage draft. | phoneapp 14 |
+| T52 | Malicious upstream `yaran-cloud-v*` release pulled into a deployment | T | Org control plane | Deploy and updates use the generated `cloud-deploy` branch; signed tags and verified attestations; updates arrive as a pull request the admin reviews. Design-stage draft. | phoneapp 07, 18 |
+| T53 | Attacker-controlled text injects terminal escapes | T | Operator terminal, logs | `yaran_core::sanitize::for_terminal` before logging or showing; the Worker escapes console HTML. Design-stage draft. | phoneapp 05, 08, 10 |
+| T54 | Control-plane Worker reached without a valid identity | S,E | Org control plane; every user's machines and phones | Worker verifies the Access JWT on every non-public route, rejects service tokens and disabled users, fails closed without JWKS; every route declares an auth class or the type check fails. Design-stage draft. | phoneapp 04, 06, 07 |
+| T55 | D1 contents exposed | I | Sealed secrets, pairing codes, device push keys and endpoints, user emails | Generated secrets stored only `DATA_KEY`-sealed with row-bound data; one-time codes hashed; tunnel tokens never written to D1, proved by a full-table scan test. Design-stage draft. | phoneapp 04, 05, 06, 08 |
+| T56 | Control plane acts on Cloudflare resources it does not own | T,D | Other deployments' and the account's own tunnels, apps, policies and DNS | Instance marker on every created resource; orphan cleanup only on marked resources past a grace period; no undocumented cascade. Design-stage draft. | phoneapp 05 |
+| T57 | Device-supplied push endpoint used for SSRF | E,I | Same-zone or internal services; Worker egress budget | Endpoint policy at registration (https, no IP literals, not the org's zone, length cap, fixed relay form); `global_fetch_strictly_public`; 404/410 clears the subscription. Design-stage draft. | phoneapp 06, 08 |
+| T58 | yaran's handoff rate limit starves another phone's sign-in | D | Phone sign-in availability | Default 12 a minute against about one a day per phone; configurable; only the owner's identity reaches it. Design-stage draft. | phoneapp 11 |
+| T59 | Attention-event metadata visible to the org Worker | I | Agent labels and project names | **Accepted risk** (see below). Minimal batched events, state as a token, no agent output; pushes stay end-to-end encrypted (T39). | phoneapp 12, 08 |
+| T60 | Shell WebView compromise drives native plugins | E,I | Vault contents, sessions, push keys | Bundled assets only under a strict CSP; narrow plugin surface; JavaScript never holds bearer credentials, every control-plane call goes through the native client. Design-stage draft. | phoneapp 14, 15, 16 |
+| T61 | iOS machine session cookie readable by page script | I | Machine Access JWT | Session cookie only, never persisted, per-org data store; only the person's own yaran UI can read it. Residual risk stated. Design-stage draft. | phoneapp 15 |
+| T62 | Native loopback proxy reachable by other apps or pages on the phone | S,E | Machine access via the managed OAuth bearer | Conditional on the sign-in gate's third fallback; otherwise retired by strikethrough. Design-stage draft. | phoneapp 15 |
+| T63 | Publisher-domain association files tampered or lost | S,T,D | Sealed handoffs (ciphertext only), sign-in availability | Files committed in the repo; `assetlinks.json` fingerprint checked against the app-signing certificate; domain and DNS under maintainer custody with renewal monitored; handoffs stay sealed (T36). Design-stage draft. | phoneapp 21, 18, 14, 15 |
+| T64 | Remembered-consent bypass | S,E | Access JWTs for the control plane and machines; the consent page as the human check | Skip only with a valid MACed consent cookie naming the device-key fingerprint **and** a fresh ES256 device signature over the server's own host; hardware-held non-exportable device key; consent keys from `DATA_KEY` (Worker) and the credentials file (yaran); revocation, rotation, re-pair and logout drop memory. Revocation gap on machines is an accepted risk (see below). Design-stage draft. | phoneapp 02, 06, 11, 15 |
 
 ## What's in scope vs. accepted
 
@@ -85,6 +144,11 @@ into source, residual risk, and detection signals, see
   the VM (operator-driven encryption playbook).
 - AMQ peer-spoofing within a single VM.
 - Right-to-erasure for chat history that may contain PII.
+- Cloud Connect: the org control-plane Worker, the tunnel leg yaran
+  supervises, yaran's own Access check, phone sign-in, and push
+  delivery through the publisher relay (T25–T64).
+- The phone apps' storage of sessions and keys, and the boundary
+  between their bundled shell and the remote yaran page.
 
 **Accepted risks** — not mitigated, with rationale:
 
@@ -122,6 +186,23 @@ into source, residual risk, and detection signals, see
   drop semantics. The HMAC tooling
   (`amq-send-signed`/`amq-receive-verify`) remains in the
   overlay and is exercised by the bats suite.
+
+- **Cloudflare reads tunneled traffic at its edge (T43).** Cloud
+  Connect rides Cloudflare's HTTPS edge, which terminates TLS, so
+  terminal I/O and file contents are visible to Cloudflare. The docs,
+  the app's onboarding and the store listing say so. People who
+  cannot accept this use Tailscale or their own proxy.
+- **Attention metadata at the org Worker (T59).** Agent labels,
+  project names and state tokens reach the org's own Worker and
+  database in plaintext. That is the org's own infrastructure; no
+  agent output leaves the machine, and pushes past the Worker stay
+  end-to-end encrypted.
+- **Remembered consent outlives a Worker-side phone revocation on
+  machines (T64).** yaran never learns that the control plane removed
+  a phone, so that phone can still skip the sign-in confirmation page
+  on a machine until the machine is re-paired or logged out, its
+  consent key is rotated, or 400 days pass. A skip still needs a
+  valid owner Access token, which sign-out-everywhere revokes.
 
 ## Verification
 

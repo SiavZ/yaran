@@ -1,7 +1,7 @@
 # Threat Model — long-form companion
 
 This document is the long-form companion to the STRIDE table in
-[`/SECURITY.md`](../../SECURITY.md). For each row T1–T20 we capture
+[`/SECURITY.md`](../../SECURITY.md). For every row in that table we capture
 the concrete attack scenario, the mitigation in code (with
 file:line references taken from `docs/audits/audit02/audit02.md`), the
 residual risk after mitigation, and the detection mechanism — what
@@ -1115,6 +1115,893 @@ is running without the channel.
 
 ---
 
+## Cloud Connect and the phone apps (design-stage drafts)
+
+The sections from T25 onward cover Cloud Connect (the org control-plane
+Worker on Cloudflare, the supervised `cloudflared` leg, the Access check
+yaran runs itself), the publisher push relay, and the phone apps under
+`mobile/`. They were written at design stage, before the code existed.
+Each `Mitigation in code.` paragraph opens by naming the phone-app phases
+that own it; the owning phase replaces the design text with symbols and
+file paths in the same PR that lands the surface, and the security review
+phase checks every row against the implementation. Placeholders follow the
+docs: `<zone>`, `<org-control-plane>`, `<publisher-relay>` and
+`<publisher-domain>` stand for values the deployer or the maintainer
+supplies, and none of them is a real hostname.
+
+---
+
+## T25 — The unauthenticated web API reachable from the internet through the tunnel
+
+**Attack scenario.** A machine's hostname routes to its tunnel, and the
+tunnel reaches yaran's loopback listener, which has no login. If the
+machine's Access app or policy is missing, scoped to the wrong hostname or
+path, or deleted, or if the DNS record is published before the app
+protects it, anyone on the internet gets the whole workspace: PTY input,
+the filesystem through the project picker, and config rewrites.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 05, 10 and 11.
+The control plane creates one Access app and one owner-only reusable policy
+per machine, in the order policy, app, tunnel, ingress, DNS, and tears down
+in the order DNS, connections, tunnel, app, policy, so no DNS record ever
+points at an unprotected tunnel. Every machine ingress rule carries
+`originRequest.access` with `required` and the app's `audTag`, and yaran
+refuses a cloudflared older than 2026.11.0, so cloudflared itself rejects a
+request with no valid Access JWT. yaran then verifies the JWT on every
+request for the cloud hostname (T26). Reconciliation compares live
+Cloudflare state with the desired state and repairs drift.
+
+**Residual risk.** If the gate run shows that per-rule `access.required`
+does not enforce, yaran's own JWT check is the only origin-side gate and
+this row records the reduced defence in depth. A Cloudflare account admin
+can still delete the app by hand between reconciliation runs.
+
+**Detection.** Worker audit events `provision.step`, `drift.repaired` and
+`machine.reconciled`; a `provision.failed` audit event when an ordered step
+fails; yaran's `yaran::cloud::ingress` log records every refused request on
+the cloud Host.
+
+---
+
+## T26 — Access JWT forgery, confusion or replay at yaran
+
+**Attack scenario.** A request reaches yaran on the cloud hostname with a
+JWT that is signed for another Access app (wrong `aud`), issued by another
+team, expired, minted for a service token, or issued to a different user
+than the paired owner. Or the team's signing keys cannot be fetched and a
+naive verifier fails open.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 11. yaran
+verifies RS256 against the team's JWKS, cached by `kid`, and checks `iss`,
+`aud`, `exp` and `nbf` with a configurable clock skew. The token's email,
+lowercased, must equal the paired owner's. Service-token JWTs are rejected.
+When the JWKS is unavailable yaran fails closed with a 503 that says so.
+The check runs on every HTTP request and every WebSocket upgrade whose Host
+is the cloud hostname; loopback, LAN and Tailscale Hosts are unaffected.
+
+**Residual risk.** A valid JWT stolen from the owner's browser or phone is
+accepted until it expires (T37, T45). The skew window extends every token's
+life by its width.
+
+**Detection.** `yaran::cloud::ingress` logs each refusal with its reason
+(audience, issuer, expiry, owner mismatch, service token, keys
+unavailable); the 503 carries the `Yaran-Refusal: access-keys-unavailable`
+header.
+
+---
+
+## T27 — Tunnel token stolen from the developer machine
+
+**Attack scenario.** The tunnel token is read from a file, a process
+argument list, a backup, the raw-config endpoint or `[env]`. With it an
+attacker runs a rogue connector for the same tunnel and receives a share of
+the machine's traffic, including requests that already carry the owner's
+Access JWT.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 09, 10 and 05.
+The token lives only in the owner-only credentials file under the 0700
+config root (`file_modes.rs`), never in `config.toml` or `[env]`. It
+reaches cloudflared through a 0600 token file written just before each
+spawn and deleted when the leg stops, never through argv. `yaran cloud
+rotate` asks the control plane to replace the tunnel secret and drop live
+connections.
+
+**Residual risk.** Anything running as the same Unix user can read the
+credentials file; that is the trust model in `SECURITY.md`. A stolen token
+works until it is rotated.
+
+**Detection.** Worker audit event `machine.rotated`; the admin console's
+machine page lists the tunnel's live connectors, so an unknown connector
+location shows there.
+
+---
+
+## T28 — Machine signing key theft or signed-request replay
+
+**Attack scenario.** An attacker who copies the machine's Ed25519 key, or
+captures one signed request, calls the machine routes of the control
+plane: posting events, fetching config, retargeting the tunnel's origin
+port with `PUT /v1/machine/origin`, or unpairing the machine.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 09, 04 and 05.
+The key is generated at pairing and stored in the credentials file. Every
+machine request is signed over the protocol's canonical string (method,
+path, Host, protocol version, machine id, timestamp, nonce and body hash).
+The Worker keeps a nonce store and accepts a timestamp only within ±300 s.
+Revoking the machine invalidates its key. The origin route is signed like
+every other machine route, because a forged one would point the tunnel at
+another local port.
+
+**Residual risk.** A stolen key works until the machine is revoked or
+re-paired. A replay inside the window is stopped only by the nonce store.
+
+**Detection.** Worker audit events `machine.origin_changed` and
+`machine.unpaired`; signature and nonce failures are counted in the
+Worker's request log.
+
+---
+
+## T29 — cloudflared supply chain
+
+**Attack scenario.** The cloudflared download is tampered with, the pinned
+version has a known vulnerability, or cloudflared replaces itself through
+its own updater with a binary yaran never checked. The binary runs as the
+developer.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 10 and 18.
+yaran pins one cloudflared version with SHA-256 hashes compiled in for the
+archive and the binary of each supported target, re-hashes the binary on
+every start, and fails closed on a mismatch. A user-supplied binary
+(`cloudflared_path`) is checked against the same minimum version,
+2026.11.0. cloudflared always runs with `--no-autoupdate` and
+`NO_AUTOUPDATE=true`. The managed binary is stored owner-only. The release
+pipeline owns a pin-bump process.
+
+**Residual risk.** A user-supplied binary is not hash-checked; that path is
+the user's responsibility and the docs say so. A vulnerability published
+after the pin stays until the next yaran release.
+
+**Detection.** The leg's status names the expected and actual hash on a
+mismatch; yaran warns when the pin nears the end of Cloudflare's one-year
+support window.
+
+---
+
+## T30 — cloudflared's metrics endpoint reached by another local user or a page
+
+**Attack scenario.** cloudflared serves an unauthenticated metrics endpoint
+that exposes tunnel configuration and profiling data. If it binds a wide
+address, another user on the machine or the LAN, or a web page through DNS
+rebinding, reads it.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 10. yaran always
+passes `--metrics 127.0.0.1:<port>` explicitly, with the port configurable
+(`[cloud] metrics_port`, a free port by default). Remote management
+diagnostics stay off unless `management_diagnostics` is turned on.
+
+**Residual risk.** Other local users can still reach a loopback port. On a
+shared machine that exposes the tunnel's configuration, not its token.
+
+**Detection.** yaran logs the metrics address it chose under
+`yaran::cloudflare` at each start.
+
+---
+
+## T31 — Org Worker compromise or a malicious `cloud-deploy` change
+
+**Attack scenario.** The org control-plane Worker holds an API token that
+can edit tunnels, Access apps and DNS. A bug in the Worker, a malicious
+commit in the deployer's clone of the `cloud-deploy` branch, or a script
+injected into the admin console lets an attacker use that token against
+the org's Cloudflare account.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 04, 05 and 07.
+The token comes from a least-privilege template, and the docs state each
+permission's blast radius. Until setup closes, `workers.dev` answers only
+the setup pages and the service-info check; the wizard then disables
+`workers.dev` by API, and the Worker refuses every Host other than the
+custom domain. Preview URLs are off and no custom domain is written into
+the wrangler config. The admin console sits behind Access and loads no
+third-party scripts. The update checker verifies release tags. Every
+mutating route writes the audit log.
+
+**Residual risk.** Whoever controls the deployer's clone controls the
+Worker; that is the org's own supply chain.
+
+**Detection.** Worker audit events `setup.completed` and
+`settings.updated`; the console's Updates page names the running version
+against the latest verified release.
+
+---
+
+## T32 — Same-zone `fetch` from the Worker bypassing Access
+
+**Attack scenario.** A Worker in the same zone can `fetch` a hostname in
+that zone without passing through Access in some configurations. If the
+control plane ever proxied requests to machine hostnames, it could reach a
+machine origin with no Access check.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 04 and 05. The
+Worker never proxies to machines; phones and browsers reach each machine
+hostname directly. The Worker runs with `global_fetch_strictly_public`.
+cloudflared's per-rule `access.required` is the second gate (T25).
+
+**Residual risk.** A future change that adds proxying would reopen this.
+
+**Detection.** A route-table test fails on any route that fetches a
+machine hostname.
+
+---
+
+## T33 — Setup takeover before setup closes
+
+**Attack scenario.** Between deploy and the end of setup the Worker is on a
+public `workers.dev` address. Someone who finds it guesses the setup code,
+or a second admin races the first, and claims the control plane.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 04 and 07. The
+setup code is a deploy-time Worker secret of at least 24 characters. Setup
+attempts are rate-limited and lock out after repeated failures, and the
+comparison is constant-time. Only the setup pages and the service-info
+check answer on `workers.dev` in that window. Setup closes permanently in
+one database transaction, after which the setup pages answer
+`410 setup_closed` and `workers.dev` is disabled.
+
+**Residual risk.** A setup code shared over a leaky channel is a valid
+credential until setup closes.
+
+**Detection.** Worker audit events `setup.completed` and `setup.closed`;
+failed attempts are counted, and the lockout shows as `setup_locked`.
+
+---
+
+## T34 — Cross-user authorization flaws in the Worker
+
+**Attack scenario.** A signed-in user changes an id in a request and reads
+or changes another user's machine or phone, including its mute settings or
+push state, or escalates to admin.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 04, 06 and 08.
+Every query is scoped by the authenticated email. The role comes from the
+Worker's own settings table, never from the request. An authorization
+matrix test covers every route, every role and owner versus non-owner, the
+device mute routes included.
+
+**Residual risk.** A route added without a matrix row; the test fails when
+a route has no row.
+
+**Detection.** Refused requests are logged with the route and the caller's
+email; admin actions write the audit log (T48).
+
+---
+
+## T35 — Pairing hijack
+
+**Attack scenario.** An attacker forges a pairing request (CSRF), steals
+the one-time code from the loopback redirect, injects a code into another
+machine's callback, or sends someone a pairing link they crafted, so their
+machine ends up paired to the victim's account or the victim's machine to
+theirs.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 06 and 09.
+Pairing uses PKCE and `state`. The browser's confirm page shows the machine
+name and the machine key fingerprint, and the terminal prints the same
+fingerprint before the browser opens, so the person compares them before
+confirming. The one-time code is short-lived and single-use. Claiming it
+needs both the machine signature and the PKCE verifier.
+
+**Residual risk.** A person who confirms without comparing the fingerprint.
+
+**Detection.** Worker audit events `pair.requested`, `pair.approved`,
+`pair.denied`, `pair.expired` and `machine.claimed`.
+
+---
+
+## T36 — Sealed-handoff interception
+
+**Attack scenario.** During phone sign-in, another app receives the
+callback, an attacker replays `state` or abuses the redirect parameter, or
+a page starts a handoff that rides the user's live SSO session so the
+identity provider approves it silently.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 02, 06, 11, 14
+and 15. The handoff payload (the Access JWT, and a cookie where the gate
+run requires one) is sealed as JWE ECDH-ES with A256GCM to an ephemeral
+P-256 key that only the app holds. Release builds return on a verified
+https callback on `<publisher-domain>` (an Android App Link through Auth
+Tab or a Custom Tab; an iOS `ASWebAuthenticationSession` https callback,
+iOS 17.4 or newer), which the OS delivers only to the app that domain
+vouches for (T63). The redirect allowlist accepts exactly that callback,
+and the custom scheme `yaranapp://auth/callback` only when the request
+declares a development build. Both handoff pages, the Worker's and
+yaran's, show a one-tap consent page naming the device and the host before
+sealing. Consent is remembered per host and device key after an explicit
+Continue, and a later handoff skips the page only with a verifying
+signature from this install's hardware-held device key (T64). `state` is
+single-use and short-lived. There is no unauthenticated exchange endpoint,
+and the responses are `no-store`.
+
+**Residual risk.** A build compiled without a publisher domain uses the
+custom scheme, which any app on the phone can register; such builds show a
+permanent warning in the app. A hijacked flow the user started yields only
+ciphertext. A hostile app that starts its own flow still needs the user to
+tap Continue, and remembered consent does not help it, because it cannot
+produce this install's device signature.
+
+**Detection.** Worker audit events `handoff.issued` and
+`handoff.declined`; yaran logs the same outcomes under
+`yaran::cloud::handoff`.
+
+---
+
+## T37 — Phone token theft at rest or on device loss
+
+**Attack scenario.** Control-plane and machine JWTs, or push keys, are read
+from the phone's storage, a backup, logs or a diagnostics export, or from a
+lost phone.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 14, 15 and 06.
+Secrets live in the iOS Keychain with `ThisDeviceOnly` access and behind an
+Android Keystore AES-GCM key. Android backups are off with matching
+extraction rules. Diagnostics redact tokens, cookies and query strings. An
+optional app lock uses biometrics bound to the key (`CryptoObject` or
+`SecAccessControl`). An admin or the person can remove the phone from the
+console.
+
+**Residual risk.** An unlocked phone in an attacker's hands with the app
+lock off has the sessions until they expire (T45).
+
+**Detection.** Worker audit event `sessions.revoked` when sessions are
+revoked; `device.updated` when a phone is removed.
+
+---
+
+## T38 — `machine-view` WebView escape
+
+**Attack scenario.** The remote yaran page shown in the app reaches a
+native bridge, navigates the WebView to a foreign origin, or reads local
+files.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 15. The machine
+WebView is a first-party native component with no JavaScript bridge. It
+navigates only to the exact machine host; every other link opens in the
+system browser. File and content access are off, and WebView debugging is
+off in release builds.
+
+**Residual risk.** A WebView engine vulnerability is the platform's to fix.
+
+**Detection.** Blocked navigations are counted in the app's local
+diagnostics.
+
+---
+
+## T39 — Push content exposed to Google, Apple, the distributor or the relay
+
+**Attack scenario.** Agent labels and project names in notifications are
+read by the push transport: Google's service, Apple's service, a
+UnifiedPush distributor, or the publisher relay.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 08, 12 and 16.
+Payloads are end-to-end encrypted to keys held on the device (RFC 8291) and
+decrypted on the device, on iOS in a Notification Service Extension. The
+payload is minimal, and the org can drop labels and project names
+entirely. When decryption cannot run, the visible text is generic.
+
+**Residual risk.** Transports still see timing, volume and the device's
+push token (T40).
+
+**Detection.** Decrypt failures are counted in the app's local
+diagnostics.
+
+---
+
+## T40 — Publisher relay abused or compromised
+
+**Attack scenario.** The relay that turns Web Push into Apple pushes is
+used to mint endpoints, flood devices or run up cost, or it is compromised
+and its APNs key used to push to every iOS user.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 08 and 21. Each
+relay endpoint is bound to the org's VAPID key, and the relay verifies the
+VAPID JWT against exactly that key. Rate limits apply per key and per
+device. The relay logs no tokens. The APNs key exists only in the relay's
+environment. A key-compromise playbook is owned by the security review
+phase.
+
+**Residual risk.** A relay compromise lets an attacker send pushes, but not
+readable ones (T39), and lets them stop iOS push for everyone.
+
+**Detection.** Relay rate-limit refusals and per-key volume alerts.
+
+---
+
+## T41 — Org VAPID private key compromise
+
+**Attack scenario.** An attacker who gets the org's VAPID private key sends
+pushes that the push services accept as coming from the org.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 04, 07 and 08.
+The Worker generates the key during setup and stores it sealed with
+`DATA_KEY`. Rotating it makes every phone register again. Payloads are
+still end-to-end encrypted to device keys, so the VAPID key alone cannot
+produce a notification the phone shows with real content.
+
+**Residual risk.** A spoofed push still wakes the phone and can show the
+generic fallback text.
+
+**Detection.** After a rotation, phones that have not re-registered show
+as "push stopped: the phone must register again" in the consoles.
+
+---
+
+## T42 — Malicious deep links or QR codes
+
+**Attack scenario.** A `yaranapp://add-org` link or QR code points the app
+at an attacker's org so the person signs in to it, or a notification tap
+opens a foreign host.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 06, 14, 15 and
+16. Adding an org shows the org's name and Access team domain, fetched from
+the org itself, and needs an explicit confirm before any sign-in. The
+genuine QR payload is built only from the control plane's canonical host,
+never from a request's Host. Deep links open only hosts of orgs already
+added. Notification taps are checked against the machine list.
+
+**Residual risk.** A person who confirms an org they do not recognise.
+
+**Detection.** Refused deep links are counted in the app's local
+diagnostics.
+
+---
+
+## T43 — Cloudflare sees all tunneled traffic in plaintext at its edge
+
+**Status: accepted-risk.** Cloud Connect is built on Cloudflare's HTTPS
+edge, which terminates TLS. This is stated in the docs, the app's
+onboarding and the store listing.
+
+**Attack scenario.** Cloudflare, or anyone who compromises or compels it,
+reads terminal I/O, file contents and everything else that crosses a
+machine hostname.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 17 (docs). No
+code mitigates this. Every Cloud Connect docs page carries the warning,
+the app shows it before the first sign-in, and the `yaran server` console
+says it when the leg first comes up. Layer-4 alternatives would break the
+one-HTTPS-hostname-per-machine model.
+
+**Residual risk.** All of it, by design. People who cannot accept it use
+Tailscale or their own proxy instead.
+
+**Detection.** None possible from yaran's side.
+
+---
+
+## T44 — Raw config and `[env]` reachable by the remote owner
+
+**Attack scenario.** The raw-config endpoint and the bootstrap `[env]`
+stay reachable to an authenticated owner over the tunnel. A stolen phone
+session therefore reads any secret the person put in `[env]`, and those
+values cross Cloudflare's edge in plaintext on every page load.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 11. Decision
+record: the remote identity is the paired owner, so no route is restricted
+by origin. The exposure is bounded by T26 and T37 and by the Access session
+duration, and the docs tell people to keep real secrets out of `[env]`.
+
+**Residual risk.** Secrets in `[env]` are as exposed as the owner's
+session.
+
+**Detection.** yaran's access log records the raw-config requests.
+
+---
+
+## T45 — Revocation lag
+
+**Attack scenario.** A revoked phone or machine keeps working until its
+JWT expires, or an open WebSocket keeps streaming after the token behind it
+expired.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 05, 06 and 11.
+The Access session duration is short and configurable. Teardown removes DNS
+first and invalidates the tunnel secret before deleting connections.
+Rotation drops live connections. yaran re-checks the JWT on every
+reconnect and closes open sockets with code 4401 at expiry plus skew
+(`close_sockets_at_access_expiry`). The console offers sign-out-everywhere
+through Access session revocation.
+
+**Residual risk.** Access has no per-device revocation, so a stolen phone
+keeps a control-plane JWT for the session duration; the console says so
+beside the remove action.
+
+**Detection.** Worker audit events `device.updated` and
+`sessions.revoked`; yaran logs 4401 closes under `yaran::cloud::ingress`.
+
+---
+## T46 — Android signing key or App Store credentials compromised
+
+**Attack scenario.** An attacker with the app-signing key or the store
+credentials ships a malicious update that every installed copy accepts.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 18 and 21. One
+app-signing key is held by the maintainers for every Android channel, with
+Play App Signing and a separate upload key. Release workflows run in
+protected GitHub environments and are covered by CODEOWNERS. A
+key-compromise playbook is owned by the security review phase.
+
+**Residual risk.** A compromise of the maintainer's custody of the key
+affects every Android channel at once; that is the price of channels that
+can upgrade each other.
+
+**Detection.** Release provenance attestations; store consoles notify the
+maintainers of every upload.
+
+---
+
+## T47 — Deploy secrets leaked
+
+**Attack scenario.** `CF_API_TOKEN`, `SETUP_CODE` or `DATA_KEY` leaks
+through Workers Builds logs, a committed `.dev.vars` file or the admin
+console, giving access to the org's Cloudflare account or to every secret
+sealed with `DATA_KEY`.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 04 and 07. The
+deploy prompts for all three as secrets and never echoes them. `.dev.vars`
+is gitignored. The console never displays them. A secret-leak sentinel test
+covers logs and responses. Each secret has a documented rotation procedure.
+
+**Residual risk.** A secret pasted into a chat or ticket is outside the
+code's reach.
+
+**Detection.** The sentinel test in CI; Worker audit events on every
+settings change.
+
+---
+
+## T48 — Repudiation or tampering of admin actions
+
+**Attack scenario.** An admin revokes a machine or changes policy and
+later denies it, or someone edits the record of what happened.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 04. Every
+mutating route appends to an `audit_log` table, which the console can
+export as JSON Lines.
+
+**Residual risk.** Anyone with write access to the account's D1 database
+can edit the table directly.
+
+**Detection.** The audit log itself, and its export.
+
+---
+
+## T49 — Quota or budget exhaustion
+
+**Attack scenario.** One user pairs many machines, or API calls exhaust
+Cloudflare's per-token rate budget, the account's Access app cap or the
+database write budget, and nobody else in the org can pair.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 04, 05 and 06.
+A per-user machine cap (10 by default). A quota guard that refuses with the
+quota's name and both numbers before Cloudflare would. A rate-limit
+binding. Reconciliation uses list calls. The scheduled dispatcher has a
+budget per run.
+
+**Residual risk.** Access apps created outside yaran count against the same
+account cap.
+
+**Detection.** Worker audit events `quota.refused` and
+`cloudflare.rate_limited`; the console warns at 90% of a quota.
+
+---
+
+## T50 — Spoofed update notice leading to a malicious APK
+
+**Attack scenario.** People who install the APK from GitHub are pointed at
+a malicious APK by a fake update notice.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 14 and 18. The
+app has no update check and no in-app installer. The only link it offers
+is to `github.com/SiavZ/yaran` releases. Releases carry checksums and
+provenance attestations.
+
+**Residual risk.** Phishing outside the app.
+
+**Detection.** None in the app; release provenance is checkable by anyone.
+
+---
+
+## T51 — Diagnostics or crash logs leak tokens or hostnames
+
+**Attack scenario.** A person shares the app's diagnostics for support,
+and the file carries tokens or infrastructure names.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 14. Diagnostics
+stay on the phone until the person exports them. Tokens, cookies, query
+strings and terminal escapes are redacted, tested with fixtures. The export
+screen says the file contains hostnames and machine names. There is no
+third-party crash reporting.
+
+**Residual risk.** Hostnames and machine names are in the export by
+design.
+
+**Detection.** The redaction fixture tests in CI.
+
+---
+
+## T52 — Malicious upstream `yaran-cloud-v*` release pulled into a deployment
+
+**Attack scenario.** A compromised upstream release, or a tampered
+`cloud-deploy` branch, reaches an org's control plane through the Deploy
+button or an update.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 07 and 18. The
+Deploy button and updates use the generated, self-contained `cloud-deploy`
+branch that the `yaran-cloud-v*` release workflow builds. Tags are signed
+and releases carry provenance attestations, which the update job verifies.
+The update arrives as a pull request in the admin's clone, so the admin
+reviews the diff and changelog before merging.
+
+**Residual risk.** An admin who merges without reading.
+
+**Detection.** The console's Updates page; attestation failures stop the
+update job with a stated reason.
+
+---
+
+## T53 — Attacker-controlled text injects terminal escapes
+
+**Attack scenario.** Cloudflare API errors, cloudflared stderr or push
+provider responses carry ANSI, OSC or DCS sequences that reach `yaran.log`,
+the status line or the admin console.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 05, 08 and 10.
+yaran passes all such text through `yaran_core::sanitize::for_terminal`
+before logging or showing it. The Worker escapes all output in console
+HTML.
+
+**Residual risk.** A new call site that skips the sanitizer.
+
+**Detection.** Sanitizer tests with escape-laden fixtures for each source.
+
+---
+
+## T54 — Control-plane Worker reached without a valid identity
+
+**Attack scenario.** The control plane's own Access app is missing or
+mis-scoped, or a request carries a service-token JWT, a JWT for the wrong
+app, or one for a disabled user.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 04, 06 and 07.
+The Worker verifies the Access JWT on every non-public route (RS256 with a
+pinned algorithm, `iss`, `aud`, `exp`, `nbf`), rejects service-token JWTs
+and disabled users, and fails closed when the JWKS is unavailable. Every
+route declares an authentication class or the type check fails. Group
+membership is decided by the Access policy; the Worker does not re-evaluate
+groups it cannot see.
+
+**Residual risk.** The two public paths (the service-info check and the
+signed machine routes) depend on their own checks (T28).
+
+**Detection.** Refusals are logged with the route and the reason.
+
+---
+
+## T55 — D1 contents exposed
+
+**Attack scenario.** Someone with account-level read access to the D1
+database, or a copy of an export or backup, reads its contents.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 04, 05, 06 and
+08. Secrets the Worker generates are stored only sealed with `DATA_KEY`,
+with additional data bound to the row. One-time codes are stored as
+hashes. Tunnel tokens are never written to D1, and a full-table scan test
+proves it.
+
+**Residual risk.** Emails and machine metadata remain readable to whoever
+can read the account's D1.
+
+**Detection.** Cloudflare's account audit log records database exports.
+
+---
+
+## T56 — Control plane acts on Cloudflare resources it does not own
+
+**Attack scenario.** Two deployments share one account, or orphan cleanup
+mistakes a foreign tunnel, Access app, policy or DNS record for its own
+and deletes it.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 05. Every
+resource the control plane creates carries an instance marker. Orphan
+cleanup acts only on marked resources past a grace period. It never uses
+undocumented cascade deletes.
+
+**Residual risk.** Someone who copies the marker onto a resource by hand.
+
+**Detection.** Worker audit events `orphan.found` and `orphan.deleted`.
+
+---
+
+## T57 — Device-supplied push endpoint used for SSRF
+
+**Attack scenario.** A phone registers a push endpoint that points at an
+internal or same-zone service, turning the Worker into a fetch client
+against it.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 06 and 08. The
+endpoint policy is enforced at registration: https only, no IP literals,
+nothing under the org's own zone, a length cap, and relay endpoints in the
+relay's fixed form. The Worker runs with `global_fetch_strictly_public`. A
+404 or 410 clears the subscription and marks the device's push as stopped.
+
+**Residual risk.** Any public https host is still a valid endpoint, so the
+Worker can be made to send small encrypted requests to it.
+
+**Detection.** Worker audit event `device.registered` records the endpoint
+host.
+
+---
+
+## T58 — yaran's handoff rate limit starves another phone's sign-in
+
+**Attack scenario.** One client fills yaran's process-wide handoff rate
+limit, and the owner's own phone cannot sign in.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 11. The default
+is 12 a minute against an expected one a day per phone, and the limit is
+configurable (`[cloud] handoff_requests_per_minute`). Every handoff request
+already passed Access, so only the owner's identity can spend it.
+
+**Residual risk.** The owner's own misbehaving client.
+
+**Detection.** `yaran::cloud::handoff` logs each refusal with
+`rate_limited`.
+
+---
+
+## T59 — Attention-event metadata visible to the org Worker
+
+**Status: accepted-risk.** The org Worker and its database are the org's
+own infrastructure.
+
+**Attack scenario.** The agent label, project name and state token in each
+attention event are readable in plaintext by the org Worker and stored in
+its database.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 12 and 08.
+Events are batched and minimal. The state is a fixed token, never free
+text. No agent output leaves the machine. Push payloads past the Worker
+stay end-to-end encrypted (T39). The org can drop labels and project names
+from pushes.
+
+**Residual risk.** Whoever controls the org's Cloudflare account sees
+agent labels and project names.
+
+**Detection.** None needed for an accepted risk.
+
+---
+
+## T60 — Shell WebView compromise drives native plugins
+
+**Attack scenario.** Injected or remote script runs in the app's bundled
+shell UI, the one page with access to native plugins, and uses them to
+read the vault, sessions or push keys.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 14, 15 and 16.
+The shell loads only bundled assets under a strict Content Security
+Policy, and the plugin surface is narrow. JavaScript never holds bearer
+credentials: every control-plane call, push registration included, goes
+through the native client, so script that reaches the bridge cannot read a
+token.
+
+**Residual risk.** Script that reaches the bridge can still ask the native
+client to act on the person's behalf while it runs.
+
+**Detection.** CSP violations are counted in the app's local diagnostics.
+
+---
+
+## T61 — iOS machine session cookie readable by page script
+
+**Attack scenario.** On iOS the machine session cookie cannot be marked
+HttpOnly through public API, so script in the machine page can read the
+machine's Access JWT.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 15. The cookie
+is a session cookie, never persisted, in a data store per org. The only
+page that can read it is the person's own yaran UI, which already has full
+reach over the API.
+
+**Residual risk.** Stated in the row: script injected into the yaran UI
+could read the token. That script would already have the workspace.
+
+**Detection.** None specific.
+
+---
+
+## T62 — Native loopback proxy reachable by other apps or pages on the phone
+
+**Attack scenario.** If the sign-in gate lands on its third fallback, the
+app runs a loopback proxy that carries a managed OAuth bearer, and another
+app or a web page on the phone reaches it.
+
+**Mitigation in code.** Design-stage draft; owner phoneapp 15. Conditional:
+phoneapp 15 writes this mitigation if that fallback is adopted. Otherwise
+this ID is struck through as retired, per the maintenance rule below.
+
+**Residual risk.** Open until the gate verdict.
+
+**Detection.** Open until the gate verdict.
+
+---
+
+## T63 — Publisher-domain association files tampered or lost
+
+**Attack scenario.** The `assetlinks.json` or `apple-app-site-association`
+file on `<publisher-domain>` is tampered with, carries a wrong
+fingerprint, or disappears with the domain, so another app receives the
+verified sign-in callback, or no app does.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 21, 18, 14 and
+15. The files are committed in the repo and hosted from there. The
+`assetlinks.json` fingerprint is the app-signing certificate that the
+release pipeline checks. The domain and its DNS are under maintainer
+custody with renewal monitored. The handoff stays sealed to the app's
+ephemeral key, so a hijacked callback yields ciphertext only (T36).
+
+**Residual risk.** Losing the domain stops sign-in on release builds until
+it is restored.
+
+**Detection.** The release pipeline's fingerprint check; domain-expiry
+monitoring.
+
+---
+
+## T64 — Remembered-consent bypass
+
+**Attack scenario.** The consent cookie that lets a phone skip the sign-in
+confirmation page is stolen, replayed or forged; the consent key leaks;
+the phone's device key is extracted or made to sign by something other
+than the app; or remembered consent outlives the phone's revocation. A
+handoff the person did not start then skips the confirmation page.
+
+**Mitigation in code.** Design-stage draft; owners phoneapp 02, 06, 11 and
+15. A handoff skips the page only when all of these hold: the
+`__Secure-yaran-handoff-consent` cookie is well formed, names the current
+key version, and its HMAC-SHA256 verifies in constant time; it is less
+than 400 days old; its fingerprint equals the fingerprint of the device
+key in the request; the request carries a verifying ES256 signature by
+that key over the server's own host, the ephemeral key, `state` and a
+timestamp within ±300 s; and, on the Worker, no revoked device row carries
+that fingerprint. The cookie is worthless without a fresh signature, and
+the signature without the cookie. A replay inside the window yields an
+envelope sealed to the original ephemeral key. The cookie is host-only,
+HttpOnly, Secure, SameSite=Lax, scoped to the handoff path, set only by an
+explicit Continue after a verified request, never refreshed by a skip and
+never set by Cancel. The device key is a non-exportable P-256 key in
+Android Keystore (StrongBox where present) or the Secure Enclave, one per
+org registration, discarded with the install. The Worker derives its
+consent key from `DATA_KEY`; yaran keeps its consent key in the owner-only
+credentials file and mints a new one at every pairing. Revoking a device
+stops its Worker skips at once; rotating `DATA_KEY`, re-pairing, `yaran
+cloud logout` or `yaran cloud rotate --consent-key` drops every memory on
+that side.
+
+**Residual risk.** Code running as the app, or as root, on an unlocked
+phone can ask the keystore to sign, because signing needs no user
+presence, and with the system browser's cookie it can skip the page for a
+flow it started; that attacker already holds the app's live sessions (T37,
+T60). yaran never learns that the Worker revoked a device, so a revoked
+phone keeps remembered consent on machines until re-pair, logout, a
+consent-key rotation or the 400-day cap; such a skip still needs a valid
+owner Access JWT, which sign-out-everywhere revokes. This gap is an
+accepted risk in `SECURITY.md`.
+
+**Detection.** The Worker's `handoff.issued` audit event records whether
+consent was remembered or explicit; yaran logs the same verdict under
+`yaran::cloud::handoff`.
+
+---
+
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must
@@ -1122,10 +2009,11 @@ update both `SECURITY.md` (the table) and this file (the
 paragraph). PRs that touch the surface listed above without
 updating these documents are blocked at review.
 
-The IDs `T1`–`T23` are stable references; new threats append at
-the end (`T23`, `T24`, …) rather than reshuffling. Retired
+Every ID is a stable reference; a new threat takes the next free
+ID at the end rather than reshuffling. Retired
 threats are kept in the table with a `~~strikethrough~~` and a
 note pointing to the PR that retired them. Threats that move to
-**accepted-risk in single-user-VM mode** keep their original ID,
+**accepted-risk** (in single-user-VM mode, or by a stated design
+decision such as T43) keep their original ID,
 get a `Status:` line at the top of their long-form section, and
 remain referenced from `SECURITY.md`'s "Accepted risks" list.
