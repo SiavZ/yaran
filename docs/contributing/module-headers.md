@@ -47,7 +47,8 @@ The tool owns only the part between the markers. Everything above it is yours:
 
 - **Comment syntax** follows the language: `//!` lines in Rust, a leading `/** … */` in
   TypeScript and JavaScript (`//` lines also work, which is the web UI's existing
-  style), a KDoc `/** … */` before `package` in Kotlin, `///` lines in Swift, and `#`
+  style), a KDoc `/** … */` before `package` in Kotlin, `///` lines in Swift (after a
+  SwiftPM manifest's `// swift-tools-version:` line, which must stay first), and `#`
   lines after the shebang (and any `# shellcheck` directive) in shell.
 - **Node names**: Rust module paths (`cloud::credentials`; `yaran-web::serve_loop`
   across crates; `crate` for the crate root), TypeScript paths relative to the package
@@ -95,7 +96,8 @@ Only tracked files exist for the tool: `git add` a new file before checking it.
 - `optIn`: existing files outside the roots. **A PR that touches an existing file for
   the phone-app plan adds it here in the same PR**, and gives it its header. Files never
   leave `optIn`; a renamed file is renamed here.
-- `exclude`: generated code, fixtures, `node_modules`, CocoaPods.
+- `exclude`: generated code, fixtures, `node_modules`, CocoaPods, the `CapApp-SPM` package
+  the Capacitor CLI manages, and the Gradle wrapper script.
 - `entryPoints`: a path or glob mapped to how the file is launched, for files nothing
   imports (binaries, test files, scripts, app entries). The block then reads
   `Used by: entry point (<description>)`. A glob (`cloud/worker/test/*.test.ts`) covers a

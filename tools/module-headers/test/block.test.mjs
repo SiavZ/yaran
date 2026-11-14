@@ -104,3 +104,13 @@ test("a directive alone is not a title", () => {
   const lines = ["#!/bin/sh", "# shellcheck disable=SC1090", "# <module-headers:begin>", "# <module-headers:end>"];
   assert.equal(hasTitle(lines, findHeader(lines, "shell")), false);
 });
+
+test("a SwiftPM manifest keeps swift-tools-version on line 1, above the header", () => {
+  const block = renderBlock({ root: "r", uses: [], unresolved: [], external: [], usedBy: [], entryPoint: "SwiftPM" });
+  const text = applyBlock("// swift-tools-version: 5.9\nimport PackageDescription\n", "swift", block);
+  assert.ok(text.startsWith("// swift-tools-version: 5.9\n/// <module-headers:begin>\n"), text);
+  const lines = ["// swift-tools-version: 5.9", "/// Manifest title.", "///", ...text.split("\n").slice(1)];
+  const h = findHeader(lines, "swift");
+  assert.equal(h?.start, 1);
+  assert.equal(hasTitle(lines, h), true);
+});

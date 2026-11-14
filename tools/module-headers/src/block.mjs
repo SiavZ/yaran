@@ -3,8 +3,8 @@
  *
  * Each language has its comment syntax: `//!` lines for Rust, a `/** … *\/` block (or `//`
  * lines, the web UI's existing style) for TS/JS, a KDoc block before `package` for Kotlin,
- * `///` lines for Swift, and `#` lines after the shebang for shell (a `# shellcheck`
- * directive stays first). Only the delimited block is ever rewritten; the prose around it
+ * `///` lines for Swift (after a SwiftPM manifest's `// swift-tools-version:` line), and
+ * `#` lines after the shebang for shell (a `# shellcheck` directive stays first). Only the delimited block is ever rewritten; the prose around it
  * belongs to the author.
  *
  * - A header with no title line (only directives, or nothing before the block) is reported.
@@ -37,6 +37,18 @@ const STYLES = {
   shell: [{ kind: "line", prefix: "#" }],
 };
 
+/**
+ * Lines that must stay first and precede the header: a shebang, or a SwiftPM manifest's
+ * `// swift-tools-version:`, which SwiftPM only reads from line 1.
+ * @param {string[]} lines
+ * @param {string} lang
+ */
+function leadLines(lines, lang) {
+  if (lang !== "rust" && lines[0]?.startsWith("#!")) return 1;
+  if (lang === "swift" && /^\/\/\s*swift-tools-version:/.test(lines[0] ?? "")) return 1;
+  return 0;
+}
+
 const DIRECTIVE = /^(?:shellcheck\s|@ts-|eslint-|prettier-|@generated|<reference\s|@jsx|@vitest-|@file:|-\*-)/;
 
 /**
@@ -50,7 +62,7 @@ const DIRECTIVE = /^(?:shellcheck\s|@ts-|eslint-|prettier-|@generated|<reference
  * @returns {Header | null}
  */
 export function findHeader(lines, lang) {
-  let i = lang !== "rust" && lines[0]?.startsWith("#!") ? 1 : 0;
+  let i = leadLines(lines, lang);
   while (i < lines.length && lines[i].trim() === "") i++;
   for (const style of STYLES[lang]) {
     let end = i;
@@ -159,7 +171,7 @@ export function applyBlock(text, lang, content) {
     else lines.splice(last, 1, lines[last].slice(0, close).trimEnd(), ...body, `${star}/${lines[last].slice(close + 2)}`);
     return lines.join("\n");
   }
-  const at = lang !== "rust" && lines[0]?.startsWith("#!") ? 1 : 0;
+  const at = leadLines(lines, lang);
   const style = STYLES[lang][0];
   const fresh =
     style.kind === "line" ? withPrefix(content, `${style.prefix} `) : ["/**", ...withPrefix(content, " * "), " */"];
