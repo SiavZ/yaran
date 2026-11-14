@@ -276,6 +276,8 @@ async fn bad_points_and_versions_redirect_with_their_codes() {
 
 #[tokio::test]
 async fn the_thirteenth_continue_in_a_minute_is_rate_limited() {
+    let captured = Captured::default();
+    let _guard = captured.install();
     let h = harness();
     for _ in 0..12 {
         assert!(
@@ -292,6 +294,14 @@ async fn the_thirteenth_continue_in_a_minute_is_rate_limited() {
         Some("rate_limited")
     );
     assert_eq!(r.headers()["retry-after"], "60");
+    // Like every other refusal, the owner can find this one in yaran.log.
+    let logged = captured.joined();
+    assert!(logged.contains("code=\"rate_limited\""), "{logged}");
+    assert!(logged.contains("retry_after_secs=60"), "{logged}");
+    assert!(
+        !logged.contains(STATE),
+        "the request's own values stay out: {logged}"
+    );
 }
 
 #[tokio::test]

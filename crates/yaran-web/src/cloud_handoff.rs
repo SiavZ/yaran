@@ -93,6 +93,7 @@ async fn issue(
         .rate()
         .try_admit(now.max(0) as u64, settings.handoff_per_minute)
     {
+        tracing::warn!(target: "yaran::cloud::handoff", code = ErrorCode::RateLimited.as_str(), retry_after_secs = retry, "refused a handoff over the per-minute limit");
         let mut response = fail(status, t, (ErrorCode::RateLimited, Vec::new()));
         response
             .headers_mut()
