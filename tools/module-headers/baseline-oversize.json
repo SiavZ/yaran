@@ -1,0 +1,766 @@
+{
+  ".github/scripts/test_install_checksum.sh": {
+    "lines": 608,
+    "reason": "baseline 2026-11-14"
+  },
+  ".github/workflows/release.yml": {
+    "lines": 506,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/action.rs": {
+    "lines": 835,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/agent_job.rs": {
+    "lines": 3520,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/amq/delivery.rs": {
+    "lines": 560,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/amq/queue.rs": {
+    "lines": 1260,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/attention.rs": {
+    "lines": 997,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/config.rs": {
+    "lines": 6520,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/config_migrate.rs": {
+    "lines": 526,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/config_queue.rs": {
+    "lines": 868,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/config_write.rs": {
+    "lines": 3841,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/diff.rs": {
+    "lines": 892,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/amq.rs": {
+    "lines": 2161,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/command.rs": {
+    "lines": 3131,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/companion.rs": {
+    "lines": 1280,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/events.rs": {
+    "lines": 10309,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/lifecycle.rs": {
+    "lines": 7558,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/limits.rs": {
+    "lines": 552,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/mod.rs": {
+    "lines": 12579,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/provider_sessions.rs": {
+    "lines": 1140,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/resume_fallback.rs": {
+    "lines": 1202,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/shared_workspace.rs": {
+    "lines": 572,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/spawn_worker.rs": {
+    "lines": 519,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/status_op.rs": {
+    "lines": 600,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/engine/watch_tick.rs": {
+    "lines": 1574,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/file_drop.rs": {
+    "lines": 3617,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/gh.rs": {
+    "lines": 5380,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/git.rs": {
+    "lines": 11542,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/human_board/cli.rs": {
+    "lines": 1343,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/human_board/markdown.rs": {
+    "lines": 878,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/human_board/mod.rs": {
+    "lines": 1139,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/human_board/relay.rs": {
+    "lines": 503,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/human_board/store.rs": {
+    "lines": 673,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/human_board/sync.rs": {
+    "lines": 691,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/human_board/tests.rs": {
+    "lines": 744,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/logger.rs": {
+    "lines": 1834,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/model.rs": {
+    "lines": 1561,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/palette.rs": {
+    "lines": 789,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/peer/amq.rs": {
+    "lines": 839,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/peer/amq_tests.rs": {
+    "lines": 871,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/peer/router.rs": {
+    "lines": 1011,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/peer/router_tests.rs": {
+    "lines": 916,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/peer/session_store.rs": {
+    "lines": 594,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/pr_reference.rs": {
+    "lines": 2055,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/project_browser.rs": {
+    "lines": 1191,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/pty.rs": {
+    "lines": 8935,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/pty_owners.rs": {
+    "lines": 1492,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/purge.rs": {
+    "lines": 1424,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/release_notes.rs": {
+    "lines": 1782,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/resource_stats.rs": {
+    "lines": 1462,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/resume_recovery.rs": {
+    "lines": 2295,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/startup.rs": {
+    "lines": 745,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/statusline.rs": {
+    "lines": 3693,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/storage.rs": {
+    "lines": 6239,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/viewmodel.rs": {
+    "lines": 3480,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/watch/engine.rs": {
+    "lines": 1153,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/welcome.rs": {
+    "lines": 623,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/wire.rs": {
+    "lines": 13760,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/worker.rs": {
+    "lines": 882,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/working_copy.rs": {
+    "lines": 922,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/worktree_file.rs": {
+    "lines": 2519,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/src/worktree_manager.rs": {
+    "lines": 657,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/tests/purge_integration.rs": {
+    "lines": 967,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/tests/release_notes_fetch.rs": {
+    "lines": 753,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/tests/reload_handoff_e2e.rs": {
+    "lines": 583,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/tests/upgrade_config.rs": {
+    "lines": 550,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-core/tests/upgrade_database.rs": {
+    "lines": 1242,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/background_server.rs": {
+    "lines": 2519,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/components/pane_card.rs": {
+    "lines": 695,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/components/wrap_lines.rs": {
+    "lines": 581,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/first_load.rs": {
+    "lines": 2434,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/grouped_sidebar_tests.rs": {
+    "lines": 1094,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/host_selection_regression_tests.rs": {
+    "lines": 874,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/human_board.rs": {
+    "lines": 1827,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/human_board_dialog.rs": {
+    "lines": 875,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/human_board_tests.rs": {
+    "lines": 2111,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/input.rs": {
+    "lines": 39165,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/mod.rs": {
+    "lines": 10472,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/modal.rs": {
+    "lines": 1919,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/name_chip_dialogs.rs": {
+    "lines": 1296,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/new_agent_settings.rs": {
+    "lines": 708,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/orphan_worktrees.rs": {
+    "lines": 665,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/overlay_dismiss.rs": {
+    "lines": 1793,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/pty_ownership.rs": {
+    "lines": 3575,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/redraw.rs": {
+    "lines": 894,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/render.rs": {
+    "lines": 27841,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/reorder.rs": {
+    "lines": 519,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/session_settings.rs": {
+    "lines": 1375,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/sessions.rs": {
+    "lines": 9354,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/test_support.rs": {
+    "lines": 705,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/text_input.rs": {
+    "lines": 1918,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/workers.rs": {
+    "lines": 3800,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/app/worktree_manager.rs": {
+    "lines": 560,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/cli.rs": {
+    "lines": 3029,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/config.rs": {
+    "lines": 5824,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/diff.rs": {
+    "lines": 1726,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/doctor.rs": {
+    "lines": 572,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/keybindings.rs": {
+    "lines": 4160,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/raw_input.rs": {
+    "lines": 1231,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/server_screen.rs": {
+    "lines": 898,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-tui/src/theme.rs": {
+    "lines": 1834,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/build.rs": {
+    "lines": 543,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/background.rs": {
+    "lines": 551,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/browse_routes.rs": {
+    "lines": 580,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/changes.rs": {
+    "lines": 1217,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/config_routes.rs": {
+    "lines": 1499,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/console.rs": {
+    "lines": 1252,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/engine_actor.rs": {
+    "lines": 7547,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/file_drop_routes.rs": {
+    "lines": 1804,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/file_routes.rs": {
+    "lines": 1794,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/git_routes.rs": {
+    "lines": 1350,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/host_guard.rs": {
+    "lines": 535,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/lib.rs": {
+    "lines": 3532,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/project_actions.rs": {
+    "lines": 1006,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/project_reads.rs": {
+    "lines": 798,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/rest_common.rs": {
+    "lines": 837,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/serve_legs.rs": {
+    "lines": 1562,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/server.rs": {
+    "lines": 6604,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/session_actions.rs": {
+    "lines": 1726,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/startup_logs.rs": {
+    "lines": 637,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/src/web_assets.rs": {
+    "lines": 609,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/tests/changes_events.rs": {
+    "lines": 947,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/tests/first_load_routes.rs": {
+    "lines": 538,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/tests/project_worktrees_routes.rs": {
+    "lines": 503,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/tests/session_branch_routes.rs": {
+    "lines": 521,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/tests/static_serving.rs": {
+    "lines": 1011,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/tests/tab_routes.rs": {
+    "lines": 1161,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/tests/ws_transport.rs": {
+    "lines": 3815,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/App.test.tsx": {
+    "lines": 716,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/AddProjectDialog.tsx": {
+    "lines": 581,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/AgentActionsMenu.test.tsx": {
+    "lines": 698,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/ChangedFiles.test.tsx": {
+    "lines": 1344,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/ChangedFiles.tsx": {
+    "lines": 1025,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/CustomizeWebappDialog.test.tsx": {
+    "lines": 958,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/CustomizeWebappDialog.tsx": {
+    "lines": 750,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/DeleteSessionDialog.test.tsx": {
+    "lines": 639,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/EditorBody.tsx": {
+    "lines": 2195,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/EditorOverlay.test.tsx": {
+    "lines": 2737,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/FileTree.test.tsx": {
+    "lines": 1287,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/FileTree.tsx": {
+    "lines": 763,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/FirstLoadDialog.test.tsx": {
+    "lines": 550,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/FlatAgentList.test.tsx": {
+    "lines": 1793,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/FlatAgentList.tsx": {
+    "lines": 1270,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/InsetHeader.test.tsx": {
+    "lines": 854,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/MobileShell.test.tsx": {
+    "lines": 1810,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/MobileShell.tsx": {
+    "lines": 611,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/Sidebar.test.tsx": {
+    "lines": 2041,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/Sidebar.tsx": {
+    "lines": 557,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/TaskManagerDialog.test.tsx": {
+    "lines": 820,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/TaskManagerDialog.tsx": {
+    "lines": 648,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/TerminalPane.clipboard.test.tsx": {
+    "lines": 1069,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/TerminalPane.filedrop.test.tsx": {
+    "lines": 1439,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/TerminalPane.test.tsx": {
+    "lines": 5438,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/TerminalPane.tsx": {
+    "lines": 1284,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/TerminalPaneLinks.test.tsx": {
+    "lines": 718,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/TheaterPill.test.tsx": {
+    "lines": 1327,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/TheaterPill.tsx": {
+    "lines": 860,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/paneDividerParity.test.tsx": {
+    "lines": 542,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/terminal/inputSurface.test.ts": {
+    "lines": 623,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/terminal/ownership.test.ts": {
+    "lines": 872,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/terminal/resizeCoordinator.test.ts": {
+    "lines": 889,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/terminal/resizeCoordinator.ts": {
+    "lines": 570,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/components/ui/sidebar.tsx": {
+    "lines": 710,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/agentTabs.test.ts": {
+    "lines": 620,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/composebar.test.ts": {
+    "lines": 504,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/editorBuffers.test.ts": {
+    "lines": 501,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/editorTabs.test.ts": {
+    "lines": 577,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/fileDrop.test.ts": {
+    "lines": 1519,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/fileDrop.ts": {
+    "lines": 594,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/flatTerminals.test.ts": {
+    "lines": 565,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/ptySocket.test.ts": {
+    "lines": 941,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/reconnectingSocket.test.ts": {
+    "lines": 1082,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/reconnectingSocket.ts": {
+    "lines": 551,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/resourceRows.test.ts": {
+    "lines": 559,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/store.ts": {
+    "lines": 6335,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/storePrReference.test.ts": {
+    "lines": 571,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/storeRouting.test.ts": {
+    "lines": 1902,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/storeStatusToasts.test.ts": {
+    "lines": 631,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/storeTabs.test.ts": {
+    "lines": 782,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/storeTheater.test.ts": {
+    "lines": 869,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/termkeys.test.ts": {
+    "lines": 966,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran-web/web/src/lib/termkeys.ts": {
+    "lines": 599,
+    "reason": "baseline 2026-11-14"
+  },
+  "crates/yaran/src/main.rs": {
+    "lines": 564,
+    "reason": "baseline 2026-11-14"
+  },
+  "tools/preview-env/screens/lib.js": {
+    "lines": 963,
+    "reason": "baseline 2026-11-14"
+  },
+  "website/src/lib/heroFleet.ts": {
+    "lines": 506,
+    "reason": "baseline 2026-11-14"
+  },
+  "website/src/lib/heroScene.ts": {
+    "lines": 792,
+    "reason": "baseline 2026-11-14"
+  },
+  "yaran-amq/install.sh": {
+    "lines": 566,
+    "reason": "baseline 2026-11-14"
+  },
+  "yaran-amq/scripts/yaran-amq-doctor": {
+    "lines": 860,
+    "reason": "baseline 2026-11-14"
+  },
+  "yaran-amq/tests/inject-bridge.bats": {
+    "lines": 518,
+    "reason": "baseline 2026-11-14"
+  },
+  "yaran-amq/tests/wrappers-p1.bats": {
+    "lines": 531,
+    "reason": "baseline 2026-11-14"
+  },
+  "yaran-amq/tests/wrappers.bats": {
+    "lines": 503,
+    "reason": "baseline 2026-11-14"
+  }
+}

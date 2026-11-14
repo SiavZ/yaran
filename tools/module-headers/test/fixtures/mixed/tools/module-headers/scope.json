@@ -1,0 +1,9 @@
+{
+  "roots": ["src/**"],
+  "optIn": [],
+  "exclude": [],
+  "entryPoints": {
+    "src/main.ts": "node src/main.ts",
+    "src/run.sh": "sh src/run.sh"
+  }
+}

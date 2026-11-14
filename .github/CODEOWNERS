@@ -27,3 +27,9 @@ install.sh                          @SiavZ
 yaran-amq/install.sh                  @SiavZ
 deny.toml                           @SiavZ
 Cargo.lock                          @SiavZ
+
+# Enforcement tooling: the module-headers gate, its scope manifest, and the
+# oversize baseline whose every raise must be a reviewed diff (--accept-growth).
+tools/module-headers/               @SiavZ
+tools/module-headers/scope.json     @SiavZ
+tools/module-headers/baseline-oversize.json @SiavZ

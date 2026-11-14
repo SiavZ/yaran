@@ -174,6 +174,15 @@ Every change should come with unit tests, and integration tests where that is
 feasible and low-lift. When you are fixing a bug, aim to prove the diagnosis with
 a failing test before you fix it.
 
+Two more gates run on every pull request through `.github/workflows/gates.yml`: no
+code file may grow past 500 lines (files already over it are held to their size by a
+baseline), and the files in the module-headers scope (the phone-app subprojects, and
+any existing file a phone-app change touches) must carry an up-to-date generated
+Uses / Used-by block in their header comment. Run `make headers-check lines-check`
+before pushing; [docs/contributing/module-headers.md](docs/contributing/module-headers.md)
+explains the block, the scope manifest, `--accept-growth` and the optional
+pre-commit hook.
+
 ## Writing a release body
 
 **yaran parses its own release notes and shows them to every user who updates.** On

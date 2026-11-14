@@ -1,0 +1,7 @@
+[package]
+name = "alpha-core"
+version = "0.1.0"
+
+[dependencies]
+serde = "1" # a comment
+anyhow.workspace = true

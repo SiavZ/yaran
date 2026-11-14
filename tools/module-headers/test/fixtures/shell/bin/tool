@@ -1,0 +1,4 @@
+#!/bin/bash
+# Extensionless tool.
+source ../lib/common.sh
+. "${BASH_SOURCE%/*}/local.sh"

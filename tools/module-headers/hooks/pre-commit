@@ -1,0 +1,13 @@
+#!/bin/sh
+# Git pre-commit hook that runs the module-headers checks before every commit.
+#
+# Enabled with `git config core.hooksPath tools/module-headers/hooks`; disable with
+# `git config --unset core.hooksPath`. All logic lives in tools/module-headers/pre-commit.sh.
+#
+# <module-headers:begin>
+# Uses: none
+# External: none
+#
+# Used by: entry point (git pre-commit hook, enabled with git config core.hooksPath tools/module-headers/hooks)
+# <module-headers:end>
+exec "$(git rev-parse --show-toplevel)/tools/module-headers/pre-commit.sh" "$@"
