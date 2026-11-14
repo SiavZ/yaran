@@ -1,0 +1,9 @@
+// Gate G8 probe: echoes path and Access JWT presence. Deployed by tools/cloud-gates/g08-public-paths.sh,
+// which attaches the control-plane hostname itself; this file names no route or custom domain.
+{
+  "name": "yaran-gate-public-path-probe",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "preview_urls": false
+}

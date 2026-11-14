@@ -1,0 +1,17 @@
+{
+  "name": "yaran-cloud-gates-origin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Echo origin, WebSocket probe and Web Push sender for the Phase 03 platform verification gates.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "web-push": "3.6.7",
+    "ws": "8.23.0"
+  }
+}
