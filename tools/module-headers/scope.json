@@ -21,6 +21,9 @@
     "crates/yaran-core/src/engine/events.rs",
     "crates/yaran-core/src/engine/followup.rs",
     "crates/yaran-core/src/engine/mod.rs",
+    "crates/yaran-core/src/engine/push_hook.rs",
+    "crates/yaran-core/src/engine/push_hook_tests.rs",
+    "crates/yaran-core/src/engine/test_support.rs",
     "crates/yaran-core/src/file_modes.rs",
     "crates/yaran-core/src/human_board/store.rs",
     "crates/yaran-core/src/lib.rs",
@@ -31,6 +34,7 @@
     "crates/yaran-core/src/worker.rs",
     "crates/yaran-core/tests/cloud_login.rs",
     "crates/yaran-core/tests/cloud_machine_api.rs",
+    "crates/yaran-core/tests/support/mock_worker.rs",
     "crates/yaran-core/tests/upgrade_config.rs",
     "crates/yaran-tui/src/app/background_server.rs",
     "crates/yaran-tui/src/app/cloud_commands.rs",
@@ -56,6 +60,7 @@
     "crates/yaran-tui/src/lib.rs",
     "crates/yaran-tui/src/theme.rs",
     "crates/yaran-web/src/background.rs",
+    "crates/yaran-web/src/bootstrap.rs",
     "crates/yaran-web/src/bootstrap_routes.rs",
     "crates/yaran-web/src/engine_actor.rs",
     "crates/yaran-web/src/handoff_consent_page.rs",
@@ -138,6 +143,7 @@
     "crates/yaran-web/web/src/lib/settingsDescriptors.test.ts": "vitest, via npm test in crates/yaran-web/web",
     "crates/yaran-web/web/src/components/CustomizeWebappDialog.test.tsx": "vitest, via npm test in crates/yaran-web/web",
     "tools/cloudflared-pin/bump.sh": "maintainer CLI: tools/cloudflared-pin/bump.sh <version> | --check; Phase 18's pin-freshness workflow runs --check",
-    "tools/cloudflared-pin/tests/*_test.sh": "bash tools/cloudflared-pin/tests/<name>_test.sh; Phase 10 Validation"
+    "tools/cloudflared-pin/tests/*_test.sh": "bash tools/cloudflared-pin/tests/<name>_test.sh; Phase 10 Validation",
+    "crates/yaran-core/tests/cloud_push_emitter.rs": "cargo test -p yaran-core --test cloud_push_emitter"
   }
 }

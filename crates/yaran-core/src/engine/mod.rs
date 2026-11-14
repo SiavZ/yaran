@@ -29,6 +29,7 @@
 //! ├── engine::limits
 //! ├── engine::pr_sync_control
 //! ├── engine::provider_sessions
+//! ├── engine::push_hook
 //! ├── engine::resume_fallback
 //! ├── engine::shared_workspace
 //! ├── engine::spawn_worker
@@ -68,6 +69,7 @@
 //! ├── changes_status
 //! ├── cloud::leg_outcome
 //! ├── cloud::outcome
+//! ├── cloud::push_runner
 //! ├── config_reload_status
 //! ├── crate
 //! ├── engine::amq
@@ -81,6 +83,8 @@
 //! ├── engine::lifecycle
 //! ├── engine::limits
 //! ├── engine::provider_sessions
+//! ├── engine::push_hook
+//! ├── engine::push_hook::tests
 //! ├── engine::resume_fallback
 //! ├── engine::shared_workspace
 //! ├── engine::spawn_worker
@@ -146,6 +150,7 @@ mod lifecycle;
 pub mod limits;
 mod pr_sync_control;
 mod provider_sessions;
+mod push_hook;
 mod resume_fallback;
 mod shared_workspace;
 mod spawn_worker;
@@ -180,6 +185,7 @@ pub use lifecycle::{
     detach_status_key, detached_agent_notice, format_shutdown_result, format_shutdown_start,
 };
 pub use pr_sync_control::PrSyncControl;
+pub use push_hook::PushHook;
 pub use resume_fallback::ResumeFallbackOutcome;
 pub use shared_workspace::{SharedMultiWriterSummary, project_link_allowed};
 pub use spawn_worker::{
@@ -201,7 +207,6 @@ use chrono::Utc;
 
 use crate::config::{Config, ProjectConfig, YaranPaths};
 use crate::config_queue::{ConfigWriteQueue, QuiesceGuard};
-use attention_decision::{apply_attention_decision, attention_engaged};
 use crate::ids::{SessionIdRef, TabId, TabIdRef};
 use crate::lockfile::SingleInstanceLock;
 use crate::model::{
@@ -216,6 +221,7 @@ use crate::worker::{
     BranchSyncEntry, PrSyncEntry, ProjectPersistenceAction, ResourceKind, ResourceTarget,
     WorkerEvent,
 };
+use attention_decision::{apply_attention_decision, attention_engaged};
 
 /// Engine-side state of the `gh` host probe.
 ///
@@ -401,6 +407,8 @@ pub struct Engine {
     /// `Shutdown` that the writer obeys even while paused, so a `QuiesceGuard`
     /// in `reload_guard` can outlive it without deadlocking.
     pub config_writer: ConfigWriteQueue,
+    /// Phone notifications: the push-only attention set and the `cloud-push` emitter.
+    pub push: PushHook,
     /// Front-end-specific config concerns the Engine cannot own itself: reload
     /// (validation + project-sync) and recover rendering. The TUI plugs in a
     /// `RuntimeBindings`-aware impl; the web a plain one.
@@ -2063,7 +2071,8 @@ impl Engine {
             }
             // Always drain (consume) the flag so a toggle can't replay a stale
             // signal; only record the hit while the feature is enabled.
-            if provider.take_attention(count_bell) && enabled {
+            // The push set needs the hit even when the indicator is off (D12).
+            if provider.take_attention(count_bell) {
                 fired.push(tab_id.clone());
             }
         }
@@ -2078,6 +2087,7 @@ impl Engine {
         let typed = &self.pty_input;
         let engaged = |tab: &TabIdRef| attention_engaged(viewed, typed, tab, now);
         apply_attention_decision(&mut self.needs_attention, &fired, enabled, engaged);
+        self.observe_push_tick(&fired, now);
     }
 
     /// Drain every provider's captured passthrough ring and return the bytes to
@@ -2213,6 +2223,7 @@ impl Engine {
         ending: crate::tab_verdict::TabRunEnding,
         excerpt: Vec<String>,
     ) {
+        self.observe_push_bad_exit(tab_id, &ending);
         self.failed_tab_runs.insert(
             tab_id.to_owned(),
             crate::tab_verdict::TabRunVerdict::new(ending, excerpt),
@@ -2588,6 +2599,9 @@ impl Engine {
         );
         self.spawn_branch_sync_worker();
         self.retune_limits();
+        self.push
+            .emitter
+            .retune(push_hook::push_settings(&self.config));
     }
 
     /// Re-resolve the in-memory `default_provider` for each project against
@@ -6263,7 +6277,8 @@ pub struct ChangeAgentProviderOutcome {
 mod tests {
     use super::*;
     use crate::engine::test_support::{
-        sample_project, sample_session, sample_standalone_session, test_engine,
+        sample_project, sample_session, sample_standalone_session, seed_signaling_provider,
+        test_engine,
     };
 
     /// Both surfaces print this confirmation word for word (the browser's copy
@@ -7853,45 +7868,6 @@ mod tests {
         engine.note_agent_viewed_if_known("s1-slot");
         assert!(engine.agent_viewed.contains_key(TabIdRef::new("s1-slot")));
         assert!(!engine.tab_needs_attention("s1-slot"));
-    }
-
-    // A one-shot child that emits, in stream order: a bell, an OSC 9 notification,
-    // then an OSC 9;4 working progress report (progress LAST so observing it means
-    // the earlier signals were already scanned). Used by the real-PTY smoke tests.
-    const EMIT_SIGNALS: &str = "printf '\\007\\033]9;hi\\007\\033]9;4;1;50\\007X'";
-
-    /// Spawn a tracked PTY that emits all three signals under `tab` and block until
-    /// its progress report lands (proving the reader thread scanned the payload).
-    fn seed_signaling_provider(engine: &mut Engine, tab: &str) -> tempfile::TempDir {
-        let tmp = tempfile::tempdir().expect("worktree dir");
-        let args = vec!["-c".to_string(), EMIT_SIGNALS.to_string()];
-        let client = PtyClient::spawn_with_env_opts(
-            "/bin/sh",
-            &args,
-            tmp.path(),
-            5,
-            40,
-            100,
-            crate::pty::PtySpawnOptions {
-                env: &[],
-                track_agent_signals: true,
-                identity: &crate::term_identity::TerminalIdentity::default(),
-            },
-        )
-        .expect("spawn signaling pty");
-        engine.providers.insert(TabId::new(tab), client);
-        for _ in 0..200 {
-            if engine
-                .providers
-                .get(TabIdRef::new(tab))
-                .and_then(|p| p.progress_report())
-                .is_some()
-            {
-                return tmp;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("timed out waiting for a progress report on {tab}");
     }
 
     #[test]

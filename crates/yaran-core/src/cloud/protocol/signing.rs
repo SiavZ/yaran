@@ -22,6 +22,8 @@
 //! ├── cloud::protocol
 //! ├── cloud::signed_request
 //! └── cloud::test_support
+//! ├── cloud::push_link
+//! └── yaran-core[test cloud_push_emitter]::mock_worker
 //! <module-headers:end>
 
 use std::fmt;

@@ -48,6 +48,7 @@
 //! ├── yaran-web::cloud_test_support
 //! ├── yaran-web::handoff_consent_page
 //! └── yaran-web::handoff_csrf
+//! └── yaran-core[test cloud_push_emitter]::mock_worker
 //! <module-headers:end>
 
 use std::fmt;
