@@ -8,17 +8,17 @@ import { notifyError } from "@/lib/notify"
 
 import { GlyphSpinner } from "@/components/GlyphSpinner"
 import { FolderBrowseList } from "@/components/FolderBrowseList"
-import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Button } from "@yaran/ui-kit/button"
+import { Checkbox } from "@yaran/ui-kit/checkbox"
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { InlineCode } from "@/components/ui/inline-code"
-import { Input } from "@/components/ui/input"
+} from "@yaran/ui-kit/dialog"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
+import { Input } from "@yaran/ui-kit/input"
 import {
   addProjectPrimaryAction,
   branchWarningCopy,

@@ -13,10 +13,10 @@ import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@/components/ui/popover"
-import { Button } from "@/components/ui/button"
+} from "@yaran/ui-kit/popover"
+import { Button } from "@yaran/ui-kit/button"
 import { getComposeInsertSink } from "@/lib/composeInsert"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import { macrosForTarget } from "@/lib/macros"
 import { openMacrosDialog, runMacro, useYaran } from "@/lib/store"
 import { getTerminalFocusElement } from "@/lib/terminalFocus"

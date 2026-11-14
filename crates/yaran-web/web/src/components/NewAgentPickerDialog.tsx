@@ -2,21 +2,21 @@ import { Ellipsis, Folder, FolderPlus, Search } from "lucide-react"
 import { useMemo, useState } from "react"
 
 import { ProjectMenuItems } from "@/components/ProjectMenuItems"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { InlineCode } from "@/components/ui/inline-code"
+} from "@yaran/ui-kit/dialog"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { ScrollArea } from "@/components/ui/scroll-area"
+} from "@yaran/ui-kit/dropdown-menu"
+import { ScrollArea } from "@yaran/ui-kit/scroll-area"
 import {
   closeNewAgentPicker,
   dismissNewAgentPicker,
@@ -26,7 +26,7 @@ import {
   openCreateAgentFromPr,
   useYaran,
 } from "@/lib/store"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 import type { ProjectView } from "@/lib/types"
 import { workspaceProjectId } from "@/lib/agentWorkspace"
 import { applyFrozenOrder, orderProjectsByRecency } from "@/lib/projectOrder"

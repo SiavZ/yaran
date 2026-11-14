@@ -1,7 +1,7 @@
 import { SquareCode } from "lucide-react"
 
 import { EDITOR_ICON_PATHS } from "@/lib/editorIcons"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // Monochrome brand glyph for an editor menu entry, keyed by the yaran-core editor
 // config key. The vendored path uses `fill="currentColor"` so it inherits the

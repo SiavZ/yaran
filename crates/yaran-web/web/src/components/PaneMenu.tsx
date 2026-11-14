@@ -7,7 +7,7 @@ import { InputMenuItems } from "@/components/InputMenuItems"
 import { PaneInputGroup } from "@/components/PaneInputGroup"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { TerminalActionsMenu } from "@/components/TerminalActionsMenu"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,7 +16,7 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import { useYaran } from "@/lib/store"
 import type { SelectedTarget, TerminalOwnerRef } from "@/lib/store"
 import type { SessionView } from "@/lib/types"

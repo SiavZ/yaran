@@ -39,13 +39,13 @@ import {
   setQuietTailManualChoice,
 } from "@/lib/quietTailChoice"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import {
   Empty,
   EmptyContent,
@@ -53,7 +53,7 @@ import {
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
-} from "@/components/ui/empty"
+} from "@yaran/ui-kit/empty"
 import { agentRowVisual } from "@/lib/agentRow"
 import {
   agentSearchLocation,
@@ -115,7 +115,7 @@ import { terminalForeground, terminalTitle } from "@/lib/terminals"
 import type { YaranState, SelectedTarget, TerminalOwnerRef } from "@/lib/store"
 import { matchOwner } from "@/lib/terminalOwner"
 import type { SessionView, TerminalView } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // How a flat row's tap resolves. Desktop just selects; mobile also drives the
 // hub-to-terminal navigation. Passed in so the one shared list serves both.

@@ -1,0 +1,33 @@
+{
+  "name": "@yaran/qr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The shell's in-WebView QR scanner (zxing-wasm reader, wasm bundled, no CDN) and the add-org payload parser.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@yaran/protocol": "file:../../../cloud/protocol"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3",
+    "vite": "8.3.8",
+    "vitest": "4.1.12",
+    "zxing-wasm": "3.1.6"
+  },
+  "peerDependencies": {
+    "zxing-wasm": "3.1.6"
+  }
+}

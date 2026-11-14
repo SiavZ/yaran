@@ -1,11 +1,11 @@
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
+} from "@yaran/ui-kit/dialog"
 import { useVanishedTargetGuard } from "@/hooks/use-vanished-target"
 import { fileStatusMeta } from "@/lib/changedFiles"
 import { formatRegularCount } from "@/lib/formatRegularCount"

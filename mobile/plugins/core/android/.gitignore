@@ -1,0 +1,4 @@
+/build/
+# The Kotlin package directory io/github/siavz/yaran/core must not fall under the root
+# .gitignore's crash-dump rule (`core`); dumps are files, this re-includes directories only.
+!core/

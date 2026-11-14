@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { ChevronLeft, ChevronRight } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Sheet,
   SheetContent,
   SheetDescription,
   SheetHeader,
   SheetTitle,
-} from "@/components/ui/sheet"
+} from "@yaran/ui-kit/sheet"
 import { appMenuModel, findSubmenu, type AppMenuEntry } from "@/lib/appMenu"
 import { useAppMenuContext } from "@/lib/useAppMenuContext"
 

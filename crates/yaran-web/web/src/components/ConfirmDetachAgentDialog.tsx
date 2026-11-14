@@ -1,4 +1,4 @@
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -6,7 +6,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
+} from "@yaran/ui-kit/dialog"
 import { useVanishedTargetGuard } from "@/hooks/use-vanished-target"
 import { sessionLabel } from "@/lib/agentWorkspace"
 import { detachConfirmProse, shutdownGraceSeconds } from "@/lib/detachAgent"

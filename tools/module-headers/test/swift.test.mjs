@@ -18,7 +18,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fixtureGraph, names } from "./helpers.mjs";
-import { swiftModuleOf } from "../src/lang/swift.mjs";
+import { swiftModuleOf, swiftScopeOf } from "../src/lang/swift.mjs";
 
 const graph = await fixtureGraph("swift", ["swift"]);
 
@@ -43,5 +43,10 @@ test("module detection: SwiftPM target, Xcode target directory, parent fallback"
   assert.equal(swiftModuleOf("pkg/Tests/AppTests/T.swift", xc), "AppTests");
   assert.equal(swiftModuleOf("Xc/Shell/Views/Card.swift", xc), "Shell");
   assert.equal(swiftModuleOf("loose/dir/X.swift", xc), "dir");
+  // Two Xcode projects with a same-named target are separate scopes; SwiftPM targets stay names.
+  const two = new Set(["a/ios/App", "b/ios/App"]);
+  assert.equal(swiftModuleOf("a/ios/App/App/X.swift", two), swiftModuleOf("b/ios/App/App/X.swift", two));
+  assert.notEqual(swiftScopeOf("a/ios/App/App/X.swift", two), swiftScopeOf("b/ios/App/App/X.swift", two));
+  assert.equal(swiftScopeOf("pkg/Sources/Core/A.swift", two), "Core");
   assert.equal(graph.rootName("Xc/Shell/Views/Card.swift"), "Shell/Card");
 });

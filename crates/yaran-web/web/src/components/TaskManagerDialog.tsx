@@ -11,7 +11,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -19,8 +19,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { useIsMobile } from "@/hooks/use-mobile"
+} from "@yaran/ui-kit/dialog"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import { formatRegularCount } from "@/lib/formatRegularCount"
 import { formatBytes, formatCpu } from "@/lib/formatStats"
 import {
@@ -48,7 +48,7 @@ import {
   stopAllRunning,
   useYaran,
 } from "@/lib/store"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // The Task Manager: what is running, what it costs, and how to stop it. Rows are
 // PER TAB, since stats are sampled per provider process; every stop confirms,

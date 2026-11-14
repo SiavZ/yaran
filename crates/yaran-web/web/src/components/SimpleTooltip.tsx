@@ -5,7 +5,7 @@ import {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@/components/ui/tooltip"
+} from "@yaran/ui-kit/tooltip"
 
 // The single Tooltip wrapper used everywhere a browser-native `title=` hover
 // hint would otherwise go, since browser tooltips render irregularly across

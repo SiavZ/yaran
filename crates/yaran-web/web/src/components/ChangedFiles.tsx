@@ -26,23 +26,23 @@ import { git } from "@/lib/git"
 import { ConfirmDiscardFilesDialog } from "@/components/ConfirmDiscardFilesDialog"
 import { FileStatusIcon } from "@/components/FileStatusIcon"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Checkbox } from "@yaran/ui-kit/checkbox"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Card,
   CardAction,
   CardContent,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card"
+} from "@yaran/ui-kit/card"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import {
   Collapsible,
   CollapsibleContent,
@@ -55,15 +55,15 @@ import {
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
-} from "@/components/ui/empty"
+} from "@yaran/ui-kit/empty"
 import {
   changesQuietReason,
   folderWorkspace,
   supportsBranchGit,
 } from "@/lib/agentWorkspace"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
+import { Input } from "@yaran/ui-kit/input"
+import { ScrollArea } from "@yaran/ui-kit/scroll-area"
+import { Separator } from "@yaran/ui-kit/separator"
 import {
   fileStatusMeta,
   formatRecapCount,
@@ -81,9 +81,9 @@ import {
   useYaran,
 } from "@/lib/store"
 import type { ChangesSlice } from "@/lib/store"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import { ALWAYS_REVEALED_ON_TOUCH } from "@/lib/touchReveal"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 import type { ChangedFileView, SessionView } from "@/lib/types"
 import { agentRoot } from "@/lib/editorRoot"
 import { formatRegularCount } from "@/lib/formatRegularCount"

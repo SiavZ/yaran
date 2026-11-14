@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react"
 
 import { usePrefersReducedMotion } from "@/hooks/use-reduced-motion"
 import { theaterTransitionMs } from "@/lib/theater"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // Wraps a stack of yaran's own chrome and collapses it out of the layout when
 // theater is on, giving its height to the terminal underneath.

@@ -4,7 +4,7 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
 
 import { reauthUri } from "@yaran/protocol/uri"
 
-import { Button, buttonVariants } from "@/components/ui/button"
+import { Button, buttonVariants } from "@yaran/ui-kit/button"
 import type { ReconnectPlanEvent } from "@/lib/reconnectingSocket"
 import { renderProse } from "@/lib/prose"
 import { accessFaceFor } from "@/lib/native/accessFace"

@@ -5,7 +5,7 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import { editorRootForTarget } from "@/lib/editorRoot"
 import { openDeleteTerminal, openEditor, standaloneEditorHash } from "@/lib/store"
 import type { TerminalOwnerRef } from "@/lib/store"

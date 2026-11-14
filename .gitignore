@@ -32,6 +32,8 @@ perf.data.old
 yaran-crash.log
 core
 core.*
+# The phone app's native core library is a directory, not a crash dump.
+!mobile/plugins/core/
 .DS_Store
 
 # Local-only branch catch-up notes (not for version control)

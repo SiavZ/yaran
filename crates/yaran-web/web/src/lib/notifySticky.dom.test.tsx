@@ -2,7 +2,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeAll, describe, expect, it } from "vitest"
 
-import { Toaster } from "@/components/ui/sonner"
+import { Toaster } from "@yaran/ui-kit/sonner"
 
 import {
   notifyBusy,
@@ -21,7 +21,7 @@ import {
 // toast's close button and its swipe, and it would be easy to assume the
 // mechanism is "this toast has no timer". It is not: the gate is
 // `toastType === 'loading'` in both places, which is why a busy toast has no
-// exit at all (pinned in `components/ui/sonner.test.tsx`) while an Infinity
+// exit at all (pinned in the ui-kit's `sonner.test.tsx`) while an Infinity
 // final keeps everything. Measured here so a sonner upgrade that changes its
 // mind fails loudly, because the alternative is a toast the user cannot remove.
 

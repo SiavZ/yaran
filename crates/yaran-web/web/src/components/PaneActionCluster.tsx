@@ -4,12 +4,12 @@ import type { ReactNode } from "react"
 
 import { MacroPopover } from "@/components/MacroPopover"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { changesSummary } from "@/lib/changesSummary"
 import { armTheaterToggleFocus } from "@/hooks/use-theater"
 import { openChangesScreen, toggleTheater, useYaran } from "@/lib/store"
 import type { SelectedTarget } from "@/lib/store"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // The pane's one action cluster, wherever it is painted: the theater toggle,
 // Macros, the changed-file count where an agent has one, and the surface `⋯`.

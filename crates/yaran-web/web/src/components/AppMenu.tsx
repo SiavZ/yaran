@@ -1,6 +1,6 @@
 import { Settings } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,7 +10,7 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import { appMenuModel, type AppMenuEntry } from "@/lib/appMenu"
 import { useAppMenuContext } from "@/lib/useAppMenuContext"
 

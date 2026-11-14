@@ -9,9 +9,9 @@
  * <module-headers:begin>
  * Uses:
  * src/components/cloud/CloudLogoutDialog.tsx
- * ├── src/components/ui/button.tsx
- * ├── src/components/ui/dialog.tsx
- * └── src/components/ui/inline-code.tsx
+ * ├── @yaran/ui-kit:src/button.tsx
+ * ├── @yaran/ui-kit:src/dialog.tsx
+ * └── @yaran/ui-kit:src/inline-code.tsx
  * External: react
  *
  * Used by:
@@ -22,7 +22,7 @@
 
 import { useRef } from "react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -30,8 +30,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { InlineCode } from "@/components/ui/inline-code"
+} from "@yaran/ui-kit/dialog"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
 
 export function CloudLogoutDialog({
   open,

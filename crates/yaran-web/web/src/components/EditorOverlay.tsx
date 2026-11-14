@@ -3,8 +3,8 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { useIsMobile } from "@/hooks/use-mobile"
+} from "@yaran/ui-kit/dialog"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import { closeEditor, useYaran } from "@/lib/store"
 import { rootKey } from "@/lib/editorRoot"
 import { LazyEditorBody } from "@/components/LazyEditorBody"

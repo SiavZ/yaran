@@ -20,7 +20,7 @@ import { ListPlus, Pencil, Trash2 } from "lucide-react"
 
 import { SimpleTooltip } from "@/components/SimpleTooltip"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -28,15 +28,15 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
+} from "@yaran/ui-kit/dialog"
+import { Input } from "@yaran/ui-kit/input"
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
+} from "@yaran/ui-kit/select"
 import { Textarea } from "@/components/ui/textarea"
 import {
   MOUSE_DRAG_ACTIVATION,
@@ -58,7 +58,7 @@ import {
   useYaran,
 } from "@/lib/store"
 import type { MacroSurface, MacroView } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // The dialog's two internal modes: the LIST (rows + Add) or the per-row EDIT/ADD
 // form. `editing` is the draft index being edited, "new" while adding, or null

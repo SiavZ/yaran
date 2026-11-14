@@ -17,8 +17,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Button } from "@/components/ui/button"
+} from "@yaran/ui-kit/dropdown-menu"
+import { Button } from "@yaran/ui-kit/button"
 
 // The component is a menu BODY, so it needs a real menu around it: base-ui's
 // GroupLabel throws outside a Menu.Group and a Group outside a menu.

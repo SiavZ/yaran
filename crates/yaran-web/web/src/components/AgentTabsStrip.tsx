@@ -14,7 +14,7 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import {
   ONLY_TAB_CLOSE_REFUSAL,
   defaultProviderForSession,
@@ -29,7 +29,7 @@ import {
 } from "@/lib/store"
 import { DEFAULT_AGENT_TABS_MAX } from "@/lib/bootstrapApi"
 import { ALWAYS_REVEALED_ON_TOUCH } from "@/lib/touchReveal"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 import type { AgentTabView, SessionView } from "@/lib/types"
 
 // The provider-tab strip at the top of the center pane, rendered by App only

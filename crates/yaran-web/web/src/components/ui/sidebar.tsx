@@ -3,25 +3,25 @@ import { mergeProps } from "@base-ui/react/merge-props"
 import { useRender } from "@base-ui/react/use-render"
 import { cva, type VariantProps } from "class-variance-authority"
 
-import { useIsMobile } from "@/hooks/use-mobile"
+import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import { SIDEBAR_RESIZING_NO_TRANSITION } from "@/lib/paneDivider"
-import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Separator } from "@/components/ui/separator"
+import { cn } from "@yaran/ui-kit/cn"
+import { Button } from "@yaran/ui-kit/button"
+import { Input } from "@yaran/ui-kit/input"
+import { Separator } from "@yaran/ui-kit/separator"
 import {
   Sheet,
   SheetContent,
   SheetDescription,
   SheetHeader,
   SheetTitle,
-} from "@/components/ui/sheet"
-import { Skeleton } from "@/components/ui/skeleton"
+} from "@yaran/ui-kit/sheet"
+import { Skeleton } from "@yaran/ui-kit/skeleton"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@/components/ui/tooltip"
+} from "@yaran/ui-kit/tooltip"
 import { PanelLeftIcon } from "lucide-react"
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"

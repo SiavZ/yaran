@@ -7,7 +7,7 @@ import { useTheaterToggleFocusWhen } from "@/hooks/use-theater"
 import { buildFlapShape } from "@/lib/flapShape"
 import { FLAP_FILL_VAR, registerFlapElement } from "@/lib/theaterFlight"
 import type { SelectedTarget } from "@/lib/store"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // Where the phone's pane actions live when theater is off: a flap hanging from
 // the band above the terminal, taking the colour of whichever band that is

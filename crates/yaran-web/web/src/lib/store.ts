@@ -4,7 +4,7 @@
  * <module-headers:begin>
  * Uses:
  * src/lib/store.ts
- * ├── src/hooks/use-mobile.ts
+ * ├── @yaran/ui-kit:src/use-mobile.ts
  * ├── src/lib/agentName.ts
  * ├── src/lib/agentTabs.ts
  * ├── src/lib/agentWorkspace.ts
@@ -263,7 +263,7 @@ import { existingBranchConflict, sessionsApi, SessionsApiError } from "./session
 import { ordersMatch, reorderById } from "./reorder"
 import { sortedSessionIds, type SortKey } from "./sortSessions"
 import { nextActiveSessionId, type FlatSortKey } from "./flatList"
-import { isMobileViewport } from "@/hooks/use-mobile"
+import { isMobileViewport } from "@yaran/ui-kit/use-mobile"
 import { EventsSocket } from "./eventsSocket"
 import { getActivePtySocket } from "./ptySocket"
 import type { ReconnectPlanEvent } from "./reconnectingSocket"

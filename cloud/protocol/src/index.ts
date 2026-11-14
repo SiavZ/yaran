@@ -36,6 +36,19 @@
  * External: none
  *
  * Used by: entry point (package entry of @yaran/protocol, the "." export in cloud/protocol/package.json)
+ * src/index.ts
+ * ├── @yaran/mobile-shell:src/lib/api.ts
+ * ├── @yaran/mobile-shell:src/lib/deepLinks.ts
+ * ├── @yaran/mobile-shell:src/lib/machinesStore.ts
+ * ├── @yaran/mobile-shell:src/lib/native/machineView.ts
+ * ├── @yaran/mobile-shell:src/lib/protocolCompat.ts
+ * ├── @yaran/mobile-shell:src/screens/machines/MachineList.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/MachineRow.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/RemoveMachineDialog.tsx
+ * ├── @yaran/mobile-shell:src/screens/machines/machines.test.tsx
+ * ├── @yaran/mobile-shell:src/screens/onboarding/ConfirmOrg.tsx
+ * ├── @yaran/mobile-shell:src/screens/onboarding/onboarding.test.tsx
+ * └── @yaran/qr:src/payload.ts
  * <module-headers:end>
  */
 export type * from "./generated/types.ts";

@@ -3,16 +3,16 @@ import { Loader2 } from "lucide-react"
 
 import { FileStatusIcon } from "@/components/FileStatusIcon"
 import { InfoRow } from "@/components/InfoRow"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { InlineCode } from "@/components/ui/inline-code"
-import { ScrollArea } from "@/components/ui/scroll-area"
+} from "@yaran/ui-kit/dialog"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
+import { ScrollArea } from "@yaran/ui-kit/scroll-area"
 import { useVanishedTargetGuard } from "@/hooks/use-vanished-target"
 import { FileApiError, fileApi } from "@/lib/fileApi"
 import {

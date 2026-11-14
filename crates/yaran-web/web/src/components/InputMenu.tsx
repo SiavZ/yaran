@@ -2,14 +2,14 @@ import { Ellipsis } from "lucide-react"
 
 import { InputMenuItems } from "@/components/InputMenuItems"
 import { SimpleTooltip } from "@/components/SimpleTooltip"
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@yaran/ui-kit/dropdown-menu"
 import { inputMenuHasItems, type InputMenuGates } from "@/lib/inputMenu"
-import { cn } from "@/lib/utils"
+import { cn } from "@yaran/ui-kit/cn"
 
 // The menu that belongs to the virtual input and lives and dies with it. It is
 // input-local, and that is the whole of it: the way out of the virtual input,

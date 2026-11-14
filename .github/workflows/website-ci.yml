@@ -10,6 +10,8 @@ on:
       # The docs-screenshot loop test reads these, so deleting a scene has to run
       # the site suite even when nothing under website/ changed.
       - "tools/preview-env/screens/scenes/**"
+      # The figure renders the web UI's components, which import the shared kit.
+      - "packages/ui-kit/**"
       - "install.sh"
       - "assets/yaran-logo.svg"
       - "assets/dux-screenshot.svg"
@@ -22,6 +24,8 @@ on:
       # The docs-screenshot loop test reads these, so deleting a scene has to run
       # the site suite even when nothing under website/ changed.
       - "tools/preview-env/screens/scenes/**"
+      # The figure renders the web UI's components, which import the shared kit.
+      - "packages/ui-kit/**"
       - "install.sh"
       - "assets/yaran-logo.svg"
       - "assets/dux-screenshot.svg"
@@ -71,6 +75,9 @@ jobs:
       # installs the web app's dependencies on a fresh clone. The figure test
       # resolves React through the app's node_modules, so without this it fails
       # on every CI run with "Cannot find module .../react-dom-server.mjs".
+      # `@yaran/ui-kit` gets no install of its own: the site resolves the kit's
+      # peers through these same node_modules (src/lib/web-ui-alias.mjs), and a
+      # second install would bring a second React.
       - name: Install the web app's dependencies (the figure test renders it)
         working-directory: crates/yaran-web/web
         run: npm ci --no-audit --no-fund

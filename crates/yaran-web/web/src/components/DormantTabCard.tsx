@@ -1,4 +1,4 @@
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import { DOCS_AGENT_TABS_RESUME } from "@/lib/docs"
 import { startDormantTab } from "@/lib/store"
 import { endingSentence, genericEndingSentence } from "@/lib/tabVerdict"

@@ -17,12 +17,12 @@
  * <module-headers:begin>
  * Uses:
  * src/components/cloud/CloudDialog.tsx
+ * ├── @yaran/ui-kit:src/button.tsx
+ * ├── @yaran/ui-kit:src/dialog.tsx
+ * ├── @yaran/ui-kit:src/inline-code.tsx
+ * ├── @yaran/ui-kit:src/input.tsx
  * ├── src/components/cloud/CloudLogoutDialog.tsx
  * ├── src/components/cloud/CloudRotateDialog.tsx
- * ├── src/components/ui/button.tsx
- * ├── src/components/ui/dialog.tsx
- * ├── src/components/ui/inline-code.tsx
- * ├── src/components/ui/input.tsx
  * ├── src/lib/cloudApi.ts
  * ├── src/lib/notify.ts
  * └── src/lib/store.ts
@@ -38,7 +38,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react"
 import { ExternalLink, Loader2 } from "lucide-react"
 
-import { Button } from "@/components/ui/button"
+import { Button } from "@yaran/ui-kit/button"
 import {
   Dialog,
   DialogContent,
@@ -46,9 +46,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
-import { InlineCode } from "@/components/ui/inline-code"
-import { Input } from "@/components/ui/input"
+} from "@yaran/ui-kit/dialog"
+import { InlineCode } from "@yaran/ui-kit/inline-code"
+import { Input } from "@yaran/ui-kit/input"
 import { cloudApi, type CloudLogin, type CloudStatus } from "@/lib/cloudApi"
 import { notifyError } from "@/lib/notify"
 import { closeCloudDialog, useYaran } from "@/lib/store"
