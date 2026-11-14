@@ -415,7 +415,25 @@ fn latest_skips_to_the_newest_snapshot() {
             .unwrap();
         std::thread::sleep(Duration::from_millis(40));
     }
-    let latest = watcher.latest().expect("snapshots were sent");
+    // The watcher polls on its own thread. Wait for it to have seen the last
+    // write rather than trusting a fixed sleep: on a loaded CI runner 40 ms
+    // was not enough and the newest queued snapshot still held two cards.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let latest = loop {
+        if let Some(snapshot) = watcher.latest()
+            && snapshot
+                .board
+                .as_ref()
+                .is_ok_and(|board| board.cards.len() == 3)
+        {
+            break snapshot;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the watcher never reported the third card"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
     assert_eq!(latest.board.unwrap().cards.len(), 3);
     assert!(watcher.latest().is_none(), "nothing new since");
 }
