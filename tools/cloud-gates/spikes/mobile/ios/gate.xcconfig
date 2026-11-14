@@ -1,0 +1,6 @@
+// Gate spike build settings shared by Debug (via debug.xcconfig) and Release.
+// GATE_CALLBACK_HOST stands in for <publisher-domain> (G13); it feeds Info.plist
+// GateCallbackHost and the associated-domains entitlements. Put the real staging host,
+// DEVELOPMENT_TEAM and any bundle-id override in the UNTRACKED gate.local.xcconfig.
+GATE_CALLBACK_HOST = gate-cb.example.invalid
+#include? "gate.local.xcconfig"

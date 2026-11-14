@@ -1,0 +1,7 @@
+include ':app'
+// G13 hijack probe: a second app declaring the same callback filters, never in assetlinks.
+include ':hijack'
+include ':capacitor-cordova-android-plugins'
+project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
+
+apply from: 'capacitor.settings.gradle'

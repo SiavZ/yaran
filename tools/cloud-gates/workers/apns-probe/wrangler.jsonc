@@ -1,0 +1,10 @@
+// Gate G4 probe: sends APNs alert pushes over fetch. Deployed by tools/cloud-gates/g04-apns.sh.
+// Secrets (set with `wrangler secret put`, never committed): P8, KID, TEAM, TOPIC, PROBE_KEY.
+{
+  "name": "yaran-gate-apns-probe",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  // Reached on workers.dev only; no route or custom domain is attached.
+  "workers_dev": true,
+  "preview_urls": false
+}

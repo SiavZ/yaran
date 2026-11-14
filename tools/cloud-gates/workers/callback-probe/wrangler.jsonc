@@ -1,0 +1,22 @@
+// Gate G13 probe: association files, a handoff consent page and /auth/callback.
+// The gate script attaches it to the callback host and a separate consent host and overrides
+// every var below with --var; these placeholders keep real team IDs and fingerprints out of git.
+{
+  "name": "yaran-gate-callback-probe",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    // Host serving the verified https callback and the association files.
+    "CALLBACK_HOST": "gate-callback.example.invalid",
+    // The spike app's Android package name.
+    "ANDROID_PACKAGE": "invalid.example.yaranapp.gate",
+    // Comma-separated colon-hex SHA-256 fingerprints of the spike's signing certificates.
+    "ANDROID_CERT_SHA256": "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00",
+    // The spike's iOS app ID: <team id>.<bundle id>.
+    "APPLE_APP_ID": "TEAMID0000.invalid.example.yaranapp.gate",
+    // Custom scheme for the dev-shaped run; distinct from a real yaranapp install.
+    "DEV_SCHEME": "yaranapp-gate"
+  }
+}
