@@ -61,6 +61,15 @@ describe('SecuritySettings', () => {
   });
 });
 
+describe('lock options', () => {
+  it('a refused option change is explained, not swallowed', async () => {
+    vi.mocked(AppLock.setOptions).mockRejectedValueOnce({ code: 'invalid_argument' });
+    renderShell(<SecuritySettings />);
+    fireEvent.click(await screen.findByRole('switch', { name: 'Allow device passcode' }));
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled());
+  });
+});
+
 describe('LockScreen', () => {
   it('an invalidated lock shows the wiped-sessions sentence', async () => {
     vi.mocked(AppLock.unlock).mockResolvedValueOnce({ outcome: 'invalidated' });

@@ -331,6 +331,9 @@ msgstr "That org address isn't valid, so it can't be added."
 msgid "That QR code isn't a yaran org code. Scan the code your admin or yaran cloud login shows."
 msgstr "That QR code isn't a yaran org code. Scan the code your admin or yaran cloud login shows."
 
+msgid "That setting can't change while app lock is on. Turn app lock off, change it, then turn the lock back on."
+msgstr "That setting can't change while app lock is on. Turn app lock off, change it, then turn the lock back on."
+
 msgid "That sign-in reply didn't match a sign-in from this phone, so it was ignored."
 msgstr "That sign-in reply didn't match a sign-in from this phone, so it was ignored."
 

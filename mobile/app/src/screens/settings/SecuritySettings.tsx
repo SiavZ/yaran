@@ -53,9 +53,14 @@ export function SecuritySettings() {
   }
 
   async function setOptions(patch: { grace?: LockGrace; allowPasscode?: boolean }) {
-    await AppLock.setOptions(patch);
+    try {
+      await AppLock.setOptions(patch);
+      notify('success', <Trans>Lock setting saved.</Trans>);
+    } catch {
+      // The passcode fallback is fixed into the lock key when it is created.
+      notify('warning', <Trans>That setting can't change while app lock is on. Turn app lock off, change it, then turn the lock back on.</Trans>);
+    }
     setLock(await AppLock.status());
-    notify('success', <Trans>Lock setting saved.</Trans>);
   }
 
   async function togglePrivacy(on: boolean) {
