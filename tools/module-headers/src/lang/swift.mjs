@@ -91,6 +91,22 @@ export function swiftModuleOf(file, xcodeDirs) {
 }
 
 /**
+ * The visibility scope of a file: the SwiftPM target name (imports name it), else the target
+ * directory's full path, so two Xcode projects whose targets share a name (every Capacitor app
+ * has `App/App`) do not see each other's declarations.
+ * @param {string} file
+ * @param {Set<string>} xcodeDirs
+ */
+export function swiftScopeOf(file, xcodeDirs) {
+  if (/(?:^|\/)(?:Sources|Tests)\/[^/]+\//.test(file)) return swiftModuleOf(file, xcodeDirs);
+  for (let d = posix.dirname(file); d !== "." && d !== ""; d = posix.dirname(d)) {
+    const parent = posix.dirname(d);
+    if (xcodeDirs.has(parent === "." ? "" : parent)) return `xcode:${d}`;
+  }
+  return `dir:${posix.dirname(file)}`;
+}
+
+/**
  * @param {import("../graph.mjs").Graph} graph
  * @param {{ files: Map<string, string>, tracked: Set<string>,
  *           extract: (file: string) => Promise<SwiftExtract> }} ctx
@@ -102,17 +118,17 @@ export async function addSwiftGraph(graph, { files, tracked, extract }) {
     if (m) xcodeDirs.add(m[1] ?? "");
   }
   const sw = [...files.keys()].filter((f) => f.endsWith(".swift"));
-  /** @type {Map<string, { module: string, ex: SwiftExtract }>} */
+  /** @type {Map<string, { module: string, scope: string, ex: SwiftExtract }>} */
   const info = new Map();
-  for (const f of sw) info.set(f, { module: swiftModuleOf(f, xcodeDirs), ex: await extract(f) });
-  const index = buildScopeIndex([...info].map(([file, { module, ex }]) => ({ scope: module, file, decls: ex.decls })));
+  for (const f of sw) info.set(f, { module: swiftModuleOf(f, xcodeDirs), scope: swiftScopeOf(f, xcodeDirs), ex: await extract(f) });
+  const index = buildScopeIndex([...info].map(([file, { scope, ex }]) => ({ scope, file, decls: ex.decls })));
 
   /** @param {string} file */
   const nameOf = (file) => `${info.get(file)?.module}/${posix.basename(file, ".swift")}`;
   for (const f of sw) graph.addNode(f, (t) => nameOf(t), nameOf(f));
 
-  for (const [file, { module, ex }] of info) {
-    const visible = new Set([module]);
+  for (const [file, { scope, ex }] of info) {
+    const visible = new Set([scope]);
     for (const m of ex.imports) {
       if (index.has(m)) visible.add(m);
       else if (m) graph.addExternal(file, m);
