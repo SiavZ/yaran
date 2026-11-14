@@ -14,7 +14,7 @@
 //! Uses:
 //! companion.rs
 //! ├── yaran-core::background_serve
-//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::view
 //! ├── yaran-core::config
 //! ├── yaran-core::engine
@@ -135,13 +135,20 @@ impl BackgroundServeCompanion for WebCompanion {
         }
     }
 
-    fn set_cloud_mode(&mut self, engine: &Engine, mode: yaran_core::cloud::leg_seam::CloudMode) {
+    fn set_cloud_mode(
+        &mut self,
+        engine: &Engine,
+        mode: yaran_core::cloud::leg_identity::CloudMode,
+    ) {
         if let Some(server) = self.server.as_ref() {
             server.set_cloud_mode(mode, engine.worker_tx.clone());
         }
     }
 
-    fn cloud_settings_changed(&mut self, settings: yaran_core::cloud::leg_seam::CloudLegSettings) {
+    fn cloud_settings_changed(
+        &mut self,
+        settings: yaran_core::cloud::leg_identity::CloudLegSettings,
+    ) {
         if let Some(server) = self.server.as_ref() {
             server.cloud_mode().settings_changed(settings);
         }

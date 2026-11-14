@@ -26,10 +26,10 @@
 //! ├── build_routes
 //! ├── changes
 //! ├── changes_routes
-//! ├── cloud_routes
 //! ├── cloud_loop
 //! ├── cloud_mode
 //! ├── cloud_mode_routes
+//! ├── cloud_routes
 //! ├── compressible_exts
 //! ├── config_routes
 //! ├── console
@@ -84,10 +84,10 @@ pub mod browse_routes;
 pub mod build_routes;
 pub mod changes;
 pub mod changes_routes;
-pub mod cloud_routes;
 pub(crate) mod cloud_loop;
 pub mod cloud_mode;
 pub mod cloud_mode_routes;
+pub mod cloud_routes;
 pub mod compressible_exts;
 pub mod config_routes;
 pub mod console;

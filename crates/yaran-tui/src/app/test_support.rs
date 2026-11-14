@@ -31,9 +31,9 @@
 //! app/test_support.rs
 //! ├── app
 //! ├── app::background_server
-//! ├── app::cloud_tests
 //! ├── app::cloud_crumb
 //! ├── app::cloud_mode
+//! ├── app::cloud_tests
 //! ├── app::first_load
 //! ├── app::grouped_sidebar_tests
 //! ├── app::human_board::tests

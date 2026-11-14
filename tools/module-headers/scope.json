@@ -73,7 +73,6 @@
     "crates/yaran-web/web/src/lib/appMenuBindings.test.tsx",
     "crates/yaran-web/web/src/lib/bootstrapApi.ts",
     "crates/yaran-web/web/src/lib/cloudApi.ts",
-    "crates/yaran-web/web/src/lib/cloudLegApi.ts",
     "crates/yaran-web/web/src/lib/settingsDescriptors.test.ts",
     "crates/yaran-web/web/src/lib/settingsDescriptors.ts",
     "crates/yaran-web/web/src/lib/settingsDescriptorsCloud.test.ts",

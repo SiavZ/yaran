@@ -14,8 +14,8 @@
 //! ├── rest_common
 //! ├── server
 //! ├── test_support
+//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
-//! ├── yaran-core::cloud::leg_seam
 //! ├── yaran-core::cloud::view
 //! ├── yaran-core::prose
 //! └── yaran-core::wire
@@ -35,8 +35,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use yaran_core::cloud::leg_identity::CloudMode;
 use yaran_core::cloud::leg_outcome::CloudModeOutcome;
-use yaran_core::cloud::leg_seam::CloudMode;
 use yaran_core::cloud::view::{CloudLegState, CloudLegView};
 use yaran_core::wire::WireCommand;
 

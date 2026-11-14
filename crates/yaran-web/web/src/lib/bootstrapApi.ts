@@ -7,7 +7,7 @@
 // <module-headers:begin>
 // Uses:
 // src/lib/bootstrapApi.ts
-// ├── src/lib/cloudLegApi.ts
+// ├── src/lib/cloudApi.ts
 // ├── src/lib/fileDrop.ts
 // ├── src/lib/flatList.ts
 // └── src/lib/types.ts
@@ -48,7 +48,7 @@
 // └── yaran-website:src/figure/workspace.ts
 // <module-headers:end>
 
-import type { CloudLegView } from "./cloudLegApi";
+import type { CloudLegView } from "./cloudApi";
 import type { DropPasteProfile } from "./fileDrop";
 import type { FlatSortKey } from "./flatList";
 import type { MacroView } from "./types";

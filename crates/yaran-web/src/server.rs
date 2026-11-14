@@ -19,9 +19,9 @@
 //! ├── build_routes
 //! ├── changes
 //! ├── changes_routes
-//! ├── cloud_routes
 //! ├── cloud_mode
 //! ├── cloud_mode_routes
+//! ├── cloud_routes
 //! ├── config_routes
 //! ├── console
 //! ├── crate
@@ -67,8 +67,8 @@
 //! ├── browse_routes
 //! ├── build_routes
 //! ├── changes_routes
-//! ├── cloud_routes
 //! ├── cloud_mode_routes
+//! ├── cloud_routes
 //! ├── config_routes
 //! ├── crate
 //! ├── file_drop_routes

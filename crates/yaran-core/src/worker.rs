@@ -5,8 +5,8 @@
 //! <module-headers:begin>
 //! Uses:
 //! worker.rs
+//! ├── cloud::leg_identity
 //! ├── cloud::leg_outcome
-//! ├── cloud::leg_seam
 //! ├── config
 //! ├── engine
 //! ├── gh
@@ -795,7 +795,7 @@ pub enum WorkerEvent {
     /// A live `[cloud] mode` change the BACKGROUND web server carried out, on this
     /// lane for the same reason as `TailscaleModeApplied`.
     CloudModeApplied {
-        mode: crate::cloud::leg_seam::CloudMode,
+        mode: crate::cloud::leg_identity::CloudMode,
         outcome: crate::cloud::leg_outcome::CloudModeOutcome,
     },
     /// A provider conversation id was captured for an agent (the UUID a fresh

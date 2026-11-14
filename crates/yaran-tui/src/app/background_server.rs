@@ -17,7 +17,7 @@
 //! ├── app::test_support
 //! ├── crate
 //! ├── yaran-core::background_serve
-//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::view
 //! ├── yaran-core::config
 //! ├── yaran-core::engine
@@ -914,7 +914,7 @@ pub(crate) mod tests {
         pub(crate) published: Vec<PtyOwnershipEvent>,
         /// Every live Tailscale mode the seam was asked for, in order.
         pub(crate) tailscale_modes: Vec<yaran_core::config::TailscaleMode>,
-        pub(crate) cloud_modes: Vec<yaran_core::cloud::leg_seam::CloudMode>,
+        pub(crate) cloud_modes: Vec<yaran_core::cloud::leg_identity::CloudMode>,
         pub(crate) cloud_view: yaran_core::cloud::view::CloudLegView,
         /// How many browser tabs the serve says are connected, standing in for the
         /// connection registry's own count.
@@ -1072,14 +1072,14 @@ pub(crate) mod tests {
         fn set_cloud_mode(
             &mut self,
             _engine: &Engine,
-            mode: yaran_core::cloud::leg_seam::CloudMode,
+            mode: yaran_core::cloud::leg_identity::CloudMode,
         ) {
             self.recorded.lock().unwrap().cloud_modes.push(mode);
         }
 
         fn cloud_settings_changed(
             &mut self,
-            _settings: yaran_core::cloud::leg_seam::CloudLegSettings,
+            _settings: yaran_core::cloud::leg_identity::CloudLegSettings,
         ) {
         }
 

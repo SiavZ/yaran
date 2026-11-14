@@ -12,7 +12,7 @@
 //! app/cloud_crumb.rs
 //! ├── app
 //! ├── app::test_support
-//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::leg_identity
 //! └── yaran-core::cloud::view
 //! External: none
 //!
@@ -22,7 +22,7 @@
 //! <module-headers:end>
 
 use super::*;
-use yaran_core::cloud::leg_seam::CloudMode;
+use yaran_core::cloud::leg_identity::CloudMode;
 use yaran_core::cloud::view::{CloudLegState, CloudLegView};
 
 /// The crumb's text and whether it wears the warning tone.

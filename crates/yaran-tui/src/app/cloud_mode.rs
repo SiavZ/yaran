@@ -15,8 +15,8 @@
 //! ├── app
 //! ├── app::render
 //! ├── app::test_support
+//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
-//! ├── yaran-core::cloud::leg_seam
 //! ├── yaran-core::engine
 //! └── yaran-core::engine::status_op
 //! External: none
@@ -28,8 +28,8 @@
 
 use super::*;
 use crate::app::render::{active_provider_marker_span, centered_rect};
+use yaran_core::cloud::leg_identity::{CloudLegSettings, CloudMode};
 use yaran_core::cloud::leg_outcome::CloudModeOutcome;
-use yaran_core::cloud::leg_seam::{CloudLegSettings, CloudMode};
 
 /// One row of the cloud-mode picker.
 #[derive(Clone, Debug)]
@@ -66,7 +66,8 @@ fn final_for(report: yaran_core::cloud::leg_outcome::CloudModeReport) -> yaran_c
 
 impl App {
     pub(crate) fn open_set_cloud_mode_prompt(&mut self) {
-        let current = yaran_core::cloud::leg_seam::settings_from_config(&self.engine.config).mode;
+        let current =
+            yaran_core::cloud::leg_identity::settings_from_config(&self.engine.config).mode;
         let options: Vec<_> = CloudMode::ALL
             .into_iter()
             .map(|mode| SetCloudModeOption {

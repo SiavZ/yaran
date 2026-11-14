@@ -1,5 +1,5 @@
-//! `live_cloud_mode_tests`: the cloud arm end to end with a fake identity (Phase 09's
-//! seam) and a `/bin/sh` stand-in for cloudflared, mirroring `live_tailscale_mode_tests`.
+//! `live_cloud_mode_tests`: the cloud arm end to end with a fake `CloudIdentity`
+//! and a `/bin/sh` stand-in for cloudflared, mirroring `live_tailscale_mode_tests`.
 //!
 //! - Test-only; spawns real child processes, no network.
 //!
@@ -9,7 +9,7 @@
 //! ├── cloud_loop
 //! ├── yaran-core::cloud::cloudflared::ready
 //! ├── yaran-core::cloud::ingress_cell
-//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::leg_identity
 //! └── yaran-core::cloud::protocol::machine
 //! External: std, tempfile, tokio
 //!
@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use yaran_core::cloud::cloudflared::ready::Readiness;
 use yaran_core::cloud::ingress_cell::LiveCloudIngress;
-use yaran_core::cloud::leg_seam::{CloudMode, CredentialsRevision, MachineApiError, RotateReason};
+use yaran_core::cloud::leg_identity::{
+    CloudMode, CredentialsRevision, MachineApiError, RotateReason,
+};
 use yaran_core::cloud::protocol::machine::MachineConfig;
 
 struct Fake {
@@ -38,12 +40,12 @@ impl CloudIdentity for Fake {
         self.dir.clone()
     }
     fn revision(&self) -> Option<CredentialsRevision> {
-        Some(CredentialsRevision(
-            self.rev.load(Ordering::SeqCst),
-            0,
-            0,
-            0,
-        ))
+        Some(CredentialsRevision {
+            dev: self.rev.load(Ordering::SeqCst),
+            ino: 0,
+            len: 0,
+            mtime_ns: 0,
+        })
     }
     fn load(&self) -> Result<Option<PairedMachine>, String> {
         Ok(self.machine.lock().unwrap().clone())

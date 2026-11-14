@@ -932,9 +932,9 @@ mod tests {
             (
                 "SetCloudMode",
                 PromptState::SetCloudMode(crate::app::SetCloudModePrompt {
-                    current: yaran_core::cloud::leg_seam::CloudMode::Auto,
+                    current: yaran_core::cloud::leg_identity::CloudMode::Auto,
                     options: vec![crate::app::cloud_mode::SetCloudModeOption {
-                        mode: yaran_core::cloud::leg_seam::CloudMode::Auto,
+                        mode: yaran_core::cloud::leg_identity::CloudMode::Auto,
                         is_current: true,
                     }],
                     selected: 0,

@@ -10,11 +10,11 @@
 //! ├── app::background_server
 //! ├── app::changes_job
 //! ├── app::cloud_commands
+//! ├── app::cloud_crumb
 //! ├── app::cloud_input
+//! ├── app::cloud_mode
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
-//! ├── app::cloud_crumb
-//! ├── app::cloud_mode
 //! ├── app::components
 //! ├── app::components::focus_ring
 //! ├── app::first_load
@@ -53,8 +53,8 @@
 //! ├── yaran-core::agent_tabs
 //! ├── yaran-core::background_serve
 //! ├── yaran-core::browser
+//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
-//! ├── yaran-core::cloud::leg_seam
 //! ├── yaran-core::config
 //! ├── yaran-core::config_queue
 //! ├── yaran-core::config_sync
@@ -95,11 +95,11 @@
 //! ├── app::background_server
 //! ├── app::changes_job
 //! ├── app::cloud_commands
+//! ├── app::cloud_crumb
 //! ├── app::cloud_input
+//! ├── app::cloud_mode
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
-//! ├── app::cloud_crumb
-//! ├── app::cloud_mode
 //! ├── app::first_load
 //! ├── app::grouped_sidebar_tests
 //! ├── app::human_board
@@ -4169,12 +4169,12 @@ pub(crate) fn build_grouped_left_items(
 mod background_server;
 mod changes_job;
 mod cloud_commands;
+mod cloud_crumb;
 mod cloud_input;
+mod cloud_mode;
 mod cloud_render;
 #[cfg(test)]
 mod cloud_tests;
-mod cloud_crumb;
-mod cloud_mode;
 pub(crate) use background_server::{BackgroundServerStart, CompanionRouting};
 pub(crate) use cloud_mode::SetCloudModePrompt;
 // `pub(crate)` for its width helpers alone: the diff wrapper has to measure a
@@ -6225,7 +6225,8 @@ impl App {
         // Captured BEFORE the swap, because the comparison is against what the
         // running serve was told, not against what the file now says.
         let tailscale_before = self.engine.config.server.tailscale_mode();
-        let cloud_before = yaran_core::cloud::leg_seam::settings_from_config(&self.engine.config);
+        let cloud_before =
+            yaran_core::cloud::leg_identity::settings_from_config(&self.engine.config);
         self.engine.config = config;
         self.engine.retune_after_config_swap();
         self.sync_view_state_from_config();
@@ -6278,7 +6279,8 @@ impl App {
             let mode = self.engine.config.server.tailscale_mode();
             self.ask_companion_for_tailscale_mode(mode);
         }
-        let cloud_after = yaran_core::cloud::leg_seam::settings_from_config(&self.engine.config);
+        let cloud_after =
+            yaran_core::cloud::leg_identity::settings_from_config(&self.engine.config);
         self.apply_cloud_reload(serving_before, &cloud_before, &cloud_after);
         // A config file can hand Tab to the agent while every `focus_next` and
         // `focus_prev` key is one the typeable pane types, and nobody toggled

@@ -15,8 +15,8 @@
 //! cloud_mode.rs
 //! ├── yaran-core::cloud::ingress_cell
 //! ├── yaran-core::cloud::leg
+//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
-//! ├── yaran-core::cloud::leg_seam
 //! ├── yaran-core::cloud::view
 //! └── yaran-core::engine
 //! External: std, tokio
@@ -35,8 +35,8 @@ use std::time::Duration;
 
 use yaran_core::cloud::ingress_cell::CloudIngressReader;
 use yaran_core::cloud::leg::CloudLegEvent;
+use yaran_core::cloud::leg_identity::{CloudLegSettings, CloudMode, PairedMachine};
 use yaran_core::cloud::leg_outcome::CloudModeOutcome;
-use yaran_core::cloud::leg_seam::{CloudLegSettings, CloudMode, PairedMachine};
 use yaran_core::cloud::view::{CloudLegView, SharedCloudView};
 
 /// Depth of the lane. Mode changes are human-paced; the leg reports a few events a

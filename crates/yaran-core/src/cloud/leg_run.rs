@@ -20,8 +20,9 @@
 //! ├── cloud::cloudflared::ready
 //! ├── cloud::cloudflared::supervisor
 //! ├── cloud::leg
-//! ├── cloud::leg_seam
+//! ├── cloud::leg_identity
 //! ├── cloud::leg_start
+//! ├── cloud::leg_state
 //! └── sanitize
 //! External: chrono, rand, std, tracing
 //!
@@ -48,9 +49,7 @@ use super::cloudflared::policy::{
 use super::cloudflared::ready::{POLL_UNTIL_READY, POLL_WHILE_READY, Readiness};
 use super::cloudflared::supervisor::{self, RunningChild};
 use super::leg::{CloudLegEvent, LegParams, LegSink, LegStop, sleep_unless_stopped};
-use super::leg_seam::{
-    CloudIdentity, LegStateRecord, MachineApiError, PairedMachine, RotateReason,
-};
+use super::leg_identity::{CloudIdentity, LegState, MachineApiError, PairedMachine, RotateReason};
 use super::leg_start::{Prepared, acquire_binary, ensure_origin, load_machine};
 
 const TICK: Duration = Duration::from_millis(100);
@@ -98,7 +97,7 @@ pub fn run(
         machine: prepared.machine,
         binary: prepared.binary,
         source: prepared.source,
-        token_file: identity.cloud_dir().join("tunnel-token"),
+        token_file: identity.cloud_paths().tunnel_token,
         failures: FailureRun::default(),
         user_rotated: false,
     };
@@ -200,10 +199,11 @@ impl Run<'_> {
 
     fn record(&self, child: &RunningChild, port: u16, state: &str) {
         let pid = child.pid();
-        let record = LegStateRecord {
+        let record = LegState {
+            schema: crate::cloud::leg_state::LEG_STATE_SCHEMA,
             pid,
             pgid: pid,
-            binary: self.binary.clone(),
+            binary: self.binary.display().to_string(),
             metrics_addr: format!("127.0.0.1:{port}"),
             state: state.to_string(),
             since: chrono::Utc::now().to_rfc3339(),
@@ -327,7 +327,7 @@ impl Run<'_> {
                     hostname: self.machine.hostname.clone(),
                 });
             }
-            MachineApiError::ClockSkew { server_time } => clock_warning(&server_time),
+            MachineApiError::ClockSkew { server_time } => clock_warning(server_time.as_deref()),
             other => format!(
                 "Cloudflare keeps refusing the tunnel for {}, and yaran could not ask Yaran Cloud \
                  why ({}); cloudflared keeps running and yaran asks again shortly.",
@@ -341,8 +341,10 @@ impl Run<'_> {
 }
 
 /// "this machine's clock is off by N s; fix the system clock" (02 §7 `signature_expired`).
-pub fn clock_warning(server_time: &str) -> String {
-    let offset = chrono::DateTime::parse_from_rfc3339(server_time)
+pub fn clock_warning(server_time: Option<&str>) -> String {
+    let offset = server_time
+        .ok_or(())
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).map_err(|_| ()))
         .map(|server| (chrono::Utc::now() - server.with_timezone(&chrono::Utc)).num_seconds());
     match offset {
         Ok(seconds) => format!(
@@ -357,19 +359,7 @@ pub fn clock_warning(server_time: &str) -> String {
 }
 
 fn describe(err: &MachineApiError) -> String {
-    let text = match err {
-        MachineApiError::Revoked => "revoked".to_string(),
-        MachineApiError::ProtocolUnsupported { min, max, ours } => {
-            format!("protocol {ours} is outside the supported {min}..{max}")
-        }
-        MachineApiError::ClockSkew { server_time } => {
-            format!("clock skew, server time {server_time}")
-        }
-        MachineApiError::Refused { code, message } => format!("{code}: {message}"),
-        MachineApiError::Server { status } => format!("HTTP {status}"),
-        MachineApiError::Network(detail) => detail.clone(),
-        MachineApiError::Malformed => "a malformed answer".to_string(),
-    };
+    let text = err.to_string();
     crate::sanitize::for_terminal(&text)
         .chars()
         .take(200)

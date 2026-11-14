@@ -17,8 +17,8 @@
 //! ├── cloud::cloudflared::acquire
 //! ├── cloud::cloudflared::ready
 //! ├── cloud::leg::tests
+//! ├── cloud::leg_identity
 //! ├── cloud::leg_run
-//! ├── cloud::leg_seam
 //! └── cloud::leg_start
 //! External: std
 //!
@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use super::cloudflared::acquire::{BinaryUnavailable, ManagedSource};
 use super::cloudflared::ready::Readiness;
-use super::leg_seam::{CloudIdentity, CloudLegSettings};
+use super::leg_identity::{CloudIdentity, CloudLegSettings};
 
 /// Why a leg ended. Every variant but `Requested` is terminal until the next input.
 #[derive(Debug, Clone, PartialEq, Eq)]

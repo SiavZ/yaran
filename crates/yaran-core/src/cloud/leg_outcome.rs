@@ -11,8 +11,8 @@
 //! Uses:
 //! cloud/leg_outcome.rs
 //! ├── cloud::leg
+//! ├── cloud::leg_identity
 //! ├── cloud::leg_outcome::tests
-//! ├── cloud::leg_seam
 //! ├── engine
 //! ├── status_text
 //! └── statusline
@@ -32,7 +32,7 @@
 //! <module-headers:end>
 
 use super::leg::{CloudLegEvent, LegStop};
-use super::leg_seam::CloudMode;
+use super::leg_identity::CloudMode;
 use crate::engine::StatusUpdate;
 use crate::status_text::StatusText;
 use crate::statusline::StatusTone;

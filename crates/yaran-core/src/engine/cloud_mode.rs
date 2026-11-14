@@ -11,7 +11,7 @@
 //! <module-headers:begin>
 //! Uses:
 //! engine/cloud_mode.rs
-//! └── cloud::leg_seam
+//! └── cloud::leg_identity
 //! External: anyhow
 //!
 //! Used by:
@@ -20,19 +20,14 @@
 //! <module-headers:end>
 
 use super::Engine;
-use crate::cloud::leg_seam::{self, CloudMode};
+use crate::cloud::leg_identity::{self, CloudMode};
 
 impl Engine {
     /// Save `[cloud] mode`, refusing anything outside the tri-state.
     pub fn set_cloud_mode(&mut self, mode: &str) -> anyhow::Result<CloudMode> {
         let parsed = parse_mode(mode)?;
-        if leg_seam::settings_from_config(&self.config).mode != parsed {
-            if !leg_seam::store_mode(&mut self.config, parsed) {
-                anyhow::bail!(
-                    "This build has no [cloud] section yet, so [cloud] mode cannot be saved as \"{}\".",
-                    parsed.as_str()
-                );
-            }
+        if leg_identity::settings_from_config(&self.config).mode != parsed {
+            leg_identity::store_mode(&mut self.config, parsed);
             self.config_writer.save_lazy(self.config.clone());
         }
         Ok(parsed)
@@ -59,8 +54,19 @@ mod tests {
     #[test]
     fn saving_the_current_mode_is_a_no_op() {
         let (mut engine, _tmp) = crate::engine::test_support::test_engine();
-        let current = leg_seam::settings_from_config(&engine.config).mode;
+        let current = leg_identity::settings_from_config(&engine.config).mode;
         assert_eq!(engine.set_cloud_mode(current.as_str()).unwrap(), current);
         assert!(engine.set_cloud_mode("banana").is_err());
+    }
+
+    #[test]
+    fn saving_another_mode_lands_in_the_cloud_section() {
+        let (mut engine, _tmp) = crate::engine::test_support::test_engine();
+        assert_eq!(engine.set_cloud_mode("no").unwrap(), CloudMode::No);
+        assert_eq!(engine.config.cloud.mode, "no");
+        assert_eq!(
+            leg_identity::settings_from_config(&engine.config).mode,
+            CloudMode::No
+        );
     }
 }

@@ -10,6 +10,9 @@
  *   dialog opens it from its own click handler.
  * - Each request carries the per-connection id, like every other mutating call.
  * - No secret crosses this wire; the status carries none.
+ * - `setCloudMode` saves `[cloud] mode` and, while yaran serves, moves the tunnel; the
+ *   reply is the sentence the server composed (the terminal UI shows the same one).
+ *   `cloudApi.leg` reads the leg snapshot, which costs no remote call.
  *
  * <module-headers:begin>
  * Uses:
@@ -19,8 +22,11 @@
  *
  * Used by:
  * src/lib/cloudApi.ts
+ * ├── src/components/CustomizeWebappDialog.test.tsx
+ * ├── src/components/CustomizeWebappDialog.tsx
  * ├── src/components/cloud/CloudDialog.test.tsx
- * └── src/components/cloud/CloudDialog.tsx
+ * ├── src/components/cloud/CloudDialog.tsx
+ * └── src/lib/bootstrapApi.ts
  * <module-headers:end>
  */
 
@@ -56,6 +62,39 @@ export interface CloudStatus {
   active_login: CloudLogin | null
 }
 
+/** `CloudLegView` from `yaran_core::cloud::view`, flattened with its state. */
+export type CloudLegState =
+  | "off"
+  | "unpaired"
+  | "acquiring"
+  | "starting"
+  | "ready"
+  | "reconnecting"
+  | "healing"
+  | "revoked"
+  | "failed"
+  | "not_serving"
+
+export interface CloudLegView {
+  mode: "auto" | "yes" | "no"
+  state: CloudLegState
+  /** Download progress while `state` is `"acquiring"`. */
+  pct?: number | null
+  hostname: string | null
+  org_url: string | null
+  org_name: string | null
+  since: string | null
+  detail: string | null
+}
+
+export interface CloudModeReply {
+  mode: string
+  warning: boolean
+  sticky: boolean
+  message: string
+  segments?: unknown
+}
+
 /** What disconnect and rotate answer; the toast carries the same sentence. */
 export interface CloudActionReply {
   ok: boolean
@@ -66,7 +105,12 @@ export interface CloudActionReply {
 // twice `[cloud] request_timeout_seconds` (15 s by default).
 const REQUEST_TIMEOUT_MS = 60_000
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" }
   const id = getConnectionId()
   if (id) headers["x-connection-id"] = id
@@ -77,7 +121,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       credentials: "same-origin",
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     })
   } catch {
     throw new Error("Could not reach the server.")
@@ -106,4 +150,10 @@ export const cloudApi = {
     request<void>("POST", "/api/v1/cloud/login/cancel", { login_id: loginId }),
   logout: () => request<CloudActionReply>("POST", "/api/v1/cloud/logout", {}),
   rotate: () => request<CloudActionReply>("POST", "/api/v1/cloud/rotate", {}),
+  leg: () => request<CloudLegView>("GET", "/api/v1/cloud/leg", undefined, 15_000),
+}
+
+/** Save `[cloud] mode`; 15 s is above the server's own 7 s bound on a mode change. */
+export function setCloudMode(mode: string): Promise<CloudModeReply> {
+  return request<CloudModeReply>("POST", "/api/v1/server/cloud-mode", { mode }, 15_000)
 }

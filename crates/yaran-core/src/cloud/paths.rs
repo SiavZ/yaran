@@ -18,6 +18,7 @@
 //! ├── cloud::actions
 //! ├── cloud::cli
 //! ├── cloud::credentials
+//! ├── cloud::leg_identity
 //! ├── cloud::leg_state
 //! ├── cloud::login
 //! ├── cloud::login_session
@@ -58,7 +59,12 @@ impl CloudPaths {
     }
 
     pub fn from_root(root: &Path) -> Self {
-        let dir = root.join("cloud");
+        Self::from_dir(&root.join("cloud"))
+    }
+
+    /// The same layout under an explicit `cloud/` directory.
+    pub fn from_dir(dir: &Path) -> Self {
+        let dir = dir.to_path_buf();
         Self {
             credentials: dir.join("credentials.json"),
             lock: dir.join("credentials.lock"),

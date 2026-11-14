@@ -20,15 +20,14 @@
 //! cloud/protocol/machine.rs
 //! ├── cloud::actions
 //! ├── cloud::credentials
+//! ├── cloud::leg::tests
+//! ├── cloud::leg_identity
 //! ├── cloud::login
 //! ├── cloud::machine_api
 //! ├── cloud::protocol
 //! ├── cloud::signed_request
 //! ├── cloud::test_support
-//! └── yaran-core[test cloud_machine_api]
-//! ├── cloud::leg::tests
-//! ├── cloud::leg_seam
-//! ├── cloud::protocol
+//! ├── yaran-core[test cloud_machine_api]
 //! └── yaran-web::cloud_loop::live_cloud_mode_tests
 //! <module-headers:end>
 

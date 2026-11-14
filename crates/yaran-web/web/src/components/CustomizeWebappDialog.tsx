@@ -14,7 +14,7 @@
  * ├── src/components/ui/scroll-area.tsx
  * ├── src/components/ui/select.tsx
  * ├── src/components/ui/switch.tsx
- * ├── src/lib/cloudLegApi.ts
+ * ├── src/lib/cloudApi.ts
  * ├── src/lib/configApi.ts
  * ├── src/lib/favicon.ts
  * ├── src/lib/inlineMarkdown.tsx
@@ -72,7 +72,7 @@ import {
   type SettingDescriptor,
   type SettingValue,
 } from "@/lib/settingsDescriptors";
-import { setCloudMode } from "@/lib/cloudLegApi";
+import { setCloudMode } from "@/lib/cloudApi";
 import { configApi } from "@/lib/configApi";
 import { renderInlineCode } from "@/lib/inlineMarkdown";
 import { wireProse } from "@/lib/prose";

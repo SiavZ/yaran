@@ -27,11 +27,13 @@
 //! file_modes.rs
 //! ├── cloud::cloudflared::acquire
 //! ├── cloud::cloudflared::command
-//! ├── cloud::leg_seam
+//! ├── cloud::credentials
+//! ├── cloud::paths
 //! ├── config
 //! ├── config_write
 //! ├── crate
 //! ├── logger
+//! ├── private_file
 //! ├── purge
 //! └── storage
 //! <module-headers:end>

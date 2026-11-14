@@ -55,8 +55,8 @@
 //! Used by:
 //! app/render.rs
 //! ├── app
-//! ├── app::cloud_render
 //! ├── app::cloud_mode
+//! ├── app::cloud_render
 //! ├── app::first_load
 //! ├── app::human_board_dialog
 //! ├── app::input

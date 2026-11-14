@@ -18,6 +18,8 @@
 //! cloud/leg_state.rs
 //! ├── cloud
 //! ├── cloud::cli::login
+//! ├── cloud::leg_identity
+//! ├── cloud::leg_run
 //! └── cloud::status
 //! <module-headers:end>
 
@@ -45,6 +47,10 @@ pub struct LegState {
     pub state: String,
     /// RFC 3339 time the state was entered.
     pub since: String,
+    /// The child's start time (`/proc` or `proc_pidinfo`), so the stale reap can tell a
+    /// reused pid apart. Absent in a record from an older yaran.
+    #[serde(default)]
+    pub child_start_time: u64,
 }
 
 /// The state word Phase 10 writes once cloudflared reports ready.
@@ -120,6 +126,7 @@ mod tests {
             metrics_addr: "127.0.0.1:41234".into(),
             state: READY.into(),
             since: "2026-11-14T12:00:00Z".into(),
+            child_start_time: 0,
         }
     }
 

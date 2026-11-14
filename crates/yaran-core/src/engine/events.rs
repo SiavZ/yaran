@@ -12,8 +12,8 @@
 //! engine/events.rs
 //! ├── agent_job
 //! ├── changes_status
+//! ├── cloud::leg_identity
 //! ├── cloud::leg_outcome
-//! ├── cloud::leg_seam
 //! ├── config
 //! ├── engine
 //! ├── engine::spawn_worker
@@ -438,7 +438,7 @@ pub enum EventReaction {
     },
     /// The background web server finished applying a live `[cloud] mode` change.
     CloudModeApplied {
-        mode: crate::cloud::leg_seam::CloudMode,
+        mode: crate::cloud::leg_identity::CloudMode,
         outcome: crate::cloud::leg_outcome::CloudModeOutcome,
     },
     /// Whether GitHub features work has CHANGED (a probe answered differently

@@ -22,8 +22,8 @@
 //! ├── yaran-core::cloud::cloudflared::command
 //! ├── yaran-core::cloud::ingress_cell
 //! ├── yaran-core::cloud::leg
+//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome
-//! ├── yaran-core::cloud::leg_seam
 //! ├── yaran-core::cloud::planner
 //! ├── yaran-core::cloud::view
 //! ├── yaran-core::config
@@ -43,8 +43,8 @@ use yaran_core::cloud::ingress_cell::{CloudIngress, CloudIngressWriter};
 use yaran_core::cloud::leg::{
     CloudLeg, CloudLegEvent, CredentialsWatch, LegParams, LegStop, ReadyProbe,
 };
+use yaran_core::cloud::leg_identity::{CloudIdentity, CloudLegSettings, PairedMachine};
 use yaran_core::cloud::leg_outcome::{CloudModeOutcome, leg_status, tls_disclosure};
-use yaran_core::cloud::leg_seam::{CloudIdentity, CloudLegSettings, PairedMachine};
 use yaran_core::cloud::planner::{
     CloudStep, Desired, Pairing, StopReason, desired_leg, plan_cloud_change,
 };
@@ -417,12 +417,13 @@ pub(crate) fn build(
 ) -> (CloudModeControl, CloudLoop) {
     let (writer, reader) = yaran_core::cloud::ingress_cell::LiveCloudIngress::new();
     let (control, rx) = CloudModeControl::new(runtime, reader);
+    let settings = yaran_core::cloud::leg_identity::settings_from_config(config);
     let mut cloud = CloudLoop::new(
         rx,
         control.clone(),
         writer,
-        yaran_core::cloud::leg_seam::production_identity(config_root),
-        yaran_core::cloud::leg_seam::settings_from_config(config),
+        yaran_core::cloud::leg_identity::production_identity(config_root, &settings),
+        settings,
         serving_port.unwrap_or(0),
         status,
         console,
@@ -434,7 +435,7 @@ pub(crate) fn build(
 /// After a serve mode's wind-down: wait for every cloudflared to be reaped, then SIGKILL
 /// whatever is left (grace plus the stop's own margin).
 pub(crate) fn wait_for_children(config: &yaran_core::config::Config) {
-    let grace = yaran_core::cloud::leg_seam::settings_from_config(config)
+    let grace = yaran_core::cloud::leg_identity::settings_from_config(config)
         .grace_period_seconds
         .min(yaran_core::cloud::cloudflared::command::MAX_GRACE_SECONDS);
     child_registry::wait_all(std::time::Duration::from_secs(grace + 3));

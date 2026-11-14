@@ -26,7 +26,7 @@
 //! ├── serve_legs
 //! ├── test_support
 //! ├── yaran-core::background_serve
-//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::config
 //! ├── yaran-core::engine
 //! ├── yaran-core::logger
@@ -214,7 +214,7 @@ impl BackgroundServer {
     /// worker event lane (never blocks, like `set_tailscale_mode`).
     pub fn set_cloud_mode(
         &self,
-        mode: yaran_core::cloud::leg_seam::CloudMode,
+        mode: yaran_core::cloud::leg_identity::CloudMode,
         worker_tx: std::sync::mpsc::Sender<yaran_core::worker::WorkerEvent>,
     ) {
         self.core

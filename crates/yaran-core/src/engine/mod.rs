@@ -66,6 +66,7 @@
 //! ├── background_serve
 //! ├── changes_status
 //! ├── cloud::leg_outcome
+//! ├── cloud::outcome
 //! ├── config_reload_status
 //! ├── crate
 //! ├── engine::amq
@@ -95,6 +96,7 @@
 //! ├── yaran-tui
 //! ├── yaran-tui::app
 //! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::cloud_commands
 //! ├── yaran-tui::app::cloud_mode
 //! ├── yaran-tui::app::first_load
 //! ├── yaran-tui::app::input
@@ -114,6 +116,8 @@
 //! ├── yaran-web::bootstrap
 //! ├── yaran-web::cloud_loop
 //! ├── yaran-web::cloud_mode
+//! ├── yaran-web::cloud_routes
+//! ├── yaran-web::cloud_routes::actions_routes
 //! ├── yaran-web::engine_actor
 //! ├── yaran-web::project_actions
 //! ├── yaran-web::serve_legs

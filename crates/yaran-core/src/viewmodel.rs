@@ -6,7 +6,7 @@
 //! <module-headers:begin>
 //! Uses:
 //! viewmodel.rs
-//! ├── cloud::leg_seam
+//! ├── cloud::leg_identity
 //! ├── cloud::view
 //! ├── config
 //! ├── crate
@@ -1513,7 +1513,7 @@ impl Engine {
             // fact, and the bootstrap ROUTE injects it. See the field's doc.
             tailscale_forced_no: false,
             cloud: Some(crate::cloud::view::CloudLegView {
-                mode: crate::cloud::leg_seam::settings_from_config(&self.config).mode,
+                mode: crate::cloud::leg_identity::settings_from_config(&self.config).mode,
                 state: crate::cloud::view::CloudLegState::NotServing,
                 ..Default::default()
             }),

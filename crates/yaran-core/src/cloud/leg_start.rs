@@ -15,7 +15,7 @@
 //! ├── cloud::cloudflared::policy
 //! ├── cloud::cloudflared::version
 //! ├── cloud::leg
-//! └── cloud::leg_seam
+//! └── cloud::leg_identity
 //! External: chrono, std, tracing
 //!
 //! Used by:
@@ -35,7 +35,7 @@ use super::cloudflared::child_registry::{StaleChild, reap_stale};
 use super::cloudflared::policy::BinarySource;
 use super::cloudflared::{pin_for, pins, version};
 use super::leg::{CloudLegEvent, LegParams, LegSink, LegStop};
-use super::leg_seam::{CloudIdentity, MachineApiError, PairedMachine};
+use super::leg_identity::{CloudIdentity, MachineApiError, PairedMachine};
 
 /// What a successful start sequence hands the run loop.
 #[derive(Debug, Clone)]
@@ -85,7 +85,7 @@ fn reap_recorded_child(identity: &dyn CloudIdentity, grace_seconds: u64) {
     let stale = StaleChild {
         pid: record.pid,
         pgid: record.pgid,
-        exe: &record.binary,
+        exe: std::path::Path::new(&record.binary),
         start_time: record.child_start_time,
     };
     if reap_stale(&stale, Duration::from_secs(grace_seconds.saturating_add(2))) {

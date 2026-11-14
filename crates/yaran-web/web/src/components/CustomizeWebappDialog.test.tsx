@@ -7,14 +7,14 @@
 // src/components/CustomizeWebappDialog.test.tsx
 // ├── src/components/CustomizeWebappDialog.tsx
 // ├── src/lib/bootstrapApi.ts
-// ├── src/lib/cloudLegApi.ts
+// ├── src/lib/cloudApi.ts
 // ├── src/lib/configApi.ts
 // ├── src/lib/notify.ts
 // ├── src/lib/settingsDescriptors.ts
 // └── src/lib/store.ts
 // External: @testing-library/react, react, vitest
 //
-// Used by: entry point (vitest, via npm test in crates/yaran-web/web)
+// Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
 // <module-headers:end>
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
@@ -46,7 +46,7 @@ vi.mock("@/lib/configApi", () => ({
 }))
 
 // The cloud row has its own endpoint for the same reason as the Tailscale one.
-vi.mock("@/lib/cloudLegApi", () => ({ setCloudMode: vi.fn() }))
+vi.mock("@/lib/cloudApi", () => ({ setCloudMode: vi.fn() }))
 
 // The Tailscale row's reply is a sentence, and its tone decides which raiser
 // it goes to. `lib/notify` is the one place a toast is raised, so it is the one
@@ -108,7 +108,7 @@ const setChangesPaneVisibility = vi.mocked(store.setChangesPaneVisibility)
 const { configApi } = await import("@/lib/configApi")
 const toggleGithubIntegration = vi.mocked(configApi.toggleGithubIntegration)
 const setTailscaleMode = vi.mocked(configApi.setTailscaleMode)
-const setCloudMode = vi.mocked((await import("@/lib/cloudLegApi")).setCloudMode)
+const setCloudMode = vi.mocked((await import("@/lib/cloudApi")).setCloudMode)
 const notify = await import("@/lib/notify")
 const notifyInfo = vi.mocked(notify.notifyInfo)
 const notifyWarning = vi.mocked(notify.notifyWarning)

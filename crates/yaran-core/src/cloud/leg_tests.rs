@@ -1,4 +1,4 @@
-//! Tests for the whole leg against a fake identity (09's seam) and a `/bin/sh` stand-in for
+//! Tests for the whole leg against a fake `CloudIdentity` and a `/bin/sh` stand-in for
 //! cloudflared, with an injected ready probe.
 //!
 //! - Test-only; spawns real child processes, never touches the network.
@@ -10,7 +10,7 @@
 //! ├── cloud::cloudflared::ready
 //! ├── cloud::cloudflared::test_support
 //! ├── cloud::leg
-//! ├── cloud::leg_seam
+//! ├── cloud::leg_identity
 //! ├── cloud::protocol::machine
 //! └── cloud::protocol::test_fixtures
 //! External: serde_json, std, tempfile
@@ -24,7 +24,7 @@ use super::*;
 use crate::cloud::cloudflared::acquire::BinaryUnavailable;
 use crate::cloud::cloudflared::ready::Readiness;
 use crate::cloud::cloudflared::test_support::script;
-use crate::cloud::leg_seam::{
+use crate::cloud::leg_identity::{
     CloudLegSettings, CredentialsRevision, MachineApiError, PairedMachine, RotateReason,
 };
 use crate::cloud::protocol::machine::MachineConfig;
@@ -75,8 +75,12 @@ impl CloudIdentity for FakeIdentity {
     }
     fn revision(&self) -> Option<CredentialsRevision> {
         let m = self.machine.lock().unwrap();
-        m.as_ref()
-            .map(|m| CredentialsRevision(m.token_version as u64, 0, 0, 0))
+        m.as_ref().map(|m| CredentialsRevision {
+            dev: m.token_version as u64,
+            ino: 0,
+            len: 0,
+            mtime_ns: 0,
+        })
     }
     fn load(&self) -> Result<Option<PairedMachine>, String> {
         Ok(self.machine.lock().unwrap().clone())
@@ -214,7 +218,7 @@ fn a_paired_leg_reaches_ready_and_stops_without_leaving_anything() {
         .unwrap();
     assert!(!String::from_utf8_lossy(&cmdline.stdout).contains("SECRET"));
     assert!(
-        !std::fs::read_to_string(id.leg_state_path())
+        !std::fs::read_to_string(id.cloud_paths().leg_state)
             .unwrap()
             .contains("SECRET")
     );
@@ -367,7 +371,7 @@ fn a_revoked_config_answer_stops_and_clock_skew_keeps_the_child() {
     h.ready.store(0, Ordering::SeqCst);
     let id = FakeIdentity::paired(h.dir.path().to_path_buf(), h.port);
     *id.config.lock().unwrap() = Err(MachineApiError::ClockSkew {
-        server_time: "2020-01-01T00:00:00Z".into(),
+        server_time: Some("2020-01-01T00:00:00Z".into()),
     });
     let body = FAKE_CF.replace(
         "Registered tunnel connection\"}' >&2",

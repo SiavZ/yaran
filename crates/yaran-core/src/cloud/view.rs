@@ -9,7 +9,7 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/view.rs
-//! └── cloud::leg_seam
+//! └── cloud::leg_identity
 //! External: serde_json, std
 //!
 //! Used by:
@@ -27,7 +27,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::leg_seam::CloudMode;
+use super::leg_identity::CloudMode;
 
 /// Where the leg is. Exhaustive: every surface matches on it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

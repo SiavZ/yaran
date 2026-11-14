@@ -9,7 +9,7 @@
  * └── src/lib/settingsDescriptorsCloud.ts
  * External: vitest
  *
- * Used by: entry point (vitest, via npm test in crates/yaran-web/web)
+ * Used by: entry point (vitest, via npx vitest run in crates/yaran-web/web)
  * <module-headers:end>
  */
 

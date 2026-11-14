@@ -8,14 +8,14 @@
 //! <module-headers:begin>
 //! Uses:
 //! engine_actor.rs
-//! ├── cloud_routes
 //! ├── cloud_mode
+//! ├── cloud_routes
 //! ├── crate
 //! ├── serve_legs
 //! ├── test_support
 //! ├── yaran-core
 //! ├── yaran-core::background_serve
-//! ├── yaran-core::cloud::leg_seam
+//! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::config
 //! ├── yaran-core::config_reload_status
 //! ├── yaran-core::config_write
@@ -46,8 +46,8 @@
 //! ├── background
 //! ├── browse_routes
 //! ├── changes
-//! ├── cloud_routes
 //! ├── cloud_loop
+//! ├── cloud_routes
 //! ├── crate
 //! ├── file_drop_routes
 //! ├── file_routes
@@ -2960,8 +2960,8 @@ pub(crate) fn run_engine_loop(
                 let previous_tailscale = engine.config.server.tailscale_mode();
                 let next_tailscale = config.server.tailscale_mode();
                 let previous_cloud =
-                    yaran_core::cloud::leg_seam::settings_from_config(&engine.config);
-                let next_cloud = yaran_core::cloud::leg_seam::settings_from_config(&config);
+                    yaran_core::cloud::leg_identity::settings_from_config(&engine.config);
+                let next_cloud = yaran_core::cloud::leg_identity::settings_from_config(&config);
                 match engine.apply_reloaded_config(*config) {
                     Ok(()) => {
                         // Memory now matches disk: any pending raw "Save" has been

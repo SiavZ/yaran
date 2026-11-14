@@ -10,7 +10,7 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud/planner.rs
-//! └── cloud::leg_seam
+//! └── cloud::leg_identity
 //! External: none
 //!
 //! Used by:
@@ -19,7 +19,7 @@
 //! └── yaran-web::cloud_loop
 //! <module-headers:end>
 
-use super::leg_seam::CloudMode;
+use super::leg_identity::CloudMode;
 
 /// What the credentials say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
