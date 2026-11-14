@@ -18,6 +18,7 @@
 //! ├── engine::amq
 //! ├── engine::backup
 //! ├── engine::cloud_mode
+//! ├── engine::attention_decision
 //! ├── engine::command
 //! ├── engine::companion
 //! ├── engine::config_saver
@@ -72,6 +73,7 @@
 //! ├── engine::amq
 //! ├── engine::backup
 //! ├── engine::cloud_mode
+//! ├── engine::attention_decision
 //! ├── engine::command
 //! ├── engine::companion
 //! ├── engine::events
@@ -131,6 +133,7 @@
 //! <module-headers:end>
 
 pub mod amq;
+pub(crate) mod attention_decision;
 pub mod backup;
 mod cloud_mode;
 pub mod command;
@@ -198,6 +201,7 @@ use chrono::Utc;
 
 use crate::config::{Config, ProjectConfig, YaranPaths};
 use crate::config_queue::{ConfigWriteQueue, QuiesceGuard};
+use attention_decision::{apply_attention_decision, attention_engaged};
 use crate::ids::{SessionIdRef, TabId, TabIdRef};
 use crate::lockfile::SingleInstanceLock;
 use crate::model::{
@@ -1392,64 +1396,6 @@ pub const PROGRESS_AUTHORITY_WINDOW: Duration = Duration::from_secs(10);
 /// attention flag from ever rising. Typing suppression is separate
 /// ([`AGENT_INPUT_SUPPRESSION_WINDOW`]). Wall-clock, per the design tenet.
 pub const ATTENTION_ENGAGED_WINDOW: Duration = Duration::from_secs(3);
-
-/// Whether the user is currently "engaged" with a tab and so should not be
-/// nagged about it: they either looked at it within [`ATTENTION_ENGAGED_WINDOW`]
-/// (`viewed`) or typed into it within [`AGENT_INPUT_SUPPRESSION_WINDOW`]
-/// (`typed`). A free function so [`Engine::poll_agent_signals`] can call it while
-/// holding a disjoint mutable borrow of `needs_attention`, and so the windowing
-/// is unit-testable without a live PTY.
-fn attention_engaged(
-    viewed: &HashMap<TabId, Instant>,
-    // `pty_input` spans the whole PTY keyspace (tabs AND companion terminals),
-    // so it stays string-keyed and is probed with the tab id's raw string.
-    typed: &HashMap<String, Instant>,
-    tab_id: &TabIdRef,
-    now: Instant,
-) -> bool {
-    viewed
-        .get(tab_id)
-        .is_some_and(|t| now.duration_since(*t) < ATTENTION_ENGAGED_WINDOW)
-        || typed
-            .get(tab_id.as_str())
-            .is_some_and(|t| now.duration_since(*t) < AGENT_INPUT_SUPPRESSION_WINDOW)
-}
-
-/// The pure per-tick attention decision behind [`Engine::poll_agent_signals`].
-/// Given the tabs whose attention signal fired this tick (`fired`, already gated by the
-/// `attention_on_bell` preference at drain time), whether the feature is enabled,
-/// and an `engaged` predicate, it updates `needs_attention` in place:
-///
-/// - Feature off: clear everything (never accumulate; drop anything left over
-///   from before a runtime toggle).
-/// - Otherwise: clear the flag on any tab the user is now engaged with, then set
-///   it for each freshly-fired tab the user is NOT engaged with. Each outcome is
-///   logged at debug level so the whole pipeline is diagnosable from `yaran.log`
-///   without adding default-level noise.
-fn apply_attention_decision(
-    needs_attention: &mut HashSet<TabId>,
-    fired: &[TabId],
-    enabled: bool,
-    engaged: impl Fn(&TabIdRef) -> bool,
-) {
-    if !enabled {
-        needs_attention.clear();
-        return;
-    }
-    // Looking at (or typing into) a tab clears its flag.
-    needs_attention.retain(|tab| !engaged(tab));
-    // A newly-fired signal sets the flag unless the user is engaged with it.
-    for tab in fired {
-        if engaged(tab) {
-            crate::logger::debug(&format!(
-                "attention signal for tab {tab} suppressed: user is engaged"
-            ));
-        } else {
-            crate::logger::debug(&format!("attention flagged for tab {tab}"));
-            needs_attention.insert(tab.clone());
-        }
-    }
-}
 
 /// How often [`Engine::refresh_terminal_foregrounds`] actually probes companion
 /// terminals for their foreground command. Calls more frequent than this are
@@ -7871,53 +7817,6 @@ mod tests {
     }
 
     #[test]
-    fn attention_engaged_covers_viewing_and_typing() {
-        let now = Instant::now();
-        let mut viewed = HashMap::new();
-        let mut typed = HashMap::new();
-
-        // Nothing recorded → not engaged.
-        assert!(!attention_engaged(
-            &viewed,
-            &typed,
-            TabIdRef::new("s1"),
-            now
-        ));
-
-        // Fresh view → engaged.
-        viewed.insert(TabId::new("s1"), now);
-        assert!(attention_engaged(&viewed, &typed, TabIdRef::new("s1"), now));
-
-        // Stale view → not engaged.
-        viewed.insert(
-            TabId::new("s1"),
-            now - (ATTENTION_ENGAGED_WINDOW + Duration::from_millis(50)),
-        );
-        assert!(!attention_engaged(
-            &viewed,
-            &typed,
-            TabIdRef::new("s1"),
-            now
-        ));
-
-        // Fresh typing alone → engaged.
-        typed.insert("s1".to_string(), now);
-        assert!(attention_engaged(&viewed, &typed, TabIdRef::new("s1"), now));
-
-        // Stale typing → not engaged.
-        typed.insert(
-            "s1".to_string(),
-            now - (AGENT_INPUT_SUPPRESSION_WINDOW + Duration::from_millis(50)),
-        );
-        assert!(!attention_engaged(
-            &viewed,
-            &typed,
-            TabIdRef::new("s1"),
-            now
-        ));
-    }
-
-    #[test]
     fn clear_tab_runtime_drops_attention_and_progress() {
         let (mut engine, _tmp) = test_engine();
         engine.needs_attention.insert(TabId::new("s1"));
@@ -7954,56 +7853,6 @@ mod tests {
         engine.note_agent_viewed_if_known("s1-slot");
         assert!(engine.agent_viewed.contains_key(TabIdRef::new("s1-slot")));
         assert!(!engine.tab_needs_attention("s1-slot"));
-    }
-
-    #[test]
-    fn apply_attention_decision_sets_flag_when_not_engaged() {
-        let mut set = HashSet::new();
-        apply_attention_decision(&mut set, &[TabId::new("s1")], true, |_| false);
-        assert!(
-            set.contains(TabIdRef::new("s1")),
-            "a fired, unengaged tab must be flagged"
-        );
-    }
-
-    #[test]
-    fn apply_attention_decision_suppresses_and_clears_when_engaged() {
-        let mut set = HashSet::new();
-        set.insert(TabId::new("s1"));
-        // Engaged: the fired signal is suppressed AND the existing flag is cleared.
-        apply_attention_decision(&mut set, &[TabId::new("s1")], true, |_| true);
-        assert!(
-            !set.contains(TabIdRef::new("s1")),
-            "engagement must both suppress the new signal and clear the old flag"
-        );
-    }
-
-    #[test]
-    fn apply_attention_decision_clears_stale_flag_without_a_new_signal() {
-        let mut set = HashSet::new();
-        set.insert(TabId::new("s1"));
-        // No new signal this tick, but the user is now engaged → clear.
-        apply_attention_decision(&mut set, &[], true, |tab| tab.as_str() == "s1");
-        assert!(!set.contains(TabIdRef::new("s1")));
-    }
-
-    #[test]
-    fn apply_attention_decision_retains_flag_while_unengaged() {
-        let mut set = HashSet::new();
-        set.insert(TabId::new("s1"));
-        apply_attention_decision(&mut set, &[], true, |_| false);
-        assert!(
-            set.contains(TabIdRef::new("s1")),
-            "an unviewed flag must persist across ticks"
-        );
-    }
-
-    #[test]
-    fn apply_attention_decision_disabled_clears_everything() {
-        let mut set = HashSet::new();
-        set.insert(TabId::new("s1"));
-        apply_attention_decision(&mut set, &[TabId::new("s2")], false, |_| false);
-        assert!(set.is_empty(), "the feature being off must drop every flag");
     }
 
     // A one-shot child that emits, in stream order: a bell, an OSC 9 notification,

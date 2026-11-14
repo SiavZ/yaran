@@ -17,6 +17,7 @@
     "crates/yaran-core/src/background_serve.rs",
     "crates/yaran-core/src/config.rs",
     "crates/yaran-core/src/config_write.rs",
+    "crates/yaran-core/src/engine/attention_decision.rs",
     "crates/yaran-core/src/engine/events.rs",
     "crates/yaran-core/src/engine/followup.rs",
     "crates/yaran-core/src/engine/mod.rs",
