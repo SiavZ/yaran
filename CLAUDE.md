@@ -7,6 +7,8 @@
 - `YARAN_*` settings take precedence, including explicit empty values. `DUX_*` is a fallback only when the new variable is absent.
 - Preserve existing state and durable interoperability names. Do not mechanically rename `dux.lock`, AMQ queues/ownership markers, stored provenance, immutable migrations, or captured historical evidence.
 - See [rebrand compatibility notes](docs/operations/rebranding.md) before changing discovery, storage, installers, or release naming.
+- **Three release trains, one repository.** `yaran-vX.Y.Z` is the `yaran` binary and the only train with binary archives. `yaran-cloud-vX.Y.Z` is the protocol, the org control-plane Worker, the publisher push relay and the generated `cloud-deploy` branch the Deploy to Cloudflare button targets. `yaran-mobile-vX.Y.Z` is the phone apps. Each has its own workflow, and they stay compatible by protocol version negotiation, never by lockstep version numbers. Three rules keep `install.sh` installing the binary: new-train releases are created with `--latest=false`, `release.yml` skips every tag that is not `yaran-v*`, and `install.sh` resolves only `yaran-v*` tags. Never use a `dux-` name for the new trains.
+- **No invented hostnames, in docs or code.** Cloud Connect values that someone else supplies are written as `<zone>`, `<org-control-plane>`, `<publisher-relay>` and `<publisher-domain>` (the app's verified sign-in callback domain). The real publisher values come from build config and never appear in the repo; `website/src/lib/cloud-docs-domains.test.ts` enforces this on the Cloud Connect docs pages.
 
 ## Design Tenets
 
@@ -105,6 +107,36 @@ The web UI (`crates/yaran-web/web/`, React + Vite + Tailwind) has its own conven
 - **Serving is visible on the terminal UI, and the indicators are honest about what they count.** The header carries a serving crumb whenever a listener is up, count or not, because being the standing "you are running a listener" signal is its first job; it lives outside the header's selection arms, since a listener is a fact about the process. The word is "connections", not "devices": the count is Events sockets, one per browser tab, so one laptop with two tabs is two and nothing on this side can honestly say otherwise. Each agent row's line two carries a quiet remote-viewer count in the MUTED tone (the standalone identity tone means something else), summed over every PTY the agent owns (its provider tabs AND its companion terminals, whose rows carry no count of their own) the way its liveness ORs over tabs, and the center pane's caption says the same for the tab it shows. It counts open sockets, the driver's included, so the honest word is "remote", never "watching". Every count is structurally zero when nothing is serving.
 - **One driver at a time, and the model spans surfaces rather than living in one.** The ownership registry is in `yaran-core` so both surfaces ask it the same questions; a watcher on either surface still gets live output, scrolling and copying. Every refusal names the device that is driving, or says plainly that nobody is, and every write goes through the gate, macros included: a refusal must never report that it sent something.
 
+- **Cloud Connect is a supervised outbound leg, not a fourth way to serve.** It never binds a listener: yaran supervises one `cloudflared` child that dials out to Cloudflare and forwards to yaran's own loopback primary, and it runs only while one of the three ways is serving. It follows pairing and serving live, and it stops with them.
+
+### Cloud Connect
+
+- **One hostname per machine, never Worker path-proxying.** Each machine is `<machine>-<user>.<zone>`, one label deep, reached directly through its own tunnel. The control-plane Worker never fetches a machine hostname: same-origin, the Host guard and the Access cookie scope then work unchanged, and the same-zone fetch that skips Access never exists.
+- **Access must fail closed, because it is the only gate in front of an unauthenticated API with shell reach.** Every machine gets its own Access app and owner-only reusable policy, created by code, and its tunnel ingress carries `originRequest.access` with `required` and the app's AUD. The account caps (500 apps, 500 policies) are enforced with a quota guard that refuses before Cloudflare would.
+- **yaran verifies the Access JWT itself on the cloud Host.** RS256 against the team JWKS, `iss`, `aud`, `exp`, `nbf`, email equal to the paired owner, service-token JWTs refused, and an unavailable JWKS refuses rather than admits. Loopback, LAN and Tailscale Hosts are untouched. Remote identity equals the paired owner, so no route is restricted by origin.
+- **cloudflared preserves Host and speaks HTTP/1.1 to the origin.** No `httpHostHeader` rewrite; the tunnel hostname is a live host-guard rule, never a restart-bound `allowed_hosts` entry.
+- **Secrets never enter `config.toml` or `[env]`.** The tunnel token, the machine's private key and its consent key live in the owner-only credentials file under the config root (`file_modes.rs` decides its mode). The token reaches cloudflared through a token file, never argv, because the raw-config route, `[env]` and `config diff --raw` would all leak it.
+- **Machine-to-Worker calls are Ed25519-signed over the protocol's canonical string.** A nonce store and a timestamp window stop replay. Service tokens are not used: the per-account cap rules them out.
+- **Pairing is a loopback redirect, `gh auth login` style.** Browser SSO at the Worker, a one-time code and PKCE back to `127.0.0.1`, claimed by a signed request. The terminal prints the machine key fingerprint and the confirm page shows the same string.
+- **Provisioning order is policy, Access app, tunnel, ingress, DNS; teardown is DNS, connections, tunnel, Access app, policy.** A hostname is never routable without its Access app. Never reorder these steps.
+- **Push is the rising edge of the attention decision, computed on a push-only set.** It runs the same decision function with the same inputs at the same call site as `needs_attention`, so it is independent of `ui.attention_indicator`. Edges leave the engine over a channel, because the engine is `!Send` and the tick must not block. Events carry ids, a label, a project and a state token, never agent output.
+- **Every org Worker sends standard Web Push only, end-to-end encrypted to the device.** Android `foss` uses UnifiedPush, `play` embeds the FCM distributor, iOS goes through the one open-source publisher relay, which alone holds the APNs key and never sees plaintext.
+- **Cloudflare decrypts traffic at its edge, and every surface says so.** Docs, the threat model, onboarding and the server console state it plainly; no copy may imply that terminal traffic is end-to-end encrypted.
+- **The Deploy button targets the generated, self-contained `cloud-deploy` branch.** On `main`, `cloud/worker` imports `cloud/protocol` as a workspace package and nothing is vendored; the `yaran-cloud-v*` release workflow builds the branch with the protocol bundled in.
+- **`workers.dev` exists only to bootstrap setup.** Until setup closes, the Worker answers only setup and its service-info check there; setup then attaches the custom domain and disables `workers.dev` by API, and every non-custom-domain Host is refused from then on. Preview URLs stay off, and no custom domain is written into the wrangler config.
+- **Three deploy-time secrets: `CF_API_TOKEN`, `SETUP_CODE`, `DATA_KEY`.** `DATA_KEY` seals everything the Worker generates and stores, because a Worker cannot write its own secrets.
+
+### Mobile apps
+
+- **The phone signs in through the system browser and a sealed handoff.** The app makes an ephemeral P-256 key; the handoff endpoint, served behind the target Access app, seals the JWT to it as a JWE and redirects to the app. No unauthenticated exchange endpoint exists. Machine handoffs are served by yaran on the machine hostname, control-plane handoffs by the Worker.
+- **The callback is a verified https link on `<publisher-domain>`.** An Android App Link or an iOS `ASWebAuthenticationSession` https callback, so iOS 17.4 is the floor and no other app can receive it. The custom scheme `yaranapp://auth/callback` is accepted only from builds compiled without a publisher domain, and those builds say so on every screen.
+- **Every handoff page shows a one-tap consent page naming the device and the host, and remembers it per host and device key.** A later handoff skips it only when the request carries a verifying signature from the install's hardware-held, non-exportable device key and the MACed consent cookie names that key's fingerprint. Revoking the device, rotating the consent key, re-pairing or logging out forgets it.
+- **The machine WebView has no JS bridge.** It is a first-party native component; the bundled Capacitor shell is the only bridge-enabled page, because Capacitor's bridge does not check the caller's origin.
+- **The remote yaran UI is served by the machine, never bundled.** That keeps same-origin, version parity and the server-run identity reload.
+- **Bearer credentials never enter JavaScript in the app.** The handoff client, envelope opener, session store and the org API client (push registration included) are native; JS orchestrates and native performs the HTTP.
+- **Capacitor for the shell, first-party plugins for everything native.** The QR decoder is JS/WASM, never ML Kit, and the `foss` flavor carries no Google library, because F-Droid forbids them.
+- **One Android app-signing key for every channel, enrolled in Play App Signing before the first upload.** Otherwise Play, GitHub and F-Droid installs can never upgrade one another, and Play keeps whichever key the first upload set.
+
 ### Agents and Providers
 
 - **A provider is supported if and only if it supports PTY mode.** yaran embeds the CLI's interactive session in a pseudo-terminal; that is the only thing a provider has to support.
@@ -195,10 +227,10 @@ The current app provides:
 - All periodic or potentially-blocking work (git commands, file I/O, network) must run in background workers, never on the main UI thread. Even fast operations like `git symbolic-ref` should use workers to prevent UI freezes if the filesystem or git lock stalls.
 - Async operations must keep the status line updated for the full operation lifecycle: set a Busy message when the worker starts, then replace it with a clear success or failure message when the worker completes. Do not start background work silently.
 - User state lives under `~/.yaran/` on macOS and `$XDG_CONFIG_HOME/yaran/` (or `~/.config/yaran/`) on Linux.
-- **The web server (server mode) is single-tenant / trusted-access by design.** There is no login. The server binds loopback by default and optionally a Tailscale address; access control is delegated to loopback scope, Tailscale ACLs, or an upstream proxy. A Host-header allowlist and same-origin check guard against DNS rebinding and cross-site requests. Every client shares one workspace: it can drive any PTY, browse the server's filesystem, and see every session. This is intentional for a per-developer or trusted-team tool. Do not add features that assume mutually-distrusting web users without first designing a real per-user isolation model.
+- **The web server (server mode) is single-tenant / trusted-access by design.** There is no login. The server binds loopback by default and optionally a Tailscale address; access control is delegated to loopback scope, Tailscale ACLs, an upstream proxy, or Cloudflare Access via Cloud Connect, which yaran also verifies on the cloud hostname. A Host-header allowlist and same-origin check guard against DNS rebinding and cross-site requests. Every client shares one workspace: it can drive any PTY, browse the server's filesystem, and see every session. This is intentional for a per-developer or trusted-team tool. Do not add features that assume mutually-distrusting web users without first designing a real per-user isolation model.
 - Worktrees are user data and should not be removed or mutated casually.
 - Git operations should be explicit and conservative, especially around the source checkout.
-- **Target platforms are macOS and Linux only.** Windows users run yaran through WSL2, which is Linux. Do not add `#[cfg(windows)]` branches, `cfg!(windows)` checks, or Windows-specific code paths. Assume Unix throughout.
+- **The `yaran` binary targets macOS and Linux only; the phone apps under `mobile/` target Android and iOS.** Windows users run yaran through WSL2, which is Linux. Do not add `#[cfg(windows)]` branches, `cfg!(windows)` checks, or Windows-specific code paths. Assume Unix throughout the binary.
 
 ## App Module Structure
 
@@ -241,6 +273,9 @@ When making changes, edit only the relevant submodule. If you need to add a new 
 - In `.astro` templates, write the space between a closing inline tag and adjacent text explicitly as `{" "}`; Astro eats the line break after a closing inline tag and welds the words together, the build succeeds, and nothing warns you. There is deliberately no automated check (the checkable half produced mostly false positives); catch it by writing it correctly and looking at the rendered page.
 - **The docs are consumer docs, never coding internals.** A page describes what a user of yaran sees, configures, and does. HTTP routes, sockets and wire frames, engine and worker mechanics, storage layout beyond "your state lives here", and design rationale are not consumer facts and stay out, however true; state the observable behavior instead (the API is not a supported surface today). Every setting, default, limit, command, refusal, platform caveat and data-loss warning is a consumer fact and stays. Box what a skimmer must not miss as an admonition (WARNING/CAUTION for security and loss, IMPORTANT for must-know behavior, TIP for a better way, NOTE for asides); a plain paragraph in a box is noise.
 - The website's docs section is generated from plain Markdown in `website/docs/`; add a `.md` file with `title`, `description`, `group`, and `order` frontmatter and everything else is derived. When a feature change touches anything a docs page explains, update the Markdown in the same change.
+- **Cloud Connect and the phone apps have their own docs group** ("Cloud Connect", orders 70 to 77). A `[cloud]` key change updates the keys table in `website/docs/cloud-connect-machine.md`; a new or reworded user-facing message updates `cloud-troubleshooting.md`, quoted from the code. Every Cloud Connect page keeps the warning that Cloudflare can read tunneled traffic.
+- **Every new attack surface edits its threat row.** Cloud Connect and the phone apps have rows from T25 onward in `SECURITY.md` and `docs/operations/threat-model.md`; the change that builds a surface replaces its design-stage mitigation with what the code does.
+- **Screenshots of the phone app's shell UI are ordinary browser scenes** at `viewport: "phone"` in `tools/preview-env/screens/scenes/`, never a second screenshot pipeline.
 - When a change makes a docs screenshot stale, regenerate it with `tools/preview-env/screens/reshoot.sh` (no arguments for the whole set, or the screenshot's own name for just that one); every image under `website/public/screens/` has a committed journey named after it, so a stale picture is re-run rather than reinvented.
 
 ## Recommendations For Debugging
@@ -289,6 +324,15 @@ cargo fmt
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
+
+For the phone-app subprojects, run each tree's own suite when you touch it (the commands are in `CONTRIBUTING.md`, under "Cloud and mobile subprojects"), and the module-headers gate for every change that touches its scope:
+
+```bash
+node tools/module-headers/bin/module-headers.mjs --check
+node tools/module-headers/bin/module-headers.mjs --lines --check
+```
+
+`make headers-check lines-check` runs the same two.
 
 `cargo clippy --all-targets --all-features -- -D warnings` is a CI gate; the same command runs on every pull request and fails it on any warning. Run it locally before committing. When a new stable Rust release enables lints that previously passed, fix the code rather than suppressing the lint unless there is a specific, documented reason.
 

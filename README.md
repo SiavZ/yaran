@@ -8,7 +8,7 @@
 
 Agents run as real CLIs in real terminals. Their MCP servers, hooks, skills, slash commands, and permission dialogs remain their own.
 
-Yaran builds on [dux](https://github.com/patrickdappollonio/dux) by Patrick D'Appollonio. The original MIT license and attribution are preserved. This repository's shared-workspace, messaging, orchestration, and session-management work is maintained under the Yaran name.
+Yaran builds on [dux](https://github.com/patrickdappollonio/dux) by Patrick D'Appollonio. The original MIT license and attribution are preserved, and [NOTICE](NOTICE) lists the third-party software Yaran downloads or ships with. This repository's shared-workspace, messaging, orchestration, and session-management work is maintained under the Yaran name.
 
 [Install](#install) · [Workspace modes](#workspace-modes) · [Peer routing](#peer-routing) · [Server mode](#server-mode) · [Documentation](#documentation) · [Upgrade compatibility](docs/operations/rebranding.md)
 
@@ -34,7 +34,7 @@ They are not identical, on purpose. Each surface does what its medium is good at
 
 You won't find a per-feature comparison table here, because a table like that is stale the week after it's written. The app is the reference: in the terminal, the help overlay and the command palette; in the browser, the cog menu and the row `⋯` menus.
 
-One thing worth knowing before you point a browser at anything: **there is no login.** [Server Mode](#server-mode) explains exactly what that means and which shapes are safe; read it before you bind anything but loopback.
+One thing worth knowing before you point a browser at anything: **there is no login.** [Server Mode](#server-mode) explains exactly what that means and which shapes are safe; read it before you bind anything but loopback. Yaran has no login of its own; if you use [Cloud Connect](#phone-app-and-cloud-connect), Cloudflare Access is the login for that one machine address, and Yaran double-checks it.
 
 ## Prerequisites
 
@@ -74,6 +74,14 @@ Open `http://127.0.0.1:3890`, add a project, and create an agent with an install
 
 The canonical repository is [SiavZ/yaran](https://github.com/SiavZ/yaran). Yaran releases use `yaran-vX.Y.Z` tags and `yaran-<os>-<arch>.tar.gz` archives. The previous `SiavZ/dux-amq-setup` address remains a legacy redirect.
 
+The repository publishes three release trains, each with its own tags:
+
+- **`yaran-vX.Y.Z`**: the `yaran` binary. These are the only releases with `yaran-<os>-<arch>.tar.gz` archives.
+- **`yaran-cloud-vX.Y.Z`**: the Cloud Connect control plane, the push relay and their shared protocol, plus the generated `cloud-deploy` branch the Deploy to Cloudflare button uses.
+- **`yaran-mobile-vX.Y.Z`**: the phone apps, including the Android APKs.
+
+The trains are released independently and work together by negotiating a protocol version, not by matching version numbers. `install.sh` with no version installs the newest `yaran-v*` release, even when a newer cloud or mobile release exists, because those releases are never marked as the latest and the installer only considers `yaran-v` tags.
+
 The renamed installer requires a release containing the new `yaran` binary. Until the first Yaran release is published, use the source-build instructions above. Older `dux-amq-v*` releases contain the previous `dux` executable.
 
 For a published Yaran release, download its `install.sh` from this repository's [releases](https://github.com/SiavZ/yaran/releases), inspect it, and run it:
@@ -106,6 +114,9 @@ The documentation sources live in [website/docs/](website/docs/). The README is 
 - **Pull request banner settings**: including whether the banner sits above or below the terminal.
 - **Naming a web instance**: `[server] title` and `favicon`, so you can tell several yaran tabs apart.
 - **Hosting yaran behind a login**: a reverse proxy and oauth2-proxy in front, since yaran has no login of its own.
+- **Cloud Connect**: an overview, setting up your org's control plane on Cloudflare, connecting a machine with `yaran cloud login` and every `[cloud]` key, and troubleshooting.
+- **The phone app and push notifications**: install channels, signing in and its confirmation page, the machines list, and what a notification contains.
+- **Cloud Connect security and privacy**: who can see what, revocation, and the accepted risks.
 
 ## How it works
 
@@ -328,19 +339,25 @@ Already in the TUI with agents running? You don't need a second yaran, and you c
 
 **How it binds.** By default `yaran server` binds `127.0.0.1:3890`, loopback only, so nothing leaves the machine. If the `tailscale` CLI is around it also binds this machine's Tailscale address on the same port, so your own tailnet devices reach yaran over WireGuard. On the default `tailscale = "auto"` that leg follows the interface: yaran binds it whenever your tailnet address is there, drops that one listener when it goes away, and binds it again when it comes back, all while serving. Set `tailscale = "yes"` under `[server]` to look once and keep what it finds, `"no"` (or `--no-tailscale` for a single run) to skip it, and when Tailscale isn't there yaran warns and serves the configured host only. You can change the mode while yaran is serving, from the TUI palette's `set-tailscale-mode` or the browser's Preferences dialog: it moves the listener there and then and saves your choice. `--bind <ADDR:PORT>` sets an exact address and port, and it wants an IP literal and a port (`0.0.0.0:3890`, `127.0.0.1:9000`): hostnames are not resolved, and the flag may be given only once. `--port <PORT>` overrides just the port, and is ignored when `--bind` is set. A required address that can't bind is fatal and says so; the Tailscale leg failing to bind is only a warning. Both of the in-app ways, `start-web-server` and `serve_while_tui`, always serve loopback plus Tailscale and never a custom host, so reach for `yaran server` when you need a specific interface.
 
-**And there is no login.** None: no password, no token, no user accounts. yaran is a single-tenant, trusted-access tool, and server mode is honest about that instead of pretending otherwise. Everyone who can reach the address shares one workspace: they can drive any agent or terminal, browse the server's filesystem, edit files in your worktrees, and see every session. That's deliberate, and it means access control is entirely a question of where you bind.
+**And there is no login.** None: no password, no token, no user accounts. yaran is a single-tenant, trusted-access tool, and server mode is honest about that instead of pretending otherwise. Everyone who can reach the address shares one workspace: they can drive any agent or terminal, browse the server's filesystem, edit files in your worktrees, and see every session. That's deliberate, and it means access control is entirely a question of where you bind. Yaran has no login of its own; with [Cloud Connect](#phone-app-and-cloud-connect), Cloudflare Access is the login for that one machine address, and yaran double-checks it.
 
-The safe shapes are loopback (the default), your own tailnet, or a reverse proxy you put in front and authenticate yourself, which is also where TLS would live, since yaran itself serves plain HTTP. The shape that isn't safe is a LAN or public address, `--bind 0.0.0.0:3890` and friends: that puts your agents and your worktrees in reach of anyone who can hit it. yaran prints a loud warning before it does that, but the warning is the only thing standing there. Don't serve it to anyone you wouldn't hand a shell on that machine.
+The safe shapes are loopback (the default), your own tailnet, Cloud Connect, or a reverse proxy you put in front and authenticate yourself, which is also where TLS would live, since yaran itself serves plain HTTP. The shape that isn't safe is a LAN or public address, `--bind 0.0.0.0:3890` and friends: that puts your agents and your worktrees in reach of anyone who can hit it. yaran prints a loud warning before it does that, but the warning is the only thing standing there. Don't serve it to anyone you wouldn't hand a shell on that machine.
 
 Two defenses do always run, and they're about hostile web pages rather than about users: a Host-header allowlist, so a malicious site can't DNS-rebind your browser into the server, and a same-origin check on every live terminal connection and every request that changes something, so another site can't ride along. Both are automatic. If you reach yaran by a name rather than an IP literal, a tailnet MagicDNS name or a proxy hostname, add it to `allowed_hosts` under `[server]` or the host guard answers `403`. That one is read when serving starts, so it takes a server restart rather than a config reload; yaran says so when you reload a config that changed it.
 
 The rest of `[server]` tunes presentation and limits: console color, the per-request access log, the shutdown grace period, and how many live connections of each kind yaran accepts at once. As ever, each key explains itself inline in your config file.
 
-### Org Control Plane
+### Phone App and Cloud Connect
+
+Cloud Connect gives each of your machines its own HTTPS address, `<machine>-<user>.<zone>`, behind your organization's single sign-on through Cloudflare Access, and it is what the yaran phone app connects through. Yaran still has no login of its own: Cloudflare Access is the login for that one address, and yaran verifies the Access sign-in itself on every request for it. Loopback and Tailscale access are unchanged.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/SiavZ/yaran/tree/cloud-deploy/worker)
 
-An organization can run its own yaran control plane on Cloudflare: deploy it with the button, create its API token from the template link the button shows, and finish on the setup page it serves.
+An admin deploys one org control plane to the organization's own Cloudflare account: deploy it with the button, create its API token from the template link the button shows, and finish on the setup page it serves. After that, `yaran cloud login https://<org-control-plane>` pairs a machine. yaran then runs `cloudflared`, which dials out, so the machine opens no port and Cloud Connect adds no listener.
+
+The phone app (Google Play, GitHub, F-Droid, App Store) signs in through your phone's own browser, opens each machine's real web UI, and buzzes when an agent needs you, with end-to-end encrypted notifications that carry names, never output.
+
+**Cloudflare terminates TLS and can read all traffic to a paired machine**, terminal sessions and file contents included. If that is not acceptable for your work, stay on Tailscale or your own proxy. The [Cloud Connect docs](website/docs/cloud-connect.md) cover setup, the trust model and the accepted risks.
 
 ### Configuration
 

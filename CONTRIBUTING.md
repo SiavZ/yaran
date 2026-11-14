@@ -183,6 +183,55 @@ before pushing; [docs/contributing/module-headers.md](docs/contributing/module-h
 explains the block, the scope manifest, `--accept-growth` and the optional
 pre-commit hook.
 
+## Cloud and mobile subprojects
+
+Cloud Connect and the phone apps live in their own trees: `cloud/protocol` (the shared
+contract), `cloud/worker` (the org control plane), `cloud/push-relay` (the publisher
+relay) and `mobile/` (the Capacitor shell and the native Android and iOS apps). You only
+need their toolchains if you touch them.
+
+What you need:
+
+- **Node** at the version in the root `.node-version` (Node 24), for everything under
+  `cloud/` and `mobile/app`.
+- **JDK 21** and the Android SDK, for `mobile/android`.
+- **Xcode** on macOS, for `mobile/ios`. The Swift packages under `mobile/ios/Shared` also
+  test with `swift test` alone.
+
+Checks, each from the repo root:
+
+```bash
+(cd cloud/protocol && npm ci && npm run gen:check && npm run typecheck && npm test)
+(cd cloud/worker && npm ci && npm run typecheck && npm run lint && npm test && npm run build)
+(cd cloud/push-relay && npm ci && npm run typecheck && npm run lint && npm test && npm run build)
+(cd mobile/app && npm ci && npx tsc --noEmit && npm run lint && npm test && npm run build)
+(cd mobile/android && ./gradlew testFossDebugUnitTest :app:verifyFossDependencies ktlintCheck detekt lint)
+(cd mobile/ios/Shared/YaranPushCore && swift test)
+node tools/module-headers/bin/module-headers.mjs --check
+node tools/module-headers/bin/module-headers.mjs --lines --check
+```
+
+The module-headers checks cover every file in these trees; `make headers-check
+lines-check` runs the same two.
+
+**Fork pull requests never see secrets.** None of the CI suites use any, so a fork's
+pull request runs the same checks as a branch in this repository. Signing keys, store
+credentials and deploy tokens exist only in protected release environments that run on
+tag pushes.
+
+### New attack surface means editing its threat row
+
+The threat model gives every Cloud Connect and phone-app surface a numbered row (T25
+onward) in `SECURITY.md` and a section in `docs/operations/threat-model.md`. Those rows
+were drafted before the code. A pull request that builds or changes one of those
+surfaces edits its own row in the same change: replace the design-stage mitigation with
+what the code actually does, with symbols and file paths. A surface with no row gets the
+next free ID at the end. Say in the pull request description which rows you edited:
+
+```markdown
+- [ ] Edited my threat-model rows (IDs: T…)
+```
+
 ## Writing a release body
 
 **yaran parses its own release notes and shows them to every user who updates.** On

@@ -1,0 +1,21 @@
+Yaran
+Licensed under the MIT License; see LICENSE for the copyright notice.
+
+This file names third-party software that Yaran downloads, runs or ships
+alongside its own code, and where to find the licenses of the rest.
+
+cloudflared
+  Copyright (c) Cloudflare, Inc.
+  Licensed under the Apache License, Version 2.0.
+  https://github.com/cloudflare/cloudflared/blob/master/LICENSE
+
+  Yaran does not bundle cloudflared. When a machine is paired with Cloud
+  Connect and no `[cloud] cloudflared_path` is set, yaran downloads one pinned,
+  checksum-verified cloudflared release from Cloudflare and runs it unmodified.
+
+Cloud Connect and the phone apps
+  The control plane and push relay under cloud/, and the phone apps under
+  mobile/, depend on third-party npm, Gradle and Swift packages. Each
+  yaran-cloud-v* and yaran-mobile-v* release carries a generated inventory of
+  those dependencies and their licenses, and the phone app shows the same list
+  under About & licenses.
