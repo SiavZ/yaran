@@ -1,7 +1,9 @@
 # iOS CI leg of mobile-ci.yml: unit and UI tests on the pinned simulator, an unsigned
 # archive, SwiftLint and the SwiftPM license gate.
 #
-# Responsibilities: no secrets, nothing is signed (CODE_SIGNING_ALLOWED=NO). Runs the
+# Responsibilities: no secrets, no certificates, no provisioning profiles. The simulator
+# test build is ad-hoc signed (CODE_SIGN_IDENTITY=-) so the hosted AppTests run with the
+# app's real entitlements; the archive is unsigned (CODE_SIGNING_ALLOWED=NO). Runs the
 # three SwiftPM suites through their test.sh (native core, MachineViewCore,
 # YaranPushCore), then the App scheme's tests (AppTests and YaranCoreTests; there is no
 # XCUITest target yet), then an unsigned archive, then `swiftlint --strict` from its
@@ -36,11 +38,13 @@ jobs:
           bash mobile/plugins/machine-view/ios/MachineViewCore/test.sh
           bash mobile/ios/Shared/YaranPushCore/test.sh
 
+      # Ad-hoc signing embeds the simulated entitlements the hosted KeychainAccessTests need.
+      # CODE_SIGNING_ALLOWED=NO skips them. No certificate, team or profile is needed.
       - name: xcodebuild test (App scheme, AppTests and YaranCoreTests)
         run: >-
           xcodebuild test -project mobile/ios/App/App.xcodeproj -scheme App
           -destination "platform=iOS Simulator,name=$IOS_SIM_DEVICE,OS=$IOS_SIM_OS"
-          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
 
       # 14's release-config guard refuses the repository's com.example placeholder id in
       # Release, so the unsigned CI archive names a CI-only bundle id.

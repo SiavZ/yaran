@@ -61,8 +61,12 @@ function api(pw: PairWorld, method: string, path: string, body?: unknown, instal
   return dispatch(new Request(`https://${CP_HOST}${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), pw.w);
 }
 
+// One world driven through every Phase 06 route, one request at a time: about 0.4 s alone and 2 s
+// under the full local suite, 5.4 s on a loaded CI runner. A generous bound, not a skipped check.
+const COVERAGE_TIMEOUT_MS = 30_000;
+
 describe("audit coverage", () => {
-  it("every state change writes exactly its event and no detail carries a secret", async () => {
+  it("every state change writes exactly its event and no detail carries a secret", { timeout: COVERAGE_TIMEOUT_MS }, async () => {
     const pw = await pairWorld();
 
     // Pairing.
