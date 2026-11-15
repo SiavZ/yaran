@@ -199,7 +199,10 @@ jobs:
           # UNPINNED is pins.rs's all-zero sentinel: bump.sh has not hashed this release yet.
           case "$row" in *UNPINNED*) echo "The linux-amd64 pin for $version is UNPINNED; run tools/cloudflared-pin/bump.sh $version (network) and commit pins.rs." >&2; exit 1 ;; esac
           sha="$(printf '%s\n' "$row" | grep -oE '[0-9a-f]{64}' | head -1 || true)"
-          [ -n "$version" ] && [ -n "$sha" ] || { echo "Could not read PINNED_VERSION and the linux-amd64 asset_sha256 from $PINS." >&2; exit 1; }
+          if [ -z "$version" ] || [ -z "$sha" ]; then
+            echo "Could not read PINNED_VERSION and the linux-amd64 asset_sha256 from $PINS." >&2
+            exit 1
+          fi
           { echo "version=$version"; echo "sha=$sha"; echo "path=$HOME/.cache/yaran-ci/cloudflared-$version"; } >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
