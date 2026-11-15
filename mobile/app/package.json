@@ -15,7 +15,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "extract": "lingui extract --clean",
-    "sync": "npm run build && cap sync"
+    "sync": "npm run build && cap sync",
+    "capacitor:update:after": "node ../scripts/capapp-spm-platform.mjs"
   },
   "dependencies": {
     "@base-ui/react": "1.9.0",

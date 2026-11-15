@@ -64,7 +64,7 @@ public struct RelayEndpointClient: Sendable {
     public func apnsMintBody(token: String, environment: String, vapidPublicKey: String, registrationId: String) -> [String: String] {
         [
             "kind": "apns", "app_id": appId, "apns_token": token, "apns_environment": environment,
-            "vapid_public_key": vapidPublicKey, "registration_id": registrationId,
+            "vapid_public_key": vapidPublicKey, "registration_id": registrationId
         ]
     }
 

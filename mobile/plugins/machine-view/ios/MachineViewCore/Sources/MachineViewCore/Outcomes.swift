@@ -23,6 +23,7 @@
 /// ├── MachineViewCoreTests/Fakes (inferred)
 /// ├── MachineViewCoreTests/FormatTests (inferred)
 /// ├── MachineViewCoreTests/HandoffClientTests (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── MachineViewCoreTests/OrgApiClientTests (inferred)
 /// └── MachineViewCoreTests/RenewalCoordinatorTests (inferred)
 /// <module-headers:end>
@@ -73,21 +74,21 @@ public enum SignInOutcome: Equatable {
     }
 
     public var jsObject: [String: Any] {
-        var o: [String: Any] = ["kind": kind]
+        var object: [String: Any] = ["kind": kind]
         switch self {
         case .signedIn(let host, let email, let expiresAt):
-            o["host"] = host; o["email"] = email; o["expiresAt"] = expiresAt
-        case .verificationFailed(let domain): o["domain"] = domain
-        case .protocolUnsupported(let min, let max): o["min"] = min; o["max"] = max
-        case .clockSkewed(let serverTime): o["serverTime"] = serverTime
-        case .deviceKeyRejected(let code, let level): o["code"] = code; o["securityLevel"] = level.rawValue
-        case .refused(let code), .decryptFailed(let code): o["code"] = code
-        case .notOwner(let email): o["email"] = email
+            object["host"] = host; object["email"] = email; object["expiresAt"] = expiresAt
+        case .verificationFailed(let domain): object["domain"] = domain
+        case .protocolUnsupported(let min, let max): object["min"] = min; object["max"] = max
+        case .clockSkewed(let serverTime): object["serverTime"] = serverTime
+        case .deviceKeyRejected(let code, let level): object["code"] = code; object["securityLevel"] = level.rawValue
+        case .refused(let code), .decryptFailed(let code): object["code"] = code
+        case .notOwner(let email): object["email"] = email
         case .cancelled, .declined, .interrupted, .rateLimited, .noBrowser, .mismatch, .envelopeExpired, .offline,
              .tlsError, .vaultLocked:
             break
         }
-        return o.compactMapValues { $0 }
+        return object.compactMapValues { $0 }
     }
 
     /// The callback `error` code's outcome (Phase 15 Failure matrix).
@@ -112,6 +113,8 @@ public enum RefusedReason: String, Equatable {
 }
 
 public enum ApiResult {
+    // `ok` is this result's `kind` on the wire to the web layer.
+    // swiftlint:disable:next identifier_name
     case ok(status: Int, body: Any?)
     /// `error` is the Phase 02 ErrorEnvelope object.
     case apiError(status: Int, error: [String: Any])
@@ -133,16 +136,16 @@ public enum ApiResult {
     }
 
     public var jsObject: [String: Any] {
-        var o: [String: Any] = ["kind": kind]
+        var object: [String: Any] = ["kind": kind]
         switch self {
-        case .ok(let status, let body): o["status"] = status; o["body"] = body ?? NSNull()
-        case .apiError(let status, let error): o["status"] = status; o["error"] = error
-        case .refused(let reason): o["reason"] = reason.rawValue
+        case .ok(let status, let body): object["status"] = status; object["body"] = body ?? NSNull()
+        case .apiError(let status, let error): object["status"] = status; object["error"] = error
+        case .refused(let reason): object["reason"] = reason.rawValue
         case .protocolUnsupported(let min, let max):
-            if let min { o["min"] = min }
-            if let max { o["max"] = max }
+            if let min { object["min"] = min }
+            if let max { object["max"] = max }
         case .sessionExpired, .deviceRevoked, .offline, .tlsError: break
         }
-        return o
+        return object
     }
 }

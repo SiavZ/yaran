@@ -28,20 +28,20 @@ public enum DeviceLabel {
         return fromModel.isEmpty ? fallback : fromModel
     }
 
-    private static func cleanOne(_ s: String) -> String {
-        let kept = s.unicodeScalars.filter { !isRemoved($0.value) }
+    private static func cleanOne(_ text: String) -> String {
+        let kept = text.unicodeScalars.filter { !isRemoved($0.value) }
         let cut = trimSpaces(Array(trimSpaces(Array(kept)).prefix(maxScalars)))
         var out = String.UnicodeScalarView()
         out.append(contentsOf: cut)
         return String(out)
     }
 
-    private static func trimSpaces(_ a: [Unicode.Scalar]) -> [Unicode.Scalar] {
-        Array(a.drop(while: { $0 == " " }).reversed().drop(while: { $0 == " " }).reversed())
+    private static func trimSpaces(_ scalars: [Unicode.Scalar]) -> [Unicode.Scalar] {
+        Array(scalars.drop(while: { $0 == " " }).reversed().drop(while: { $0 == " " }).reversed())
     }
 
-    private static func isRemoved(_ v: UInt32) -> Bool {
-        v <= 0x1F || (0x7F...0x9F).contains(v) || v == 0x061C || v == 0x200E || v == 0x200F
-            || (0x202A...0x202E).contains(v) || (0x2066...0x2069).contains(v)
+    private static func isRemoved(_ value: UInt32) -> Bool {
+        value <= 0x1F || (0x7F...0x9F).contains(value) || value == 0x061C || value == 0x200E || value == 0x200F
+            || (0x202A...0x202E).contains(value) || (0x2066...0x2069).contains(value)
     }
 }

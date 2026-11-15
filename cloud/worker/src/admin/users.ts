@@ -73,10 +73,8 @@ export async function getUser(deps: Phase07Deps, id: string): Promise<AdminUser 
   return row ? toAdminUser(row) : null;
 }
 
-async function otherActiveAdmins(deps: Phase07Deps, id: string): Promise<number> {
-  const row = await deps.db.prepare("SELECT count(*) AS n FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?").bind(id).first<{ n: number }>();
-  return Number(row?.n ?? 0);
-}
+// Checked inside each UPDATE (one atomic statement), so concurrent demotions cannot both pass.
+const keepsAnAdmin = (idParam: string) => `EXISTS (SELECT 1 FROM users o WHERE o.role = 'admin' AND o.status = 'active' AND o.id <> ${idParam})`;
 
 export type PatchOutcome = { ok: true; user: AdminUser } | { ok: false; code: "not_found" | "last_admin" | "validation_failed" };
 
@@ -85,16 +83,22 @@ export async function patchUser(deps: Phase07Deps, actor: Identity, id: string, 
   if (patch.revoke_all && patch.disabled !== true) return { ok: false, code: "validation_failed" };
   const user = await getUser(deps, id);
   if (!user) return { ok: false, code: "not_found" };
-  const losesAdmin = user.role === "admin" && !user.disabled && (patch.role === "user" || patch.disabled === true);
-  if (losesAdmin && (await otherActiveAdmins(deps, id)) === 0) return { ok: false, code: "last_admin" };
+  const status = patch.disabled === undefined ? null : patch.disabled ? "disabled" : "active";
+  // Role and status change together, refused (no row changed) when they would leave no active admin.
+  const res = await deps.db
+    .prepare(
+      `UPDATE users SET role = COALESCE(?1, role), status = COALESCE(?2, status) WHERE id = ?3 AND (
+        (COALESCE(?1, role) = 'admin' AND COALESCE(?2, status) = 'active') OR NOT (role = 'admin' AND status = 'active') OR ${keepsAnAdmin("?3")})`,
+    )
+    .bind(patch.role ?? null, status, id)
+    .run();
+  if (res.meta.changes === 0) return { ok: false, code: "last_admin" };
   const who = { kind: "admin" as const, id: actor.user_id };
   const target = { kind: "user" as const, id };
   if (patch.role && patch.role !== user.role) {
-    await deps.db.prepare("UPDATE users SET role = ? WHERE id = ?").bind(patch.role, id).run();
     await deps.audit({ actor: who, action: "user.role_changed", target, outcome: "ok", detail: { role: patch.role } });
   }
   if (patch.disabled !== undefined && patch.disabled !== user.disabled) {
-    await deps.db.prepare("UPDATE users SET status = ? WHERE id = ?").bind(patch.disabled ? "disabled" : "active", id).run();
     await deps.audit({ actor: who, action: patch.disabled ? "user.disabled" : "user.enabled", target, outcome: "ok", detail: { revoke_all: !!patch.revoke_all } });
   }
   if (patch.disabled && patch.revoke_all) await revokeEverything(deps, user);
@@ -114,8 +118,11 @@ export async function revokeEverything(deps: Phase07Deps, user: AdminUser): Prom
 export async function deleteUser(deps: Phase07Deps, actor: Identity, id: string): Promise<{ ok: true } | { ok: false; code: "not_found" | "last_admin" }> {
   const user = await getUser(deps, id);
   if (!user) return { ok: false, code: "not_found" };
-  if (user.role === "admin" && !user.disabled && (await otherActiveAdmins(deps, id)) === 0) return { ok: false, code: "last_admin" };
-  await deps.db.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").bind(id).run();
+  const res = await deps.db
+    .prepare(`UPDATE users SET status = 'disabled' WHERE id = ?1 AND (NOT (role = 'admin' AND status = 'active') OR ${keepsAnAdmin("?1")})`)
+    .bind(id)
+    .run();
+  if (res.meta.changes === 0) return { ok: false, code: "last_admin" };
   await revokeEverything(deps, user);
   await deps.audit({ actor: { kind: "admin", id: actor.user_id }, action: "user.deleted", target: { kind: "user", id }, outcome: "ok" });
   // shortcut: the row stays (disabled) because machine rows reference it until 05's async teardown finishes; purge it from a teardown-done hook when 05 exposes one.

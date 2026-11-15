@@ -109,7 +109,7 @@ public final class PrivacyCover {
         NSLayoutConstraint.activate([
             unlockButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             unlockButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            unlockButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            unlockButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
         return view
     }

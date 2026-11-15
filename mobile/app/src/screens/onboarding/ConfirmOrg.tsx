@@ -5,7 +5,8 @@
  * a chip, fetches `/v1/meta` through Phase 15's native client, runs the protocol verdict,
  * stops on `setup: open`, discloses that Cloudflare decrypts traffic at its edge (D17), warns
  * that the browser will ask to sign this device in (the consent page, D8), and only then
- * offers Sign in. The org is added after a successful sign-in, never before.
+ * offers Sign in. The native handoff only signs in to an org in the vault's org list, so the
+ * confirmed org is written there first and put back as it was when sign-in does not succeed.
  *
  * - The org name and team domain come from the org and render as React text.
  *
@@ -16,6 +17,7 @@
  * ├── @yaran/ui-kit:src/button.tsx
  * ├── @yaran/ui-kit:src/inline-code.tsx
  * ├── src/lib/api.ts
+ * ├── src/lib/diagnostics.ts
  * ├── src/lib/hostRules.ts
  * ├── src/lib/machinesStore.ts
  * ├── src/lib/native/machineView.ts
@@ -41,11 +43,12 @@ import { Button } from '@yaran/ui-kit/button';
 import { InlineCode } from '@yaran/ui-kit/inline-code';
 import { useCallback, useEffect, useState } from 'react';
 
+import { log } from '../../lib/diagnostics.ts';
 import { orgUrl } from '../../lib/hostRules.ts';
 import { refreshMachines } from '../../lib/machinesStore.ts';
 import { getMeta, type MetaFailure } from '../../lib/api.ts';
 import { Session, type SignInOutcome } from '../../lib/native/machineView.ts';
-import { addOrg } from '../../lib/orgStore.ts';
+import { addOrg, findOrg, removeOrgLocal } from '../../lib/orgStore.ts';
 import { protocolVerdict } from '../../lib/protocolCompat.ts';
 import { navigate } from '../../lib/route.ts';
 import { Page } from '../Page.tsx';
@@ -129,9 +132,19 @@ export function ConfirmOrg({ url }: { url: string }) {
 
   async function startSignIn(m: Meta) {
     setSignIn({ kind: 'running' });
-    const outcome = await Session.signIn({ orgId: org!, target: 'control-plane' }).catch((): SignInOutcome => ({ kind: 'offline' }));
-    if (outcome.kind !== 'signed_in') return setSignIn({ kind: 'failed', outcome });
-    await addOrg({ id: org!, name: m.org?.name ?? host, teamDomain: m.access?.team_domain ?? null });
+    const previous = findOrg(org!);
+    let outcome: SignInOutcome;
+    try {
+      await addOrg({ id: org!, name: m.org?.name ?? host, teamDomain: m.access?.team_domain ?? null });
+      outcome = await Session.signIn({ orgId: org!, target: 'control-plane' }).catch((): SignInOutcome => ({ kind: 'offline' }));
+    } catch (err) {
+      log('error', `could not stage the org for sign-in: ${err instanceof Error ? err.message : String(err)}`);
+      outcome = { kind: 'vault_locked' };
+    }
+    if (outcome.kind !== 'signed_in') {
+      await (previous ? addOrg(previous) : removeOrgLocal(org!)).catch(() => undefined);
+      return setSignIn({ kind: 'failed', outcome });
+    }
     void refreshMachines(org!);
     navigate({ name: 'machines' }, { replace: true });
   }

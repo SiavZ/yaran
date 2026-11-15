@@ -5,7 +5,11 @@
 //! authorize URL, open the browser (a failure only shows the URL, 19 hook H1), then take
 //! the first of: the loopback callback, a pasted callback address, cancel, timeout.
 //! Then the signed claim, a freshly minted D24 consent key, and one atomic credentials
-//! write. Old credentials are replaced only after a successful claim.
+//! write. A cancel stops the login only until it commits (`LoginIo::commit`), just before
+//! the claim is sent: a claim can tear a replaced machine down on the control plane, so
+//! once it is sent the login runs to its real outcome. Old credentials are replaced only
+//! while the stored pairing is still the one the login started from; a claim refused at
+//! that point is unpaired again and the outcome says a replaced machine may be gone.
 //!
 //! - Blocking: runs on a worker or CLI thread. `LoginIo` is how a front end sees it.
 //! - The listener lives only for the duration of the call (RFC 8252 §8.3).
@@ -28,7 +32,7 @@
 //! ├── cloud::protocol::meta
 //! ├── cloud::protocol::pairing
 //! └── cloud::protocol::rules
-//! External: chrono, std, url
+//! External: chrono, std, tracing, url
 //!
 //! Used by:
 //! cloud/login.rs
@@ -100,6 +104,11 @@ pub trait LoginIo {
     /// A channel of pasted callback addresses; may never yield.
     fn pasted_callback(&mut self) -> Receiver<String>;
     fn cancelled(&mut self) -> bool;
+    /// Called once, just before the claim is sent: `false` (cancelled) stops the login
+    /// with nothing sent. After `true` a cancel can no longer stop this login.
+    fn commit(&mut self) -> bool {
+        !self.cancelled()
+    }
     fn progress(&mut self, step: LoginStep);
 }
 
@@ -144,17 +153,17 @@ pub fn run_login(params: LoginParams, io: &mut dyn LoginIo) -> LoginOutcome {
         },
         None => default_machine_name(),
     };
-    match credentials::read(&params.paths) {
+    let started_from = match credentials::read(&params.paths) {
         Ok(Some(c)) if c.org_url != org_url => {
             return CloudActionOutcome::AlreadyPairedElsewhere { org: c.org_name };
         }
-        Ok(_) => {}
+        Ok(c) => c,
         Err(e) => {
             return CloudActionOutcome::CredentialsUnreadable {
                 reason: e.to_string(),
             };
         }
-    }
+    };
     io.progress(LoginStep::CheckingOrg {
         org_url: org_url.clone(),
     });
@@ -246,6 +255,10 @@ pub fn run_login(params: LoginParams, io: &mut dyn LoginIo) -> LoginOutcome {
         }
     };
 
+    // The claim may tear a replaced machine down, so a cancel must win before it or not at all.
+    if !io.commit() {
+        return CloudActionOutcome::LoginCancelled;
+    }
     io.progress(LoginStep::Claiming);
     let request = ClaimRequest {
         code,
@@ -260,9 +273,19 @@ pub fn run_login(params: LoginParams, io: &mut dyn LoginIo) -> LoginOutcome {
     // Server text crossed a trust boundary; it is shown on every surface (T53).
     claim.org.name = server_text(&claim.org.name);
     let paired_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut superseded = false;
     let stored = credentials::update(&params.paths, |previous| {
-        let same_org = previous.filter(|p| p.org_url == claim.org.url);
-        let consent = HandoffConsentKey::for_claim(same_org.as_ref())?;
+        let unchanged = match (&started_from, &previous) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same_pairing(b),
+            _ => false,
+        };
+        if !unchanged {
+            superseded = true;
+            return Ok(previous);
+        }
+        let same_org = previous.as_ref().filter(|p| p.org_url == claim.org.url);
+        let consent = HandoffConsentKey::for_claim(same_org)?;
         Ok(Some(Credentials::from_claim(
             &claim,
             identity.pkcs8(),
@@ -270,14 +293,33 @@ pub fn run_login(params: LoginParams, io: &mut dyn LoginIo) -> LoginOutcome {
             paired_at,
         )))
     });
-    match stored {
-        Ok(_) => CloudActionOutcome::Paired {
-            hostname: claim.hostname,
-            org_name: claim.org.name,
+    let reason = match (stored, superseded) {
+        (Ok(_), false) => {
+            return CloudActionOutcome::Paired {
+                hostname: claim.hostname,
+                org_name: claim.org.name,
+            };
+        }
+        (_, true) => None,
+        (Err(e), false) => Some(e.to_string()),
+    };
+    // Nothing here holds the claimed key any more; tell the control plane to forget it.
+    let cleanup_started = match api.unpair_claimed(&identity, &claim.machine_id) {
+        Ok(_) => {
+            tracing::info!(target: "yaran::cloud", "requested removal of a claim this login discarded");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(target: "yaran::cloud", error = %e, "could not confirm removal of a claim this login discarded; an administrator can remove it");
+            false
+        }
+    };
+    match reason {
+        Some(reason) => CloudActionOutcome::LoginNotStored {
+            reason,
+            cleanup_started,
         },
-        Err(e) => CloudActionOutcome::CredentialsUnreadable {
-            reason: e.to_string(),
-        },
+        None => CloudActionOutcome::LoginSuperseded { cleanup_started },
     }
 }
 

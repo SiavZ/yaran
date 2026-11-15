@@ -32,7 +32,7 @@ private func load(_ name: String) throws -> [String: Any] {
 }
 
 private func expected(_ expect: [String: String]) -> HostRulesResult? {
-    if let ok = expect["ok"] { return .ok(ok) }
+    if let accepted = expect["ok"] { return .ok(accepted) }
     return expect["refused"].flatMap(HostRefusal.init(rawValue:)).map { .refused($0) }
 }
 

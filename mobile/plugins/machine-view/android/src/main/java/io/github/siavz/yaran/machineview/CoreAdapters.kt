@@ -20,7 +20,7 @@
  * ├── io.github.siavz.yaran.core.ScreenPrivacy
  * ├── io.github.siavz.yaran.core.Vault
  * └── io.github.siavz.yaran.machineview.CoreBindings (inferred)
- * External: android.content, java.security, org.json
+ * External: android.content, androidx.fragment.app, java.security, org.json
  *
  * Used by:
  * io.github.siavz.yaran.machineview.CoreAdapters
@@ -31,6 +31,7 @@
 package io.github.siavz.yaran.machineview
 
 import android.content.Context
+import androidx.fragment.app.FragmentActivity
 import io.github.siavz.yaran.core.AppLock
 import io.github.siavz.yaran.core.CoreError
 import io.github.siavz.yaran.core.Diagnostics
@@ -53,6 +54,13 @@ object CoreAdapters {
                 override fun lockEnabled() = vault.isLockWrapped()
 
                 override fun isLocked() = AppLock.shared(app).locked
+
+                override fun unlock(activity: FragmentActivity, done: () -> Unit) =
+                    AppLock.shared(app).unlock(activity) { activity.runOnUiThread(done) }
+
+                override fun holdForExternalFlow(ttlMs: Long) = AppLock.shared(app).holdForExternalFlow(ttlMs)
+
+                override fun releaseExternalFlow() = AppLock.shared(app).releaseExternalFlow()
             },
             screenPrivacy = { ScreenPrivacy.shared(app).enabled },
         )

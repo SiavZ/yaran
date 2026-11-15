@@ -67,8 +67,8 @@ public final class SecureEnclaveBackend: DeviceKeyBackend {
                 kSecAttrIsPermanent: true,
                 kSecAttrApplicationTag: Data(alias.utf8),
                 kSecAttrIsExtractable: false,
-                kSecAttrAccessControl: access,
-            ] as [CFString: Any],
+                kSecAttrAccessControl: access
+            ] as [CFString: Any]
         ]
         if enclave { attrs[kSecAttrTokenID] = kSecAttrTokenIDSecureEnclave }
         guard SecKeyCreateRandomKey(attrs as CFDictionary, &error) != nil else {
@@ -80,9 +80,12 @@ public final class SecureEnclaveBackend: DeviceKeyBackend {
         var item: CFTypeRef?
         let status = SecItemCopyMatching([
             kSecClass: kSecClassKey, kSecAttrApplicationTag: Data(alias.utf8), kSecAttrKeyClass: kSecAttrKeyClassPrivate,
-            kSecReturnRef: true, kSecUseDataProtectionKeychain: true,
+            kSecReturnRef: true, kSecUseDataProtectionKeychain: true
         ] as CFDictionary, &item)
         guard status == errSecSuccess, let item else { throw SecureEnclaveBackendError.keychain(status) }
+        guard CFGetTypeID(item) == SecKeyGetTypeID() else { throw SecureEnclaveBackendError.noKey }
+        // A CF type cannot be cast conditionally; the type ID check above is what makes this safe.
+        // swiftlint:disable:next force_cast
         return item as! SecKey
     }
 }

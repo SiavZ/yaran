@@ -259,9 +259,11 @@ async fn login_start(
         // Held across the spawn so the new login's callbacks wait until it is
         // the current one; the old one is cancelled and its final dropped.
         let mut slot = lock(&cloud.login);
-        if let Some(old) = slot.take() {
-            old.handle.cancel();
+        if slot.as_ref().is_some_and(|old| !old.handle.cancel()) {
+            // Its claim is out; its own final closes the busy above.
+            return login_finishing();
         }
+        slot.take();
         let handle = spawn_login(params, on_event);
         *slot = Some(ActiveLogin {
             id: id.clone(),
@@ -388,23 +390,22 @@ struct CancelBody {
 
 /// Cancel the named login. The slot is cleared and the `LoginCancelled` final
 /// posted here, so the next status read already shows no login; the thread's own
-/// final is then dropped as stale. A login that already ended is a no-op.
+/// final is then dropped as stale. A login that already ended is a no-op, and one
+/// that already sent its claim keeps its slot so its own final is posted.
 async fn login_cancel(
     State(cloud): State<Arc<CloudState>>,
     Json(body): Json<CancelBody>,
 ) -> Response {
     let cancelled = {
         let mut slot = lock(&cloud.login);
-        match slot.take() {
-            Some(active) if active.id == body.login_id => Some(active),
-            other => {
-                *slot = other;
-                None
-            }
+        let named = slot.as_ref().is_some_and(|a| a.id == body.login_id);
+        if named && slot.as_ref().is_some_and(|a| a.handle.cancel()) {
+            slot.take()
+        } else {
+            None
         }
     };
-    if let Some(active) = cancelled {
-        active.handle.cancel();
+    if cancelled.is_some() {
         cloud
             .engine
             .post_status(CloudActionOutcome::LoginCancelled.to_status(KEY_LOGIN));
@@ -417,6 +418,15 @@ fn refusal(outcome: &CloudActionOutcome) -> Response {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
         outcome.report().message().to_string(),
+    )
+        .into_response()
+}
+
+fn login_finishing() -> Response {
+    (
+        StatusCode::CONFLICT,
+        "The previous Yaran Cloud login is finishing this machine's pairing right now; wait \
+         for its result, then start a new one if you still need to.",
     )
         .into_response()
 }

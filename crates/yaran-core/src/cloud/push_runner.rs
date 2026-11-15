@@ -1,7 +1,8 @@
 //! The `cloud-push` thread body: queue, machine-config cache, delivery and its outcomes.
 //!
-//! One `Runner` per emitter start. It sleeps until the next entry is due, a retry or
-//! `min_interval_ms` window ends, or a second passes (TTL expiry), and classifies every
+//! One `Runner` per emitter start. It sleeps until a send is allowed (an entry due, any
+//! retry backoff and `min_interval_ms` window over) or a second passes (TTL expiry, and a
+//! re-pair, which starts its per-pairing state over), and classifies every
 //! answer exhaustively (`Verdict`) into ack, retry with the same ids, drop, pause, revoke
 //! or clock skew. Keyed statuses for the failures worth surfacing are built here.
 //!
@@ -126,10 +127,19 @@ pub(crate) fn classify(result: Result<EventBatchResult, MachineApiError>) -> Ver
 pub(crate) struct Runner {
     rx: Receiver<Msg>,
     link: Box<dyn MachineLink>,
-    queue: PushQueue,
     status: Option<Sender<WorkerEvent>>,
     flush_on_exit: Arc<AtomicBool>,
+    coalesce: Duration,
     ttl: Duration,
+    /// The pairing `st` belongs to (`MachineLink::pairing_key`).
+    pairing: Option<String>,
+    st: PairingState,
+}
+
+/// Everything learned for one pairing; a re-pair (or unpair) starts it over, so no
+/// queued event, acknowledged state, org config or revocation carries across.
+struct PairingState {
+    queue: PushQueue,
     max_batch: usize,
     min_interval: Duration,
     minimal: bool,
@@ -144,21 +154,10 @@ pub(crate) struct Runner {
     expiry_warned: bool,
 }
 
-impl Runner {
-    pub(crate) fn new(
-        rx: Receiver<Msg>,
-        link: Box<dyn MachineLink>,
-        s: PushSettings,
-        status: Option<Sender<WorkerEvent>>,
-        flush_on_exit: Arc<AtomicBool>,
-    ) -> Self {
+impl PairingState {
+    fn new(coalesce: Duration, ttl: Duration) -> Self {
         Self {
-            rx,
-            link,
-            queue: PushQueue::new(s.coalesce, s.offline_ttl),
-            status,
-            flush_on_exit,
-            ttl: s.offline_ttl,
+            queue: PushQueue::new(coalesce, ttl),
             max_batch: DEFAULT_MAX_BATCH,
             min_interval: Duration::ZERO,
             minimal: false,
@@ -173,19 +172,64 @@ impl Runner {
             expiry_warned: false,
         }
     }
+}
+
+/// How long to sleep: a send needs every gate open at once (an entry due, the retry
+/// backoff over, the org's minimum interval passed), and expiry is checked every
+/// `IDLE_WAKE` regardless.
+pub(crate) fn wake_in(
+    now: Instant,
+    next_due: Option<Instant>,
+    retry_at: Option<Instant>,
+    next_send: Instant,
+) -> Duration {
+    let idle = now + IDLE_WAKE;
+    let at = next_due.map_or(idle, |due| {
+        due.max(next_send).max(retry_at.unwrap_or(due)).min(idle)
+    });
+    at.saturating_duration_since(now)
+}
+
+impl Runner {
+    pub(crate) fn new(
+        rx: Receiver<Msg>,
+        link: Box<dyn MachineLink>,
+        s: PushSettings,
+        status: Option<Sender<WorkerEvent>>,
+        flush_on_exit: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            rx,
+            link,
+            status,
+            flush_on_exit,
+            coalesce: s.coalesce,
+            ttl: s.offline_ttl,
+            pairing: None,
+            st: PairingState::new(s.coalesce, s.offline_ttl),
+        }
+    }
 
     pub(crate) fn run(mut self) {
         loop {
-            match self.rx.recv_timeout(self.wake_in(Instant::now())) {
+            let wait = wake_in(
+                Instant::now(),
+                self.st.queue.next_due(),
+                self.st.retry_at,
+                self.st.next_send,
+            );
+            match self.rx.recv_timeout(wait) {
                 Ok(Msg::Offer(event)) => {
-                    if !self.revoked && !self.paused {
-                        self.queue.offer(event, Instant::now());
+                    self.follow_pairing();
+                    if !self.st.revoked && !self.st.paused {
+                        self.st.queue.offer(event, Instant::now());
                     }
                 }
                 Ok(Msg::Retune(s)) => {
-                    self.queue.set_windows(s.coalesce, s.offline_ttl);
+                    self.st.queue.set_windows(s.coalesce, s.offline_ttl);
+                    self.coalesce = s.coalesce;
                     self.ttl = s.offline_ttl;
-                    self.config_due = true;
+                    self.st.config_due = true;
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -197,75 +241,76 @@ impl Runner {
         }
     }
 
-    fn wake_in(&self, now: Instant) -> Duration {
-        let mut at = now + IDLE_WAKE;
-        if !self.queue.is_empty() {
-            for t in [self.queue.next_due(), self.retry_at, Some(self.next_send)]
-                .into_iter()
-                .flatten()
-            {
-                at = at.min(t);
+    /// Starts `st` over when the credentials name a different pairing than it was for.
+    fn follow_pairing(&mut self) {
+        let pairing = self.link.pairing_key();
+        if pairing != self.pairing {
+            if self.pairing.is_some() {
+                tracing::info!(target: "yaran::cloud::push", "the machine's pairing changed; phone notifications start over for it");
             }
+            self.pairing = pairing;
+            self.st = PairingState::new(self.coalesce, self.ttl);
         }
-        at.saturating_duration_since(now)
     }
 
     fn tick(&mut self, now: Instant) {
-        if self.revoked {
-            self.queue.discard_all();
+        self.follow_pairing();
+        if self.st.revoked {
+            self.st.queue.discard_all();
             return;
         }
-        let expired = self.queue.expire(now);
+        let expired = self.st.queue.expire(now);
         if expired > 0 {
             self.warn_expired(expired);
         }
-        if self.paused
+        if self.st.paused
             && self
+                .st
                 .last_config_check
                 .is_none_or(|t| now - t >= CONFIG_RECHECK)
         {
-            self.config_due = true;
+            self.st.config_due = true;
         }
-        if (self.queue.is_empty() && !(self.paused && self.config_due))
-            || self.retry_at.is_some_and(|t| t > now)
-            || self.next_send > now
+        if (self.st.queue.is_empty() && !(self.st.paused && self.st.config_due))
+            || self.st.retry_at.is_some_and(|t| t > now)
+            || self.st.next_send > now
         {
             return;
         }
         let Some(org) = self.link.org_name() else {
-            let n = self.queue.discard_all();
+            let n = self.st.queue.discard_all();
             tracing::debug!(target: "yaran::cloud::push", dropped = n, "not paired; events dropped");
             return;
         };
-        if self.config_due {
+        if self.st.config_due {
             self.refresh_config(&org, now);
         }
-        if self.revoked || self.paused {
-            self.queue.discard_all();
+        if self.st.revoked || self.st.paused {
+            self.st.queue.discard_all();
             return;
         }
-        let batch = self.queue.due(now, self.max_batch);
+        let batch = self.st.queue.due(now, self.st.max_batch);
         if batch.is_empty() {
             return;
         }
         let mut events: Vec<Event> = batch.iter().map(|q| q.event.clone()).collect();
-        if self.minimal {
+        if self.st.minimal {
             events.iter_mut().for_each(strip_names);
         }
         let verdict = classify(self.link.post_events(&EventBatch { events }));
-        self.next_send = Instant::now() + self.min_interval;
+        self.st.next_send = Instant::now() + self.st.min_interval;
         match verdict {
             Verdict::Delivered {
                 acknowledged,
                 push_enabled,
             } => {
-                self.queue.ack(batch, &acknowledged);
-                self.attempt = 0;
-                self.retry_at = None;
-                self.last_error = None;
-                if self.expiry_warned {
-                    self.expiry_warned = false;
-                    let c = self.queue.counts;
+                self.st.queue.ack(batch, &acknowledged);
+                self.st.attempt = 0;
+                self.st.retry_at = None;
+                self.st.last_error = None;
+                if self.st.expiry_warned {
+                    self.st.expiry_warned = false;
+                    let c = self.st.queue.counts;
                     tracing::info!(target: "yaran::cloud::push", sent = c.sent, coalesced = c.coalesced, expired = c.expired, overflow = c.overflow, "phone notifications recovered");
                     self.post(
                         StatusTone::Info,
@@ -281,7 +326,7 @@ impl Runner {
                 }
             }
             Verdict::Retry { after, error } => {
-                self.queue.nack(batch);
+                self.st.queue.nack(batch);
                 self.back_off(now, after, error);
             }
             Verdict::DropBatch { error } => {
@@ -289,7 +334,7 @@ impl Runner {
             }
             Verdict::Revoked => self.revoke(&org),
             Verdict::ClockSkew { server_time } => {
-                self.queue.nack(batch);
+                self.st.queue.nack(batch);
                 self.back_off(now, None, "signature_expired".into());
                 self.warn_skew(server_time);
             }
@@ -297,18 +342,18 @@ impl Runner {
     }
 
     fn refresh_config(&mut self, org: &str, now: Instant) {
-        self.config_due = false;
-        self.last_config_check = Some(now);
+        self.st.config_due = false;
+        self.st.last_config_check = Some(now);
         match self.link.machine_config() {
             Ok(config) => {
-                self.max_batch = config.events.max_batch.clamp(1, 16) as usize;
-                self.min_interval =
+                self.st.max_batch = config.events.max_batch.clamp(1, 16) as usize;
+                self.st.min_interval =
                     Duration::from_millis(config.events.min_interval_ms.max(0) as u64);
-                self.minimal = config.push.detail == PushDetail::Minimal;
-                if config.push.enabled && self.paused {
+                self.st.minimal = config.push.detail == PushDetail::Minimal;
+                if config.push.enabled && self.st.paused {
                     tracing::info!(target: "yaran::cloud::push", "the org turned phone notifications back on; resuming");
                 }
-                self.paused = !config.push.enabled;
+                self.st.paused = !config.push.enabled;
             }
             Err(err) if says_revoked(&err) => self.revoke(org),
             Err(err) => {
@@ -318,25 +363,29 @@ impl Runner {
     }
 
     fn pause(&mut self, now: Instant) {
-        let n = self.queue.discard_all();
-        self.paused = true;
-        self.last_config_check = Some(now);
+        let n = self.st.queue.discard_all();
+        self.st.paused = true;
+        self.st.last_config_check = Some(now);
         tracing::info!(target: "yaran::cloud::push", discarded = n, "the org has phone notifications off; pausing until its config says otherwise");
     }
 
     fn back_off(&mut self, now: Instant, after: Option<Duration>, error: String) {
         let delay = after.unwrap_or_else(|| {
             let jitter = rand::thread_rng().gen_range(0..=BACKOFF.jitter_ms);
-            Duration::from_millis(BACKOFF.deterministic_delay_ms(self.attempt) + jitter)
+            Duration::from_millis(BACKOFF.deterministic_delay_ms(self.st.attempt) + jitter)
         });
-        self.attempt = self.attempt.saturating_add(1);
-        self.retry_at = Some(now + delay);
-        self.last_error = Some(error);
+        self.st.attempt = self.st.attempt.saturating_add(1);
+        self.st.retry_at = Some(now + delay);
+        self.st.last_error = Some(error);
     }
 
     fn revoke(&mut self, org: &str) {
-        self.revoked = true;
-        self.queue.discard_all();
+        if self.link.pairing_key() != self.pairing {
+            self.follow_pairing();
+            return;
+        }
+        self.st.revoked = true;
+        self.st.queue.discard_all();
         self.link.report_revoked();
         tracing::warn!(target: "yaran::cloud::push", "the control plane says this machine is no longer paired; phone notifications stopped");
         self.post(
@@ -350,14 +399,15 @@ impl Runner {
     }
 
     fn warn_expired(&mut self, n: usize) {
-        self.expiry_warned = true;
-        let c = self.queue.counts;
+        self.st.expiry_warned = true;
+        let c = self.st.queue.counts;
         tracing::info!(target: "yaran::cloud::push", expired = n, sent = c.sent, coalesced = c.coalesced, overflow = c.overflow, "phone notifications expired unsent");
         let org = self
             .link
             .org_name()
             .unwrap_or_else(|| "the control plane".into());
         let error = self
+            .st
             .last_error
             .clone()
             .unwrap_or_else(|| "no answer".into());
@@ -405,19 +455,19 @@ impl Runner {
     /// One last attempt at idle clears (and pending exits); the result is only logged.
     fn shutdown_flush(&mut self) {
         let now = Instant::now();
-        if self.revoked || self.paused {
+        if self.st.revoked || self.st.paused {
             return;
         }
         let Some(_org) = self.link.org_name() else {
             return;
         };
-        self.queue.queue_shutdown_clears(now);
-        let batch = self.queue.due(now, self.max_batch);
+        self.st.queue.queue_shutdown_clears(now);
+        let batch = self.st.queue.due(now, self.st.max_batch);
         if batch.is_empty() {
             return;
         }
         let mut events: Vec<Event> = batch.into_iter().map(|q| q.event).collect();
-        if self.minimal {
+        if self.st.minimal {
             events.iter_mut().for_each(strip_names);
         }
         let verdict = classify(self.link.post_events(&EventBatch { events }));

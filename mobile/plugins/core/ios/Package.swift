@@ -27,7 +27,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "YaranCore"),
-        .testTarget(name: "YaranCoreTests", dependencies: ["YaranCore"]),
+        .testTarget(name: "YaranCoreTests", dependencies: ["YaranCore"])
     ],
     swiftLanguageModes: [.v5]
 )

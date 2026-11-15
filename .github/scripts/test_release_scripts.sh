@@ -20,7 +20,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK="$(mktemp -d)"
+# Canonical (pwd -P), as on Linux CI: macOS's /var -> /private/var symlink would make
+# every path differ from Node's resolved module URL and hide entry-point guard bugs.
+WORK="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$WORK"' EXIT
 pass=0
 fails=0
@@ -81,6 +83,11 @@ tree 1.1.0-rc.1; check "a tag/manifest mismatch is refused" 1 publish yaran-clou
 tree 1.1.0; check "a newer tag appends" 0 publish yaran-cloud-v1.1.0
 check "history is append-only, one commit per release" 0 test "$(count)" -eq 2
 check "the commit message names the tag and source" 0 bash -c "git -C '$WORK/origin.git' log -1 --format=%s cloud-deploy | grep -qx 'yaran-cloud-v1.1.0: generated from deadbeef'"
+tree 1.1.0; check "a refusal is the semver check, not a CLI usage error" 0 bash -c "! publish_out=\$(cd '$WORK/src' && bash .github/scripts/publish_deploy_branch.sh cloud-deploy '$WORK/tree' yaran-cloud-v1.1.0 deadbeef 2>&1) && grep -q 'REFUSED: cloud-deploy already holds 1.1.0' <<<\"\$publish_out\" && ! grep -q usage <<<\"\$publish_out\""
+# The same checkout reached through a symlink (the macOS temp-dir shape) must append too.
+ln -s "$WORK/src" "$WORK/src-link"
+tree 1.2.0; check "a newer tag appends through a symlinked checkout path" 0 bash -c "cd '$WORK/src-link' && bash .github/scripts/publish_deploy_branch.sh cloud-deploy '$WORK/tree' yaran-cloud-v1.2.0 deadbeef"
+check "the symlinked append is the third release commit" 0 test "$(count)" -eq 3
 
 echo "$pass passed, $fails failed"
 [ "$fails" -eq 0 ]

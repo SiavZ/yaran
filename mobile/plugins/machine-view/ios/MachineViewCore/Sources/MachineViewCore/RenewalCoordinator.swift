@@ -4,7 +4,9 @@
 /// the policy's next check (the banner 10 minutes out, the overlay at `exp`, even with the
 /// socket still open); a reauth signal (`yaranapp://reauth`, an Access redirect, a refusal)
 /// shows the overlay. A successful renewal re-injects the cookie and reloads the same URL; a
-/// failed one keeps the overlay and hands back the outcome to show.
+/// failed one keeps the overlay and hands back the outcome to show. While a renewal's sign-in
+/// is out (the user left for Mail or an authenticator), opening or resuming waits for it rather
+/// than starting a second one.
 ///
 /// - Absolute `exp` against the wall clock on every event, never a tick count.
 /// - Main-thread only, like the views it drives.
@@ -12,6 +14,7 @@
 /// <module-headers:begin>
 /// Uses:
 /// MachineViewCore/RenewalCoordinator
+/// ├── MachineViewCore/CallbackUrl (inferred)
 /// ├── MachineViewCore/Outcomes (inferred)
 /// └── MachineViewCore/RenewalPolicy (inferred)
 /// External: Foundation
@@ -20,6 +23,7 @@
 /// MachineViewCore/RenewalCoordinator
 /// ├── MachineView/MachineViewController (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// └── MachineViewCoreTests/RenewalCoordinatorTests (inferred)
 /// <module-headers:end>
 import Foundation
@@ -36,30 +40,36 @@ public protocol RenewalUi: AnyObject {
 public protocol Cancellable { func cancel() }
 
 public protocol OneShotScheduler: AnyObject {
-    /// Calls `fire` once at wall-clock second `at` (or as soon as possible if that has passed).
-    func schedule(at: Int64, _ fire: @escaping () -> Void) -> Cancellable
+    /// Calls `fire` once at wall-clock `second` (or as soon as possible if that has passed).
+    func schedule(at second: Int64, _ fire: @escaping () -> Void) -> Cancellable
 }
 
-public enum OpenDecision: Equatable { case load, renewFirst }
+/// `wait`: a renewal is already out and its success reloads the page.
+public enum OpenDecision: Equatable { case load, renewFirst, wait }
 
 public final class RenewalCoordinator {
     private let clock: () -> Int64
     private let scheduler: OneShotScheduler
     private let session: () -> (iat: Int64?, exp: Int64)?
-    private weak var ui: RenewalUi?
+    private weak var renewalUi: RenewalUi?
     private let renew: (@escaping (SignInOutcome) -> Void) -> Void
     private var timer: Cancellable?
     private var visible = false
     private var overlayShown = false
+    private var renewal = 0
+    private var renewingSince: Int64?
 
     public init(clock: @escaping () -> Int64, scheduler: OneShotScheduler, session: @escaping () -> (iat: Int64?, exp: Int64)?,
-                ui: RenewalUi, renew: @escaping (@escaping (SignInOutcome) -> Void) -> Void) {
-        (self.clock, self.scheduler, self.session, self.ui, self.renew) = (clock, scheduler, session, ui, renew)
+                ui renewalUi: RenewalUi, renew: @escaping (@escaping (SignInOutcome) -> Void) -> Void) {
+        (self.clock, self.scheduler, self.session, self.renewalUi, self.renew) = (clock, scheduler, session, renewalUi, renew)
     }
 
     public func onOpen() -> OpenDecision { gate(.open) }
 
     public func onResume() -> OpenDecision { gate(.resume) }
+
+    /// A renewal that has not reported back, for at most the callback TTL (a later reply is refused anyway).
+    public var renewing: Bool { renewingSince.map { clock() - $0 <= CallbackUrl.ttlS } ?? false }
 
     public func onVisibilityChanged(_ visible: Bool) {
         self.visible = visible
@@ -70,28 +80,33 @@ public final class RenewalCoordinator {
     public func evaluate() {
         timer?.cancel()
         timer = nil
-        guard let s = session() else { return showOverlay() }
-        let d = RenewalPolicy.decide(now: clock(), iat: s.iat, exp: s.exp, context: .view, visible: visible)
-        switch d.action {
-        case .none, .renewBeforeLoad: ui?.hideBanner()
-        case .banner: ui?.showBanner()
-        case .overlay: ui?.hideBanner(); showOverlay()
+        guard let current = session() else { return showOverlay() }
+        let decision = RenewalPolicy.decide(now: clock(), iat: current.iat, exp: current.exp, context: .view, visible: visible)
+        switch decision.action {
+        case .none, .renewBeforeLoad: renewalUi?.hideBanner()
+        case .banner: renewalUi?.showBanner()
+        case .overlay: renewalUi?.hideBanner(); showOverlay()
         }
-        if let at = d.nextCheckAt { timer = scheduler.schedule(at: at) { [weak self] in self?.evaluate() } }
+        if let nextCheck = decision.nextCheckAt { timer = scheduler.schedule(at: nextCheck) { [weak self] in self?.evaluate() } }
     }
 
     /// `yaranapp://reauth`, an Access redirect, or a refusal that asks to sign in again.
     public func onReauthSignal() { showOverlay() }
 
-    /// The banner's Renew or the overlay's Sign in (always behind a user gesture).
+    /// The banner's Renew or the overlay's Sign in (always behind a user gesture), or opening.
+    /// A newer renewal replaces an older one; only the newest one's ending clears `renewing`.
     public func renewNow(completion: @escaping (SignInOutcome) -> Void) {
+        renewal += 1
+        let mine = renewal
+        renewingSince = clock()
         renew { [weak self] outcome in
             guard let self else { return }
+            if self.renewal == mine { self.renewingSince = nil }
             if case .signedIn = outcome {
                 self.overlayShown = false
-                self.ui?.hideOverlay()
-                self.ui?.hideBanner()
-                self.ui?.reloadSameUrl()
+                self.renewalUi?.hideOverlay()
+                self.renewalUi?.hideBanner()
+                self.renewalUi?.reloadSameUrl()
                 self.evaluate()
             }
             completion(outcome)
@@ -99,14 +114,15 @@ public final class RenewalCoordinator {
     }
 
     private func gate(_ context: RenewalContext) -> OpenDecision {
-        guard let s = session() else { return .renewFirst }
-        return RenewalPolicy.decide(now: clock(), iat: s.iat, exp: s.exp, context: context, visible: true).action
+        if renewing { return .wait }
+        guard let current = session() else { return .renewFirst }
+        return RenewalPolicy.decide(now: clock(), iat: current.iat, exp: current.exp, context: context, visible: true).action
             == .renewBeforeLoad ? .renewFirst : .load
     }
 
     private func showOverlay() {
         guard !overlayShown else { return }
         overlayShown = true
-        ui?.showReauthOverlay()
+        renewalUi?.showReauthOverlay()
     }
 }

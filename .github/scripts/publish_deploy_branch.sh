@@ -46,10 +46,12 @@ if git ls-remote --exit-code --heads "$REMOTE" "$BRANCH" >/dev/null; then
     exit 1
   }
   prev="$(printf '%s' "$prev_json" | node -e 'console.log(JSON.parse(require("fs").readFileSync(0)).version)')"
-  if ! node --input-type=module -e '
-    const { compareVersions } = await import(process.argv[1]);
-    process.exit(compareVersions(process.argv[2], process.argv[3]) > 0 ? 0 : 1);
-  ' "$ROOT/tools/release-trains/versions.mjs" "$VERSION" "$prev"; then
+  # The module path rides in the environment: in argv[1] it would match versions.mjs's
+  # own entry-point guard and run its CLI instead of importing it.
+  if ! VERSIONS_MJS="$ROOT/tools/release-trains/versions.mjs" node --input-type=module -e '
+    const { compareVersions } = await import(process.env.VERSIONS_MJS);
+    process.exit(compareVersions(process.argv[1], process.argv[2]) > 0 ? 0 : 1);
+  ' "$VERSION" "$prev"; then
     echo "REFUSED: $BRANCH already holds $prev; $TAG is not newer, nothing pushed" >&2
     exit 1
   fi

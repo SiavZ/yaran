@@ -50,13 +50,14 @@ describe("devices repository", () => {
     const w = await makeWorld();
     const { row } = await registered(w);
     const actor = { kind: "admin" as const, id: "admin-1" };
+    const sealed = String((await read(w, row.id))!.endpoint_enc);
     expect(await revokeDevice(w.ctx, row.id, { ownerUserId: null, actor, signOutEverywhere: false })).toBe(true);
     expect(await revokeDevice(w.ctx, row.id, { ownerUserId: null, actor, signOutEverywhere: false })).toBe(false);
     expect((await read(w, row.id))!).toMatchObject({ revoked_by: "admin-1", device_key_fingerprint: DEVICE_KEYS[0]!.fingerprint });
     await w.refresh();
     expect(w.audit.map((a) => [a.action, a.actor.kind])).toEqual([["device.revoked", "admin"]]);
     // A delivery never resurrects a revoked device (08's writer guards on push_state).
-    await markOk(w.ctx.db, row.id, w.clock.now);
+    await markOk(w.ctx.db, row.id, sealed, w.clock.now);
     expect((await read(w, row.id))!.push_state).toBe("none");
   });
 });

@@ -123,17 +123,17 @@ async function handle(ctx: BatchCtx, m: QueueMessage<PushJob>): Promise<void> {
   const fields = { device_id: d.id, push_host: d.endpoint_host, status: res.status, attempts: m.attempts, outcome: outcome.kind };
   switch (outcome.kind) {
     case "ok":
-      await markOk(deps.db, d.id, now);
+      await markOk(deps.db, d.id, d.endpoint_enc!, now);
       tally.delivered++;
       deps.log.info("push.sent", fields);
       return m.ack();
     case "gone":
-      if (await markGone(deps.db, d.id)) await deps.audit("device.push_gone", d.id, { status: res.status });
+      if (await markGone(deps.db, d.id, d.endpoint_enc!)) await deps.audit("device.push_gone", d.id, { status: res.status });
       tally.gone++;
       deps.log.info("push.gone", fields);
       return m.ack();
     case "auth_failed":
-      if (await markAuthFailed(deps.db, d.id)) await deps.audit("device.push_auth_failed", d.id, { status: res.status });
+      if (await markAuthFailed(deps.db, d.id, d.endpoint_enc!)) await deps.audit("device.push_auth_failed", d.id, { status: res.status });
       tally.failed++;
       deps.log.warn("push.auth_failed", fields);
       return m.ack();
@@ -153,7 +153,9 @@ async function handle(ctx: BatchCtx, m: QueueMessage<PushJob>): Promise<void> {
 async function exhausted(ctx: BatchCtx, m: QueueMessage<PushJob>, why: string): Promise<void> {
   ctx.tally.failed++;
   ctx.deps.log.warn("push.exhausted", { device_id: m.body.device_id, attempts: m.attempts, reason: why });
-  if (await recordExhausted(ctx.deps.db, m.body.device_id)) await ctx.deps.audit("device.push_failing", m.body.device_id);
+  // Counted against the subscription this batch read, the one the retries were sent to.
+  const sentTo = ctx.devices.get(m.body.device_id)?.endpoint_enc ?? null;
+  if (await recordExhausted(ctx.deps.db, m.body.device_id, sentTo)) await ctx.deps.audit("device.push_failing", m.body.device_id);
   m.ack();
 }
 

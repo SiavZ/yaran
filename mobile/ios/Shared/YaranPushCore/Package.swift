@@ -23,12 +23,12 @@ let package = Package(
     platforms: [.iOS("17.4"), .macOS(.v13)],
     products: [
         .library(name: "YaranPushCore", targets: ["YaranPushCore"]),
-        .library(name: "YaranPushRegistration", targets: ["YaranPushRegistration"]),
+        .library(name: "YaranPushRegistration", targets: ["YaranPushRegistration"])
     ],
     targets: [
         .target(name: "YaranPushCore"),
         .target(name: "YaranPushRegistration", dependencies: ["YaranPushCore"]),
         .testTarget(name: "YaranPushCoreTests", dependencies: ["YaranPushCore"]),
-        .testTarget(name: "YaranPushRegistrationTests", dependencies: ["YaranPushRegistration", "YaranPushCore"]),
+        .testTarget(name: "YaranPushRegistrationTests", dependencies: ["YaranPushRegistration", "YaranPushCore"])
     ]
 )

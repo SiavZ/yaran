@@ -31,12 +31,12 @@ public struct SplitUri: Equatable {
     /// Authority plus path, e.g. "add-org", "auth/callback", "reauth".
     public var command: String { authority + path }
 
-    private static let re = Pattern("([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)(/[^?#]*)?(?:\\?([^#]*))?(?:#(.*))?")
+    private static let uriPattern = Pattern("([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)(/[^?#]*)?(?:\\?([^#]*))?(?:#(.*))?")
 
     /// Splits without decoding; nil when the shape is wrong.
     public static func split(_ uri: String) -> SplitUri? {
-        guard let g = re.groups(uri), let scheme = g[0], let authority = g[1] else { return nil }
-        return SplitUri(scheme: scheme.lowercased(), authority: authority, path: g[2] ?? "", query: g[3], fragment: g[4])
+        guard let groups = uriPattern.groups(uri), let scheme = groups[0], let authority = groups[1] else { return nil }
+        return SplitUri(scheme: scheme.lowercased(), authority: authority, path: groups[2] ?? "", query: groups[3], fragment: groups[4])
     }
 
     /// `decodeURIComponent` over `k=v&k=v`; nil on a duplicate key or a bad escape.
@@ -44,9 +44,9 @@ public struct SplitUri: Equatable {
         var out: [String: String] = [:]
         guard let text, !text.isEmpty else { return out }
         for pair in text.split(separator: "&", omittingEmptySubsequences: false) where !pair.isEmpty {
-            let eq = pair.firstIndex(of: "=")
-            let rawKey = eq.map { pair[..<$0] } ?? pair
-            let rawValue = eq.map { pair[pair.index(after: $0)...] } ?? ""
+            let equals = pair.firstIndex(of: "=")
+            let rawKey = equals.map { pair[..<$0] } ?? pair
+            let rawValue = equals.map { pair[pair.index(after: $0)...] } ?? ""
             guard let key = String(rawKey).removingPercentEncoding,
                   let value = String(rawValue).removingPercentEncoding,
                   out[key] == nil else { return nil }
@@ -76,12 +76,12 @@ public enum ControlUrl {
     public static let maxChars = 512
 
     public static func parse(_ uri: String) -> AppUri {
-        guard uri.utf16.count <= maxChars, let s = SplitUri.split(uri), s.scheme == "yaranapp",
-              let query = SplitUri.params(s.query), SplitUri.params(s.fragment) != nil else { return .invalid }
-        switch s.command {
+        guard uri.utf16.count <= maxChars, let split = SplitUri.split(uri), split.scheme == "yaranapp",
+              let query = SplitUri.params(split.query), SplitUri.params(split.fragment) != nil else { return .invalid }
+        switch split.command {
         case "add-org":
-            guard let u = query["u"], Pattern.orgUrl.matches(u) else { return .invalid }
-            return .addOrg(orgUrl: u)
+            guard let orgUrl = query["u"], Pattern.orgUrl.matches(orgUrl) else { return .invalid }
+            return .addOrg(orgUrl: orgUrl)
         case "reauth":
             guard let host = query["host"], Pattern.hostname.matches(host) else { return .invalid }
             return .reauth(host: host)

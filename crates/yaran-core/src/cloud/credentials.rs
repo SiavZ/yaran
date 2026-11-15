@@ -11,7 +11,7 @@
 //! - `update(&CloudPaths, |Option<Credentials>| -> Result<Option<Credentials>, _>)`:
 //!   read-modify-write under the lock; returning `None` deletes the file.
 //! - `delete(&CloudPaths)`, `revision(&CloudPaths) -> Option<CredentialsRevision>`
-//! - `stamp_revoked(&CloudPaths)`, `rotate_consent_key(&CloudPaths)`
+//! - `stamp_revoked(&CloudPaths, &Credentials) -> Result<bool, _>`, `rotate_consent_key(&CloudPaths)`
 //! - `read_handoff_consent_key(&CloudPaths) -> Result<Option<HandoffConsentKey>, _>`
 //!   (lock-free, call per request: a rotation by another process applies at once)
 //!
@@ -264,6 +264,11 @@ impl Credentials {
         self.revoked_at.is_some()
     }
 
+    /// Whether `other` is the same pairing (machine and org): a re-pair mints a new one.
+    pub fn same_pairing(&self, other: &Credentials) -> bool {
+        self.machine_id == other.machine_id && self.org_url == other.org_url
+    }
+
     fn check(&self) -> Result<(), CredentialsError> {
         self.machine_key_der()?;
         self.consent_key()?;
@@ -341,13 +346,18 @@ fn write_locked(paths: &CloudPaths, creds: &Credentials) -> Result<(), Credentia
 
 /// Read-modify-write under the writers' lock. `f` sees the current record (or `None`);
 /// it returns the record to store, or `None` to delete the file. Returns what was stored.
+/// Returning the record unchanged writes nothing, so watchers see no new revision.
 pub fn update<F>(paths: &CloudPaths, f: F) -> Result<Option<Credentials>, CredentialsError>
 where
     F: FnOnce(Option<Credentials>) -> Result<Option<Credentials>, CredentialsError>,
 {
     paths.ensure_dir().map_err(io_err)?;
     let _lock = crate::private_file::lock_exclusive(&paths.lock).map_err(io_err)?;
-    let next = f(read(paths)?)?;
+    let current = read(paths)?;
+    let next = f(current.clone())?;
+    if next == current {
+        return Ok(next);
+    }
     match &next {
         Some(creds) => write_locked(paths, creds)?,
         None => remove_file(paths)?,
@@ -371,17 +381,24 @@ pub fn delete(paths: &CloudPaths) -> Result<(), CredentialsError> {
     remove_file(paths)
 }
 
-/// Stamp `revoked_at` (any `410 machine_revoked`). A no-op when unpaired or already stamped.
-pub fn stamp_revoked(paths: &CloudPaths) -> Result<(), CredentialsError> {
+/// Stamp `revoked_at` (any `410 machine_revoked`) on the record still holding the pairing
+/// the refused request was signed for. Returns whether that pairing is the stored one: a
+/// late answer about an older pairing never touches a newer one, and unpaired is a no-op.
+pub fn stamp_revoked(
+    paths: &CloudPaths,
+    signed_for: &Credentials,
+) -> Result<bool, CredentialsError> {
+    let mut matched = false;
     update(paths, |current| {
         Ok(current.map(|mut c| {
-            if c.revoked_at.is_none() {
+            matched = c.same_pairing(signed_for);
+            if matched && c.revoked_at.is_none() {
                 c.revoked_at = Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
             }
             c
         }))
-    })
-    .map(|_| ())
+    })?;
+    Ok(matched)
 }
 
 /// `yaran cloud rotate --consent-key` (D24): fresh key, version + 1, no network call.

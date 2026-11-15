@@ -19,7 +19,8 @@
  * Used by:
  * src/test/setup.ts
  * ├── src/lib/orgStore.test.ts
- * └── src/lib/settingsStore.test.ts
+ * ├── src/lib/settingsStore.test.ts
+ * └── src/screens/onboarding/onboarding.test.tsx
  * <module-headers:end>
  */
 import { cleanup } from '@testing-library/react';

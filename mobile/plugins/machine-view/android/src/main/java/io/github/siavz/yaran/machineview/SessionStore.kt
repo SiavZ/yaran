@@ -25,11 +25,13 @@
  * ├── io.github.siavz.yaran.machineview.HandoffClient (inferred)
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
+ * ├── io.github.siavz.yaran.machineview.MachineWindowRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClient (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClientTest (inferred)
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
  * ├── io.github.siavz.yaran.machineview.RenewalCoordinator (inferred)
  * ├── io.github.siavz.yaran.machineview.RenewalCoordinatorTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.SignInLockRobolectricTest (inferred)
  * └── io.github.siavz.yaran.machineview.StoresTest (inferred)
  * <module-headers:end>
  */

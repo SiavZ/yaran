@@ -22,7 +22,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.6.2"),
-        .package(path: "../../ios/Shared/YaranPushCore"),
+        .package(path: "../../ios/Shared/YaranPushCore")
     ],
     targets: [
         .target(
@@ -30,7 +30,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "YaranPushCore", package: "YaranPushCore"),
-                .product(name: "YaranPushRegistration", package: "YaranPushCore"),
+                .product(name: "YaranPushRegistration", package: "YaranPushCore")
             ],
             path: "ios/Sources/PushPlugin"
         )

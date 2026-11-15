@@ -14,7 +14,8 @@
 /// ├── MachineViewCore/RefusalPolicy (inferred)
 /// ├── MachineViewCore/RenewalPolicy (inferred)
 /// ├── MachineViewCore/RouteFragment (inferred)
-/// └── MachineViewCoreTests/Fixtures (inferred)
+/// ├── MachineViewCoreTests/Fixtures (inferred)
+/// └── MachineViewCoreTests/FormatTests (inferred)
 /// External: Foundation, Testing
 ///
 /// Used by: entry point (Swift Testing, via bash ios/MachineViewCore/test.sh)
@@ -24,71 +25,74 @@ import Testing
 @testable import MachineViewCore
 
 @Suite struct PolicyTests {
-    @Test func navigationCases() {
-        let fx = Fixtures.plugin("navigation-cases.json")
-        let host = fx["host"] as! String
-        let cases = Fixtures.cases(fx)
+    @Test func navigationCases() throws {
+        let fixture = Fixtures.plugin("navigation-cases.json")
+        let host = try #require(fixture["host"] as? String)
+        let cases = Fixtures.cases(fixture)
         #expect(cases.count >= 60)
-        for c in cases {
-            let v = NavigationPolicy.decide(pinnedHost: host, url: c["url"] as! String, mainFrame: c["frame"] as! String == "main",
-                                            newWindow: c["new_window"] as! Bool, gesture: c["gesture"] as! Bool)
-            #expect(v.decision.rawValue == c["expect"] as! String, "\(c["name"]!)")
-            #expect(v.diagnostic == c["diagnostic"] as! Bool, "\(c["name"]!)")
+        for entry in cases {
+            let verdict = NavigationPolicy.decide(pinnedHost: host, url: try #require(entry["url"] as? String),
+                                                  mainFrame: try #require(entry["frame"] as? String) == "main",
+                                                  newWindow: try #require(entry["new_window"] as? Bool), gesture: try #require(entry["gesture"] as? Bool))
+            #expect(verdict.decision.rawValue == entry["expect"] as? String, "\(entry["name"]!)")
+            #expect(verdict.diagnostic == entry["diagnostic"] as? Bool, "\(entry["name"]!)")
         }
     }
 
-    @Test func controlUrlCases() {
-        for c in Fixtures.cases(Fixtures.proto("fixtures/uri/control-urls.json")) {
-            let d = ControlUrl.decision(c["uri"] as! String, loadedHost: c["loaded_host"] as! String)
+    @Test func controlUrlCases() throws {
+        for entry in Fixtures.cases(Fixtures.proto("fixtures/uri/control-urls.json")) {
+            let decision = ControlUrl.decision(try #require(entry["uri"] as? String), loadedHost: try #require(entry["loaded_host"] as? String))
             let name: String
             var code: String?
-            switch d {
+            switch decision {
             case .reauth: name = "reauth"
             case .home: name = "home"
             case .settings: name = "settings"
-            case .ignore(let c): name = "ignore"; code = c
+            case .ignore(let ignoreCode): name = "ignore"; code = ignoreCode
             }
-            #expect(name == c["expect"] as! String, "\(c["uri"]!)")
-            #expect(code == c["code"] as? String, "\(c["uri"]!)")
+            #expect(name == entry["expect"] as? String, "\(entry["uri"]!)")
+            #expect(code == entry["code"] as? String, "\(entry["uri"]!)")
         }
     }
 
-    @Test func routeCases() {
-        for c in Fixtures.cases(Fixtures.plugin("routes.json")) {
-            #expect(RouteFragment.isValid(c["route"] as! String) == c["expect"] as! Bool, "\(c["route"]!)")
+    @Test func routeCases() throws {
+        for entry in Fixtures.cases(Fixtures.plugin("routes.json")) {
+            #expect(RouteFragment.isValid(try #require(entry["route"] as? String)) == entry["expect"] as? Bool, "\(entry["route"]!)")
         }
     }
 
-    @Test func renewalCases() {
-        let fx = Fixtures.plugin("renewal-cases.json")
-        let k = fx["constants"] as! [String: Any]
-        #expect(RenewalPolicy.preOpenMaxS == k["pre_open_max_s"] as! Int64)
-        #expect(RenewalPolicy.preOpenDivisor == k["pre_open_divisor"] as! Int64)
-        #expect(RenewalPolicy.bannerS == k["banner_s"] as! Int64)
-        for c in Fixtures.cases(fx) {
-            let d = RenewalPolicy.decide(now: c["now"] as! Int64, iat: c["iat"] as? Int64, exp: c["exp"] as! Int64,
-                                         context: RenewalContext(rawValue: c["context"] as! String)!, visible: c["visible"] as! Bool)
-            let e = c["expect"] as! [String: Any]
-            #expect(d.action.rawValue == e["action"] as! String, "\(c["name"]!)")
-            #expect(d.nextCheckAt == e["next_check_at"] as? Int64, "\(c["name"]!)")
+    @Test func renewalCases() throws {
+        let fixture = Fixtures.plugin("renewal-cases.json")
+        let constants = try #require(fixture["constants"] as? [String: Any])
+        #expect(RenewalPolicy.preOpenMaxS == constants["pre_open_max_s"] as? Int64)
+        #expect(RenewalPolicy.preOpenDivisor == constants["pre_open_divisor"] as? Int64)
+        #expect(RenewalPolicy.bannerS == constants["banner_s"] as? Int64)
+        for entry in Fixtures.cases(fixture) {
+            let context = try #require((entry["context"] as? String).flatMap(RenewalContext.init(rawValue:)))
+            let decision = RenewalPolicy.decide(now: try #require(entry["now"] as? Int64), iat: entry["iat"] as? Int64, exp: try #require(entry["exp"] as? Int64),
+                                                context: context, visible: try #require(entry["visible"] as? Bool))
+            let want = try #require(entry["expect"] as? [String: Any])
+            #expect(decision.action.rawValue == want["action"] as? String, "\(entry["name"]!)")
+            #expect(decision.nextCheckAt == want["next_check_at"] as? Int64, "\(entry["name"]!)")
         }
     }
 
-    @Test func refusalCases() {
-        for c in Fixtures.cases(Fixtures.plugin("refusal-cases.json")) {
-            let v = RefusalPolicy.decide(status: c["status"] as! Int, refusal: c["refusal"] as? String)
-            let e = c["expect"] as! [String: Any]
-            #expect(v.decision.rawValue == e["decision"] as! String, "\(c["name"]!)")
-            #expect(v.diagnostic == e["diagnostic"] as! Bool, "\(c["name"]!)")
+    @Test func refusalCases() throws {
+        for entry in Fixtures.cases(Fixtures.plugin("refusal-cases.json")) {
+            let verdict = RefusalPolicy.decide(status: try #require(entry["status"] as? Int), refusal: entry["refusal"] as? String)
+            let want = try #require(entry["expect"] as? [String: Any])
+            #expect(verdict.decision.rawValue == want["decision"] as? String, "\(entry["name"]!)")
+            #expect(verdict.diagnostic == want["diagnostic"] as? Bool, "\(entry["name"]!)")
         }
     }
 
-    @Test func everyRegistryRefusalHasADecision() {
-        let registry = Fixtures.proto("registry/refusals.json")["refusals"] as! [[String: Any]]
-        #expect(Set(registry.map { $0["code"] as! String }) == RefusalPolicy.known)
-        for r in registry {
-            let v = RefusalPolicy.decide(status: r["status"] as! Int, refusal: r["code"] as? String)
-            #expect(!v.diagnostic && v.decision != .none && v.decision != .codeOverlay, "\(r["code"]!)")
+    @Test func everyRegistryRefusalHasADecision() throws {
+        let registry = try #require(Fixtures.proto("registry/refusals.json")["refusals"] as? [[String: Any]])
+        let codes = try registry.map { try #require($0["code"] as? String) }
+        #expect(Set(codes) == RefusalPolicy.known)
+        for refusal in registry {
+            let verdict = RefusalPolicy.decide(status: try #require(refusal["status"] as? Int), refusal: refusal["code"] as? String)
+            #expect(!verdict.diagnostic && verdict.decision != .none && verdict.decision != .codeOverlay, "\(refusal["code"]!)")
         }
     }
 }

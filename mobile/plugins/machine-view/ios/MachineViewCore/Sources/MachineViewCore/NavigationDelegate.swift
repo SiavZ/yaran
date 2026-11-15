@@ -75,9 +75,9 @@ public final class NavigationDelegate: NSObject, WKNavigationDelegate {
         let newWindow = navigationAction.targetFrame == nil
         // A new window only opens on a user gesture (javaScriptCanOpenWindowsAutomatically is off).
         let gesture = newWindow || navigationAction.navigationType == .linkActivated
-        let go = apply(url: navigationAction.request.url, mainFrame: navigationAction.targetFrame?.isMainFrame ?? true,
+        let proceed = apply(url: navigationAction.request.url, mainFrame: navigationAction.targetFrame?.isMainFrame ?? true,
                        newWindow: newWindow, gesture: gesture) { webView.load(URLRequest(url: $0)) }
-        decisionHandler(go ? .allow : .cancel)
+        decisionHandler(proceed ? .allow : .cancel)
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
@@ -127,13 +127,13 @@ public final class NavigationDelegate: NSObject, WKNavigationDelegate {
     }
 
     /// nil for errors that are ours (a cancelled navigation, a policy change).
-    static func classify(_ e: NSError) -> LoadFailure? {
-        if e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled { return nil }
-        if e.domain == "WebKitErrorDomain" { return nil }
+    static func classify(_ error: NSError) -> LoadFailure? {
+        if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled { return nil }
+        if error.domain == "WebKitErrorDomain" { return nil }
         let tls: Set<Int> = [NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateHasBadDate, NSURLErrorServerCertificateUntrusted,
                              NSURLErrorServerCertificateHasUnknownRoot, NSURLErrorServerCertificateNotYetValid,
                              NSURLErrorClientCertificateRejected, NSURLErrorClientCertificateRequired]
-        return e.domain == NSURLErrorDomain && tls.contains(e.code) ? .tls : .offline
+        return error.domain == NSURLErrorDomain && tls.contains(error.code) ? .tls : .offline
     }
 }
 #endif

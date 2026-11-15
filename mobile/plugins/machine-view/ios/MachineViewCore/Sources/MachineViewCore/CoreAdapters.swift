@@ -9,6 +9,8 @@
 ///
 /// - Values are UTF-8 text: every caller in this plugin writes JSON.
 /// - The org directory reads the shell's org list (`orgs/list`), written at onboarding.
+/// - `lockStateChanged` is the core's own App Lock notification, for UIKit code that does
+///   not import `YaranCore`.
 ///
 /// <module-headers:begin>
 /// Uses:
@@ -18,14 +20,17 @@
 /// ├── YaranCore/Diagnostics (inferred)
 /// ├── YaranCore/ScreenPrivacy (inferred)
 /// └── YaranCore/Vault (inferred)
-/// External: CryptoKit, Foundation
+/// External: CryptoKit, Darwin, Foundation
 ///
 /// Used by:
 /// MachineViewCore/CoreAdapters
 /// ├── App/AppDelegate (inferred)
-/// └── MachineViewCoreTests/CoreAdaptersTests (inferred)
+/// ├── MachineView/MachineViewController (inferred)
+/// ├── MachineViewCoreTests/CoreAdaptersTests (inferred)
+/// └── MachineViewCoreTests/LockTests (inferred)
 /// <module-headers:end>
 import CryptoKit
+import Darwin
 import Foundation
 import YaranCore
 
@@ -36,6 +41,9 @@ public enum CoreAdapters {
         CoreBindings.install(vault: VaultSecrets(vault), diagnostics: CoreDiagnostics(), orgs: OrgList(vault),
                              appLock: CoreAppLock(), screenPrivacy: CoreScreenPrivacy())
     }
+
+    /// Posted (any thread) whenever App Lock locks or unlocks.
+    public static let lockStateChanged = AppLock.lockStateChanged
 }
 
 public final class VaultSecrets: SecretVault {
@@ -48,36 +56,38 @@ public final class VaultSecrets: SecretVault {
 
     private struct Name { let namespace: String; let key: String; let name: String? }
 
-    private func split(_ ns: String) -> Name {
-        guard let slash = ns.firstIndex(of: "/") else { return Name(namespace: ns, key: Self.singleKey, name: nil) }
-        let name = String(ns[ns.index(after: slash)...])
+    private func split(_ path: String) -> Name {
+        guard let slash = path.firstIndex(of: "/") else { return Name(namespace: path, key: Self.singleKey, name: nil) }
+        let name = String(path[path.index(after: slash)...])
         let hash = SHA256.hash(data: Data(name.utf8)).map { String(format: "%02x", $0) }.joined()
-        return Name(namespace: String(ns[..<slash]), key: hash, name: name)
+        return Name(namespace: String(path[..<slash]), key: hash, name: name)
     }
 
-    public func read(_ ns: String) throws -> Data? {
-        let n = split(ns)
-        return try mapped { try vault.get(namespace: n.namespace, key: n.key) }.map { Data($0.utf8) }
+    public func read(_ path: String) throws -> Data? {
+        let target = split(path)
+        return try mapped { try vault.get(namespace: target.namespace, key: target.key) }.map { Data($0.utf8) }
     }
 
-    public func write(_ ns: String, _ value: Data, _ cls: ProtectionClass) throws {
-        let n = split(ns)
+    public func write(_ path: String, _ value: Data, _ cls: ProtectionClass) throws {
+        let target = split(path)
         let protection: Protection
         switch cls {
         case .standard: protection = .standard
         case .locked: protection = .locked
         }
+        // Values are JSON; bytes that are not UTF-8 are refused rather than replaced.
+        guard let text = String(bytes: value, encoding: .utf8) else { throw YaranCore.VaultError.invalidArgument }
         try locked {
-            try mapped { try vault.set(namespace: n.namespace, key: n.key, value: String(decoding: value, as: UTF8.self), protection: protection) }
-            if let name = n.name { try saveNames(n.namespace, names(n.namespace).union([name])) }
+            try mapped { try vault.set(namespace: target.namespace, key: target.key, value: text, protection: protection) }
+            if let name = target.name { try saveNames(target.namespace, names(target.namespace).union([name])) }
         }
     }
 
-    public func delete(_ ns: String) throws {
-        let n = split(ns)
+    public func delete(_ path: String) throws {
+        let target = split(path)
         try locked {
-            try mapped { try vault.remove(namespace: n.namespace, key: n.key) }
-            if let name = n.name { try saveNames(n.namespace, names(n.namespace).subtracting([name])) }
+            try mapped { try vault.remove(namespace: target.namespace, key: target.key) }
+            if let name = target.name { try saveNames(target.namespace, names(target.namespace).subtracting([name])) }
         }
     }
 
@@ -131,8 +141,13 @@ final class CoreDiagnostics: DiagnosticsSink {
 }
 
 final class CoreAppLock: AppLockState {
-    func lockEnabled() -> Bool { AppLock.shared.status().enabled }
-    func isLocked() -> Bool { AppLock.shared.locked }
+    private let lock: AppLock
+    init(_ lock: AppLock = .shared) { self.lock = lock }
+    func lockEnabled() -> Bool { lock.status().enabled }
+    func isLocked() -> Bool { lock.locked }
+    // The same continuous monotonic clock as SceneDelegate, including time asleep.
+    func holdForExternalFlow(ttlMs: Int64) { lock.holdForExternalFlow(ttlMs: ttlMs, nowMs: Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1_000_000)) }
+    func releaseExternalFlow() { lock.releaseExternalFlow() }
 }
 
 final class CoreScreenPrivacy: ScreenPrivacyState {

@@ -201,6 +201,26 @@ describe("POST /v1/pair/authorize", () => {
     expect(res.status).toBe(409);
     expect(await res.text()).toContain("provisioning_in_progress");
   });
+  it("Retry after cron finished the deferred op issues the code without starting another op", async () => {
+    const pw = await pairWorld();
+    const m = await fixtureMachine();
+    pw.w.cf.faults.push({ kind: "transient", when: on("POST", /access\/policies$/), times: 20 });
+    const f = formFields(await (await getAuthorize(pw, authorizeQuery(m))).text());
+    const deferred = await postAuthorize(pw, { request_id: f["request_id"]!, csrf: f["csrf"]!, decision: "approve" });
+    expect(deferred.status).toBe(409);
+    const retry = formFields(await deferred.text());
+    const { machine_id: machineId } = (await pw.w.ctx.db.prepare("SELECT machine_id FROM pair_requests WHERE id = ?").bind(f["request_id"]).first<{ machine_id: string }>())!;
+    const { id: opId } = (await pw.w.ctx.db.prepare("SELECT id FROM provisioning_ops WHERE machine_id = ?").bind(machineId).first<{ id: string }>())!;
+    // Cloudflare recovers and the background drive finishes the op before the browser retries.
+    pw.w.cf.faults.length = 0;
+    pw.w.clock.now += 300;
+    expect((await pw.w.ctx.provisioning.driveOp(opId, { wallMs: 30_000, apiCalls: 50 })).state).toBe("complete");
+    expect((await pw.w.ctx.db.prepare("SELECT status FROM machines WHERE id = ?").bind(machineId).first<{ status: string }>())!.status).toBe("awaiting_claim");
+    const ok = await postAuthorize(pw, retry);
+    expect(ok.status).toBe(302);
+    expect(location(ok).searchParams.get("code")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect((await opsOf(pw.w, machineId)).map((o) => [o.kind, o.state])).toEqual([["provision", "succeeded"]]);
+  });
   it("enforces the cap again atomically at approve", async () => {
     const pw = await pairWorld();
     pw.w.settings.machine_cap_per_user = 1;

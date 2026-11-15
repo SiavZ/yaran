@@ -30,7 +30,7 @@ public class AppLockPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "enable", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "disable", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "unlock", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setOptions", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setOptions", returnType: CAPPluginReturnPromise)
     ]
     private var observer: NSObjectProtocol?
 
@@ -55,7 +55,7 @@ public class AppLockPlugin: CAPPlugin, CAPBridgedPlugin {
                 "allowPasscode": status.allowPasscode,
                 "grace": status.grace.rawValue,
                 "locked": status.locked,
-                "biometry": status.biometry.rawValue,
+                "biometry": status.biometry.rawValue
             ]
         }
     }

@@ -1,3 +1,21 @@
+//! Unit tests for the human board's card model, persistence and reply rules.
+//!
+//! Exercises store updates in temporary files and the pure card/reply behavior.
+//! - Threaded watcher cases live in the watcher_tests child module.
+//!
+//! <module-headers:begin>
+//! Uses:
+//! human_board/tests.rs
+//! ├── human_board
+//! └── human_board::tests::watcher_tests
+//! External: chrono, std, tempfile
+//!
+//! Used by:
+//! human_board/tests.rs
+//! ├── human_board
+//! └── human_board::tests::watcher_tests
+//! <module-headers:end>
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
@@ -5,6 +23,9 @@ use std::time::Duration;
 use chrono::{Duration as ChronoDuration, TimeZone};
 
 use super::*;
+
+#[path = "watcher_tests.rs"]
+mod watcher_tests;
 
 fn at(minute: i64) -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 11, 12, 0, 0).unwrap() + ChronoDuration::minutes(minute)
@@ -378,46 +399,6 @@ fn concurrent_writers_never_lose_a_card() {
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 80, "every card has its own number");
-}
-
-#[test]
-fn the_watcher_reports_at_once_and_again_on_every_change() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = BoardStore::new(dir.path());
-    let watcher = BoardWatcher::spawn(store.clone(), Duration::from_millis(10)).unwrap();
-    let wait = Duration::from_secs(5);
-
-    let first = watcher.next_within(wait).unwrap();
-    assert_eq!(first.board.unwrap(), Board::default());
-
-    store
-        .update(|board| board.post(card(CardKind::Task, None, "a"), at(0)))
-        .unwrap();
-    let second = watcher.next_within(wait).unwrap();
-    assert_eq!(second.board.unwrap().cards.len(), 1);
-
-    fs::write(store.path(), b"garbage").unwrap();
-    let third = watcher.next_within(wait).unwrap();
-    assert!(third.board.is_err());
-
-    // Nothing changes, nothing is sent.
-    assert!(watcher.next_within(Duration::from_millis(100)).is_none());
-}
-
-#[test]
-fn latest_skips_to_the_newest_snapshot() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = BoardStore::new(dir.path());
-    let watcher = BoardWatcher::spawn(store.clone(), Duration::from_millis(5)).unwrap();
-    for n in 0..3 {
-        store
-            .update(|board| board.post(card(CardKind::Info, None, &format!("{n}")), at(n)))
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(40));
-    }
-    let latest = watcher.latest().expect("snapshots were sent");
-    assert_eq!(latest.board.unwrap().cards.len(), 3);
-    assert!(watcher.latest().is_none(), "nothing new since");
 }
 
 fn sample_card() -> Card {

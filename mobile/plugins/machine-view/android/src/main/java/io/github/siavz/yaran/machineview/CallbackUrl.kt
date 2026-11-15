@@ -26,7 +26,8 @@
  * ├── io.github.siavz.yaran.machineview.HandoffUrlFixtureTest (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
- * └── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
+ * ├── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
+ * └── io.github.siavz.yaran.machineview.SignInLockRobolectricTest (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview

@@ -45,11 +45,12 @@ class HandoffClientTest {
     private val backend = SoftwareKeyBackend()
     private val installIds = InstallIdStore(vault)
     private val keys = DeviceKeyStore(backend, installIds, diag)
-    private val sessions = SessionStore(vault, FakeLock(), diag) { }
+    private val lock = FakeLock()
+    private val sessions = SessionStore(vault, lock, diag) { }
     private val orgs = OrgDirectory { if (it == "org1") "https://cp.example.com" else null }
 
     private fun client(mode: CallbackMode = CallbackMode.Https("app.example.com")) =
-        HandoffClient(vault, orgs, sessions, keys, mode, "Ada's Pixel", { clock }, diag)
+        HandoffClient(vault, orgs, sessions, keys, mode, "Ada's Pixel", { clock }, diag, lock)
 
     private fun query(url: String) = url.substringAfter('?').split('&').associate {
         it.substringBefore('=') to URLDecoder.decode(it.substringAfter('='), "UTF-8")

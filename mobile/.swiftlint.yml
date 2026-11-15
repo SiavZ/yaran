@@ -11,3 +11,10 @@ line_length:
   warning: 220
   error: 250
   ignores_comments: true
+# The conventions require exhaustive switches with no default, so a case is not a branch
+# to count; guard ladders and if/else chains still are.
+cyclomatic_complexity:
+  ignores_case_statements: true
+# Codable's CodingKeys must sit inside the type they key, wherever that type is nested.
+nesting:
+  ignore_coding_keys: true

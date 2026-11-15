@@ -24,6 +24,7 @@
 /// ├── AppTests/KeychainAccessTests (inferred)
 /// ├── MachineViewCore/CoreAdapters (inferred)
 /// ├── MachineViewCoreTests/CoreAdaptersTests (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── YaranCore/AppLock (inferred)
 /// ├── YaranCore/PluginArguments (inferred)
 /// ├── YaranCoreTests/PluginArgumentsTests (inferred)
@@ -228,6 +229,8 @@ public final class Vault: @unchecked Sendable {
     // MARK: Internals
 
     private struct Blob: Codable {
+        // `v` is the stored blob's version field; renaming it would change what is on disk.
+        // swiftlint:disable:next identifier_name
         var v = 1
         var standard: [String: String] = [:]
         var locked: Data?

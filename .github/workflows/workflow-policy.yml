@@ -7,7 +7,8 @@
 # pull_request_target, no secrets: inherit, --latest=false on new-train releases, one
 # writer of the cloud-deploy branches, documented environments), its fixture test
 # .github/scripts/test_check_workflow_policy.sh, the release-helper tests
-# .github/scripts/test_release_scripts.sh, and actionlint from its checksummed release.
+# .github/scripts/test_release_scripts.sh, the Play promotion boundary test
+# mobile/fastlane/test/promote_lane_test.rb, and actionlint from its checksummed release.
 name: Workflow policy
 
 on:
@@ -46,6 +47,10 @@ jobs:
 
       - name: Release helpers (signer gate, deploy-branch publisher)
         run: bash .github/scripts/test_release_scripts.sh
+
+      # The runner image's Ruby is enough: the test records fastlane actions, no gems.
+      - name: Play promotion selects the tag's versionCode
+        run: ruby mobile/fastlane/test/promote_lane_test.rb
 
       - name: Check every workflow against the policy
         run: bash .github/scripts/check_workflow_policy.sh

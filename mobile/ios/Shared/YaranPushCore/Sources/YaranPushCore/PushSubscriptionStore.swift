@@ -123,7 +123,7 @@ public struct SystemKeychain: KeychainBackend {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccessGroup as String: accessGroup,
-            kSecUseDataProtectionKeychain as String: true,
+            kSecUseDataProtectionKeychain as String: true
         ]
         if let account { query[kSecAttrAccount as String] = account }
         return query
@@ -132,7 +132,7 @@ public struct SystemKeychain: KeychainBackend {
     public func set(account: String, data: Data) throws {
         let update: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         var status = SecItemUpdate(base(account: account) as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {

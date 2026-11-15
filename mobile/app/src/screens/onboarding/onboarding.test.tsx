@@ -9,6 +9,7 @@
  * <module-headers:begin>
  * Uses:
  * src/screens/onboarding/onboarding.test.tsx
+ * ├── @yaran/machine-view:src/index.ts
  * ├── @yaran/protocol:src/index.ts
  * ├── @yaran/qr:src/index.ts
  * ├── @yaran/secure-store:src/index.ts
@@ -20,13 +21,15 @@
  * ├── src/screens/onboarding/EnterUrl.tsx
  * ├── src/screens/onboarding/ScanQr.tsx
  * ├── src/screens/onboarding/Welcome.tsx
- * └── src/test/render.tsx
+ * ├── src/test/render.tsx
+ * └── src/test/setup.ts
  * External: @testing-library/react, vitest
  *
  * Used by: entry point (vitest, via npm test in mobile/app)
  * <module-headers:end>
  */
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { SignInOutcome } from '@yaran/machine-view';
 import type { Meta } from '@yaran/protocol';
 import { ScanError, startScan } from '@yaran/qr';
 import { BuildInfo } from '@yaran/secure-store';
@@ -37,6 +40,7 @@ import { Session } from '../../lib/native/machineView.ts';
 import { orgStore } from '../../lib/orgStore.ts';
 import { parseRoute } from '../../lib/route.ts';
 import { renderShell } from '../../test/render.tsx';
+import { vault } from '../../test/setup.ts';
 import { ConfirmOrg } from './ConfirmOrg.tsx';
 import { EnterUrl } from './EnterUrl.tsx';
 import { ScanQr } from './ScanQr.tsx';
@@ -58,6 +62,12 @@ const meta = vi.mocked(Session.meta);
 const ok = (body: Meta) => ({ kind: 'ok' as const, status: 200, body });
 const signIn = vi.mocked(Session.signIn);
 const route = () => parseRoute(window.location.hash);
+const listedIds = () => (JSON.parse(vault.get('orgs/list') ?? '[]') as { id: string }[]).map((o) => o.id);
+
+/** The native handoff's own precondition (Android OrgList, iOS OrgList): the org must be in the vault's `orgs/list`. */
+function nativeSignIn(after: SignInOutcome = { kind: 'signed_in', host: 'cp.example.com', email: 'ada@example.com', expiresAt: 1 }) {
+  signIn.mockImplementationOnce(async ({ orgId }) => (listedIds().includes(orgId) ? after : { kind: 'refused', code: 'unknown_org' }));
+}
 
 beforeEach(() => {
   orgStore.set({ loaded: true, orgs: [] });
@@ -148,8 +158,37 @@ describe('ConfirmOrg', () => {
     expect(orgStore.get().orgs).toEqual([]);
   });
 
+  it('lists a new org where the native handoff looks before signing in, and removes it again on failure', async () => {
+    meta.mockResolvedValueOnce(ok(META));
+    nativeSignIn({ kind: 'cancelled' });
+    renderShell(<ConfirmOrg url="https://cp.example.com" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Sign-in was cancelled/);
+    expect(listedIds()).toEqual([]);
+    expect(orgStore.get().orgs).toEqual([]);
+
+    nativeSignIn();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(route()).toEqual({ name: 'machines' }));
+    expect(listedIds()).toEqual(['https://cp.example.com']);
+  });
+
+  it('puts an already-added org back as it was when signing in again fails', async () => {
+    const before = { id: 'https://cp.example.com', name: 'Old name', teamDomain: null, addedAt: '2026-01-01T00:00:00.000Z' };
+    vault.set('orgs/list', JSON.stringify([before]));
+    orgStore.set({ loaded: true, orgs: [before] });
+    meta.mockResolvedValueOnce(ok(META));
+    nativeSignIn({ kind: 'declined' });
+    renderShell(<ConfirmOrg url="https://cp.example.com" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
+    await screen.findByRole('alert');
+    await waitFor(() => expect(orgStore.get().orgs).toEqual([before]));
+    expect(JSON.parse(vault.get('orgs/list')!)).toEqual([before]);
+  });
+
   it('adds the org after a successful sign-in and opens Machines', async () => {
     meta.mockResolvedValueOnce(ok(META));
+    nativeSignIn();
     renderShell(<ConfirmOrg url="https://cp.example.com" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(route()).toEqual({ name: 'machines' }));

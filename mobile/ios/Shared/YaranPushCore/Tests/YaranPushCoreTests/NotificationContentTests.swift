@@ -30,28 +30,28 @@ import UserNotifications
     }
 
     @Test func raisedWithNames() throws {
-        let c = try #require(content(.attentionRaised(push("needs_attention"), ts: 1)))
-        #expect(c.title == "fix the tests needs you")
-        #expect(c.body == "yaran · build-box")
-        #expect(c.threadIdentifier == "org-1/\(machine)")
-        #expect(c.categoryIdentifier == NotificationContentBuilder.agentCategory)
-        #expect(c.userInfo == ["org": "org-1", "machine": machine, "agent": "agent-1", "kind": "attention_raised"])
-        #expect(c.interruption == .active)
-        #expect(c.playsSound)
+        let built = try #require(content(.attentionRaised(push("needs_attention"), ts: 1)))
+        #expect(built.title == "fix the tests needs you")
+        #expect(built.body == "yaran · build-box")
+        #expect(built.threadIdentifier == "org-1/\(machine)")
+        #expect(built.categoryIdentifier == NotificationContentBuilder.agentCategory)
+        #expect(built.userInfo == ["org": "org-1", "machine": machine, "agent": "agent-1", "kind": "attention_raised"])
+        #expect(built.interruption == .active)
+        #expect(built.playsSound)
     }
 
     @Test func minimalDetailAndExtraTab() throws {
-        let c = try #require(content(.attentionRaised(push("needs_attention", label: nil, project: nil, tab: "t2"), ts: 1)))
-        #expect(c.title == "An agent needs you")
-        #expect(c.body == "build-box")
-        #expect(c.userInfo["tab"] == "t2")
+        let built = try #require(content(.attentionRaised(push("needs_attention", label: nil, project: nil, tab: "t2"), ts: 1)))
+        #expect(built.title == "An agent needs you")
+        #expect(built.body == "build-box")
+        #expect(built.userInfo["tab"] == "t2")
     }
 
     @Test func unknownMachineAndTimeSensitive() throws {
         let other = AgentPush(machineId: "11111111-1111-4111-8111-111111111111", agentId: "a", tabId: nil, token: "needs_attention", project: nil, label: nil)
-        let c = try #require(content(.attentionRaised(other, ts: 1), timeSensitive: true))
-        #expect(c.body == "A machine not on this phone")
-        #expect(c.interruption == .timeSensitive)
+        let built = try #require(content(.attentionRaised(other, ts: 1), timeSensitive: true))
+        #expect(built.body == "A machine not on this phone")
+        #expect(built.interruption == .timeSensitive)
     }
 
     @Test func everyEndingToken() throws {
@@ -59,7 +59,7 @@ import UserNotifications
             "launch_failed": "fix the tests failed to start",
             "exited": "fix the tests stopped with an error",
             "exited_unknown": "fix the tests stopped unexpectedly",
-            "rapid_clean_exit": "fix the tests exited right after starting",
+            "rapid_clean_exit": "fix the tests exited right after starting"
         ]
         for (token, title) in expected {
             #expect(content(.agentExitedBadly(push(token), ts: 1))?.title == title)
@@ -75,41 +75,41 @@ import UserNotifications
 
     @Test func mutedIsPassiveAndSilent() throws {
         for mutes in [LocalMutes(muteAll: true), LocalMutes(mutedUntil: now.addingTimeInterval(60)), LocalMutes(mutedMachineIds: [machine])] {
-            let c = try #require(content(.attentionRaised(push("needs_attention"), ts: 1), mutes: mutes, timeSensitive: true))
-            #expect(c.interruption == .passive)
-            #expect(!c.playsSound)
+            let built = try #require(content(.attentionRaised(push("needs_attention"), ts: 1), mutes: mutes, timeSensitive: true))
+            #expect(built.interruption == .passive)
+            #expect(!built.playsSound)
         }
         let expired = LocalMutes(mutedUntil: now.addingTimeInterval(-1))
         #expect(content(.attentionRaised(push("needs_attention"), ts: 1), mutes: expired)?.interruption == .active)
     }
 
     @Test func clearedIsAPassiveReplacement() throws {
-        let c = try #require(content(.attentionCleared(push("typing"), ts: 1)))
-        #expect(c.title == "fix the tests no longer needs you")
-        #expect(c.interruption == .passive)
-        #expect(c.relevanceScore == 0)
-        #expect(!c.playsSound)
+        let built = try #require(content(.attentionCleared(push("typing"), ts: 1)))
+        #expect(built.title == "fix the tests no longer needs you")
+        #expect(built.interruption == .passive)
+        #expect(built.relevanceScore == 0)
+        #expect(!built.playsSound)
     }
 
     @Test func testPush() throws {
-        let c = try #require(content(.test(ts: 1)))
-        #expect(c.title == "Test notification from Acme")
+        let built = try #require(content(.test(ts: 1)))
+        #expect(built.title == "Test notification from Acme")
         let noDirectory = builder.content(for: .test(ts: 1), orgId: "o", directory: nil, mutes: .init(), timeSensitive: false, now: now)
         #expect(noDirectory?.title == "Test notification from your organization")
     }
 
     @Test func payloadTextIsSanitized() throws {
-        let c = try #require(content(.attentionRaised(push("needs_attention", label: "a\u{202E}b", project: "p\u{1B}"), ts: 1)))
-        #expect(c.title == "ab needs you")
-        #expect(c.body == "p · build-box")
+        let built = try #require(content(.attentionRaised(push("needs_attention", label: "a\u{202E}b", project: "p\u{1B}"), ts: 1)))
+        #expect(built.title == "ab needs you")
+        #expect(built.body == "p · build-box")
     }
 
     @Test func applyWritesSystemContent() throws {
-        let c = try #require(content(.attentionRaised(push("needs_attention"), ts: 1), timeSensitive: true))
+        let built = try #require(content(.attentionRaised(push("needs_attention"), ts: 1), timeSensitive: true))
         let system = UNMutableNotificationContent()
-        c.apply(to: system)
-        #expect(system.title == c.title)
-        #expect(system.threadIdentifier == c.threadIdentifier)
+        built.apply(to: system)
+        #expect(system.title == built.title)
+        #expect(system.threadIdentifier == built.threadIdentifier)
         #expect(system.interruptionLevel == .timeSensitive)
         #expect(system.userInfo["agent"] as? String == "agent-1")
     }

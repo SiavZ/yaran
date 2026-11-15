@@ -7,7 +7,9 @@ apply plugin: 'com.android.library'
 apply plugin: 'org.jetbrains.kotlin.android'
 
 def fixturesDir = file('../fixtures').absolutePath
-def protocolDir = file('../../../../cloud/protocol').absolutePath
+// From the Gradle root (mobile/android): cap sync moves this project under mobile/app/node_modules,
+// where a project-relative path no longer reaches the repository's cloud/protocol.
+def protocolDir = rootProject.file('../../cloud/protocol').absolutePath
 
 android {
     namespace = "io.github.siavz.yaran.machineview"

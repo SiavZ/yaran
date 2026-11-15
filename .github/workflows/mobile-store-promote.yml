@@ -2,7 +2,8 @@
 #
 # Responsibilities: a manual dispatch moves one channel forward; when to do so is 22's
 # rollout policy. play: promote between Play tracks with an optional staged rollout,
-# behind the D23 enrollment gate (the lane runs check-versions.mjs --play first).
+# behind the D23 enrollment gate (the lane runs check-versions.mjs --play first), of the
+# tag's own versionCode only.
 # appstore: submit the TestFlight build for review with phased release. github: publish
 # the stable draft release, still never "latest" (R17). Each channel is its own job in
 # its own environment, so a GitHub publish touches no store secret.
@@ -50,6 +51,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
+      version_code: ${{ steps.v.outputs.version_code }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -86,6 +88,9 @@ jobs:
       - name: fastlane android promote (D23 gate first)
         working-directory: mobile
         env:
+          # The tag's own build: the lane promotes only this versionCode, never another
+          # release that happens to be active on the source track.
+          PLAY_VERSION_CODE: ${{ needs.tag.outputs.version_code }}
           PLAY_TRACK_FROM: ${{ inputs.from_track }}
           PLAY_TRACK_TO: ${{ inputs.track }}
           PLAY_ROLLOUT: ${{ inputs.rollout_fraction }}

@@ -163,7 +163,9 @@ check ──▶ CI ──▶ android-build ─┬─▶ fdroid-verify ─┐
 
 Both store uploads run only after the GitHub release exists. Promotion beyond
 the internal track and TestFlight is `mobile-store-promote.yml`, which Phase 22
-operates.
+operates. Its Play channel promotes only the dispatched tag's own versionCode; if
+the source track holds no release with that code, fastlane refuses rather than
+promoting whatever else is active there.
 
 ## Secrets and who holds them
 

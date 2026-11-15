@@ -42,10 +42,13 @@ public struct AgentPush: Equatable, Sendable {
 }
 
 public enum PushPayload: Equatable, Sendable {
+    // `ts` is the payload's wire field (02 §9).
+    // swiftlint:disable identifier_name
     case attentionRaised(AgentPush, ts: Int)
     case attentionCleared(AgentPush, ts: Int)
     case agentExitedBadly(AgentPush, ts: Int)
     case test(ts: Int)
+    // swiftlint:enable identifier_name
 
     public static let maxBytes = 320
     public static let maxTextBytes = 24
@@ -64,32 +67,32 @@ public enum PushPayload: Equatable, Sendable {
               let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
               integer(object["v"]) == 1,
               let kindText = object["k"] as? String, let kind = PushKind(rawValue: kindText),
-              let ts = integer(object["ts"]), ts >= 0
+              let timestamp = integer(object["ts"]), timestamp >= 0
         else { return nil }
         switch kind {
         case .test:
-            return Set(object.keys).isSubset(of: ["v", "k", "ts"]) ? .test(ts: ts) : nil
+            return Set(object.keys).isSubset(of: ["v", "k", "ts"]) ? .test(ts: timestamp) : nil
         case .attentionRaised:
-            return agentPush(object).map { .attentionRaised($0, ts: ts) }
+            return agentPush(object).map { .attentionRaised($0, ts: timestamp) }
         case .attentionCleared:
-            return agentPush(object).map { .attentionCleared($0, ts: ts) }
+            return agentPush(object).map { .attentionCleared($0, ts: timestamp) }
         case .agentExitedBadly:
-            return agentPush(object).map { .agentExitedBadly($0, ts: ts) }
+            return agentPush(object).map { .agentExitedBadly($0, ts: timestamp) }
         }
     }
 
     private static func agentPush(_ object: [String: Any]) -> AgentPush? {
-        guard let m = object["m"] as? String, matches(m, uuidPattern),
-              let a = object["a"] as? String, matches(a, yaranIdPattern),
-              let s = object["s"] as? String, matches(s, tokenPattern)
+        guard let machineId = object["m"] as? String, matches(machineId, uuidPattern),
+              let agentId = object["a"] as? String, matches(agentId, yaranIdPattern),
+              let token = object["s"] as? String, matches(token, tokenPattern)
         else { return nil }
         var tab: String?
-        if let t = object["t"] {
-            guard let text = t as? String, matches(text, yaranIdPattern) else { return nil }
+        if let rawTab = object["t"] {
+            guard let text = rawTab as? String, matches(text, yaranIdPattern) else { return nil }
             tab = text
         }
-        guard case let .some(p) = optionalText(object["p"]), case let .some(l) = optionalText(object["l"]) else { return nil }
-        return AgentPush(machineId: m, agentId: a, tabId: tab, token: s, project: p, label: l)
+        guard case let .some(project) = optionalText(object["p"]), case let .some(label) = optionalText(object["l"]) else { return nil }
+        return AgentPush(machineId: machineId, agentId: agentId, tabId: tab, token: token, project: project, label: label)
     }
 
     /// `.some(nil)` when absent, `.none` when present but not a 1-24 byte string.
@@ -123,10 +126,10 @@ public struct RelayWrapping: Equatable, Sendable {
 
     public init?(userInfo: [AnyHashable: Any]) {
         guard (userInfo["v"] as? NSNumber)?.intValue == 1,
-              let r = userInfo["r"] as? String, PushPayload.matches(r, PushPayload.uuidPattern),
-              let y = userInfo["y"] as? String, !y.isEmpty, let body = Base64URL.decode(y)
+              let registration = userInfo["r"] as? String, PushPayload.matches(registration, PushPayload.uuidPattern),
+              let wrapped = userInfo["y"] as? String, !wrapped.isEmpty, let body = Base64URL.decode(wrapped)
         else { return nil }
-        registrationId = r
+        registrationId = registration
         self.body = body
     }
 }

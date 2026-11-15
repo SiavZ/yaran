@@ -31,7 +31,7 @@ public class SecureStorePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "set", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "remove", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "list", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "eraseAll", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "eraseAll", returnType: CAPPluginReturnPromise)
     ]
 
     @objc func get(_ call: CAPPluginCall) {

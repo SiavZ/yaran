@@ -17,6 +17,7 @@
 /// YaranCore/KeychainStore
 /// ├── AppTests/KeychainAccessTests (inferred)
 /// ├── MachineViewCoreTests/CoreAdaptersTests (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── YaranCore/AppLock (inferred)
 /// ├── YaranCore/Vault (inferred)
 /// ├── YaranCoreTests/PluginArgumentsTests (inferred)
@@ -140,7 +141,7 @@ public final class SystemKeychainStore: KeychainStore, @unchecked Sendable {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecUseDataProtectionKeychain as String: true,
+            kSecUseDataProtectionKeychain as String: true
         ]
         if let account { query[kSecAttrAccount as String] = account }
         if let group { query[kSecAttrAccessGroup as String] = group }

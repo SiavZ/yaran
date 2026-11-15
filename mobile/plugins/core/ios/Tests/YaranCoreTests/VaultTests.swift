@@ -181,6 +181,38 @@ struct AppLockTests {
         #expect(lock.willEnterForeground(nowMs: 61_000))
     }
 
+    @Test func anExternalFlowHoldsTheLockOpenUntilItEndsOrItsTtl() throws {
+        let (vault, _) = makeVault()
+        let lock = AppLock(vault: vault, biometry: { .available })
+        #expect(try lock.enable(allowPasscode: false) == .enabled)
+        try lock.setOptions(grace: .immediately, allowPasscode: nil)
+        lock.holdForExternalFlow(ttlMs: 600_000, nowMs: 1_000)
+        lock.didEnterBackground(nowMs: 2_000)
+        #expect(!lock.willEnterForeground(nowMs: 300_000), "back from the app's own sign-in browser")
+        lock.releaseExternalFlow()
+        lock.didEnterBackground(nowMs: 400_000)
+        #expect(lock.willEnterForeground(nowMs: 400_000), "released: the background lock applies again")
+
+        #expect(try lock.unlock() == .unlocked)
+        lock.holdForExternalFlow(ttlMs: 600_000, nowMs: 1_000_000)
+        lock.didEnterBackground(nowMs: 1_000_000)
+        #expect(lock.willEnterForeground(nowMs: 1_600_001), "a hold nobody released expires with its TTL")
+        #expect(try lock.unlock() == .unlocked)
+        lock.didEnterBackground(nowMs: 1_100_000)
+        #expect(lock.willEnterForeground(nowMs: 999_999), "a clock that went backwards is outside the hold")
+    }
+
+    @Test func anUnlockVoidsTheBackgroundMark() throws {
+        let (vault, _) = makeVault()
+        let lock = AppLock(vault: vault, biometry: { .available })
+        _ = try lock.enable(allowPasscode: false)
+        try lock.setOptions(grace: .immediately, allowPasscode: nil)
+        lock.engage()
+        lock.didEnterBackground(nowMs: 1_000)
+        #expect(try lock.unlock() == .unlocked)
+        #expect(!lock.willEnterForeground(nowMs: 90_000))
+    }
+
     @Test(arguments: [
         (nil, 5_000, LockGrace.immediately, false),
         (1_000, 1_000, .immediately, true),
@@ -190,7 +222,9 @@ struct AppLockTests {
         (0, 300_000, .fiveMinutes, true),
         (0, 899_999, .fifteenMinutes, false),
         (0, 900_000, .fifteenMinutes, true),
-        (10_000, 9_000, .fifteenMinutes, true),
+        (10_000, 9_000, .fifteenMinutes, true)
+    // A Swift Testing argument table: one row per case, matching the test's four parameters.
+    // swiftlint:disable:next large_tuple
     ] as [(Int64?, Int64, LockGrace, Bool)])
     func shouldLockTable(backgroundedAt: Int64?, now: Int64, grace: LockGrace, expected: Bool) {
         #expect(AppLock.shouldLock(backgroundedAtMs: backgroundedAt, nowMs: now, grace: grace) == expected)

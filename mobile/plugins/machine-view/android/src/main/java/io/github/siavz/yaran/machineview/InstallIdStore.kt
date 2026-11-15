@@ -21,6 +21,7 @@
  * ├── io.github.siavz.yaran.machineview.OrgApiClient (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClientTest (inferred)
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
+ * ├── io.github.siavz.yaran.machineview.SignInLockRobolectricTest (inferred)
  * └── io.github.siavz.yaran.machineview.StoresTest (inferred)
  * <module-headers:end>
  */

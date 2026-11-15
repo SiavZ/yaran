@@ -9,6 +9,8 @@
 /// - The recipient key and pending state live in memory only; a new sign-in replaces them.
 /// - The pending entry is single use: the first callback consumes it, a replay is a mismatch.
 /// - Call from one thread (the main thread in the app).
+/// - A launched sign-in holds App Lock open for at most the callback TTL; every ending
+///   releases it, after the session is stored.
 ///
 /// <module-headers:begin>
 /// Uses:
@@ -32,7 +34,8 @@
 /// ├── MachineView/AuthSessionLauncher (inferred)
 /// ├── MachineView/SessionPlugin (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
-/// └── MachineViewCoreTests/HandoffClientTests (inferred)
+/// ├── MachineViewCoreTests/HandoffClientTests (inferred)
+/// └── MachineViewCoreTests/LockTests (inferred)
 /// <module-headers:end>
 import CryptoKit
 import Foundation
@@ -82,13 +85,15 @@ public final class HandoffClient {
     private let diagnostics: DiagnosticsSink?
     private let rung: CredentialKind
     private let fragment: Bool
+    private let appLock: AppLockState?
     private var pending: Pending?
 
     public init(vault: SecretVault, deviceKeys: DeviceKeyStore, sessions: SessionStore, orgs: OrgDirectory,
                 launcher: HandoffLauncher, mode: CallbackMode, deviceLabel: String, clock: @escaping () -> Int64,
-                diagnostics: DiagnosticsSink?, rung: CredentialKind = Fallbacks.credentialRung,
+                diagnostics: DiagnosticsSink?, appLock: AppLockState?, rung: CredentialKind = Fallbacks.credentialRung,
                 fragment: Bool = Fallbacks.handoffModeFragment) {
         (self.vault, self.deviceKeys, self.sessions, self.orgs, self.launcher) = (vault, deviceKeys, sessions, orgs, launcher)
+        self.appLock = appLock
         (self.mode, self.deviceLabel, self.clock, self.diagnostics, self.rung, self.fragment) =
             (mode, deviceLabel, clock, diagnostics, rung, fragment)
     }
@@ -98,24 +103,24 @@ public final class HandoffClient {
         let host: String
         switch request {
         case .controlPlane:
-            guard let orgUrl = orgs.orgUrl(orgId), Pattern.orgUrl.matches(orgUrl), let h = URL(string: orgUrl)?.host else {
+            guard let orgUrl = orgs.orgUrl(orgId), Pattern.orgUrl.matches(orgUrl), let urlHost = URL(string: orgUrl)?.host else {
                 return completion(.refused(code: "unknown_org"))
             }
-            (target, host) = (.controlPlane(orgUrl: orgUrl), h)
-        case .machine(let h):
-            guard Pattern.hostname.matches(h) else { return completion(.refused(code: "host_invalid")) }
-            (target, host) = (.machine(host: h), h)
+            (target, host) = (.controlPlane(orgUrl: orgUrl), urlHost)
+        case .machine(let machineHost):
+            guard Pattern.hostname.matches(machineHost) else { return completion(.refused(code: "host_invalid")) }
+            (target, host) = (.machine(host: machineHost), machineHost)
         }
         let url: URL
         do {
             let identity = try deviceKeys.ensure(orgId)
-            let (key, pk) = SealedEnvelope.generateRecipient()
+            let (key, recipientKey) = SealedEnvelope.generateRecipient()
             let state = Self.randomState()
             let now = clock()
             let marker = Marker(state: state, host: host, target: target.kind, createdAt: now)
             try vault.write(Self.markerNamespace, JSONEncoder().encode(marker), .standard)
-            let dsig = try deviceKeys.sign(orgId, HandoffSignature.canonical(host: host, pk: pk, state: state, dts: now))
-            let params = HandoffParams(pk: pk, state: state, device: deviceLabel, dk: identity.publicKey, dts: now, dsig: dsig)
+            let dsig = try deviceKeys.sign(orgId, HandoffSignature.canonical(host: host, pk: recipientKey, state: state, dts: now))
+            let params = HandoffParams(pk: recipientKey, state: state, device: deviceLabel, dk: identity.publicKey, dts: now, dsig: dsig)
             url = URL(string: HandoffUrl.build(target: target, mode: mode, fragment: fragment, params: params))!
             pending?.completion(.cancelled)
             pending = Pending(orgId: orgId, state: state, host: host, kind: target.kind, createdAt: now, key: key, completion: completion)
@@ -126,6 +131,8 @@ public final class HandoffClient {
             return completion(.vaultLocked)
         }
         diagnostics?.append(diagLine("handoff started", [("host", host), ("target", target.kind)]))
+        // Leaving for the browser (or Mail, for a one-time PIN) must not relock before the callback is stored.
+        appLock?.holdForExternalFlow(ttlMs: CallbackUrl.ttlS * 1000)
         let state = pending!.state
         launcher.launch(url: url, mode: mode) { [weak self] result in self?.launcherFinished(result, state: state) }
     }
@@ -139,7 +146,7 @@ public final class HandoffClient {
         case .verificationFailed:
             let domain: String
             switch mode {
-            case .https(let d): domain = d
+            case .https(let httpsDomain): domain = httpsDomain
             case .dev: domain = ""
             }
             finishPending(state, .verificationFailed(domain: domain))
@@ -169,25 +176,26 @@ public final class HandoffClient {
             outcome = open(jwe, taken!, now: now)
         }
         try? vault.delete(Self.markerNamespace)
+        appLock?.releaseExternalFlow()
         diagnostics?.append(diagLine("handoff outcome", [("kind", outcome.kind)]))
         taken?.completion(outcome)
         return outcome
     }
 
-    private func open(_ jwe: String, _ p: Pending, now: Int64) -> SignInOutcome {
-        switch SealedEnvelope.open(jwe: jwe, recipient: p.key, expectedHost: p.host, expectedState: p.state,
-                                   expectedKind: p.kind, now: now) {
-        case .failure(let e):
-            diagnostics?.append(diagLine("handoff envelope refused", [("code", e.rawValue)]))
-            switch e {
+    private func open(_ jwe: String, _ signIn: Pending, now: Int64) -> SignInOutcome {
+        switch SealedEnvelope.open(jwe: jwe, recipient: signIn.key, expectedHost: signIn.host, expectedState: signIn.state,
+                                   expectedKind: signIn.kind, now: now) {
+        case .failure(let refusal):
+            diagnostics?.append(diagLine("handoff envelope refused", [("code", refusal.rawValue)]))
+            switch refusal {
             case .stateMismatch: return .mismatch
             case .expired: return .envelopeExpired
             case .malformed, .unsupported, .kidMismatch, .pointInvalid, .hostMismatch, .decryptFailed, .kindMismatch:
-                return .decryptFailed(code: e.rawValue)
+                return .decryptFailed(code: refusal.rawValue)
             }
         case .success(let payload):
             do {
-                let stored = try sessions.put(orgId: p.orgId, payload: payload, kind: rung)
+                let stored = try sessions.put(orgId: signIn.orgId, payload: payload, kind: rung)
                 return .signedIn(host: payload.host, email: payload.email, expiresAt: stored.exp)
             } catch {
                 return .vaultLocked
@@ -196,11 +204,12 @@ public final class HandoffClient {
     }
 
     private func finishPending(_ state: String, _ outcome: SignInOutcome) {
-        guard let p = pending, p.state == state else { return }
+        guard let current = pending, current.state == state else { return }
         pending = nil
         try? vault.delete(Self.markerNamespace)
+        appLock?.releaseExternalFlow()
         diagnostics?.append(diagLine("handoff outcome", [("kind", outcome.kind)]))
-        p.completion(outcome)
+        current.completion(outcome)
     }
 
     /// A reply for a sign-in this process no longer holds the key of (the app was closed).

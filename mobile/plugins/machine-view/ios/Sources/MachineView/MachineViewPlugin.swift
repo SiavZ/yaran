@@ -26,7 +26,7 @@ public class MachineViewPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "MachineView"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "close", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "close", returnType: CAPPluginReturnPromise)
     ]
 
     private weak var current: MachineViewController?
@@ -57,13 +57,13 @@ public class MachineViewPlugin: CAPPlugin, CAPBridgedPlugin {
     private func present(_ target: MachineViewController.Target) {
         let show = { [weak self] in
             guard let self, let host = self.bridge?.viewController else { return }
-            let vc = MachineViewController(target: target, services: .shared) { [weak self] reason, code in
+            let controller = MachineViewController(target: target, services: .shared) { [weak self] reason, code in
                 var data: [String: Any] = ["reason": reason]
                 if let code { data["code"] = code }
                 self?.notifyListeners("closed", data: data)
             }
-            self.current = vc
-            host.present(vc, animated: true)
+            self.current = controller
+            host.present(controller, animated: true)
         }
         if let current {
             current.close("user")

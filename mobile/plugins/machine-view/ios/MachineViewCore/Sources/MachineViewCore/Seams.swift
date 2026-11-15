@@ -25,7 +25,9 @@
 /// ├── MachineViewCore/NavigationDelegate (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
 /// ├── MachineViewCore/SessionStore (inferred)
+/// ├── MachineViewCoreTests/CoreAdaptersTests (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// <module-headers:end>
 import Foundation
@@ -40,9 +42,9 @@ public enum VaultError: Error, Equatable {
 }
 
 public protocol SecretVault: AnyObject {
-    func read(_ ns: String) throws -> Data?
-    func write(_ ns: String, _ value: Data, _ cls: ProtectionClass) throws
-    func delete(_ ns: String) throws
+    func read(_ path: String) throws -> Data?
+    func write(_ path: String, _ value: Data, _ cls: ProtectionClass) throws
+    func delete(_ path: String) throws
     func list(prefix: String) throws -> [String]
 }
 
@@ -54,6 +56,10 @@ public protocol OrgDirectory: AnyObject { func orgUrl(_ orgId: String) -> String
 public protocol AppLockState: AnyObject {
     func lockEnabled() -> Bool
     func isLocked() -> Bool
+    /// The app is opening its own sign-in browser: coming back within `ttlMs` must not relock before the callback.
+    func holdForExternalFlow(ttlMs: Int64)
+    /// That sign-in ended, whichever way: the background lock applies again.
+    func releaseExternalFlow()
 }
 
 public protocol ScreenPrivacyState: AnyObject { func enabled() -> Bool }
@@ -76,9 +82,9 @@ public enum CoreBindings {
 }
 
 final class UnavailableVault: SecretVault {
-    func read(_ ns: String) throws -> Data? { throw VaultError.unavailable }
-    func write(_ ns: String, _ value: Data, _ cls: ProtectionClass) throws { throw VaultError.unavailable }
-    func delete(_ ns: String) throws { throw VaultError.unavailable }
+    func read(_ path: String) throws -> Data? { throw VaultError.unavailable }
+    func write(_ path: String, _ value: Data, _ cls: ProtectionClass) throws { throw VaultError.unavailable }
+    func delete(_ path: String) throws { throw VaultError.unavailable }
     func list(prefix: String) throws -> [String] { throw VaultError.unavailable }
 }
 

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Notification Service Extension (Phase 16). Bundle id <ios-bundle-id>.NotificationService (D16);
-     YARAN_APP_GROUP comes from Phase 14's Publisher.xcconfig. -->
+     YaranAppGroup is group.$(APP_ID), the app's group: APP_ID comes from Publisher.xcconfig. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>

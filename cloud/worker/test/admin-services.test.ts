@@ -26,7 +26,7 @@ import { exportAuditJsonl, queryAudit, sweepAudit } from "../src/admin/audit-que
 import { saveSettings } from "../src/admin/settings-apply.ts";
 import { getPath, parseSettingsForm, readSettings, SETTINGS_FIELDS, validateSettings } from "../src/admin/settings-schema.ts";
 import { writeKeys } from "../src/admin/settings-store.ts";
-import { patchUser } from "../src/admin/users.ts";
+import { deleteUser, patchUser } from "../src/admin/users.ts";
 import { advance } from "../src/setup/steps/common.ts";
 import { closedOrg, DEVICE_ID, MACHINE_ID, seedDevice, seedMachine, seedUser, type TestWorld, world } from "./helpers/deps.ts";
 
@@ -97,6 +97,34 @@ describe("users", () => {
     await seedUser(w, "bob@example.org", "admin");
     expect((await patchUser(w.deps, actor, ada, { role: "user" })).ok).toBe(true);
     expect(w.audits.map((a) => a.action)).toEqual(["user.role_changed"]);
+  });
+  test.each([
+    ["demote + demote", { role: "user" }, { role: "user" }],
+    ["demote + disable", { role: "user" }, { disabled: true }],
+    ["disable + delete", { disabled: true }, "delete"],
+  ] as const)("concurrent %s of the only two admins leaves one active admin", async (_n, a, b) => {
+    const w = await world();
+    const ada = await seedUser(w, "ada@example.org", "admin");
+    const bob = await seedUser(w, "bob@example.org", "admin");
+    const run = (id: string, p: typeof a | typeof b) => (p === "delete" ? deleteUser(w.deps, actor, id) : patchUser(w.deps, actor, id, p));
+    const out = await Promise.all([run(ada, a), run(bob, b)]);
+    expect(out.map((o) => o.ok).sort()).toEqual([false, true]);
+    expect(out.find((o) => !o.ok)).toEqual({ ok: false, code: "last_admin" });
+    expect(await w.db.prepare("SELECT count(*) AS n FROM users WHERE role = 'admin' AND status = 'active'").first()).toEqual({ n: 1 });
+  });
+  test("deleting the last active admin is refused and changes nothing", async () => {
+    const w = await world();
+    const ada = await seedUser(w, "ada@example.org", "admin");
+    expect(await deleteUser(w.deps, actor, ada)).toEqual({ ok: false, code: "last_admin" });
+    expect(await w.db.prepare("SELECT status FROM users WHERE id = ?").bind(ada).first()).toEqual({ status: "active" });
+  });
+  test("a patch to a non-admin or one that keeps admin access needs no other admin", async () => {
+    const w = await world();
+    const ada = await seedUser(w, "ada@example.org", "admin");
+    const cy = await seedUser(w, "cy@example.org");
+    expect((await patchUser(w.deps, actor, cy, { disabled: true })).ok).toBe(true);
+    expect((await patchUser(w.deps, actor, cy, { disabled: false, role: "admin" })).ok).toBe(true);
+    expect((await patchUser(w.deps, actor, ada, { role: "admin" })).ok).toBe(true);
   });
   test("disable with revoke_all tears down machines, then phones, then sessions", async () => {
     const w = await world();

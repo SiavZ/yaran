@@ -57,6 +57,8 @@ Some details:
 - If you already have a machine with that name, the confirm page offers **Replace
   `<name>`** (the same computer paired again; the old one is removed only after this one
   connects) or **Pair as `<name>-2`**.
+- Cancelling works only until the browser hands the approval back. After that the login
+  always finishes, because a Replace has already started removing the old machine.
 - A machine paired with a different org is refused until you log out of the first one.
 
 ## The commands

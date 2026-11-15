@@ -72,6 +72,30 @@ fn a_410_raises_the_signal_and_stamps_the_credentials() {
 }
 
 #[test]
+fn a_late_410_for_an_older_pairing_does_not_revoke_a_newer_one() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = CloudPaths::from_root(root.path());
+    pair_sample(&paths, SAMPLE_ORG);
+    let mut fresh = crate::cloud::test_support::sample_credentials(SAMPLE_ORG);
+    fresh.machine_id = "22afdb39-9d90-49a8-9ef5-b9482c1bdf61".into();
+    let (repair_paths, repaired) = (paths.clone(), fresh.clone());
+    // A login pairs a new machine while the old machine's request is in flight.
+    let worker = MockWorker::start(move |_| {
+        credentials::update(&repair_paths, |_| Ok(Some(repaired.clone()))).unwrap();
+        MockResponse::error(410, "machine_revoked", "This machine was revoked.")
+    });
+    let api = MachineApi::new(SAMPLE_ORG, &paths, Duration::from_secs(5))
+        .unwrap()
+        .with_test_transport(&worker.base_url());
+    assert_eq!(api.config(), Err(MachineApiError::Revoked));
+    assert_eq!(
+        credentials::read(&paths).unwrap(),
+        Some(fresh),
+        "no revoked_at"
+    );
+}
+
+#[test]
 fn a_signed_call_without_credentials_is_not_paired() {
     let (_root, _paths, worker, api) = setup(|_| MockResponse::json(200, serde_json::json!({})));
     assert_eq!(api.config(), Err(MachineApiError::NotPaired));
@@ -134,7 +158,7 @@ fn no_secret_reaches_a_log_line() {
     tracing::subscriber::with_default(subscriber, || {
         api.rotate(RotateReason::User).unwrap();
         let _ = api.config();
-        let _ = credentials::stamp_revoked(&paths);
+        let _ = credentials::stamp_revoked(&paths, &creds);
     });
     let logged = capture.0.lock().unwrap().clone();
     assert!(logged.contains("/v1/machine/rotate"), "{logged}");

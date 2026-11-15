@@ -22,14 +22,19 @@ platform :android do
     )
   end
 
-  desc "Promote a Play release between tracks (PLAY_TRACK_FROM, PLAY_TRACK_TO, PLAY_ROLLOUT)"
+  desc "Promote the tag's Play release between tracks (PLAY_VERSION_CODE, PLAY_TRACK_FROM, PLAY_TRACK_TO, PLAY_ROLLOUT)"
   lane :promote do
     play_enrollment_gate
+    # Without version_code supply promotes whichever release is active on the source
+    # track; with it, supply refuses when that track holds no release with this code.
+    version_code = required_env("PLAY_VERSION_CODE")
+    UI.user_error!("PLAY_VERSION_CODE #{version_code.inspect} is not a versionCode") unless version_code.match?(/\A[1-9][0-9]*\z/)
     rollout = ENV["PLAY_ROLLOUT"].to_s
     upload_to_play_store(
       package_name: Publisher.app_id!,
       track: ENV["PLAY_TRACK_FROM"].to_s.empty? ? "internal" : ENV["PLAY_TRACK_FROM"],
       track_promote_to: required_env("PLAY_TRACK_TO"),
+      version_code: Integer(version_code, 10),
       rollout: rollout.empty? ? nil : rollout,
       json_key_data: required_env("PLAY_SERVICE_ACCOUNT_JSON"),
       skip_upload_aab: true,

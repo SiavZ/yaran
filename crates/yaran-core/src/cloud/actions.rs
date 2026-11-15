@@ -14,8 +14,9 @@
 //! ├── cloud::machine_api
 //! ├── cloud::outcome
 //! ├── cloud::paths
-//! └── cloud::protocol::machine
-//! External: none
+//! ├── cloud::protocol::machine
+//! └── cloud::test_support
+//! External: serde_json, tempfile
 //!
 //! Used by:
 //! cloud/actions.rs
@@ -37,8 +38,9 @@ fn unreadable(e: CredentialsError) -> CloudActionOutcome {
     }
 }
 
-/// Unpair (W8) and delete the credentials on 202 or 410. A failed request keeps the
-/// credentials and returns its outcome. `local_only` never contacts the control plane
+/// Unpair (W8) and delete the credentials on 202 or 410, unless a login replaced them
+/// meanwhile (`PairingChanged`). A failed request keeps the credentials and returns its
+/// outcome. `local_only` never contacts the control plane
 /// and also forgets an unreadable file.
 pub fn logout(paths: &CloudPaths, api: &ApiFactory, local_only: bool) -> CloudActionOutcome {
     let creds = match credentials::read(paths) {
@@ -56,8 +58,19 @@ pub fn logout(paths: &CloudPaths, api: &ApiFactory, local_only: bool) -> CloudAc
             Err(e) => return CloudActionOutcome::from_api_error(e, &hostname),
         }
     }
-    if let Err(e) = credentials::delete(paths) {
-        return unreadable(e);
+    let forgotten = match &creds {
+        // Only the pairing just unpaired: one a login made meanwhile is kept.
+        Some(signed_for) => credentials::update(paths, |current| match current {
+            Some(c) if !c.same_pairing(signed_for) => Ok(Some(c)),
+            _ => Ok(None),
+        })
+        .map(|kept| kept.is_none()),
+        None => credentials::delete(paths).map(|()| true),
+    };
+    match forgotten {
+        Ok(true) => {}
+        Ok(false) => return CloudActionOutcome::PairingChanged,
+        Err(e) => return unreadable(e),
     }
     if local_only {
         CloudActionOutcome::UnpairedLocallyOnly { hostname }
@@ -89,5 +102,33 @@ pub fn rotate_consent_key(paths: &CloudPaths) -> CloudActionOutcome {
         },
         Ok(None) => CloudActionOutcome::NotPaired,
         Err(e) => unreadable(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cloud::machine_api::test_api_factory;
+    use crate::cloud::test_support::{
+        MockResponse, MockWorker, SAMPLE_MACHINE_ID, SAMPLE_ORG, pair_sample, sample_credentials,
+    };
+
+    #[test]
+    fn a_logout_never_deletes_a_pairing_made_while_it_ran() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = CloudPaths::from_root(root.path());
+        pair_sample(&paths, SAMPLE_ORG);
+        let mut fresh = sample_credentials(SAMPLE_ORG);
+        fresh.machine_id = "22afdb39-9d90-49a8-9ef5-b9482c1bdf61".into();
+        let (repair_paths, repaired) = (paths.clone(), fresh.clone());
+        let worker = MockWorker::start(move |_| {
+            credentials::update(&repair_paths, |_| Ok(Some(repaired.clone()))).unwrap();
+            let body =
+                serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"});
+            MockResponse::json(202, body)
+        });
+        let out = logout(&paths, &test_api_factory(worker.base_url()), false);
+        assert_eq!(out, CloudActionOutcome::PairingChanged);
+        assert_eq!(credentials::read(&paths).unwrap(), Some(fresh));
     }
 }

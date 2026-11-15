@@ -4,6 +4,7 @@
 /// Uses:
 /// MachineViewCoreTests/CoreAdaptersTests
 /// ├── MachineViewCore/CoreAdapters (inferred)
+/// ├── MachineViewCore/Seams (inferred)
 /// ├── YaranCore/KeychainStore (inferred)
 /// └── YaranCore/Vault (inferred)
 /// External: Foundation, Testing
@@ -38,6 +39,12 @@ struct CoreAdaptersTests {
         try secrets.delete("session/m1.example.com")
         #expect(try secrets.list(prefix: "session/") == [])
         #expect(try core.list(namespace: "session") == [])
+    }
+
+    @Test func aValueThatIsNotUtf8IsRefusedAndNothingIsStored() throws {
+        let secrets = VaultSecrets(vault())
+        #expect(throws: YaranCore.VaultError.invalidArgument) { try secrets.write("handoff", Data([0x7b, 0xff, 0x7d]), .standard) }
+        #expect(try secrets.read("handoff") == nil)
     }
 
     @Test func orgDirectoryReadsOnlyOnboardedOrgs() throws {

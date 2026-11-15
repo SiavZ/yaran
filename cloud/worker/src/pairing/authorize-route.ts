@@ -30,7 +30,7 @@
  */
 import { errorEntry, machineKeyFingerprint, utf8Decode, validate, type ErrorCode, type PairConsent, type Settings } from "@yaran/protocol";
 import { getOwnedMachine, insertProvisioningMachine, liveMachineNames } from "../machines/machine-rows.ts";
-import type { Phase06Ctx, RouteCall, RouteRow } from "../routes/call.ts";
+import type { OpView, Phase06Ctx, RouteCall, RouteRow } from "../routes/call.ts";
 import { HttpError } from "../http/responses.ts";
 import { type UserIdentity } from "../routes/call.ts";
 import { callbackUrl, parseAuthorizeQuery } from "./authorize-params.ts";
@@ -215,13 +215,16 @@ async function postAuthorize({ req, ctx, user, body }: RouteCall): Promise<Respo
   }
 
   const retry = { requestId: row.id, csrf: consent.csrf, fields: (replace ? { replace_machine_id: replace } : {}) as Record<string, string>, callbackPort: port };
-  let view;
+  let view: OpView;
   try {
     const op = await ctx.provisioning.startProvision(machineId);
     view = await ctx.provisioning.driveOp(op.opId, PROVISION_INLINE_BUDGET);
   } catch (e) {
     if (!(e instanceof HttpError)) throw e;
-    view = { state: "failed" as const, errorCode: e.code, ...(e.details ? { details: e.details } : {}) };
+    // A Retry after cron finished the deferred op finds the machine already awaiting its claim:
+    // that op succeeded, so issue the code rather than start another.
+    if (e.code === "conflict" && (await getOwnedMachine(ctx, machineId, me.userId))?.status === "awaiting_claim") view = { state: "complete", errorCode: null };
+    else view = { state: "failed", errorCode: e.code, ...(e.details ? { details: e.details } : {}) };
   }
   switch (view.state) {
     case "complete":

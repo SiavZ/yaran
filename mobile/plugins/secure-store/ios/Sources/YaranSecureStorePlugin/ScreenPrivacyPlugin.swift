@@ -25,7 +25,7 @@ public class ScreenPrivacyPlugin: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "ScreenPrivacy"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "set", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "get", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "get", returnType: CAPPluginReturnPromise)
     ]
 
     @objc func set(_ call: CAPPluginCall) {

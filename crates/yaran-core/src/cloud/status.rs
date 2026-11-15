@@ -168,10 +168,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let paths = CloudPaths::from_root(root.path());
         assert_eq!(gather(&paths, CloudMode::Auto, None).exit_code(), 4);
-        pair_sample(&paths, SAMPLE_ORG);
+        let creds = pair_sample(&paths, SAMPLE_ORG);
         let r = gather(&paths, CloudMode::No, None);
         assert_eq!((r.exit_code(), r.mode.as_str()), (3, "no"));
-        credentials::stamp_revoked(&paths).unwrap();
+        credentials::stamp_revoked(&paths, &creds).unwrap();
         assert_eq!(gather(&paths, CloudMode::Auto, None).exit_code(), 5);
         let json = serde_json::to_string(&gather(&paths, CloudMode::Auto, None)).unwrap();
         assert!(!json.contains("tunnel-token") && !json.contains("pkcs8"));

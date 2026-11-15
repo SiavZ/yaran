@@ -19,6 +19,7 @@
 /// ├── MachineView/AppServices (inferred)
 /// ├── MachineViewCore/DeviceKeyStore (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// <module-headers:end>
 import Foundation
