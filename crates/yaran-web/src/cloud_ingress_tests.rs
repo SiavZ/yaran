@@ -310,10 +310,13 @@ async fn refusal_logs_never_carry_the_token() {
 #[test]
 fn the_ingress_clock_defaults_to_the_wall_clock() {
     let now = CloudIngress::default().now_secs();
-    let wall = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    let wall = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
     assert!((now - wall).abs() < 5);
 }
 

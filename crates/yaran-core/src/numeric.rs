@@ -81,6 +81,18 @@ pub(crate) fn u64_to_f64(n: u64) -> f64 {
     n as f64
 }
 
+/// An `f64` as the nearest `f32`, for a figure shown to a person (a percentage),
+/// where the lost precision is far below what is displayed.
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "no From exists from f64 to f32; rounding to the nearest f32 is the intended answer"
+)]
+#[cfg(test)]
+pub(crate) fn f64_to_f32(x: f64) -> f32 {
+    x as f32
+}
+
 /// A non-negative float rounded down to a `u64`, saturating like
 /// [`f64_to_u32_saturating`]: below zero or NaN is 0, above `u64::MAX` is `u64::MAX`.
 #[expect(

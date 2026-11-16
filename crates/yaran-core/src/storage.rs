@@ -10,9 +10,10 @@ use std::collections::HashSet;
 
 use crate::config::ProjectConfig;
 use crate::model::{
-    AGENT_HANDLE_MAX_LEN, AgentSession, AgentTab, ProviderKind, SessionStatus, derive_agent_handle,
+    AgentSession, AgentTab, ProviderKind, SessionStatus, derive_agent_handle,
     is_valid_agent_handle, normalize_agent_handle,
 };
+use crate::peer::next_unique_agent_handle;
 use crate::text::count_of;
 
 /// A stored PR association loaded from the database.
@@ -4849,6 +4850,7 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::AGENT_HANDLE_MAX_LEN;
 
     /// A corrupt `started_providers` cell degrades to empty instead of failing
     /// the load (fork e79bfbe5 kept this while adding the warning).
@@ -8697,26 +8699,6 @@ fn used_agent_handles(conn: &Connection) -> Result<HashSet<String>> {
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<HashSet<String>>>()?;
     Ok(used)
-}
-
-/// `base` if it is free, otherwise `base-2`, `base-3`, ... with the prefix
-/// truncated so the suffixed handle still fits [`AGENT_HANDLE_MAX_LEN`].
-fn next_unique_agent_handle(base: &str, used: &HashSet<String>) -> String {
-    if !used.contains(base) {
-        return base.to_string();
-    }
-    for ordinal in 2usize.. {
-        let suffix = format!("-{ordinal}");
-        let prefix: String = base
-            .chars()
-            .take(AGENT_HANDLE_MAX_LEN - suffix.len())
-            .collect();
-        let candidate = format!("{prefix}{suffix}");
-        if !used.contains(&candidate) {
-            return candidate;
-        }
-    }
-    unreachable!("unbounded handle suffix search")
 }
 
 /// Fail closed on a corrupt identity instead of repairing it: every stored

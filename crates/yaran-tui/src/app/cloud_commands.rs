@@ -45,7 +45,7 @@
 
 use std::time::Duration;
 
-use yaran_core::cloud::actions::{logout, rotate_token};
+use yaran_core::cloud::actions::{LogoutScope, logout, rotate_token};
 use yaran_core::cloud::login::{LoginParams, LoginStep};
 use yaran_core::cloud::login_session::{AuthorizeInfo, LoginEvent, LoginHandle, spawn_login};
 use yaran_core::cloud::machine_api::{ApiFactory, default_api_factory};
@@ -456,7 +456,7 @@ impl App {
                 "Disconnecting this machine from Yaran Cloud...",
                 move || CloudAnswer::Action {
                     key: KEY_LOGOUT,
-                    outcome: logout(&paths, &api, false),
+                    outcome: logout(&paths, &api, LogoutScope::ControlPlane),
                 },
             );
         }

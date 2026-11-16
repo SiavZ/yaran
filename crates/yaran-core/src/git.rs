@@ -17207,10 +17207,6 @@ mod tests {
         assert_eq!(path.as_os_str().as_bytes(), b"/base/rep\xffo");
     }
 
-    // Linux only: APFS, the macOS file system, refuses a name that is not
-    // UTF-8 (EILSEQ), so this fixture cannot be built on a Mac. The byte
-    // decode runs there in `a_path_git_prints_keeps_bytes_that_are_not_utf8`.
-    #[cfg(target_os = "linux")]
     #[test]
     fn repo_path_kind_classifies_repos_under_non_utf8_paths() {
         // Catches the fail-open gate bypass: `--show-toplevel` output for a
@@ -17218,10 +17214,10 @@ mod tests {
         // raw bytes; a lossy decode rewrites the byte to U+FFFD, fails
         // canonicalization, and falls to Indeterminate, which the add gate
         // accepts.
-        use std::os::unix::ffi::OsStrExt;
         let base = tempfile::tempdir().unwrap();
-        let repo = base.path().join(std::ffi::OsStr::from_bytes(b"rep\xFFo"));
-        std::fs::create_dir(&repo).unwrap();
+        let Some(repo) = create_dir_with_non_utf8_name(base.path(), b"rep\xFFo") else {
+            return;
+        };
         let out = test_support::git_command()
             .arg("-C")
             .arg(&repo)

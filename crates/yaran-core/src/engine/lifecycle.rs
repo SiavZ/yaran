@@ -6470,11 +6470,6 @@ mod tests {
     /// exactly once there is no second chance to capture it later, so a crashed
     /// agent gets reported with an EMPTY excerpt, losing the very diagnostic the
     /// message exists to show.
-    // Linux only: macOS revokes a terminal when its session leader exits, so
-    // no grandchild can hold it open and the reader reaches end of input with
-    // the reap. The prune policy is covered on macOS by
-    // `agent_pty_ready_to_prune_wants_both_facts_and_falls_back_to_either_clock`.
-    #[cfg(target_os = "linux")]
     #[test]
     fn prune_defers_a_reaped_child_until_its_reader_has_drained() {
         let worktree = tempfile::tempdir().expect("worktree dir");
@@ -6506,11 +6501,6 @@ mod tests {
     /// prune condition exists and cannot simply be deleted. Once
     /// `REAPED_DRAIN_GRACE` has elapsed since the reap, prune takes it anyway,
     /// carrying the exit status cached at reap time.
-    // Linux only: macOS revokes a terminal when its session leader exits, so
-    // no grandchild can hold it open and the reader reaches end of input with
-    // the reap. The prune policy is covered on macOS by
-    // `agent_pty_ready_to_prune_wants_both_facts_and_falls_back_to_either_clock`.
-    #[cfg(target_os = "linux")]
     #[test]
     fn prune_takes_a_never_draining_pty_once_the_drain_grace_expires() {
         let worktree = tempfile::tempdir().expect("worktree dir");
@@ -6640,12 +6630,6 @@ mod tests {
     /// permanently, and every decision keyed on it silently takes its unknown
     /// branch: `clean_exit_closes_tab_row` cannot fire, so a tab that exited
     /// cleanly keeps a dead row.
-    // Linux only: on macOS the reader reaches end of input only when the
-    // session leader exits, even with every slave descriptor closed, so the
-    // child cannot be kept running past it. The prune policy is covered on
-    // macOS by
-    // `agent_pty_ready_to_prune_wants_both_facts_and_falls_back_to_either_clock`.
-    #[cfg(target_os = "linux")]
     #[test]
     fn prune_defers_a_drained_child_until_its_exit_status_is_known() {
         let worktree = tempfile::tempdir().expect("worktree dir");
@@ -6676,12 +6660,6 @@ mod tests {
     /// would leak the provider forever. The grace is the safety valve in both
     /// directions: once it expires, prune takes the PTY with the status still
     /// unknown.
-    // Linux only: on macOS the reader reaches end of input only when the
-    // session leader exits, even with every slave descriptor closed, so the
-    // child cannot be kept running past it. The prune policy is covered on
-    // macOS by
-    // `agent_pty_ready_to_prune_wants_both_facts_and_falls_back_to_either_clock`.
-    #[cfg(target_os = "linux")]
     #[test]
     fn prune_takes_a_never_reaped_child_once_the_drain_grace_expires() {
         let worktree = tempfile::tempdir().expect("worktree dir");
@@ -6728,12 +6706,6 @@ mod tests {
     /// the bare EOF records `exit_success: None`, `clean_exit_closes_tab_row`
     /// takes its unknown branch, and the user is left with a dormant tab that
     /// should have closed itself.
-    // Linux only: on macOS the reader reaches end of input only when the
-    // session leader exits, even with every slave descriptor closed, so the
-    // child cannot be kept running past it. The prune policy is covered on
-    // macOS by
-    // `agent_pty_ready_to_prune_wants_both_facts_and_falls_back_to_either_clock`.
-    #[cfg(target_os = "linux")]
     #[test]
     fn prune_waits_for_the_status_so_a_clean_extra_tab_exit_closes_its_row() {
         let worktree = tempfile::tempdir().expect("worktree dir");

@@ -7760,11 +7760,6 @@ mod tests {
         );
     }
 
-    // Linux only: macOS revokes a terminal when its session leader exits, so
-    // no job can hold it open past the shell and the reader reaches end of
-    // input with the reap. The predicate runs on macOS in
-    // `a_reaped_child_is_not_live_while_its_reader_has_not_ended`.
-    #[cfg(target_os = "linux")]
     #[test]
     fn a_reaped_child_is_not_live_even_while_its_pty_stays_open() {
         // The launch-over-live gate asks `is_live`, and asking `is_exited`

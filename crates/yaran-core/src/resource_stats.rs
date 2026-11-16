@@ -1280,7 +1280,8 @@ mod tests {
                 Some(now.saturating_sub(*before.get(pid)?))
             })
             .sum();
-        (sys, (charged_ms as f64 / window_ms * 100.0) as f32)
+        let percent = crate::numeric::u64_to_f64(charged_ms) / window_ms * 100.0;
+        (sys, crate::numeric::f64_to_f32(percent))
     }
 
     /// A leaf target's `children` holds exactly one entry: the root itself.

@@ -724,7 +724,7 @@ fn tombstone_releases_the_registry_lock_before_waiting_for_wake_exit() {
     let kill_wake = |reaper: &std::thread::JoinHandle<_>| {
         if let (false, Some(pid)) = (
             reaper.is_finished(),
-            rustix::process::Pid::from_raw(wake_pid as i32),
+            rustix::process::Pid::from_raw(i32::try_from(wake_pid).unwrap()),
         ) {
             let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
         }
@@ -732,9 +732,11 @@ fn tombstone_releases_the_registry_lock_before_waiting_for_wake_exit() {
     // A hang guard only: every verdict below waits on an event, never a clock.
     let deadline = Instant::now() + Duration::from_secs(30);
     while !ready.exists() {
-        if reaper.is_finished() {
-            panic!("wake stand-in exited early: {:?}", reaper.join());
-        }
+        assert!(
+            !reaper.is_finished(),
+            "wake stand-in exited early: {:?}",
+            reaper.join()
+        );
         if Instant::now() >= deadline {
             kill_wake(&reaper);
             panic!("wake stand-in never installed its SIGTERM handler");

@@ -55,7 +55,7 @@ pub(super) async fn logout(State(cloud): State<Arc<CloudState>>) -> Response {
         &cloud,
         KEY_LOGOUT,
         "Disconnecting this machine from Yaran Cloud and deleting its credentials…",
-        |paths, api| actions::logout(paths, api, false),
+        |paths, api| actions::logout(paths, api, actions::LogoutScope::ControlPlane),
     )
     .await
 }

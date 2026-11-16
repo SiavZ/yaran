@@ -144,7 +144,12 @@ pub(super) fn logout(
     {
         return code;
     }
-    let outcome = actions::logout(&deps.paths, &deps.api, args.local_only);
+    let scope = if args.local_only {
+        actions::LogoutScope::LocalOnly
+    } else {
+        actions::LogoutScope::ControlPlane
+    };
+    let outcome = actions::logout(&deps.paths, &deps.api, scope);
     let code = finish(&outcome, out);
     if !matches!(
         outcome,
