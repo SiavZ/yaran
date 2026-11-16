@@ -22,7 +22,9 @@ GitHub UI (Settings → Branches → Protection rules → main).
     `ubuntu-24.04`
   - `Test (macos-14)`: the `clippy-test-macos` job in the same two files.
     It runs clippy with `--all-targets` and then `cargo test` on
-    `macos-latest`, as upstream does (not yet proven on a macos-14 runner)
+    `macos-26-intel` (upstream uses `macos-latest`; the arm64 pool repeatedly
+    cancelled the job before assigning a runner). The name is kept only for
+    the existing protection rule
   - `Security`: `cargo audit` + `cargo deny check`, in pr.yml and test.yml
   - `shell`: `shellcheck` + `bats` from `.github/workflows/overlay-ci.yml`
   - `Required gates`: the always-reporting aggregator job in

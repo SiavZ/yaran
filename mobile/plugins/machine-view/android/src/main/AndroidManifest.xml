@@ -26,12 +26,14 @@
             android:launchMode="singleTask"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
-        <!-- Release builds only: the verified App Link callback on the publisher domain. -->
+        <!-- Release builds only: the verified App Link callback on the publisher domain. The
+             enabled literals are a dev build's (a placeholder in a boolean attribute fails the
+             library's own resource check); the app manifest replaces both from its placeholders. -->
         <activity-alias
             android:name=".AuthCallbackHttps"
             android:targetActivity=".AuthCallbackActivity"
             android:exported="true"
-            android:enabled="${publisherCallbackEnabled}">
+            android:enabled="false">
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -46,7 +48,7 @@
             android:name=".AuthCallbackDev"
             android:targetActivity=".AuthCallbackActivity"
             android:exported="true"
-            android:enabled="${devCallbackEnabled}">
+            android:enabled="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

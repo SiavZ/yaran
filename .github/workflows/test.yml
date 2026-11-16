@@ -88,9 +88,9 @@ jobs:
   # steps, so the compile cache is warmed once on the slower runner.
   clippy-test-macos:
     # BRANCH-PROTECTION CONTRACT: reports the required `Test (macos-14)`
-    # context. Stays on macos-latest like upstream; see pr.yml for why.
+    # context. Runs on macos-26-intel; see pr.yml for why.
     name: Test (macos-14)
-    runs-on: macos-latest
+    runs-on: macos-26-intel
     needs: no-ui-build-hatch
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

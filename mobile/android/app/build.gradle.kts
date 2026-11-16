@@ -182,7 +182,7 @@ tasks.configureEach {
     if (name.contains("ArtProfile")) enabled = false
 }
 
-// The unit tests read build outputs: the merged manifest and the generated BuildConfig of
+// The unit tests read build outputs: the merged manifests and the generated BuildConfig of
 // the variants whose flags they check.
 val mergedManifests = mutableMapOf<String, Provider<RegularFile>>()
 androidComponents {
@@ -191,14 +191,17 @@ androidComponents {
 tasks.withType<Test>().configureEach {
     if (name != "testFossDebugUnitTest") return@configureEach
     val manifest = mergedManifests.getValue("fossDebug")
+    val e2eManifest = mergedManifests.getValue("fossE2e")
     val buildConfigs = listOf("fossDebug", "fossE2e", "fossRelease", "playRelease")
     inputs.file(manifest)
+    inputs.file(e2eManifest)
     dependsOn(buildConfigs.map { "generate${it.replaceFirstChar(Char::uppercase)}BuildConfig" })
     val buildConfigRoot = layout.buildDirectory.dir("generated/source/buildConfig")
     jvmArgumentProviders.add(
         CommandLineArgumentProvider {
             listOf(
                 "-Dyaran.mergedManifest=${manifest.get().asFile.absolutePath}",
+                "-Dyaran.mergedE2eManifest=${e2eManifest.get().asFile.absolutePath}",
                 "-Dyaran.buildConfigRoot=${buildConfigRoot.get().asFile.absolutePath}",
             )
         },

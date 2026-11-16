@@ -1,8 +1,9 @@
 // machine-view plugin module (:yaran-machine-view in mobile/android): MachineView (bridge-less
 // machine WebView) and Session (sealed handoff client, per-host sessions, native org API
-// client). Placeholders default to a dev (no publisher domain) build; the app sets
-// publisherDomain, publisherCallbackEnabled, devCallbackEnabled and e2eWebViewDebug from
-// mobile/publisher.properties for the merged manifest.
+// client). The manifest's placeholders (publisherDomain, e2eWebViewDebug) are deliberately NOT
+// given values here: a library's own values are substituted before the app merge and would
+// override the app's. The app sets them from mobile/publisher.properties, and its manifest
+// replaces the callback aliases' literal dev `enabled` values.
 apply plugin: 'com.android.library'
 apply plugin: 'org.jetbrains.kotlin.android'
 
@@ -17,12 +18,6 @@ android {
     defaultConfig {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        manifestPlaceholders = [
-            publisherDomain: '',
-            publisherCallbackEnabled: 'false',
-            devCallbackEnabled: 'true',
-            e2eWebViewDebug: 'false',
-        ]
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
@@ -44,11 +39,25 @@ android {
                 systemProperty 'machineview.fixtures', fixturesDir
                 systemProperty 'machineview.protocol', protocolDir
                 systemProperty 'machineview.manifest', file('src/main/AndroidManifest.xml').absolutePath
+                // ManifestTest reads this file, so an edit here must rerun it.
+                inputs.file('build.gradle')
             }
         }
     }
     lint {
         abortOnError = false
+    }
+}
+
+// This module's own test manifests are merged like an app's and need values: a dev build's.
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        [variant.unitTest, variant.androidTest].findAll { it != null }.each { test ->
+            test.manifestPlaceholders.putAll([
+                publisherDomain: '',
+                e2eWebViewDebug: 'false',
+            ])
+        }
     }
 }
 

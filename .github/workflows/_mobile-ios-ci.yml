@@ -24,7 +24,10 @@ env:
 jobs:
   ios:
     name: iOS build and tests
-    runs-on: macos-26
+    # Intel macOS 26: the arm64 macos-26 pool cancelled this job before assigning a
+    # runner. The image carries the same Xcode_26.6.app and iPhone 17 / iOS 26.5
+    # simulator that mobile/toolchain.env pins; the release job stays on macos-26.
+    runs-on: macos-26-intel
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
