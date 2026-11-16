@@ -21,6 +21,7 @@
 //! table is listed by the TUI palette exactly once.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! palette.rs
 //! ├── action
@@ -33,6 +34,7 @@
 //! ├── palette::search
 //! ├── yaran-tui::app
 //! └── yaran-tui::keybindings
+//! ```
 //! <module-headers:end>
 
 pub mod search;

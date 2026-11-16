@@ -9,6 +9,7 @@
 //! - Trust boundary: both headers are attacker input; anything unparseable is a mismatch.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: none
 //!
@@ -16,6 +17,7 @@
 //! origin_match.rs
 //! ├── crate
 //! └── server
+//! ```
 //! <module-headers:end>
 
 /// `host` (ASCII-lowercased, one trailing dot dropped, IPv6 kept bracketed) and the port

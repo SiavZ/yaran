@@ -1,14 +1,20 @@
 //! Shared test fixtures for engine submodule unit tests. Test-only.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! engine/test_support.rs
+//! ├── attachments
+//! ├── changes_status
+//! ├── clone_project
 //! ├── config
 //! ├── config_queue
 //! ├── engine
 //! ├── ids
 //! ├── lockfile
 //! ├── model
+//! ├── operations
+//! ├── process_sessions
 //! ├── pty
 //! ├── statusline
 //! ├── storage
@@ -17,15 +23,21 @@
 //! ├── test_scratch
 //! ├── watch::runtime
 //! └── worker
-//! External: chrono, std, tempfile
+//! External: anyhow, chrono, std, tempfile
 //!
 //! Used by:
 //! engine/test_support.rs
 //! ├── agent_env
+//! ├── agent_job
 //! ├── background_serve
+//! ├── base_branch
 //! ├── engine
+//! ├── engine::admission
 //! ├── engine::amq
+//! ├── engine::attachment_guard
 //! ├── engine::backup
+//! ├── engine::classic_keys_tests
+//! ├── engine::clone
 //! ├── engine::cloud_mode
 //! ├── engine::command
 //! ├── engine::companion
@@ -33,20 +45,50 @@
 //! ├── engine::followup
 //! ├── engine::lifecycle
 //! ├── engine::limits
+//! ├── engine::project_base
 //! ├── engine::provider_sessions
 //! ├── engine::push_hook::tests
+//! ├── engine::races_review2_tests
+//! ├── engine::races_review3_tests
+//! ├── engine::races_review4_tests
+//! ├── engine::races_review5_tests
+//! ├── engine::races_review6_tests
+//! ├── engine::removal
+//! ├── engine::removal_review_tests
+//! ├── engine::rename
 //! ├── engine::resume_fallback
+//! ├── engine::review10_tests
+//! ├── engine::review11_tests
+//! ├── engine::review12_tests
+//! ├── engine::review13_tests
+//! ├── engine::review14_tests
+//! ├── engine::review15_tests
+//! ├── engine::review17_tests
+//! ├── engine::review19_tests
+//! ├── engine::review20_tests
+//! ├── engine::review21_tests
+//! ├── engine::review22_tests
+//! ├── engine::review23_tests
+//! ├── engine::review24_tests
+//! ├── engine::review8_tests
+//! ├── engine::review_nested_folder_tests
 //! ├── engine::shared_workspace
+//! ├── engine::spawn_worker
 //! ├── engine::status_op
 //! ├── engine::watch_tick
 //! ├── engine::watch_tick::schedule_tests
 //! ├── engine::worktree_link
+//! ├── engine::worktree_removal_race_tests
 //! ├── flat_list
+//! ├── git::clone
+//! ├── leftover_folders
+//! ├── operations
 //! ├── project_order
 //! ├── sidebar
 //! ├── test_provider
 //! ├── viewmodel
 //! └── wire
+//! ```
 //! <module-headers:end>
 
 use std::collections::{BTreeMap, HashMap, HashSet};

@@ -4,6 +4,7 @@
 //! - Test-only; spawns real child processes, no network.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_loop_tests.rs
 //! ├── cloud_loop
@@ -16,6 +17,7 @@
 //! Used by:
 //! cloud_loop_tests.rs
 //! └── cloud_loop
+//! ```
 //! <module-headers:end>
 
 use super::*;

@@ -13,6 +13,7 @@
 //!   colours, so no colour is hard-coded.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! handoff_consent_page.rs
 //! ├── yaran-core::cloud::protocol::rules
@@ -26,6 +27,7 @@
 //! ├── cloud_handoff_request
 //! ├── cloud_handoff_tests
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::OnceLock;

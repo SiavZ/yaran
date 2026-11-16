@@ -9,8 +9,10 @@
 //! - Pure and engine-free; the engine calls `observe` once per tick.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/push_edges.rs
+//! ├── engine
 //! ├── engine::attention_decision
 //! └── ids
 //! External: std
@@ -19,6 +21,7 @@
 //! cloud/push_edges.rs
 //! ├── cloud
 //! └── engine::push_hook
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashSet;

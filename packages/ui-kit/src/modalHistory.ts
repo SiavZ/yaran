@@ -5,6 +5,22 @@
 // history writer, and it listens here and gives each open modal one entry of
 // its own (see "Modal entries" in store.ts). Kept apart from the store so the
 // shared UI primitives can register without importing the whole app state.
+//
+// <module-headers:begin>
+// Uses: none
+// External: none
+//
+// Used by:
+// src/modalHistory.ts
+// ├── src/dialog.test.tsx
+// ├── src/dropdown-menu.test.tsx
+// ├── src/use-back-dismiss.ts
+// ├── web:src/components/EditorOverlay.test.tsx
+// ├── web:src/components/EditorStatusBar.test.tsx
+// ├── web:src/components/StandaloneEditor.test.tsx
+// ├── web:src/lib/store.ts
+// └── web:src/lib/storeRouting.test.ts
+// <module-headers:end>
 
 export interface OpenModal {
   id: number

@@ -8,11 +8,13 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_outcome.rs
 //! ├── cloud::leg
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_outcome::tests
+//! ├── cloud::outcome
 //! ├── engine
 //! ├── status_text
 //! └── statusline
@@ -29,6 +31,7 @@
 //! ├── yaran-web::cloud_loop
 //! ├── yaran-web::cloud_mode
 //! └── yaran-web::cloud_mode_routes
+//! ```
 //! <module-headers:end>
 
 use super::leg::{CloudLegEvent, LegStop};

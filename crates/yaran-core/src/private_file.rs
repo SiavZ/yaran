@@ -11,6 +11,7 @@
 //! - Blocking I/O: call from a worker or CLI thread, never the UI thread.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! private_file.rs
 //! ├── file_modes
@@ -24,6 +25,7 @@
 //! ├── crate
 //! ├── human_board::store
 //! └── human_board::tests::watcher_tests
+//! ```
 //! <module-headers:end>
 
 use std::fs::{self, File, OpenOptions};

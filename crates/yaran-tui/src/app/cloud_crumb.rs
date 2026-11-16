@@ -8,6 +8,7 @@
 //! gate compares [`App::cloud_crumb`] rather than waiting for a mark.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_crumb.rs
 //! ├── app
@@ -19,6 +20,7 @@
 //! Used by:
 //! app/cloud_crumb.rs
 //! └── app
+//! ```
 //! <module-headers:end>
 
 use super::*;

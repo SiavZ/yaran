@@ -9,6 +9,7 @@
 //!   and stops when dropped.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/test_support.rs
 //! ├── cloud::credentials
@@ -36,6 +37,7 @@
 //! ├── yaran-web::cloud_ingress_tests
 //! ├── yaran-web::cloud_phone_routes
 //! └── yaran-web::cloud_routes::tests
+//! ```
 //! <module-headers:end>
 
 use std::io::{BufRead, BufReader, Read, Write};

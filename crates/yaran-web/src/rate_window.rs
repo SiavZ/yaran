@@ -9,6 +9,7 @@
 //! - The limit is passed per call, so a live config change applies to the next request.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: std
 //!
@@ -16,6 +17,7 @@
 //! rate_window.rs
 //! ├── cloud_ingress
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::Mutex;

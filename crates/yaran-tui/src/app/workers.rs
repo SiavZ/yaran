@@ -5,39 +5,57 @@
 //! that keep blocking work off the UI thread.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/workers.rs
 //! ├── app
 //! ├── app::background_server
+//! ├── app::project_actions
 //! ├── app::render
 //! ├── app::test_support
+//! ├── app::text_input
+//! ├── app::ui_jobs
 //! ├── config
 //! ├── crate
+//! ├── keybindings
 //! ├── raw_input
+//! ├── theme
 //! ├── yaran-core::agent_job
+//! ├── yaran-core::agent_tabs
 //! ├── yaran-core::background_serve
 //! ├── yaran-core::bidi
 //! ├── yaran-core::changes_status
 //! ├── yaran-core::config
+//! ├── yaran-core::config_keys
+//! ├── yaran-core::config_queue
 //! ├── yaran-core::config_reload_status
+//! ├── yaran-core::control_socket
 //! ├── yaran-core::engine
 //! ├── yaran-core::git
 //! ├── yaran-core::ids
+//! ├── yaran-core::leftover_folders
 //! ├── yaran-core::model
+//! ├── yaran-core::operations
+//! ├── yaran-core::process_sessions
+//! ├── yaran-core::project_browser
 //! ├── yaran-core::pty
+//! ├── yaran-core::serve_log
 //! ├── yaran-core::startup
+//! ├── yaran-core::status_text
 //! ├── yaran-core::statusline
 //! ├── yaran-core::tab_verdict
 //! ├── yaran-core::term_identity
 //! ├── yaran-core::test_provider
+//! ├── yaran-core::wire
 //! ├── yaran-core::worker
 //! └── yaran-core::worktree_manager
-//! External: chrono, std, tempfile
+//! External: anyhow, chrono, crossterm, ratatui, std, tempfile
 //!
 //! Used by:
 //! app/workers.rs
 //! ├── app
 //! └── app::sessions
+//! ```
 //! <module-headers:end>
 
 use std::sync::mpsc::Sender;

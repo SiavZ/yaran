@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]` child of `cloud::access_jwks`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/access_jwks_tests.rs
 //! ├── cloud::access_jwks
@@ -14,6 +15,7 @@
 //! Used by:
 //! cloud/access_jwks_tests.rs
 //! └── cloud::access_jwks
+//! ```
 //! <module-headers:end>
 
 use std::io::{Read, Write};

@@ -3,10 +3,12 @@
 //! domain into the crate.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: std
 //!
 //! Used by: entry point (cargo build script of yaran-core)
+//! ```
 //! <module-headers:end>
 
 use std::env;

@@ -1,5 +1,95 @@
 //! Keyboard and mouse handling for the terminal UI: every key and mouse event handler of
 //! `App`, routed through the runtime bindings to the focused pane, the open modal or the PTY.
+//!
+//! <module-headers:begin>
+//! ```text
+//! Uses:
+//! app/input.rs
+//! ├── app
+//! ├── app::attachment_presence
+//! ├── app::components
+//! ├── app::components::wrap_lines
+//! ├── app::debug_input
+//! ├── app::dock
+//! ├── app::first_load
+//! ├── app::hangup
+//! ├── app::human_board
+//! ├── app::human_board_dialog
+//! ├── app::input::host_click_regression_tests
+//! ├── app::input::host_selection_regression_tests
+//! ├── app::modal
+//! ├── app::orphan_worktrees
+//! ├── app::pr_clone
+//! ├── app::project_actions
+//! ├── app::pty_ownership
+//! ├── app::render
+//! ├── app::reorder
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── app::ui_jobs
+//! ├── clipboard
+//! ├── config
+//! ├── crate
+//! ├── key_decode
+//! ├── key_encode
+//! ├── keybindings
+//! ├── numeric
+//! ├── raw_input
+//! ├── theme
+//! ├── yaran-core::add_project_plan
+//! ├── yaran-core::agent_tabs
+//! ├── yaran-core::attachments
+//! ├── yaran-core::auth
+//! ├── yaran-core::branch_history
+//! ├── yaran-core::clone_project
+//! ├── yaran-core::config
+//! ├── yaran-core::config_effective
+//! ├── yaran-core::config_queue
+//! ├── yaran-core::engine
+//! ├── yaran-core::engine::status_op
+//! ├── yaran-core::gh
+//! ├── yaran-core::git
+//! ├── yaran-core::ids
+//! ├── yaran-core::logger
+//! ├── yaran-core::macros
+//! ├── yaran-core::model
+//! ├── yaran-core::operations
+//! ├── yaran-core::pr_reference
+//! ├── yaran-core::project_browser
+//! ├── yaran-core::project_prose
+//! ├── yaran-core::prose
+//! ├── yaran-core::pty
+//! ├── yaran-core::reload_policy
+//! ├── yaran-core::reload_signal
+//! ├── yaran-core::status_text
+//! ├── yaran-core::statusline
+//! ├── yaran-core::storage
+//! ├── yaran-core::test_git
+//! ├── yaran-core::text
+//! ├── yaran-core::watch
+//! ├── yaran-core::welcome_screen
+//! ├── yaran-core::wire
+//! ├── yaran-core::worker
+//! └── yaran-core::worktree_manager
+//! External: anyhow, chrono, crokey, crossterm, home, libc, ratatui, rusqlite, rustix, std, tempfile, toml, unicode_segmentation
+//!
+//! Used by:
+//! app/input.rs
+//! ├── app
+//! ├── app::cloud_input
+//! ├── app::debug_input
+//! ├── app::dock
+//! ├── app::input::host_click_regression_tests
+//! ├── app::input::host_selection_regression_tests
+//! ├── app::modal
+//! ├── app::new_agent_settings
+//! ├── app::overlay_dismiss
+//! ├── app::picker_lists
+//! ├── app::render
+//! ├── app::session_settings
+//! └── app::tab_reorder
+//! ```
+//! <module-headers:end>
 
 use super::CompletionAnswer;
 use super::components::wrap_lines::cluster_width;

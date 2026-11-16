@@ -16,6 +16,7 @@
 //! file.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! human_board/store.rs
 //! ├── human_board
@@ -29,6 +30,7 @@
 //! ├── human_board
 //! ├── human_board::seen
 //! └── human_board::sync
+//! ```
 //! <module-headers:end>
 
 use std::fs::{self, File};

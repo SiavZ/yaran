@@ -12,6 +12,7 @@
 //! - Binds loopback only; never a wildcard address.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/loopback.rs
 //! ├── cloud::loopback::tests
@@ -24,6 +25,7 @@
 //! ├── cloud
 //! ├── cloud::login
 //! └── cloud::loopback::tests
+//! ```
 //! <module-headers:end>
 
 use std::io::{self, Read, Write};

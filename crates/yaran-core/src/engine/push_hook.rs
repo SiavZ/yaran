@@ -10,6 +10,7 @@
 //! - Runs on the engine thread; hands owned events to the emitter with `try_send`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! engine/push_hook.rs
 //! ├── cloud::config
@@ -35,6 +36,7 @@
 //! engine/push_hook.rs
 //! ├── engine
 //! └── engine::push_hook::tests
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashMap;

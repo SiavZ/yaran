@@ -9,6 +9,48 @@
 //! Both the TUI and the web surface share this patch path so a save from either
 //! preserves the same on-disk shape. The TUI keeps its own pretty
 //! first-creation renderer; the web uses [`save_config`] for a plain fallback.
+//!
+//! <module-headers:begin>
+//! ```text
+//! Uses:
+//! config_write.rs
+//! ├── auth
+//! ├── cloud::config_patch
+//! ├── config
+//! ├── config_migrate
+//! ├── file_modes
+//! ├── io_retry
+//! ├── logger
+//! ├── numeric
+//! └── text
+//! External: anyhow, rustix, sha2, std, tempfile, toml, toml_edit
+//!
+//! Used by:
+//! config_write.rs
+//! ├── cloud::config_patch
+//! ├── config
+//! ├── config_keys
+//! ├── config_migrate
+//! ├── config_queue
+//! ├── config_queue::three_way_save_regressions
+//! ├── config_resources
+//! ├── crate
+//! ├── engine
+//! ├── engine::command
+//! ├── engine::config_saver
+//! ├── engine::events
+//! ├── yaran-core[test upgrade_config]
+//! ├── yaran-tui::app
+//! ├── yaran-tui::cli
+//! ├── yaran-tui::config
+//! ├── yaran-web
+//! ├── yaran-web::auth
+//! ├── yaran-web::auth::routes
+//! ├── yaran-web::bootstrap
+//! ├── yaran-web::engine_actor
+//! └── yaran-web[test auth_router]
+//! ```
+//! <module-headers:end>
 
 use std::collections::BTreeMap;
 use std::fs;

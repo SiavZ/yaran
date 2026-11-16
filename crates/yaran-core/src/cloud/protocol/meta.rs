@@ -8,6 +8,7 @@
 //! - Pure data; no I/O.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/meta.rs
 //! ├── cloud::protocol::rules
@@ -21,6 +22,7 @@
 //! ├── cloud::protocol
 //! ├── cloud::protocol::machine
 //! └── cloud::test_support
+//! ```
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};

@@ -11,6 +11,7 @@
 //! - `fetch_jwks` BLOCKS: callers run it on a blocking task, never a reactor thread.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/access_jwks.rs
 //! ├── cloud::access_jwks::tests
@@ -27,6 +28,7 @@
 //! ├── yaran-web::cloud_ingress
 //! ├── yaran-web::cloud_jwks_cache
 //! └── yaran-web::cloud_test_support
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;

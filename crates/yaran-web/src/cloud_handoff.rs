@@ -13,6 +13,7 @@
 //! - No token, key, state, csrf, cookie, `dk` or `dsig` is ever logged (T36, T58).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_handoff.rs
 //! ├── cloud_handoff_request
@@ -30,6 +31,7 @@
 //! cloud_handoff.rs
 //! ├── crate
 //! └── server
+//! ```
 //! <module-headers:end>
 
 use std::time::UNIX_EPOCH;

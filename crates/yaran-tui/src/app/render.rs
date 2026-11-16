@@ -1,5 +1,93 @@
 //! Rendering for the terminal UI: every pane, header and overlay, plus shared render helpers,
 //! drawn from the theme engine's tokens; it publishes the mouse layout the input handlers read.
+//!
+//! <module-headers:begin>
+//! ```text
+//! Uses:
+//! app/render.rs
+//! ├── app
+//! ├── app::background_server
+//! ├── app::changes_tree
+//! ├── app::components
+//! ├── app::components::button
+//! ├── app::components::ellipsis
+//! ├── app::components::name_chip
+//! ├── app::components::pane_card
+//! ├── app::components::wrap_lines
+//! ├── app::confirm_dialog
+//! ├── app::first_load
+//! ├── app::human_board
+//! ├── app::input
+//! ├── app::new_agent_settings
+//! ├── app::pr_clone
+//! ├── app::project_actions
+//! ├── app::pty_ownership
+//! ├── app::reorder
+//! ├── app::test_support
+//! ├── app::text_input
+//! ├── config
+//! ├── crate
+//! ├── diff
+//! ├── host_keys
+//! ├── keybindings
+//! ├── numeric
+//! ├── theme
+//! ├── tui_color
+//! ├── yaran-core::add_project_plan
+//! ├── yaran-core::add_project_prose
+//! ├── yaran-core::agent_search
+//! ├── yaran-core::agent_tabs
+//! ├── yaran-core::attached_prose
+//! ├── yaran-core::attachments
+//! ├── yaran-core::bidi
+//! ├── yaran-core::branch_history
+//! ├── yaran-core::config
+//! ├── yaran-core::config_effective
+//! ├── yaran-core::delete_agent_prose
+//! ├── yaran-core::engine
+//! ├── yaran-core::git
+//! ├── yaran-core::home_path
+//! ├── yaran-core::human_board
+//! ├── yaran-core::ids
+//! ├── yaran-core::leftover_folders
+//! ├── yaran-core::model
+//! ├── yaran-core::project_prose
+//! ├── yaran-core::prose
+//! ├── yaran-core::pty
+//! ├── yaran-core::row_state
+//! ├── yaran-core::statusline
+//! ├── yaran-core::tab_verdict
+//! ├── yaran-core::terminal_title
+//! ├── yaran-core::text
+//! ├── yaran-core::theme
+//! ├── yaran-core::version
+//! ├── yaran-core::watch
+//! ├── yaran-core::welcome
+//! ├── yaran-core::worker
+//! ├── yaran-core::working_copy
+//! ├── yaran-core::working_cue
+//! └── yaran-core::worktree_manager
+//! External: chrono, crokey, crossterm, home, ratatui, std, tempfile, unicode_segmentation
+//!
+//! Used by:
+//! app/render.rs
+//! ├── app
+//! ├── app::cloud_mode
+//! ├── app::cloud_render
+//! ├── app::confirm_dialog
+//! ├── app::dock
+//! ├── app::first_load
+//! ├── app::grouped_sidebar_tests
+//! ├── app::human_board_dialog
+//! ├── app::input
+//! ├── app::overlay_dismiss
+//! ├── app::presize
+//! ├── app::pull_requests
+//! ├── app::session_settings
+//! ├── app::sessions
+//! └── app::workers
+//! ```
+//! <module-headers:end>
 
 use super::changes_tree::ChangesRow;
 use super::components::BUTTON_HEIGHT;

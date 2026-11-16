@@ -9,6 +9,7 @@
 //! - Secrets: `PairedMachine::tunnel_token` is redacted from `Debug`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_identity.rs
 //! ├── cloud::config
@@ -38,12 +39,14 @@
 //! ├── yaran-tui::app::background_server
 //! ├── yaran-tui::app::cloud_crumb
 //! ├── yaran-tui::app::cloud_mode
+//! ├── yaran-tui::app::picker_lists
 //! ├── yaran-web::background
 //! ├── yaran-web::cloud_loop
 //! ├── yaran-web::cloud_loop::live_cloud_mode_tests
 //! ├── yaran-web::cloud_mode
 //! ├── yaran-web::cloud_mode_routes
 //! └── yaran[bin yaran]::companion
+//! ```
 //! <module-headers:end>
 
 use std::path::{Path, PathBuf};

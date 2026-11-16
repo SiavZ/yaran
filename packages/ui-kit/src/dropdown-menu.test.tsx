@@ -10,7 +10,8 @@
  * <module-headers:begin>
  * Uses:
  * src/dropdown-menu.test.tsx
- * └── src/dropdown-menu.tsx
+ * ├── src/dropdown-menu.tsx
+ * └── src/modalHistory.ts
  * External: @testing-library/react, vitest
  *
  * Used by: entry point (vitest, via npm test in packages/ui-kit)

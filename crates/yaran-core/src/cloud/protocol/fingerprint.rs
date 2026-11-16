@@ -8,6 +8,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/fingerprint.rs
 //! └── cloud::protocol::test_fixtures
@@ -18,6 +19,7 @@
 //! ├── cloud::identity
 //! ├── cloud::protocol
 //! └── cloud::protocol::handoff_consent
+//! ```
 //! <module-headers:end>
 
 use ring::digest::{SHA256, digest};

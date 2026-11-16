@@ -23,6 +23,7 @@
 //! the round trip in mechanism 3, which is what an upgrade actually exercises.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! tests/upgrade_config.rs
 //! ├── yaran-core::config
@@ -30,6 +31,7 @@
 //! External: std, tempfile
 //!
 //! Used by: entry point (cargo test -p yaran-core --test upgrade_config (integration test))
+//! ```
 //! <module-headers:end>
 
 use std::collections::BTreeMap;

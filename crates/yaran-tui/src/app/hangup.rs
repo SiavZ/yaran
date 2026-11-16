@@ -19,6 +19,7 @@
 //!   in, a signal that asks yaran to quit is never just swallowed.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/hangup.rs
 //! ├── crate
@@ -29,6 +30,7 @@
 //! app/hangup.rs
 //! ├── app
 //! └── app::input
+//! ```
 //! <module-headers:end>
 
 use std::os::fd::AsFd;

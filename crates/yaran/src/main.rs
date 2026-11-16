@@ -1,5 +1,39 @@
 //! The `yaran` binary: the terminal UI, `yaran server`, and the command line that talks to a running
 //! yaran.
+//!
+//! <module-headers:begin>
+//! ```text
+//! Uses:
+//! main.rs
+//! ├── cli_reference
+//! ├── client_commands
+//! ├── commands
+//! ├── companion
+//! ├── yaran-core
+//! ├── yaran-core::activity
+//! ├── yaran-core::auth
+//! ├── yaran-core::client
+//! ├── yaran-core::client::connect
+//! ├── yaran-core::client::transport
+//! ├── yaran-core::cloud::cli
+//! ├── yaran-core::config
+//! ├── yaran-core::engine
+//! ├── yaran-core::file_modes
+//! ├── yaran-core::human_board::cli
+//! ├── yaran-core::logger
+//! ├── yaran-core::peer
+//! ├── yaran-core::reload_handoff
+//! ├── yaran-core::reload_policy
+//! ├── yaran-core::reload_signal
+//! ├── yaran-core::serve_log
+//! ├── yaran-core::tailscale
+//! ├── yaran-tui
+//! └── yaran-web
+//! External: anyhow, clap, serde, std
+//!
+//! Used by: entry point (the yaran binary's main)
+//! ```
+//! <module-headers:end>
 
 #[cfg(test)]
 mod cli_reference;

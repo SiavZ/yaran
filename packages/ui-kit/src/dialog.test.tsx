@@ -11,7 +11,8 @@
  * <module-headers:begin>
  * Uses:
  * src/dialog.test.tsx
- * └── src/dialog.tsx
+ * ├── src/dialog.tsx
+ * └── src/modalHistory.ts
  * External: @testing-library/react, react, vitest
  *
  * Used by: entry point (vitest, via npm test in packages/ui-kit)

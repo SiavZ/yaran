@@ -8,6 +8,7 @@
 //! - Pure; the status keys are the constants below, one per action.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/outcome.rs
 //! ├── cloud::machine_api_error
@@ -23,6 +24,7 @@
 //! ├── cloud::cli
 //! ├── cloud::cli::login
 //! ├── cloud::cli::manage
+//! ├── cloud::leg_outcome
 //! ├── cloud::login
 //! ├── cloud::login_session
 //! ├── yaran-core[test cloud_login]
@@ -31,6 +33,7 @@
 //! ├── yaran-tui::app::cloud_tests
 //! ├── yaran-web::cloud_routes
 //! └── yaran-web::cloud_routes::actions_routes
+//! ```
 //! <module-headers:end>
 
 use crate::cloud::machine_api_error::MachineApiError;

@@ -5,6 +5,7 @@
 //! - Test-only (`#[cfg(test)]`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_consent_tests.rs
 //! ├── cloud_ingress
@@ -14,6 +15,7 @@
 //! Used by:
 //! cloud_consent_tests.rs
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::atomic::Ordering;

@@ -7,6 +7,7 @@
 //! - Cheap to clone; the lock is held only to copy.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/view.rs
 //! └── cloud::leg_identity
@@ -23,6 +24,7 @@
 //! ├── yaran-web::cloud_mode
 //! ├── yaran-web::cloud_mode_routes
 //! └── yaran[bin yaran]::companion
+//! ```
 //! <module-headers:end>
 
 use std::sync::{Arc, Mutex};

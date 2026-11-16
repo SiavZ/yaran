@@ -7,6 +7,7 @@
 //! - Test-only; one thread per mock, one request per connection (`Connection: close`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! tests/support/mock_worker.rs
 //! ├── yaran-core::cloud::protocol
@@ -18,6 +19,7 @@
 //! Used by:
 //! tests/support/mock_worker.rs
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::collections::VecDeque;

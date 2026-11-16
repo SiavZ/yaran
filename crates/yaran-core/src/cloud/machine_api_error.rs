@@ -10,6 +10,7 @@
 //!   characters here, before anything logs or shows it (T53).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/machine_api_error.rs
 //! ├── cloud::credentials
@@ -24,6 +25,7 @@
 //! ├── cloud::login
 //! ├── cloud::machine_api
 //! └── cloud::outcome
+//! ```
 //! <module-headers:end>
 
 use std::fmt;

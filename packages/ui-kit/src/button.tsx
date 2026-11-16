@@ -9,7 +9,8 @@
  * <module-headers:begin>
  * Uses:
  * src/button.tsx
- * └── src/cn.ts
+ * ├── src/cn.ts
+ * └── src/focusRing.ts
  * External: @base-ui/react, class-variance-authority
  *
  * Used by:
@@ -32,6 +33,7 @@
  * ├── @yaran/mobile-shell:src/screens/settings/LockScreen.tsx
  * ├── @yaran/mobile-shell:src/screens/settings/NotificationSettings.tsx
  * ├── @yaran/mobile-shell:src/screens/settings/Settings.tsx
+ * ├── src/button.test.tsx
  * ├── src/dialog.tsx
  * ├── src/sheet.tsx
  * ├── web:src/components/AccessoryBar.tsx

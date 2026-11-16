@@ -1,6 +1,7 @@
 //! Tests for `yaran cloud` through `run_with`, against a mock Worker.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cli/tests.rs
 //! ├── cloud::cli
@@ -12,6 +13,7 @@
 //! Used by:
 //! cloud/cli/tests.rs
 //! └── cloud::cli
+//! ```
 //! <module-headers:end>
 
 use super::*;

@@ -18,6 +18,7 @@
 //!   carries none.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_routes.rs
 //! ├── cloud_routes::actions_routes
@@ -44,6 +45,7 @@
 //! ├── crate
 //! ├── engine_actor
 //! └── server
+//! ```
 //! <module-headers:end>
 
 use std::sync::{Arc, Mutex, MutexGuard};

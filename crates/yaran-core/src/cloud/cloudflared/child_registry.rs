@@ -11,6 +11,7 @@
 //!   executable with the same start time.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: rustix, std, sysinfo
 //!
@@ -23,6 +24,7 @@
 //! ├── yaran-tui::app::hangup
 //! ├── yaran-web
 //! └── yaran-web::cloud_loop
+//! ```
 //! <module-headers:end>
 
 use std::path::Path;

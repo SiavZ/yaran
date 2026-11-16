@@ -8,6 +8,7 @@
 //! - CSPRNG draws only (`ring::rand::SystemRandom`); no I/O.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/pkce.rs
 //! └── cloud::protocol::rules
@@ -19,6 +20,7 @@
 //! ├── cloud::login
 //! ├── cloud::loopback
 //! └── yaran-core[test cloud_login]
+//! ```
 //! <module-headers:end>
 
 use ring::digest::{SHA256, digest};

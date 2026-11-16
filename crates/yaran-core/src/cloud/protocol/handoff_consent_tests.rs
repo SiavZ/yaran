@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]` child of `cloud::protocol::handoff_consent`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/handoff_consent_tests.rs
 //! ├── cloud::protocol::handoff_consent
@@ -13,6 +14,7 @@
 //! Used by:
 //! cloud/protocol/handoff_consent_tests.rs
 //! └── cloud::protocol::handoff_consent
+//! ```
 //! <module-headers:end>
 
 use super::*;

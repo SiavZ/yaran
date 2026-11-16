@@ -3,6 +3,7 @@
 //! - Test-only; spawns real processes and kills their groups.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/supervisor_tests.rs
 //! ├── cloud::cloudflared::command
@@ -13,6 +14,7 @@
 //! Used by:
 //! cloud/cloudflared/supervisor_tests.rs
 //! └── cloud::cloudflared::supervisor
+//! ```
 //! <module-headers:end>
 
 use super::*;

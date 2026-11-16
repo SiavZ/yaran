@@ -11,6 +11,7 @@
 //! listeners; this decides nothing and only relays.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! companion.rs
 //! ├── yaran-core::background_serve
@@ -20,6 +21,7 @@
 //! ├── yaran-core::config
 //! ├── yaran-core::engine
 //! ├── yaran-core::logger
+//! ├── yaran-core::serve_log
 //! ├── yaran-web::background
 //! └── yaran-web::cloud_mode
 //! External: std
@@ -27,6 +29,7 @@
 //! Used by:
 //! companion.rs
 //! └── crate
+//! ```
 //! <module-headers:end>
 //! The one core it holds is either a web serve or, while nothing serves the
 //! web, a core that serves only the control socket. Moving between the two

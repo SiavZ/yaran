@@ -8,6 +8,7 @@
 //! - Pure data.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! config_schema_cloud.rs
 //! ├── config
@@ -17,6 +18,7 @@
 //! Used by:
 //! config_schema_cloud.rs
 //! └── config
+//! ```
 //! <module-headers:end>
 
 use super::{CommentSource, ConfigEntry, FieldValue};

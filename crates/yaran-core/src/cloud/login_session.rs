@@ -14,6 +14,7 @@
 //!   end must not report the login as cancelled).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/login_session.rs
 //! ├── cloud::login
@@ -29,6 +30,7 @@
 //! ├── yaran-tui::app::cloud_commands
 //! ├── yaran-tui::app::cloud_tests
 //! └── yaran-web::cloud_routes
+//! ```
 //! <module-headers:end>
 
 use std::sync::atomic::{AtomicU8, Ordering};

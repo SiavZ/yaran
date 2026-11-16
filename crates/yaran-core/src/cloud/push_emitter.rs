@@ -13,6 +13,7 @@
 //!   stops without withdrawing anything already delivered.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/push_emitter.rs
 //! ├── cloud::protocol::machine
@@ -32,6 +33,7 @@
 //! ├── engine::push_hook
 //! ├── engine::push_hook::tests
 //! └── yaran-core[test cloud_push_emitter]
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

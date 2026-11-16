@@ -6,6 +6,7 @@
 //! - Test-only (`#[cfg(test)]`); never touches the network beyond loopback.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_test_support.rs
 //! ├── auth
@@ -26,12 +27,14 @@
 //!
 //! Used by:
 //! cloud_test_support.rs
+//! ├── cloud_auth_bridge_tests
 //! ├── cloud_consent_tests
 //! ├── cloud_handoff_tests
 //! ├── cloud_ingress_tests
 //! ├── cloud_loop::live_cloud_mode_tests
 //! ├── cloud_mode
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::atomic::{AtomicI64, Ordering};

@@ -15,6 +15,7 @@
 //!   bodies.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/machine_api.rs
 //! ├── cloud::credentials
@@ -51,6 +52,7 @@
 //! ├── yaran-web::cloud_routes
 //! ├── yaran-web::cloud_routes::actions_routes
 //! └── yaran-web::cloud_routes::tests
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;

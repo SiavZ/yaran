@@ -4,6 +4,7 @@
 //! - Test-only; spawns real child processes, never touches the network.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_tests.rs
 //! ├── cloud::cloudflared::acquire
@@ -18,6 +19,7 @@
 //! Used by:
 //! cloud/leg_tests.rs
 //! └── cloud::leg
+//! ```
 //! <module-headers:end>
 
 use super::*;

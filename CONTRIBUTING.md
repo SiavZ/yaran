@@ -8,7 +8,9 @@ the tenet wins.
 ## What you need
 
 - **Rust** (stable). The workspace tracks whatever `dtolnay/rust-toolchain@stable`
-  installs in CI, so a current stable toolchain is the right target.
+  installs in CI, so a current stable toolchain is the right target. The oldest
+  compiler that builds it is Rust 1.98 (`rust-version` in `Cargo.toml`); the
+  `MSRV (1.98)` CI job keeps that true, so raise the two together.
 - **Node 22.12 or newer** plus npm. The web UI is a React app that is **compiled into
   the `yaran` binary**, so a normal `cargo build` builds it. If you have no Node
   toolchain, see [Building without the web UI](#building-without-the-web-ui).

@@ -6,6 +6,7 @@
 //! `keybindings` module, not here.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: none
 //!
@@ -15,6 +16,7 @@
 //! ├── palette
 //! ├── welcome
 //! └── yaran-tui::keybindings
+//! ```
 //! <module-headers:end>
 
 /// Unique identifier for every bindable action.

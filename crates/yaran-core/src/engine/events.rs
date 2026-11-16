@@ -8,14 +8,26 @@
 //! translates each variant back into concrete view mutations.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! engine/events.rs
 //! ├── agent_job
+//! ├── attachments
+//! ├── auth
+//! ├── branch_history
 //! ├── changes_status
+//! ├── clone_project
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_outcome
 //! ├── config
+//! ├── config_keys
+//! ├── config_queue
+//! ├── config_reload_status
+//! ├── config_write
 //! ├── engine
+//! ├── engine::lifecycle
+//! ├── engine::pending_removals
+//! ├── engine::removal
 //! ├── engine::spawn_worker
 //! ├── engine::status_op
 //! ├── engine::test_support
@@ -23,34 +35,45 @@
 //! ├── git
 //! ├── home_path
 //! ├── ids
+//! ├── leftover_folders
 //! ├── logger
 //! ├── model
+//! ├── operations
 //! ├── peer
 //! ├── peer::session_store
 //! ├── poller_status
+//! ├── process_sessions
 //! ├── project_browser
 //! ├── prose
 //! ├── pty
+//! ├── serve_log
 //! ├── startup
 //! ├── status_text
 //! ├── statusline
 //! ├── storage
 //! ├── tab_verdict
+//! ├── term_identity
 //! ├── test_git
 //! ├── wire
 //! ├── worker
 //! ├── working_copy
-//! └── worktree_manager
+//! ├── worktree_manager
+//! └── worktree_ops
 //! External: anyhow, chrono, rusqlite, serde_json, std, tempfile, tracing
 //!
 //! Used by:
 //! engine/events.rs
 //! ├── engine
+//! ├── engine::clone
 //! ├── engine::command
 //! ├── engine::limits
+//! ├── engine::pending_removals
 //! ├── engine::provider_sessions
 //! ├── engine::resume_fallback
-//! └── engine::spawn_worker
+//! ├── engine::review23_tests
+//! ├── engine::spawn_worker
+//! └── engine::worktree_removal_race_tests
+//! ```
 //! <module-headers:end>
 
 use std::time::Instant;

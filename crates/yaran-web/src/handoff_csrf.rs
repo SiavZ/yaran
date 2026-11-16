@@ -9,6 +9,7 @@
 //! - At most 64 pending, oldest evicted; each valid for 10 minutes on the injected clock.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! handoff_csrf.rs
 //! └── yaran-core::cloud::protocol::rules
@@ -19,6 +20,7 @@
 //! ├── cloud_handoff
 //! ├── cloud_ingress
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::collections::VecDeque;

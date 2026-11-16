@@ -5,6 +5,7 @@
 //! plane is ever contacted.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! tests/cloud_machine_api.rs
 //! ├── yaran-core::cloud::credentials
@@ -16,6 +17,7 @@
 //! External: serde_json, std, tempfile
 //!
 //! Used by: entry point (cargo test -p yaran-core --test <name> (integration tests))
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;

@@ -10,7 +10,8 @@
  * Uses:
  * src/sheet.tsx
  * ├── src/button.tsx
- * └── src/cn.ts
+ * ├── src/cn.ts
+ * └── src/use-back-dismiss.ts
  * External: @base-ui/react, lucide-react, react
  *
  * Used by:

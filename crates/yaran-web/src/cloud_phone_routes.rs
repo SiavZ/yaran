@@ -12,6 +12,7 @@
 //! - Read-only and cheap: no remote call, `no-store`; the file read runs off the runtime.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_phone_routes.rs
 //! ├── server
@@ -27,6 +28,7 @@
 //! cloud_phone_routes.rs
 //! ├── crate
 //! └── server
+//! ```
 //! <module-headers:end>
 
 use axum::{

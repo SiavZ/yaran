@@ -8,6 +8,7 @@
 //! - Pure apart from the clock and CSPRNG nonce in `prepare`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/signed_request.rs
 //! ├── cloud::protocol::machine
@@ -20,6 +21,7 @@
 //! cloud/signed_request.rs
 //! ├── cloud
 //! └── cloud::machine_api
+//! ```
 //! <module-headers:end>
 
 use ring::signature::Ed25519KeyPair;

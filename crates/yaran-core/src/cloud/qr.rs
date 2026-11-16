@@ -10,6 +10,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/qr.rs
 //! ├── cloud::protocol::test_fixtures
@@ -23,6 +24,7 @@
 //! ├── yaran-tui::app::cloud_commands
 //! ├── yaran-tui::app::cloud_tests
 //! └── yaran-web::cloud_phone_routes
+//! ```
 //! <module-headers:end>
 
 use qrcode::render::{svg, unicode};

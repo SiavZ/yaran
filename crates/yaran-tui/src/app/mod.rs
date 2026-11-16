@@ -4,9 +4,12 @@
 //! - Runs on the TUI thread and owns the `Engine`, which is `!Send`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/mod.rs
+//! ├── app::attachment_presence
 //! ├── app::background_server
+//! ├── app::changes_tree
 //! ├── app::cloud_commands
 //! ├── app::cloud_crumb
 //! ├── app::cloud_input
@@ -15,9 +18,14 @@
 //! ├── app::cloud_tests
 //! ├── app::components
 //! ├── app::components::focus_ring
+//! ├── app::confirm_dialog
+//! ├── app::debug_input
+//! ├── app::dock
+//! ├── app::ellipsis_rows
 //! ├── app::first_load
 //! ├── app::grouped_sidebar_tests
 //! ├── app::hangup
+//! ├── app::hint_lines
 //! ├── app::human_board
 //! ├── app::human_board_dialog
 //! ├── app::human_board_relay
@@ -25,36 +33,58 @@
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::new_agent_settings
+//! ├── app::no_branch_notice
 //! ├── app::orphan_worktrees
 //! ├── app::overlay_dismiss
+//! ├── app::picker_lists
+//! ├── app::pr_clone
 //! ├── app::presize
+//! ├── app::project_actions
 //! ├── app::pty_ownership
+//! ├── app::pull_requests
 //! ├── app::redraw
 //! ├── app::render
 //! ├── app::reorder
 //! ├── app::session_settings
 //! ├── app::sessions
 //! ├── app::shared_workspace_tests
+//! ├── app::tab_reorder
 //! ├── app::test_support
 //! ├── app::text_input
 //! ├── app::ui_audit_tests
+//! ├── app::ui_jobs
 //! ├── app::workers
 //! ├── app::worktree_manager
 //! ├── clipboard
 //! ├── config
 //! ├── crate
 //! ├── diff
+//! ├── host_keys
+//! ├── key_encode
 //! ├── keybindings
+//! ├── numeric
 //! ├── raw_input
+//! ├── server_screen
 //! ├── theme
+//! ├── yaran-core
 //! ├── yaran-core::agent_search
 //! ├── yaran-core::agent_tabs
+//! ├── yaran-core::attachments
 //! ├── yaran-core::background_serve
+//! ├── yaran-core::base_branch
+//! ├── yaran-core::branch_history
 //! ├── yaran-core::browser
+//! ├── yaran-core::changes_status
+//! ├── yaran-core::clone_project
 //! ├── yaran-core::cloud::leg_outcome
 //! ├── yaran-core::config
+//! ├── yaran-core::config_effective
+//! ├── yaran-core::config_keys
 //! ├── yaran-core::config_queue
 //! ├── yaran-core::config_sync
+//! ├── yaran-core::config_write
+//! ├── yaran-core::control_socket
+//! ├── yaran-core::delete_agent_prose
 //! ├── yaran-core::engine
 //! ├── yaran-core::engine::status_op
 //! ├── yaran-core::first_load
@@ -64,17 +94,26 @@
 //! ├── yaran-core::home_path
 //! ├── yaran-core::human_board
 //! ├── yaran-core::ids
+//! ├── yaran-core::leftover_folders
 //! ├── yaran-core::logger
 //! ├── yaran-core::macros
 //! ├── yaran-core::model
+//! ├── yaran-core::operations
 //! ├── yaran-core::palette
 //! ├── yaran-core::peer
 //! ├── yaran-core::pr_reference
+//! ├── yaran-core::process_sessions
 //! ├── yaran-core::project_browser
+//! ├── yaran-core::prose
+//! ├── yaran-core::pty
+//! ├── yaran-core::pty_owners
 //! ├── yaran-core::quiet_tail
 //! ├── yaran-core::release_notes
 //! ├── yaran-core::reload_handoff
 //! ├── yaran-core::reload_policy
+//! ├── yaran-core::reload_signal
+//! ├── yaran-core::row_state
+//! ├── yaran-core::serve_log
 //! ├── yaran-core::session_settings
 //! ├── yaran-core::sidebar
 //! ├── yaran-core::statusline
@@ -82,22 +121,30 @@
 //! ├── yaran-core::test_git
 //! ├── yaran-core::test_scratch
 //! ├── yaran-core::version
+//! ├── yaran-core::wire
 //! ├── yaran-core::worker
 //! ├── yaran-core::working_copy
 //! └── yaran-core::worktree_manager
-//! External: anyhow, chrono, crossterm, libc, ratatui, signal_hook, std, tempfile, uuid
+//! External: anyhow, chrono, crossterm, libc, ratatui, signal_hook, std, tempfile
 //!
 //! Used by:
 //! app/mod.rs
+//! ├── app::attachment_presence
 //! ├── app::background_server
+//! ├── app::changes_tree
 //! ├── app::cloud_commands
 //! ├── app::cloud_crumb
 //! ├── app::cloud_input
 //! ├── app::cloud_mode
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
+//! ├── app::confirm_dialog
+//! ├── app::debug_input
+//! ├── app::dock
+//! ├── app::ellipsis_rows
 //! ├── app::first_load
 //! ├── app::grouped_sidebar_tests
+//! ├── app::hint_lines
 //! ├── app::human_board
 //! ├── app::human_board::tests
 //! ├── app::human_board_dialog
@@ -106,24 +153,33 @@
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::new_agent_settings
+//! ├── app::no_branch_notice
 //! ├── app::orphan_worktrees
 //! ├── app::overlay_dismiss
+//! ├── app::picker_lists
+//! ├── app::pr_clone
 //! ├── app::presize
+//! ├── app::project_actions
 //! ├── app::pty_ownership
+//! ├── app::pull_requests
 //! ├── app::redraw
 //! ├── app::render
 //! ├── app::reorder
 //! ├── app::session_settings
 //! ├── app::sessions
 //! ├── app::shared_workspace_tests
+//! ├── app::tab_reorder
 //! ├── app::test_support
 //! ├── app::ui_audit_tests
+//! ├── app::ui_jobs
 //! ├── app::workers
 //! ├── app::worktree_manager
 //! ├── clipboard
 //! ├── config_saver
 //! ├── crate
+//! ├── host_keys
 //! └── server_screen
+//! ```
 //! <module-headers:end>
 
 use crate::app::background_server::ReloadListenerChanges;

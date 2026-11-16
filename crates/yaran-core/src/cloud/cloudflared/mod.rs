@@ -8,6 +8,7 @@
 //! - No tokio: everything here runs on std threads owned by `cloud::leg`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/mod.rs
 //! ├── cloud::cloudflared::acquire
@@ -27,6 +28,7 @@
 //! cloud/cloudflared/mod.rs
 //! ├── cloud
 //! └── cloud::leg_start
+//! ```
 //! <module-headers:end>
 
 pub mod acquire;

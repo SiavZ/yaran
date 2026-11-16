@@ -1,6 +1,7 @@
 //! Unit tests for `MachineApi`: transport rules, body cap, revocation, write-backs.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/machine_api_tests.rs
 //! ├── cloud::machine_api
@@ -10,6 +11,7 @@
 //! Used by:
 //! cloud/machine_api_tests.rs
 //! └── cloud::machine_api
+//! ```
 //! <module-headers:end>
 
 use super::*;

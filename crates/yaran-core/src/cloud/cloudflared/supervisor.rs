@@ -8,6 +8,7 @@
 //! - Dropping a `RunningChild` that was never stopped SIGKILLs its group and reaps it.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/supervisor.rs
 //! ├── cloud::cloudflared::child_registry
@@ -22,6 +23,7 @@
 //! ├── cloud::cloudflared
 //! ├── cloud::cloudflared::supervisor::tests
 //! └── cloud::leg_run
+//! ```
 //! <module-headers:end>
 
 use std::io::{BufRead, BufReader, Read};

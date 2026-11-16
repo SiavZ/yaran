@@ -52,6 +52,18 @@ export function expectedBlock(graph, file, entryPoint, annotations) {
 }
 
 /**
+ * A Rust header is rustdoc, which reads the tree's paths (`auth::routes`) as
+ * prose and clippy's `doc_markdown` flags every one; inside a `text` fence it is
+ * shown as written and linted as code. Other languages keep the bare tree.
+ * @param {string[]} block rendered content, BEGIN and END included
+ * @param {string} lang
+ */
+export function fenced(block, lang) {
+  if (lang !== "rust") return block;
+  return [block[0], "```text", ...block.slice(1, -1), "```", block[block.length - 1]];
+}
+
+/**
  * Check (and in write mode, fix) one in-scope file.
  * @param {{ path: string, text: string, lang: string }} f
  * @param {import("./graph.mjs").Graph} graph
@@ -79,7 +91,7 @@ export function checkFile(f, graph, entryPoint, write) {
 
   const present = h !== null && h.begin >= 0;
   const existing = present ? blockContent(lines, /** @type {import("./block.mjs").Header} */ (h)) : null;
-  const expected = expectedBlock(graph, f.path, entryPoint, existing ? parseAnnotations(existing) : undefined);
+  const expected = fenced(expectedBlock(graph, f.path, entryPoint, existing ? parseAnnotations(existing) : undefined), f.lang);
 
   if (!existing) {
     if (write) text = applyBlock(text, f.lang, expected);

@@ -9,6 +9,7 @@
 //! - Destructive verbs confirm on a terminal and require `--yes` elsewhere.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cli/manage.rs
 //! ├── cloud::actions
@@ -21,6 +22,7 @@
 //! Used by:
 //! cloud/cli/manage.rs
 //! └── cloud::cli
+//! ```
 //! <module-headers:end>
 
 use std::io::{BufRead, Write};

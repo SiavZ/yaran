@@ -16,6 +16,7 @@
 //! opt-in.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! background_serve.rs
 //! ├── cloud::config
@@ -27,24 +28,33 @@
 //! ├── ids
 //! ├── logger
 //! ├── pty
-//! └── pty_owners
+//! ├── pty_owners
+//! ├── serve_log
+//! └── wire
 //! External: std
 //!
 //! Used by:
 //! background_serve.rs
+//! ├── attached_prose
+//! ├── attachments
+//! ├── client::server_inspect
 //! ├── crate
 //! ├── device_label
+//! ├── engine::admission
 //! ├── yaran-tui
 //! ├── yaran-tui::app
+//! ├── yaran-tui::app::attachment_presence
 //! ├── yaran-tui::app::background_server
 //! ├── yaran-tui::app::pty_ownership
 //! ├── yaran-tui::app::workers
+//! ├── yaran-web
 //! ├── yaran-web::background
 //! ├── yaran-web::engine_actor
 //! ├── yaran-web::ownership_publish
 //! ├── yaran-web::server
 //! ├── yaran-web[test background_serve_claims]
 //! └── yaran[bin yaran]::companion
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

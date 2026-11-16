@@ -9,6 +9,7 @@
 //! - Pure constants; Phase 11's `AccessRejection::code()` returns these.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/signals.rs
 //! └── cloud::protocol::test_fixtures
@@ -19,6 +20,7 @@
 //! ├── cloud::access_jwt
 //! ├── cloud::protocol
 //! └── yaran-web::cloud_ingress
+//! ```
 //! <module-headers:end>
 
 /// Sent on PTY and events sockets of a cloud-hostname connection at the Access JWT's

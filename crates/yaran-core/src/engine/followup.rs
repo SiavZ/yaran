@@ -24,6 +24,7 @@
 //! for `yaran server` and the flip, which ask before they drive.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! engine/followup.rs
 //! ├── engine
@@ -36,6 +37,7 @@
 //! Used by:
 //! engine/followup.rs
 //! └── engine
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashSet;

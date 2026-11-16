@@ -4,6 +4,7 @@
  * <module-headers:begin>
  * Uses:
  * src/lib/store.ts
+ * ├── @yaran/ui-kit:src/modalHistory.ts
  * ├── @yaran/ui-kit:src/use-mobile.ts
  * ├── src/components/agentStackModel.ts
  * ├── src/lib/agentName.ts
@@ -74,7 +75,7 @@
  * ├── src/lib/workspaceApi.ts
  * ├── src/lib/worktreeDelete.ts
  * └── src/lib/yaranInstance.ts
- * External: @yaran/ui-kit, react
+ * External: react
  *
  * Used by:
  * src/lib/store.ts
@@ -232,6 +233,7 @@
  * ├── src/components/agentStackModel.ts
  * ├── src/components/cloud/CloudDialog.tsx
  * ├── src/components/createAgentDialogView.ts
+ * ├── src/components/dialogBackHistory.test.tsx
  * ├── src/components/insetHeaderView.test.ts
  * ├── src/components/insetHeaderView.ts
  * ├── src/components/paneDividerParity.test.tsx

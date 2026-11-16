@@ -7,6 +7,7 @@
 //!   whatever happens to the tunnel, then the lane, then one sentence with its chips.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_mode_routes.rs
 //! ├── cloud_mode
@@ -25,6 +26,7 @@
 //! cloud_mode_routes.rs
 //! ├── crate
 //! └── server
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

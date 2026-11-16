@@ -1,4 +1,52 @@
 //! The terminal UI's theme engine: every color and style the TUI paints comes from here.
+//!
+//! <module-headers:begin>
+//! ```text
+//! Uses:
+//! theme.rs
+//! ├── config
+//! ├── crate
+//! ├── numeric
+//! ├── yaran-core::theme
+//! └── yaran-core::working_cue
+//! External: anyhow, opaline, ratatui, std, tempfile
+//!
+//! Used by:
+//! theme.rs
+//! ├── app
+//! ├── app::cloud_render
+//! ├── app::cloud_tests
+//! ├── app::components::button
+//! ├── app::components::checkbox
+//! ├── app::components::hint_bar
+//! ├── app::components::name_chip
+//! ├── app::components::picker_list
+//! ├── app::components::scroll_view
+//! ├── app::components::wrap_lines
+//! ├── app::confirm_dialog
+//! ├── app::debug_input
+//! ├── app::dock
+//! ├── app::ellipsis_rows
+//! ├── app::first_load
+//! ├── app::hint_lines
+//! ├── app::human_board_dialog
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::no_branch_notice
+//! ├── app::picker_lists
+//! ├── app::redraw
+//! ├── app::render
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── app::workers
+//! ├── config
+//! ├── config_cli::plaintext_password_and_theme_tests
+//! ├── crate
+//! ├── diff
+//! └── server_screen
+//! ```
+//! <module-headers:end>
 
 use crate::numeric::f32_to_u8_saturating;
 use std::path::Path;

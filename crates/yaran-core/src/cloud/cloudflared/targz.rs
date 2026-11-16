@@ -9,6 +9,7 @@
 //! - Pure over a `Read`/`Write` pair; no filesystem access of its own.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: flate2, std
 //!
@@ -17,6 +18,7 @@
 //! ├── cloud::cloudflared
 //! ├── cloud::cloudflared::acquire
 //! └── cloud::cloudflared::acquire::tests
+//! ```
 //! <module-headers:end>
 
 use std::io::{Read, Write};

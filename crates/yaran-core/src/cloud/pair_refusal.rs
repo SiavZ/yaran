@@ -8,6 +8,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/pair_refusal.rs
 //! └── cloud::protocol::errors
@@ -17,6 +18,7 @@
 //! cloud/pair_refusal.rs
 //! ├── cloud
 //! └── cloud::login
+//! ```
 //! <module-headers:end>
 
 use crate::cloud::protocol::errors::ErrorCode;

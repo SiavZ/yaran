@@ -7,6 +7,7 @@
 //! - A click lands the login's caret, or arms a confirm button that acts on release.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_input.rs
 //! ├── app
@@ -18,6 +19,7 @@
 //! Used by:
 //! app/cloud_input.rs
 //! └── app
+//! ```
 //! <module-headers:end>
 
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};

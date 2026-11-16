@@ -18,6 +18,7 @@
 //! `cfg(windows)` branch here.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! file_modes.rs
 //! └── logger
@@ -25,17 +26,24 @@
 //!
 //! Used by:
 //! file_modes.rs
+//! ├── client::remotes
 //! ├── cloud::cloudflared::acquire
 //! ├── cloud::cloudflared::command
 //! ├── cloud::credentials
 //! ├── cloud::paths
 //! ├── config
 //! ├── config_write
+//! ├── control_socket
 //! ├── crate
 //! ├── logger
 //! ├── private_file
 //! ├── purge
-//! └── storage
+//! ├── storage
+//! ├── web_sessions
+//! ├── yaran-tui
+//! ├── yaran-tui::cli
+//! └── yaran[bin yaran]
+//! ```
 //! <module-headers:end>
 
 use std::fs;

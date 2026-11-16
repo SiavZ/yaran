@@ -10,6 +10,7 @@
 //! - The token file is written before each spawn and removed when the leg ends.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_run.rs
 //! ├── cloud::cloudflared::acquire
@@ -30,6 +31,7 @@
 //! cloud/leg_run.rs
 //! ├── cloud
 //! └── cloud::leg
+//! ```
 //! <module-headers:end>
 
 use std::path::PathBuf;

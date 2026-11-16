@@ -7,6 +7,7 @@
 //! - The browser confirms first (its own dialog); these handlers do not ask again.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_routes_actions.rs
 //! ├── cloud_routes
@@ -21,6 +22,7 @@
 //! Used by:
 //! cloud_routes_actions.rs
 //! └── cloud_routes
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

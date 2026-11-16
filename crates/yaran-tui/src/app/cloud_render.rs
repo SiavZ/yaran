@@ -11,6 +11,7 @@
 //!   rect so a click can land the caret.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_render.rs
 //! ├── app
@@ -19,15 +20,17 @@
 //! ├── app::components::button
 //! ├── app::modal
 //! ├── app::render
+//! ├── theme
 //! ├── yaran-core::cloud::outcome
 //! ├── yaran-core::cloud::status
 //! └── yaran-core::prose
-//! External: none
+//! External: ratatui
 //!
 //! Used by:
 //! app/cloud_render.rs
 //! ├── app
 //! └── app::cloud_tests
+//! ```
 //! <module-headers:end>
 
 use yaran_core::cloud::outcome::CloudActionOutcome;

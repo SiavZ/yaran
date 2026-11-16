@@ -21,6 +21,7 @@
 //! - Blocking I/O: worker or CLI threads only.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/credentials.rs
 //! ├── cloud::credentials::tests
@@ -53,6 +54,7 @@
 //! ├── yaran-web::cloud_ingress
 //! ├── yaran-web::cloud_phone_routes
 //! └── yaran-web::cloud_routes::tests
+//! ```
 //! <module-headers:end>
 
 use std::fmt;

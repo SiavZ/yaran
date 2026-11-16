@@ -12,6 +12,7 @@
 //!   `HandoffPayload`'s Debug output redacts it.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/handoff.rs
 //! ├── cloud::protocol::concat_kdf
@@ -27,6 +28,7 @@
 //! ├── cloud::protocol::uri
 //! ├── yaran-web::cloud_handoff
 //! └── yaran-web::cloud_handoff_request
+//! ```
 //! <module-headers:end>
 
 use std::fmt;

@@ -13,6 +13,7 @@
 //!   is why every spawn happens on the leg's one long-lived supervisor thread).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/command.rs
 //! ├── bounded_command
@@ -26,6 +27,7 @@
 //! ├── cloud::cloudflared::supervisor::tests
 //! ├── cloud::leg_run
 //! └── yaran-web::cloud_loop
+//! ```
 //! <module-headers:end>
 
 use std::ffi::OsString;

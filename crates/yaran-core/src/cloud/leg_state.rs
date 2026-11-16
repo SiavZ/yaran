@@ -8,6 +8,7 @@
 //! - Holds no secret.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_state.rs
 //! ├── cloud::paths
@@ -21,6 +22,7 @@
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_run
 //! └── cloud::status
+//! ```
 //! <module-headers:end>
 
 use std::fs;

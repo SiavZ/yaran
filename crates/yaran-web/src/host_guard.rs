@@ -81,6 +81,7 @@
 //! attacker owns.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! host_guard.rs
 //! ├── auth::provenance
@@ -100,6 +101,7 @@
 //! ├── serve_legs
 //! ├── server
 //! └── yaran-web[test auth_router]
+//! ```
 //! <module-headers:end>
 
 use std::net::IpAddr;

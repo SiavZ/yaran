@@ -8,6 +8,7 @@
 //! - Pure. The parsers live with the app (TS `src/uri.ts`); yaran only builds.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/uri.rs
 //! ├── cloud::protocol::handoff
@@ -21,6 +22,7 @@
 //! ├── cloud::qr
 //! ├── yaran-web::cloud_handoff_request
 //! └── yaran-web::cloud_phone_routes
+//! ```
 //! <module-headers:end>
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};

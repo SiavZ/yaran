@@ -3,6 +3,7 @@
 //! - Test-only (`#[cfg(test)]` child of `cloud::protocol::machine`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/machine_tests.rs
 //! ├── cloud::protocol::machine
@@ -12,6 +13,7 @@
 //! Used by:
 //! cloud/protocol/machine_tests.rs
 //! └── cloud::protocol::machine
+//! ```
 //! <module-headers:end>
 
 use super::*;

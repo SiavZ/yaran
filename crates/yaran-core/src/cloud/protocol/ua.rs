@@ -7,6 +7,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/ua.rs
 //! └── cloud::protocol::test_fixtures
@@ -17,6 +18,7 @@
 //! ├── cloud::protocol
 //! ├── device_label
 //! └── yaran-web::handoff_consent_page
+//! ```
 //! <module-headers:end>
 
 use std::sync::LazyLock;

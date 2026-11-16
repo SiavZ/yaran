@@ -4,6 +4,23 @@
  * element to carry a (transparent) 1px border for `focus-visible:border-ring` to
  * colour; the ring half is a box-shadow, so any ancestor that clips its overflow
  * shears it off and must let it out while the control holds keyboard focus.
+ *
+ * <module-headers:begin>
+ * Uses: none
+ * External: none
+ *
+ * Used by:
+ * src/focusRing.ts
+ * ├── src/button.tsx
+ * ├── web:src/components/ChangeBaseBranchDialog.tsx
+ * ├── web:src/components/ChangedFiles.tsx
+ * ├── web:src/components/EditorBody.tsx
+ * ├── web:src/components/FlatAgentList.tsx
+ * ├── web:src/components/MacroPopover.tsx
+ * ├── web:src/components/NewLauncherDialog.tsx
+ * ├── web:src/components/ProjectList.tsx
+ * └── web:src/components/StackNewDialog.tsx
+ * <module-headers:end>
  */
 export const FOCUS_RING =
   "outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"

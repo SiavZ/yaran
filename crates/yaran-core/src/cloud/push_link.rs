@@ -11,6 +11,7 @@
 //! - Server text is sanitized and truncated by `MachineApi` and again in `describe`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/push_link.rs
 //! ├── cloud::credentials
@@ -31,6 +32,7 @@
 //! ├── cloud::push_runner
 //! ├── engine::push_hook
 //! └── yaran-core[test cloud_push_emitter]
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

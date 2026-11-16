@@ -12,6 +12,7 @@
 //!   for `yaran server`, and fires `cloud.changed` on every view change.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_loop.rs
 //! ├── cloud_ingress
@@ -36,6 +37,7 @@
 //! cloud_loop.rs
 //! ├── cloud_loop::live_cloud_mode_tests
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

@@ -6,15 +6,21 @@
 //! the toml_edit patching, live in the binary's `config` module, not here.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! config.rs
 //! ├── amq::config
+//! ├── auth
 //! ├── brand_env
+//! ├── client::remotes
 //! ├── cloud::config
+//! ├── config_auth
+//! ├── config_effective
+//! ├── config_keys
 //! ├── config_migrate
+//! ├── config_sync
 //! ├── config_write
 //! ├── crate
-//! ├── editor
 //! ├── file_drop
 //! ├── file_modes
 //! ├── human_board
@@ -24,23 +30,35 @@
 //! ├── status_text
 //! ├── theme
 //! └── watch
-//! External: anyhow, home, indexmap, libc, rustix, serde, std, tempfile, toml, toml_edit, uuid
+//! External: anyhow, home, indexmap, libc, rustix, serde, serde_json, std, tempfile, toml, toml_edit, uuid
 //!
 //! Used by:
 //! config.rs
+//! ├── activity
 //! ├── agent_env
 //! ├── agent_job
 //! ├── amq::config
+//! ├── attachments
 //! ├── auto_resume
 //! ├── background_serve
+//! ├── client::config_resources
+//! ├── client::server_inspect
+//! ├── client::wait
 //! ├── cloud::cli
 //! ├── cloud::leg_identity
 //! ├── cloud::paths
+//! ├── config_auth
+//! ├── config_effective
+//! ├── config_keys
 //! ├── config_migrate
 //! ├── config_queue
+//! ├── config_queue::three_way_save_regressions
+//! ├── config_resources
 //! ├── config_sync
 //! ├── config_write
+//! ├── control_socket
 //! ├── crate
+//! ├── destructive
 //! ├── engine
 //! ├── engine::amq
 //! ├── engine::command
@@ -52,16 +70,22 @@
 //! ├── engine::provider_sessions
 //! ├── engine::push_hook
 //! ├── engine::push_hook::tests
+//! ├── engine::removal
 //! ├── engine::resume_fallback
+//! ├── engine::review10_tests
+//! ├── engine::review8_tests
 //! ├── engine::shared_workspace
 //! ├── engine::test_support
 //! ├── engine::watch_tick
+//! ├── engine::worktree_removal_race_tests
 //! ├── file_drop
 //! ├── git
 //! ├── human_board::cli
 //! ├── human_board::settings
+//! ├── leftover_folders
 //! ├── logger
 //! ├── macros
+//! ├── operations
 //! ├── orphan_worktrees
 //! ├── peer::amq
 //! ├── peer::router
@@ -71,6 +95,7 @@
 //! ├── purge
 //! ├── purge_amq
 //! ├── resume_recovery
+//! ├── route_checks
 //! ├── startup
 //! ├── storage
 //! ├── tailscale
@@ -81,9 +106,30 @@
 //! ├── wire
 //! ├── worker
 //! ├── worktree_manager
+//! ├── yaran-core[test a_deprecated_setting_survives_an_unrelated_save]
+//! ├── yaran-core[test a_hand_deleted_deprecated_key_stays_deleted]
+//! ├── yaran-core[test a_hand_fix_survives_an_unrelated_save]
+//! ├── yaran-core[test a_load_logs_its_recovery_once]
+//! ├── yaran-core[test a_misplaced_password_hash_never_starts_without_a_password]
+//! ├── yaran-core[test a_save_lands_beside_a_hand_broken_auth_section]
+//! ├── yaran-core[test a_token_pasted_as_a_keys_name_is_never_printed]
+//! ├── yaran-core[test a_token_pasted_as_a_name_never_reaches_the_log]
+//! ├── yaran-core[test auth_in_named_map_arrays]
+//! ├── yaran-core[test auth_settings_in_any_shape]
 //! ├── yaran-core[test auto_resume]
+//! ├── yaran-core[test get_reports_what_yaran_server_uses_after_recovery]
 //! ├── yaran-core[test logger_jsonlines]
+//! ├── yaran-core[test misplaced_auth_settings]
+//! ├── yaran-core[test names_never_printed]
+//! ├── yaran-core[test names_never_reach_the_log]
+//! ├── yaran-core[test plaintext_password_and_projects_table]
+//! ├── yaran-core[test project_sync_conflict_names_projects_by_line]
 //! ├── yaran-core[test purge_integration]
+//! ├── yaran-core[test set_attribution_by_segments]
+//! ├── yaran-core[test set_not_blocked_by_an_entry_already_reset]
+//! ├── yaran-core[test set_of_a_value_the_load_corrects]
+//! ├── yaran-core[test start_refusals_never_quote_a_user_named_key]
+//! ├── yaran-core[test unrelated_tables_never_stop_a_start]
 //! ├── yaran-core[test upgrade_config]
 //! ├── yaran-core[test upgrade_database]
 //! ├── yaran-tui::app
@@ -91,37 +137,59 @@
 //! ├── yaran-tui::app::cloud_tests
 //! ├── yaran-tui::app::human_board
 //! ├── yaran-tui::app::input
+//! ├── yaran-tui::app::picker_lists
 //! ├── yaran-tui::app::pty_ownership
 //! ├── yaran-tui::app::render
 //! ├── yaran-tui::app::sessions
 //! ├── yaran-tui::app::shared_workspace_tests
 //! ├── yaran-tui::app::test_support
 //! ├── yaran-tui::app::workers
+//! ├── yaran-tui::cli
 //! ├── yaran-tui::config
 //! ├── yaran-tui::config::config_schema_cloud
+//! ├── yaran-tui::config::inline_section_start_tests
+//! ├── yaran-tui::config::start_corpus_tests
+//! ├── yaran-tui::config_cli
+//! ├── yaran-tui::config_cli::appended_password_tests
+//! ├── yaran-tui::config_cli::dotted_names_migrations_and_providers_tests
+//! ├── yaran-tui::config_cli::effective_values_and_array_names_tests
+//! ├── yaran-tui::config_cli::get_keys_and_effective_tables_tests
+//! ├── yaran-tui::config_cli::names_never_printed_property_tests
+//! ├── yaran-tui::config_cli::set_get_policy_projects_paths_tests
+//! ├── yaran-tui::config_cli::sets_over_the_start_corpus_tests
 //! ├── yaran-tui::config_saver
 //! ├── yaran-tui::doctor
+//! ├── yaran-tui::host_keys
 //! ├── yaran-tui::keybindings
 //! ├── yaran-tui::server_screen
 //! ├── yaran-web
+//! ├── yaran-web::auth
+//! ├── yaran-web::auth::admission
+//! ├── yaran-web::auth::cookie
+//! ├── yaran-web::auth::routes
 //! ├── yaran-web::background
 //! ├── yaran-web::bootstrap
 //! ├── yaran-web::browse_routes
 //! ├── yaran-web::changes
+//! ├── yaran-web::cloud_auth_bridge_tests
 //! ├── yaran-web::cloud_loop
 //! ├── yaran-web::config_routes
+//! ├── yaran-web::console
 //! ├── yaran-web::engine_actor
 //! ├── yaran-web::file_drop_routes
 //! ├── yaran-web::file_routes
 //! ├── yaran-web::git_routes
+//! ├── yaran-web::host_guard
 //! ├── yaran-web::project_actions
-//! ├── yaran-web::project_reads
+//! ├── yaran-web::reload_signal
 //! ├── yaran-web::serve_legs
 //! ├── yaran-web::server
+//! ├── yaran-web::server_inspect_routes
 //! ├── yaran-web::session_actions
 //! ├── yaran-web::startup_logs
 //! ├── yaran-web::test_support
 //! ├── yaran-web[test add_project_base_branch]
+//! ├── yaran-web[test auth_router]
 //! ├── yaran-web[test background_serve_claims]
 //! ├── yaran-web[test changes_events]
 //! ├── yaran-web[test file_move_and_info_routes]
@@ -131,18 +199,28 @@
 //! ├── yaran-web[test missing_working_copy]
 //! ├── yaran-web[test project_worktrees_routes]
 //! ├── yaran-web[test pull_request_resolution]
+//! ├── yaran-web[test races_review2_editor_hold]
+//! ├── yaran-web[test races_review5_editor_delete]
+//! ├── yaran-web[test review11_symlink_folder]
+//! ├── yaran-web[test review9_nested_destructive]
 //! ├── yaran-web[test serve_with_engine]
 //! ├── yaran-web[test session_branch_routes]
+//! ├── yaran-web[test start_corpus]
 //! ├── yaran-web[test static_serving]
 //! ├── yaran-web[test tab_routes]
 //! ├── yaran-web[test terminal_file_routes]
 //! ├── yaran-web[test workspace_push]
 //! ├── yaran-web[test ws_transport]
+//! ├── yaran-web[test yaran_server_control_socket]
 //! ├── yaran[bin yaran]
+//! ├── yaran[bin yaran]::client_commands
+//! ├── yaran[bin yaran]::commands
 //! ├── yaran[bin yaran]::companion
+//! ├── yaran[test config_resources]::support
 //! ├── yaran[test jcode_doubleclick_acceptance]
 //! ├── yaran[test jcode_mouse_acceptance]
 //! └── yaran[test overlay_config]
+//! ```
 //! <module-headers:end>
 
 use std::collections::BTreeMap;

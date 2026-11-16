@@ -5,6 +5,7 @@
 //!   `seed_signaling_provider`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! engine/push_hook_tests.rs
 //! ├── cloud::protocol
@@ -24,6 +25,7 @@
 //! Used by:
 //! engine/push_hook_tests.rs
 //! └── engine::push_hook
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashSet;

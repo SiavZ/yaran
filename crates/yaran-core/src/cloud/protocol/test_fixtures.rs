@@ -7,6 +7,7 @@
 //! - Compiled only under `cfg(test)`; panics on a missing or malformed fixture.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/test_fixtures.rs
 //! └── cloud::protocol::rules
@@ -34,6 +35,7 @@
 //! ├── cloud::protocol::uri
 //! ├── cloud::qr
 //! └── cloud::signed_request
+//! ```
 //! <module-headers:end>
 
 use std::path::{Path, PathBuf};

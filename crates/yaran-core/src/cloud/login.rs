@@ -15,6 +15,7 @@
 //! - The listener lives only for the duration of the call (RFC 8252 §8.3).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/login.rs
 //! ├── cloud::credentials
@@ -42,6 +43,7 @@
 //! ├── yaran-core[test cloud_login]
 //! ├── yaran-tui::app::cloud_commands
 //! └── yaran-web::cloud_routes
+//! ```
 //! <module-headers:end>
 
 use std::sync::mpsc::{Receiver, TryRecvError};

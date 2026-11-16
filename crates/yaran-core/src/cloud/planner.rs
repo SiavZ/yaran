@@ -8,6 +8,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/planner.rs
 //! └── cloud::leg_identity
@@ -17,6 +18,7 @@
 //! cloud/planner.rs
 //! ├── cloud
 //! └── yaran-web::cloud_loop
+//! ```
 //! <module-headers:end>
 
 use super::leg_identity::CloudMode;

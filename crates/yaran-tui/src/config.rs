@@ -1,4 +1,77 @@
 //! The canonical, fully commented `config.toml` renderer and the TUI's config load/save orchestration.
+//!
+//! <module-headers:begin>
+//! ```text
+//! Uses:
+//! config.rs
+//! ├── config::config_schema_cloud
+//! ├── config::inline_section_start_tests
+//! ├── config::start_corpus_tests
+//! ├── crate
+//! ├── keybindings
+//! ├── numeric
+//! ├── theme
+//! ├── yaran-core::auth
+//! ├── yaran-core::config
+//! ├── yaran-core::config_effective
+//! ├── yaran-core::config_migrate
+//! ├── yaran-core::config_write
+//! ├── yaran-core::logger
+//! ├── yaran-core::start_check_fixtures
+//! └── yaran-core::watch
+//! External: anyhow, crokey, crossterm, indexmap, serde_json, std, tempfile, toml, toml_edit
+//!
+//! Used by:
+//! config.rs
+//! ├── app
+//! ├── app::confirm_dialog
+//! ├── app::ellipsis_rows
+//! ├── app::grouped_sidebar_tests
+//! ├── app::hint_lines
+//! ├── app::human_board::tests
+//! ├── app::input
+//! ├── app::modal
+//! ├── app::name_chip_dialogs
+//! ├── app::overlay_dismiss
+//! ├── app::picker_lists
+//! ├── app::pty_ownership
+//! ├── app::pull_requests
+//! ├── app::render
+//! ├── app::sessions
+//! ├── app::test_support
+//! ├── app::workers
+//! ├── cli
+//! ├── cli::plaintext_shape_preview_tests
+//! ├── cli::preview_leak_tests
+//! ├── config::config_schema_cloud
+//! ├── config::inline_section_start_tests
+//! ├── config::start_corpus_tests
+//! ├── config_cli
+//! ├── config_cli::appended_password_tests
+//! ├── config_cli::dotted_names_migrations_and_providers_tests
+//! ├── config_cli::effective_tables_and_secret_arguments_tests
+//! ├── config_cli::effective_values_and_array_names_tests
+//! ├── config_cli::get_keys_and_effective_tables_tests
+//! ├── config_cli::get_names_every_setting_in_use_tests
+//! ├── config_cli::get_never_prints_unknown_names_tests
+//! ├── config_cli::get_sources_and_refusing_surfaces_tests
+//! ├── config_cli::hidden_values_tests
+//! ├── config_cli::names_never_printed_property_tests
+//! ├── config_cli::names_under_unknown_keys_tests
+//! ├── config_cli::password_control_characters_tests
+//! ├── config_cli::plaintext_password_and_theme_tests
+//! ├── config_cli::plaintext_shape_get_tests
+//! ├── config_cli::restore_report_and_unknown_path_tests
+//! ├── config_cli::set_get_policy_projects_paths_tests
+//! ├── config_cli::sets_over_the_start_corpus_tests
+//! ├── config_cli::source_markers_and_path_echo_tests
+//! ├── config_cli::stdin_limits_tests
+//! ├── config_saver
+//! ├── crate
+//! ├── keybindings
+//! └── theme
+//! ```
+//! <module-headers:end>
 
 use crate::numeric::u32_to_usize;
 use crate::numeric::u64_to_usize;

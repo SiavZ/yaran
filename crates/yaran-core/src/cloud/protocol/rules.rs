@@ -10,6 +10,7 @@
 //! - Lengths count characters (code points), as JSON Schema does, never bytes.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/rules.rs
 //! └── cloud::protocol::test_fixtures
@@ -50,6 +51,7 @@
 //! ├── yaran-web::cloud_test_support
 //! ├── yaran-web::handoff_consent_page
 //! └── yaran-web::handoff_csrf
+//! ```
 //! <module-headers:end>
 
 use std::fmt;

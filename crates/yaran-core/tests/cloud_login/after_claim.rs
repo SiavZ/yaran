@@ -4,6 +4,7 @@
 //! - Test-only child of the cloud_login integration suite.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! tests/cloud_login/after_claim.rs
 //! └── crate
@@ -12,6 +13,7 @@
 //! Used by:
 //! tests/cloud_login/after_claim.rs
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use super::*;

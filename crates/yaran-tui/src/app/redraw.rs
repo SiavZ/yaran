@@ -9,13 +9,16 @@
 //! status line, or the once-a-second backstop.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/redraw.rs
 //! ├── app
 //! ├── app::background_server
 //! ├── app::pty_ownership
 //! ├── app::test_support
+//! ├── app::text_input
 //! ├── crate
+//! ├── numeric
 //! ├── theme
 //! ├── yaran-core::statusline
 //! └── yaran-core::working_cue
@@ -23,7 +26,9 @@
 //!
 //! Used by:
 //! app/redraw.rs
-//! └── app
+//! ├── app
+//! └── app::sessions
+//! ```
 //! <module-headers:end>
 
 use super::{App, CenterMode, CenterPart, FullscreenOverlay, PromptState, attention_blink_phase};

@@ -14,6 +14,7 @@
 //! hijacked browser tab.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! server.rs
 //! ├── auth
@@ -48,6 +49,7 @@
 //! ├── operation_routes
 //! ├── origin_match
 //! ├── ownership_publish
+//! ├── peer_routes
 //! ├── project_actions
 //! ├── project_reads
 //! ├── pty_log
@@ -104,6 +106,7 @@
 //! ├── git_routes
 //! ├── operation_routes
 //! ├── ownership_publish
+//! ├── peer_routes
 //! ├── project_actions
 //! ├── project_reads
 //! ├── resource_routes
@@ -135,6 +138,7 @@
 //! ├── yaran-web[test terminal_file_routes]
 //! ├── yaran-web[test workspace_push]
 //! └── yaran-web[test ws_transport]
+//! ```
 //! <module-headers:end>
 
 use std::net::{IpAddr, SocketAddr};

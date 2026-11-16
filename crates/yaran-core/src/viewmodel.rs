@@ -4,28 +4,34 @@
 //! view; it never deserializes.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! viewmodel.rs
+//! ├── bidi
 //! ├── cloud::leg_identity
 //! ├── cloud::view
 //! ├── config
+//! ├── config_effective
 //! ├── crate
 //! ├── engine
+//! ├── engine::pull_requests
 //! ├── engine::test_support
+//! ├── gh
 //! ├── git
 //! ├── home_path
 //! ├── ids
 //! ├── logger
 //! ├── model
+//! ├── pr_list
 //! ├── pty
 //! ├── release_notes
 //! ├── sidebar
-//! ├── storage
 //! ├── tab_verdict
 //! ├── test_scratch
 //! ├── urls
 //! ├── welcome
 //! ├── welcome_screen
+//! ├── wire
 //! ├── worker
 //! └── working_copy
 //! External: chrono, serde, serde_json, std, tempfile
@@ -33,12 +39,20 @@
 //! Used by:
 //! viewmodel.rs
 //! ├── crate
+//! ├── engine
+//! ├── engine::lifecycle
+//! ├── engine::pull_requests
+//! ├── operations
+//! ├── wire
+//! ├── yaran-tui::app::pull_requests
 //! ├── yaran-web::changes
 //! ├── yaran-web::changes_routes
 //! ├── yaran-web::engine_actor
 //! ├── yaran-web::first_load_routes
 //! ├── yaran-web::resource_routes
+//! ├── yaran-web::session_actions
 //! └── yaran-web::workspace_routes
+//! ```
 //! <module-headers:end>
 
 use serde::Serialize;

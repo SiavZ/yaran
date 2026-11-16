@@ -3,6 +3,7 @@
 //! - Test-only; downloads only from 127.0.0.1.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/acquire_tests.rs
 //! ├── cloud::cloudflared::acquire
@@ -14,6 +15,7 @@
 //! Used by:
 //! cloud/cloudflared/acquire_tests.rs
 //! └── cloud::cloudflared::acquire
+//! ```
 //! <module-headers:end>
 
 use super::*;

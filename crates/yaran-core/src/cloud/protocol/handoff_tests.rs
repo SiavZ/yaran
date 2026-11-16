@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]` child of `cloud::protocol::handoff`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/handoff_tests.rs
 //! ├── cloud::protocol::concat_kdf
@@ -15,6 +16,7 @@
 //! Used by:
 //! cloud/protocol/handoff_tests.rs
 //! └── cloud::protocol::handoff
+//! ```
 //! <module-headers:end>
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};

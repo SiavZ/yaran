@@ -6,6 +6,23 @@
 //! - It holds only for a loopback-to-loopback arrival (cloudflared dialing the
 //!   loopback primary) with no Funnel marker, never for a header.
 //! - Access refusals, the blocklist and a broken `[server.auth]` still apply.
+//!
+//! <module-headers:begin>
+//! ```text
+//! Uses:
+//! cloud_auth_bridge_tests.rs
+//! ├── auth
+//! ├── cloud_jwks_cache
+//! ├── cloud_test_support
+//! ├── yaran-core::auth
+//! └── yaran-core::config
+//! External: axum, serde_json, std, tokio
+//!
+//! Used by:
+//! cloud_auth_bridge_tests.rs
+//! └── crate
+//! ```
+//! <module-headers:end>
 
 use std::net::SocketAddr;
 use std::time::Duration;

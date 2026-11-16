@@ -10,6 +10,7 @@
 //! - An unparseable answer fails closed, the same as a too-old one.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/version.rs
 //! ├── bounded_command
@@ -23,6 +24,7 @@
 //! ├── cloud::cloudflared
 //! ├── cloud::cloudflared::acquire
 //! └── cloud::leg_start
+//! ```
 //! <module-headers:end>
 
 use std::path::Path;

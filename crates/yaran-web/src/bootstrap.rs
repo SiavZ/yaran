@@ -3,6 +3,7 @@
 //! file) and a `WebConfigSurface`. Sessions and projects come from SQLite.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! bootstrap.rs
 //! ├── yaran-core::attachments
@@ -57,6 +58,7 @@
 //! ├── yaran-web[test terminal_file_routes]
 //! ├── yaran-web[test workspace_push]
 //! └── yaran-web[test ws_transport]
+//! ```
 //! <module-headers:end>
 
 use std::collections::{HashMap, HashSet};

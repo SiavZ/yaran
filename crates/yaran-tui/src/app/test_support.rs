@@ -6,22 +6,33 @@
 //! in `mod.rs`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/test_support.rs
 //! ├── app
+//! ├── app::background_server
+//! ├── app::debug_input
 //! ├── app::human_board
+//! ├── app::ui_jobs
 //! ├── clipboard
 //! ├── config
 //! ├── crate
 //! ├── diff
+//! ├── host_keys
 //! ├── keybindings
 //! ├── raw_input
 //! ├── theme
+//! ├── yaran-core::attachments
+//! ├── yaran-core::changes_status
+//! ├── yaran-core::clone_project
 //! ├── yaran-core::config
 //! ├── yaran-core::config_queue
 //! ├── yaran-core::engine
 //! ├── yaran-core::ids
 //! ├── yaran-core::model
+//! ├── yaran-core::operations
+//! ├── yaran-core::process_sessions
+//! ├── yaran-core::pty
 //! ├── yaran-core::term_identity
 //! ├── yaran-core::test_git
 //! └── yaran-core::test_provider
@@ -30,12 +41,19 @@
 //! Used by:
 //! app/test_support.rs
 //! ├── app
+//! ├── app::attachment_presence
 //! ├── app::background_server
+//! ├── app::changes_tree
 //! ├── app::cloud_crumb
 //! ├── app::cloud_mode
 //! ├── app::cloud_tests
+//! ├── app::confirm_dialog
+//! ├── app::debug_input
+//! ├── app::dock
+//! ├── app::ellipsis_rows
 //! ├── app::first_load
 //! ├── app::grouped_sidebar_tests
+//! ├── app::hint_lines
 //! ├── app::human_board::tests
 //! ├── app::input
 //! ├── app::input::host_click_regression_tests
@@ -43,18 +61,25 @@
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
 //! ├── app::new_agent_settings
+//! ├── app::no_branch_notice
 //! ├── app::orphan_worktrees
 //! ├── app::overlay_dismiss
+//! ├── app::picker_lists
 //! ├── app::presize
+//! ├── app::project_actions
 //! ├── app::pty_ownership
+//! ├── app::pull_requests
 //! ├── app::redraw
 //! ├── app::render
 //! ├── app::session_settings
 //! ├── app::sessions
 //! ├── app::shared_workspace_tests
+//! ├── app::tab_reorder
 //! ├── app::ui_audit_tests
+//! ├── app::ui_jobs
 //! ├── app::workers
 //! └── app::worktree_manager
+//! ```
 //! <module-headers:end>
 
 use crate::app::ChangesTreeState;

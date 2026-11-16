@@ -10,7 +10,8 @@
  * Uses:
  * src/dialog.tsx
  * ├── src/button.tsx
- * └── src/cn.ts
+ * ├── src/cn.ts
+ * └── src/use-back-dismiss.ts
  * External: @base-ui/react, lucide-react, react
  *
  * Used by:
@@ -80,6 +81,7 @@
  * ├── web:src/components/cloud/CloudDialog.tsx
  * ├── web:src/components/cloud/CloudLogoutDialog.tsx
  * ├── web:src/components/cloud/CloudRotateDialog.tsx
+ * ├── web:src/components/dialogBackHistory.test.tsx
  * ├── web:src/components/ui/command.tsx
  * └── web:src/lib/uiKitSingleReact.test.tsx
  * <module-headers:end>

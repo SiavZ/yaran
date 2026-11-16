@@ -5,6 +5,7 @@
 //! overrides, and the labels the help overlay and hint bars print.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! keybindings.rs
 //! ├── config
@@ -18,16 +19,32 @@
 //! Used by:
 //! keybindings.rs
 //! ├── app
+//! ├── app::background_server
+//! ├── app::changes_tree
+//! ├── app::confirm_dialog
+//! ├── app::debug_input
+//! ├── app::dock
+//! ├── app::first_load
+//! ├── app::hint_lines
 //! ├── app::input
 //! ├── app::modal
+//! ├── app::pr_clone
+//! ├── app::project_actions
+//! ├── app::pty_ownership
+//! ├── app::pull_requests
 //! ├── app::render
 //! ├── app::session_settings
 //! ├── app::sessions
 //! ├── app::test_support
+//! ├── app::workers
 //! ├── cli
 //! ├── config
+//! ├── config_cli::get_keys_and_effective_tables_tests
 //! ├── config_saver
-//! └── crate
+//! ├── crate
+//! ├── key_encode
+//! └── server_screen
+//! ```
 //! <module-headers:end>
 
 use crokey::{KeyCombination, KeyCombinationFormat, key};

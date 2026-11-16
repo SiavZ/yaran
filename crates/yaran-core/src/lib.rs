@@ -4,6 +4,7 @@
 //! crate. Surfaces (TUI, web) depend on `yaran-core`, never the reverse.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! lib.rs
 //! ├── action
@@ -16,26 +17,45 @@
 //! ├── agent_tabs
 //! ├── amq
 //! ├── atomic_update
+//! ├── attached_prose
+//! ├── attachments
 //! ├── attention
+//! ├── auth
 //! ├── auto_resume
 //! ├── background_serve
+//! ├── base_branch
 //! ├── bidi
 //! ├── bounded_command
+//! ├── branch_history
 //! ├── brand_env
 //! ├── browser
+//! ├── changes_lane
 //! ├── changes_status
+//! ├── checkout_move
+//! ├── client
+//! ├── clone_project
 //! ├── cloud
 //! ├── config
+//! ├── config_auth
+//! ├── config_effective
+//! ├── config_keys
 //! ├── config_migrate
 //! ├── config_queue
 //! ├── config_reload_status
+//! ├── config_resources
 //! ├── config_sync
 //! ├── config_write
+//! ├── container
+//! ├── control_socket
+//! ├── delete_agent_prose
+//! ├── destructive
 //! ├── device_label
 //! ├── diff
+//! ├── duration_text
 //! ├── editor
 //! ├── engine
 //! ├── file_drop
+//! ├── file_follow
 //! ├── file_modes
 //! ├── first_load
 //! ├── flat_list
@@ -47,16 +67,21 @@
 //! ├── human_board
 //! ├── ids
 //! ├── io_retry
+//! ├── leftover_folders
 //! ├── lockfile
 //! ├── logger
 //! ├── macros
 //! ├── model
+//! ├── numeric
+//! ├── operations
 //! ├── orphan_worktrees
 //! ├── palette
 //! ├── peer
 //! ├── poller_status
+//! ├── pr_list
 //! ├── pr_reference
 //! ├── private_file
+//! ├── process_sessions
 //! ├── project_browser
 //! ├── project_order
 //! ├── project_prose
@@ -69,19 +94,25 @@
 //! ├── purge
 //! ├── purge_amq
 //! ├── purge_encoding
+//! ├── qr
 //! ├── quiet_tail
 //! ├── release_notes
 //! ├── reload_handoff
 //! ├── reload_policy
+//! ├── reload_signal
 //! ├── resource_stats
 //! ├── resume_recovery
+//! ├── review27_tests
+//! ├── route_checks
 //! ├── row_state
 //! ├── sanitize
 //! ├── scroll_hint
 //! ├── scroll_margins
+//! ├── serve_log
 //! ├── session_settings
 //! ├── shell_quote
 //! ├── sidebar
+//! ├── start_check_fixtures
 //! ├── startup
 //! ├── status_text
 //! ├── statusline
@@ -94,11 +125,13 @@
 //! ├── test_provider
 //! ├── test_scratch
 //! ├── text
+//! ├── text_encoding
 //! ├── theme
 //! ├── urls
 //! ├── version
 //! ├── viewmodel
 //! ├── watch
+//! ├── web_sessions
 //! ├── welcome
 //! ├── welcome_screen
 //! ├── wire
@@ -106,21 +139,25 @@
 //! ├── working_copy
 //! ├── working_cue
 //! ├── worktree_file
-//! └── worktree_manager
+//! ├── worktree_manager
+//! └── worktree_ops
 //! External: std
 //!
 //! Used by:
 //! lib.rs
 //! ├── brand_env
 //! ├── config
-//! ├── startup
 //! ├── viewmodel
+//! ├── yaran-tui::app
 //! ├── yaran-tui::app::first_load
+//! ├── yaran-web
+//! ├── yaran-web::background
 //! ├── yaran-web::build_routes
 //! ├── yaran-web::engine_actor
 //! ├── yaran-web::first_load_routes
 //! ├── yaran-web[test first_load_routes]
 //! └── yaran[bin yaran]
+//! ```
 //! <module-headers:end>
 
 pub mod action;

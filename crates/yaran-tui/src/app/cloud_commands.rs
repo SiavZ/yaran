@@ -13,6 +13,7 @@
 //! - Escape on a running login cancels it, which also closes its loopback listener.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_commands.rs
 //! ├── app
@@ -39,6 +40,7 @@
 //! ├── app::cloud_tests
 //! ├── app::modal
 //! └── app::overlay_dismiss
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;

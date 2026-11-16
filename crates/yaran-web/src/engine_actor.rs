@@ -6,6 +6,7 @@
 //! the coarse spine-change, status and commit signals.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! engine_actor.rs
 //! ├── auth
@@ -109,6 +110,7 @@
 //! ├── yaran-web[test terminal_file_routes]
 //! ├── yaran-web[test workspace_push]
 //! └── yaran-web[test ws_transport]
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

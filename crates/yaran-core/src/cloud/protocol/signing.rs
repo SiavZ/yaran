@@ -10,6 +10,7 @@
 //!   owner-only credentials file (PKCS#8 v2 from `generate_pkcs8`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/signing.rs
 //! ├── cloud::protocol::rules
@@ -23,6 +24,7 @@
 //! ├── cloud::signed_request
 //! ├── cloud::test_support
 //! └── yaran-core[test cloud_push_emitter]::mock_worker
+//! ```
 //! <module-headers:end>
 
 use std::fmt;

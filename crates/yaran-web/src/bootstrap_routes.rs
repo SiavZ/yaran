@@ -8,6 +8,7 @@
 //!   real (always non-empty) payload.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! bootstrap_routes.rs
 //! ├── serve_legs
@@ -18,6 +19,7 @@
 //! bootstrap_routes.rs
 //! ├── crate
 //! └── server
+//! ```
 //! <module-headers:end>
 
 use axum::{

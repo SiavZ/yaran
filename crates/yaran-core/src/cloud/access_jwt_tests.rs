@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]` child of `cloud::access_jwt`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/access_jwt_tests.rs
 //! ├── cloud::access_jwks
@@ -14,6 +15,7 @@
 //! Used by:
 //! cloud/access_jwt_tests.rs
 //! └── cloud::access_jwt
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashSet;

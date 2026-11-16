@@ -9,6 +9,7 @@
 //!   threads only.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/status.rs
 //! ├── cloud::config
@@ -27,6 +28,7 @@
 //! ├── yaran-tui::app::cloud_render
 //! ├── yaran-tui::app::cloud_tests
 //! └── yaran-web::cloud_routes
+//! ```
 //! <module-headers:end>
 
 use serde::Serialize;

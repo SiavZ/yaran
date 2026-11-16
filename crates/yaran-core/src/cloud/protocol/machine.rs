@@ -9,6 +9,7 @@
 //!   (D5); Phase 09 writes them to the owner-only credentials file.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/machine.rs
 //! ├── cloud::protocol::machine::tests
@@ -39,6 +40,7 @@
 //! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-core[test cloud_push_emitter]::mock_worker
 //! └── yaran-web::cloud_loop::live_cloud_mode_tests
+//! ```
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};

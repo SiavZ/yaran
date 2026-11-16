@@ -12,6 +12,7 @@
 //! - Pure: the caller supplies the keys and the clock.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/access_jwt.rs
 //! ├── cloud::access_jwks
@@ -24,9 +25,12 @@
 //! cloud/access_jwt.rs
 //! ├── cloud
 //! ├── cloud::access_jwt::tests
+//! ├── yaran-web::auth::middleware
+//! ├── yaran-web::auth::provenance
 //! ├── yaran-web::cloud_handoff
 //! ├── yaran-web::cloud_ingress
 //! └── yaran-web::cloud_ingress_tests
+//! ```
 //! <module-headers:end>
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

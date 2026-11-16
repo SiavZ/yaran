@@ -17,6 +17,7 @@
 //! runs `cargo tree -p yaran-web` and fails if any TUI-only crate appears.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! lib.rs
 //! ├── auth
@@ -28,6 +29,7 @@
 //! ├── build_routes
 //! ├── changes
 //! ├── changes_routes
+//! ├── cloud_auth_bridge_tests
 //! ├── cloud_consent_tests
 //! ├── cloud_handoff
 //! ├── cloud_handoff_request
@@ -59,6 +61,7 @@
 //! ├── operation_routes
 //! ├── origin_match
 //! ├── ownership_publish
+//! ├── peer_routes
 //! ├── project_actions
 //! ├── project_reads
 //! ├── pty_log
@@ -111,6 +114,7 @@
 //! ├── yaran-web[test yaran_server_control_socket]
 //! ├── yaran[bin yaran]
 //! └── yaran[test config_resources]::support
+//! ```
 //! <module-headers:end>
 
 pub mod auth;

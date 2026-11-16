@@ -6,6 +6,7 @@
 //!   `state` pass, the only possible answer is a 400; nothing is redirected to.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_handoff_request.rs
 //! ├── handoff_consent_page
@@ -20,6 +21,7 @@
 //! cloud_handoff_request.rs
 //! ├── cloud_handoff
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashMap;

@@ -13,6 +13,7 @@
 //! - MACs are compared in constant time (`ring::hmac::verify`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/handoff_consent.rs
 //! ├── cloud::protocol::errors
@@ -28,6 +29,7 @@
 //! ├── cloud::protocol::handoff_consent::tests
 //! ├── yaran-web::cloud_handoff
 //! └── yaran-web::cloud_test_support
+//! ```
 //! <module-headers:end>
 
 use ring::{hkdf, hmac, signature};

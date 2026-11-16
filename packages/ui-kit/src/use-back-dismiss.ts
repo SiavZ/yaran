@@ -1,3 +1,26 @@
+/**
+ * Back closes an open dialog, sheet or menu primitive.
+ *
+ * While a shared base-ui Root is open it holds one history entry of its own,
+ * and the browser's Back (or a phone's back gesture) closes it through the
+ * Root's own close, exactly as Cancel or Escape would.
+ *
+ * <module-headers:begin>
+ * Uses:
+ * src/use-back-dismiss.ts
+ * └── src/modalHistory.ts
+ * External: react
+ *
+ * Used by:
+ * src/use-back-dismiss.ts
+ * ├── src/dialog.tsx
+ * ├── src/dropdown-menu.tsx
+ * ├── src/popover.tsx
+ * ├── src/sheet.tsx
+ * └── web:src/components/ui/context-menu.tsx
+ * <module-headers:end>
+ */
+
 import { useEffect, useRef, useState, type RefObject } from "react"
 
 import { registerModal } from "./modalHistory"

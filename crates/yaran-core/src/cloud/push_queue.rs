@@ -9,6 +9,7 @@
 //! - Pure, time injected; owned by the `cloud-push` thread.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/push_queue.rs
 //! ├── cloud::protocol
@@ -22,6 +23,7 @@
 //! ├── cloud::push_runner
 //! ├── engine::push_hook
 //! └── yaran-core[test cloud_push_emitter]
+//! ```
 //! <module-headers:end>
 
 use std::collections::{HashSet, VecDeque};

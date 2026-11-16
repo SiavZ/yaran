@@ -19,20 +19,25 @@
 //! not with a close, since a swallowed click teaches the user nothing.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/overlay_dismiss.rs
 //! ├── app
 //! ├── app::cloud_commands
+//! ├── app::first_load
 //! ├── app::input
 //! ├── app::render
 //! ├── app::test_support
+//! ├── app::text_input
 //! ├── config
-//! └── yaran-core::welcome_screen
+//! ├── yaran-core::welcome_screen
+//! └── yaran-core::worker
 //! External: crossterm, ratatui, std
 //!
 //! Used by:
 //! app/overlay_dismiss.rs
 //! └── app
+//! ```
 //! <module-headers:end>
 
 use super::cloud_commands::CloudPrompt;

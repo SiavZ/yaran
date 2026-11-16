@@ -9,6 +9,7 @@
 //! - Pure apart from CSPRNG draws in `signing::sign_now` and `handoff::seal`; no I/O.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/mod.rs
 //! ├── cloud::protocol::concat_kdf
@@ -43,6 +44,7 @@
 //! ├── yaran-web::cloud_ingress
 //! ├── yaran-web::cloud_ingress_tests
 //! └── yaran-web::host_guard
+//! ```
 //! <module-headers:end>
 
 pub mod concat_kdf;

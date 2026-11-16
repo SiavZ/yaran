@@ -6,54 +6,92 @@
 //! and view-coupled; web clients re-fetch `view_model()` for fresh state).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! wire.rs
 //! ├── add_project_plan
+//! ├── branch_history
+//! ├── changes_lane
+//! ├── clone_project
 //! ├── config
+//! ├── config_effective
 //! ├── config_queue
 //! ├── engine
+//! ├── engine::command
 //! ├── engine::status_op
 //! ├── engine::test_support
 //! ├── gh
 //! ├── git
+//! ├── home_path
 //! ├── ids
 //! ├── logger
 //! ├── model
+//! ├── operations
+//! ├── pr_list
+//! ├── pr_reference
 //! ├── project_browser
 //! ├── prose
 //! ├── pty
+//! ├── route_checks
 //! ├── sanitize
 //! ├── session_settings
 //! ├── sidebar
 //! ├── startup
 //! ├── status_text
 //! ├── statusline
-//! └── worker
-//! External: anyhow, chrono, serde, serde_json, std, tempfile, toml, uuid
+//! ├── test_scratch
+//! ├── text
+//! ├── viewmodel
+//! ├── worker
+//! └── worktree_ops
+//! External: anyhow, chrono, rusqlite, serde, serde_json, sha2, std, tempfile, toml, uuid
 //!
 //! Used by:
 //! wire.rs
+//! ├── agent_job
+//! ├── background_serve
+//! ├── client::workspace
+//! ├── clone_project
 //! ├── cloud::push_runner
 //! ├── config_reload_status
 //! ├── crate
 //! ├── engine
+//! ├── engine::admission
+//! ├── engine::attachment_guard
+//! ├── engine::clone
+//! ├── engine::command
 //! ├── engine::events
+//! ├── engine::lifecycle
+//! ├── engine::removal_review_tests
 //! ├── engine::shared_workspace
+//! ├── engine::worktree_removal_race_tests
+//! ├── operations
+//! ├── route_checks
 //! ├── statusline
+//! ├── viewmodel
 //! ├── yaran-core[test cloud_push_emitter]
+//! ├── yaran-tui::app
+//! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::input
 //! ├── yaran-tui::app::sessions
+//! ├── yaran-tui::app::workers
+//! ├── yaran-web
+//! ├── yaran-web::background
 //! ├── yaran-web::cloud_mode_routes
 //! ├── yaran-web::config_routes
 //! ├── yaran-web::engine_actor
 //! ├── yaran-web::first_load_routes
 //! ├── yaran-web::git_routes
 //! ├── yaran-web::project_actions
+//! ├── yaran-web::reload_signal
 //! ├── yaran-web::rest_common
 //! ├── yaran-web::server
 //! ├── yaran-web::session_actions
 //! ├── yaran-web::tab_actions
 //! ├── yaran-web::terminal_actions
-//! └── yaran-web[test changes_events]
+//! ├── yaran-web[test changes_events]
+//! └── yaran[bin yaran]::commands
+//! ```
 //! <module-headers:end>
 
 /// Stable string keys for correlated status pairs (busy → final). The TUI and

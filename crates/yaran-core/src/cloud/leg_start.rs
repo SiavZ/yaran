@@ -6,6 +6,7 @@
 //!   them pass. A stop requested mid-way answers `Requested`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg_start.rs
 //! ├── cloud::cloudflared
@@ -23,6 +24,7 @@
 //! ├── cloud
 //! ├── cloud::leg
 //! └── cloud::leg_run
+//! ```
 //! <module-headers:end>
 
 use std::net::{SocketAddr, TcpStream};

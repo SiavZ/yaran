@@ -9,6 +9,7 @@
 //!   against the pending login by the caller (constant-time), not here.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/pairing.rs
 //! ├── cloud::protocol::rules
@@ -19,6 +20,7 @@
 //! cloud/protocol/pairing.rs
 //! ├── cloud::login
 //! └── cloud::protocol
+//! ```
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};

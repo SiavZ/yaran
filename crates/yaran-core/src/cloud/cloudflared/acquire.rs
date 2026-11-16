@@ -10,6 +10,7 @@
 //!   (asset, then extracted binary) match the generated pin.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/acquire.rs
 //! ├── cloud::cloudflared::acquire::tests
@@ -28,6 +29,7 @@
 //! ├── cloud::leg_outcome::tests
 //! ├── cloud::leg_run
 //! └── cloud::leg_start
+//! ```
 //! <module-headers:end>
 
 use std::fs;

@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]` child of `cloud::push_emitter`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/push_emitter_tests.rs
 //! ├── cloud::protocol
@@ -17,6 +18,7 @@
 //! Used by:
 //! cloud/push_emitter_tests.rs
 //! └── cloud::push_emitter
+//! ```
 //! <module-headers:end>
 
 use std::sync::Mutex;

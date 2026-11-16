@@ -4,6 +4,7 @@
 //! - Threaded watcher cases live in the watcher_tests child module.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! human_board/tests.rs
 //! ├── human_board
@@ -14,6 +15,7 @@
 //! human_board/tests.rs
 //! ├── human_board
 //! └── human_board::tests::watcher_tests
+//! ```
 //! <module-headers:end>
 
 use std::fs;

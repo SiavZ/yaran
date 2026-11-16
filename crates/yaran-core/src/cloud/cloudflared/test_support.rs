@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]`); nothing here touches the network beyond 127.0.0.1.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: std
 //!
@@ -15,6 +16,7 @@
 //! ├── cloud::cloudflared::supervisor::tests
 //! ├── cloud::cloudflared::version
 //! └── cloud::leg::tests
+//! ```
 //! <module-headers:end>
 
 use std::io::{Read, Write};

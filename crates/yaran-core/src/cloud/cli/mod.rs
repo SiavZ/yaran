@@ -10,6 +10,7 @@
 //!   running), 4 (not paired) and 5 (revoked).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cli/mod.rs
 //! ├── browser
@@ -33,6 +34,7 @@
 //! ├── cloud::cli::pair_phone
 //! ├── cloud::cli::tests
 //! └── yaran[bin yaran]
+//! ```
 //! <module-headers:end>
 
 mod args;

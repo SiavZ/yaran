@@ -4,6 +4,7 @@
 //! - Pure; every clock is passed in, so the timing is table-tested.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/policy.rs
 //! └── watch::rule
@@ -15,6 +16,7 @@
 //! ├── cloud::cloudflared::supervisor
 //! ├── cloud::leg_run
 //! └── cloud::leg_start
+//! ```
 //! <module-headers:end>
 
 use std::time::{Duration, Instant};

@@ -7,6 +7,7 @@
 //! pairing changed during the claim, and the D24 consent key.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! tests/cloud_login.rs
 //! ├── after_claim
@@ -23,6 +24,7 @@
 //! Used by: entry point (cargo test -p yaran-core --test <name> (integration tests))
 //! tests/cloud_login.rs
 //! └── after_claim
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashMap;

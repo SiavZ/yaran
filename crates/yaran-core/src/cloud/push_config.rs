@@ -9,6 +9,7 @@
 //! - Pure values; no I/O.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses: none
 //! External: serde, serde_json, std
 //!
@@ -22,6 +23,7 @@
 //! ├── engine::push_hook
 //! ├── engine::push_hook::tests
 //! └── yaran-core[test cloud_push_emitter]
+//! ```
 //! <module-headers:end>
 
 use std::ops::RangeInclusive;

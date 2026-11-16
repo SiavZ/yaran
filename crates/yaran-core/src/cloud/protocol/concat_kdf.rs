@@ -7,6 +7,7 @@
 //! - Pure.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/concat_kdf.rs
 //! └── cloud::protocol::test_fixtures
@@ -18,6 +19,7 @@
 //! ├── cloud::protocol::handoff
 //! ├── cloud::protocol::handoff::tests
 //! └── yaran-web::cloud_test_support
+//! ```
 //! <module-headers:end>
 
 use ring::digest::{Context, SHA256};

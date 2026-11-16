@@ -12,6 +12,7 @@
 //! - `JwksSource` is the network seam: ureq in production, fixtures in tests.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_jwks_cache.rs
 //! └── yaran-core::cloud::access_jwks
@@ -19,9 +20,11 @@
 //!
 //! Used by:
 //! cloud_jwks_cache.rs
+//! ├── cloud_auth_bridge_tests
 //! ├── cloud_ingress
 //! ├── cloud_test_support
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

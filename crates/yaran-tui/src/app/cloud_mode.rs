@@ -10,9 +10,12 @@
 //!   picker say the same words.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_mode.rs
 //! ├── app
+//! ├── app::components
+//! ├── app::components::hint_bar
 //! ├── app::render
 //! ├── app::test_support
 //! ├── yaran-core::cloud::config
@@ -20,11 +23,13 @@
 //! ├── yaran-core::cloud::leg_outcome
 //! ├── yaran-core::engine
 //! └── yaran-core::engine::status_op
-//! External: none
+//! External: ratatui
 //!
 //! Used by:
 //! app/cloud_mode.rs
-//! └── app
+//! ├── app
+//! └── app::picker_lists
+//! ```
 //! <module-headers:end>
 
 use super::*;

@@ -4,6 +4,7 @@
 //! - Test-only (`#[cfg(test)]`); never touches the network beyond loopback.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_ingress_tests.rs
 //! ├── cloud_ingress
@@ -19,6 +20,7 @@
 //! Used by:
 //! cloud_ingress_tests.rs
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::net::SocketAddr;

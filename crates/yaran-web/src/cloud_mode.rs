@@ -11,6 +11,7 @@
 //! - Also hands out the shared view snapshot and the ingress reader (for Phase 11).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_mode.rs
 //! ├── cloud_ingress
@@ -32,6 +33,7 @@
 //! ├── engine_actor
 //! ├── server
 //! └── yaran[bin yaran]::companion
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;

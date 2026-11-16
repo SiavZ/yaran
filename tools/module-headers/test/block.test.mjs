@@ -114,3 +114,19 @@ test("a SwiftPM manifest keeps swift-tools-version on line 1, above the header",
   assert.equal(h?.start, 1);
   assert.equal(hasTitle(lines, h), true);
 });
+
+test("a Rust block is fenced as text so rustdoc and clippy read the tree as code", async () => {
+  const { fenced } = await import("../src/headers.mjs");
+  const block = ["<module-headers:begin>", "Uses:", "a.rs", "└── b", "External: none", "<module-headers:end>"];
+  assert.deepEqual(fenced(block, "rust"), [
+    "<module-headers:begin>",
+    "```text",
+    "Uses:",
+    "a.rs",
+    "└── b",
+    "External: none",
+    "```",
+    "<module-headers:end>",
+  ]);
+  assert.deepEqual(fenced(block, "ts"), block);
+});

@@ -9,6 +9,7 @@
 //! - Runs only on the `cloud-push` thread.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/push_runner.rs
 //! ├── cloud::protocol
@@ -30,6 +31,7 @@
 //! ├── cloud
 //! ├── cloud::push_emitter
 //! └── cloud::push_emitter::tests
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashSet;

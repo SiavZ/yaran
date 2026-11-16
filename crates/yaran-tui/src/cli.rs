@@ -1,25 +1,45 @@
 //! The `yaran config` subcommands (path, diff, reset, regenerate) and their config-diff engine.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cli.rs
+//! ├── cli::plaintext_shape_preview_tests
+//! ├── cli::preview_leak_tests
 //! ├── config
+//! ├── config_cli
+//! ├── config_spec
 //! ├── crate
 //! ├── keybindings
+//! ├── yaran-core::auth
+//! ├── yaran-core::branch_history
+//! ├── yaran-core::client
+//! ├── yaran-core::config
+//! ├── yaran-core::config_keys
 //! ├── yaran-core::config_write
+//! ├── yaran-core::engine
+//! ├── yaran-core::file_modes
+//! ├── yaran-core::leftover_folders
 //! ├── yaran-core::model
+//! ├── yaran-core::process_sessions
 //! ├── yaran-core::project_browser
 //! ├── yaran-core::purge
 //! ├── yaran-core::purge_amq
 //! ├── yaran-core::sanitize
 //! ├── yaran-core::storage
 //! ├── yaran-core::test_git
-//! └── yaran-core::text
-//! External: anyhow, chrono, serde_json, similar, std, tempfile, toml
+//! ├── yaran-core::text
+//! └── yaran-core::worktree_ops
+//! External: anyhow, chrono, rusqlite, rustix, serde_json, similar, std, tempfile, toml
 //!
 //! Used by:
 //! cli.rs
+//! ├── cli::plaintext_shape_preview_tests
+//! ├── cli::preview_leak_tests
+//! ├── config_cli::appended_password_tests
+//! ├── config_cli::names_never_printed_property_tests
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::collections::BTreeSet;

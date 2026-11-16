@@ -4,6 +4,7 @@
 //! - Test-only child of human_board::tests.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! human_board/watcher_tests.rs
 //! ├── human_board::tests
@@ -13,6 +14,7 @@
 //! Used by:
 //! human_board/watcher_tests.rs
 //! └── human_board::tests
+//! ```
 //! <module-headers:end>
 
 use super::*;

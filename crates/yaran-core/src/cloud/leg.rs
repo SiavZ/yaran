@@ -12,6 +12,7 @@
 //! - A new leg joins the previous one first, so two children never share the token file.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/leg.rs
 //! ├── cloud::cloudflared::acquire
@@ -31,6 +32,7 @@
 //! ├── cloud::leg_start
 //! ├── yaran-web::cloud_loop
 //! └── yaran-web::cloud_mode
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

@@ -10,6 +10,7 @@
 //!   the network beyond loopback.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_routes_tests.rs
 //! ├── cloud_routes
@@ -24,6 +25,7 @@
 //! Used by:
 //! cloud_routes_tests.rs
 //! └── cloud_routes
+//! ```
 //! <module-headers:end>
 
 use std::collections::HashMap;

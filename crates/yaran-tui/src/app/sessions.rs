@@ -1,5 +1,80 @@
 //! Project and agent-session CRUD for the terminal UI: create, delete, reconnect, refresh, and
 //! the project browser. Blocking git and provider work goes to background workers.
+//!
+//! <module-headers:begin>
+//! ```text
+//! Uses:
+//! app/sessions.rs
+//! ├── app
+//! ├── app::attachment_presence
+//! ├── app::background_server
+//! ├── app::debug_input
+//! ├── app::human_board
+//! ├── app::project_actions
+//! ├── app::pty_ownership
+//! ├── app::redraw
+//! ├── app::render
+//! ├── app::test_support
+//! ├── app::text_input
+//! ├── app::ui_jobs
+//! ├── app::workers
+//! ├── clipboard
+//! ├── config
+//! ├── crate
+//! ├── diff
+//! ├── host_keys
+//! ├── keybindings
+//! ├── raw_input
+//! ├── theme
+//! ├── yaran-core::add_project_plan
+//! ├── yaran-core::agent_tabs
+//! ├── yaran-core::attachments
+//! ├── yaran-core::branch_history
+//! ├── yaran-core::changes_status
+//! ├── yaran-core::clone_project
+//! ├── yaran-core::config
+//! ├── yaran-core::config_queue
+//! ├── yaran-core::config_sync
+//! ├── yaran-core::delete_agent_prose
+//! ├── yaran-core::engine
+//! ├── yaran-core::engine::status_op
+//! ├── yaran-core::gh
+//! ├── yaran-core::git
+//! ├── yaran-core::home_path
+//! ├── yaran-core::ids
+//! ├── yaran-core::logger
+//! ├── yaran-core::model
+//! ├── yaran-core::operations
+//! ├── yaran-core::pr_reference
+//! ├── yaran-core::process_sessions
+//! ├── yaran-core::project_browser
+//! ├── yaran-core::project_order
+//! ├── yaran-core::prose
+//! ├── yaran-core::pty
+//! ├── yaran-core::reload_policy
+//! ├── yaran-core::sanitize
+//! ├── yaran-core::serve_log
+//! ├── yaran-core::sidebar
+//! ├── yaran-core::status_text
+//! ├── yaran-core::statusline
+//! ├── yaran-core::tailscale
+//! ├── yaran-core::term_identity
+//! ├── yaran-core::terminal_title
+//! ├── yaran-core::test_git
+//! ├── yaran-core::test_provider
+//! ├── yaran-core::wire
+//! ├── yaran-core::worker
+//! └── yaran-core::working_copy
+//! External: anyhow, chrono, crossterm, ratatui, std, tempfile, uuid
+//!
+//! Used by:
+//! app/sessions.rs
+//! ├── app
+//! ├── app::background_server
+//! ├── app::input
+//! └── app::pr_clone
+//! ```
+//! <module-headers:end>
 
 use super::text_input::TextInput;
 use super::{

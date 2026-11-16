@@ -5,6 +5,7 @@
 //! - Test-only (`#[cfg(test)]`); the envelope is opened with ring ECDH + 02's Concat KDF.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_handoff_tests.rs
 //! ├── cloud_test_support
@@ -15,6 +16,7 @@
 //! Used by:
 //! cloud_handoff_tests.rs
 //! └── crate
+//! ```
 //! <module-headers:end>
 
 use std::sync::atomic::Ordering;

@@ -10,34 +10,51 @@
 //! out for the server. These commands keep both up at once.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/background_server.rs
 //! ├── app
 //! ├── app::sessions
 //! ├── app::test_support
 //! ├── crate
+//! ├── keybindings
+//! ├── server_screen
+//! ├── yaran-core::attachments
 //! ├── yaran-core::background_serve
+//! ├── yaran-core::clone_project
 //! ├── yaran-core::cloud::config
 //! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::view
 //! ├── yaran-core::config
+//! ├── yaran-core::config_reload_status
 //! ├── yaran-core::engine
 //! ├── yaran-core::engine::status_op
+//! ├── yaran-core::gh
+//! ├── yaran-core::ids
+//! ├── yaran-core::logger
 //! ├── yaran-core::model
+//! ├── yaran-core::operations
 //! ├── yaran-core::pty_owners
+//! ├── yaran-core::serve_log
+//! ├── yaran-core::status_text
 //! ├── yaran-core::statusline
 //! ├── yaran-core::tailscale
+//! ├── yaran-core::wire
 //! └── yaran-core::worker
-//! External: chrono, std
+//! External: anyhow, chrono, crossterm, ratatui, std, tempfile
 //!
 //! Used by:
 //! app/background_server.rs
 //! ├── app
+//! ├── app::attachment_presence
 //! ├── app::presize
 //! ├── app::pty_ownership
 //! ├── app::redraw
 //! ├── app::render
+//! ├── app::sessions
+//! ├── app::test_support
 //! └── app::workers
+//! ```
 //! <module-headers:end>
 
 use yaran_core::engine::EventReaction;

@@ -8,6 +8,7 @@
 //! - Pure apart from [`log`], which writes under the `yaran::cloudflare` target.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/log_lines.rs
 //! └── sanitize
@@ -18,6 +19,7 @@
 //! ├── cloud::cloudflared
 //! ├── cloud::cloudflared::supervisor
 //! └── cloud::leg_run
+//! ```
 //! <module-headers:end>
 
 /// Longest stderr line kept; the rest is dropped.

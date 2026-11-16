@@ -9,6 +9,7 @@
 //!   `yaran_core::sanitize` before logging or showing it (it crossed a trust boundary).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/protocol/errors.rs
 //! ├── cloud::protocol::rules
@@ -22,6 +23,7 @@
 //! ├── cloud::protocol
 //! ├── cloud::protocol::handoff_consent
 //! └── yaran-web::cloud_handoff_request
+//! ```
 //! <module-headers:end>
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

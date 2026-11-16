@@ -6,6 +6,7 @@
 //! - Blocking; called from the leg's supervisor thread. Loopback only, proxy disabled.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/cloudflared/ready.rs
 //! └── cloud::cloudflared::test_support
@@ -18,6 +19,7 @@
 //! ├── cloud::leg::tests
 //! ├── cloud::leg_run
 //! └── yaran-web::cloud_loop::live_cloud_mode_tests
+//! ```
 //! <module-headers:end>
 
 use std::time::Duration;

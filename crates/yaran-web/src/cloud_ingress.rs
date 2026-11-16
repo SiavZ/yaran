@@ -20,6 +20,7 @@
 //! - The serve loop is the only writer (`bind`/`unbind`/`update_settings`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud_ingress.rs
 //! ├── cloud_jwks_cache
@@ -48,6 +49,7 @@
 //! ├── crate
 //! ├── host_guard
 //! └── server
+//! ```
 //! <module-headers:end>
 
 use std::convert::Infallible;

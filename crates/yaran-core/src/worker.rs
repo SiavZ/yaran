@@ -3,8 +3,12 @@
 //! in E2+); the payload types are plain data describing worker results.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! worker.rs
+//! ├── base_branch
+//! ├── branch_history
+//! ├── clone_project
 //! ├── cloud::leg_identity
 //! ├── cloud::leg_outcome
 //! ├── config
@@ -12,46 +16,69 @@
 //! ├── gh
 //! ├── git
 //! ├── ids
+//! ├── leftover_folders
 //! ├── model
 //! ├── pr_reference
+//! ├── process_sessions
 //! ├── pty
 //! ├── resume_recovery
+//! ├── serve_log
 //! ├── startup
 //! ├── status_text
 //! ├── statusline
-//! ├── storage
 //! ├── term_identity
 //! ├── watch::builtin
 //! ├── working_copy
 //! └── worktree_manager
-//! External: std
+//! External: chrono, std
 //!
 //! Used by:
 //! worker.rs
 //! ├── add_project_plan
 //! ├── agent_env
 //! ├── agent_job
+//! ├── base_branch
+//! ├── clone_project
 //! ├── cloud::push_emitter
 //! ├── cloud::push_runner
 //! ├── config_queue
 //! ├── crate
 //! ├── engine
 //! ├── engine::amq
+//! ├── engine::clone
 //! ├── engine::command
 //! ├── engine::config_saver
 //! ├── engine::events
 //! ├── engine::followup
 //! ├── engine::lifecycle
 //! ├── engine::limits
+//! ├── engine::pending_removals
+//! ├── engine::project_base
 //! ├── engine::provider_sessions
 //! ├── engine::push_hook
+//! ├── engine::races_review2_tests
+//! ├── engine::races_review3_tests
+//! ├── engine::races_review4_tests
+//! ├── engine::removal
+//! ├── engine::removal_review_tests
+//! ├── engine::rename
 //! ├── engine::resume_fallback
+//! ├── engine::review10_tests
+//! ├── engine::review11_tests
+//! ├── engine::review12_tests
+//! ├── engine::review13_tests
+//! ├── engine::review17_tests
+//! ├── engine::review19_tests
+//! ├── engine::review8_tests
+//! ├── engine::review_nested_folder_tests
 //! ├── engine::shared_workspace
 //! ├── engine::spawn_worker
 //! ├── engine::test_support
 //! ├── engine::watch_tick
+//! ├── engine::worktree_removal_race_tests
 //! ├── gh
 //! ├── git
+//! ├── poller_status
 //! ├── pr_reference
 //! ├── project_browser
 //! ├── resource_stats
@@ -60,11 +87,17 @@
 //! ├── worktree_manager
 //! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-tui::app
+//! ├── yaran-tui::app::attachment_presence
 //! ├── yaran-tui::app::background_server
+//! ├── yaran-tui::app::confirm_dialog
+//! ├── yaran-tui::app::first_load
 //! ├── yaran-tui::app::input
 //! ├── yaran-tui::app::modal
 //! ├── yaran-tui::app::name_chip_dialogs
 //! ├── yaran-tui::app::new_agent_settings
+//! ├── yaran-tui::app::no_branch_notice
+//! ├── yaran-tui::app::overlay_dismiss
+//! ├── yaran-tui::app::pr_clone
 //! ├── yaran-tui::app::pty_ownership
 //! ├── yaran-tui::app::render
 //! ├── yaran-tui::app::sessions
@@ -73,7 +106,9 @@
 //! ├── yaran-web
 //! ├── yaran-web::background
 //! ├── yaran-web::bootstrap
-//! └── yaran-web::engine_actor
+//! ├── yaran-web::engine_actor
+//! └── yaran-web[test auth_router]
+//! ```
 //! <module-headers:end>
 
 use std::collections::BTreeMap;

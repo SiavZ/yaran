@@ -16,6 +16,7 @@
 //! Web-originated statuses stay scoped per connection, decided in `handle_request`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! background.rs
 //! ├── cloud_mode
@@ -47,6 +48,7 @@
 //! ├── yaran-web[test background_serve_claims]
 //! ├── yaran-web[test serve_with_engine]
 //! └── yaran[bin yaran]::companion
+//! ```
 //! <module-headers:end>
 
 use std::sync::Arc;

@@ -11,6 +11,7 @@
 //!   `publisher.json` (`YARAN_PUBLISHER_DOMAIN`, set by `build.rs`).
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/config.rs
 //! ├── cloud::protocol::rules
@@ -34,6 +35,7 @@
 //! ├── yaran-web::cloud_mode
 //! ├── yaran-web::cloud_routes
 //! └── yaran[bin yaran]::companion
+//! ```
 //! <module-headers:end>
 
 use serde::{Deserialize, Serialize};

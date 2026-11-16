@@ -8,6 +8,7 @@
 //!   worker or CLI threads only.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/actions.rs
 //! ├── cloud::credentials
@@ -24,6 +25,7 @@
 //! ├── cloud::cli::manage
 //! ├── yaran-tui::app::cloud_commands
 //! └── yaran-web::cloud_routes::actions_routes
+//! ```
 //! <module-headers:end>
 
 use crate::cloud::credentials::{self, CredentialsError};

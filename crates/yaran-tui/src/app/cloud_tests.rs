@@ -7,6 +7,7 @@
 //!   in outcome sentences, and a QR painted from the two theme tokens only.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/cloud_tests.rs
 //! ├── app
@@ -29,6 +30,7 @@
 //! app/cloud_tests.rs
 //! ├── app
 //! └── app::modal
+//! ```
 //! <module-headers:end>
 
 use std::sync::mpsc;

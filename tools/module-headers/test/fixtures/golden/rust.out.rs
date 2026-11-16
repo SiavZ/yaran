@@ -3,6 +3,7 @@
 //! - Runs on its own thread.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! cloud/supervisor.rs
 //! ├── cloud::credentials  (token file path)
@@ -12,6 +13,7 @@
 //! Used by:
 //! cloud/supervisor.rs
 //! └── cloud::leg
+//! ```
 //! <module-headers:end>
 
 pub fn start() {}

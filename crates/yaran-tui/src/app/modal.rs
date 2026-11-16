@@ -46,11 +46,13 @@
 //! `PromptState` variants, so nothing here guards them.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! app/modal.rs
 //! ├── app
 //! ├── app::cloud_commands
 //! ├── app::cloud_tests
+//! ├── app::components
 //! ├── app::first_load
 //! ├── app::input
 //! ├── app::test_support
@@ -59,6 +61,7 @@
 //! ├── crate
 //! ├── keybindings
 //! ├── theme
+//! ├── yaran-core::leftover_folders
 //! └── yaran-core::worker
 //! External: ratatui, std
 //!
@@ -68,7 +71,12 @@
 //! ├── app::cloud_input
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
-//! └── app::input
+//! ├── app::confirm_dialog
+//! ├── app::hint_lines
+//! ├── app::input
+//! ├── app::picker_lists
+//! └── app::project_actions
+//! ```
 //! <module-headers:end>
 
 use ratatui::Frame;

@@ -1,17 +1,23 @@
 //! Yaran TUI library: the terminal user-interface surface over `yaran-core`.
 //!
 //! <module-headers:begin>
+//! ```text
 //! Uses:
 //! lib.rs
 //! ├── app
 //! ├── cli
 //! ├── clipboard
 //! ├── config
+//! ├── config_cli
 //! ├── config_saver
+//! ├── config_spec
 //! ├── diff
 //! ├── doctor
+//! ├── host_keys
+//! ├── key_decode
 //! ├── key_encode
 //! ├── keybindings
+//! ├── numeric
 //! ├── raw_input
 //! ├── server_screen
 //! ├── theme
@@ -19,6 +25,7 @@
 //! ├── yaran-core::background_serve
 //! ├── yaran-core::editor
 //! ├── yaran-core::engine
+//! ├── yaran-core::file_modes
 //! ├── yaran-core::focus
 //! ├── yaran-core::git
 //! ├── yaran-core::io_retry
@@ -27,17 +34,26 @@
 //! ├── yaran-core::model
 //! ├── yaran-core::pty
 //! ├── yaran-core::reload_handoff
+//! ├── yaran-core::reload_signal
+//! ├── yaran-core::serve_log
 //! ├── yaran-core::startup
 //! ├── yaran-core::statusline
 //! ├── yaran-core::storage
 //! └── yaran-core::term_identity
-//! External: anyhow, std
+//! External: anyhow, std, tempfile
 //!
 //! Used by:
 //! lib.rs
 //! ├── app
+//! ├── app::attachment_presence
 //! ├── app::background_server
+//! ├── app::changes_tree
+//! ├── app::debug_input
+//! ├── app::dock
+//! ├── app::ellipsis_rows
+//! ├── app::first_load
 //! ├── app::hangup
+//! ├── app::hint_lines
 //! ├── app::human_board
 //! ├── app::human_board::tests
 //! ├── app::human_board_relay
@@ -45,19 +61,29 @@
 //! ├── app::input::host_selection_regression_tests
 //! ├── app::modal
 //! ├── app::name_chip_dialogs
+//! ├── app::picker_lists
+//! ├── app::pr_clone
 //! ├── app::presize
+//! ├── app::project_actions
 //! ├── app::pty_ownership
+//! ├── app::pull_requests
 //! ├── app::redraw
 //! ├── app::render
 //! ├── app::sessions
 //! ├── app::test_support
+//! ├── app::ui_jobs
 //! ├── app::workers
+//! ├── app::worktree_manager
 //! ├── cli
 //! ├── config
 //! ├── config_saver
 //! ├── diff
 //! ├── theme
-//! └── yaran[bin yaran]
+//! ├── yaran[bin yaran]
+//! ├── yaran[bin yaran]::cli_reference
+//! ├── yaran[bin yaran]::client_commands
+//! └── yaran[test config_resources]::support
+//! ```
 //! <module-headers:end>
 
 mod app;
