@@ -5,11 +5,14 @@
 //! Uses:
 //! engine/test_support.rs
 //! ├── attachments
+//! ├── auto_resume
 //! ├── changes_status
 //! ├── clone_project
 //! ├── config
 //! ├── config_queue
 //! ├── engine
+//! ├── engine::amq
+//! ├── engine::limits
 //! ├── ids
 //! ├── lockfile
 //! ├── model

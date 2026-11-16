@@ -39,6 +39,7 @@
 //! ├── yaran-core::process_sessions
 //! ├── yaran-core::project_browser
 //! ├── yaran-core::pty
+//! ├── yaran-core::resume_recovery
 //! ├── yaran-core::serve_log
 //! ├── yaran-core::startup
 //! ├── yaran-core::status_text

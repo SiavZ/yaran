@@ -25,6 +25,7 @@
 //! ├── app
 //! ├── app::cloud_commands
 //! ├── app::first_load
+//! ├── app::human_board
 //! ├── app::input
 //! ├── app::render
 //! ├── app::test_support

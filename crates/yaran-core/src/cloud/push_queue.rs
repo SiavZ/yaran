@@ -13,7 +13,8 @@
 //! Uses:
 //! cloud/push_queue.rs
 //! ├── cloud::protocol
-//! └── cloud::protocol::machine
+//! ├── cloud::protocol::machine
+//! └── numeric
 //! External: chrono, std, uuid
 //!
 //! Used by:

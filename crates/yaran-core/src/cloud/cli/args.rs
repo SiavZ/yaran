@@ -9,11 +9,13 @@
 //! <module-headers:begin>
 //! ```text
 //! Uses: none
-//! External: none
+//! External: std
 //!
 //! Used by:
 //! cloud/cli/args.rs
-//! └── cloud::cli
+//! ├── cloud::cli
+//! ├── cloud::cli::login
+//! └── cloud::cli::manage
 //! ```
 //! <module-headers:end>
 

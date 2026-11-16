@@ -80,6 +80,7 @@
 //! ├── app::grouped_sidebar_tests
 //! ├── app::human_board_dialog
 //! ├── app::input
+//! ├── app::orphan_worktrees
 //! ├── app::overlay_dismiss
 //! ├── app::presize
 //! ├── app::pull_requests

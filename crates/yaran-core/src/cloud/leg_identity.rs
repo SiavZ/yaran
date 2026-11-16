@@ -36,6 +36,7 @@
 //! ├── engine::events
 //! ├── viewmodel
 //! ├── worker
+//! ├── yaran-core[test cloud_push_emitter]
 //! ├── yaran-tui::app::background_server
 //! ├── yaran-tui::app::cloud_crumb
 //! ├── yaran-tui::app::cloud_mode

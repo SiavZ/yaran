@@ -8,8 +8,10 @@
 //! ├── app
 //! ├── app::attachment_presence
 //! ├── app::background_server
+//! ├── app::cloud_commands
 //! ├── app::debug_input
 //! ├── app::human_board
+//! ├── app::presize
 //! ├── app::project_actions
 //! ├── app::pty_ownership
 //! ├── app::redraw
@@ -29,6 +31,7 @@
 //! ├── yaran-core::add_project_plan
 //! ├── yaran-core::agent_tabs
 //! ├── yaran-core::attachments
+//! ├── yaran-core::auto_resume
 //! ├── yaran-core::branch_history
 //! ├── yaran-core::changes_status
 //! ├── yaran-core::clone_project
@@ -37,6 +40,8 @@
 //! ├── yaran-core::config_sync
 //! ├── yaran-core::delete_agent_prose
 //! ├── yaran-core::engine
+//! ├── yaran-core::engine::amq
+//! ├── yaran-core::engine::limits
 //! ├── yaran-core::engine::status_op
 //! ├── yaran-core::gh
 //! ├── yaran-core::git
@@ -62,6 +67,7 @@
 //! ├── yaran-core::terminal_title
 //! ├── yaran-core::test_git
 //! ├── yaran-core::test_provider
+//! ├── yaran-core::watch::runtime
 //! ├── yaran-core::wire
 //! ├── yaran-core::worker
 //! └── yaran-core::working_copy

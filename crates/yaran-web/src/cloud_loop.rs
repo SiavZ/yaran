@@ -22,6 +22,7 @@
 //! ├── engine_actor
 //! ├── yaran-core::cloud::cloudflared::child_registry
 //! ├── yaran-core::cloud::cloudflared::command
+//! ├── yaran-core::cloud::cloudflared::ready
 //! ├── yaran-core::cloud::leg
 //! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::cloud::leg_outcome

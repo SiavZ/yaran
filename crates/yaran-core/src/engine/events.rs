@@ -46,6 +46,7 @@
 //! ├── project_browser
 //! ├── prose
 //! ├── pty
+//! ├── resume_recovery
 //! ├── serve_log
 //! ├── startup
 //! ├── status_text

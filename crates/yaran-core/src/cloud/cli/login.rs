@@ -12,6 +12,7 @@
 //! Uses:
 //! cloud/cli/login.rs
 //! ├── cloud::cli
+//! ├── cloud::cli::args
 //! ├── cloud::leg_state
 //! ├── cloud::login
 //! └── cloud::outcome

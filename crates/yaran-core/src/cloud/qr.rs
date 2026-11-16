@@ -15,7 +15,7 @@
 //! cloud/qr.rs
 //! ├── cloud::protocol::test_fixtures
 //! └── cloud::protocol::uri
-//! External: qrcode, ring
+//! External: qrcode, ring, std
 //!
 //! Used by:
 //! cloud/qr.rs

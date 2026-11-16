@@ -24,6 +24,7 @@
 //! ├── app::pty_ownership
 //! ├── app::render
 //! ├── app::reorder
+//! ├── app::session_settings
 //! ├── app::sessions
 //! ├── app::test_support
 //! ├── app::ui_jobs

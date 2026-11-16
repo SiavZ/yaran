@@ -70,6 +70,7 @@
 //! ├── yaran-core::agent_search
 //! ├── yaran-core::agent_tabs
 //! ├── yaran-core::attachments
+//! ├── yaran-core::auto_resume
 //! ├── yaran-core::background_serve
 //! ├── yaran-core::base_branch
 //! ├── yaran-core::branch_history
@@ -86,6 +87,8 @@
 //! ├── yaran-core::control_socket
 //! ├── yaran-core::delete_agent_prose
 //! ├── yaran-core::engine
+//! ├── yaran-core::engine::amq
+//! ├── yaran-core::engine::limits
 //! ├── yaran-core::engine::status_op
 //! ├── yaran-core::first_load
 //! ├── yaran-core::flat_list
@@ -121,6 +124,7 @@
 //! ├── yaran-core::test_git
 //! ├── yaran-core::test_scratch
 //! ├── yaran-core::version
+//! ├── yaran-core::watch::runtime
 //! ├── yaran-core::wire
 //! ├── yaran-core::worker
 //! ├── yaran-core::working_copy

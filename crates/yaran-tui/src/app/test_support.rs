@@ -11,8 +11,10 @@
 //! app/test_support.rs
 //! ├── app
 //! ├── app::background_server
+//! ├── app::cloud_commands
 //! ├── app::debug_input
 //! ├── app::human_board
+//! ├── app::presize
 //! ├── app::ui_jobs
 //! ├── clipboard
 //! ├── config
@@ -23,11 +25,14 @@
 //! ├── raw_input
 //! ├── theme
 //! ├── yaran-core::attachments
+//! ├── yaran-core::auto_resume
 //! ├── yaran-core::changes_status
 //! ├── yaran-core::clone_project
 //! ├── yaran-core::config
 //! ├── yaran-core::config_queue
 //! ├── yaran-core::engine
+//! ├── yaran-core::engine::amq
+//! ├── yaran-core::engine::limits
 //! ├── yaran-core::ids
 //! ├── yaran-core::model
 //! ├── yaran-core::operations
@@ -35,7 +40,8 @@
 //! ├── yaran-core::pty
 //! ├── yaran-core::term_identity
 //! ├── yaran-core::test_git
-//! └── yaran-core::test_provider
+//! ├── yaran-core::test_provider
+//! └── yaran-core::watch::runtime
 //! External: chrono, std, tempfile
 //!
 //! Used by:

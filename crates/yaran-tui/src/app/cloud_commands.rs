@@ -39,7 +39,9 @@
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
 //! ├── app::modal
-//! └── app::overlay_dismiss
+//! ├── app::overlay_dismiss
+//! ├── app::sessions
+//! └── app::test_support
 //! ```
 //! <module-headers:end>
 

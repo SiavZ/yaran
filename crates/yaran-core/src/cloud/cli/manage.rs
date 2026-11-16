@@ -14,6 +14,7 @@
 //! cloud/cli/manage.rs
 //! ├── cloud::actions
 //! ├── cloud::cli
+//! ├── cloud::cli::args
 //! ├── cloud::credentials
 //! ├── cloud::outcome
 //! └── cloud::status

@@ -17,7 +17,8 @@
 //! ├── cloud::cloudflared::pins
 //! ├── cloud::cloudflared::targz
 //! ├── cloud::cloudflared::version
-//! └── file_modes
+//! ├── file_modes
+//! └── numeric
 //! External: ring, std, ureq
 //!
 //! Used by:
