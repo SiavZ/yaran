@@ -1682,19 +1682,19 @@ impl App {
                  that posted it sees it resolved by {RESOLVED_BY} in \"yaran board list --all\"."
             )),
             (BoardJob::Resolve { label, .. }, Ok(false)) => {
-                self.set_info(format!("Card {label} was already done; nothing changed."))
+                self.set_info(format!("Card {label} was already done; nothing changed."));
             }
             (BoardJob::Reopen { label, .. }, Ok(true)) => {
-                self.set_info(format!("Reopened card {label}; it is back on the board."))
+                self.set_info(format!("Reopened card {label}; it is back on the board."));
             }
             (BoardJob::Reopen { label, .. }, Ok(false)) => {
-                self.set_info(format!("Card {label} was already open; nothing changed."))
+                self.set_info(format!("Card {label} was already open; nothing changed."));
             }
             (BoardJob::Resolve { label, .. }, Err(err)) => {
-                self.set_error(format!("Could not mark card {label} done: {err}"))
+                self.set_error(format!("Could not mark card {label} done: {err}"));
             }
             (BoardJob::Reopen { label, .. }, Err(err)) => {
-                self.set_error(format!("Could not reopen card {label}: {err}"))
+                self.set_error(format!("Could not reopen card {label}: {err}"));
             }
             (
                 BoardJob::Reply {
@@ -1759,10 +1759,10 @@ impl App {
                     format!("Added your reply to card {label} and marked it done; {reach}.")
                 } else {
                     format!("Added your reply to card {label}; {reach}. The card stays open.")
-                })
+                });
             }
             (BoardJob::Reply { label, .. }, Err(err)) => {
-                self.set_error(format!("Could not add your reply to card {label}: {err}"))
+                self.set_error(format!("Could not add your reply to card {label}: {err}"));
             }
             (BoardJob::Assign { label, person, .. }, Ok(true)) => self.set_info(format!(
                 "Card {label} is now in {person}'s queue; it shows on their tab and reaches \
@@ -1772,7 +1772,7 @@ impl App {
                 "Card {label} was already in {person}'s queue; nothing changed."
             )),
             (BoardJob::Assign { label, person, .. }, Err(err)) => {
-                self.set_error(format!("Could not assign card {label} to {person}: {err}"))
+                self.set_error(format!("Could not assign card {label} to {person}: {err}"));
             }
             (BoardJob::CloseStaleNews { hours, .. }, Ok(true)) => self.set_info(format!(
                 "Closed the news cards older than {hours}h that nobody had marked done; they are \
@@ -1780,7 +1780,7 @@ impl App {
             )),
             (BoardJob::CloseStaleNews { .. }, Ok(false)) => {}
             (BoardJob::CloseStaleNews { .. }, Err(err)) => {
-                self.set_warning(format!("Could not close old news on the board: {err}"))
+                self.set_warning(format!("Could not close old news on the board: {err}"));
             }
             (BoardJob::MarkRelayed { label, to, .. }, Ok(_)) => self.set_info(format!(
                 "Passed the other side's replies on card {label} to {to}; the card shows they \

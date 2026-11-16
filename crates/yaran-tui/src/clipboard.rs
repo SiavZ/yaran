@@ -103,7 +103,7 @@ impl Clipboard {
 }
 
 /// Maximum payload size for an OSC 52 copy. Many terminals refuse longer
-/// sequences. 100 KiB matches the limit used by tmux and WezTerm.
+/// sequences. 100 KiB matches the limit used by tmux and `WezTerm`.
 const OSC52_MAX_BYTES: usize = 100_000;
 
 /// True when no X11 or Wayland display is reachable, so arboard's Linux/BSD
@@ -151,7 +151,7 @@ fn osc52_sequence(text: &str) -> String {
 
 /// Emit an OSC 52 copy via /dev/tty so the escape reaches the controlling
 /// terminal regardless of stdout/stderr redirection. The host terminal
-/// (WezTerm, kitty, alacritty, the VS Code terminal, tmux with
+/// (`WezTerm`, kitty, alacritty, the VS Code terminal, tmux with
 /// `set-clipboard on`, and so on) writes the payload to the local clipboard.
 /// This is the standard way to copy from a remote shell with no X server.
 fn osc52_copy(text: &str) -> Result<()> {

@@ -44,13 +44,16 @@ use super::components::{
 };
 use super::modal::ModalFrame;
 use super::render::{centered_rect_exact, render_single_line_cursor_input};
-use super::*;
+use super::{
+    Action, App, ConfirmFocus, Line, OverlayMouseLayout, PromptState, Rect, Result, Span, Style,
+    Theme,
+};
 use crate::theme::FocusState;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::prelude::*;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::symbols::border;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 /// Blank columns between the border and the content, each side.

@@ -69,7 +69,7 @@ fn init_emits_json_lines_with_target_and_fields() {
                 fields.get("session_id").and_then(|v| v.as_str()),
                 Some("demo")
             );
-            assert_eq!(fields.get("n").and_then(|v| v.as_i64()), Some(3));
+            assert_eq!(fields.get("n").and_then(serde_json::Value::as_i64), Some(3));
             assert_eq!(message, "hello world");
             assert_eq!(parsed["level"], "INFO");
         }

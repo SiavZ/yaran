@@ -32,15 +32,18 @@
 //! ```
 //! <module-headers:end>
 
-use super::*;
+use super::{
+    Action, App, BindingScope, FullscreenOverlay, InputTarget, KeyEvent, Line, Modifier,
+    OverlayMouseLayout, PromptState, Span, Style,
+};
 use crate::app::components::PickerList;
 use crate::app::components::hint_bar::{Hint, modal_hint_line};
 use crate::app::render::{CurrentMark, active_provider_marker_span, centered_rect};
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::prelude::*;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::symbols::border;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use yaran_core::cloud::config::CloudConfig;
 use yaran_core::cloud::leg_identity::CloudMode;

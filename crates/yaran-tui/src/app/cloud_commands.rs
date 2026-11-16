@@ -61,7 +61,7 @@ use yaran_core::prose::Prose;
 use yaran_core::status_text;
 use yaran_core::status_text::StatusText;
 
-use super::*;
+use super::{App, ConfirmFocus, PromptState, Result, StatusTone, TextInput, mpsc, thread};
 
 /// The pair-phone busy's key: a local read with no outcome sentence of its own.
 pub(crate) const KEY_PAIR_PHONE: &str = "cloud-pair-phone";
@@ -468,8 +468,7 @@ fn phone_qr(paths: &CloudPaths, configured: &str) -> Result<PhoneQr, Prose> {
     let raw = credentials::read(paths)
         .ok()
         .flatten()
-        .map(|c| c.org_url)
-        .unwrap_or_else(|| configured.to_string());
+        .map_or_else(|| configured.to_string(), |c| c.org_url);
     if raw.trim().is_empty() {
         return Err(Prose::new()
             .text("This machine is not paired and no organization is set. Run ")

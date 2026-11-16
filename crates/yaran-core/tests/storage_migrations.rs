@@ -131,13 +131,13 @@ fn migrate_v3_to_v4_backfills_session_sort_order() {
     fork_database_at(
         &path,
         3,
-        r#"
+        r"
         insert into agent_sessions
             (id, project_id, provider, source_branch, branch_name, worktree_path, status, created_at, updated_at)
         values
             ('old', 'p', 'claude', 'main', 'old-branch', '/tmp/old', 'detached', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
             ('new', 'p', 'claude', 'main', 'new-branch', '/tmp/new', 'detached', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z');
-        "#,
+        ",
     );
 
     let store = SessionStore::open(&path).expect("open a fork schema-3 database");
@@ -176,7 +176,7 @@ fn migration_0005_backfills_duplicate_handles_deterministically() {
     fork_database_at(
         &path,
         4,
-        r#"
+        r"
         insert into agent_sessions
             (id, project_id, provider, source_branch, branch_name,
              worktree_path, status, created_at, updated_at)
@@ -187,7 +187,7 @@ fn migration_0005_backfills_duplicate_handles_deterministically() {
              'detached', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
             ('c', 'p', 'claude', 'main', '???', '/three/---',
              'detached', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
-        "#,
+        ",
     );
 
     let store = SessionStore::open(&path).expect("open a fork schema-4 database");
@@ -222,7 +222,7 @@ fn migration_0005_drops_orphan_session_prs_and_succeeds() {
     fork_database_at(
         &path,
         4,
-        r#"
+        r"
         insert into agent_sessions
             (id, project_id, provider, source_branch, branch_name,
              worktree_path, status, created_at, updated_at)
@@ -231,7 +231,7 @@ fn migration_0005_drops_orphan_session_prs_and_succeeds() {
              'detached', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
         insert into session_prs (session_id, pr_number, owner_repo)
         values ('live', 1, 'owner/repo'), ('missing-parent', 7, 'owner/repo');
-        "#,
+        ",
     );
 
     let store = SessionStore::open(&path).expect("an orphan PR row must not fail the open");
@@ -275,7 +275,7 @@ fn migration_0005_preserves_session_pr_foreign_key() {
     fork_database_at(
         &path,
         4,
-        r#"
+        r"
         insert into agent_sessions
             (id, project_id, provider, source_branch, branch_name,
              worktree_path, status, created_at, updated_at)
@@ -284,7 +284,7 @@ fn migration_0005_preserves_session_pr_foreign_key() {
              'detached', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
         insert into session_prs (session_id, pr_number, owner_repo)
         values ('session', 42, 'owner/repo');
-        "#,
+        ",
     );
 
     let store = SessionStore::open(&path).expect("migrate with PR row");
@@ -308,10 +308,13 @@ fn migration_0005_preserves_session_pr_foreign_key() {
         "the declared reference still names agent_sessions(id)"
     );
     store.delete_session("session").expect("hard delete parent");
-    assert!(store.load_agent_prs_of("session").expect("load").is_empty());
+    assert_eq!(
+        store.load_agent_prs_of("session").expect("load"),
+        [] as [yaran_core::model::AgentPr; 0]
+    );
 }
 
-/// Fork migration 0005 rebuilt the table with a NOT NULL, UNIQUE, CHECKed
+/// Fork migration 0005 rebuilt the table with a NOT NULL, UNIQUE, `CHECKed`
 /// `agent_handle` and had to recreate the sort index. SQLite cannot add a
 /// CHECK to an existing table, so upstream enforces the same contract in
 /// Rust plus a partial unique index. Asserted through the public API (which
@@ -407,7 +410,7 @@ fn migration_0005_rolls_back_atomically_on_failure() {
     fork_database_at(
         &path,
         4,
-        r#"
+        r"
         insert into agent_sessions
             (id, project_id, provider, source_branch, branch_name,
              worktree_path, status, created_at, updated_at)
@@ -416,7 +419,7 @@ fn migration_0005_rolls_back_atomically_on_failure() {
              'detached', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
             ('b', 'p', 'claude', 'main', 'b', '/tmp/second',
              'detached', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
-        "#,
+        ",
     );
     // Make the SECOND assignment fail after the first has been written: a
     // trigger aborts the update that would give row 'b' its handle.

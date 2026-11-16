@@ -1,5 +1,5 @@
 //! Integration tests for the bounded auto-resume primitives (fork
-//! tests/auto_resume.rs, 07d9b0ba), driven without real PTYs:
+//! `tests/auto_resume.rs`, 07d9b0ba), driven without real PTYs:
 //!
 //! 1. The peak concurrency never exceeds `cfg.concurrency`.
 //! 2. `is_stale` reports stale worktrees as stale, so the startup candidate

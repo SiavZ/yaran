@@ -254,13 +254,13 @@ use yaran_core::process_sessions::AgentProcessRegistry;
 
 use text_input::TextInput;
 
-pub(crate) use yaran_core::worker::{
-    AgentLaunchKind, BranchWarningKind, BrowserEntry, CreateAgentRequest, NonDefaultBranchAction,
-    ProjectWorktreeEntry, PullTarget, ResourceStats, WorkerEvent,
-};
 #[cfg(test)]
 pub(crate) use yaran_core::worker::{
     AgentLaunchReadyData, CreateAgentBranchInspection, ProcessInfo, ResourceKind,
+};
+pub(crate) use yaran_core::worker::{
+    BranchWarningKind, BrowserEntry, CreateAgentRequest, NonDefaultBranchAction,
+    ProjectWorktreeEntry, PullTarget, ResourceStats, WorkerEvent,
 };
 
 /// Status key shared by every hint that describes what the interface is doing

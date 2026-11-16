@@ -159,8 +159,7 @@ pub(crate) fn extras_lines(extras: &NewAgentExtras) -> Vec<ExtrasLine> {
     };
     let harness = extras
         .selected()
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| "(none)".to_string());
+        .map_or_else(|| "(none)".to_string(), |p| p.as_str().to_string());
     let mut lines = vec![
         row(
             NameNewAgentFocus::Provider,

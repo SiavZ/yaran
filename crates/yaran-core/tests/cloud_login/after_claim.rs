@@ -1,7 +1,7 @@
 //! Failures after a claim succeeds must report cleanup and Replace effects truthfully.
 //!
 //! Exercises supersession and failed persistence through the real login and mock Worker.
-//! - Test-only child of the cloud_login integration suite.
+//! - Test-only child of the `cloud_login` integration suite.
 //!
 //! <module-headers:begin>
 //! ```text

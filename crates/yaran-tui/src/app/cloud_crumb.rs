@@ -23,7 +23,7 @@
 //! ```
 //! <module-headers:end>
 
-use super::*;
+use super::{App, Span, Style};
 use yaran_core::cloud::leg_identity::CloudMode;
 use yaran_core::cloud::view::{CloudLegState, CloudLegView};
 

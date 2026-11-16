@@ -1164,7 +1164,7 @@ impl Theme {
     /// background, with whichever body color reads on it, so the pane that owns
     /// the keys reads at a glance without a token of its own. Deliberately not
     /// the selection colors, which mean "the selected row" inside a pane.
-    pub fn pane_focus_chip_style(&self) -> Style {
+    pub(crate) fn pane_focus_chip_style(&self) -> Style {
         Style::default()
             .fg(readable_on(
                 self.title_focused,
@@ -1178,7 +1178,7 @@ impl Theme {
     /// state's own color as the background, with whichever of the theme's body
     /// colors reads on it. Typing is what the user is doing there, so it wears
     /// the same violet the sidebar's "Typing" word does.
-    pub fn pane_input_chip_style(&self) -> Style {
+    pub(crate) fn pane_input_chip_style(&self) -> Style {
         Style::default()
             .fg(readable_on(
                 self.session_typing,

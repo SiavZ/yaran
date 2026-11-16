@@ -142,7 +142,7 @@ fn watch_engine_no_rules_for_provider_is_noop() {
     // With zero rules, the engine reports rule_count == 0 and observe
     // returns an empty Vec for any snapshot.
     let (mut engine, errors) = WatchEngine::new("noop", &[]);
-    assert!(errors.is_empty());
+    assert_eq!(errors, [] as [std::string::String; 0]);
     assert_eq!(engine.rule_count(), 0);
 
     let effects = engine.observe("rate limited everything is on fire", Instant::now());
@@ -228,7 +228,10 @@ fn auto_clear_rule_fires_for_multiple_completed_tasks() {
     assert!(errors.is_empty(), "load errors: {errors:?}");
 
     let t0 = Instant::now();
-    assert!(engine.observe("first task [task-done]", t0).is_empty());
+    assert_eq!(
+        engine.observe("first task [task-done]", t0),
+        [] as [yaran_core::watch::WatchEffect; 0]
+    );
     let effects = engine.observe("first task [task-done]", t0 + Duration::from_millis(15));
     assert!(
         effects.iter().any(|effect| {
@@ -242,16 +245,14 @@ fn auto_clear_rule_fires_for_multiple_completed_tasks() {
 
     // Simulate the provider clearing the visible transcript before the
     // next task completes. This ratchets the match baseline back to zero.
-    assert!(
-        engine
-            .observe("transcript cleared", t0 + Duration::from_millis(40))
-            .is_empty()
+    assert_eq!(
+        engine.observe("transcript cleared", t0 + Duration::from_millis(40)),
+        [] as [yaran_core::watch::WatchEffect; 0]
     );
 
-    assert!(
-        engine
-            .observe("second task [task-done]", t0 + Duration::from_millis(50))
-            .is_empty()
+    assert_eq!(
+        engine.observe("second task [task-done]", t0 + Duration::from_millis(50)),
+        [] as [yaran_core::watch::WatchEffect; 0]
     );
     let effects = engine.observe("second task [task-done]", t0 + Duration::from_millis(65));
     assert!(

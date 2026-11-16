@@ -100,10 +100,10 @@ impl App {
     /// projects, so they cannot be moved by this action.
     pub(crate) fn move_selected_project(&mut self, dir: MoveDir) {
         let Some(project_id) = self.selected_project_group_key() else {
-            if self.sidebar_style() != SidebarStyle::Grouped {
-                self.set_info("Project ordering is available in the grouped sidebar.");
-            } else {
+            if self.sidebar_style() == SidebarStyle::Grouped {
                 self.set_info("Select a project header or one of its agents to move the project.");
+            } else {
+                self.set_info("Project ordering is available in the grouped sidebar.");
             }
             return;
         };

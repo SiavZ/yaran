@@ -1,5 +1,5 @@
 //! Integration tests for `yaran_core::purge`, the GDPR hard purge (fork
-//! tests/purge_integration.rs, audit02 Phase 10 / P0-J).
+//! `tests/purge_integration.rs`, audit02 Phase 10 / P0-J).
 //!
 //! These tests fabricate a self-contained yaran installation under a
 //! tempdir (sqlite, worktree, fake provider chat dirs, fake AMQ inbox,
@@ -253,8 +253,7 @@ fn count_target_records(log_text: &str, target_sid: &str) -> usize {
             v.get("fields")
                 .and_then(|f| f.get("session_id"))
                 .and_then(|s| s.as_str())
-                .map(|s| s == target_sid)
-                .unwrap_or(false)
+                .is_some_and(|s| s == target_sid)
         })
         .count()
 }
@@ -270,7 +269,7 @@ fn count_redacted_records(log_text: &str) -> usize {
             };
             v.get("fields")
                 .and_then(|f| f.get("redacted"))
-                .and_then(|b| b.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
         })
         .count()
@@ -638,7 +637,7 @@ fn purge_all_retains_shared_provider_history_without_workspace_consent() {
     h.storage.upsert_session(&shared).unwrap();
 
     let (plans, failures) = build_plans_for_all(&h.storage, &h.paths, &h.config).unwrap();
-    assert!(failures.is_empty());
+    assert_eq!(failures, [] as [std::string::String; 0]);
     assert_eq!(plans.len(), 1);
     assert!(plans[0].items.iter().any(|item| matches!(
         item,

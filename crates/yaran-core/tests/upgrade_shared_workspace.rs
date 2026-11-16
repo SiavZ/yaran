@@ -80,7 +80,7 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
             // The fork runner's backfill: basename-first handle, `-N` on a
             // collision, rows visited in id order.
             tx.execute_batch(
-                r#"
+                r"
                 insert into agent_sessions_new
                   (id, project_id, provider, source_branch, branch_name, worktree_path,
                    title, project_path, started_providers, status, created_at, updated_at,
@@ -92,7 +92,7 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
                        case id when 'legacy-a' then 'lively-otter' else 'lively-otter-2' end,
                        null
                 from agent_sessions;
-                "#,
+                ",
             )
             .unwrap();
             tx.execute_batch(after).unwrap();
@@ -238,7 +238,7 @@ fn an_upstream_database_gets_derived_valid_unique_handles_for_every_row() {
         drop(store);
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
-            r#"
+            r"
             drop index idx_agent_sessions_agent_handle;
             alter table agent_sessions drop column agent_handle;
             alter table agent_sessions drop column shared_workspace;
@@ -255,7 +255,7 @@ fn an_upstream_database_gets_derived_valid_unique_handles_for_every_row() {
                '2026-01-01T00:00:00Z', 'folder', '/home/ada/Notes', 2),
               ('u4', 'p', 'claude', 'main', '!!!', '/wt/p/!!!',
                'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'managed', null, 3);
-            "#,
+            ",
         )
         .unwrap();
     }
@@ -317,14 +317,14 @@ fn fork_state_json_rows_load_as_reconnectable_sessions() {
         ),
     ] {
         conn.execute(
-            r#"insert into agent_sessions
+            r"insert into agent_sessions
                  (id, project_id, provider, source_branch, branch_name, worktree_path, title,
                   project_path, started_providers, status, created_at, updated_at, state_json,
                   session_settings, sort_order, shared_workspace, agent_handle, deleted_at,
                   provider_session_ids)
                values (?1, 'proj-1', 'claude', 'main', ?1, '/tmp/' || ?1, null, '/home/ada/widget',
                        '[]', ?3, '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z', ?4, null, 9, 0,
-                       ?2, null, '{}')"#,
+                       ?2, null, '{}')",
             rusqlite::params![id, handle, status, state_json],
         )
         .unwrap();

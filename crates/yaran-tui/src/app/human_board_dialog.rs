@@ -26,13 +26,17 @@ use super::components::{
 };
 use super::human_board::{HumanBoardCardFocus as Focus, Recipient};
 use super::render::{age_words, centered_rect_exact};
-use super::*;
+use super::{
+    Action, App, CenterPart, Line, Modifier, MouseButton, MouseEvent, MouseEventKind,
+    OverlayMouseLayout, PromptState, Rect, SelectionOrigin, Span, Style, TermGridPos,
+    TerminalSelection,
+};
 use crate::theme::FocusState;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::prelude::*;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::symbols::border;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 /// The most rows the reply field grows to before it scrolls.
@@ -309,27 +313,22 @@ impl App {
         // ── The fixed part under the text, at its current and tallest ──────
         let no_target = card.is_open() && reply.is_none();
         let field_box_width = content_width;
-        let reply_rows = reply
-            .as_ref()
-            .map(|reply| {
-                let (rows, ..) = reply_window(
-                    &reply.input,
-                    reply_text_width(field_box_width),
-                    reply.scroll,
-                );
-                rows.len().clamp(1, REPLY_MAX_ROWS as usize) as u16
-            })
-            .unwrap_or(0);
+        let reply_rows = reply.as_ref().map_or(0, |reply| {
+            let (rows, ..) = reply_window(
+                &reply.input,
+                reply_text_width(field_box_width),
+                reply.scroll,
+            );
+            rows.len().clamp(1, REPLY_MAX_ROWS as usize) as u16
+        });
         let bottom = |field_rows: u16| -> u16 {
             let reply_part = if reply.is_some() {
                 1 + 2 + field_rows
-            } else if no_target {
-                1
             } else {
-                0
+                u16::from(no_target)
             };
             let gap_above = 1;
-            let gap_before_buttons = if reply_part > 0 { 1 } else { 0 };
+            let gap_before_buttons = u16::from(reply_part > 0);
             gap_above + reply_part + gap_before_buttons + 3 + 1
         };
         let bottom_now = bottom(reply_rows);

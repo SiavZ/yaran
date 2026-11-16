@@ -17,7 +17,7 @@ use ratatui::layout::Rect;
 
 use super::pty_ownership::PtyDriver;
 use super::render::minimized_agent_term_size;
-use super::*;
+use super::{App, FullscreenOverlay, InputTarget, SessionIdRef, SessionSurface, TabId, TabIdRef};
 
 /// How long the windowed center pane must keep one geometry before background
 /// PTYs follow it. Every presize costs a hidden agent a full transcript
@@ -156,6 +156,7 @@ mod tests {
     use super::*;
     use crate::app::background_server::tests::FakeCompanion;
     use crate::app::test_support::{default_bindings, test_app};
+    use crate::app::{CenterMode, FocusPane, LeftItem};
     use crate::model::SessionStatus;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

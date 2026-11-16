@@ -53,7 +53,7 @@ fn discover_doctor_script(
 }
 
 /// Entry point for `yaran doctor [--json] [--anonymize]`.
-pub fn run_doctor(paths: &YaranPaths, json: bool, anonymize: bool) -> Result<()> {
+pub(crate) fn run_doctor(paths: &YaranPaths, json: bool, anonymize: bool) -> Result<()> {
     let script = resolve_doctor_script();
     if json {
         let mut bash_json = serde_json::json!({});

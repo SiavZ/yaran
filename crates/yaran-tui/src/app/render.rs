@@ -179,7 +179,7 @@ const AGENT_SIDEBAR_TITLE: &str = "Agents & Terminals";
 /// Split the center lane into `(pr_banner_area, pane_area)`. The banner row is
 /// one row tall when `banner` is set and zero rows otherwise.
 pub(crate) fn center_pane_split(area: Rect, banner: bool, at_bottom: bool) -> (Rect, Rect) {
-    let banner_height: u16 = if banner { 1 } else { 0 };
+    let banner_height: u16 = u16::from(banner);
     if at_bottom {
         let [pane_area, pr_area] = Layout::default()
             .direction(Direction::Vertical)
@@ -1254,10 +1254,10 @@ pub(crate) fn agent_row_provider_suffix(
     running: &ProviderKind,
     configured: &ProviderKind,
 ) -> String {
-    if running != configured {
-        format!(" ({} → {})", running.as_str(), configured.as_str())
-    } else {
+    if running == configured {
         format!(" ({})", configured.as_str())
+    } else {
+        format!(" ({} → {})", running.as_str(), configured.as_str())
     }
 }
 
@@ -3191,7 +3191,7 @@ impl App {
         let right_w = right
             .iter()
             .map(|s| s.content.as_ref().cell_width())
-            .fold(0u16, |a, b| a.saturating_add(b));
+            .fold(0u16, u16::saturating_add);
         let left_budget = if right.is_empty() {
             text_width
         } else {
@@ -3920,18 +3920,17 @@ impl App {
                             .is_some_and(|next| matches!(next, LeftItem::Session(_)));
                         if last { "└ " } else { "├ " }
                     });
-                    self.engine
-                        .sessions
-                        .get(*index)
-                        .map(|session| {
+                    self.engine.sessions.get(*index).map_or_else(
+                        || ListItem::new(Line::from("")),
+                        |session| {
                             ListItem::new(self.render_compact_agent_row(
                                 session,
                                 row_text_width,
                                 connector,
                                 !grouped,
                             ))
-                        })
-                        .unwrap_or_else(|| ListItem::new(Line::from("")))
+                        },
+                    )
                 }
                 // A terminal row in compact density is its first line alone,
                 // like a compact agent row.
@@ -4008,7 +4007,7 @@ impl App {
             spans
                 .iter()
                 .map(|s| s.content.as_ref().cell_width())
-                .fold(0u16, |a, b| a.saturating_add(b))
+                .fold(0u16, u16::saturating_add)
         };
 
         let mut prefix: Vec<Span<'static>> = Vec::new();
@@ -5980,7 +5979,7 @@ impl App {
     fn render_agent_scrollbar(&mut self, frame: &mut Frame, area: Rect, term_area: Rect) {
         let has_output = self
             .selected_terminal_surface_client()
-            .is_some_and(|provider| provider.has_output());
+            .is_some_and(yaran_core::pty::PtyClient::has_output);
         let total = self.part_snapshots.main.buf.scrollback_total;
         if !has_output || total == 0 || term_area.height < 3 || area.width < 2 {
             return;
@@ -6249,7 +6248,7 @@ impl App {
             }
         }
 
-        let Some([term_area, hint_area]) = agent_term_hint_split(inner) else {
+        let Some([_term_area, _hint_area]) = agent_term_hint_split(inner) else {
             return;
         };
 
@@ -6373,7 +6372,7 @@ impl App {
             .human_board
             .settings
             .as_ref()
-            .is_some_and(|settings| settings.has_people());
+            .is_some_and(yaran_core::human_board::BoardSettings::has_people);
         let current = self.human_board.tab.clone();
         let pane_focused = self.focus == FocusPane::Files;
         let changed_files = self.engine.unstaged_files.len() + self.engine.staged_files.len();
@@ -6425,8 +6424,7 @@ impl App {
             let width = display_width(&label)
                 + count
                     .as_ref()
-                    .map(|(text, _)| 1 + display_width(text))
-                    .unwrap_or(0)
+                    .map_or(0, |(text, _)| 1 + display_width(text))
                 + if dots > 0 { 1 + dots } else { 0 };
             let room = usize::from(right.saturating_sub(x));
             if width > room {
@@ -6901,8 +6899,7 @@ impl App {
         let problems = self
             .human_board
             .readable()
-            .map(|board| board.problems.len())
-            .unwrap_or(0);
+            .map_or(0, |board| board.problems.len());
         let left = (problems > 0).then(|| {
             Line::from(Span::styled(
                 format!(
@@ -7021,7 +7018,7 @@ impl App {
                 .human_board
                 .settings
                 .as_ref()
-                .is_some_and(|settings| settings.has_people());
+                .is_some_and(yaran_core::human_board::BoardSettings::has_people);
         if rows.is_empty() {
             let (headline, hint) = match view {
                 yaran_core::human_board::Audience::Person(person) => (
@@ -8302,11 +8299,10 @@ impl App {
                         row.snapshot.attempts_made, row.snapshot.max_attempts
                     )
                 };
-                let session = self
-                    .engine
-                    .session_by_id(&row.session_id)
-                    .map(|s| s.display_label())
-                    .unwrap_or_else(|| row.session_id.clone());
+                let session = self.engine.session_by_id(&row.session_id).map_or_else(
+                    || row.session_id.clone(),
+                    yaran_core::model::AgentSession::display_label,
+                );
                 let built_in = if row.built_in { " (built-in)" } else { "" };
                 ListItem::new(Line::from(vec![
                     Span::styled(
@@ -15177,7 +15173,7 @@ impl App {
                 self.render_confirm_use_existing_branch_prompt(frame);
             }
             PromptState::ConfirmSharedWriter { .. } => {
-                self.render_confirm_shared_writer_prompt(frame)
+                self.render_confirm_shared_writer_prompt(frame);
             }
             PromptState::Cloud(_) => self.render_cloud_prompt(frame),
             _ => return false,

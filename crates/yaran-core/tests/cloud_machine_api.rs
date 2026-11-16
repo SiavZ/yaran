@@ -118,7 +118,7 @@ fn config_success_skew_and_revocation() {
     assert_eq!(api.config().unwrap().tunnel.token_version, 1);
     let seen = &worker.requests()[0];
     assert!(seen.signature_verifies(&public_key_of(&creds.machine_key_der().unwrap())));
-    assert!(seen.body.is_empty());
+    assert_eq!(seen.body, [] as [u8; 0]);
 
     let (_r, paths, _w, api) = api_for(|_| {
         let mut r = MockResponse::error(401, "signature_expired", "clock");
@@ -194,7 +194,7 @@ fn unpair_counts_202_and_410_as_done() {
     pair_sample(&paths, SAMPLE_ORG);
     assert_eq!(api.unpair(), Ok(Unpaired::TeardownStarted));
     assert_eq!(worker.requests()[0].path, "/v1/machine/unpair");
-    assert!(worker.requests()[0].body.is_empty());
+    assert_eq!(worker.requests()[0].body, [] as [u8; 0]);
     let (_r, paths, _w, api) = api_for(|_| MockResponse::error(410, "machine_revoked", "gone"));
     pair_sample(&paths, SAMPLE_ORG);
     assert_eq!(api.unpair(), Ok(Unpaired::AlreadyRevoked));

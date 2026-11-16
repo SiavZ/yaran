@@ -129,12 +129,11 @@ fn main() {
     println!("\nrunning {} tests", selected.len());
     let mut failed = Vec::new();
     for (name, case) in &selected {
-        match std::panic::catch_unwind(case) {
-            Ok(()) => println!("test {name} ... ok"),
-            Err(_) => {
-                println!("test {name} ... FAILED");
-                failed.push(*name);
-            }
+        if let Ok(()) = std::panic::catch_unwind(case) {
+            println!("test {name} ... ok")
+        } else {
+            println!("test {name} ... FAILED");
+            failed.push(*name);
         }
     }
     println!(

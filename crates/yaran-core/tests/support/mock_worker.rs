@@ -35,11 +35,11 @@ use yaran_core::cloud::protocol::machine::EventBatch;
 use yaran_core::cloud::protocol::rules::b64url_decode;
 use yaran_core::cloud::protocol::signing::{RequestParts, canonical_string};
 
-pub const MACHINE_ID: &str = "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b";
+pub(crate) const MACHINE_ID: &str = "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b";
 
 /// How the mock answers one `POST /v1/machine/events`.
 #[derive(Clone, Debug)]
-pub enum Answer {
+pub(crate) enum Answer {
     Accept,
     AcceptAsDuplicates,
     AcceptPushOff,
@@ -50,7 +50,7 @@ pub enum Answer {
 }
 
 #[derive(Clone, Debug)]
-pub struct Seen {
+pub(crate) struct Seen {
     pub method: String,
     pub path: String,
     pub verified: bool,
@@ -59,7 +59,7 @@ pub struct Seen {
     pub body: Value,
 }
 
-pub struct MockWorker {
+pub(crate) struct MockWorker {
     pub base: String,
     pub seen: Arc<Mutex<Vec<Seen>>>,
     pub answers: Arc<Mutex<VecDeque<Answer>>>,
@@ -82,7 +82,7 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 /// The 02 test machine key's PKCS#8 v2 bytes (`fixtures/sig/machine-request.json`).
-pub fn machine_key_pkcs8() -> Vec<u8> {
+pub(crate) fn machine_key_pkcs8() -> Vec<u8> {
     unhex(
         fixture("sig/machine-request.json")["pkcs8_v2_hex"]
             .as_str()
@@ -91,7 +91,7 @@ pub fn machine_key_pkcs8() -> Vec<u8> {
 }
 
 /// The 02 test machine key (`fixtures/sig/machine-request.json`).
-pub fn machine_key() -> (Ed25519KeyPair, Vec<u8>) {
+pub(crate) fn machine_key() -> (Ed25519KeyPair, Vec<u8>) {
     let f = fixture("sig/machine-request.json");
     let key = Ed25519KeyPair::from_pkcs8(&machine_key_pkcs8()).expect("pkcs8");
     let public = b64url_decode(f["public_key"].as_str().unwrap()).expect("public key");
@@ -99,14 +99,14 @@ pub fn machine_key() -> (Ed25519KeyPair, Vec<u8>) {
 }
 
 /// 02's own `MachineConfig` fixture, spaced for tests.
-pub fn machine_config() -> Value {
+pub(crate) fn machine_config() -> Value {
     let mut config = fixture("api/MachineConfig.json")["valid"][0]["value"].clone();
     config["events"]["min_interval_ms"] = json!(0);
     config
 }
 
 impl MockWorker {
-    pub fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let addr = listener.local_addr().expect("addr");
         let mock = Self {
@@ -132,11 +132,11 @@ impl MockWorker {
         mock
     }
 
-    pub fn script(&self, answers: impl IntoIterator<Item = Answer>) {
+    pub(crate) fn script(&self, answers: impl IntoIterator<Item = Answer>) {
         self.answers.lock().unwrap().extend(answers);
     }
 
-    pub fn posts(&self) -> Vec<Seen> {
+    pub(crate) fn posts(&self) -> Vec<Seen> {
         self.seen
             .lock()
             .unwrap()
@@ -146,7 +146,7 @@ impl MockWorker {
             .collect()
     }
 
-    pub fn config_gets(&self) -> usize {
+    pub(crate) fn config_gets(&self) -> usize {
         self.seen
             .lock()
             .unwrap()
@@ -155,7 +155,7 @@ impl MockWorker {
             .count()
     }
 
-    pub fn wait_for_posts(&self, n: usize) -> Vec<Seen> {
+    pub(crate) fn wait_for_posts(&self, n: usize) -> Vec<Seen> {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let posts = self.posts();

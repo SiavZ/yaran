@@ -266,7 +266,7 @@ const EXIT_PURGE_ABORTED: i32 = 2;
 /// [`EXIT_PURGE_ABORTED`] when the confirmation phrase did not match. Invalid
 /// arguments and an unknown target are `Err`. The caller holds the
 /// single-instance lock for the mutating subcommands.
-pub fn run_session(args: &[String], paths: &YaranPaths) -> Result<i32> {
+pub(crate) fn run_session(args: &[String], paths: &YaranPaths) -> Result<i32> {
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     run_session_with_input(args, paths, &mut input)
@@ -277,7 +277,7 @@ fn run_session_with_input(
     paths: &YaranPaths,
     input: &mut dyn std::io::BufRead,
 ) -> Result<i32> {
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("");
+    let sub = args.first().map_or("", std::string::String::as_str);
     match sub {
         "purge" => run_session_purge(paths, &args[1..], input),
         "purge-all" => {

@@ -14,12 +14,15 @@ use std::sync::mpsc;
 use yaran_core::orphan_worktrees::OrphanWorktreeCandidate;
 
 use super::components::PickerList;
-use super::*;
-#[allow(unused_imports)]
+use super::{
+    Action, App, BindingScope, KeyCode, KeyEvent, Line, Modifier, OverlayMouseLayout, PathBuf,
+    PromptState, Result, Span, Style, render, thread,
+};
+#[expect(unused_imports)]
 use ratatui::prelude::*;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::symbols::border;
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 /// Where the cleaner modal is.
@@ -148,7 +151,7 @@ impl App {
                     match result {
                         Ok(()) => self.set_info(format!("Removed orphan worktree {shown}.")),
                         Err(message) => {
-                            self.set_error(yaran_core::sanitize::for_terminal(&message))
+                            self.set_error(yaran_core::sanitize::for_terminal(&message));
                         }
                     }
                     return;
@@ -233,7 +236,7 @@ impl App {
                     .is_some_and(|candidate| candidate.branch.is_some());
                 match key.code {
                     // `b` toggles branch deletion, only when there is a branch.
-                    KeyCode::Char('b') | KeyCode::Char(' ') if has_branch => {
+                    KeyCode::Char('b' | ' ') if has_branch => {
                         prompt.stage = OrphanWorktreesStage::Confirm {
                             delete_branch: !delete_branch,
                         };

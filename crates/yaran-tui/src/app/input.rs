@@ -1727,7 +1727,7 @@ impl App {
                 Action::MoveAgentDown => self.move_selected_agent(super::reorder::MoveDir::Down),
                 Action::MoveAgentUp => self.move_selected_agent(super::reorder::MoveDir::Up),
                 Action::MoveProjectDown => {
-                    self.move_selected_project(super::reorder::MoveDir::Down)
+                    self.move_selected_project(super::reorder::MoveDir::Down);
                 }
                 Action::MoveProjectUp => self.move_selected_project(super::reorder::MoveDir::Up),
                 Action::NewTerminal => self.new_companion_terminal(),
@@ -3642,7 +3642,7 @@ impl App {
         let poll_ms = 100u64.min(self.max_poll_ms());
         let stdin_borrow = stdin_handle.as_fd();
         let input =
-            super::hangup::wait_for_terminal_input(&stdin_borrow, Duration::from_millis(poll_ms))?;
+            super::hangup::wait_for_terminal_input(stdin_borrow, Duration::from_millis(poll_ms))?;
         // A hang-up the poll reports (HUP, ERR, NVAL) ends the run here, before
         // a read that may never come back.
         if input == super::hangup::TerminalInput::Gone {
@@ -13059,7 +13059,7 @@ impl App {
 
     /// Jump the selected surface's scrollback to the point on the scrollbar
     /// track under `row`. Goes through `note_user_scroll` so a drag away from
-    /// the live edge enters scroll mode exactly like a wheel or PageUp would.
+    /// the live edge enters scroll mode exactly like a wheel or `PageUp` would.
     fn set_center_scrollback_from_mouse(&mut self, row: u16) {
         let Some(track) = self.mouse_layout.agent_scrollbar else {
             return;
@@ -13736,7 +13736,7 @@ impl App {
                     && !self.scroll_mode_active()
                     && self
                         .selected_terminal_surface_client()
-                        .is_some_and(|p| p.has_mouse_mode());
+                        .is_some_and(yaran_core::pty::PtyClient::has_mouse_mode);
                 self.handle_terminal_selection_mouse(mouse);
                 if replay_click {
                     self.replay_click_to_center_child(&mouse);
@@ -14494,8 +14494,8 @@ mod tests {
     }
     use crate::app::test_support::*;
     use crate::app::{
-        AgentLaunchKind, App, BranchWarningKind, CenterMode, ChangeAgentProviderMode,
-        CloneProjectFocus, ConfigReloadFailedFocus, ConfigureFieldFocus, ConfirmKillRunningPrompt,
+        App, BranchWarningKind, CenterMode, ChangeAgentProviderMode, CloneProjectFocus,
+        ConfigReloadFailedFocus, ConfigureFieldFocus, ConfirmKillRunningPrompt,
         ConfirmNonDefaultBranchFocus, CreateAgentBranchInspection, CreateAgentRequest,
         DeleteAgentFocus, FirstLoadButton, FirstLoadPrompt, FocusPane, FullscreenOverlay,
         InputTarget, KillRunningAction, KillRunningFocus, KillRunningFooterAction,
@@ -14527,6 +14527,7 @@ mod tests {
     use ratatui::text::Line;
     use tempfile::tempdir;
     use yaran_core::engine::InFlightKey;
+    use yaran_core::worker::AgentLaunchKind;
     use yaran_core::worker::BrowserEntry;
     use yaran_core::worker::ResolvedPullRequest;
 

@@ -47,7 +47,7 @@ use yaran_core::model::{
     ProviderKind, SessionStatus,
 };
 use yaran_core::pr_list::PrSortMode;
-use yaran_core::storage::{SessionStore, StoredPr};
+use yaran_core::storage::SessionStore;
 
 /// `sessions.sqlite3` exactly as the FIRST public yaran created it (`ed917a4`,
 /// "First upload"): ONE table, and it already carried `title` and `project_path`.
@@ -1004,7 +1004,7 @@ fn opening_a_database_this_build_created_is_a_no_op_the_second_time() {
 /// `src/storage/migrations/0005_shared_workspace.sql` (the table rebuild) plus
 /// `0006_provider_session_ids.sql`, not invented. The fork kept projects in
 /// `config.toml`, so there is no `projects` table.
-const FORK_SCHEMA_6: &str = r#"
+const FORK_SCHEMA_6: &str = r"
 create table agent_sessions (
     id text primary key,
     project_id text not null,
@@ -1042,7 +1042,7 @@ create table session_prs (
 create index idx_agent_sessions_sort_order
     on agent_sessions(sort_order, updated_at desc, id);
 pragma user_version = 6;
-"#;
+";
 
 /// A fork user's provider session ids are the whole point of the column: they
 /// must come through the upgrade readable and writable, and the ALTER that adds

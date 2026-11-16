@@ -27,7 +27,7 @@ use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use super::cloud_commands::CloudPrompt;
 use super::input::{contains_point, cursor_from_single_line_position};
 use super::modal::{ModalKeyStep, binding_lookup_is_suppressed, click_target, modal_key_step};
-use super::*;
+use super::{App, BindingScope, ConfirmFocus, OverlayMouseLayout, PromptState, Rect};
 
 /// What a key does, decided before anything is mutated.
 enum CloudKey {
