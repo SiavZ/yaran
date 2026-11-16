@@ -32,11 +32,17 @@ use crate::cloud::protocol::signing::{self, RequestParts, SignedHeaders, Signing
 /// The exact bytes to send and the SIG headers that cover them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedRequest {
+    /// The body exactly as signed.
     pub body: Vec<u8>,
+    /// The signature headers over the body.
     pub headers: SignedHeaders,
 }
 
 /// The body bytes for `value` (`None`: an empty body).
+///
+/// # Panics
+///
+/// Never in practice: every wire type serializes.
 pub fn body_bytes<T: Serialize>(value: Option<&T>) -> Vec<u8> {
     value
         .map(|v| serde_json::to_vec(v).expect("wire types always serialize"))
@@ -44,6 +50,10 @@ pub fn body_bytes<T: Serialize>(value: Option<&T>) -> Vec<u8> {
 }
 
 /// Sign `body` now, with a fresh nonce.
+///
+/// # Errors
+///
+/// Fails when the request cannot be signed.
 pub fn prepare(
     key: &Ed25519KeyPair,
     parts: &RequestParts<'_>,
@@ -54,6 +64,10 @@ pub fn prepare(
 }
 
 /// Sign `body` with a fixed timestamp and nonce (tests and vectors).
+///
+/// # Errors
+///
+/// Fails when the request cannot be signed.
 pub fn prepare_at(
     key: &Ed25519KeyPair,
     parts: &RequestParts<'_>,

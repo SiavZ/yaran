@@ -25,7 +25,8 @@
 use ring::digest::{Context, SHA256};
 
 fn length_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
-    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    let len = u32::try_from(bytes.len()).expect("a JOSE header value is far below 4 GiB");
+    out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(bytes);
 }
 
@@ -50,7 +51,7 @@ pub fn concat_kdf(z: &[u8], algorithm_id: &str, apu: &[u8], apv: &[u8], key_bits
         ctx.update(&info);
         out.extend_from_slice(ctx.finish().as_ref());
     }
-    out.truncate((key_bits / 8) as usize);
+    out.truncate(usize::try_from(key_bits / 8).unwrap_or(usize::MAX));
     out
 }
 
@@ -67,7 +68,7 @@ mod tests {
             f["apu_utf8"].as_str().unwrap(),
             f["apv_utf8"].as_str().unwrap(),
         );
-        let bits = f["keydatalen"].as_u64().unwrap() as u32;
+        let bits = u32::try_from(f["keydatalen"].as_u64().unwrap()).unwrap();
         assert_eq!(
             hex(&other_info(enc, apu.as_bytes(), apv.as_bytes(), bits)),
             f["other_info_hex"],

@@ -25,7 +25,7 @@ use crate::engine::events::{EventReaction, StatusUpdate};
 use crate::engine::spawn_worker::{BackgroundWorkerSpec, LoopControl, LoopWorkerSpec};
 use crate::engine::{Command, Engine, InFlightKey};
 use crate::ids::{SessionIdRef, TabIdRef};
-use crate::model::{AgentSession, ProviderKind};
+use crate::model::{AgentSession, ConversationStart, ProviderKind};
 use crate::resume_recovery::{
     self, ClaudeLiveSession, ClaudeLiveSessionTarget, ProviderSessionLaunch, ResumeIdInput,
 };
@@ -34,7 +34,16 @@ use crate::worker::{AgentLaunchKind, WorkerEvent};
 /// How often a running Claude tab's live conversation is compared with the
 /// recorded id. A `/clear` is followed within this window; a restart inside
 /// it still resumes the conversation from before the `/clear`.
-pub const CLAUDE_SESSION_FOLLOW_INTERVAL: Duration = Duration::from_secs(20);
+pub(crate) const CLAUDE_SESSION_FOLLOW_INTERVAL: Duration = Duration::from_secs(20);
+
+/// Whether the one-time history recovery is running in the background.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeRecovery {
+    /// A recovery worker was started and has not reported yet.
+    Running,
+    /// Nothing needed recovering, or the worker could not start.
+    Idle,
+}
 
 impl Engine {
     /// Start following running Claude tabs onto the conversation they are
@@ -188,9 +197,10 @@ impl Engine {
         session: &AgentSession,
         tab_id: &TabIdRef,
         provider: &ProviderKind,
-        requested: bool,
-        resume: bool,
+        requested: ConversationStart,
+        resume: ConversationStart,
     ) -> ProviderSessionLaunch {
+        let (requested, resume) = (requested.is_resume(), resume.is_resume());
         let config = crate::config::provider_config(&self.config, provider);
         let slot = self.is_slot_tab(session, tab_id);
         if requested && slot && !self.tab_has_live_same_provider_sibling(session, tab_id, provider)
@@ -315,10 +325,10 @@ impl Engine {
     }
 
     /// Start the one-time recovery of Claude and Codex histories stranded under
-    /// old per-agent worktrees (fork 36568df7), off the engine thread. Returns
+    /// old per-agent worktrees (fork 36568df7), off the engine thread. Answers
     /// whether a worker was started: with nothing to recover it is not, so a
     /// normal startup never scans the provider directories at all.
-    pub fn dispatch_resume_recovery(&self) -> bool {
+    pub fn dispatch_resume_recovery(&self) -> ResumeRecovery {
         // Who to look for is read here, on the engine's own store. The worker
         // never opens a store (`SessionStore::open` runs migrate(), which
         // must not race the engine); it only scans and copies, and the
@@ -329,7 +339,7 @@ impl Engine {
             &self.session_store,
         );
         if identities.is_empty() {
-            return false;
+            return ResumeRecovery::Idle;
         }
         let worktrees_root = self.paths.worktrees_root.clone();
         let tx = self.worker_tx.clone();
@@ -347,7 +357,11 @@ impl Engine {
                     .map_err(|err| format!("{err:#}"));
                 let _ = tx.send(WorkerEvent::ResumeRecoveryCompleted(result));
             });
-        spawned.is_ok()
+        if spawned.is_ok() {
+            ResumeRecovery::Running
+        } else {
+            ResumeRecovery::Idle
+        }
     }
 
     pub(crate) fn process_resume_recovery_completed(
@@ -427,20 +441,22 @@ impl Engine {
     /// Queue every startup candidate behind the `[auto_resume]` throttle.
     /// Returns how many were queued.
     ///
-    /// `recovering` says a history recovery was just dispatched. A shared
+    /// `recovery` says whether a history recovery was just dispatched. A shared
     /// agent has no resume-latest fallback, so launching it before recovery
     /// records its id would start it fresh and lose the conversation; the
     /// queue is then held until `ResumeRecoveryCompleted`, as the fork ran
     /// auto-resume only after recovery. Unshared agents lose nothing by going
     /// first, but one queue keeps one order, so they wait too.
-    pub fn queue_startup_launches(&mut self, recovering: bool) -> usize {
+    pub fn queue_startup_launches(&mut self, recovery: ResumeRecovery) -> usize {
         let candidates = self.startup_launch_candidates();
         for session in &candidates {
             self.startup_launches.enqueue(QueuedStartupLaunch {
                 session_id: session.id.clone(),
             });
         }
-        if recovering && candidates.iter().any(resume_recovery::session_is_shared) {
+        if recovery == ResumeRecovery::Running
+            && candidates.iter().any(resume_recovery::session_is_shared)
+        {
             self.startup_launches.hold();
         }
         if !candidates.is_empty() {
@@ -662,7 +678,13 @@ mod tests {
         let slot = session.slot_tab_id().to_owned();
 
         assert_eq!(
-            engine.provider_session_launch(&session, &slot, &session.provider, false, false),
+            engine.provider_session_launch(
+                &session,
+                &slot,
+                &session.provider,
+                ConversationStart::Fresh,
+                ConversationStart::Fresh
+            ),
             ProviderSessionLaunch::CaptureClaude
         );
         assert_eq!(
@@ -670,8 +692,8 @@ mod tests {
                 &session,
                 TabIdRef::new("extra-tab"),
                 &session.provider,
-                false,
-                false
+                ConversationStart::Fresh,
+                ConversationStart::Fresh,
             ),
             ProviderSessionLaunch::Plain
         );
@@ -693,7 +715,13 @@ mod tests {
         let slot = session.slot_tab_id().to_owned();
         assert!(
             engine
-                .provider_session_launch(&session, &slot, &session.provider, true, false)
+                .provider_session_launch(
+                    &session,
+                    &slot,
+                    &session.provider,
+                    ConversationStart::Resume,
+                    ConversationStart::Fresh
+                )
                 .is_resume_id(),
             "alone, jcode resumes by id even though it has no resume_args"
         );
@@ -706,7 +734,13 @@ mod tests {
             .in_flight
             .insert(InFlightKey::AgentLaunch(crate::ids::TabId::new("tab-2")));
         assert_eq!(
-            engine.provider_session_launch(&session, &slot, &session.provider, true, false),
+            engine.provider_session_launch(
+                &session,
+                &slot,
+                &session.provider,
+                ConversationStart::Resume,
+                ConversationStart::Fresh
+            ),
             ProviderSessionLaunch::Plain
         );
     }
@@ -878,7 +912,7 @@ mod tests {
         workspace.auto_resume_shared = true;
         engine.config.workspace = Some(workspace);
         engine.config.auto_resume.stagger_ms = 0;
-        assert_eq!(engine.queue_startup_launches(true), 2);
+        assert_eq!(engine.queue_startup_launches(ResumeRecovery::Running), 2);
         assert!(engine.pump_startup_launches((24, 80)).is_empty());
         engine.process_worker_event(WorkerEvent::ResumeRecoveryCompleted(Ok(
             crate::resume_recovery::RecoveryReport::default(),
@@ -1008,7 +1042,7 @@ mod tests {
     /// Launch an opencode session through the real builder and launch job,
     /// with a provider command that prints the args it was given, and return
     /// that line.
-    fn launched_argv(yolo: bool) -> String {
+    fn launched_argv(settings: crate::session_settings::SessionSettings) -> String {
         let (mut engine, tmp) = test_engine();
         // `sh -c '...' argv0 <args>`: the script echoes every arg yaran appends.
         engine.config.providers.commands.insert(
@@ -1026,10 +1060,6 @@ mod tests {
         let session = session_in(tmp.path(), "s1", "opencode");
         engine.session_store.create_session(&session).unwrap();
         engine.sessions.push(session.clone());
-        let settings = crate::session_settings::SessionSettings {
-            yolo_permissions: yolo,
-            ..Default::default()
-        };
         engine
             .set_session_settings("s1", settings, crate::engine::amq::TitleEdit::Keep)
             .expect("settings persist");
@@ -1054,7 +1084,7 @@ mod tests {
                 Ok(WorkerEvent::AgentLaunchFailed(data)) => {
                     panic!("launch failed: {}", data.message)
                 }
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(err) => panic!("no launch event: {err}"),
             }
         };
@@ -1079,12 +1109,15 @@ mod tests {
     /// other arg; YOLO off leaves it out (fork c2c44378).
     #[test]
     fn opencode_yolo_launch_appends_auto_only_when_yolo_is_on() {
-        let on = launched_argv(true);
+        let on = launched_argv(crate::session_settings::SessionSettings {
+            yolo_permissions: true,
+            ..Default::default()
+        });
         assert!(
             on.contains("--auto:END"),
             "argv must end with --auto: {on:?}"
         );
-        let off = launched_argv(false);
+        let off = launched_argv(crate::session_settings::SessionSettings::default());
         assert!(
             !off.contains("--auto"),
             "argv must not carry --auto: {off:?}"
@@ -1148,7 +1181,7 @@ mod tests {
             session.desired_running = false;
             engine.sessions.push(session);
         }
-        assert_eq!(engine.queue_startup_launches(false), 2);
+        assert_eq!(engine.queue_startup_launches(ResumeRecovery::Idle), 2);
         let first = engine.pump_startup_launches((24, 80));
         assert_eq!(first.len(), 1, "one slot, one launch");
         assert_eq!(engine.startup_launches.pending_len(), 1);

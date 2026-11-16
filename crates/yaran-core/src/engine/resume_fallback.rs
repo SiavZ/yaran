@@ -160,15 +160,12 @@ impl Engine {
         kind: AgentLaunchKind,
     ) -> AgentLaunchRequest {
         let provider = tab_provider.unwrap_or_else(|| session.provider.clone());
-        let requested = start.is_resume();
         // Resume is decided per-provider in one place; see `tab_resume_decision`.
-        let resume = self
-            .tab_resume_decision(&session, &tab_id, &provider, start)
-            .is_resume();
+        let resume = self.tab_resume_decision(&session, &tab_id, &provider, start);
         // Resume by the provider's own conversation id when yaran knows it,
         // falling back to `resume` (see `provider_session_launch`).
         let provider_session =
-            self.provider_session_launch(&session, &tab_id, &provider, requested, resume);
+            self.provider_session_launch(&session, &tab_id, &provider, start, resume);
         let yolo_args = self
             .session_settings_or_default(&session.id)
             .yolo_launch_args(&provider);
@@ -190,7 +187,7 @@ impl Engine {
             provider_config,
             env,
             identity: self.resolved_identity(),
-            resume,
+            resume: resume.is_resume(),
             pty_size,
             scrollback_lines: self.config.ui.agent_scrollback_lines,
             kind,

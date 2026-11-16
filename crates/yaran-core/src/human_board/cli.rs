@@ -18,6 +18,7 @@ use super::{
 };
 use crate::config::YaranPaths;
 
+/// The help text of `yaran board`.
 pub const BOARD_HELP: &str = "\
 yaran board - cards for the people running yaran
 
@@ -94,6 +95,10 @@ static AGENT_HERE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::ne
 /// Entry point for `yaran board <args>`. `sessions` asks the running yaran for
 /// its agents, or answers `None` when it cannot; the command line never opens
 /// the session database itself.
+///
+/// # Errors
+///
+/// Fails when the config cannot be loaded or the command fails.
 pub fn run_board(
     args: &[String],
     paths: &YaranPaths,
@@ -115,6 +120,15 @@ pub fn run_board(
 }
 
 /// The testable body of [`run_board`]: everything comes in through arguments.
+///
+/// # Errors
+///
+/// Fails, with the sentence to print, on a bad argument or when the board
+/// cannot be read or written.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one dispatch over every board verb, each arm a few lines"
+)]
 pub fn run_with(
     args: &[String],
     settings: &BoardSettings,
@@ -1213,6 +1227,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one conversation followed end to end, every step asserted where it happens"
+    )]
     fn reply_show_and_blocking_carry_a_conversation() {
         let home = tempfile::tempdir().unwrap();
         let sam = team(home.path());

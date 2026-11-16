@@ -2823,11 +2823,11 @@ impl Engine {
             // so there is nothing of ours to tombstone.
             return;
         };
-        let peer = crate::peer::session_store::peer_session(
-            session,
-            session.agent_handle().to_string(),
-            true,
-        );
+        // The row is on its way out even while memory still shows it live.
+        let peer = crate::peer::PeerSession {
+            deleted: true,
+            ..crate::peer::session_store::peer_session(session, session.agent_handle().to_string())
+        };
         let paths = self.paths.clone();
         std::thread::spawn(move || {
             let _ = crate::peer::tombstone_amq_session(&paths, &store_id, &peer);

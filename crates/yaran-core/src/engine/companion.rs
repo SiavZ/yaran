@@ -71,7 +71,6 @@ impl Engine {
                     &crate::peer::session_store::peer_session(
                         &session,
                         session.agent_handle().to_string(),
-                        false,
                     ),
                     &store_id,
                 ),

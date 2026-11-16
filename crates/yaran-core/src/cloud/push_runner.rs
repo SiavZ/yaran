@@ -140,11 +140,15 @@ pub(crate) struct Runner {
 
 /// Everything learned for one pairing; a re-pair (or unpair) starts it over, so no
 /// queued event, acknowledged state, org config or revocation carries across.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "paused, revoked, config due and expiry warned are independent facts about one pairing"
+)]
 struct PairingState {
     queue: PushQueue,
     max_batch: usize,
     min_interval: Duration,
-    minimal: bool,
+    detail: PushDetail,
     paused: bool,
     revoked: bool,
     config_due: bool,
@@ -162,7 +166,7 @@ impl PairingState {
             queue: PushQueue::new(coalesce, ttl),
             max_batch: DEFAULT_MAX_BATCH,
             min_interval: Duration::ZERO,
-            minimal: false,
+            detail: PushDetail::Names,
             paused: false,
             revoked: false,
             config_due: true,
@@ -296,7 +300,7 @@ impl Runner {
             return;
         }
         let mut events: Vec<Event> = batch.iter().map(|q| q.event.clone()).collect();
-        if self.st.minimal {
+        if self.st.detail == PushDetail::Minimal {
             events.iter_mut().for_each(strip_names);
         }
         let verdict = classify(self.link.post_events(&EventBatch { events }));
@@ -348,10 +352,12 @@ impl Runner {
         self.st.last_config_check = Some(now);
         match self.link.machine_config() {
             Ok(config) => {
-                self.st.max_batch = config.events.max_batch.clamp(1, 16) as usize;
-                self.st.min_interval =
-                    Duration::from_millis(config.events.min_interval_ms.max(0) as u64);
-                self.st.minimal = config.push.detail == PushDetail::Minimal;
+                self.st.max_batch = usize::try_from(config.events.max_batch.clamp(1, 16))
+                    .unwrap_or(DEFAULT_MAX_BATCH);
+                self.st.min_interval = Duration::from_millis(
+                    u64::try_from(config.events.min_interval_ms).unwrap_or(0),
+                );
+                self.st.detail = config.push.detail;
                 if config.push.enabled && self.st.paused {
                     tracing::info!(target: "yaran::cloud::push", "the org turned phone notifications back on; resuming");
                 }
@@ -476,7 +482,7 @@ impl Runner {
             return;
         }
         let mut events: Vec<Event> = batch.into_iter().map(|q| q.event).collect();
-        if self.st.minimal {
+        if self.st.detail == PushDetail::Minimal {
             events.iter_mut().for_each(strip_names);
         }
         let verdict = classify(self.link.post_events(&EventBatch { events }));

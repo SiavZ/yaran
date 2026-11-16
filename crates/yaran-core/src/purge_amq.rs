@@ -24,11 +24,7 @@ use crate::config::YaranPaths;
 use crate::model::AgentSession;
 
 fn peer_view(session: &AgentSession) -> crate::peer::PeerSession {
-    crate::peer::session_store::peer_session(
-        session,
-        session.agent_handle().to_string(),
-        session.is_deleted(),
-    )
+    crate::peer::session_store::peer_session(session, session.agent_handle().to_string())
 }
 
 /// The AMQ root this store shares, if any: `AMQ_GLOBAL_ROOT`, else `AM_ROOT`,

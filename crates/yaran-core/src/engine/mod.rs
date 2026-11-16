@@ -265,6 +265,7 @@ mod pending_removals;
 mod pr_sync_control;
 mod project_base;
 mod provider_sessions;
+pub use provider_sessions::ResumeRecovery;
 pub(crate) mod pull_requests;
 mod push_hook;
 mod reload_origin;
@@ -7087,8 +7088,8 @@ impl Engine {
                     &session,
                     session.slot_tab_id(),
                     &session.provider,
-                    requested.is_resume(),
-                    resume.is_resume(),
+                    requested,
+                    resume,
                 )
                 .is_resume_id();
         let mut msg = self.agent_reconnect_status_message(

@@ -20,6 +20,7 @@
 //! types into an agent reaches it directly, and an agent's own answers need
 //! no echo.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -41,6 +42,7 @@ pub const RELAY_TIMEOUT: Duration = Duration::from_secs(30);
 /// One message (or card) to pass to one agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RelayJob {
+    /// The card the message belongs to.
     pub card: CardId,
     /// The agent handle it goes to.
     pub to: String,
@@ -72,6 +74,11 @@ impl RelayJob {
 /// Send `job` with the yaran binary at `exe` (`yaran peer send`, so it takes
 /// the route every agent message takes), then record it on the card in
 /// `store`. A send that fails records nothing, so the job is planned again.
+///
+/// # Errors
+///
+/// Fails when the send cannot run or is refused, or the card cannot be
+/// updated.
 pub fn deliver(job: &RelayJob, transport: &str, exe: &Path, store: &BoardStore) -> Result<()> {
     let mut cmd = Command::new(exe);
     cmd.arg("peer")
@@ -111,6 +118,10 @@ pub fn deliver(job: &RelayJob, transport: &str, exe: &Path, store: &BoardStore) 
 }
 
 /// Mark what `job` carried as relayed on its card.
+///
+/// # Errors
+///
+/// Fails when the board cannot be read or written.
 pub fn record(job: &RelayJob, store: &BoardStore, now: DateTime<Utc>) -> Result<()> {
     store.update(|board| {
         if job.card_itself {
@@ -251,11 +262,12 @@ fn card_text(card: &Card, person: &str, me: &str, messages: &[&Message]) -> Stri
         text.push_str("\nSo far on the card:\n");
         text.push_str(&message_lines(messages));
     }
-    text.push_str(&format!(
+    let _ = write!(
+        text,
         "\nTake it on and report on the card, not here: yaran board reply {id} \"...\" reaches \
          {person}; when it is finished, yaran board reply {id} --done \"what was done\". \
          yaran board show {id} prints the whole card."
-    ));
+    );
     text
 }
 
@@ -307,19 +319,26 @@ mod tests {
             .id()
     }
 
-    fn say(board: &mut Board, id: &CardId, from: &str, side: &str, text: &str, done: bool) {
-        board
-            .reply(
-                id,
-                &NewMessage {
-                    from: from.to_string(),
-                    side: Some(side.to_string()),
-                    text: text.to_string(),
-                    done,
-                },
-                at(1),
-            )
-            .unwrap();
+    fn message(from: &str, side: &str, text: &str) -> NewMessage {
+        NewMessage {
+            from: from.to_string(),
+            side: Some(side.to_string()),
+            text: text.to_string(),
+            done: false,
+        }
+    }
+
+    fn say(board: &mut Board, id: &CardId, from: &str, side: &str, text: &str) {
+        board.reply(id, &message(from, side, text), at(1)).unwrap();
+    }
+
+    /// A reply that also marks the card done.
+    fn say_done(board: &mut Board, id: &CardId, from: &str, side: &str, text: &str) {
+        let done = NewMessage {
+            done: true,
+            ..message(from, side, text)
+        };
+        board.reply(id, &done, at(1)).unwrap();
     }
 
     fn here(handle: &str) -> bool {
@@ -333,20 +352,13 @@ mod tests {
         let id = post(&mut board, "Sam", "orchestrator", "Alex");
         assert!(plan(&board, &sam, &here).is_empty(), "nothing to pass yet");
 
-        say(
-            &mut board,
-            &id,
-            "orchestrator",
-            "Sam",
-            "Asking again.",
-            false,
-        );
+        say(&mut board, &id, "orchestrator", "Sam", "Asking again.");
         assert!(
             plan(&board, &sam, &here).is_empty(),
             "this side's words are not echoed"
         );
 
-        say(&mut board, &id, "Alex", "Alex", "Yes, drop it.", true);
+        say_done(&mut board, &id, "Alex", "Alex", "Yes, drop it.");
         let jobs = plan(&board, &sam, &here);
         assert_eq!(jobs.len(), 1);
         let job = &jobs[0];
@@ -381,14 +393,7 @@ mod tests {
     fn a_card_handed_over_goes_to_relay_to_with_its_conversation() {
         let mut board = Board::default();
         let id = post(&mut board, "Alex", "Alex", "Sam");
-        say(
-            &mut board,
-            &id,
-            "Alex",
-            "Alex",
-            "Needed before Friday.",
-            false,
-        );
+        say(&mut board, &id, "Alex", "Alex", "Needed before Friday.");
         assert!(
             plan(&board, &settings("Sam", Some("hub")), &here).is_empty(),
             "posted for Sam is a question for Sam: it waits for the person"
@@ -448,7 +453,7 @@ mod tests {
             .update(|board| {
                 board.prefix = "S".to_string();
                 let id = post(board, "Sam", "orchestrator", "Alex");
-                say(board, &id, "Alex", "Alex", "Yes.", false);
+                say(board, &id, "Alex", "Alex", "Yes.");
                 Ok(id)
             })
             .unwrap();
@@ -492,7 +497,7 @@ mod tests {
         std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755)).unwrap();
         store
             .update(|board| {
-                say(board, &id, "Alex", "Alex", "Also: today.", false);
+                say(board, &id, "Alex", "Alex", "Also: today.");
                 Ok(())
             })
             .unwrap();
@@ -509,7 +514,7 @@ mod tests {
     fn nothing_is_relayed_when_off_or_to_an_agent_of_another_machine() {
         let mut board = Board::default();
         let id = post(&mut board, "Sam", "orchestrator", "Alex");
-        say(&mut board, &id, "Alex", "Alex", "Yes.", false);
+        say(&mut board, &id, "Alex", "Alex", "Yes.");
         let mut off = settings("Sam", None);
         off.relay = false;
         assert_eq!(
