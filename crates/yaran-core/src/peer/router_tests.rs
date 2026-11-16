@@ -898,10 +898,26 @@ fn peer_subcommands_reject_unknown_flags_and_subcommands() {
     };
     // A refused line never asks the running yaran anything.
     let fetch = || -> Result<PeerSnapshot> { panic!("a refused line asked yaran") };
-    assert!(run_peer(&args(&["bogus"]), &paths, &fetch).is_err());
-    assert!(run_peer(&args(&["list", "--nope"]), &paths, &fetch).is_err());
-    assert!(run_peer(&args(&["sync-amq", "--nope"]), &paths, &fetch).is_err());
-    assert!(run_peer(&args(&["--help"]), &paths, &fetch).is_ok());
+    assert!(run_peer(&args(&["bogus"]), &paths, &fetch, &mut std::io::sink()).is_err());
+    assert!(
+        run_peer(
+            &args(&["list", "--nope"]),
+            &paths,
+            &fetch,
+            &mut std::io::sink()
+        )
+        .is_err()
+    );
+    assert!(
+        run_peer(
+            &args(&["sync-amq", "--nope"]),
+            &paths,
+            &fetch,
+            &mut std::io::sink()
+        )
+        .is_err()
+    );
+    assert!(run_peer(&args(&["--help"]), &paths, &fetch, &mut std::io::sink()).is_ok());
 }
 
 /// Every peer command takes its sessions and its registry pass from the
@@ -928,8 +944,8 @@ fn peer_commands_ask_the_running_yaran_once() {
             sessions: Vec::new(),
         })
     };
-    assert!(run_peer(&args(&["sync-amq"]), &paths, &fetch).is_ok());
-    assert!(run_peer(&args(&["list"]), &paths, &fetch).is_ok());
+    assert!(run_peer(&args(&["sync-amq"]), &paths, &fetch, &mut std::io::sink()).is_ok());
+    assert!(run_peer(&args(&["list"]), &paths, &fetch, &mut std::io::sink()).is_ok());
     assert_eq!(asked.get(), 2);
     assert!(!paths.sessions_db_path.exists(), "no database was opened");
 }

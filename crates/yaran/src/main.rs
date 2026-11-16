@@ -199,7 +199,7 @@ fn run_peer(args: &[String]) -> Result<()> {
             "/api/v1/peer/sync",
         )
     };
-    yaran_core::peer::run_peer(args, &paths, &fetch)
+    yaran_core::peer::run_peer(args, &paths, &fetch, &mut std::io::stdout())
 }
 
 /// `yaran board`: asks the running yaran for its agents only to recognise the

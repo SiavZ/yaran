@@ -86,7 +86,7 @@ struct ClaudePeer {
     registered_at: Option<String>,
 }
 
-pub const PEER_HELP: &str = "\
+pub(crate) const PEER_HELP: &str = "\
 yaran peer - route messages between Yaran agent sessions
 
 Subcommands:
@@ -123,18 +123,24 @@ pub fn sync_and_list(paths: &YaranPaths) -> Result<PeerSnapshot> {
 
 /// Entry point for `yaran peer <args>`. `fetch` asks the running yaran for a
 /// [`PeerSnapshot`]; the command line never opens the session database.
+///
+/// # Errors
+///
+/// Fails on an unknown subcommand or flag, when the running yaran cannot be
+/// asked, or when the message cannot be delivered.
 pub fn run_peer(
     args: &[String],
     paths: &YaranPaths,
     fetch: &dyn Fn() -> Result<PeerSnapshot>,
+    out: &mut dyn Write,
 ) -> Result<()> {
     let sub = args.first().map_or("", String::as_str);
     match sub {
-        "send" => run_peer_send(&args[1..], paths, fetch),
-        "list" => run_peer_list(&args[1..], paths, fetch),
-        "sync-amq" | "sync" => run_peer_sync_amq(&args[1..], fetch),
+        "send" => run_peer_send(&args[1..], paths, fetch, out),
+        "list" => run_peer_list(&args[1..], paths, fetch, out),
+        "sync-amq" | "sync" => run_peer_sync_amq(&args[1..], fetch, out),
         "" | "--help" | "-h" => {
-            println!("{PEER_HELP}");
+            writeln!(out, "{PEER_HELP}")?;
             Ok(())
         }
         other => bail!("unknown peer subcommand: {other}\nRun `yaran peer --help` for usage."),
@@ -145,9 +151,10 @@ fn run_peer_send(
     args: &[String],
     paths: &YaranPaths,
     fetch: &dyn Fn() -> Result<PeerSnapshot>,
+    out: &mut dyn Write,
 ) -> Result<()> {
     let Some(parsed) = parse_send_args(args)? else {
-        println!("{PEER_HELP}");
+        writeln!(out, "{PEER_HELP}")?;
         return Ok(());
     };
     let PeerSnapshot { sessions, .. } = fetch()?;
@@ -177,26 +184,28 @@ fn run_peer_send(
                     let (from_id, message) =
                         claude_peers_sender(&sender, &peers, &parsed.message, &processes);
                     claude_peers_send(&from_id, &to_id, &message)?;
-                    println!(
+                    writeln!(
+                        out,
                         "sent via claude-peers: {} -> {}",
                         sender.handle, target.handle
-                    );
+                    )?;
                 }
                 Err(why) => {
                     let reason = amq_fallback_reason(parsed.transport, &why, &target.handle)?;
                     let root = require_amq_root(paths)?;
                     amq_send(&root, &sender.handle, &target.handle, &parsed.message)?;
-                    println!(
+                    writeln!(
+                        out,
                         "sent via amq: {} -> {} ({reason})",
                         sender.handle, target.handle
-                    );
+                    )?;
                 }
             }
         }
         ChosenTransport::Amq => {
             let root = require_amq_root(paths)?;
             amq_send(&root, &sender.handle, &target.handle, &parsed.message)?;
-            println!("sent via amq: {} -> {}", sender.handle, target.handle);
+            writeln!(out, "sent via amq: {} -> {}", sender.handle, target.handle)?;
         }
     }
 
@@ -207,6 +216,7 @@ fn run_peer_list(
     args: &[String],
     paths: &YaranPaths,
     fetch: &dyn Fn() -> Result<PeerSnapshot>,
+    out: &mut dyn Write,
 ) -> Result<()> {
     reject_unknown_peer_flags(args)?;
     let PeerSnapshot { report, sessions } = fetch()?;
@@ -215,9 +225,9 @@ fn run_peer_list(
     let processes = peers
         .as_ref()
         .map(|_| ProcessTable::snapshot(yaran_tui_pid(paths)));
-    println!("Yaran peers:");
+    writeln!(out, "Yaran peers:")?;
     if sessions.is_empty() {
-        println!("  (no persisted sessions)");
+        writeln!(out, "  (no persisted sessions)")?;
     } else {
         for session in &sessions {
             let note = match (&peers, &processes) {
@@ -234,56 +244,76 @@ fn run_peer_list(
                 }
                 _ => "",
             };
-            println!(
+            writeln!(
+                out,
                 "  {:<32} {:<8} {}{note}",
                 session.agent_handle(),
                 session.provider,
                 session.directory
-            );
+            )?;
         }
     }
 
     if report.skipped {
-        println!("AMQ registry: skipped (no configured AMQ root found)");
+        writeln!(out, "AMQ registry: skipped (no configured AMQ root found)")?;
     } else if let Some(root) = report.root {
-        println!(
+        writeln!(
+            out,
             "AMQ registry: {} (added {}, removed stale {}, deconflicted {})",
             root.display(),
             report.configured_agents_added,
             report.stale_config_agents_removed,
             report.handles_deconflicted
-        );
+        )?;
     }
 
     match &peers {
-        Some(peers) => println!("Claude Peers broker: {} peer(s) registered", peers.len()),
-        None => println!("Claude Peers broker: unavailable (messages to Claude agents go via AMQ)"),
+        Some(peers) => writeln!(
+            out,
+            "Claude Peers broker: {} peer(s) registered",
+            peers.len()
+        )?,
+        None => writeln!(
+            out,
+            "Claude Peers broker: unavailable (messages to Claude agents go via AMQ)"
+        )?,
     }
 
     Ok(())
 }
 
-fn run_peer_sync_amq(args: &[String], fetch: &dyn Fn() -> Result<PeerSnapshot>) -> Result<()> {
+fn run_peer_sync_amq(
+    args: &[String],
+    fetch: &dyn Fn() -> Result<PeerSnapshot>,
+    out: &mut dyn Write,
+) -> Result<()> {
     reject_unknown_peer_flags(args)?;
     let PeerSnapshot { report, .. } = fetch()?;
     let Some(root) = report.root.as_ref().filter(|_| !report.skipped) else {
-        println!("AMQ sync skipped: no configured AMQ root found");
+        writeln!(out, "AMQ sync skipped: no configured AMQ root found")?;
         return Ok(());
     };
-    println!("AMQ sync: {}", root.display());
-    println!(
+    writeln!(out, "AMQ sync: {}", root.display())?;
+    writeln!(
+        out,
         "  configured agents added: {}",
         report.configured_agents_added
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "  stale config agents removed: {}",
         report.stale_config_agents_removed
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "  ownership markers created: {}",
         report.ownership_markers_created
-    );
-    println!("  handles deconflicted: {}", report.handles_deconflicted);
+    )?;
+    writeln!(
+        out,
+        "  handles deconflicted: {}",
+        report.handles_deconflicted
+    )?;
     Ok(())
 }
 
