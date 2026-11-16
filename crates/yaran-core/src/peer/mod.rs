@@ -126,4 +126,49 @@ pub(crate) mod test_support {
             exited: false,
         }
     }
+
+    /// Spawn an `amq wake --me <handle> --root <root>` stand-in that spins
+    /// until SIGTERM, returning once it reports ready. Ready means it runs in
+    /// its final image with the TERM trap installed: macOS `/bin/sh` re-execs
+    /// bash, and during that exec its argv reads back empty, so a wake
+    /// recorded any earlier is (correctly) not identifiable as a wake yet. A
+    /// real wake has long been running by the time anything stops it.
+    pub(crate) fn spawn_ready_wake_stand_in(
+        dir: &Path,
+        root: &Path,
+        handle: &str,
+    ) -> std::process::Child {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+        let fake_amq = dir.join("amq-wake-test");
+        let ready = dir.join("amq-wake-test.ready");
+        std::fs::write(
+            &fake_amq,
+            "#!/bin/sh\ntrap 'exit 0' TERM\n: > \"$WAKE_READY_FILE\"\nwhile :; do :; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_amq, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = std::process::Command::new(&fake_amq)
+            .args(["wake", "--me", handle, "--root"])
+            .arg(root)
+            .env("WAKE_READY_FILE", &ready)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        // A hang guard only: readiness is an event, not a clock.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !ready.exists() {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("wake stand-in exited before it was ready: {status}");
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("wake stand-in never became ready");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        child
+    }
 }

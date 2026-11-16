@@ -793,23 +793,7 @@ fn tombstone_releases_the_registry_lock_before_waiting_for_wake_exit() {
 fn tombstone_terminates_recorded_wake_pid_and_keeps_inbox() {
     let dir = tempdir().unwrap();
     let root = dir.path().join("amq").tap_agents();
-    let fake_amq = dir.path().join("amq-wake-test");
-    fs::write(
-        &fake_amq,
-        "#!/bin/sh\ntrap 'exit 0' TERM\nwhile :; do :; done\n",
-    )
-    .unwrap();
-    fs::set_permissions(&fake_amq, fs::Permissions::from_mode(0o755)).unwrap();
-    let child = Command::new(&fake_amq)
-        .arg("wake")
-        .arg("--me")
-        .arg("agent")
-        .arg("--root")
-        .arg(&root)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let child = crate::peer::test_support::spawn_ready_wake_stand_in(dir.path(), &root, "agent");
     let pid = child.id();
     let reaper = std::thread::spawn(move || child.wait_with_output());
     let s = session("session-a", "claude", "agent", &dir.path().join("agent"));
