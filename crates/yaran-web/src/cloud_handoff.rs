@@ -78,7 +78,10 @@ fn not_found() -> Response {
 }
 
 /// The seal-and-redirect step shared by Continue and the remembered-consent skip.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the route's verified request, its target and the answer it builds, all distinct"
+)]
 async fn issue(
     ingress: &CloudIngress,
     binding: &CloudBinding,
@@ -93,7 +96,7 @@ async fn issue(
     let settings = ingress.settings();
     if let Err(retry) = ingress
         .rate()
-        .try_admit(now.max(0) as u64, settings.handoff_per_minute)
+        .try_admit(u64::try_from(now).unwrap_or(0), settings.handoff_per_minute)
     {
         tracing::warn!(target: "yaran::cloud::handoff", code = ErrorCode::RateLimited.as_str(), retry_after_secs = retry, "refused a handoff over the per-minute limit");
         let mut response = fail(status, t, (ErrorCode::RateLimited, Vec::new()));
@@ -125,7 +128,7 @@ async fn issue(
         exp: access
             .exp
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64),
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX)),
         iat: now,
         cookie: access_cookie,
     };
@@ -156,6 +159,10 @@ async fn issue(
     response
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the handoff's checks run in the order the protocol fixes, each with its own refusal"
+)]
 async fn handoff_get(
     State(ingress): State<CloudIngress>,
     access: Access,
@@ -242,7 +249,10 @@ async fn handoff_get(
         }
     }
     let binding_for_csrf = CsrfBinding::new(&t.state, pk, &dk_fp24, verified);
-    let Some(csrf) = ingress.csrf().mint(binding_for_csrf, now.max(0) as u64) else {
+    let Some(csrf) = ingress
+        .csrf()
+        .mint(binding_for_csrf, u64::try_from(now).unwrap_or(0))
+    else {
         return fail(StatusCode::FOUND, &t, invalid());
     };
     let mut hidden: Vec<(&'static str, String)> = [
@@ -306,11 +316,13 @@ async fn handoff_post(
         return fail(StatusCode::SEE_OTHER, &t, invalid());
     };
     let now = ingress.now_secs();
-    let Some(verified) =
-        ingress
-            .csrf()
-            .redeem(csrf, &t.state, &p["pk"], &dk_fp24, now.max(0) as u64)
-    else {
+    let Some(verified) = ingress.csrf().redeem(
+        csrf,
+        &t.state,
+        &p["pk"],
+        &dk_fp24,
+        u64::try_from(now).unwrap_or(0),
+    ) else {
         return fail(StatusCode::SEE_OTHER, &t, invalid());
     };
     if decision == Some("cancel") {

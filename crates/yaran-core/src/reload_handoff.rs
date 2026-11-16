@@ -55,16 +55,22 @@ pub struct HandoffTerminal {
     /// The owner, flattened to a kind and an optional id because
     /// [`crate::model::TerminalOwner`] is not itself serializable.
     pub owner_kind: TerminalOwnerKind,
+    /// The owner's id; `None` for a standalone terminal.
     pub owner_id: Option<String>,
+    /// The name the terminal was opened with.
     pub label: String,
+    /// Its place among the terminals of its owner.
     pub sort_order: u64,
 }
 
 /// Which kind of owner a [`HandoffTerminal`] had.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TerminalOwnerKind {
+    /// An agent's terminal.
     Session,
+    /// A project's terminal.
     Project,
+    /// A standalone terminal.
     Standalone,
 }
 
@@ -90,7 +96,9 @@ pub struct HandoffPty {
     /// The agent process's pid, carried so the new image can report on the child
     /// it adopted without having to rediscover it.
     pub child_pid: Option<u32>,
+    /// The terminal's height, in rows.
     pub rows: u16,
+    /// Its width, in columns.
     pub cols: u16,
     /// The directory the child was spawned in.
     pub spawn_dir: PathBuf,
@@ -126,6 +134,7 @@ pub struct Handoff {
     /// The pid that wrote this, so a manifest left behind by a different process
     /// is recognisable rather than silently adopted.
     pub written_by: u32,
+    /// Every live terminal, agents and companion terminals alike.
     pub ptys: Vec<HandoffPty>,
     /// The agent that was selected when the reload started, so the new image
     /// opens on the same agent instead of the top of the list. Without it a
@@ -146,6 +155,10 @@ impl Handoff {
     /// before the manifest that names them, and if any step fails the sidecars
     /// already renamed into place are removed again: a manifest is only ever
     /// published complete.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a sidecar or the manifest cannot be written; nothing partial is left.
     pub fn write(&mut self, path: &Path) -> Result<()> {
         let mut written: Vec<PathBuf> = Vec::new();
         let result = self.write_inner(path, &mut written);
@@ -189,6 +202,10 @@ impl Handoff {
     /// to something else. The sidecars are consumed with it for the same
     /// reason, and a sidecar that cannot be read still gets removed: the
     /// terminal then adopts empty, which is a degraded row, not a wrong one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the manifest is missing, unreadable, malformed or written by another process.
     pub fn consume(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("reading the reload handoff at {}", path.display()))?;

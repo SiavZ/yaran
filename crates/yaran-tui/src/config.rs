@@ -3228,7 +3228,7 @@ fn render_project_configs(out: &mut String, projects: &[ProjectConfig]) {
             out.push_str(" }\n");
         }
         if let Some(mode) = project.workspace_mode {
-            out.push_str(&format!("workspace_mode = \"{}\"\n", mode.as_str()));
+            let _ = writeln!(out, "workspace_mode = \"{}\"", mode.as_str());
         }
         out.push('\n');
     }
@@ -3302,6 +3302,10 @@ fn render_startup_command_terminal_config(
     let _ = writeln!(out, "args = {}\n", render_string_list(&terminal.args));
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "every provider key with its comment, in the order config.toml shows them"
+)]
 fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommandConfig) {
     // A provider name is free text: the key form quotes it wherever a bare
     // key would not parse, and it keeps a newline in the name out of the
@@ -3342,10 +3346,9 @@ fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommand
          # Leave the key absent for CLIs with no resume-by-id; set [] to opt out.\n",
     );
     match &config.resume_by_id_args {
-        Some(args) => out.push_str(&format!(
-            "resume_by_id_args = {}\n",
-            render_string_list(args)
-        )),
+        Some(args) => {
+            let _ = writeln!(out, "resume_by_id_args = {}", render_string_list(args));
+        }
         None => out.push_str("# resume_by_id_args = [\"--resume\", \"{session_id}\"]\n"),
     }
     if let Some(hint) = &config.install_hint {
@@ -3382,7 +3385,9 @@ fn render_provider_config(out: &mut String, name: &str, config: &ProviderCommand
          # forward_scroll above, not by this key.\n",
     );
     match config.forward_mouse {
-        Some(value) => out.push_str(&format!("forward_mouse = {value}\n")),
+        Some(value) => {
+            let _ = writeln!(out, "forward_mouse = {value}");
+        }
         None => out.push_str("# forward_mouse = false\n"),
     }
     out.push_str(
@@ -3446,7 +3451,8 @@ fn render_provider_watch_rules(
     name: &str,
     rules: &[yaran_core::watch::WatchRule],
 ) {
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         "# Watch rules. Each rule pairs a regex against this provider's recent\n\
          # output with an action; configure as `[[providers.{name}.watch]]` array\n\
          # entries. Fields:\n\
@@ -3467,7 +3473,7 @@ fn render_provider_watch_rules(
          # Patterns run against output that may include content from the project\n\
          # under edit, so the engine caps regex size and caps each rule's fires by\n\
          # default. Rules are disarmed and re-armed from the \"watch-rules\" palette.\n"
-    ));
+    );
     if name == "claude" {
         out.push_str(
             "#\n\
@@ -3534,7 +3540,7 @@ fn render_provider_watch_rules(
     }
     out.push('\n');
     for rule in rules {
-        out.push_str(&format!("[[providers.{name}.watch]]\n"));
+        let _ = writeln!(out, "[[providers.{name}.watch]]");
         out.push_str(&render_watch_rule_body(rule));
         out.push('\n');
     }
@@ -3549,7 +3555,7 @@ fn render_watch_rule_body(rule: &yaran_core::watch::WatchRule) -> String {
     };
     let mut out = String::new();
     for (key, value) in &table {
-        out.push_str(&format!("{key} = {value}\n"));
+        let _ = writeln!(out, "{key} = {value}");
     }
     out
 }
@@ -7179,7 +7185,10 @@ mod web_dragdrop_paste_render_tests {
     /// never touches the watch array. The test drives the deprecated sync save
     /// path directly, as the fork's test did.
     #[test]
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "a sync-direct save, like the other save_config tests"
+    )]
     fn save_config_preserves_user_authored_watch_rules() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let config_path = dir.path().join("config.toml");
@@ -7439,7 +7448,10 @@ mod workspace_mode_tests {
     /// `[workspace]` (which would flip it to shared), and a project's override
     /// survives a save.
     #[test]
-    #[allow(deprecated)] // sync-direct save, like the other save_config tests
+    #[expect(
+        deprecated,
+        reason = "a sync-direct save, like the other save_config tests"
+    )]
     fn save_config_preserves_legacy_workspace_absence_and_project_override() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("config.toml");

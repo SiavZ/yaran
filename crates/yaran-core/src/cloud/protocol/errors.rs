@@ -35,7 +35,11 @@ macro_rules! error_codes {
         /// A registry error code; `Unknown` is any code this build does not know.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum ErrorCode {
-            $($variant,)*
+            $(
+                #[doc = concat!("The `", $code, "` registry code.")]
+                $variant,
+            )*
+            /// A code this build does not know.
             Unknown,
         }
 
@@ -171,14 +175,19 @@ impl<'de> Deserialize<'de> for ErrorCode {
 /// survives a round trip; [`ErrorBody::code`] interprets it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorBody {
+    /// The registry code, as sent.
     pub code: String,
+    /// The sentence for a person.
     pub message: String,
+    /// Whether trying again later may succeed.
     pub retryable: bool,
+    /// Code-specific detail, when there is some.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl ErrorBody {
+    /// The code, read against this build's registry.
     pub fn code(&self) -> ErrorCode {
         ErrorCode::parse(&self.code)
     }
@@ -187,7 +196,9 @@ impl ErrorBody {
 /// Every non-2xx JSON response of the Worker, the relay and `/__yaran/handoff`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorEnvelope {
+    /// What went wrong.
     pub error: ErrorBody,
+    /// The request's id, for the server's logs.
     pub request_id: String,
 }
 
@@ -236,7 +247,7 @@ mod tests {
         for (entry, code) in entries.iter().zip(ErrorCode::ALL) {
             assert_eq!(entry["code"].as_str(), Some(code.as_str()));
             assert_eq!(
-                entry["status"].as_u64().map(|s| s as u16),
+                entry["status"].as_u64().and_then(|s| u16::try_from(s).ok()),
                 code.status(),
                 "{}",
                 code.as_str()
