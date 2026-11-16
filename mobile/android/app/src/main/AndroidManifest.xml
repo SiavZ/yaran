@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- The QR scanner (mobile/plugins/qr) reads the camera inside the shell WebView. -->
@@ -55,5 +56,16 @@
                 <data android:scheme="yaranapp" android:host="add-org" />
             </intent-filter>
         </activity>
+
+        <!-- The machine-view plugin's callback aliases ship dev defaults; this build's
+             publisher domain picks the one that is on (D8). -->
+        <activity-alias
+            android:name="io.github.siavz.yaran.machineview.AuthCallbackHttps"
+            android:enabled="${publisherCallbackEnabled}"
+            tools:replace="android:enabled" />
+        <activity-alias
+            android:name="io.github.siavz.yaran.machineview.AuthCallbackDev"
+            android:enabled="${devCallbackEnabled}"
+            tools:replace="android:enabled" />
     </application>
 </manifest>

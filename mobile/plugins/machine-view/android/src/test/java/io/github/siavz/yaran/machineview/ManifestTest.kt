@@ -1,12 +1,13 @@
 /**
  * The plugin manifest's callback aliases: one enabled per build, never both (D8, work item 1).
  *
- * Parses `src/main/AndroidManifest.xml`: the https alias is `autoVerify`, bound to
- * `${publisherCallbackEnabled}` and the publisher-domain paths; the dev alias is bound to
- * `${devCallbackEnabled}` and the custom scheme; both target the exported, `noHistory`
- * callback activity; the machine window is `singleTask`, not exported, and keeps the page
- * across size, orientation, uiMode and density changes. The library's own defaults are a dev
- * build, and no source file calls a WebView bridge API (D9). The app's merged-manifest check (one build per variant) belongs to Phase 14's app.
+ * Parses `src/main/AndroidManifest.xml`: the https alias is `autoVerify`, off by default and
+ * bound to the publisher-domain paths; the dev alias is on by default and owns the custom
+ * scheme (the app manifest replaces both `enabled` values per build); both target the exported,
+ * `noHistory` callback activity; the machine window is `singleTask`, not exported, and keeps the
+ * page across size, orientation, uiMode and density changes. The library's `android` block gives
+ * no placeholder values, which would shadow the app's, and no source file calls a WebView
+ * bridge API (D9). The app's merged-manifest check (one build per variant) belongs to Phase 14's app.
  *
  * - Pure JVM XML parsing.
  *
@@ -20,6 +21,7 @@
 package io.github.siavz.yaran.machineview
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.w3c.dom.Element
@@ -42,9 +44,9 @@ class ManifestTest {
         .map { "${it.a("scheme")}://${it.a("host")}${it.a("path")}" }
 
     @Test
-    fun httpsAliasIsVerifiedAndGatedByThePublisherPlaceholder() {
+    fun httpsAliasIsVerifiedAndOffByDefault() {
         val https = alias(".AuthCallbackHttps")
-        assertEquals("\${publisherCallbackEnabled}", https.a("enabled"))
+        assertEquals("false", https.a("enabled"))
         assertEquals(".AuthCallbackActivity", https.a("targetActivity"))
         val filter = https.getElementsByTagName("intent-filter").item(0) as Element
         assertEquals("true", filter.a("autoVerify"))
@@ -52,9 +54,9 @@ class ManifestTest {
     }
 
     @Test
-    fun devAliasIsTheOnlyCustomSchemeAndGatedByTheDevPlaceholder() {
+    fun devAliasIsTheOnlyCustomSchemeAndOnByDefault() {
         val dev = alias(".AuthCallbackDev")
-        assertEquals("\${devCallbackEnabled}", dev.a("enabled"))
+        assertEquals("true", dev.a("enabled"))
         assertEquals(listOf("yaranapp://auth/callback", "yaranapp://oauth/callback"), dataOf(dev))
         val schemes = elements("data").map { it.a("scheme") }
         assertEquals(2, schemes.count { it == "yaranapp" })
@@ -73,12 +75,14 @@ class ManifestTest {
         assertTrue(changes.containsAll(setOf("orientation", "screenSize", "smallestScreenSize", "screenLayout", "uiMode", "density")))
     }
 
+    // Values given in the library's android block are substituted before the app merge and win
+    // over the app's (a release shipped the dev domain that way); only test manifests get them.
     @Test
-    fun libraryDefaultsAreADevBuild() {
+    fun libraryGivesNoPlaceholderValuesToItsOwnManifest() {
         val gradle = manifest.parentFile!!.parentFile!!.parentFile!!.resolve("build.gradle").readText()
-        assertTrue(gradle.contains("publisherCallbackEnabled: 'false'"))
-        assertTrue(gradle.contains("devCallbackEnabled: 'true'"))
-        assertTrue(gradle.contains("publisherDomain: ''"))
+        val androidBlock = gradle.substringBefore("androidComponents {")
+        assertTrue(androidBlock.contains("defaultConfig {"))
+        assertFalse(androidBlock.contains("manifestPlaceholders"))
     }
 
     @Test
