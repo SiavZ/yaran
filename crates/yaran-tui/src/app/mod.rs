@@ -8032,7 +8032,10 @@ impl App {
                 self.open_agent_info();
                 Ok(())
             }
-            "session-settings" => self.open_session_settings(),
+            "session-settings" => {
+                self.open_session_settings();
+                Ok(())
+            }
             "kill-running" => {
                 self.open_kill_running();
                 Ok(())

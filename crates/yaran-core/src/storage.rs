@@ -64,6 +64,10 @@ const STORE_ID_LOCK: &str = ".store-id.lock";
 /// AMQ ownership markers record `{store_id, session_id}` so two yaran homes
 /// sharing one AMQ root can never free each other's inboxes. The lock covers
 /// the first write AND readers, so no process can observe a half-written id.
+///
+/// # Errors
+///
+/// Fails when the home cannot be created or the id cannot be read or written.
 pub fn load_or_create_store_id(yaran_home: &std::path::Path) -> Result<String> {
     use rustix::fs::{FlockOperation, flock};
     use std::io::Write;
@@ -125,12 +129,20 @@ pub fn load_or_create_store_id(yaran_home: &std::path::Path) -> Result<String> {
 /// Load an existing store identity WITHOUT creating one. Destructive reset and
 /// purge paths use this so a missing or corrupt identity fails them closed
 /// instead of minting a new id that would disown every existing AMQ inbox.
+///
+/// # Errors
+///
+/// Fails when the id is missing or corrupt.
 pub fn load_store_id(yaran_home: &std::path::Path) -> Result<String> {
     read_store_id(&yaran_home.join(STORE_ID_FILE))
 }
 
 /// Remove the durable store identity. Only valid after every exactly-owned
 /// AMQ handle is gone; the caller holds yaran's per-home process lock.
+///
+/// # Errors
+///
+/// Fails when the id file exists and cannot be removed.
 pub fn remove_store_identity(yaran_home: &std::path::Path) -> Result<()> {
     for name in [STORE_ID_FILE, STORE_ID_LOCK] {
         let path = yaran_home.join(name);
@@ -178,6 +190,24 @@ fn sidecar_path(db: &std::path::Path, suffix: &str) -> std::path::PathBuf {
     let mut name = db.as_os_str().to_os_string();
     name.push(suffix);
     std::path::PathBuf::from(name)
+}
+
+/// Whether a session read includes soft-deleted tombstones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tombstones {
+    /// Live sessions only.
+    Skip,
+    /// Tombstones too, for the maintenance that must see every identity.
+    Include,
+}
+
+/// Whether a provider session id write replaces one already recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Overwrite {
+    /// Record it whatever was there.
+    Always,
+    /// Record it only when none is recorded for the provider yet.
+    OnlyIfMissing,
 }
 
 /// A write transaction that takes the database's write lock when it begins.
@@ -313,6 +343,10 @@ impl SessionStore {
     ///
     /// Reading sessions from a database written by an older schema can fail
     /// on a missing column; the caller reports that rather than a zero count.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database cannot be opened.
     pub fn open_read_only(path: &std::path::Path) -> Result<Self> {
         let conn = Connection::open_with_flags(
             path,
@@ -349,6 +383,10 @@ impl SessionStore {
     /// writing, and running them from a worker while the engine inserts a tab
     /// can delete that tab. Anything that may be the first open of a database
     /// must use [`Self::open`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when the database cannot be opened.
     pub fn open_existing(path: &std::path::Path) -> Result<Self> {
         Self::connect(path)
     }
@@ -356,6 +394,10 @@ impl SessionStore {
     /// Whether this database has been migrated at all (its sessions table
     /// exists). A reader on an [`Self::open_existing`] connection uses it to
     /// tell "no rows yet" from a real error.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the schema cannot be read.
     pub fn has_session_table(&self) -> Result<bool> {
         Ok(self
             .conn
@@ -2016,6 +2058,10 @@ impl SessionStore {
     /// consistently and includes WAL content, which a plain file copy of the
     /// `.sqlite3` alone would miss. The destination is tightened to owner-only
     /// like the database itself, because it carries the same per-project env.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the backup cannot be written or tightened.
     pub fn backup_to(&self, dst: &std::path::Path) -> Result<()> {
         self.conn
             .backup(
@@ -2045,6 +2091,10 @@ impl SessionStore {
     }
 
     /// Write one app-wide value, replacing any previous value for the key.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the write is refused.
     pub fn set_app_state(&self, key: &str, value: &str) -> Result<()> {
         self.conn.execute(
             "insert into app_state(key, value) values(?1, ?2) \
@@ -3645,6 +3695,10 @@ impl SessionStore {
     /// uniqueness holds because sessions are only ever inserted from the
     /// engine's single thread, and the unique index turns any violation of
     /// that assumption into a failed insert rather than a shared inbox.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the handles in use cannot be read.
     pub fn assign_unique_agent_handle(&self, session: &mut AgentSession) -> Result<()> {
         let base = normalize_agent_handle(session.agent_handle());
         ensure!(!base.is_empty(), "new session has an empty agent handle");
@@ -3657,6 +3711,10 @@ impl SessionStore {
     /// reject every handle change; this narrow compare-and-swap is for the AMQ
     /// layer only, called while its shared lock proves `expected` is occupied
     /// by a foreign owner and `replacement` is free.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the row no longer holds `expected`, or the write is refused.
     pub fn reassign_agent_handle_for_global_backfill(
         &self,
         id: &str,
@@ -3685,6 +3743,10 @@ impl SessionStore {
     /// reach them once the agent is gone from both surfaces and keeping them
     /// would let the slot-tab repair passes resurrect state for a dead agent.
     /// Idempotent: a second call keeps the first timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the transaction is refused.
     pub fn soft_delete_session(&self, id: &str) -> Result<()> {
         let tx = immediate_tx(&self.conn)?;
         tx.execute(
@@ -3749,6 +3811,10 @@ impl SessionStore {
 
     /// The body of [`Self::upsert_session`], parameterized over the connection so
     /// [`Self::create_session`] can run it inside its transaction.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one bound column per session field, in the statement's order"
+    )]
     fn upsert_session_in(conn: &Connection, session: &AgentSession) -> Result<()> {
         // Identity is checked before anything is written. A bad handle is a
         // bug at the creation site, and a changed one would orphan the AMQ
@@ -4003,18 +4069,31 @@ impl SessionStore {
 
     /// Every live session, in display order. Soft-deleted tombstones are
     /// excluded; see [`Self::load_sessions_including_deleted`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when the rows cannot be read, or one is malformed.
     pub fn load_sessions(&self) -> Result<Vec<AgentSession>> {
-        self.load_sessions_impl(false)
+        self.load_sessions_impl(Tombstones::Skip)
     }
 
     /// Live sessions AND tombstones, for AMQ ownership reconciliation and
     /// destructive maintenance (purge, orphan cleanup), which must see every
     /// identity yaran still owns.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the rows cannot be read, or one is malformed.
     pub fn load_sessions_including_deleted(&self) -> Result<Vec<AgentSession>> {
-        self.load_sessions_impl(true)
+        self.load_sessions_impl(Tombstones::Include)
     }
 
-    fn load_sessions_impl(&self, include_deleted: bool) -> Result<Vec<AgentSession>> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one column read per session field, in the table's order"
+    )]
+    fn load_sessions_impl(&self, tombstones: Tombstones) -> Result<Vec<AgentSession>> {
+        let include_deleted = tombstones == Tombstones::Include;
         validate_stored_handles(&self.conn)?;
         // Visibility is decided by the raw NULL here, never by parsing the
         // stamp: `soft_delete_session` always writes a valid RFC 3339 value,
@@ -4160,6 +4239,10 @@ impl SessionStore {
     /// corrupt database that load-time validation must refuse. Test-only: it
     /// exists so destructive paths in other crates (factory reset, purge) can
     /// prove they fail closed on a malformed row.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the write is refused.
     #[cfg(any(test, feature = "test-support"))]
     pub fn corrupt_agent_handle_for_test(&self, id: &str, handle: &str) -> Result<()> {
         self.conn.execute(
@@ -4283,6 +4366,10 @@ impl SessionStore {
 
     /// Every provider session id recorded for `session_id`, keyed by provider
     /// name. Empty for an agent with none, or one that no longer exists.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the row cannot be read or its ids are not valid JSON.
     pub fn provider_session_ids(&self, session_id: &str) -> Result<BTreeMap<String, String>> {
         let raw: Option<String> = self
             .conn
@@ -4301,6 +4388,10 @@ impl SessionStore {
     }
 
     /// The id `provider` gave this agent's conversation, if yaran recorded one.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the row cannot be read or its ids are not valid JSON.
     pub fn provider_session_id(&self, session_id: &str, provider: &str) -> Result<Option<String>> {
         Ok(self.provider_session_ids(session_id)?.remove(provider))
     }
@@ -4308,26 +4399,44 @@ impl SessionStore {
     /// Record (or replace) the id `provider` gave this agent's conversation.
     /// Errors when the agent does not exist, so a capture that raced a delete
     /// is reported rather than silently dropped.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the agent does not exist or the write is refused.
     pub fn set_provider_session_id(
         &self,
         session_id: &str,
         provider: &str,
         provider_session_id: &str,
     ) -> Result<()> {
-        self.write_provider_session_id(session_id, provider, provider_session_id, false)?;
+        self.write_provider_session_id(
+            session_id,
+            provider,
+            provider_session_id,
+            Overwrite::Always,
+        )?;
         Ok(())
     }
 
     /// Record the id only when none is stored for `provider` yet. Returns
     /// whether it wrote. Used by the one-time history recovery, which must
     /// never override an id captured at launch.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the agent does not exist or the write is refused.
     pub fn set_provider_session_id_if_missing(
         &self,
         session_id: &str,
         provider: &str,
         provider_session_id: &str,
     ) -> Result<bool> {
-        self.write_provider_session_id(session_id, provider, provider_session_id, true)
+        self.write_provider_session_id(
+            session_id,
+            provider,
+            provider_session_id,
+            Overwrite::OnlyIfMissing,
+        )
     }
 
     fn write_provider_session_id(
@@ -4335,8 +4444,9 @@ impl SessionStore {
         session_id: &str,
         provider: &str,
         provider_session_id: &str,
-        only_if_missing: bool,
+        overwrite: Overwrite,
     ) -> Result<bool> {
+        let only_if_missing = overwrite == Overwrite::OnlyIfMissing;
         let tx = immediate_tx(&self.conn)?;
         let raw: String = tx
             .query_row(
@@ -4363,6 +4473,10 @@ impl SessionStore {
     /// `{}` (the column is `not null` on new databases). Deliberately a
     /// dedicated setter outside `upsert_session`'s hot path, so status churn
     /// can never clobber it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the write is refused.
     pub fn set_session_settings(
         &self,
         id: &str,
@@ -4385,6 +4499,10 @@ impl SessionStore {
 
     /// Every session's non-default settings, keyed by session id. Malformed
     /// blobs read as the default (and are therefore omitted).
+    ///
+    /// # Errors
+    ///
+    /// Fails when the rows cannot be read.
     pub fn load_session_settings(
         &self,
     ) -> Result<std::collections::HashMap<String, crate::session_settings::SessionSettings>> {
@@ -5891,7 +6009,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// A binary older than the minted-rename table deletes a session with
     /// foreign keys off: the session goes and its rename row stays. The next
     /// open of a binary that knows the table sweeps it, so a later session
@@ -7822,7 +7939,7 @@ mod tests {
             *byte = 0xA5;
         }
         std::fs::write(&db, bytes).unwrap();
-        let err = format!("{:#}", SessionStore::open(&db).err().expect("must refuse"));
+        let err = format!("{:#}", SessionStore::open(&db).expect_err("must refuse"));
         assert!(
             err.contains("integrity check failed") && err.contains(".bak"),
             "corruption must fail open loudly: {err}"
@@ -8731,6 +8848,8 @@ fn is_safe_ident(s: &str) -> bool {
 /// default. Nothing that could end the statement, open a comment, or smuggle
 /// in a string unless the whole clause is on [`ALLOWED_COLUMN_TYPES`].
 fn is_allowed_column_type(s: &str) -> bool {
+    /// The type names SQLite reads as one of its storage classes.
+    const STORAGE_CLASSES: &[&str] = &["text", "integer", "real", "blob", "numeric"];
     let normalized = s
         .trim()
         .to_ascii_lowercase()
@@ -8749,7 +8868,6 @@ fn is_allowed_column_type(s: &str) -> bool {
     {
         return false;
     }
-    const STORAGE_CLASSES: &[&str] = &["text", "integer", "real", "blob", "numeric"];
     let mut words = normalized.split(' ');
     let Some(class) = words.next() else {
         return false;
@@ -8815,7 +8933,7 @@ mod immediate_transaction_tests {
                 rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred)
             },
             || {
-                let mut b = Connection::open(&db).unwrap();
+                let b = Connection::open(&db).unwrap();
                 b.execute("insert into t (who) values ('b')", []).unwrap();
             },
         )

@@ -1535,11 +1535,7 @@ impl App {
             }
             Action::RemoveGitPane => self.toggle_git_pane_removed(),
             Action::ToggleResizeMode => self.toggle_resize_mode(),
-            Action::SessionSettings => {
-                if let Err(err) = self.open_session_settings() {
-                    self.set_error(format!("{err:#}"));
-                }
-            }
+            Action::SessionSettings => self.open_session_settings(),
             Action::CloseOverlay if self.center_typeable() && !self.scroll_mode_active() => {
                 self.forward_typing_key_to_center(&key);
             }
@@ -12046,11 +12042,11 @@ impl App {
                 false
             }
             ButtonPressedTarget::SessionSettingsCancel => {
-                self.press_session_settings_button(false);
+                self.press_session_settings_button(super::session_settings::SettingsButton::Cancel);
                 false
             }
             ButtonPressedTarget::SessionSettingsSave => {
-                self.press_session_settings_button(true);
+                self.press_session_settings_button(super::session_settings::SettingsButton::Save);
                 false
             }
             ButtonPressedTarget::ConfigureFieldSave => {

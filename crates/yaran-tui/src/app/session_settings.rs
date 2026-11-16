@@ -92,6 +92,15 @@ pub(crate) enum SettingsFocus {
     CancelButton,
 }
 
+/// The session settings dialog's two buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettingsButton {
+    /// Save the draft.
+    Save,
+    /// Throw it away.
+    Cancel,
+}
+
 impl SettingsFocus {
     /// Next focus; skips the watch-rule rows when there are none, wraps.
     pub(crate) fn next(self, rules_len: usize) -> Self {
@@ -103,9 +112,9 @@ impl SettingsFocus {
             // Both spawn-time settings, so they sit together.
             Self::Yolo => Self::SystemPrompt,
             Self::SystemPrompt if rules_len > 0 => Self::WatchRule(0),
-            Self::SystemPrompt => Self::AutoClearOnDone,
             Self::WatchRule(idx) if idx + 1 < rules_len => Self::WatchRule(idx + 1),
-            Self::WatchRule(_) => Self::AutoClearOnDone,
+            // Past the last watch rule, or with none at all.
+            Self::SystemPrompt | Self::WatchRule(_) => Self::AutoClearOnDone,
             Self::AutoClearOnDone => Self::AutoCompactOnCompact,
             Self::AutoCompactOnCompact => Self::CompactInstructionsPath,
             Self::CompactInstructionsPath => Self::VerifyDefault,
@@ -202,10 +211,10 @@ impl App {
 
     /// Open the modal for the selected agent. With nothing selected it warns
     /// on the status line, so the binding is safe to press anywhere.
-    pub(crate) fn open_session_settings(&mut self) -> Result<()> {
+    pub(crate) fn open_session_settings(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             self.set_warning("Select an agent first, then open its session settings.");
-            return Ok(());
+            return;
         };
         let settings = self.engine.session_settings_or_default(&session.id);
         let rules = self.collect_provider_watch_rule_summaries(&session.provider, &settings);
@@ -242,7 +251,6 @@ impl App {
             rules,
             hit_rows: Vec::new(),
         }));
-        Ok(())
     }
 
     /// The provider's configured watch rules with the effective arm state:
@@ -272,9 +280,9 @@ impl App {
 
     /// Send the draft. On success the modal closes; on a store failure it
     /// stays open with the draft intact so the user can retry (773a6b04).
-    pub(crate) fn save_session_settings(&mut self) -> Result<()> {
+    pub(crate) fn save_session_settings(&mut self) {
         let PromptState::SessionSettings(prompt) = &self.prompt else {
-            return Ok(());
+            return;
         };
         let mut settings = prompt.draft.clone();
         // Trailing whitespace dropped; all-whitespace means "none", so the
@@ -304,7 +312,6 @@ impl App {
                 ));
             }
         }
-        Ok(())
     }
 
     fn cancel_session_settings(&mut self) {
@@ -345,7 +352,7 @@ impl App {
     /// field engages, everything else toggles.
     fn activate_session_settings_row(&mut self, focus: SettingsFocus) -> Result<()> {
         match focus {
-            SettingsFocus::SaveButton => self.save_session_settings()?,
+            SettingsFocus::SaveButton => self.save_session_settings(),
             SettingsFocus::CancelButton => self.cancel_session_settings(),
             SettingsFocus::SystemPrompt => self.engage_session_settings_system_prompt(),
             SettingsFocus::Title | SettingsFocus::CompactInstructionsPath => {}
@@ -409,7 +416,7 @@ impl App {
             Some(Action::MoveUp) => self.set_session_settings_focus(focus.prev(rules_len)),
             // Enter submits from a single-line field (nothing competes for
             // it there) and acts on the focused control elsewhere.
-            Some(Action::Confirm) if line_field_focused => self.save_session_settings()?,
+            Some(Action::Confirm) if line_field_focused => self.save_session_settings(),
             Some(Action::Confirm) => self.activate_session_settings_row(focus)?,
             _ if line_field_focused => {
                 if let Some(p) = self.session_settings_prompt_mut() {
@@ -500,29 +507,34 @@ impl App {
     }
 
     /// A released Save or Cancel button.
-    pub(super) fn press_session_settings_button(&mut self, save: bool) {
-        if save {
-            self.set_session_settings_focus(SettingsFocus::SaveButton);
-            if let Err(err) = self.save_session_settings() {
-                self.set_error(format!("{err:#}"));
+    pub(super) fn press_session_settings_button(&mut self, button: SettingsButton) {
+        match button {
+            SettingsButton::Save => {
+                self.set_session_settings_focus(SettingsFocus::SaveButton);
+                self.save_session_settings();
             }
-        } else {
-            self.set_session_settings_focus(SettingsFocus::CancelButton);
-            self.cancel_session_settings();
+            SettingsButton::Cancel => {
+                self.set_session_settings_focus(SettingsFocus::CancelButton);
+                self.cancel_session_settings();
+            }
         }
     }
 
     // ── render ───────────────────────────────────────────────────────
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "every section of the dialog is laid out against one height, top to bottom"
+    )]
     pub(super) fn render_session_settings(&mut self, frame: &mut Frame<'_>) {
         let PromptState::SessionSettings(prompt) = &self.prompt else {
             return;
         };
         let prompt = prompt.clone();
         let engaged = self.session_settings_prompt_engaged();
-        let rule_rows = prompt.rules.len().max(1) as u16;
+        let rule_rows = u16::try_from(prompt.rules.len().max(1)).unwrap_or(u16::MAX);
         // Header rows + fixed rows + editor + rules + buttons + hints.
-        let height = 28 + rule_rows + SYSTEM_PROMPT_LINES as u16;
+        let height = 28 + rule_rows + u16::try_from(SYSTEM_PROMPT_LINES).unwrap_or(u16::MAX);
         let area = centered_rect_exact(86, height, frame.area());
         let title = format!("Session Settings: {}", prompt.session_label);
         let modal = self.open_modal_frame(frame, &title, area);
@@ -579,7 +591,10 @@ impl App {
                     .draft_title
                     .cursor_display_position()
                     .unwrap_or_default();
-                frame.set_cursor_position((title_rect.x + col as u16, y));
+                frame.set_cursor_position((
+                    title_rect.x + u16::try_from(col).unwrap_or(u16::MAX),
+                    y,
+                ));
             }
             y += 1;
         }
@@ -660,7 +675,8 @@ impl App {
             ),
         );
         rows.push((r, SettingsFocus::SystemPrompt));
-        let editor_height = (SYSTEM_PROMPT_LINES as u16 + 2).min(rows_bottom.saturating_sub(y));
+        let editor_height = (u16::try_from(SYSTEM_PROMPT_LINES).unwrap_or(u16::MAX) + 2)
+            .min(rows_bottom.saturating_sub(y));
         if editor_height > 2 {
             let field = Rect::new(inner.x + 3, y, inner.width.saturating_sub(6), editor_height);
             let exit_key = engaged.then(|| {
@@ -675,18 +691,26 @@ impl App {
                 exit_key,
             );
             let mut editor = prompt.draft_system_prompt.clone();
-            editor.set_display_width((text_area.width > 0).then_some(text_area.width as usize));
-            editor.set_visible_lines(text_area.height as usize);
+            editor.set_display_width((text_area.width > 0).then_some(usize::from(text_area.width)));
+            editor.set_visible_lines(usize::from(text_area.height));
             for (i, row_text) in editor.visible_lines().iter().enumerate() {
-                if i >= text_area.height as usize {
+                if i >= usize::from(text_area.height) {
                     break;
                 }
-                let r = Rect::new(text_area.x, text_area.y + i as u16, text_area.width, 1);
+                let r = Rect::new(
+                    text_area.x,
+                    text_area.y + u16::try_from(i).unwrap_or(u16::MAX),
+                    text_area.width,
+                    1,
+                );
                 Paragraph::new(row_text.as_str()).render(r, frame.buffer_mut());
             }
             // `None` while the caret is scrolled out of the field's view.
             if engaged && let Some((row, col)) = editor.cursor_display_position() {
-                let (cx, cy) = (text_area.x + col as u16, text_area.y + row as u16);
+                let (cx, cy) = (
+                    text_area.x + u16::try_from(col).unwrap_or(u16::MAX),
+                    text_area.y + u16::try_from(row).unwrap_or(u16::MAX),
+                );
                 if cx < text_area.x + text_area.width && cy < text_area.y + text_area.height {
                     frame.set_cursor_position((cx, cy));
                 }
@@ -750,14 +774,21 @@ impl App {
         let path_focused = f == SettingsFocus::CompactInstructionsPath;
         let prefix = "      file: ";
         let path_rect = Rect::new(
-            inner.x + 1 + prefix.len() as u16,
+            inner.x + 1 + u16::try_from(prefix.len()).unwrap_or(u16::MAX),
             y,
-            inner.width.saturating_sub(2 + prefix.len() as u16),
+            inner
+                .width
+                .saturating_sub(2 + u16::try_from(prefix.len()).unwrap_or(u16::MAX)),
             1,
         );
         if y < rows_bottom {
             Paragraph::new(Line::from(Span::styled(prefix, dim))).render(
-                Rect::new(inner.x + 1, y, prefix.len() as u16, 1),
+                Rect::new(
+                    inner.x + 1,
+                    y,
+                    u16::try_from(prefix.len()).unwrap_or(u16::MAX),
+                    1,
+                ),
                 frame.buffer_mut(),
             );
             let path_text = if prompt.draft_compact_path.text.is_empty() {
@@ -774,7 +805,8 @@ impl App {
                     .draft_compact_path
                     .cursor_display_position()
                     .unwrap_or_default();
-                frame.set_cursor_position((path_rect.x + col as u16, y));
+                frame
+                    .set_cursor_position((path_rect.x + u16::try_from(col).unwrap_or(u16::MAX), y));
             }
             rows.push((path_rect, SettingsFocus::CompactInstructionsPath));
             y += 1;
@@ -947,7 +979,7 @@ mod tests {
 
     fn open_rendered() -> App {
         let mut app = app();
-        app.open_session_settings().expect("open");
+        app.open_session_settings();
         render(&mut app);
         app
     }
@@ -989,7 +1021,7 @@ mod tests {
     #[test]
     fn auto_compact_and_its_path_are_edited_by_keyboard_and_saved() {
         let mut app = app();
-        app.open_session_settings().unwrap();
+        app.open_session_settings();
         prompt_mut(&mut app).draft.mode = ContextMode::Worker;
         prompt_mut(&mut app).focus = SettingsFocus::AutoCompactOnCompact;
         app.handle_session_settings_key(key(KeyCode::Char(' ')))
@@ -1019,12 +1051,12 @@ mod tests {
     #[test]
     fn a_blank_compact_path_saves_as_unset() {
         let mut app = app();
-        app.open_session_settings().unwrap();
+        app.open_session_settings();
         prompt_mut(&mut app).draft.auto_compact_on_compact = true;
         prompt_mut(&mut app)
             .draft_compact_path
             .set_text("   ".into());
-        app.save_session_settings().unwrap();
+        app.save_session_settings();
         let saved = app.engine.session_settings("session-1").unwrap();
         assert_eq!(saved.compact_instructions_path, None);
     }
@@ -1065,7 +1097,7 @@ mod tests {
     fn open_session_settings_warns_when_no_session_selected() {
         let mut app = app();
         app.selected_left = 99;
-        app.open_session_settings().expect("open");
+        app.open_session_settings();
         assert!(matches!(app.prompt, PromptState::None));
         assert!(!app.status.message().is_empty(), "a warning is shown");
     }
@@ -1087,7 +1119,7 @@ mod tests {
                 title: None,
             })
             .unwrap();
-        app.open_session_settings().expect("open");
+        app.open_session_settings();
         let p = prompt(&app);
         assert_eq!(p.session_id, "session-1");
         assert_eq!(p.draft, saved);
@@ -1123,7 +1155,7 @@ mod tests {
     #[test]
     fn save_session_settings_persists_to_sqlite_and_in_memory() {
         let mut app = app();
-        app.open_session_settings().unwrap();
+        app.open_session_settings();
         {
             let p = prompt_mut(&mut app);
             p.draft.mode = ContextMode::Worker;
@@ -1134,7 +1166,7 @@ mod tests {
                 .set_text("be concise and cite sources".into());
             p.draft_title.set_text("Reviewer".into());
         }
-        app.save_session_settings().unwrap();
+        app.save_session_settings();
         assert!(matches!(app.prompt, PromptState::None), "modal closed");
         let expected = SessionSettings {
             mode: ContextMode::Worker,
@@ -1153,12 +1185,12 @@ mod tests {
     #[test]
     fn save_session_settings_system_prompt_whitespace_persists_as_none() {
         let mut app = app();
-        app.open_session_settings().unwrap();
+        app.open_session_settings();
         prompt_mut(&mut app)
             .draft_system_prompt
             .set_text("   \n\t  \n".into());
         prompt_mut(&mut app).draft.yolo_permissions = true;
-        app.save_session_settings().unwrap();
+        app.save_session_settings();
         let saved = app.engine.session_settings("session-1").unwrap();
         assert_eq!(saved.system_prompt, None);
     }
@@ -1166,11 +1198,11 @@ mod tests {
     #[test]
     fn save_session_settings_system_prompt_change_triggers_respawn_warning() {
         let mut app = app();
-        app.open_session_settings().unwrap();
+        app.open_session_settings();
         prompt_mut(&mut app)
             .draft_system_prompt
             .set_text("review pls".into());
-        app.save_session_settings().unwrap();
+        app.save_session_settings();
         let msg = app.status.message().clone();
         assert!(msg.contains("system prompt"), "{msg}");
         assert!(msg.contains("Reconnect"), "{msg}");
@@ -1179,8 +1211,8 @@ mod tests {
     #[test]
     fn save_session_settings_no_changes_reports_no_changes() {
         let mut app = app();
-        app.open_session_settings().unwrap();
-        app.save_session_settings().unwrap();
+        app.open_session_settings();
+        app.save_session_settings();
         let msg = app.status.message().clone();
         assert!(msg.contains("no changes"), "{msg}");
     }
@@ -1190,7 +1222,7 @@ mod tests {
     #[test]
     fn failed_settings_upsert_preserves_memory_runtime_and_retryable_draft() {
         let mut app = app();
-        app.open_session_settings().unwrap();
+        app.open_session_settings();
         prompt_mut(&mut app).draft.mode = ContextMode::Worker;
         prompt_mut(&mut app).draft.auto_clear_on_task_done = true;
         // Every write now fails: the row the save targets is gone.
@@ -1199,7 +1231,7 @@ mod tests {
             .delete_session("session-1")
             .expect("drop the row");
 
-        app.save_session_settings().unwrap();
+        app.save_session_settings();
 
         assert_eq!(app.engine.session_settings("session-1"), None);
         assert!(app.engine.watch_rule_rows().is_empty());
@@ -1216,7 +1248,7 @@ mod tests {
     #[test]
     fn keyboard_space_toggles_and_tab_moves_focus() {
         let mut app = app();
-        app.open_session_settings().unwrap();
+        app.open_session_settings();
         // Down to Worker, Space selects it.
         app.handle_key(key(KeyCode::Down)).unwrap();
         app.handle_key(key(KeyCode::Down)).unwrap();
@@ -1240,7 +1272,7 @@ mod tests {
     #[test]
     fn engaged_system_prompt_owns_enter() {
         let mut app = app();
-        app.open_session_settings().unwrap();
+        app.open_session_settings();
         prompt_mut(&mut app).focus = SettingsFocus::SystemPrompt;
         app.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(app.session_settings_prompt_engaged());
@@ -1324,7 +1356,7 @@ mod tests {
     #[test]
     fn mouse_click_session_settings_title_focuses_and_positions_cursor() {
         let mut app = app();
-        app.open_session_settings().unwrap();
+        app.open_session_settings();
         prompt_mut(&mut app)
             .draft_title
             .set_text("draft title".into());
