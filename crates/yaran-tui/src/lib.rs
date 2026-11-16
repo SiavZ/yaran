@@ -240,8 +240,16 @@ pub fn run_doctor(args: &[String]) -> Result<()> {
     let paths = config::YaranPaths::discover()?;
     doctor::run_doctor(
         &paths,
-        args.iter().any(|a| a == "--json"),
-        args.iter().any(|a| a == "--anonymize"),
+        if args.iter().any(|a| a == "--json") {
+            doctor::DoctorFormat::Json
+        } else {
+            doctor::DoctorFormat::Text
+        },
+        if args.iter().any(|a| a == "--anonymize") {
+            doctor::Privacy::Anonymized
+        } else {
+            doctor::Privacy::Shown
+        },
     )
 }
 

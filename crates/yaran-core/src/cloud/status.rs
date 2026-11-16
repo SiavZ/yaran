@@ -42,17 +42,30 @@ use crate::cloud::paths::CloudPaths;
 /// No secrets; `status --json` prints exactly this.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct StatusReport {
+    /// Whether this machine holds a pairing.
     pub paired: bool,
+    /// The `[cloud] mode` setting.
     pub mode: String,
+    /// The organization's control-plane address.
     pub org_url: Option<String>,
+    /// The organization's name.
     pub org_name: Option<String>,
+    /// The machine's hostname.
     pub hostname: Option<String>,
+    /// The machine's id in the organization.
     pub machine_id: Option<String>,
+    /// The paired owner's email.
     pub owner_email: Option<String>,
+    /// The local port the tunnel forwards to.
     pub origin_port: Option<u16>,
+    /// The token issue it holds.
+    /// The tunnel token's issue held here.
     pub token_version: Option<i64>,
+    /// When it was paired, RFC 3339.
     pub paired_at: Option<String>,
+    /// When the control plane said it was revoked, RFC 3339.
     pub revoked_at: Option<String>,
+    /// The tunnel process, when one runs.
     pub leg: Option<LegReport>,
     /// The control plane's view (`None` when not asked or unpaired).
     pub remote: Option<RemoteReport>,
@@ -60,22 +73,31 @@ pub struct StatusReport {
     pub error: Option<String>,
 }
 
+/// The cloudflared process this yaran runs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LegReport {
+    /// Its state.
     pub state: String,
+    /// Its process id.
     pub pid: u32,
+    /// Since when it has been in that state, RFC 3339.
     pub since: String,
 }
 
+/// What the control plane said about this machine.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RemoteReport {
+    /// Whether it answered.
     pub reachable: bool,
+    /// Whether it says the machine is revoked.
     pub revoked: bool,
     pub token_version: Option<i64>,
+    /// What went wrong, when it did not answer.
     pub detail: Option<String>,
 }
 
 impl StatusReport {
+    /// Whether either side says the pairing is revoked.
     pub fn is_revoked(&self) -> bool {
         self.revoked_at.is_some() || self.remote.as_ref().is_some_and(|r| r.revoked)
     }

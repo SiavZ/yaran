@@ -76,24 +76,46 @@ impl fmt::Display for Invalid {
 
 impl std::error::Error for Invalid {}
 
+/// A schema check's result: the first field that broke a rule.
 pub type Checked = Result<(), Invalid>;
 
 /// Schema constraints serde cannot express (patterns, bounds, cross-field rules).
 pub trait Validate {
+    /// Check every rule serde did not.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the first field that breaks a rule.
     fn validate(&self) -> Checked;
 }
 
 /// `Ok` when `ok`, else the named field.
+///
+/// # Errors
+///
+/// Fails with `field` when `ok` is false.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "turning a rule's verdict into a named refusal is the whole function"
+)]
 pub fn check(ok: bool, field: &'static str) -> Checked {
     if ok { Ok(()) } else { Err(Invalid(field)) }
 }
 
 /// Validates an optional value when present.
+///
+/// # Errors
+///
+/// Fails with `field` when the value is present and breaks `ok`.
 pub fn check_opt<T>(value: &Option<T>, ok: impl Fn(&T) -> bool, field: &'static str) -> Checked {
     check(value.as_ref().is_none_or(ok), field)
 }
 
 /// A required-but-nullable field: present as `null` or a value, never absent.
+///
+/// # Errors
+///
+/// Fails when the value present is not a `T`.
 pub fn nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<T>, D::Error> {
@@ -142,9 +164,11 @@ pattern!(UNIX_SECONDS, r"^(?:0|[1-9][0-9]{0,11})$");
 pattern!(ERROR_CODE, r"^[a-z][a-z0-9_]{0,63}$");
 pattern!(FINGERPRINT, r"^[A-Z2-7]{4}(?:-[A-Z2-7]{4}){5}$");
 
+/// A lowercase hyphenated UUID.
 pub fn is_uuid(s: &str) -> bool {
     UUID.is_match(s)
 }
+/// An id yaran mints for agents and tabs.
 pub fn is_yaran_id(s: &str) -> bool {
     YARAN_ID.is_match(s)
 }
@@ -156,6 +180,7 @@ pub fn is_timestamp(s: &str) -> bool {
 pub fn is_date(s: &str) -> bool {
     DATE.is_match(s) && chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
 }
+/// Unpadded base64url characters only.
 pub fn is_b64url(s: &str) -> bool {
     B64URL.is_match(s)
 }
@@ -173,24 +198,31 @@ pub fn is_email(s: &str) -> bool {
         && !domain.ends_with('.')
         && !s.chars().any(char::is_whitespace)
 }
+/// An organization's `https://` control-plane address.
 pub fn is_org_url(s: &str) -> bool {
     ORG_URL.is_match(s)
 }
+/// A lowercase DNS hostname.
 pub fn is_hostname(s: &str) -> bool {
     s.len() <= 253 && HOSTNAME.is_match(s)
 }
+/// A machine name: one lowercase DNS label.
 pub fn is_machine_name(s: &str) -> bool {
     MACHINE_NAME.is_match(s)
 }
+/// A user slug: one lowercase DNS label.
 pub fn is_user_slug(s: &str) -> bool {
     USER_SLUG.is_match(s)
 }
+/// A `MAJOR.MINOR.PATCH` version.
 pub fn is_semver(s: &str) -> bool {
     SEMVER.is_match(s)
 }
+/// A TCP port yaran may serve on.
 pub fn is_origin_port(p: i64) -> bool {
     (1..=65535).contains(&p)
 }
+/// A request id as the control plane mints them.
 pub fn is_request_id(s: &str) -> bool {
     REQUEST_ID.is_match(s)
 }
@@ -206,15 +238,19 @@ pub fn is_b64url_43(s: &str) -> bool {
 pub fn is_unix_seconds(s: &str) -> bool {
     UNIX_SECONDS.is_match(s)
 }
+/// A snake_case error code.
 pub fn is_error_code(s: &str) -> bool {
     ERROR_CODE.is_match(s)
 }
+/// A base64url Ed25519 public key (32 bytes).
 pub fn is_ed25519_public_key(s: &str) -> bool {
     ED25519_KEY.is_match(s)
 }
+/// A base64url raw ECDSA P-256 signature (64 bytes).
 pub fn is_ecdsa_sig(s: &str) -> bool {
     ECDSA_SIG.is_match(s)
 }
+/// A key fingerprint as the confirm page shows it.
 pub fn is_fingerprint(s: &str) -> bool {
     FINGERPRINT.is_match(s)
 }
@@ -233,6 +269,7 @@ pub fn b64url_decode(s: &str) -> Option<Vec<u8>> {
     URL_SAFE_NO_PAD.decode(s).ok()
 }
 
+/// Unpadded base64url of `bytes`.
 pub fn b64url_encode(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
