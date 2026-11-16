@@ -41,23 +41,39 @@ pub fn server_text(s: &str) -> String {
     crate::sanitize::truncate(s, SERVER_TEXT_MAX)
 }
 
+/// Why a control-plane request failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MachineApiError {
     /// `410 machine_revoked`.
     Revoked,
     /// No protocol both sides speak.
-    ProtocolUnsupported { min: i64, max: i64, ours: i64 },
+    ProtocolUnsupported {
+        /// The oldest version the server speaks.
+        min: i64,
+        /// The newest it speaks.
+        max: i64,
+        /// The version this yaran speaks.
+        ours: i64,
+    },
     /// `signature_expired`: this machine's clock is off. RFC 3339 server time if known.
-    ClockSkew { server_time: Option<String> },
+    ClockSkew {
+        /// The server's clock, when it said.
+        server_time: Option<String>,
+    },
     /// A registered refusal (or an unknown 4xx code), sanitized.
     Refused {
+        /// The error code.
         code: String,
+        /// Its message.
         message: String,
+        /// Seconds to wait before trying again, when the server said.
         retry_after: Option<u64>,
     },
     /// A 5xx or 429 without a code this build maps more precisely.
     Server {
+        /// The HTTP status.
         status: u16,
+        /// Seconds to wait before trying again, when the server said.
         retry_after: Option<u64>,
     },
     /// The request never got an HTTP answer.
@@ -194,7 +210,7 @@ mod tests {
     use super::*;
     use crate::cloud::protocol::test_fixtures::api_cases;
 
-    fn envelope(code: &str, details: serde_json::Value) -> String {
+    fn envelope(code: &str, details: &serde_json::Value) -> String {
         serde_json::json!({
             "error": {"code": code, "message": "m", "retryable": false, "details": details},
             "request_id": "req-1"
@@ -227,7 +243,7 @@ mod tests {
         for (code, status) in refused {
             let (err, _) = map_error(
                 status,
-                &envelope(code, serde_json::json!({})),
+                &envelope(code, &serde_json::json!({})),
                 None,
                 None,
                 1,
@@ -239,7 +255,7 @@ mod tests {
         }
         let (err, _) = map_error(
             409,
-            &envelope("machine_not_ready", serde_json::json!({})),
+            &envelope("machine_not_ready", &serde_json::json!({})),
             Some("7"),
             None,
             1,
@@ -254,7 +270,7 @@ mod tests {
         for code in ["rate_limited", "unavailable"] {
             let (err, _) = map_error(
                 429,
-                &envelope(code, serde_json::json!({})),
+                &envelope(code, &serde_json::json!({})),
                 Some("3"),
                 None,
                 1,
@@ -272,7 +288,7 @@ mod tests {
         }
         let (err, _) = map_error(
             410,
-            &envelope("machine_revoked", serde_json::json!({})),
+            &envelope("machine_revoked", &serde_json::json!({})),
             None,
             None,
             1,
@@ -282,7 +298,7 @@ mod tests {
             400,
             &envelope(
                 "protocol_unsupported",
-                serde_json::json!({"min": 2, "max": 3}),
+                &serde_json::json!({"min": 2, "max": 3}),
             ),
             None,
             None,
@@ -298,7 +314,7 @@ mod tests {
         );
         let (err, _) = map_error(
             401,
-            &envelope("signature_expired", serde_json::json!({})),
+            &envelope("signature_expired", &serde_json::json!({})),
             None,
             Some("Sat, 14 Nov 2026 12:00:00 GMT"),
             1,
@@ -315,7 +331,7 @@ mod tests {
     fn an_unknown_code_or_no_envelope_falls_back_to_the_status_class() {
         let (err, _) = map_error(
             503,
-            &envelope("brand_new", serde_json::json!({})),
+            &envelope("brand_new", &serde_json::json!({})),
             Some("9"),
             None,
             1,
@@ -329,7 +345,7 @@ mod tests {
         );
         let (err, _) = map_error(
             404,
-            &envelope("brand_new", serde_json::json!({})),
+            &envelope("brand_new", &serde_json::json!({})),
             None,
             None,
             1,

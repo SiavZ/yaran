@@ -164,7 +164,7 @@ fn an_empty_board_has_no_rows() {
 #[test]
 fn done_shows_only_the_most_recent_few() {
     let mut board = Board::default();
-    for n in 0..(RECENT_DONE as i64 + 3) {
+    for n in 0..(i64::try_from(RECENT_DONE).unwrap() + 3) {
         board
             .post(&new_card(CardKind::Info, None, &format!("n{n}")), at(n))
             .unwrap();
@@ -523,7 +523,7 @@ fn clicking_a_card_row_focuses_the_board_and_selects_it() {
     let click = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: list.x + 3,
-        row: list.y + row as u16,
+        row: list.y + u16::try_from(row).unwrap_or(u16::MAX),
         modifiers: KeyModifiers::NONE,
     };
     app.handle_mouse(click);
@@ -1011,7 +1011,8 @@ fn the_selected_card_row_uses_the_agent_lists_soft_tint() {
         .board_row_to_slot
         .iter()
         .position(|slot| *slot == Some(1))
-        .expect("slot 1 drawn") as u16;
+        .expect("slot 1 drawn");
+    let row = u16::try_from(row).unwrap();
     let cell = &buffer[(list.x + 3, list.y + row)];
     assert_eq!(cell.bg, app.theme.selection_bar_tint());
     assert_ne!(
@@ -1407,7 +1408,7 @@ fn a_folder_board_reads_its_notes() {
 /// A board shared by Sam and Alex, run by `me`, holding one card that Sam's
 /// agent `session-1` posted on Sam's board for Alex. The agent runs here only
 /// when `me` is Sam.
-fn two_sided_app(me: &str, blocking: bool) -> (App, String) {
+fn two_sided_app(me: &str, blocking: yaran_core::human_board::Blocking) -> (App, String) {
     let mut app = test_app(default_bindings());
     app.engine.config.ui.human_board = true;
     app.engine.config.board.people = vec!["Sam".to_string(), "Alex".to_string()];
@@ -1419,7 +1420,7 @@ fn two_sided_app(me: &str, blocking: bool) -> (App, String) {
     card.from = Some("session-1".to_string());
     card.assignee = Some("Alex".to_string());
     card.origin = Some("Sam".to_string());
-    card.blocking = Some(blocking);
+    card.blocking = Some(blocking == yaran_core::human_board::Blocking::HoldsPoster);
     board.post(&card, at(0)).unwrap();
     BoardStore::new(&app.engine.paths.root)
         .update(|current| {
@@ -1454,7 +1455,7 @@ fn card_s1(app: &App) -> Card {
 }
 
 /// Something written on the other side's machine lands on the board.
-fn other_side_says(app: &mut App, from: &str, text: &str, done: bool) {
+fn other_side_says(app: &mut App, from: &str, text: &str, done: ReplyDone) {
     BoardStore::new(&app.engine.paths.root)
         .update(|board| {
             board.reply(
@@ -1463,7 +1464,7 @@ fn other_side_says(app: &mut App, from: &str, text: &str, done: bool) {
                     from: from.to_string(),
                     side: Some(from.to_string()),
                     text: text.to_string(),
-                    done,
+                    done: done == ReplyDone::MarkDone,
                 },
                 Utc::now(),
             )
@@ -1485,7 +1486,7 @@ fn latest_status(app: &App) -> String {
 
 #[test]
 fn a_card_from_the_other_side_answers_its_person_through_the_board() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let PromptState::HumanBoardCard {
         reply: Some(reply), ..
@@ -1539,7 +1540,7 @@ fn a_card_from_the_other_side_answers_its_person_through_the_board() {
 
 #[test]
 fn send_and_mark_done_answers_the_other_side_and_closes_the_card() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     type_text(&mut app, "Yes, drop it.");
     // The action button with text in the field: send it and mark done.
@@ -1554,7 +1555,7 @@ fn send_and_mark_done_answers_the_other_side_and_closes_the_card() {
 
 #[test]
 fn on_your_own_card_you_can_ask_the_other_person_instead_of_the_agent() {
-    let (mut app, tab) = two_sided_app("Sam", false);
+    let (mut app, tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let PromptState::HumanBoardCard {
         reply: Some(reply), ..
@@ -1590,7 +1591,7 @@ fn on_your_own_card_you_can_ask_the_other_person_instead_of_the_agent() {
 
 #[test]
 fn assign_opens_a_picker_of_everyone_and_esc_goes_back_to_the_card() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     // Only a task can be handed to someone else's queue.
     BoardStore::new(&app.engine.paths.root)
         .update(|board| {
@@ -1636,7 +1637,7 @@ fn assign_opens_a_picker_of_everyone_and_esc_goes_back_to_the_card() {
 
 #[test]
 fn news_and_confirmations_cannot_be_assigned() {
-    let (app, _tab) = two_sided_app("Alex", false);
+    let (app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     let mut card = card_s1(&app);
     assert!(!app.board_card_assignable(&card), "a confirmation");
     card.kind = CardKind::Info;
@@ -1649,14 +1650,14 @@ fn news_and_confirmations_cannot_be_assigned() {
 
 #[test]
 fn the_dots_say_what_waits_and_what_is_unread() {
-    let (mut app, _tab) = two_sided_app("Sam", true);
+    let (mut app, _tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::HoldsPoster);
     let alex = yaran_core::human_board::Audience::Person("Alex");
     // The poster is blocked and nobody answered: red. Nothing from Alex yet.
     assert_eq!(app.board_queue_marks(&alex), (true, false));
     let text = screen(&mut app);
     assert!(text.contains("\u{25cf}"), "a dot on the tab strip: {text}");
 
-    other_side_says(&mut app, "Alex", "Which table?", false);
+    other_side_says(&mut app, "Alex", "Which table?", ReplyDone::Keep);
     // Alex answered: the poster is no longer waiting on a person, and Sam has
     // something unread.
     assert_eq!(app.board_queue_marks(&alex), (false, true));
@@ -1692,8 +1693,13 @@ fn the_dots_say_what_waits_and_what_is_unread() {
 
 #[test]
 fn a_reply_from_the_other_side_is_announced() {
-    let (mut app, _tab) = two_sided_app("Sam", false);
-    other_side_says(&mut app, "Alex", "Yes, but keep a backup.", true);
+    let (mut app, _tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
+    other_side_says(
+        &mut app,
+        "Alex",
+        "Yes, but keep a backup.",
+        ReplyDone::MarkDone,
+    );
     let status = latest_status(&app);
     assert!(
         status.contains("Alex answered and marked done card #S-1 [db-9]")
@@ -1705,7 +1711,7 @@ fn a_reply_from_the_other_side_is_announced() {
 #[test]
 fn a_reply_from_the_other_side_is_relayed_to_the_agent_that_asked() {
     use std::os::unix::fs::PermissionsExt;
-    let (mut app, _tab) = two_sided_app("Sam", false);
+    let (mut app, _tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
     app.engine.config.board.relay = true;
     app.engine.config.board.relay_transport = "amq".to_string();
     let log = app.engine.paths.root.join("relayed.txt");
@@ -1719,7 +1725,7 @@ fn a_reply_from_the_other_side_is_relayed_to_the_agent_that_asked() {
     app.human_board.talk.relay_exe = Some(fake);
     app.drain_human_board();
 
-    other_side_says(&mut app, "Alex", "Yes, drop it.", false);
+    other_side_says(&mut app, "Alex", "Yes, drop it.", ReplyDone::Keep);
     app.drain_board_talk();
     app.finish_board_relay();
     let sent = std::fs::read_to_string(&log).expect("the relay ran");
@@ -1757,8 +1763,8 @@ fn a_reply_from_the_other_side_is_relayed_to_the_agent_that_asked() {
 
 #[test]
 fn with_relaying_off_send_forwards_the_other_sides_reply_by_hand() {
-    let (mut app, tab) = two_sided_app("Sam", false);
-    other_side_says(&mut app, "Alex", "Yes, drop it.", false);
+    let (mut app, tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
+    other_side_says(&mut app, "Alex", "Yes, drop it.", ReplyDone::Keep);
     app.open_selected_board_card();
     // The card is Alex's; choose the agent that posted it as the recipient.
     app.handle_key(key(KeyCode::Tab)).unwrap();
@@ -1842,7 +1848,7 @@ fn find_on_screen(text: &str, needle: &str) -> Option<(usize, usize)> {
 
 #[test]
 fn typing_a_long_reply_grows_the_field_downward_and_moves_nothing_else() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let before = screen(&mut app);
     let top = find_on_screen(&before, "Card S-1").expect("the dialog title");
@@ -1877,13 +1883,13 @@ fn typing_a_long_reply_grows_the_field_downward_and_moves_nothing_else() {
         .count();
     assert_eq!(
         field_rows,
-        super::super::human_board_dialog::REPLY_MAX_ROWS as usize
+        usize::from(super::super::human_board_dialog::REPLY_MAX_ROWS)
     );
 }
 
 #[test]
 fn every_element_of_the_card_dialog_shares_one_left_edge() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let text = screen(&mut app);
     // Only the dialog: the board's own row shows the same title elsewhere.
@@ -1941,7 +1947,7 @@ fn every_element_of_the_card_dialog_shares_one_left_edge() {
 
 #[test]
 fn a_drag_over_the_card_text_selects_it_and_copies_it() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     screen(&mut app);
     let body = app.human_board.card_view.body;
@@ -2049,7 +2055,7 @@ fn news_closes_by_itself_after_the_configured_hours() {
 #[test]
 fn a_card_in_someone_elses_queue_asks_them_first() {
     // Sam's own agent posted the card for Alex; Sam opens it on Sam's board.
-    let (mut app, _tab) = two_sided_app("Sam", false);
+    let (mut app, _tab) = two_sided_app("Sam", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     let PromptState::HumanBoardCard {
         reply: Some(reply), ..
@@ -2078,7 +2084,7 @@ fn a_card_in_someone_elses_queue_asks_them_first() {
 
 #[test]
 fn a_long_reply_scrolls_with_the_wheel_and_the_line_keys() {
-    let (mut app, _tab) = two_sided_app("Alex", false);
+    let (mut app, _tab) = two_sided_app("Alex", yaran_core::human_board::Blocking::DoesNotHold);
     app.open_selected_board_card();
     screen(&mut app);
     type_text(&mut app, "FIRSTWORD ");

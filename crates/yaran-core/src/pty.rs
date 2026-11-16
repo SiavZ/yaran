@@ -113,6 +113,15 @@ pub enum Hyperlinks {
     Skip,
 }
 
+/// Whether a snapshot reports if the visible text changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextTracking {
+    /// Compare the text and report a change.
+    Track,
+    /// Skip the comparison.
+    Skip,
+}
+
 /// Whether a plain bell counts as asking for attention (`attention_on_bell`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BellPolicy {
@@ -1561,6 +1570,11 @@ impl PtyClient {
     ///
     /// `master_fd` must be a PTY master this process inherited and that nothing
     /// else owns; ownership moves into the returned client.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the descriptor is not a usable PTY master or its reader
+    /// thread cannot start.
     pub unsafe fn adopt_after_reload(
         master_fd: std::os::fd::RawFd,
         child_pid: Option<u32>,
@@ -2112,7 +2126,8 @@ impl PtyClient {
     /// `false` no cell carries a `link` and the interning work is skipped
     /// entirely, so a config that disables hyperlinks pays nothing.
     pub fn snapshot_into(&self, target: &mut TerminalSnapshot, links: Hyperlinks) -> bool {
-        self.snapshot_into_inner(target, links, false).is_some()
+        self.snapshot_into_inner(target, links, TextTracking::Skip)
+            .is_some()
     }
 
     /// [`Self::snapshot_into`], also recording which viewport cells changed
@@ -2122,14 +2137,14 @@ impl PtyClient {
         target: &mut TerminalSnapshot,
         links: Hyperlinks,
     ) -> Option<bool> {
-        self.snapshot_into_inner(target, links, true)
+        self.snapshot_into_inner(target, links, TextTracking::Track)
     }
 
     fn snapshot_into_inner(
         &self,
         target: &mut TerminalSnapshot,
         links: Hyperlinks,
-        track_text: bool,
+        tracking: TextTracking,
     ) -> Option<bool> {
         if !self.dirty.swap(false, Ordering::AcqRel) {
             return None;
@@ -2138,7 +2153,7 @@ impl PtyClient {
             logger::error("pty: terminal mutex poisoned; skipping snapshot rebuild");
             return None;
         };
-        Some(terminal.snapshot_into_tracking_text(target, links, track_text))
+        Some(terminal.snapshot_into_tracking_text(target, links, tracking))
     }
 
     /// How many lines the view is scrolled back from the bottom.
@@ -3610,15 +3625,20 @@ impl TerminalState {
     /// false, OSC 8 hyperlink interning is skipped and every cell's `link` is
     /// `None`.
     fn snapshot_into(&mut self, target: &mut TerminalSnapshot, links: Hyperlinks) {
-        self.snapshot_into_tracking_text(target, links, false);
+        self.snapshot_into_tracking_text(target, links, TextTracking::Skip);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass over the grid fills the cells, the links and the text change together"
+    )]
     fn snapshot_into_tracking_text(
         &mut self,
         target: &mut TerminalSnapshot,
         links: Hyperlinks,
-        track_text: bool,
+        tracking: TextTracking,
     ) -> bool {
+        let track_text = tracking == TextTracking::Track;
         let collect_links = links == Hyperlinks::Collect;
         let previous_full_damage_epoch = target.full_damage_epoch;
         target.full_damage_epoch = self.full_damage_epoch;
@@ -5572,7 +5592,7 @@ mod tests {
         let grid = terminal.term.grid();
         let mut out = String::new();
         for line in grid.topmost_line().0..=grid.bottommost_line().0 {
-            for cell in grid[Line(line)].into_iter() {
+            for cell in &grid[Line(line)] {
                 out.push(cell.c);
             }
             out.push('\n');
@@ -9468,7 +9488,11 @@ mod tests {
         let mut terminal = TerminalState::with_scrollback(3, 20, 5);
         terminal.process(b"STATIC TARGET");
         let mut buf = TerminalSnapshot::empty();
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Collect, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Collect,
+            TextTracking::Track
+        ));
         let text_cells = |buf: &TerminalSnapshot| {
             buf.cells
                 .iter()
@@ -9479,7 +9503,11 @@ mod tests {
         let capacity = buf.cells.capacity();
 
         terminal.process(b"\x1b[2;5H");
-        assert!(!terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Collect, true));
+        assert!(!terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Collect,
+            TextTracking::Track
+        ));
         assert_eq!(buf.cursor, Some(SnapshotCursor { row: 1, col: 4 }));
         assert_eq!(text_cells(&buf), before);
 
@@ -9490,7 +9518,11 @@ mod tests {
             .unwrap()
             .fg;
         terminal.process(b"\x1b[1;1H\x1b[31mSTATIC TARGET");
-        assert!(!terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Collect, true));
+        assert!(!terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Collect,
+            TextTracking::Track
+        ));
         assert_ne!(
             buf.cells
                 .iter()
@@ -9504,7 +9536,11 @@ mod tests {
         terminal.process(
             b"\x1b[1;1H\x1b]8;;https://example.test/copy\x1b\\STATIC TARGET\x1b]8;;\x1b\\",
         );
-        assert!(!terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Collect, true));
+        assert!(!terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Collect,
+            TextTracking::Track
+        ));
         assert!(
             buf.links
                 .iter()
@@ -9520,9 +9556,17 @@ mod tests {
         let mut terminal = TerminalState::with_scrollback(3, 20, 5);
         terminal.process(b"STATIC TARGET");
         let mut buf = TerminalSnapshot::empty();
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Collect, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Collect,
+            TextTracking::Track
+        ));
         terminal.process(b"\x1b[1;1HX");
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Collect, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Collect,
+            TextTracking::Track
+        ));
         assert_eq!(
             buf.cells
                 .iter()
@@ -9531,21 +9575,33 @@ mod tests {
                 .symbol,
             "X"
         );
-        assert!(!terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Collect, true));
+        assert!(!terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Collect,
+            TextTracking::Track
+        ));
     }
 
     #[test]
     fn snapshot_text_change_reports_metadata_without_visible_glyph_changes() {
         let mut terminal = TerminalState::with_scrollback(3, 12, 5);
         let mut buf = TerminalSnapshot::empty();
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         let before: Vec<_> = buf
             .cells
             .iter()
             .map(|c| (c.row, c.col, c.symbol.clone()))
             .collect();
         terminal.process(b"\r\n\r\n\r\n\r\n");
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         assert!(buf.scrollback_total > 0);
         assert_eq!(
             buf.cells
@@ -9555,7 +9611,11 @@ mod tests {
             before
         );
         terminal.scroll(ScrollDirection::Up, 1);
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         assert_eq!(buf.scrollback_offset, 1);
         assert_eq!(
             buf.cells
@@ -9565,24 +9625,48 @@ mod tests {
             before
         );
         terminal.resize(2, 12);
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         terminal.resize(2, 10);
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
     }
 
     #[test]
     fn snapshot_text_change_detects_and_removes_stale_tail_cells() {
         let mut terminal = TerminalState::with_scrollback(3, 12, 5);
         let mut buf = TerminalSnapshot::empty();
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         let expected_len = buf.cells.len();
         let extra = buf.cells.last().expect("grid has cells").clone();
         buf.cells.push(extra);
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         assert_eq!(buf.cells.len(), expected_len);
-        assert!(!terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(!terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         buf.cells.pop();
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         assert_eq!(buf.cells.len(), expected_len);
     }
 
@@ -9591,7 +9675,11 @@ mod tests {
         let mut terminal = TerminalState::with_scrollback(3, 20, 5);
         terminal.process("界e\u{301}\tZ".as_bytes());
         let mut buf = TerminalSnapshot::empty();
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         assert!(
             buf.cells
                 .iter()
@@ -9615,7 +9703,11 @@ mod tests {
             .collect();
 
         terminal.process("\x1b[1;1H\x1b[31m界e\u{301}\tZ".as_bytes());
-        assert!(!terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(!terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         assert_eq!(
             buf.cells
                 .iter()
@@ -9625,7 +9717,11 @@ mod tests {
         );
 
         terminal.process(b"\x1b[1;1HAA");
-        assert!(terminal.snapshot_into_tracking_text(&mut buf, Hyperlinks::Skip, true));
+        assert!(terminal.snapshot_into_tracking_text(
+            &mut buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         assert!(
             buf.cells
                 .iter()
@@ -9635,9 +9731,17 @@ mod tests {
         let mut combining = TerminalState::with_scrollback(3, 20, 5);
         combining.process(b"e");
         let mut combining_buf = TerminalSnapshot::empty();
-        assert!(combining.snapshot_into_tracking_text(&mut combining_buf, Hyperlinks::Skip, true));
+        assert!(combining.snapshot_into_tracking_text(
+            &mut combining_buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         combining.process("\u{301}".as_bytes());
-        assert!(combining.snapshot_into_tracking_text(&mut combining_buf, Hyperlinks::Skip, true));
+        assert!(combining.snapshot_into_tracking_text(
+            &mut combining_buf,
+            Hyperlinks::Skip,
+            TextTracking::Track
+        ));
         assert!(
             combining_buf
                 .cells
