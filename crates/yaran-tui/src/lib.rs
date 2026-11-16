@@ -168,7 +168,9 @@ pub enum TuiExit {
     /// image is about to inherit. The binary writes the handoff, then execs; if
     /// either step fails it still owns a fully working engine and can carry on.
     Reload {
+        /// The engine, carried across the exec.
         engine: Box<Engine>,
+        /// What the next image adopts.
         handoff: yaran_core::reload_handoff::Handoff,
     },
 }
@@ -354,6 +356,10 @@ pub fn resume_after_server(
 /// The handoff had already stopped every PTY's reader thread, so they are
 /// restarted first. Without that, the resumed TUI would show terminals that
 /// never update again.
+///
+/// # Errors
+///
+/// Fails when the terminal UI cannot be set up again.
 pub fn resume_after_failed_reload(
     mut engine: Box<Engine>,
     companion: Box<dyn yaran_core::background_serve::BackgroundServeCompanion>,

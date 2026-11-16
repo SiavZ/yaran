@@ -18,9 +18,9 @@ use yaran_core::storage::SessionStore;
 
 fn screen(pty: &PtyClient) -> String {
     let snapshot = pty.snapshot();
-    let mut lines = vec![String::new(); snapshot.rows as usize];
+    let mut lines = vec![String::new(); usize::from(snapshot.rows)];
     for cell in snapshot.cells {
-        lines[cell.row as usize].push_str(&cell.symbol);
+        lines[usize::from(cell.row)].push_str(&cell.symbol);
     }
     lines.join("\n")
 }
@@ -40,7 +40,7 @@ fn row_of(pty: &PtyClient, needle: &str) -> Option<u16> {
     screen(pty)
         .lines()
         .position(|l| l.contains(needle))
-        .map(|r| r as u16)
+        .map(|r| u16::try_from(r).expect("a screen row fits u16"))
 }
 
 fn session(id: &str, title: &str, provider: &str, folder: &Path) -> AgentSession {
@@ -68,6 +68,10 @@ fn session(id: &str, title: &str, provider: &str, folder: &Path) -> AgentSession
 
 #[test]
 #[ignore = "requires an installed jcode and a saved session for offline replay"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real jcode session driven end to end, each step asserted where it happens"
+)]
 fn double_click_opens_jcode_like_any_other_harness() {
     let session_json = std::env::var("YARAN_ACCEPTANCE_SESSION").expect("saved session path");
     let jcode = std::env::var("YARAN_ACCEPTANCE_JCODE").expect("jcode binary path");

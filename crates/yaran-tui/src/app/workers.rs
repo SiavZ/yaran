@@ -979,7 +979,7 @@ impl App {
                 self.apply_tailscale_mode_outcome(mode, outcome);
             }
             EventReaction::CloudModeApplied { mode, outcome } => {
-                self.apply_cloud_mode_outcome(mode, outcome);
+                self.apply_cloud_mode_outcome(mode, &outcome);
             }
             EventReaction::ApplyReloadedConfig(boxed) => {
                 self.apply_reloaded_config_reaction(*boxed);

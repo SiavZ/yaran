@@ -274,7 +274,7 @@ fn the_installer_sed_pins_forward_mouse_off_in_a_kept_config() {
                 _ => line,
             }
         })
-        .map(|line| format!("{line}\n"))
+        .flat_map(|line| [line, "\n"])
         .collect();
     assert_ne!(kept, stock, "the fixture must actually flip forward_mouse");
     let patched = run_overlay_sed(tmp.path(), &kept);

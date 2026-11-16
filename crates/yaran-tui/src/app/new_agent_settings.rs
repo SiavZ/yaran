@@ -147,6 +147,10 @@ pub(crate) enum ExtrasLine {
 
 /// The block's lines, in draw (and focus) order. Headings mirror the
 /// settings modal's sections so the two read the same.
+#[expect(
+    clippy::too_many_lines,
+    reason = "every line of the block in draw order, so the order reads straight off the code"
+)]
 pub(crate) fn extras_lines(extras: &NewAgentExtras) -> Vec<ExtrasLine> {
     use yaran_core::session_settings::ContextMode;
     let radio = |on: bool| if on { "(\u{2022})" } else { "( )" }.to_string();
@@ -377,8 +381,7 @@ impl App {
         let text = Style::default().fg(self.theme.text_fg);
         let focused = self.theme.selection_style();
         let mut hits = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            let y = area.y + i as u16;
+        for (y, line) in (area.y..).zip(lines.iter()) {
             if y >= area.y + area.height {
                 break;
             }

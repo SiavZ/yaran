@@ -6,7 +6,10 @@
 //! process (and is a test binary of its own, since that yaran runs until the
 //! process ends).
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "this journey uses only the serving half of the shared helpers"
+)]
 mod support;
 
 use std::path::Path;
@@ -58,6 +61,10 @@ fn session(id: &str, provider: &str, folder: &Path, status: SessionStatus) -> Ag
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey through every peer command against one running yaran"
+)]
 fn peer_commands_ask_the_running_yaran() {
     let tmp = tempfile::tempdir().unwrap();
     let home = support::home("peer", "journey");
@@ -96,13 +103,12 @@ fn peer_commands_ask_the_running_yaran() {
         // A terminal runs the developer's login shell otherwise.
         ("SHELL", Some("/bin/sh".as_ref())),
     ] {
-        // SAFETY: this binary runs this one test, and the serve that reads
-        // the environment starts after this.
-        unsafe {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
+        match value {
+            // SAFETY: this binary runs this one test, and the serve that reads
+            // the environment starts after this.
+            Some(value) => unsafe { std::env::set_var(name, value) },
+            // SAFETY: as above.
+            None => unsafe { std::env::remove_var(name) },
         }
     }
     support::serve(&home);
@@ -158,7 +164,7 @@ fn peer_commands_ask_the_running_yaran() {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let send = |args: &[&str]| {
+    let peer_send = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_yaran"))
             .args(args)
             .env("YARAN_HOME", &home)
@@ -175,7 +181,7 @@ fn peer_commands_ask_the_running_yaran() {
 
     // With the broker down a Claude target still gets the message, over AMQ,
     // and the output says why.
-    let claude = send(&["peer", "send", "worker", "--status", "please"]);
+    let claude = peer_send(&["peer", "send", "worker", "--status", "please"]);
     let out = String::from_utf8_lossy(&claude.stdout);
     assert!(
         claude.status.success(),
@@ -188,7 +194,7 @@ fn peer_commands_ask_the_running_yaran() {
     assert!(handed.contains("--status please"), "{handed}");
 
     // Asking for Claude Peers explicitly refuses rather than falling back.
-    let explicit = send(&[
+    let explicit = peer_send(&[
         "peer",
         "send",
         "--transport",

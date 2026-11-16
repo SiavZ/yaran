@@ -28,9 +28,9 @@ use yaran_core::storage::SessionStore;
 
 fn screen(pty: &PtyClient) -> String {
     let snapshot = pty.snapshot();
-    let mut lines = vec![String::new(); snapshot.rows as usize];
+    let mut lines = vec![String::new(); usize::from(snapshot.rows)];
     for cell in snapshot.cells {
-        lines[cell.row as usize].push_str(&cell.symbol);
+        lines[usize::from(cell.row)].push_str(&cell.symbol);
     }
     lines.join("\n")
 }
@@ -47,6 +47,10 @@ fn wait_for(pty: &PtyClient, needle: &str, secs: u64) -> bool {
 
 #[test]
 #[ignore = "requires an installed jcode and a saved session for offline replay"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real jcode session driven end to end, each step asserted where it happens"
+)]
 fn real_jcode_mouse_scroll_in_yaran() {
     let session = std::env::var("YARAN_ACCEPTANCE_SESSION").expect("saved session path");
     let jcode = std::env::var("YARAN_ACCEPTANCE_JCODE").expect("jcode binary path");

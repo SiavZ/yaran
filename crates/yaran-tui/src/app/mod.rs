@@ -8562,7 +8562,9 @@ impl App {
             self.ask_companion_for_tailscale_mode_for_reload(mode);
         }
         let cloud_after = self.engine.config.cloud.clone();
-        self.apply_cloud_reload(serving_before, &before.cloud, &cloud_after);
+        if serving_before && self.background_server_is_serving() {
+            self.apply_cloud_reload(&before.cloud, &cloud_after);
+        }
         // A config file can hand Tab to the agent while every `focus_next` and
         // `focus_prev` key is one the typeable pane types, and nobody toggled
         // anything, so the load is the only place that can say the pane has no

@@ -6,6 +6,7 @@
 use super::*;
 use crate::app::test_support::{default_bindings, test_app};
 use crate::pty::PtyClient;
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use yaran_core::ids::TabId;
@@ -29,7 +30,6 @@ impl OutputFixture {
 }
 
 fn shell_printf(bytes: &str) -> String {
-    use std::fmt::Write as _;
     let encoded = bytes.bytes().fold(String::new(), |mut out, byte| {
         let _ = write!(out, "\\0{byte:03o}");
         out
@@ -38,7 +38,6 @@ fn shell_printf(bytes: &str) -> String {
 }
 
 fn numbered_lines(count: usize) -> String {
-    use std::fmt::Write as _;
     (0..count).fold(String::new(), |mut out, n| {
         let _ = write!(out, "L{n:02}\r\n");
         out
@@ -49,7 +48,7 @@ fn fixture(scrollback: usize, initial: &str, phases: &[&str]) -> (App, OutputFix
     let directory = tempfile::tempdir().expect("private terminal output directory");
     let mut script = shell_printf(initial);
     for (index, output) in phases.iter().enumerate() {
-        script.push_str(&format!("n=0\nwhile [ ! -f \"$1/phase-{index}\" ]; do\n"));
+        let _ = writeln!(script, "n=0\nwhile [ ! -f \"$1/phase-{index}\" ]; do");
         script.push_str("  n=$((n + 1))\n  [ \"$n\" -lt 1000 ] || exit 71\n  sleep 0.01\ndone\n");
         script.push_str(&shell_printf(output));
     }
@@ -595,7 +594,7 @@ fn status_redraw_gesture(
     while copies.lock().unwrap().is_empty() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let copied = copies.lock().unwrap().clone();
+    let clipboard_text = copies.lock().unwrap().clone();
     let trace = format!(
         "saturated={} selection_after_status_redraw={} grid_generation {}->{} selection_after_gesture={}",
         after.history_saturated,
@@ -604,7 +603,7 @@ fn status_redraw_gesture(
         app.part_snapshots.main.generation,
         app.terminal_selection.is_some(),
     );
-    (copied, trace)
+    (clipboard_text, trace)
 }
 
 #[test]
@@ -728,10 +727,10 @@ fn saturated_established_drag_failsafe(
     while copies.lock().unwrap().is_empty() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let copied = copies.lock().unwrap().clone();
+    let clipboard_text = copies.lock().unwrap().clone();
     assert!(
-        copied.is_empty(),
-        "release after unsafe movement must not enqueue a clipboard copy, got {copied:?}"
+        clipboard_text.is_empty(),
+        "release after unsafe movement must not enqueue a clipboard copy, got {clipboard_text:?}"
     );
 }
 

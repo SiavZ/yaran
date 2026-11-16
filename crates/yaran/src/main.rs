@@ -44,6 +44,10 @@ mod companion;
 use anyhow::Result;
 use clap::Parser;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the binary's whole start in order: signal setup, dispatch and the surface it runs"
+)]
 fn main() -> Result<()> {
     // First of all: until the handler is installed, a hand reload's SIGUSR1 would end this
     // yaran. A failure is reported where each serving mode starts, which installs it again.

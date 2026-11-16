@@ -11693,9 +11693,13 @@ impl App {
                 self.click_tailscale_mode_item(index);
             }
             PromptMouseTarget::SetCloudModeItem(index) => {
-                let double_click =
-                    self.register_mouse_click(MouseClickTarget::CommandPalette, Some(index));
-                self.click_cloud_mode_item(index, double_click);
+                let clicks =
+                    if self.register_mouse_click(MouseClickTarget::CommandPalette, Some(index)) {
+                        ClickCount::Double
+                    } else {
+                        ClickCount::Single
+                    };
+                self.click_cloud_mode_item(index, clicks);
             }
             PromptMouseTarget::AssignBoardCardItem(index) => {
                 self.click_board_assign_item(index);

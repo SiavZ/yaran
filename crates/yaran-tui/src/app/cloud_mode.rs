@@ -33,8 +33,8 @@
 //! <module-headers:end>
 
 use super::{
-    Action, App, BindingScope, FullscreenOverlay, InputTarget, KeyEvent, Line, Modifier,
-    OverlayMouseLayout, PromptState, Span, Style,
+    Action, App, BindingScope, ClickCount, FullscreenOverlay, InputTarget, KeyEvent, Line,
+    Modifier, OverlayMouseLayout, PromptState, Span, Style,
 };
 use crate::app::components::PickerList;
 use crate::app::components::hint_bar::{Hint, modal_hint_line};
@@ -164,9 +164,9 @@ impl App {
 
     /// Resolve the pending op with what the serve did, or say it on the shared lane when
     /// nothing on this surface is waiting.
-    pub(crate) fn apply_cloud_mode_outcome(&mut self, mode: CloudMode, outcome: CloudModeOutcome) {
+    pub(crate) fn apply_cloud_mode_outcome(&mut self, mode: CloudMode, outcome: &CloudModeOutcome) {
         match self.pending_cloud_mode_op.take() {
-            Some(op) => self.apply_reaction(op.resolve(&outcome).into_reaction()),
+            Some(op) => self.apply_reaction(op.resolve(outcome).into_reaction()),
             None => self.engine.post_status(outcome.status(mode)),
         }
     }
@@ -174,16 +174,9 @@ impl App {
     /// The background-mode reload owner: a changed mode goes through the companion (only
     /// when a serve ran both before and after the reload, so it is never applied twice),
     /// every other changed key goes to the serve, which applies the ingress keys live and
-    /// restarts the running child on a changed restart key.
-    pub(crate) fn apply_cloud_reload(
-        &mut self,
-        serving_before: bool,
-        previous: &CloudConfig,
-        next: &CloudConfig,
-    ) {
-        if !(serving_before && self.background_server_is_serving()) {
-            return;
-        }
+    /// restarts the running child on a changed restart key. Called only when a serve
+    /// ran both before and after the reload.
+    pub(crate) fn apply_cloud_reload(&mut self, previous: &CloudConfig, next: &CloudConfig) {
         if previous != next
             && let Some(companion) = self.companion.as_mut()
         {
@@ -218,13 +211,13 @@ impl App {
         Some(false)
     }
 
-    pub(crate) fn click_cloud_mode_item(&mut self, index: usize, double_click: bool) {
+    pub(crate) fn click_cloud_mode_item(&mut self, index: usize, clicks: ClickCount) {
         if let PromptState::SetCloudMode(prompt) = &mut self.prompt
             && index < prompt.options.len()
         {
             prompt.selected = index;
         }
-        if double_click {
+        if clicks == ClickCount::Double {
             self.apply_set_cloud_mode();
         }
     }
@@ -361,11 +354,11 @@ mod tests {
     fn an_outcome_with_no_pending_op_is_posted_and_one_with_an_op_resolves_it() {
         let mut app =
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
-        app.apply_cloud_mode_outcome(CloudMode::Auto, CloudModeOutcome::NotPaired);
+        app.apply_cloud_mode_outcome(CloudMode::Auto, &CloudModeOutcome::NotPaired);
         assert!(app.pending_cloud_mode_op.is_none());
         app.ask_companion_for_cloud_mode(CloudMode::No);
         assert!(app.pending_cloud_mode_op.is_some());
-        app.apply_cloud_mode_outcome(CloudMode::No, CloudModeOutcome::Stopped);
+        app.apply_cloud_mode_outcome(CloudMode::No, &CloudModeOutcome::Stopped);
         assert!(app.pending_cloud_mode_op.is_none());
     }
 }
