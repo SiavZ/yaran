@@ -48,18 +48,26 @@ pub const MAX_TOKEN_BYTES: usize = 8 * 1024;
 /// What a token must match.
 #[derive(Debug, Clone)]
 pub struct Expectations {
+    /// The Access team domain the token must come from.
     pub team: TeamDomain,
+    /// The application audience the token must carry.
     pub aud: String,
+    /// The paired owner's email, the only one let in.
     pub owner_email: String,
+    /// How much clock skew `exp` and `nbf` are given.
     pub skew: Duration,
 }
 
 /// A token that passed every check; the request extension handlers read.
 #[derive(Clone, PartialEq, Eq)]
 pub struct VerifiedAccess {
+    /// The signed-in identity's email.
     pub email: String,
+    /// The identity's subject id.
     pub sub: String,
+    /// The audiences the token names.
     pub aud: Vec<String>,
+    /// When it expires.
     pub exp: SystemTime,
     /// The header value verbatim (02's `HandoffPayload.jwt`).
     pub jwt: String,
@@ -78,21 +86,34 @@ impl std::fmt::Debug for VerifiedAccess {
 /// Why a token was refused; `code()` is the `Yaran-Refusal` value (02 §13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccessRejection {
+    /// No token came with the request.
     Missing,
+    /// It does not parse as a JWT.
     Malformed,
+    /// It is not signed with RS256.
     BadAlgorithm,
+    /// Its key id is not in the team's key set.
     UnknownKid,
+    /// Its signature does not verify.
     BadSignature,
+    /// It comes from another team.
     WrongIssuer,
+    /// It is for another application.
     WrongAudience,
+    /// It has expired.
     Expired,
+    /// It is not valid yet.
     NotYetValid,
+    /// It is not an application token.
     NotAppToken,
+    /// It is a service token, which a person's sign-in never is.
     ServiceToken,
+    /// It is valid but names someone other than the paired owner.
     NotOwner,
 }
 
 impl AccessRejection {
+    /// Every rejection, for tests that walk them all.
     pub const ALL: &[AccessRejection] = &[
         Self::Missing,
         Self::Malformed,
@@ -108,6 +129,7 @@ impl AccessRejection {
         Self::NotOwner,
     ];
 
+    /// The refusal code the response carries.
     pub fn refusal(self) -> RefusalCode {
         match self {
             Self::Missing => RefusalCode::AccessMissing,
@@ -125,6 +147,7 @@ impl AccessRejection {
         }
     }
 
+    /// That code's wire spelling, the `Yaran-Refusal` value.
     pub fn code(self) -> &'static str {
         self.refusal().as_str()
     }
@@ -149,6 +172,10 @@ fn unix(secs: f64) -> SystemTime {
 }
 
 /// Verifies `token` against `keys` and `expect` at `now` (Phase 11 §4 order).
+///
+/// # Errors
+///
+/// Fails with the first [`AccessRejection`] the token breaks.
 pub fn verify(
     token: &str,
     keys: &Jwks,

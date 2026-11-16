@@ -20,10 +20,15 @@
 /// Which verb a help request is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verb {
+    /// `yaran cloud login`.
     Login,
+    /// `yaran cloud logout`.
     Logout,
+    /// `yaran cloud status`.
     Status,
+    /// `yaran cloud rotate`.
     Rotate,
+    /// `yaran cloud pair-phone`.
     PairPhone,
 }
 
@@ -40,32 +45,54 @@ impl Verb {
     }
 }
 
+/// A parsed `yaran cloud` command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloudCommand {
+    /// Print help, for one verb or all of them.
     Help(Option<Verb>),
+    /// Pair this machine.
     Login {
+        /// The organization's address, when given.
         url: Option<String>,
+        /// The machine name to ask for.
         name: Option<String>,
+        /// Print the approval address instead of opening a browser.
         no_browser: bool,
     },
+    /// Disconnect this machine.
     Logout {
+        /// Skip the confirmation.
         yes: bool,
+        /// Forget the pairing here without telling the control plane.
         local_only: bool,
     },
+    /// Report the pairing and the tunnel.
     Status {
+        /// Print JSON.
         json: bool,
+        /// Report only what is on disk, asking nobody.
         offline: bool,
     },
+    /// Rotate the tunnel token, or the consent key.
     Rotate {
+        /// Skip the confirmation.
         yes: bool,
+        /// Rotate the consent key instead of the tunnel token.
         consent_key: bool,
     },
+    /// Show the QR code a phone pairs with.
     PairPhone {
+        /// The organization to pair the phone with.
         org: Option<String>,
     },
 }
 
 /// Parse the arguments after `yaran cloud`.
+///
+/// # Errors
+///
+/// Fails, with the sentence to print, on an unknown verb or option or a
+/// missing value.
 pub fn parse(args: &[String]) -> Result<CloudCommand, String> {
     let Some(first) = args.first() else {
         return Ok(CloudCommand::Help(None));
@@ -94,12 +121,12 @@ pub fn parse(args: &[String]) -> Result<CloudCommand, String> {
         };
         match (verb, arg.as_str()) {
             (Verb::Login, "--name") => flags.name = Some(value("--name")?),
-            (Verb::Login, "--no-browser") => flags.no_browser = true,
-            (Verb::Logout | Verb::Rotate, "--yes" | "-y") => flags.yes = true,
-            (Verb::Logout, "--local-only") => flags.local_only = true,
-            (Verb::Status, "--json") => flags.json = true,
-            (Verb::Status, "--offline") => flags.offline = true,
-            (Verb::Rotate, "--consent-key") => flags.consent_key = true,
+            (Verb::Login, "--no-browser") => flags.switch(Switch::NoBrowser),
+            (Verb::Logout | Verb::Rotate, "--yes" | "-y") => flags.switch(Switch::Yes),
+            (Verb::Logout, "--local-only") => flags.switch(Switch::LocalOnly),
+            (Verb::Status, "--json") => flags.switch(Switch::Json),
+            (Verb::Status, "--offline") => flags.switch(Switch::Offline),
+            (Verb::Rotate, "--consent-key") => flags.switch(Switch::ConsentKey),
             (Verb::PairPhone, "--org") => flags.org = Some(value("--org")?),
             (Verb::Login, a) if !a.starts_with('-') && positional.is_empty() => {
                 positional.push(a.to_string());
@@ -115,35 +142,52 @@ pub fn parse(args: &[String]) -> Result<CloudCommand, String> {
     Ok(match verb {
         Verb::Login => CloudCommand::Login {
             url: positional.pop(),
+            no_browser: flags.has(Switch::NoBrowser),
             name: flags.name,
-            no_browser: flags.no_browser,
         },
         Verb::Logout => CloudCommand::Logout {
-            yes: flags.yes,
-            local_only: flags.local_only,
+            yes: flags.has(Switch::Yes),
+            local_only: flags.has(Switch::LocalOnly),
         },
         Verb::Status => CloudCommand::Status {
-            json: flags.json,
-            offline: flags.offline,
+            json: flags.has(Switch::Json),
+            offline: flags.has(Switch::Offline),
         },
         Verb::Rotate => CloudCommand::Rotate {
-            yes: flags.yes,
-            consent_key: flags.consent_key,
+            yes: flags.has(Switch::Yes),
+            consent_key: flags.has(Switch::ConsentKey),
         },
         Verb::PairPhone => CloudCommand::PairPhone { org: flags.org },
     })
 }
 
+/// A flag that takes no value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Switch {
+    NoBrowser,
+    Yes,
+    LocalOnly,
+    Json,
+    Offline,
+    ConsentKey,
+}
+
+/// What the flags after the verb said.
 #[derive(Default)]
 struct Flags {
     name: Option<String>,
-    no_browser: bool,
-    yes: bool,
-    local_only: bool,
-    json: bool,
-    offline: bool,
-    consent_key: bool,
+    switches: std::collections::BTreeSet<Switch>,
     org: Option<String>,
+}
+
+impl Flags {
+    fn switch(&mut self, switch: Switch) {
+        self.switches.insert(switch);
+    }
+
+    fn has(&self, switch: Switch) -> bool {
+        self.switches.contains(&switch)
+    }
 }
 
 #[cfg(test)]

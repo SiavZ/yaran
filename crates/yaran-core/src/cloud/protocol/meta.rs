@@ -32,7 +32,9 @@ use super::rules::{self, Checked, Validate, check, check_opt};
 /// A server's supported protocol versions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolRange {
+    /// The oldest version it speaks.
     pub min: i64,
+    /// The newest version it speaks.
     pub max: i64,
 }
 
@@ -48,7 +50,9 @@ impl Validate for ProtocolRange {
 /// An org's display name and control-plane origin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrgRef {
+    /// The organization's display name.
     pub name: String,
+    /// Its control plane's address.
     pub url: String,
 }
 
@@ -59,18 +63,25 @@ impl Validate for OrgRef {
     }
 }
 
+/// Whether the organization's first-run setup is still open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupState {
+    /// Setup still waits for its administrator.
     Open,
+    /// Setup is done.
     Closed,
+    /// A state this build does not know.
     #[serde(other)]
     Unknown,
 }
 
+/// A protocol version the server will stop speaking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Deprecation {
+    /// The version.
     pub protocol: i64,
+    /// When it stops, RFC 3339.
     pub after: String,
 }
 
@@ -81,38 +92,54 @@ impl Validate for Deprecation {
     }
 }
 
+/// The Access team the organization signs in through.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaAccess {
+    /// Its team domain.
     pub team_domain: String,
 }
 
+/// The control-plane Worker that answered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerInfo {
+    /// Its release.
     pub version: String,
 }
 
+/// Whether the organization sends push notifications.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaPush {
+    /// Whether push is on.
     pub enabled: bool,
     /// The org's VAPID public key, or null while push is off.
     #[serde(deserialize_with = "rules::nullable")]
     pub vapid_public_key: Option<String>,
 }
 
+/// W1 `GET /v1/meta`: what a control plane is and what it speaks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Meta {
+    /// Always [`META_SERVICE`] for a yaran control plane.
     pub service: String,
+    /// The protocol versions it speaks.
     pub protocol: ProtocolRange,
+    /// Whether its setup is done.
     pub setup: SetupState,
+    /// Versions it will stop speaking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecations: Option<Vec<Deprecation>>,
+    /// The organization, once setup has named it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<OrgRef>,
+    /// The Access team, once setup has attached it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<MetaAccess>,
+    /// The Worker that answered.
     pub worker: WorkerInfo,
+    /// Optional features it offers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
+    /// Its push settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push: Option<MetaPush>,
 }
