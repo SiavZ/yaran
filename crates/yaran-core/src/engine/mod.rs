@@ -3763,6 +3763,10 @@ impl Engine {
 
     /// Start the branch-sync poller, at most once, unless the config turns it
     /// off.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the worker's snapshot, its loop and its per-agent sync in one place, so each tick sees one consistent list"
+    )]
     pub fn spawn_branch_sync_worker(&self) {
         let configured = self.config.ui.branch_sync_interval;
         // Seeded even on the disabled path so a running loop from an earlier,
@@ -6990,6 +6994,10 @@ impl Engine {
     /// # Errors
     ///
     /// Returns an error for an unknown session.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one decision over every way an agent can be brought back, each branch a few lines"
+    )]
     pub fn reconnect_plan(
         &mut self,
         session_id: &str,
@@ -12254,12 +12262,12 @@ mod tests {
         assert!(matches!(event, WorkerEvent::BranchSyncReady(_)));
     }
 
-    fn branch_entry(id: &str, path: &Path, branch: &str, shared: bool) -> BranchSyncEntry {
+    fn branch_entry(id: &str, path: &Path, branch: &str) -> BranchSyncEntry {
         BranchSyncEntry {
             session_id: id.to_string(),
             worktree_path: path.to_string_lossy().to_string(),
             branch_name: branch.to_string(),
-            shared_workspace: shared,
+            shared_workspace: false,
             created_at: chrono::Utc::now(),
             unidentified_birth: None,
             recorded_tips: Vec::new(),
@@ -12281,9 +12289,15 @@ mod tests {
         std::os::unix::fs::symlink(&shared, &alias).unwrap();
         let worktree_canonical = worktree.canonicalize().unwrap();
         let snapshot = vec![
-            branch_entry("shared-a", &shared, "old", true),
-            branch_entry("shared-b", &alias, "old", true),
-            branch_entry("worktree", &worktree, "old", false),
+            BranchSyncEntry {
+                shared_workspace: true,
+                ..branch_entry("shared-a", &shared, "old")
+            },
+            BranchSyncEntry {
+                shared_workspace: true,
+                ..branch_entry("shared-b", &alias, "old")
+            },
+            branch_entry("worktree", &worktree, "old"),
         ];
         let calls = std::cell::Cell::new(0);
         let mut reads = Vec::new();
@@ -12327,9 +12341,15 @@ mod tests {
     fn detached_shared_head_fans_out_label_and_skips_pr_discovery() {
         let dir = tempfile::tempdir().unwrap();
         let snapshot = vec![
-            branch_entry("shared-a", dir.path(), "main", true),
-            branch_entry("shared-b", dir.path(), "main", true),
-            branch_entry("worktree", dir.path(), "feature", false),
+            BranchSyncEntry {
+                shared_workspace: true,
+                ..branch_entry("shared-a", dir.path(), "main")
+            },
+            BranchSyncEntry {
+                shared_workspace: true,
+                ..branch_entry("shared-b", dir.path(), "main")
+            },
+            branch_entry("worktree", dir.path(), "feature"),
         ];
         let mut failed = Vec::new();
 

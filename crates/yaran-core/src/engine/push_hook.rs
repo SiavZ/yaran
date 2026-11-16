@@ -66,8 +66,10 @@ use crate::worker::WorkerEvent;
 const NAME_MAX_CHARS: usize = 64;
 
 /// The engine's push state: the shadow set, the emitter, and what each raise was sent as.
+#[derive(Debug)]
 pub struct PushHook {
     edges: PushEdges,
+    /// Sends the events.
     pub emitter: PushEmitter,
     raised: HashMap<TabId, Origin>,
 }
@@ -91,6 +93,7 @@ impl PushHook {
         Self::with_emitter(PushEmitter::off())
     }
 
+    /// A hook around `emitter`.
     pub fn with_emitter(emitter: PushEmitter) -> Self {
         Self {
             edges: PushEdges::default(),

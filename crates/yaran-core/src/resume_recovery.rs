@@ -213,7 +213,7 @@ pub fn prepare_fresh_capture(
 
 /// The argv a launch runs with.
 ///
-/// `resume` is upstream's resume-latest flag. A targeted resume replaces the
+/// `start` is upstream's resume-latest answer. A targeted resume replaces the
 /// base args with `resume_by_id_args`; Codex also gets `-C <cwd>`, because
 /// `codex resume <id>` otherwise reopens the conversation in the directory it
 /// was recorded in, which for a moved agent is not where yaran launched it.
@@ -226,7 +226,7 @@ pub fn launch_args(
     config: &ProviderCommandConfig,
     provider: &str,
     launch: &ProviderSessionLaunch,
-    resume: bool,
+    start: crate::model::ConversationStart,
     fresh_claude_id: Option<&str>,
     cwd: &Path,
 ) -> Result<Vec<String>> {
@@ -243,11 +243,7 @@ pub fn launch_args(
         ProviderSessionLaunch::Plain
         | ProviderSessionLaunch::CaptureClaude
         | ProviderSessionLaunch::CaptureCodex => {
-            let mut args = config.interactive_args(if resume {
-                crate::model::ConversationStart::Resume
-            } else {
-                crate::model::ConversationStart::Fresh
-            });
+            let mut args = config.interactive_args(start);
             if let Some(session_id) = fresh_claude_id {
                 args.extend(["--session-id".to_string(), session_id.to_string()]);
             }
@@ -486,6 +482,13 @@ pub fn resolve_latest_jcode_session_from_home(worktree: &Path) -> Option<String>
 #[derive(Clone, Default)]
 pub struct CodexCaptureCoordinator {
     inner: Arc<(Mutex<HashMap<PathBuf, CaptureState>>, Condvar)>,
+}
+
+impl std::fmt::Debug for CodexCaptureCoordinator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexCaptureCoordinator")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone)]
@@ -1607,8 +1610,8 @@ mod tests {
         );
     }
     use crate::model::{
-        AgentWorkspace, BranchProvenance, ManagedWorkspace, ProjectBranchStatus, ProviderKind,
-        SessionStatus,
+        AgentWorkspace, BranchProvenance, ConversationStart, ManagedWorkspace, ProjectBranchStatus,
+        ProviderKind, SessionStatus,
     };
 
     fn identity(id: &str) -> RecoveryIdentity {
@@ -2162,6 +2165,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "it takes the input over to hand it back marked shared"
+    )]
     fn shared(input: ResumeIdInput<'_>) -> ResumeIdInput<'_> {
         ResumeIdInput {
             shared: true,
@@ -2187,7 +2194,7 @@ mod tests {
             &config,
             "codex",
             &ProviderSessionLaunch::ResumeId(session_id.clone()),
-            false,
+            crate::model::ConversationStart::Fresh,
             None,
             cwd,
         )
@@ -2213,7 +2220,7 @@ mod tests {
             &config,
             "claude",
             &ProviderSessionLaunch::CaptureClaude,
-            false,
+            crate::model::ConversationStart::Fresh,
             Some(&session_id),
             Path::new("/tmp/shared-project"),
         )
@@ -2289,8 +2296,24 @@ mod tests {
         )
         .map(ProviderSessionLaunch::ResumeId)
         .unwrap();
-        let first_argv = launch_args(&config, "codex", &first, false, None, cwd).unwrap();
-        let second_argv = launch_args(&config, "codex", &second, false, None, cwd).unwrap();
+        let first_argv = launch_args(
+            &config,
+            "codex",
+            &first,
+            ConversationStart::Fresh,
+            None,
+            cwd,
+        )
+        .unwrap();
+        let second_argv = launch_args(
+            &config,
+            "codex",
+            &second,
+            ConversationStart::Fresh,
+            None,
+            cwd,
+        )
+        .unwrap();
         assert_ne!(first_argv, second_argv);
         assert_eq!(first_argv.get(1), Some(&first_id));
         assert_eq!(second_argv.get(1), Some(&second_id));
@@ -2344,7 +2367,7 @@ mod tests {
                     &config,
                     provider,
                     &ProviderSessionLaunch::Plain,
-                    false,
+                    ConversationStart::Fresh,
                     None,
                     Path::new("/tmp/shared-project"),
                 )

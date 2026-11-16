@@ -4003,7 +4003,11 @@ fn run_agent_launch_job_with(
         &request.provider_config,
         request.provider.as_str(),
         &request.provider_session,
-        request.resume,
+        if request.resume {
+            crate::model::ConversationStart::Resume
+        } else {
+            crate::model::ConversationStart::Fresh
+        },
         capture.claude_session_id(),
         Path::new(request.session.directory()),
     ) {

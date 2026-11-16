@@ -25,10 +25,10 @@ pub fn for_terminal(s: &str) -> String {
             SAFE_NEWLINE | SAFE_TAB => out.push(c),
             c if c.is_control() => {
                 use std::fmt::Write;
-                let _ = write!(out, "\\x{:02x}", c as u32);
+                let _ = write!(out, "\\x{:02x}", u32::from(c));
             }
-            c if (c as u32) == 0x7f => out.push_str("\\x7f"),
-            c if (c as u32) == 0x9b => out.push_str("\\x9b"), // CSI 8-bit
+            c if u32::from(c) == 0x7f => out.push_str("\\x7f"),
+            c if u32::from(c) == 0x9b => out.push_str("\\x9b"), // CSI 8-bit
             c => out.push(c),
         }
     }

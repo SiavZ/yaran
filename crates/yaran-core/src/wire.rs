@@ -442,7 +442,10 @@ pub enum WireCommand {
     /// Save `[cloud] mode` (`auto` | `yes` | `no`): the `set-cloud-mode` palette
     /// command and the web Preferences row. The config write only; the serve loop
     /// moves the tunnel afterwards. An unrecognized value is refused.
-    SetCloudMode { mode: String },
+    SetCloudMode {
+        /// The mode to save.
+        mode: String,
+    },
     /// Set explicit values for the Preferences dialog's `[ui]`/`[capabilities]`
     /// knobs in one request. The payload and the field-by-field semantics live on
     /// [`SettingsPatch`]; `server.title` and `server.favicon` are deliberately
@@ -957,7 +960,9 @@ pub enum WireCommand {
     /// persisted before live memory changes, untouched on a store failure.
     /// Title-free on purpose: the web renames through `rename_session`.
     SetSessionSettings {
+        /// The agent the settings belong to.
         session_id: String,
+        /// The settings to store.
         settings: crate::session_settings::SessionSettings,
     },
 }
