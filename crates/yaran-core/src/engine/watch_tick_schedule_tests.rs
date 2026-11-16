@@ -96,7 +96,7 @@ fn echo_pty() -> PtyClient {
 }
 
 /// `n` agents whose slot tabs all run `spawn()` and one claude rule.
-fn engine_with_tabs(
+pub(super) fn engine_with_tabs(
     n: usize,
     spawn: impl Fn() -> PtyClient,
 ) -> (Engine, crate::test_scratch::ScratchDir, Vec<TabId>) {
