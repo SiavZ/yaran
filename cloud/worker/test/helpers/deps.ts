@@ -38,6 +38,7 @@
  * ├── test/push/migration.test.ts
  * ├── test/setup-flow.test.ts
  * ├── test/setup-gate.test.ts
+ * ├── test/setup-installer.test.ts
  * ├── test/setup-steps.test.ts
  * ├── test/update-checker.test.ts
  * └── test/vapid-rotate.test.ts

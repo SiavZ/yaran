@@ -1869,9 +1869,33 @@ background through `DATA_KEY_PREVIOUS` and forgets every remembered
 consent; the API token is replaced on the Health page; a new `SETUP_CODE`
 lifts every address's lockout.
 
+The source installer (`cloud/worker/scripts/setup.ts`) generates
+`SETUP_CODE` and `DATA_KEY` with `node:crypto` and writes them, before any
+Cloudflare write, to one recovery file per control-plane hostname under the
+yaran config root (`cloud-setup/`, directory 0700, file 0600, written to an
+owner-only temp file in that directory, fsynced, renamed, and the directory
+fsynced). It refuses a recovery file or directory that is a symlink or
+another user's, and leaves the mode of a `--state-file` directory the user
+already had alone. An exclusive lock next to the recovery file keeps two
+runs from each generating and uploading a key. It uploads them, and a
+runtime token read without echo, only in Cloudflare API request bodies;
+none is an argument, an environment variable, a log line or part of the
+generated Wrangler config, and it prints the recovery file's path, never a
+value. Cloudflare's error text is printed with control characters
+stripped and any secret the request carried redacted. It never replaces a
+`DATA_KEY` the Worker already has: it reads the Worker's secret names from
+the dedicated endpoint, stops before any write if it cannot, and reads them
+again right before the upload. It drives
+the wizard through the same setup routes and guards a browser meets and
+never sends the API token over them. `test/node/org-setup.test.ts` fails if
+a secret reaches a log line, a command, its environment or the generated
+config, and `test/node/org-setup-safety.test.ts` covers the lock, the
+re-read, the symlink rules and the redaction.
+
 **Residual risk.** A secret pasted into a chat or ticket is outside the
 code's reach. What the Deploy button and Workers Builds do with the
-values is Cloudflare's.
+values is Cloudflare's. The installer's recovery file is as safe as the
+admin's account on that machine and its backups.
 
 **Detection.** The sentinel test in CI; Worker audit event
 `settings.updated` on an API-token replacement.

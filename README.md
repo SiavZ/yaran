@@ -392,31 +392,31 @@ Notifications are optional, and the app opens machines without them. The Android
 
 #### Org admin: deploy the control plane
 
-Do this once per organization. You need a Cloudflare account with a zone whose DNS Cloudflare serves, and a Zero Trust organization. The deploy asks for three values. Create the API token in Cloudflare and generate the setup code and data key locally. Keep them in your password manager. Never paste them into chat, issues or pull requests.
+Do this once per organization. You need a Cloudflare account with a zone whose DNS Cloudflare serves.
 
-- **A Cloudflare API token**, created from the [token template in the deploy README](cloud/worker/deploy-template/README.md#first-run), with the scoped permissions listed in [the admin guide](website/docs/cloud-admin-setup.md#the-three-values-the-deploy-asks-for).
-- **`SETUP_CODE`**, at least 24 random characters, typed once on the setup page:
+**Recommended: one command from a source checkout.** Log Wrangler in once (`npx wrangler login` in `cloud/worker`), then from the repository root:
 
-  ```bash
-  openssl rand -base64 24
-  ```
+```bash
+node cloud/worker/scripts/setup.ts --domain <zone> --label <label> --app-callback https://<publisher-domain>/auth/callback
+```
 
-- **`DATA_KEY`**, base64 of at least 32 random bytes, which encrypts the secrets the control plane stores:
+You can leave out `--app-callback` when the checkout's `publisher.json` names the publisher domain; otherwise copy `APP_CALLBACK_URLS` from the `wrangler.jsonc` of the release's `cloud-deploy` branch.
 
-  ```bash
-  openssl rand -base64 32
-  ```
+It installs the pinned npm dependencies it needs, creates or reuses the D1 database and queue, deploys the Worker, generates the setup code and data key and sets them as Worker secrets, then runs the setup wizard for you: token check, Zero Trust, hostname, Access, custom domain, sign-in method and push keys, in that order. It ends with a claim link: sign in once through Access as yourself and setup closes. The setup code and data key are kept in an owner-only recovery file under `~/.yaran/cloud-setup/` (macOS) or `~/.config/yaran/cloud-setup/` (Linux); the command prints the path, never the values.
+
+The one thing Wrangler's login cannot do is hand the control plane its own Access, DNS and Tunnel rights. If the Worker has no API token, the command prints the pre-filled token template link and asks you to paste one (not echoed), checking every permission before it creates anything; if the Worker's token falls short, it stops, names what is missing, and asks you to rerun with `--token`. If Zero Trust has no sign-in method besides Cloudflare account login, it stops and asks for `--one-time-pin` or your own identity provider. Rerun the same command after any stop; it resumes, reuses what exists, and never replaces an existing data key. `--help` lists every flag.
 
 > [!CAUTION]
-> **Back up the `DATA_KEY`.** If it is lost, push notifications stop for the whole org until you rotate the push keys, and you have to paste the API token again.
+> **Back up the recovery file, or at least its `dataKey`.** If the data key is lost, push notifications stop for the whole org until you rotate the push keys, and you have to paste the API token again.
 
-Once a `yaran-cloud-v*` release exists:
+**Or use the Deploy to Cloudflare button**, once a `yaran-cloud-v*` release exists. It asks for three values: an API token created from the [token template in the deploy README](cloud/worker/deploy-template/README.md#first-run), a `SETUP_CODE` (`openssl rand -base64 24`) and a `DATA_KEY` (`openssl rand -base64 32`).
 
 1. Press the button. It copies the `cloud-deploy` branch into your GitHub account and deploys it to your Cloudflare account as a Worker with its three secrets.
 
    [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/SiavZ/yaran/tree/cloud-deploy/worker)
 2. Open `/setup` on the `workers.dev` address the deploy prints and type the setup code. The wizard checks the token, sets up Zero Trust, picks the zone and the control plane's protected hostname, adds a sign-in method (One-time PIN, GitHub or Google), and ends with a claim link that makes you the first admin. Setup then closes for good and the `workers.dev` address stops answering.
-3. Open **Settings** on `https://<org-control-plane>`. **Who may sign in and pair** starts as an allowlist holding only your email, so add your developers' emails, domain or Access group, then hand them the address.
+
+Either way, then open **Settings** on `https://<org-control-plane>`. **Who may sign in and pair** starts as an allowlist holding only your email, so add your developers' emails, domain or Access group, then hand them the address.
 
 [Setting up your org's control plane](website/docs/cloud-admin-setup.md) walks through every wizard step, the admin console, updates and removal.
 

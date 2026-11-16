@@ -39,7 +39,8 @@
  * Used by:
  * src/setup/routes.ts
  * ├── src/phase07.ts
- * └── test/setup-flow.test.ts
+ * ├── test/setup-flow.test.ts
+ * └── test/setup-installer.test.ts
  * <module-headers:end>
  */
 import { CfApiError } from "../cloudflare/errors.ts";

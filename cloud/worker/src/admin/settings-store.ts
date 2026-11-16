@@ -31,6 +31,7 @@
  * ├── test/admin-services.test.ts
  * ├── test/helpers/deps.ts
  * ├── test/setup-flow.test.ts
+ * ├── test/setup-installer.test.ts
  * ├── test/setup-steps.test.ts
  * └── test/vapid-rotate.test.ts
  * <module-headers:end>

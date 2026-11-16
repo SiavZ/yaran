@@ -64,7 +64,14 @@ const PROBLEM_TEXT: Record<StepProblem, string> = {
 };
 
 export function ProblemNotice(props: { problem?: StepProblem | undefined }) {
-  return props.problem ? <Notice tone={props.problem === "no_org" ? "info" : "error"}>{PROBLEM_TEXT[props.problem]}</Notice> : null;
+  if (!props.problem) return null;
+  // The hidden marker is how the source installer (scripts/setup.ts) reads the outcome.
+  return (
+    <>
+      <span hidden data-setup-problem={props.problem} />
+      <Notice tone={props.problem === "no_org" ? "info" : "error"}>{PROBLEM_TEXT[props.problem]}</Notice>
+    </>
+  );
 }
 
 export function OrgPage(props: { problem?: StepProblem | undefined }) {

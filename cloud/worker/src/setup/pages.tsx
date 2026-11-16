@@ -61,7 +61,7 @@ export function SetupFrame(props: { step: SetupStep; children: Child }) {
           ))}
         </ol>
       </nav>
-      <h2>{STEP_LABEL[props.step]}</h2>
+      <h2 data-setup-step={props.step}>{STEP_LABEL[props.step]}</h2>
       {props.children}
     </Shell>
   );
@@ -141,7 +141,7 @@ export function ProbeChecklist(props: { rows: readonly ProbeRow[] }) {
   return (
     <ul class="checklist">
       {props.rows.map((r) => (
-        <li>
+        <li data-permission={r.permission.name} data-outcome={r.outcome}>
           <strong>{OUTCOME_TEXT[r.outcome]}</strong>: <Chip>{r.permission.name}</Chip> ({r.permission.scope}). {r.permission.purpose}
           {r.reason && <span class="muted"> Cloudflare answered {r.reason}; try again in a minute.</span>}
         </li>
@@ -168,10 +168,13 @@ export function TokenPage(p: TokenPageProps) {
   const missing = p.probe?.some((r) => r.outcome !== "ok");
   return (
     <SetupFrame step="token">
+      {p.error && <span hidden data-setup-problem={p.error} />}
+      {p.accountProblem && <span hidden data-setup-problem={`account_${p.accountProblem}`} />}
       {p.error === "token_required" && <Notice tone="error">Paste the API token: the CF_API_TOKEN secret is empty.</Notice>}
       {p.error === "email_required" && <Notice tone="error">Type the email you will sign in with; it becomes the first admin.</Notice>}
       {p.error === "not_workers_dev" && <Notice tone="error">Open this page on the Worker's workers.dev address, which is how setup learns the Worker's script name.</Notice>}
       {p.accountProblem && <Notice tone="error">{ACCOUNT_TEXT[p.accountProblem]}</Notice>}
+      {missing && <span hidden data-setup-problem="missing_permissions" />}
       {missing && (
         <Notice tone="error">
           The token is missing permissions (<Chip>cloudflare_permission_denied</Chip>). Create a token from the template below, or add the missing rows to

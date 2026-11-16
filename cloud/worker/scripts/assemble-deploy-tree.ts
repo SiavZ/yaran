@@ -17,6 +17,7 @@
  * Uses:
  * scripts/assemble-deploy-tree.ts
  * ├── @yaran/protocol:src/index.ts
+ * ├── scripts/callback-urls.ts
  * ├── scripts/copy-ui-kit-assets.ts
  * ├── src/admin/wire-time.ts
  * └── src/update/release-manifest.ts
@@ -37,6 +38,7 @@ import { parseArgs } from "node:util";
 import { PROTOCOL_MAX, PROTOCOL_MIN, type ReleaseManifest } from "@yaran/protocol";
 import { wireTime } from "../src/admin/wire-time.ts";
 import { parseManifest, REPO, TRAIN_TAG_PREFIX } from "../src/update/release-manifest.ts";
+import { callbackUrls } from "./callback-urls.ts";
 import { copyUiKitAssets, defaultSources, type CopySources } from "./copy-ui-kit-assets.ts";
 
 const TAG = /^yaran-cloud-v(\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.-]{1,32})?)$/;
@@ -65,12 +67,6 @@ export function versionOf(tag: string): string {
   const m = TAG.exec(tag);
   if (!m) throw new Error(`not a yaran-cloud tag: ${tag}`);
   return m[1]!;
-}
-
-/** `APP_CALLBACK_URLS` from publisher.json's domain (18's one home for it). */
-export function callbackUrls(publisherDomain: string): string {
-  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(publisherDomain)) throw new Error(`publisher_domain is not a hostname: ${publisherDomain}`);
-  return `https://${publisherDomain}/auth/callback`;
 }
 
 function filesUnder(root: string, dir = root): string[] {
