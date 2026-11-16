@@ -127,18 +127,11 @@ fn base64_encode(data: &[u8]) -> String {
         let b1 = chunk.get(1).copied().map_or(0, u32::from);
         let b2 = chunk.get(2).copied().map_or(0, u32::from);
         let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(A[((n >> 18) & 0x3f) as usize] as char);
-        out.push(A[((n >> 12) & 0x3f) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            A[((n >> 6) & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            A[(n & 0x3f) as usize] as char
-        } else {
-            '='
-        });
+        let sextet = |shift: u32| char::from(A[usize::try_from((n >> shift) & 0x3f).unwrap_or(0)]);
+        out.push(sextet(18));
+        out.push(sextet(12));
+        out.push(if chunk.len() > 1 { sextet(6) } else { '=' });
+        out.push(if chunk.len() > 2 { sextet(0) } else { '=' });
     }
     out
 }
@@ -181,7 +174,7 @@ fn clipboard_worker(rx: mpsc::Receiver<CopyRequest>) {
         arboard::Clipboard::new().map_err(|e| e.to_string())
     };
     run_worker(
-        rx,
+        &rx,
         primary.map(|mut board| move |text: &str| board.set_text(text).map_err(|e| e.to_string())),
         osc52_copy,
     );
@@ -193,7 +186,7 @@ fn clipboard_worker(rx: mpsc::Receiver<CopyRequest>) {
 /// timeout, lost selection ownership), that request is retried through
 /// `fallback` before the failure is reported.
 fn run_worker<P>(
-    rx: mpsc::Receiver<CopyRequest>,
+    rx: &mpsc::Receiver<CopyRequest>,
     primary: Result<P, String>,
     fallback: impl Fn(&str) -> Result<()>,
 ) where
@@ -288,7 +281,7 @@ mod tests {
 
     fn run_one<P>(
         primary: Result<P, String>,
-        fallback_ok: bool,
+        fallback: Result<(), &'static str>,
     ) -> (Result<(), String>, Vec<String>)
     where
         P: FnMut(&str) -> std::result::Result<(), String>,
@@ -297,13 +290,9 @@ mod tests {
         let (tx, rx) = request("payload", &worker_tx);
         drop(tx);
         let seen = std::cell::RefCell::new(Vec::new());
-        run_worker(rx, primary, |t: &str| {
+        run_worker(&rx, primary, |t: &str| {
             seen.borrow_mut().push(t.to_string());
-            if fallback_ok {
-                Ok(())
-            } else {
-                Err(anyhow!("no tty"))
-            }
+            fallback.map_err(|e| anyhow!(e))
         });
         let WorkerEvent::ClipboardCopyCompleted { result, .. } = worker_rx.recv().unwrap() else {
             panic!("unexpected event");
@@ -316,28 +305,29 @@ mod tests {
     #[test]
     fn unavailable_native_clipboard_falls_back_to_osc52() {
         // The fork's failure mode: arboard cannot reach an X server over SSH.
-        let (result, seen) = run_one::<Setter>(Err("X11 server connection timed out".into()), true);
+        let (result, seen) =
+            run_one::<Setter>(Err("X11 server connection timed out".into()), Ok(()));
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(seen, vec!["payload".to_string()]);
     }
 
     #[test]
     fn failed_native_set_retries_via_osc52() {
-        let (result, seen) = run_one::<Setter>(Ok(|_| Err("lost ownership".into())), true);
+        let (result, seen) = run_one::<Setter>(Ok(|_| Err("lost ownership".into())), Ok(()));
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(seen, vec!["payload".to_string()]);
     }
 
     #[test]
     fn successful_native_set_does_not_emit_osc52() {
-        let (result, seen) = run_one::<Setter>(Ok(|_| Ok(())), true);
+        let (result, seen) = run_one::<Setter>(Ok(|_| Ok(())), Ok(()));
         assert!(result.is_ok());
         assert_eq!(seen, Vec::<std::string::String>::new());
     }
 
     #[test]
     fn fallback_failure_is_reported() {
-        let (result, _) = run_one::<Setter>(Err("no display server".into()), false);
+        let (result, _) = run_one::<Setter>(Err("no display server".into()), Err("no tty"));
         assert!(result.unwrap_err().contains("no tty"));
     }
 

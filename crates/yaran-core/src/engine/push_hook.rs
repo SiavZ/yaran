@@ -55,6 +55,7 @@ use crate::cloud::push_emitter::PushEmitter;
 use crate::cloud::push_link::paired_link_factory;
 use crate::cloud::push_queue::{event_ts, new_event_id};
 use crate::config::{Config, YaranPaths};
+use crate::engine::AttentionIndicator;
 use crate::ids::{TabId, TabIdRef};
 use crate::model::AgentWorkspace;
 use crate::row_state::{RowState, agent_row_state};
@@ -145,7 +146,11 @@ impl Engine {
         let providers = &self.providers;
         let edges = self.push.edges.observe(
             fired,
-            enabled,
+            if enabled {
+                AttentionIndicator::On
+            } else {
+                AttentionIndicator::Off
+            },
             |tab| attention_engaged(viewed, typed, tab, now),
             |tab| providers.contains_key(tab),
         );

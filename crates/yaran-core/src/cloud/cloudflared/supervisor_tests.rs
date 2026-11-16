@@ -44,7 +44,10 @@ fn wait_exit(child: &mut RunningChild) -> ChildExit {
 }
 
 fn alive(pid: u32) -> bool {
-    rustix::process::test_kill_process(rustix::process::Pid::from_raw(pid as i32).unwrap()).is_ok()
+    rustix::process::test_kill_process(
+        rustix::process::Pid::from_raw(i32::try_from(pid).unwrap()).unwrap(),
+    )
+    .is_ok()
 }
 
 #[test]
@@ -54,7 +57,7 @@ fn exit_codes_are_reported() {
         let bin = script(dir.path(), &format!("exit{code}"), &format!("exit {code}"));
         let mut child = spawn(&spec(bin, dir.path()), "").unwrap();
         assert_eq!(wait_exit(&mut child), ChildExit::Code(code));
-        assert!(!child_registry::live().contains(&(child.pid() as i32)));
+        assert!(!child_registry::live().contains(&i32::try_from(child.pid()).unwrap()));
     }
 }
 
@@ -106,7 +109,7 @@ fn a_child_ignoring_sigterm_is_killed_after_the_grace() {
         started.elapsed()
     );
     assert!(!alive(pid));
-    assert!(!child_registry::live().contains(&(pid as i32)));
+    assert!(!child_registry::live().contains(&i32::try_from(pid).unwrap()));
 }
 
 #[test]
