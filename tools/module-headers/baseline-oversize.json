@@ -4,8 +4,8 @@
     "reason": "baseline 2026-11-14"
   },
   ".github/workflows/release.yml": {
-    "lines": 506,
-    "reason": "baseline 2026-11-14"
+    "lines": 508,
+    "reason": "baseline 2026-11-14; phase 18: R17 guard, the prepare-release job skips releases of the cloud and mobile trains"
   },
   "crates/yaran-core/src/action.rs": {
     "lines": 882,

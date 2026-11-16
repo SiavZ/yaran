@@ -20,13 +20,15 @@
 import Foundation
 
 public enum UaToken {
+    // `Os` mirrors the token's `os` field (`android` or `ios`).
+    // swiftlint:disable:next type_name
     public enum Os: String { case android, ios }
     public enum Form: String { case phone, tablet }
 
     private static let versionRe = Pattern("[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}(?:-[0-9A-Za-z.-]{1,32})?")
 
     /// Nil when `version` is not a protocol version string.
-    public static func token(version: String, os: Os, form: Form) -> String? {
-        versionRe.matches(version) ? "YaranApp/\(version) (\(os.rawValue); \(form.rawValue))" : nil
+    public static func token(version: String, os platform: Os, form: Form) -> String? {
+        versionRe.matches(version) ? "YaranApp/\(version) (\(platform.rawValue); \(form.rawValue))" : nil
     }
 }

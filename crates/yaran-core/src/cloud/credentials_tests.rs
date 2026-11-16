@@ -58,7 +58,7 @@ fn a_future_schema_is_refused_without_a_write() {
     let err = read(&paths).unwrap_err();
     assert_eq!(err, CredentialsError::NewerSchema(2));
     assert!(err.to_string().contains("yaran cloud logout --local-only"));
-    assert!(stamp_revoked(&paths).is_err());
+    assert!(stamp_revoked(&paths, &sample_credentials(SAMPLE_ORG)).is_err());
     assert_eq!(fs::read(&paths.credentials).unwrap(), body);
 }
 
@@ -124,13 +124,31 @@ fn concurrent_writers_serialize() {
 #[test]
 fn revoked_at_is_stamped_once() {
     let (_root, paths) = paths();
-    stamp_revoked(&paths).unwrap(); // unpaired: no-op, no file
+    let creds = sample_credentials(SAMPLE_ORG);
+    assert!(!stamp_revoked(&paths, &creds).unwrap()); // unpaired: no-op, no file
     assert_eq!(read(&paths).unwrap(), None);
-    pair_sample(&paths, SAMPLE_ORG);
-    stamp_revoked(&paths).unwrap();
+    let creds = pair_sample(&paths, SAMPLE_ORG);
+    assert!(stamp_revoked(&paths, &creds).unwrap());
     let first = read(&paths).unwrap().unwrap().revoked_at.unwrap();
-    stamp_revoked(&paths).unwrap();
+    assert!(stamp_revoked(&paths, &creds).unwrap());
     assert_eq!(read(&paths).unwrap().unwrap().revoked_at.unwrap(), first);
+}
+
+#[test]
+fn a_revocation_for_an_older_pairing_leaves_a_newer_one_alone() {
+    let (_root, paths) = paths();
+    let old = pair_sample(&paths, SAMPLE_ORG);
+    let mut fresh = sample_credentials(SAMPLE_ORG);
+    fresh.machine_id = "11111111-2222-4333-8444-555555555555".into();
+    update(&paths, |_| Ok(Some(fresh.clone()))).unwrap();
+    let before = revision(&paths);
+    assert!(!stamp_revoked(&paths, &old).unwrap());
+    assert_eq!(read(&paths).unwrap(), Some(fresh));
+    assert_eq!(
+        revision(&paths),
+        before,
+        "an unchanged record is not rewritten"
+    );
 }
 
 #[test]

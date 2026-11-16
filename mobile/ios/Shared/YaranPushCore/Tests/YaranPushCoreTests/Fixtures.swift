@@ -10,7 +10,7 @@
 /// YaranPushCoreTests/Fixtures
 /// ├── YaranPushCore/Base64URL (inferred)
 /// └── YaranPushCore/WebPushDecryptor (inferred)
-/// External: CryptoKit, Foundation
+/// External: CryptoKit, Foundation, Testing
 ///
 /// Used by:
 /// YaranPushCoreTests/Fixtures
@@ -20,6 +20,7 @@
 /// <module-headers:end>
 import CryptoKit
 import Foundation
+import Testing
 @testable import YaranPushCore
 
 enum Fixtures {
@@ -30,11 +31,11 @@ enum Fixtures {
 
     static func json(_ path: String) throws -> [String: Any] {
         let data = try Data(contentsOf: root.appendingPathComponent(path))
-        return try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
-    static func b64(_ text: Any?) -> Data {
-        Base64URL.decode(text as! String)!
+    static func b64(_ text: Any?) throws -> Data {
+        try #require((text as? String).flatMap { Base64URL.decode($0) })
     }
 }
 
@@ -43,7 +44,7 @@ enum TestEncryptor {
     static func encrypt(_ plaintext: Data, uaPublic: P256.KeyAgreement.PublicKey, authSecret: Data) throws -> Data {
         let sender = P256.KeyAgreement.PrivateKey()
         var salt = Data(count: 16)
-        for i in 0..<16 { salt[i] = UInt8.random(in: 0...255) }
+        for index in 0..<16 { salt[index] = UInt8.random(in: 0...255) }
         let shared = try sender.sharedSecretFromKeyAgreement(with: uaPublic).withUnsafeBytes { Data($0) }
         let asPublic = sender.publicKey.x963Representation
         let (cek, nonce) = WebPushDecryptor.deriveKeys(

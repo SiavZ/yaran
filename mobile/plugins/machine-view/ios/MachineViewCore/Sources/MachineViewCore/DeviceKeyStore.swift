@@ -27,6 +27,7 @@
 /// ├── MachineViewCore/SecureEnclaveBackend (inferred)
 /// ├── MachineViewCore/SessionStore (inferred)
 /// ├── MachineViewCoreTests/Fakes (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// <module-headers:end>
 import Foundation
@@ -79,7 +80,7 @@ public final class DeviceKeyStore {
         let minted = try installs.mint(orgId, level: level)
         diagnostics?.append(diagLine("device key minted", [
             ("level", level.rawValue),
-            ("fp", HandoffSignature.displayFingerprint(HandoffSignature.fingerprint24(point: point))),
+            ("fp", HandoffSignature.displayFingerprint(HandoffSignature.fingerprint24(point: point)))
         ]))
         return DeviceIdentity(installId: minted.installId, publicKey: B64url.encode(point), level: level)
     }

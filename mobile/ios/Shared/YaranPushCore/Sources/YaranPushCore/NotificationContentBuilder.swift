@@ -117,7 +117,8 @@ public struct NotificationContentBuilder: Sendable {
     }
 
     /// The content for a decrypted payload, or nil when only the generic text fits.
-    public func content(
+    /// Each argument is an independent input to the one notification decision.
+    public func content( // swiftlint:disable:this function_parameter_count
         for payload: PushPayload, orgId: String, directory: OrgDirectory?, mutes: LocalMutes,
         timeSensitive: Bool, now: Date
     ) -> PushNotificationContent? {

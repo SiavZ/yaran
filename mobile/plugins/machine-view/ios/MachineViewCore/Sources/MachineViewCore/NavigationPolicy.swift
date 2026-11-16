@@ -51,15 +51,15 @@ public enum NavigationPolicy {
 
     private static func decision(_ pinned: String, _ url: String, _ mainFrame: Bool, _ newWindow: Bool,
                                  _ gesture: Bool) -> NavigationDecision {
-        guard let p = UrlParts.parse(url) else { return .block }
+        guard let parts = UrlParts.parse(url) else { return .block }
         let offHost: NavigationDecision = gesture ? .external : .block
         if !mainFrame {
-            if isAboutBlank(p) || (p.scheme == "https" && isPinned(p, pinned)) { return .allow }
+            if isAboutBlank(parts) || (parts.scheme == "https" && isPinned(parts, pinned)) { return .allow }
             return .block
         }
-        switch p.scheme {
+        switch parts.scheme {
         case "about":
-            return isAboutBlank(p) && !newWindow ? .allow : .block
+            return isAboutBlank(parts) && !newWindow ? .allow : .block
         case "yaranapp":
             switch ControlUrl.decision(url, loadedHost: pinned) {
             case .reauth: return .reauth
@@ -68,20 +68,20 @@ public enum NavigationPolicy {
             case .ignore: return .ignore
             }
         case "https":
-            guard let (host, port) = p.hostAndPort else { return .block }
+            guard let (host, port) = parts.hostAndPort else { return .block }
             if host == pinned && (port == nil || port == 443) {
-                if p.path.hasPrefix(accessLoginPath) { return .reauth }
+                if parts.path.hasPrefix(accessLoginPath) { return .reauth }
                 return newWindow ? .allowInPlace : .allow
             }
             if host.count > accessSuffix.count && host.hasSuffix(accessSuffix) { return .reauth }
             return offHost
         case "http":
-            guard let (host, _) = p.hostAndPort else { return .block }
+            guard let (host, _) = parts.hostAndPort else { return .block }
             return host == pinned ? .block : offHost
         case "mailto", "tel":
             return offHost
         case "blob":
-            guard !newWindow, let inner = UrlParts.parse(p.rest), inner.scheme == "https", isPinned(inner, pinned)
+            guard !newWindow, let inner = UrlParts.parse(parts.rest), inner.scheme == "https", isPinned(inner, pinned)
             else { return .block }
             return .allow
         default:
@@ -89,13 +89,13 @@ public enum NavigationPolicy {
         }
     }
 
-    private static func isAboutBlank(_ p: UrlParts) -> Bool {
-        p.scheme == "about" && p.authority == nil && p.query == nil && p.fragment == nil
-            && (p.path == "blank" || p.path == "srcdoc")
+    private static func isAboutBlank(_ parts: UrlParts) -> Bool {
+        parts.scheme == "about" && parts.authority == nil && parts.query == nil && parts.fragment == nil
+            && (parts.path == "blank" || parts.path == "srcdoc")
     }
 
-    private static func isPinned(_ p: UrlParts, _ pinned: String) -> Bool {
-        guard let (host, port) = p.hostAndPort else { return false }
+    private static func isPinned(_ parts: UrlParts, _ pinned: String) -> Bool {
+        guard let (host, port) = parts.hostAndPort else { return false }
         return host == pinned && (port == nil || port == 443)
     }
 }

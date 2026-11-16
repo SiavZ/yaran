@@ -18,12 +18,14 @@
 /// ├── MachineViewCore/RenewalCoordinator (inferred)
 /// ├── MachineViewCore/SealedEnvelope (inferred)
 /// ├── MachineViewCore/Seams (inferred)
+/// ├── MachineViewCoreTests/FormatTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// External: CryptoKit, Foundation
 ///
 /// Used by:
 /// MachineViewCoreTests/Fakes
 /// ├── MachineViewCoreTests/HandoffClientTests (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── MachineViewCoreTests/OrgApiClientTests (inferred)
 /// ├── MachineViewCoreTests/RenewalCoordinatorTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
@@ -35,14 +37,14 @@ import Foundation
 final class MemoryVault: SecretVault {
     var items: [String: (Data, ProtectionClass)] = [:]
     var locked = false
-    func read(_ ns: String) throws -> Data? {
-        if locked, items[ns]?.1 == .locked { throw VaultError.locked }
-        return items[ns]?.0
+    func read(_ path: String) throws -> Data? {
+        if locked, items[path]?.1 == .locked { throw VaultError.locked }
+        return items[path]?.0
     }
-    func write(_ ns: String, _ value: Data, _ cls: ProtectionClass) throws { items[ns] = (value, cls) }
-    func delete(_ ns: String) throws { items[ns] = nil }
+    func write(_ path: String, _ value: Data, _ cls: ProtectionClass) throws { items[path] = (value, cls) }
+    func delete(_ path: String) throws { items[path] = nil }
     func list(prefix: String) throws -> [String] { items.keys.filter { $0.hasPrefix(prefix) }.sorted() }
-    func json(_ ns: String) -> [String: Any]? { items[ns].flatMap { try? JSONSerialization.jsonObject(with: $0.0) as? [String: Any] } }
+    func json(_ path: String) -> [String: Any]? { items[path].flatMap { try? JSONSerialization.jsonObject(with: $0.0) as? [String: Any] } }
 }
 
 final class MemoryDiag: DiagnosticsSink {
@@ -84,36 +86,37 @@ final class FakeLauncher: HandoffLauncher {
 
 enum Sealer {
     /// Seals `payload` to `pk` for `host`/`state` (ECDH-ES + Concat KDF + A256GCM), like 06/11 do.
-    static func seal(pk: String, host: String, state: String, payload: [String: Any]) throws -> String {
-        let point = P256Point.decode(pk)!
+    static func seal(pk recipientKey: String, host: String, state: String, payload: [String: Any]) throws -> String {
+        let point = P256Point.decode(recipientKey)!
         let eph = P256.KeyAgreement.PrivateKey()
         let epk = eph.publicKey.x963Representation
         let header: [String: Any] = [
             "alg": "ECDH-ES", "enc": "A256GCM", "typ": "yaran-handoff+jwe", "cty": "yaran-handoff+json",
             "kid": SealedEnvelope.thumbprint(point: point),
             "epk": ["kty": "EC", "crv": "P-256", "x": B64url.encode(epk.subdata(in: 1..<33)), "y": B64url.encode(epk.subdata(in: 33..<65))],
-            "apu": B64url.encode(Data(host.utf8)), "apv": B64url.encode(Data(state.utf8)),
+            "apu": B64url.encode(Data(host.utf8)), "apv": B64url.encode(Data(state.utf8))
         ]
-        let h = B64url.encode(try JSONSerialization.data(withJSONObject: header))
-        let z = try eph.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: point)).withUnsafeBytes { Data($0) }
-        let cek = ConcatKdf.derive(z: z, algorithmId: "A256GCM", apu: Data(host.utf8), apv: Data(state.utf8), keyBits: 256)
+        let encodedHeader = B64url.encode(try JSONSerialization.data(withJSONObject: header))
+        let sharedSecret = try eph.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: point)).withUnsafeBytes { Data($0) }
+        let cek = ConcatKdf.derive(z: sharedSecret, algorithmId: "A256GCM", apu: Data(host.utf8), apv: Data(state.utf8), keyBits: 256)
         let box = try AES.GCM.seal(try JSONSerialization.data(withJSONObject: payload), using: SymmetricKey(data: cek),
-                                   nonce: AES.GCM.Nonce(), authenticating: Data(h.utf8))
-        return [h, "", B64url.encode(Data(box.nonce)), B64url.encode(box.ciphertext), B64url.encode(box.tag)].joined(separator: ".")
+                                   nonce: AES.GCM.Nonce(), authenticating: Data(encodedHeader.utf8))
+        return [encodedHeader, "", B64url.encode(Data(box.nonce)), B64url.encode(box.ciphertext), B64url.encode(box.tag)].joined(separator: ".")
     }
 
     static func jwt(exp: Int64) -> String {
-        "eyJhbGciOiJSUzI1NiJ9." + B64url.encode(try! JSONSerialization.data(withJSONObject: ["exp": exp])) + ".c2ln"
+        "eyJhbGciOiJSUzI1NiJ9." + B64url.encode(Data("{\"exp\":\(exp)}".utf8)) + ".c2ln"
     }
 }
 
 final class FakeScheduler: OneShotScheduler {
     final class Handle: Cancellable { var cancelled = false; func cancel() { cancelled = true } }
-    var scheduled: [(Int64, () -> Void, Handle)] = []
-    func schedule(at: Int64, _ fire: @escaping () -> Void) -> Cancellable {
-        let h = Handle(); scheduled.append((at, fire, h)); return h
+    struct Entry { let second: Int64; let fire: () -> Void; let handle: Handle }
+    var scheduled: [Entry] = []
+    func schedule(at second: Int64, _ fire: @escaping () -> Void) -> Cancellable {
+        let handle = Handle(); scheduled.append(Entry(second: second, fire: fire, handle: handle)); return handle
     }
-    var live: (Int64, () -> Void)? { scheduled.last { !$0.2.cancelled }.map { ($0.0, $0.1) } }
+    var live: (Int64, () -> Void)? { scheduled.last { !$0.handle.cancelled }.map { ($0.second, $0.fire) } }
 }
 
 final class FakeUi: RenewalUi {

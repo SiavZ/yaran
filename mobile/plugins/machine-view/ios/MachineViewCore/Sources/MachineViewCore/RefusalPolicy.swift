@@ -41,7 +41,7 @@ public enum RefusalPolicy {
         "access-missing", "access-malformed", "access-bad-algorithm", "access-unknown-kid",
         "access-bad-signature", "access-wrong-issuer", "access-wrong-audience", "access-expired",
         "access-not-yet-valid", "access-not-app-token", "access-service-token", "access-not-owner",
-        "access-keys-unavailable", "host-not-served", "host-missing",
+        "access-keys-unavailable", "host-not-served", "host-missing"
     ]
 
     public static func decide(status: Int, refusal: String?) -> RefusalVerdict {

@@ -59,23 +59,27 @@ internal class OverlayView(context: Context, private val banner: Boolean, privat
     fun show(kind: String, vars: Map<String, String>, detail: String? = null) {
         val row = Messages.overlay.getValue(kind)
         text.text = Messages.fill(row.message, vars) + (detail?.let { "\n\n$it" } ?: "")
+        setActions(row.actions)
+        shown = kind
+        visibility = View.VISIBLE
+    }
+
+    /** Free text with its own actions (the lock cover). */
+    fun showText(message: String, actions: List<String> = emptyList()) {
+        text.text = message
+        setActions(actions)
+        shown = "text"
+        visibility = View.VISIBLE
+    }
+
+    private fun setActions(actions: List<String>) {
         buttons.removeAllViews()
-        for (action in row.actions) {
+        for (action in actions) {
             buttons.addView(Button(context).apply {
                 this.text = label(action)
                 setOnClickListener { onAction(action) }
             }, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { setMargins(dp(8), dp(16), dp(8), 0) })
         }
-        shown = kind
-        visibility = View.VISIBLE
-    }
-
-    /** Free text (the lock cover), with no actions. */
-    fun showText(message: String) {
-        text.text = message
-        buttons.removeAllViews()
-        shown = "text"
-        visibility = View.VISIBLE
     }
 
     fun hide() {
@@ -84,6 +88,7 @@ internal class OverlayView(context: Context, private val banner: Boolean, privat
     }
 
     private fun label(action: String) = when (action) {
+        "unlock" -> "Unlock"
         "sign_in" -> "Sign in"
         "back_to_machines" -> "Back to machines"
         "retry" -> "Retry"

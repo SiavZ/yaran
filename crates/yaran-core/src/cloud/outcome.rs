@@ -60,6 +60,19 @@ pub enum CloudActionOutcome {
     },
     LoginTimedOut,
     LoginCancelled,
+    /// Another login or a disconnect changed the pairing while this action ran; the
+    /// newer state was kept.
+    PairingChanged,
+    /// The newer pairing was kept; cleanup_started records an acknowledged teardown
+    /// request for the discarded claim. Any machine it replaced is still torn down.
+    LoginSuperseded {
+        cleanup_started: bool,
+    },
+    /// The claim succeeded but could not be persisted; its replacement effects remain.
+    LoginNotStored {
+        reason: String,
+        cleanup_started: bool,
+    },
     /// Not an error: the surface shows the URL to open by hand.
     BrowserUnavailable {
         url: String,
@@ -141,6 +154,8 @@ impl CloudActionOutcome {
             | Self::LoginCancelled => StatusTone::Info,
             Self::UnpairedLocallyOnly { .. }
             | Self::LoginTimedOut
+            | Self::PairingChanged
+            | Self::LoginSuperseded { .. }
             | Self::AlreadyPairedElsewhere { .. } => StatusTone::Warning,
             Self::ProtocolUnsupported { .. }
             | Self::ClaimRefused { .. }
@@ -149,6 +164,7 @@ impl CloudActionOutcome {
             | Self::ClockSkew { .. }
             | Self::Network { .. }
             | Self::CredentialsUnreadable { .. }
+            | Self::LoginNotStored { .. }
             | Self::InvalidInput { .. } => StatusTone::Error,
         }
     }
@@ -157,7 +173,15 @@ impl CloudActionOutcome {
     pub fn sticky(&self) -> bool {
         matches!(
             self,
-            Self::UnpairedLocallyOnly { .. } | Self::Revoked { .. }
+            Self::UnpairedLocallyOnly { .. }
+                | Self::Revoked { .. }
+                | Self::LoginSuperseded {
+                    cleanup_started: false
+                }
+                | Self::LoginNotStored {
+                    cleanup_started: false,
+                    ..
+                }
         )
     }
 
@@ -202,6 +226,34 @@ impl CloudActionOutcome {
                 " again when you are ready."
             ),
             Self::LoginCancelled => status_text!("The login was cancelled; nothing was changed."),
+            Self::PairingChanged => status_text!(
+                "This machine's Yaran Cloud pairing changed while that was running (another login or disconnect finished first), so the newer pairing was kept. Run ",
+                q("yaran cloud status"),
+                " to see it."
+            ),
+            Self::LoginSuperseded { cleanup_started } => status_text!(
+                "Another login or disconnect changed this machine's Yaran Cloud pairing while this login was finishing, so the newer state was kept. ",
+                discarded_claim_cleanup(*cleanup_started),
+                " If you chose Replace on the confirm page, the replaced machine is being disconnected anyway; run ",
+                q("yaran cloud status"),
+                ", and run ",
+                q(login),
+                " again if it says the pairing was revoked."
+            ),
+            Self::LoginNotStored {
+                reason,
+                cleanup_started,
+            } => status_text!(
+                "The control plane accepted this login, but yaran could not save its credentials: ",
+                reason.as_str(),
+                ". ",
+                discarded_claim_cleanup(*cleanup_started),
+                " If you chose Replace on the confirm page, the replaced machine is being disconnected anyway. Run ",
+                q("yaran cloud status"),
+                " to check this machine, fix the credentials problem, then run ",
+                q(login),
+                " again."
+            ),
             Self::BrowserUnavailable { url } => status_text!(
                 "yaran could not open a browser here. Open ",
                 q(url),
@@ -291,6 +343,14 @@ impl CloudActionOutcome {
         } else {
             update
         }
+    }
+}
+
+fn discarded_claim_cleanup(started: bool) -> &'static str {
+    if started {
+        "The control plane is removing this login's new pairing."
+    } else {
+        "The control plane did not confirm removal of this login's new pairing. Ask an administrator to check and remove it if it is still listed."
     }
 }
 

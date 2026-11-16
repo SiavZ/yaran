@@ -29,39 +29,39 @@ public enum HandoffSignature {
     public static let tag = "yaran-handoff-device-v1"
     public static let deviceKeyTag = "yaran-device-key-v1\n"
 
-    public static func canonical(host: String, pk: String, state: String, dts: Int64) -> String {
-        "\(tag)\n\(host)\n\(pk)\n\(state)\n\(dts)\n"
+    public static func canonical(host: String, pk recipientKey: String, state: String, dts: Int64) -> String {
+        "\(tag)\n\(host)\n\(recipientKey)\n\(state)\n\(dts)\n"
     }
 
     public static func derToRaw(_ der: Data) throws -> Data {
-        let b = [UInt8](der)
-        guard b.count >= 8, b[0] == 0x30, b[1] < 0x80, Int(b[1]) == b.count - 2 else { throw HandoffSignatureError.malformedDer }
-        var i = 2
+        let bytes = [UInt8](der)
+        guard bytes.count >= 8, bytes[0] == 0x30, bytes[1] < 0x80, Int(bytes[1]) == bytes.count - 2 else { throw HandoffSignatureError.malformedDer }
+        var offset = 2
         func integer() throws -> Data {
-            guard i + 2 <= b.count, b[i] == 0x02 else { throw HandoffSignatureError.malformedDer }
-            let len = Int(b[i + 1])
-            guard len >= 1, len < 0x80, i + 2 + len <= b.count else { throw HandoffSignatureError.malformedDer }
-            var v = Array(b[(i + 2)..<(i + 2 + len)])
-            i += 2 + len
-            guard v[0] & 0x80 == 0 else { throw HandoffSignatureError.malformedDer }
-            if v.count > 1 && v[0] == 0 {
-                guard v[1] & 0x80 != 0 else { throw HandoffSignatureError.malformedDer }
-                v.removeFirst()
+            guard offset + 2 <= bytes.count, bytes[offset] == 0x02 else { throw HandoffSignatureError.malformedDer }
+            let len = Int(bytes[offset + 1])
+            guard len >= 1, len < 0x80, offset + 2 + len <= bytes.count else { throw HandoffSignatureError.malformedDer }
+            var value = Array(bytes[(offset + 2)..<(offset + 2 + len)])
+            offset += 2 + len
+            guard value[0] & 0x80 == 0 else { throw HandoffSignatureError.malformedDer }
+            if value.count > 1 && value[0] == 0 {
+                guard value[1] & 0x80 != 0 else { throw HandoffSignatureError.malformedDer }
+                value.removeFirst()
             }
-            guard v.count <= 32 else { throw HandoffSignatureError.malformedDer }
-            return Data(repeating: 0, count: 32 - v.count) + Data(v)
+            guard value.count <= 32 else { throw HandoffSignatureError.malformedDer }
+            return Data(repeating: 0, count: 32 - value.count) + Data(value)
         }
-        let r = try integer(), s = try integer()
-        guard i == b.count else { throw HandoffSignatureError.malformedDer }
-        return r + s
+        let sigR = try integer(), sigS = try integer()
+        guard offset == bytes.count else { throw HandoffSignatureError.malformedDer }
+        return sigR + sigS
     }
 
     public static func rawToDer(_ raw: Data) -> Data {
-        func integer(_ d: Data) -> [UInt8] {
-            var v = Array(d.drop(while: { $0 == 0 }))
-            if v.isEmpty { v = [0] }
-            if v[0] & 0x80 != 0 { v.insert(0, at: 0) }
-            return [0x02, UInt8(v.count)] + v
+        func integer(_ half: Data) -> [UInt8] {
+            var bytes = Array(half.drop(while: { $0 == 0 }))
+            if bytes.isEmpty { bytes = [0] }
+            if bytes[0] & 0x80 != 0 { bytes.insert(0, at: 0) }
+            return [0x02, UInt8(bytes.count)] + bytes
         }
         let body = integer(raw.prefix(32)) + integer(raw.suffix(32))
         return Data([0x30, UInt8(body.count)] + body)
@@ -74,8 +74,8 @@ public enum HandoffSignature {
 
     /// `XXXX-XXXX-…`, the 29-character display form.
     public static func displayFingerprint(_ fp24: String) -> String {
-        stride(from: 0, to: fp24.count, by: 4).map { i in
-            String(fp24.dropFirst(i).prefix(4))
+        stride(from: 0, to: fp24.count, by: 4).map { offset in
+            String(fp24.dropFirst(offset).prefix(4))
         }.joined(separator: "-")
     }
 

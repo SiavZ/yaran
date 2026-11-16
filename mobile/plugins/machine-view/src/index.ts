@@ -20,7 +20,8 @@
  * ├── @yaran/mobile-shell:src/lib/native/machineView.ts
  * ├── @yaran/mobile-shell:src/lib/openMachine.test.ts
  * ├── @yaran/mobile-shell:src/lib/openMachine.ts
- * └── @yaran/mobile-shell:src/push/notificationTap.ts
+ * ├── @yaran/mobile-shell:src/push/notificationTap.ts
+ * └── @yaran/mobile-shell:src/screens/onboarding/onboarding.test.tsx
  * <module-headers:end>
  */
 import { registerPlugin } from "@capacitor/core";

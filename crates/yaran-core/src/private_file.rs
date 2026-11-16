@@ -22,7 +22,8 @@
 //! ├── cloud::credentials
 //! ├── cloud::leg_state
 //! ├── crate
-//! └── human_board::store
+//! ├── human_board::store
+//! └── human_board::tests::watcher_tests
 //! <module-headers:end>
 
 use std::fs::{self, File, OpenOptions};

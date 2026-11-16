@@ -65,8 +65,12 @@ const careless: Route = {
   },
 };
 
+// Every route × host × identity, before and after setup closes, one request at a time: about 4 s
+// locally, past vitest's 5 s default on a loaded CI runner. A generous bound, not a skipped check.
+const CORPUS_TIMEOUT_MS = 120_000;
+
 describe("no secret leaks", () => {
-  it("across the whole matrix corpus, before and after setup closes", async () => {
+  it("across the whole matrix corpus, before and after setup closes", { timeout: CORPUS_TIMEOUT_MS }, async () => {
     const lines: string[] = [];
     const capture = (...args: unknown[]) => lines.push(args.map(String).join(" "));
     const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation(capture));

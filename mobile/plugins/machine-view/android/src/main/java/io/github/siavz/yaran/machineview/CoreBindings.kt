@@ -11,7 +11,7 @@
  *
  * <module-headers:begin>
  * Uses: none
- * External: none
+ * External: androidx.fragment.app
  *
  * Used by:
  * io.github.siavz.yaran.machineview.CoreBindings
@@ -30,10 +30,13 @@
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
  * ├── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
  * ├── io.github.siavz.yaran.machineview.SessionStore (inferred)
+ * ├── io.github.siavz.yaran.machineview.SignInLockRobolectricTest (inferred)
  * └── io.github.siavz.yaran.machineview.StoresTest (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview
+
+import androidx.fragment.app.FragmentActivity
 
 enum class ProtectionClass { STANDARD, LOCKED }
 
@@ -65,6 +68,15 @@ interface AppLockState {
     fun lockEnabled(): Boolean
 
     fun isLocked(): Boolean
+
+    /** Shows the app lock's own prompt over [activity]; [done] runs once it ends, unlocked or not. */
+    fun unlock(activity: FragmentActivity, done: () -> Unit)
+
+    /** The app is opening its own sign-in browser: coming back within [ttlMs] must not relock before the callback. */
+    fun holdForExternalFlow(ttlMs: Long)
+
+    /** That sign-in ended, whichever way: the background lock applies again. */
+    fun releaseExternalFlow()
 }
 
 fun interface ScreenPrivacyState {

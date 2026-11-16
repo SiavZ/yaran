@@ -23,6 +23,9 @@
 /// <module-headers:end>
 import Foundation
 
+// Curve and limb arithmetic keep the textbook names (x, y, p, b, a, i); Limbs defines only the operators the equation needs.
+// swiftlint:disable identifier_name shorthand_operator
+
 public enum P256Point {
     static let p = Limbs(hex: "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff")
     static let b = Limbs(hex: "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b")
@@ -122,3 +125,4 @@ struct Limbs: Comparable {
         return r
     }
 }
+// swiftlint:enable identifier_name shorthand_operator

@@ -12,7 +12,7 @@
 /// App/SceneDelegate
 /// ├── YaranCore/AppLock (inferred)
 /// └── YaranCore/ScreenPrivacy (inferred)
-/// External: Capacitor, UIKit
+/// External: Capacitor, Darwin, UIKit
 ///
 /// Used by:
 /// App/SceneDelegate
@@ -20,6 +20,7 @@
 /// <module-headers:end>
 
 import Capacitor
+import Darwin
 import UIKit
 import YaranCore
 
@@ -63,6 +64,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     private static func nowMs() -> Int64 {
-        Int64(Date().timeIntervalSince1970 * 1000)
+        Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1_000_000)
     }
 }

@@ -8,6 +8,9 @@
 ///
 /// - Main actor. Every iPad orientation, Split View and Stage Manager size: a size change is a
 ///   layout pass, never a reload. Not compiled on this machine (UIKit).
+/// - Opening, resuming and renewal wait while App Lock is engaged (`LockGate`), and run once
+///   at the unlock the core's own lock notification reports. A resume while a renewal's
+///   sign-in is out waits for it, and a WebContent crash behind the lock reloads at the unlock.
 ///
 /// <module-headers:begin>
 /// Uses:
@@ -18,6 +21,8 @@
 /// ├── MachineView/WebViewFactory (inferred)
 /// ├── MachineViewCore/CookieInjector (inferred)
 /// ├── MachineViewCore/CookieSpec (inferred)
+/// ├── MachineViewCore/CoreAdapters (inferred)
+/// ├── MachineViewCore/LockGate (inferred)
 /// ├── MachineViewCore/Messages (inferred)
 /// ├── MachineViewCore/NavigationDelegate (inferred)
 /// ├── MachineViewCore/Outcomes (inferred)
@@ -39,9 +44,6 @@ import WebKit
 final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
     struct Target { let orgId: String, machineId: String, host: String, route: String? }
 
-    /// Phase 14 posts this when App Lock locks or unlocks (assumed name).
-    static let appLockChanged = Notification.Name("YaranAppLockStateChanged")
-
     let target: Target
     private let services: AppServices
     private let onClosed: (String, String?) -> Void
@@ -57,6 +59,8 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
     private var lastUrl: URL
     private var started = false
     private var closed = false
+    private var gate = LockGate()
+    private var locked: Bool { CoreBindings.appLock?.isLocked() == true }
 
     init(target: Target, services: AppServices, onClosed: @escaping (String, String?) -> Void) {
         self.target = target
@@ -87,8 +91,8 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
         webView.uiDelegate = uiDelegate
         wireNavigation()
         coordinator = RenewalCoordinator(clock: AppServices.now, scheduler: scheduler, session: { [weak self] in
-            guard let self, let s = try? self.services.sessions.get(self.target.host) else { return nil }
-            return (iat: s.iat, exp: s.exp)
+            guard let self, let stored = try? self.services.sessions.get(self.target.host) else { return nil }
+            return (iat: stored.iat, exp: stored.exp)
         }, ui: self, renew: { [weak self] done in
             guard let self else { return }
             self.services.handoff.signIn(orgId: self.target.orgId, request: .machine(host: self.target.host), completion: done)
@@ -97,7 +101,7 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
         center.addObserver(self, selector: #selector(willResignActive), name: UIApplication.willResignActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(didBecomeActive), name: UIApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(didEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
-        center.addObserver(self, selector: #selector(updateLockCover), name: Self.appLockChanged, object: nil)
+        center.addObserver(self, selector: #selector(lockStateDidChange), name: CoreAdapters.lockStateChanged, object: nil)
         registerForTraitChanges([UITraitSceneCaptureState.self]) { (self: Self, _: UITraitCollection) in self.updatePrivacyCover() }
     }
 
@@ -106,7 +110,7 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
         guard !started else { return }
         started = true
         updateLockCover()
-        open(context: .open)
+        run(gate.appeared(locked: locked))
     }
 
     private func wireNavigation() {
@@ -129,18 +133,29 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
             }
         }
         navigation.onContentProcessTerminated = { [weak self] in
-            self?.toast("renderer_crashed")
-            self?.loadCurrent()
+            // Behind the lock nothing loads: the gate's pending open or resume reloads at the unlock.
+            guard let self, !self.locked else { return }
+            self.toast("renderer_crashed")
+            self.loadCurrent()
         }
         navigation.onCommitted = { [weak self] url in self?.lastUrl = url }
     }
 
     // MARK: loading
 
+    private func run(_ step: LockGate.Step) {
+        switch step {
+        case .none: break
+        case .open: open(context: .open)
+        case .resume: open(context: .resume)
+        }
+    }
+
     private func open(context: RenewalContext) {
         let decision = context == .open ? coordinator.onOpen() : coordinator.onResume()
         switch decision {
         case .load: loadCurrent()
+        case .wait: break // back from Mail or an authenticator mid sign-in: that renewal reloads
         case .renewFirst:
             coordinator.renewNow { [weak self] outcome in
                 guard let self else { return }
@@ -154,9 +169,9 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
 
     /// Re-injects the cookie, then loads the page's last same-host URL.
     private func loadCurrent() {
-        inject { [weak self] ok in
+        inject { [weak self] injected in
             guard let self else { return }
-            if ok { self.webView.load(URLRequest(url: self.lastUrl)) } else { self.coordinator.onReauthSignal() }
+            if injected { self.webView.load(URLRequest(url: self.lastUrl)) } else { self.coordinator.onReauthSignal() }
         }
     }
 
@@ -168,9 +183,9 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
         if cookie.diagnostic { services.diagnostics?.append(diagLine("cookie rung without cookie field", [("host", target.host)])) }
         let store = webView.configuration.websiteDataStore.httpCookieStore
         Task { @MainActor in
-            let ok = await CookieInjector.inject(cookie, host: self.target.host, into: store)
-            if !ok { self.services.diagnostics?.append(diagLine("cookie not visible after inject", [("host", self.target.host)])) }
-            done(ok)
+            let visible = await CookieInjector.inject(cookie, host: self.target.host, into: store)
+            if !visible { self.services.diagnostics?.append(diagLine("cookie not visible after inject", [("host", self.target.host)])) }
+            done(visible)
         }
     }
 
@@ -191,14 +206,15 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
 
     private func showOverlay(_ key: String, extra: [String: String] = [:]) {
         overlay?.removeFromSuperview()
-        let o = OverlayView.overlay(key, vars: vars.merging(extra) { $1 }) { [weak self] action in self?.perform(action) }
-        view.pin(o)
-        overlay = o
+        let shown = OverlayView.overlay(key, vars: vars.merging(extra) { $1 }) { [weak self] action in self?.perform(action) }
+        view.pin(shown)
+        overlay = shown
         bringCoversToFront()
-        UIAccessibility.post(notification: .screenChanged, argument: o)
+        UIAccessibility.post(notification: .screenChanged, argument: shown)
     }
 
     private func perform(_ action: String) {
+        guard !locked else { return } // nothing behind the lock cover may act
         switch action {
         case "sign_in", "renew":
             coordinator.renewNow { [weak self] outcome in
@@ -216,25 +232,25 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
     private func toast(_ key: String) { view.toast(Messages.fill(Messages.overlay[key]?.message ?? key, vars)) }
 
     private func toastSignIn(_ outcome: SignInOutcome) {
-        var v = vars
-        if case .verificationFailed(let domain) = outcome { v["domain"] = domain }
-        if case .refused(let code) = outcome { v["code"] = code }
-        if case .deviceKeyRejected(let code, _) = outcome { v["code"] = code }
-        if case .decryptFailed(let code) = outcome { v["code"] = code }
-        view.toast(Messages.fill(Messages.signIn[outcome.kind]?.message ?? outcome.kind, v))
+        var values = vars
+        if case .verificationFailed(let domain) = outcome { values["domain"] = domain }
+        if case .refused(let code) = outcome { values["code"] = code }
+        if case .deviceKeyRejected(let code, _) = outcome { values["code"] = code }
+        if case .decryptFailed(let code) = outcome { values["code"] = code }
+        view.toast(Messages.fill(Messages.signIn[outcome.kind]?.message ?? outcome.kind, values))
     }
 
     // MARK: RenewalUi
 
     func showBanner() {
         guard banner == nil else { return }
-        let b = OverlayView.overlay("banner", vars: vars, style: .banner) { [weak self] action in self?.perform(action) }
-        view.addSubview(b)
+        let bannerView = OverlayView.overlay("banner", vars: vars, style: .banner) { [weak self] action in self?.perform(action) }
+        view.addSubview(bannerView)
         NSLayoutConstraint.activate([
-            b.topAnchor.constraint(equalTo: view.topAnchor), b.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            b.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bannerView.topAnchor.constraint(equalTo: view.topAnchor), bannerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bannerView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
-        banner = b
+        banner = bannerView
         bringCoversToFront()
     }
 
@@ -253,17 +269,30 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
         updatePrivacyCover()
         updateLockCover()
         guard started, !closed else { return }
-        open(context: .resume)
+        run(gate.becameActive(locked: locked))
     }
 
-    @objc private func didEnterBackground() { coordinator.onVisibilityChanged(false) }
+    @objc private func didEnterBackground() {
+        coordinator.onVisibilityChanged(false)
+        gate.enteredBackground()
+    }
 
-    @objc private func updateLockCover() {
-        let locked = CoreBindings.appLock?.isLocked() == true
+    /// Posted on whatever thread changed the lock (the unlock's Keychain read runs off main).
+    @objc private nonisolated func lockStateDidChange() {
+        Task { @MainActor [weak self] in self?.lockChanged() }
+    }
+
+    private func lockChanged() {
+        updateLockCover()
+        guard started, !closed else { return }
+        run(gate.lockChanged(locked: locked))
+    }
+
+    private func updateLockCover() {
         if locked, lockCover == nil {
-            let c = CoverView()
-            view.pin(c)
-            lockCover = c
+            let cover = CoverView()
+            view.pin(cover)
+            lockCover = cover
         } else if !locked {
             lockCover?.removeFromSuperview()
             lockCover = nil
@@ -275,12 +304,12 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
         setPrivacyCover(CoreBindings.screenPrivacy?.enabled() == true && capturing)
     }
 
-    private func setPrivacyCover(_ on: Bool) {
-        if on, privacyCover == nil {
-            let c = CoverView()
-            view.pin(c)
-            privacyCover = c
-        } else if !on {
+    private func setPrivacyCover(_ shown: Bool) {
+        if shown, privacyCover == nil {
+            let cover = CoverView()
+            view.pin(cover)
+            privacyCover = cover
+        } else if !shown {
             privacyCover?.removeFromSuperview()
             privacyCover = nil
         }
@@ -296,6 +325,8 @@ final class MachineViewController: UIViewController, @preconcurrency RenewalUi {
         guard !closed else { return }
         closed = true
         coordinator.onVisibilityChanged(false)
+        // Lifecycle and lock events must stop at close, not when the dismissal ends and deinit runs.
+        // swiftlint:disable:next notification_center_detachment
         NotificationCenter.default.removeObserver(self)
         webView.stopLoading()
         dismiss(animated: true) { [onClosed] in onClosed(reason, code) }
@@ -310,9 +341,9 @@ final class MainScheduler: @preconcurrency OneShotScheduler {
         func cancel() { timer?.invalidate() }
     }
 
-    func schedule(at: Int64, _ fire: @escaping () -> Void) -> Cancellable {
+    func schedule(at second: Int64, _ fire: @escaping () -> Void) -> Cancellable {
         let token = Token()
-        let delay = max(0, Double(at) - Date().timeIntervalSince1970)
+        let delay = max(0, Double(second) - Date().timeIntervalSince1970)
         token.timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
             MainActor.assumeIsolated { fire() }
         }

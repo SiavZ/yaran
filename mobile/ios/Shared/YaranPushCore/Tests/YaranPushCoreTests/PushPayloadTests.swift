@@ -17,20 +17,21 @@ import Testing
 
 @Suite struct PushPayloadTests {
     @Test func parseFixture() throws {
-        let cases = try Fixtures.json("push/payload-parse.json")["cases"] as! [[String: Any]]
-        for c in cases {
-            let parsed = PushPayload.parse(Data((c["utf8"] as! String).utf8))
-            let expectOk = c["expect"] as! String == "ok"
-            #expect((parsed != nil) == expectOk, "\(c["name"]!)")
+        let cases = try #require(Fixtures.json("push/payload-parse.json")["cases"] as? [[String: Any]])
+        for entry in cases {
+            let parsed = PushPayload.parse(Data(try #require(entry["utf8"] as? String).utf8))
+            let expectOk = try #require(entry["expect"] as? String) == "ok"
+            #expect((parsed != nil) == expectOk, "\(entry["name"]!)")
         }
     }
 
     @Test func everyEventFixtureParsesToItsFields() throws {
-        let cases = try Fixtures.json("push/payload-events.json")["cases"] as! [[String: Any]]
+        let cases = try #require(Fixtures.json("push/payload-events.json")["cases"] as? [[String: Any]])
         #expect(cases.count >= 18)
-        for c in cases {
-            let expected = c["payload"] as! [String: Any]
-            let parsed = try #require(PushPayload.parse(Data((c["serialized"] as! String).utf8)), "\(c["name"]!)")
+        for entry in cases {
+            let expected = try #require(entry["payload"] as? [String: Any])
+            let serialized = try #require(entry["serialized"] as? String)
+            let parsed = try #require(PushPayload.parse(Data(serialized.utf8)), "\(entry["name"]!)")
             let push = try #require(parsed.agent)
             #expect(push.machineId == expected["m"] as? String)
             #expect(push.agentId == expected["a"] as? String)
@@ -63,16 +64,17 @@ import Testing
     }
 
     @Test func topicFixture() throws {
-        let topics = try Fixtures.json("push/payload-topic.json")["topics"] as! [[String: Any]]
-        for t in topics {
-            let tab = t["t"] as? String
-            #expect(PushTopic.topic(machineId: t["m"] as! String, agentId: t["a"] as! String, tabId: tab) == t["topic"] as! String)
+        let topics = try #require(Fixtures.json("push/payload-topic.json")["topics"] as? [[String: Any]])
+        for topic in topics {
+            let tab = topic["t"] as? String
+            let built = PushTopic.topic(machineId: try #require(topic["m"] as? String), agentId: try #require(topic["a"] as? String), tabId: tab)
+            #expect(built == topic["topic"] as? String)
         }
     }
 
     @Test func twoAgentsSlotTabsOnOneMachineDiffer() {
-        let m = "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
-        #expect(PushTopic.topic(machineId: m, agentId: "a1", tabId: nil) != PushTopic.topic(machineId: m, agentId: "a2", tabId: nil))
+        let machine = "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b"
+        #expect(PushTopic.topic(machineId: machine, agentId: "a1", tabId: nil) != PushTopic.topic(machineId: machine, agentId: "a2", tabId: nil))
     }
 
     @Test func displayStripsControlAndBidi() {
@@ -84,10 +86,11 @@ import Testing
 
     @Test func relayWrappingFromTheFixture() throws {
         let wrapping = try Fixtures.json("push/relay-wrapping.json")
-        for c in wrapping["apns"] as! [[String: Any]] {
-            let relay = try #require(RelayWrapping(userInfo: c["payload"] as! [String: Any]))
-            #expect(relay.registrationId == wrapping["registration_id"] as! String)
-            #expect(relay.body == Fixtures.b64(wrapping["body_b64url"]))
+        for entry in try #require(wrapping["apns"] as? [[String: Any]]) {
+            let payload = try #require(entry["payload"] as? [String: Any])
+            let relay = try #require(RelayWrapping(userInfo: payload))
+            #expect(relay.registrationId == wrapping["registration_id"] as? String)
+            #expect(try relay.body == Fixtures.b64(wrapping["body_b64url"]))
         }
         #expect(RelayWrapping(userInfo: ["v": 2, "r": wrapping["registration_id"]!, "y": "AA"]) == nil)
         #expect(RelayWrapping(userInfo: ["v": 1, "r": "nope", "y": "AA"]) == nil)

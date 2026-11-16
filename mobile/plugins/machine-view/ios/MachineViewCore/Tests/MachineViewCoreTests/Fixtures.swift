@@ -51,8 +51,8 @@ enum Fixtures {
 extension Data {
     init(hex: String) {
         var out = Data()
-        var it = hex.makeIterator()
-        while let a = it.next(), let b = it.next() { out.append(UInt8(String([a, b]), radix: 16)!) }
+        var chars = hex.makeIterator()
+        while let high = chars.next(), let low = chars.next() { out.append(UInt8(String([high, low]), radix: 16)!) }
         self = out
     }
 

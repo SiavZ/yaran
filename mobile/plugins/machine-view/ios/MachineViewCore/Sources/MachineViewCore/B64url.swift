@@ -44,7 +44,7 @@ public enum B64url {
         return data
     }
 
-    private static func isAlphabet(_ c: UInt8) -> Bool {
-        (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39) || c == 0x2D || c == 0x5F
+    private static func isAlphabet(_ byte: UInt8) -> Bool {
+        (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A) || (byte >= 0x30 && byte <= 0x39) || byte == 0x2D || byte == 0x5F
     }
 }

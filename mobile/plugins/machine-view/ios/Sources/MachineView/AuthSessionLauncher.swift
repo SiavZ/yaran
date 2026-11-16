@@ -26,6 +26,7 @@ import UIKit
 @MainActor
 final class AuthSessionLauncher: NSObject, @preconcurrency HandoffLauncher, ASWebAuthenticationPresentationContextProviding {
     private var session: ASWebAuthenticationSession?
+    private var launches = 0
 
     func launch(url: URL, mode: CallbackMode, completion: @escaping (LauncherResult) -> Void) {
         let callback: ASWebAuthenticationSession.Callback
@@ -34,16 +35,19 @@ final class AuthSessionLauncher: NSObject, @preconcurrency HandoffLauncher, ASWe
         case .dev: callback = .customScheme("yaranapp")
         }
         session?.cancel()
-        let s = ASWebAuthenticationSession(url: url, callback: callback) { [weak self] callbackURL, error in
+        launches += 1
+        let id = launches
+        let authSession = ASWebAuthenticationSession(url: url, callback: callback) { [weak self] callbackURL, error in
             DispatchQueue.main.async {
-                self?.session = nil
+                // A replaced session's late cancel must not drop the newer one, which iOS needs held while it runs.
+                if self?.launches == id { self?.session = nil }
                 completion(Self.result(callbackURL, error))
             }
         }
-        s.presentationContextProvider = self
-        s.prefersEphemeralWebBrowserSession = HandoffClient.prefersEphemeralWebBrowserSession
-        session = s
-        if !s.start() {
+        authSession.presentationContextProvider = self
+        authSession.prefersEphemeralWebBrowserSession = HandoffClient.prefersEphemeralWebBrowserSession
+        session = authSession
+        if !authSession.start() {
             session = nil
             completion(.noBrowser)
         }
@@ -51,8 +55,8 @@ final class AuthSessionLauncher: NSObject, @preconcurrency HandoffLauncher, ASWe
 
     nonisolated static func result(_ url: URL?, _ error: Error?) -> LauncherResult {
         if let url { return .redirect(url) }
-        guard let e = error as? ASWebAuthenticationSessionError else { return .cancelled }
-        switch e.code {
+        guard let authError = error as? ASWebAuthenticationSessionError else { return .cancelled }
+        switch authError.code {
         case .canceledLogin: return .cancelled
         case .presentationContextNotProvided, .presentationContextInvalid: return .noBrowser
         @unknown default: return .cancelled

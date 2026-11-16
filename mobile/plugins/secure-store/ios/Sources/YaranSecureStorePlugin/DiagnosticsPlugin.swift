@@ -28,7 +28,7 @@ public class DiagnosticsPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "append", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "read", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "export", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "export", returnType: CAPPluginReturnPromise)
     ]
 
     @objc func append(_ call: CAPPluginCall) {

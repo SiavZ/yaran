@@ -4,7 +4,8 @@
  * Hosts the one bridge-enabled WebView (D9). Around Capacitor's own setup it draws edge to
  * edge, follows the system font size through the WebView's text zoom, applies screen privacy
  * before the first frame, and puts a native cover over the shell whenever the app lock is
- * engaged, prompting once when the lock engages and again on the cover's Unlock button.
+ * engaged, prompting once when the lock engages and again on the cover's Unlock button. The
+ * lock itself is moved by the app-wide foreground tracking, never by this Activity's own stop.
  *
  * - WebView debugging is on only in the `e2e` build type (Phase 19 hook H4).
  * - [textZoomFor] is the pure font-scale mapping the unit tests pin.
@@ -56,8 +57,14 @@ class MainActivity : BridgeActivity() {
     private val appLock by lazy { AppLock.shared(this) }
     private var cover: View? = null
     private var promptPending = false
-    private val onLockChanged: (Boolean) -> Unit = { locked -> runOnUiThread { showCover(locked) } }
+    private val onLockChanged: (Boolean) -> Unit = { locked ->
+        runOnUiThread {
+            showCover(locked)
+            promptPending = locked
+        }
+    }
 
+    // YaranApplication's AppLock.trackActivities moves the lock; this Activity only shows it.
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         ScreenPrivacy.install(this)
@@ -71,17 +78,10 @@ class MainActivity : BridgeActivity() {
 
     override fun onResume() {
         super.onResume()
-        val wasLocked = appLock.locked
-        if (appLock.onForeground() && !wasLocked) promptPending = true
         if (promptPending) {
             promptPending = false
-            unlock()
+            if (appLock.locked) unlock()
         }
-    }
-
-    override fun onStop() {
-        super.onStop()
-        if (!isChangingConfigurations) appLock.onBackground()
     }
 
     override fun onDestroy() {

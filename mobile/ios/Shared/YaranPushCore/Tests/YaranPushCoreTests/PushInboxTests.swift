@@ -26,16 +26,16 @@ import Testing
     var inbox: PushInbox { PushInbox(subscriptions: store, state: state, builder: NotificationContentBuilder(localize: { $0.english })) }
 
     func subscribe(_ org: String) throws -> PushSubscription {
-        let s = try store.mint(orgId: org)
-        try store.save(s)
+        let subscription = try store.mint(orgId: org)
+        try store.save(subscription)
         state.setDirectory(OrgDirectory(orgName: org, machines: [machine: "box-\(org)"]), orgId: org)
-        return s
+        return subscription
     }
 
-    func relayPush(_ json: String, to s: PushSubscription, alert: Bool = true) throws -> [AnyHashable: Any] {
-        let body = try TestEncryptor.encrypt(Data(json.utf8), uaPublic: s.agreementKey().publicKey, authSecret: s.authSecret)
+    func relayPush(_ json: String, to subscription: PushSubscription, alert: Bool = true) throws -> [AnyHashable: Any] {
+        let body = try TestEncryptor.encrypt(Data(json.utf8), uaPublic: subscription.agreementKey().publicKey, authSecret: subscription.authSecret)
         let aps: [String: Any] = alert ? ["alert": ["title-loc-key": "PUSH_GENERIC_TITLE", "loc-key": "PUSH_GENERIC_BODY"], "mutable-content": 1] : ["content-available": 1]
-        return ["aps": aps, "v": 1, "r": s.registrationId, "y": Base64URL.encode(body)]
+        return ["aps": aps, "v": 1, "r": subscription.registrationId, "y": Base64URL.encode(body)]
     }
 
     let raised = #"{"v":1,"k":"attention_raised","m":"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b","a":"agent-1","s":"needs_attention","p":"yaran","l":"fix the tests","ts":1731571200}"#
@@ -43,74 +43,75 @@ import Testing
 
     @Test func selectsTheOrgByRegistrationIdAmongThree() throws {
         let subs = try ["org-a", "org-b", "org-c"].map(subscribe)
-        for s in subs {
-            guard case let .show(content) = inbox.alertOutcome(userInfo: try relayPush(raised, to: s), now: now) else {
-                Issue.record("no content for \(s.orgId)"); continue
+        for subscription in subs {
+            guard case let .show(content) = inbox.alertOutcome(userInfo: try relayPush(raised, to: subscription), now: now) else {
+                Issue.record("no content for \(subscription.orgId)"); continue
             }
-            #expect(content.userInfo["org"] == s.orgId)
-            #expect(content.body == "yaran · box-\(s.orgId)")
+            #expect(content.userInfo["org"] == subscription.orgId)
+            #expect(content.body == "yaran · box-\(subscription.orgId)")
         }
     }
 
     @Test func unknownRegistrationKeepsTheGenericAlert() throws {
         _ = try subscribe("org-a")
         let wrapping = try Fixtures.json("push/relay-wrapping.json")
-        for c in wrapping["apns"] as! [[String: Any]] {
-            #expect(inbox.alertOutcome(userInfo: c["payload"] as! [String: Any], now: now) == .keepGeneric(.unknownRegistration))
+        for entry in try #require(wrapping["apns"] as? [[String: Any]]) {
+            let payload = try #require(entry["payload"] as? [String: Any])
+            #expect(inbox.alertOutcome(userInfo: payload, now: now) == .keepGeneric(.unknownRegistration))
         }
     }
 
     @Test func corruptedCiphertextKeepsTheGenericAlert() throws {
-        let s = try subscribe("org-a")
-        var info = try relayPush(raised, to: s)
-        var body = Base64URL.decode(info["y"] as! String)!
+        let subscription = try subscribe("org-a")
+        var info = try relayPush(raised, to: subscription)
+        var body = try #require((info["y"] as? String).flatMap { Base64URL.decode($0) })
         body[body.count - 3] ^= 0x40
         info["y"] = Base64URL.encode(body)
         #expect(inbox.alertOutcome(userInfo: info, now: now) == .keepGeneric(.decryptFailed))
     }
 
     @Test func anotherOrgsKeysCannotDecrypt() throws {
-        let a = try subscribe("org-a")
-        let b = try subscribe("org-b")
-        var info = try relayPush(raised, to: a)
-        info["r"] = b.registrationId
+        let first = try subscribe("org-a")
+        let second = try subscribe("org-b")
+        var info = try relayPush(raised, to: first)
+        info["r"] = second.registrationId
         #expect(inbox.alertOutcome(userInfo: info, now: now) == .keepGeneric(.decryptFailed))
     }
 
     @Test func invalidPayloadAndNonRelayPush() throws {
-        let s = try subscribe("org-a")
-        #expect(inbox.alertOutcome(userInfo: try relayPush(#"{"v":2}"#, to: s), now: now) == .keepGeneric(.payloadInvalid))
+        let subscription = try subscribe("org-a")
+        #expect(inbox.alertOutcome(userInfo: try relayPush(#"{"v":2}"#, to: subscription), now: now) == .keepGeneric(.payloadInvalid))
         #expect(inbox.alertOutcome(userInfo: ["aps": [:]], now: now) == .keepGeneric(.notRelayPush))
     }
 
     @Test func mutedMachineIsPassive() throws {
-        let s = try subscribe("org-a")
+        let subscription = try subscribe("org-a")
         state.setMutes(LocalMutes(mutedMachineIds: [machine]), orgId: "org-a")
-        guard case let .show(content) = inbox.alertOutcome(userInfo: try relayPush(raised, to: s), now: now) else {
+        guard case let .show(content) = inbox.alertOutcome(userInfo: try relayPush(raised, to: subscription), now: now) else {
             Issue.record("expected content"); return
         }
         #expect(content.interruption == .passive)
     }
 
     @Test func clearedAlertIsPassiveOrSuppressed() throws {
-        let s = try subscribe("org-a")
-        guard case let .show(content) = inbox.alertOutcome(userInfo: try relayPush(cleared, to: s), now: now) else {
+        let subscription = try subscribe("org-a")
+        guard case let .show(content) = inbox.alertOutcome(userInfo: try relayPush(cleared, to: subscription), now: now) else {
             Issue.record("expected content"); return
         }
         #expect(content.interruption == .passive)
         #expect(content.title == "An agent no longer needs you")
         state.filteringEnabled = true
-        #expect(inbox.alertOutcome(userInfo: try relayPush(cleared, to: s), now: now) == .suppress)
+        #expect(inbox.alertOutcome(userInfo: try relayPush(cleared, to: subscription), now: now) == .suppress)
     }
 
     @Test func backgroundClearNamesTheDeliveriesToRemove() throws {
-        let s = try subscribe("org-a")
-        let filter = try #require(inbox.clearFilter(userInfo: try relayPush(cleared, to: s, alert: false)))
+        let subscription = try subscribe("org-a")
+        let filter = try #require(inbox.clearFilter(userInfo: try relayPush(cleared, to: subscription, alert: false)))
         #expect(filter == DeliveredFilter(orgId: "org-a", machineId: machine, agentId: "agent-1", tab: .exactly("t2")))
         #expect(filter.matches(["org": "org-a", "machine": machine, "agent": "agent-1", "tab": "t2"]))
         #expect(filter.matches(["org": "org-a", "machine": machine, "agent": "agent-1"]) == false)
         #expect(filter.matches(["org": "org-b", "machine": machine, "agent": "agent-1", "tab": "t2"]) == false)
-        #expect(inbox.clearFilter(userInfo: try relayPush(raised, to: s, alert: false)) == nil)
+        #expect(inbox.clearFilter(userInfo: try relayPush(raised, to: subscription, alert: false)) == nil)
     }
 
     @Test func agentOpenFilterClearsEveryTab() {

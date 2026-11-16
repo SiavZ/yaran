@@ -27,6 +27,8 @@ public enum HostRefusal: String, Sendable, CaseIterable {
 }
 
 public enum HostRulesResult: Equatable, Sendable {
+    // `ok` is the shared host-rules fixtures' key for an accepted URL.
+    // swiftlint:disable:next identifier_name
     case ok(String)
     case refused(HostRefusal)
 }

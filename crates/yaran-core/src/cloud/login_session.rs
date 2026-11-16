@@ -9,6 +9,9 @@
 //!
 //! - The callback runs on the login thread; it must not block for long.
 //! - Dropping the handle does not cancel; call `cancel`.
+//! - Cancel and the claim are one atomic race: `cancel` returns `false` once the login
+//!   has committed to sending its claim, and then its own final is the truth (a front
+//!   end must not report the login as cancelled).
 //!
 //! <module-headers:begin>
 //! Uses:
@@ -28,7 +31,7 @@
 //! └── yaran-web::cloud_routes
 //! <module-headers:end>
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -50,11 +53,15 @@ pub enum LoginEvent {
     Finished(LoginOutcome),
 }
 
+const RUNNING: u8 = 0;
+const CANCELLED: u8 = 1;
+const COMMITTED: u8 = 2;
+
 /// Controls one running login.
 #[derive(Clone)]
 pub struct LoginHandle {
     paste: Sender<String>,
-    cancel: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
 }
 
 impl LoginHandle {
@@ -63,13 +70,20 @@ impl LoginHandle {
         let _ = self.paste.send(address);
     }
 
-    /// Stop waiting; the login finishes with `LoginCancelled` within one poll.
-    pub fn cancel(&self) {
-        self.cancel.store(true, Ordering::SeqCst);
+    /// Stop the login; it finishes with `LoginCancelled` and changes nothing. Returns
+    /// `false` when it already committed to sending its claim; its own final follows.
+    pub fn cancel(&self) -> bool {
+        match self
+            .state
+            .compare_exchange(RUNNING, CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            Ok(_) => true,
+            Err(now) => now == CANCELLED,
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancel.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst) == CANCELLED
     }
 }
 
@@ -78,7 +92,7 @@ type Sink = Arc<Mutex<Box<dyn FnMut(LoginEvent) + Send>>>;
 struct ThreadIo {
     sink: Sink,
     paste: Option<Receiver<String>>,
-    cancel: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
 }
 
 impl ThreadIo {
@@ -109,7 +123,13 @@ impl LoginIo for ThreadIo {
     }
 
     fn cancelled(&mut self) -> bool {
-        self.cancel.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst) == CANCELLED
+    }
+
+    fn commit(&mut self) -> bool {
+        self.state
+            .compare_exchange(RUNNING, COMMITTED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
     }
 
     fn progress(&mut self, step: LoginStep) {
@@ -123,12 +143,12 @@ pub fn spawn_login(
     on_event: impl FnMut(LoginEvent) + Send + 'static,
 ) -> LoginHandle {
     let (paste_tx, paste_rx) = mpsc::channel();
-    let cancel = Arc::new(AtomicBool::new(false));
+    let state = Arc::new(AtomicU8::new(RUNNING));
     let sink: Sink = Arc::new(Mutex::new(Box::new(on_event)));
     let mut io = ThreadIo {
         sink: Arc::clone(&sink),
         paste: Some(paste_rx),
-        cancel: Arc::clone(&cancel),
+        state: Arc::clone(&state),
     };
     std::thread::Builder::new()
         .name("yaran-cloud-login".into())
@@ -139,7 +159,7 @@ pub fn spawn_login(
         .expect("spawn the cloud login thread");
     LoginHandle {
         paste: paste_tx,
-        cancel,
+        state,
     }
 }
 
@@ -189,12 +209,39 @@ mod tests {
         assert!(authorize.url.contains("/v1/pair/authorize?"));
         assert_eq!(authorize.org_name, "Example Org");
         handle.paste("http://127.0.0.1:1/callback".into());
-        handle.cancel();
+        assert!(handle.cancel());
         let finished = loop {
             if let LoginEvent::Finished(o) = rx.recv_timeout(Duration::from_secs(10)).unwrap() {
                 break o;
             }
         };
         assert_eq!(finished, CloudActionOutcome::LoginCancelled);
+        assert!(
+            handle.is_cancelled() && handle.cancel(),
+            "cancel is idempotent"
+        );
+    }
+
+    #[test]
+    fn cancel_and_commit_exclude_each_other() {
+        let state = Arc::new(AtomicU8::new(RUNNING));
+        let handle = LoginHandle {
+            paste: mpsc::channel().0,
+            state: Arc::clone(&state),
+        };
+        let mut io = ThreadIo {
+            sink: Arc::new(Mutex::new(Box::new(|_| {}))),
+            paste: None,
+            state: Arc::clone(&state),
+        };
+        assert!(io.commit());
+        assert!(
+            !handle.cancel(),
+            "a committed login can no longer be cancelled"
+        );
+        assert!(!handle.is_cancelled() && !io.cancelled());
+        state.store(RUNNING, Ordering::SeqCst);
+        assert!(handle.cancel());
+        assert!(!io.commit(), "a cancelled login never commits");
     }
 }

@@ -54,9 +54,9 @@ public class SessionPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func status(_ call: CAPPluginCall) {
         let host = call.getString("host") ?? ""
         DispatchQueue.main.async {
-            let s = AppServices.shared.sessions.status(host, now: AppServices.now())
-            var out: [String: Any] = ["signedIn": s.signedIn]
-            if let exp = s.expiresAt { out["expiresAt"] = exp }
+            let status = AppServices.shared.sessions.status(host, now: AppServices.now())
+            var out: [String: Any] = ["signedIn": status.signedIn]
+            if let exp = status.expiresAt { out["expiresAt"] = exp }
             call.resolve(out)
         }
     }
@@ -86,9 +86,9 @@ public class SessionPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let orgId = call.getString("orgId"), !orgId.isEmpty else { return call.reject("orgId is required", "invalid_argument") }
         let hosts = (call.getArray("hosts") ?? []).compactMap { $0 as? String }.filter { Pattern.hostname.matches($0) }
         DispatchQueue.main.async {
-            let s = AppServices.shared
+            let services = AppServices.shared
             do {
-                try s.sessions.wipe(orgId: orgId, extraHosts: hosts, deviceKeys: s.deviceKeys, cleaner: s.cleaner)
+                try services.sessions.wipe(orgId: orgId, extraHosts: hosts, deviceKeys: services.deviceKeys, cleaner: services.cleaner)
                 call.resolve()
             } catch {
                 call.reject("Unlock the app to sign out.", "vault_locked")

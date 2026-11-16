@@ -32,7 +32,7 @@ public enum CookieInjector {
     public static func httpCookie(host: String, value: String) -> HTTPCookie? {
         HTTPCookie(properties: [
             .name: CookieSpec.name, .value: value, .domain: host, .path: "/", .secure: "TRUE",
-            .discard: "TRUE", .sameSitePolicy: HTTPCookieStringPolicy.sameSiteLax, httpOnlyKey: "TRUE",
+            .discard: "TRUE", .sameSitePolicy: HTTPCookieStringPolicy.sameSiteLax, httpOnlyKey: "TRUE"
         ])
     }
 
@@ -52,8 +52,8 @@ public enum CookieInjector {
 
     /// Deletes `CF_Authorization` and `CF_AppSession` for `host`.
     public static func clear(host: String, in store: WKHTTPCookieStore) async {
-        for c in await store.allCookies() where c.domain == host && CookieSpec.clearNames.contains(c.name) {
-            await store.deleteCookie(c)
+        for cookie in await store.allCookies() where cookie.domain == host && CookieSpec.clearNames.contains(cookie.name) {
+            await store.deleteCookie(cookie)
         }
     }
 

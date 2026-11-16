@@ -27,6 +27,7 @@
  * ├── io.github.siavz.yaran.machineview.RenewalCoordinator (inferred)
  * ├── io.github.siavz.yaran.machineview.RenewalCoordinatorTest (inferred)
  * ├── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
+ * ├── io.github.siavz.yaran.machineview.SignInLockRobolectricTest (inferred)
  * └── io.github.siavz.yaran.machineview.StoresTest (inferred)
  * <module-headers:end>
  */

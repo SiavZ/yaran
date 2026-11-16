@@ -21,23 +21,23 @@ import Foundation
 
 public enum RouteFragment {
     private static let seg = "((?:[A-Za-z0-9\\-_.!~*'()]|%[0-9A-Fa-f]{2})+)"
-    private static let re = Pattern("#/agent/" + seg + "(?:/tab/" + seg + ")?")
+    private static let routePattern = Pattern("#/agent/" + seg + "(?:/tab/" + seg + ")?")
 
     public static func isValid(_ route: String) -> Bool {
-        guard let g = re.groups(route), let sid = g[0] else { return false }
-        return segmentOk(sid) && (g[1].map(segmentOk) ?? true)
+        guard let groups = routePattern.groups(route), let sid = groups[0] else { return false }
+        return segmentOk(sid) && (groups[1].map(segmentOk) ?? true)
     }
 
     private static func segmentOk(_ raw: String) -> Bool {
         var bytes: [UInt8] = []
-        var it = Array(raw.utf8)[...]
-        while let c = it.popFirst() {
-            if c == UInt8(ascii: "%") {
-                guard it.count >= 2, let b = UInt8(String(decoding: it.prefix(2), as: UTF8.self), radix: 16) else { return false }
-                bytes.append(b)
-                it = it.dropFirst(2)
+        var rest = Array(raw.utf8)[...]
+        while let byte = rest.popFirst() {
+            if byte == UInt8(ascii: "%") {
+                guard rest.count >= 2, let hex = String(bytes: rest.prefix(2), encoding: .utf8), let decoded = UInt8(hex, radix: 16) else { return false }
+                bytes.append(decoded)
+                rest = rest.dropFirst(2)
             } else {
-                bytes.append(c)
+                bytes.append(byte)
             }
         }
         return (1...128).contains(bytes.count) && bytes.allSatisfy { $0 >= 0x20 && $0 <= 0x7E }

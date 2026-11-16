@@ -27,7 +27,7 @@ private let fixtures = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().appendingPathComponent("cloud/protocol")
 
 private func load(_ path: String) throws -> [String: Any] {
-    try JSONSerialization.jsonObject(with: Data(contentsOf: fixtures.appendingPathComponent(path))) as! [String: Any]
+    try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixtures.appendingPathComponent(path))) as? [String: Any])
 }
 
 private let vapid = "BGuXrBERTW6sUC8-SWAenyGmbmQg3GyikfpRKoD9PWtulg4KijYaQ6d6wd5EVYTC12m3K0K5IRf66r20urk2rG0"
@@ -36,6 +36,8 @@ private let app = AppInfo(bundleId: "com.example.yaran", flavor: "appstore", app
 private let meta: [String: Any] = ["service": "yaran-push-relay", "protocol": ["min": 1, "max": 1], "apps": ["com.example.yaran"], "channels": ["apns"], "endpoint_key_id": "k1"]
 private let endpoint = "https://relay.example.com/w/v1.k1.AAAAAAAAAAAAAAAAAAAAAAAA"
 
+// The stubbed mint reply is a (status, headers, body) literal, as StubURLProtocol takes it.
+// swiftlint:disable:next large_tuple
 private func relayHandler(meta: [String: Any] = meta, mint: (Int, [String: String], Data) = (201, [:], json(["endpoint": endpoint]))) {
     StubURLProtocol.handler = { request in
         request.url!.path.hasSuffix("/v1/meta") ? (200, [:], json(meta)) : mint
@@ -61,13 +63,14 @@ extension RelayStubbed {
 
     @Test func mintsWithTheExact02Body() async throws {
         relayHandler()
-        let c = try client()
-        #expect(try await c.endpointKeyId(channel: .apns) == "k1")
-        let fixture = (try load("fixtures/api/ApnsMintRequest.json")["valid"] as! [[String: Any]])[0]["value"] as! [String: String]
-        let body = c.apnsMintBody(token: token, environment: "production", vapidPublicKey: vapid, registrationId: "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b")
+        let relayClient = try client()
+        #expect(try await relayClient.endpointKeyId(channel: .apns) == "k1")
+        let valid = try #require(load("fixtures/api/ApnsMintRequest.json")["valid"] as? [[String: Any]])
+        let fixture = try #require(valid.first?["value"] as? [String: String])
+        let body = relayClient.apnsMintBody(token: token, environment: "production", vapidPublicKey: vapid, registrationId: "3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b")
         #expect(body == fixture)
-        #expect(try await c.mint(body: body) == endpoint)
-        let sent = try JSONSerialization.jsonObject(with: StubURLProtocol.requests.last!.httpBody!) as! [String: String]
+        #expect(try await relayClient.mint(body: body) == endpoint)
+        let sent = try #require(JSONSerialization.jsonObject(with: StubURLProtocol.requests.last!.httpBody!) as? [String: String])
         #expect(sent == fixture)
         #expect(StubURLProtocol.requests.last!.httpMethod == "POST")
     }
@@ -118,16 +121,16 @@ extension RelayStubbed {
 
     /// The body has exactly 02's `DeviceRegistration` fields and the schema's id patterns.
     func assertMatchesSchema(_ body: [String: Any]) throws {
-        let defs = try load("schemas/devices.schema.json")["$defs"] as! [String: Any]
-        let registration = defs["DeviceRegistration"] as! [String: Any]
-        let required = Set(registration["required"] as! [String])
-        let allowed = Set((registration["properties"] as! [String: Any]).keys)
+        let defs = try #require(load("schemas/devices.schema.json")["$defs"] as? [String: Any])
+        let registration = try #require(defs["DeviceRegistration"] as? [String: Any])
+        let required = Set(try #require(registration["required"] as? [String]))
+        let allowed = Set(try #require(registration["properties"] as? [String: Any]).keys)
         #expect(required.isSubset(of: Set(body.keys)))
         #expect(Set(body.keys).isSubset(of: allowed))
         #expect(body["muted_until"] as? String == "2024-11-14T08:00:00Z")
-        let push = body["push"] as! [String: Any]
+        let push = try #require(body["push"] as? [String: Any])
         if push["kind"] as? String == "webpush" {
-            let keys = push["keys"] as! [String: String]
+            let keys = try #require(push["keys"] as? [String: String])
             #expect(keys["p256dh"]!.range(of: "^B[A-Za-z0-9_-]{85}[AEIMQUYcgkosw048]$", options: .regularExpression) != nil)
             #expect(keys["auth"]!.range(of: "^[A-Za-z0-9_-]{21}[AQgw]$", options: .regularExpression) != nil)
             #expect(Set(push.keys) == ["kind", "channel", "endpoint", "keys"])
@@ -144,8 +147,8 @@ extension RelayStubbed {
         try assertMatchesSchema(body)
         #expect(body["device_key"] as? String == api.deviceKey)
         #expect(body["platform"] as? String == "ios")
-        #expect((body["push"] as! [String: Any])["endpoint"] as? String == endpoint)
-        #expect((body["push"] as! [String: Any])["channel"] as? String == "apns_relay")
+        #expect((body["push"] as? [String: Any])?["endpoint"] as? String == endpoint)
+        #expect((body["push"] as? [String: Any])?["channel"] as? String == "apns_relay")
         #expect(try store.load(orgId: "org-1")?.endpointKeyId == "k1")
     }
 
@@ -156,7 +159,7 @@ extension RelayStubbed {
         guard case .ok = outcome else { Issue.record("\(outcome)"); return }
         let body = try #require(api.bodies.last)
         try assertMatchesSchema(body)
-        #expect((body["push"] as! [String: Any])["kind"] as? String == "none")
+        #expect((body["push"] as? [String: Any])?["kind"] as? String == "none")
         #expect(body["device_key"] as? String == api.deviceKey)
         #expect(try store.load(orgId: "org-1") == nil)
     }

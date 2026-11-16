@@ -172,7 +172,7 @@ mod tests {
         let paths = CloudPaths::from_root(tmp.path());
         let (status, _) = body(phone_qr_response(Some(&paths))).await;
         assert_eq!(status, StatusCode::CONFLICT, "unpaired");
-        pair_sample(&paths, SAMPLE_ORG);
+        let creds = pair_sample(&paths, SAMPLE_ORG);
         let (status, text) = body(phone_qr_response(Some(&paths))).await;
         assert_eq!(status, StatusCode::OK, "{text}");
         let v: serde_json::Value = serde_json::from_str(&text).expect("json");
@@ -182,7 +182,7 @@ mod tests {
             (Some(SAMPLE_ORG), Some(uri.as_str()))
         );
         assert_eq!(v["svg"], qr.to_svg(MODULE_PX));
-        credentials::stamp_revoked(&paths).unwrap();
+        credentials::stamp_revoked(&paths, &creds).unwrap();
         let (status, _) = body(phone_qr_response(Some(&paths))).await;
         assert_eq!(status, StatusCode::CONFLICT, "revoked reads as unpaired");
     }

@@ -33,12 +33,15 @@ public enum HandoffTarget: Equatable {
     }
 }
 
+// The fields are the handoff query parameter names (Phase 02).
+// swiftlint:disable identifier_name
 public struct HandoffParams: Equatable {
     public let pk: String, state: String, device: String, dk: String, dts: Int64, dsig: String
     public init(pk: String, state: String, device: String, dk: String, dts: Int64, dsig: String) {
         (self.pk, self.state, self.device, self.dk, self.dts, self.dsig) = (pk, state, device, dk, dts, dsig)
     }
 }
+// swiftlint:enable identifier_name
 
 public enum HandoffUrl {
     public static let devRedirect = "yaranapp://auth/callback"
@@ -58,18 +61,18 @@ public enum HandoffUrl {
         }
         var pairs: [(String, String)] = [
             ("v", "1"), ("pk", params.pk), ("state", params.state), ("redirect", redirect(mode)),
-            ("device", params.device), ("dk", params.dk), ("dts", String(params.dts)), ("dsig", params.dsig),
+            ("device", params.device), ("dk", params.dk), ("dts", String(params.dts)), ("dsig", params.dsig)
         ]
         if case .dev = mode { pairs.append(("build", "dev")) }
         if fragment { pairs.append(("mode", "fragment")) }
         return base + "?" + pairs.map { "\($0.0)=\(encode($0.1))" }.joined(separator: "&")
     }
 
-    static func encode(_ s: String) -> String {
+    static func encode(_ text: String) -> String {
         var out = ""
-        for b in s.utf8 {
-            let c = Character(Unicode.Scalar(b))
-            if b < 0x80 && (c.isLetter || c.isNumber || "-_.~".contains(c)) { out.append(c) } else { out += String(format: "%%%02X", b) }
+        for byte in text.utf8 {
+            let char = Character(Unicode.Scalar(byte))
+            if byte < 0x80 && (char.isLetter || char.isNumber || "-_.~".contains(char)) { out.append(char) } else { out += String(format: "%%%02X", byte) }
         }
         return out
     }

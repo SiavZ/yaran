@@ -44,7 +44,7 @@ public enum Messages {
         "not_owner": Row(message: "{email} isn't the owner of {machine}.", actions: ["back_to_machines"]),
         "offline": Row(message: "No connection. Check your network and try again.", actions: ["retry"]),
         "tls_error": Row(message: "The connection to {host} isn't secure, so the app stopped.", actions: ["back"]),
-        "vault_locked": Row(message: "Unlock the app to sign in.", actions: ["unlock"]),
+        "vault_locked": Row(message: "Unlock the app to sign in.", actions: ["unlock"])
     ]
 
     public static let overlay: [String: Row] = [
@@ -58,7 +58,7 @@ public enum Messages {
         "tls_error": Row(message: "The connection to {host} isn't secure, so the app stopped.", actions: ["back_to_machines"]),
         "banner": Row(message: "Your session for {machine} ends in 10 minutes", actions: ["renew"]),
         "download_refused": Row(message: "Downloads aren't supported in the app. Open it in the yaran web UI on your computer.", actions: []),
-        "renderer_crashed": Row(message: "The page crashed and was reloaded", actions: []),
+        "renderer_crashed": Row(message: "The page crashed and was reloaded", actions: [])
     ]
 
     public static func fill(_ template: String, _ vars: [String: String]) -> String {

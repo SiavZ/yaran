@@ -70,6 +70,11 @@ pub fn says_revoked(err: &MachineApiError) -> bool {
 pub trait MachineLink: Send {
     /// The paired org's name, read from the credentials now; `None` when unpaired.
     fn org_name(&mut self) -> Option<String>;
+    /// Which pairing answers belong to, read now (`None`: unpaired). When it changes the
+    /// emitter forgets everything it knew for the old pairing, revocation included.
+    fn pairing_key(&mut self) -> Option<String> {
+        self.org_name()
+    }
     fn machine_config(&mut self) -> Result<MachineConfig, MachineApiError>;
     fn post_events(&mut self, batch: &EventBatch) -> Result<EventBatchResult, MachineApiError>;
     /// Raise the process-wide `RevocationSignal` (the cloud leg stops on it).
@@ -96,6 +101,13 @@ impl MachineLink for PairedLink {
             .ok()
             .flatten()
             .map(|c| c.org_name)
+    }
+
+    fn pairing_key(&mut self) -> Option<String> {
+        credentials::read(&self.paths)
+            .ok()
+            .flatten()
+            .map(|c| format!("{} {}", c.org_url, c.machine_id))
     }
 
     fn machine_config(&mut self) -> Result<MachineConfig, MachineApiError> {

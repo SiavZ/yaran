@@ -231,3 +231,183 @@ fn push_emitter_off_drops_offers_without_a_thread() {
     assert_eq!(built.load(Ordering::SeqCst), 0);
     assert!(calls.lock().unwrap().batches.is_empty());
 }
+
+/// A link whose pairing and answers a test changes while the thread runs.
+#[derive(Clone, Default)]
+struct Scripted {
+    pairing: Arc<Mutex<Option<String>>>,
+    pair_on_post: Arc<Mutex<Option<String>>>,
+    revocations: Arc<AtomicUsize>,
+    /// Answers for the next posts, in order; an empty script accepts.
+    answers: Arc<Mutex<std::collections::VecDeque<MachineApiError>>>,
+    batches: Arc<Mutex<Vec<EventBatch>>>,
+    configs: Arc<AtomicUsize>,
+    /// Every thread iteration reads the pairing once, so this counts wake-ups.
+    pairing_reads: Arc<AtomicUsize>,
+}
+
+impl MachineLink for Scripted {
+    fn org_name(&mut self) -> Option<String> {
+        self.pairing.lock().unwrap().as_ref().map(|_| "acme".into())
+    }
+    fn pairing_key(&mut self) -> Option<String> {
+        self.pairing_reads.fetch_add(1, Ordering::SeqCst);
+        self.pairing.lock().unwrap().clone()
+    }
+    fn machine_config(&mut self) -> Result<MachineConfig, MachineApiError> {
+        self.configs.fetch_add(1, Ordering::SeqCst);
+        Err(MachineApiError::Network("no config in this fake".into()))
+    }
+    fn post_events(&mut self, batch: &EventBatch) -> Result<EventBatchResult, MachineApiError> {
+        self.batches.lock().unwrap().push(batch.clone());
+        if let Some(pairing) = self.pair_on_post.lock().unwrap().take() {
+            *self.pairing.lock().unwrap() = Some(pairing);
+        }
+        if let Some(err) = self.answers.lock().unwrap().pop_front() {
+            return Err(err);
+        }
+        let ids = batch.events.iter().map(|e| match e {
+            Event::Attention(a) => a.id.clone(),
+            Event::Exit(x) => x.id.clone(),
+        });
+        Ok(EventBatchResult {
+            accepted: ids.collect(),
+            duplicates: Vec::new(),
+            push_enabled: true,
+        })
+    }
+    fn report_revoked(&mut self) {
+        self.revocations.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn scripted(link: &Scripted, coalesce: Duration) -> PushEmitter {
+    let link = link.clone();
+    let settings = PushSettings { coalesce, ..on() };
+    PushEmitter::with_link(settings, None, Arc::new(move || Box::new(link.clone())))
+}
+
+fn agents(batch: &EventBatch) -> Vec<String> {
+    batch
+        .events
+        .iter()
+        .map(|e| match e {
+            Event::Attention(a) => a.agent_id.clone(),
+            Event::Exit(x) => x.agent_id.clone(),
+        })
+        .collect()
+}
+
+#[test]
+fn push_emitter_sleeps_through_coalescing_and_backoff() {
+    let link = Scripted::default();
+    *link.pairing.lock().unwrap() = Some("machine-a".into());
+    link.answers
+        .lock()
+        .unwrap()
+        .push_back(MachineApiError::Server {
+            status: 503,
+            retry_after: Some(10),
+        });
+    let mut e = scripted(&link, Duration::from_millis(600));
+    e.offer(attention("a", AttentionKind::AttentionRaised));
+    // Inside the coalescing window: the earlier send gates must not wake it up.
+    let reads = link.pairing_reads.load(Ordering::SeqCst);
+    thread::sleep(Duration::from_millis(300));
+    let woke = link.pairing_reads.load(Ordering::SeqCst) - reads;
+    assert!(woke <= 3, "spun {woke} times while coalescing");
+    wait_for(|| link.batches.lock().unwrap().len() == 1);
+    // Inside a ten-second Retry-After: the entry is due, but the backoff is not over.
+    let reads = link.pairing_reads.load(Ordering::SeqCst);
+    thread::sleep(Duration::from_millis(400));
+    let woke = link.pairing_reads.load(Ordering::SeqCst) - reads;
+    assert!(woke <= 3, "spun {woke} times during backoff");
+    assert_eq!(link.batches.lock().unwrap().len(), 1);
+    e.retune(PushSettings::off());
+}
+
+#[test]
+fn wake_in_waits_for_every_send_gate() {
+    use crate::cloud::push_runner::wake_in;
+    let now = Instant::now();
+    let ms = Duration::from_millis;
+    // Coalescing: the entry is due later, the minimum interval already passed.
+    assert_eq!(
+        wake_in(now, Some(now + ms(400)), None, now - ms(5)),
+        ms(400)
+    );
+    // Backoff: due already, retry later.
+    assert_eq!(wake_in(now, Some(now), Some(now + ms(700)), now), ms(700));
+    // Minimum interval: due already, next send later.
+    assert_eq!(
+        wake_in(now, Some(now - ms(1)), None, now + ms(250)),
+        ms(250)
+    );
+    // Everything open: send now; long gates are capped at the expiry check.
+    assert_eq!(
+        wake_in(now, Some(now), Some(now - ms(1)), now),
+        Duration::ZERO
+    );
+    assert_eq!(
+        wake_in(now, Some(now), Some(now + ms(60_000)), now),
+        Duration::from_secs(1)
+    );
+    assert_eq!(wake_in(now, None, None, now), Duration::from_secs(1));
+}
+
+#[test]
+fn push_emitter_starts_over_when_the_machine_is_paired_again() {
+    let link = Scripted::default();
+    *link.pairing.lock().unwrap() = Some("machine-a".into());
+    let mut e = scripted(&link, Duration::ZERO);
+    let posts = || link.batches.lock().unwrap().len();
+    e.offer(attention("x", AttentionKind::AttentionRaised));
+    wait_for(|| posts() == 1);
+    link.answers
+        .lock()
+        .unwrap()
+        .push_back(MachineApiError::Revoked);
+    e.offer(attention("y", AttentionKind::AttentionRaised));
+    wait_for(|| posts() == 2);
+    e.offer(attention("z", AttentionKind::AttentionRaised));
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(posts(), 2, "revoked: nothing more for the old pairing");
+    let configs = link.configs.load(Ordering::SeqCst);
+
+    *link.pairing.lock().unwrap() = Some("machine-b".into());
+    // The new pairing never saw x raised, so its clear is no change; w is new.
+    e.offer(attention("x", AttentionKind::AttentionCleared));
+    e.offer(attention("w", AttentionKind::AttentionRaised));
+    wait_for(|| posts() == 3);
+    assert_eq!(agents(&link.batches.lock().unwrap()[2]), ["w"]);
+    assert!(
+        link.configs.load(Ordering::SeqCst) > configs,
+        "the new pairing's org config is fetched, not the old one reused"
+    );
+    e.retune(PushSettings::off());
+}
+
+#[test]
+fn push_emitter_ignores_a_revocation_for_the_previous_pairing() {
+    let link = Scripted::default();
+    *link.pairing.lock().unwrap() = Some("machine-a".into());
+    *link.pair_on_post.lock().unwrap() = Some("machine-b".into());
+    link.answers
+        .lock()
+        .unwrap()
+        .push_back(MachineApiError::Revoked);
+    let (status_tx, status_rx) = mpsc::channel();
+    let factory = link.clone();
+    let mut emitter = PushEmitter::with_link(
+        on(),
+        Some(status_tx),
+        Arc::new(move || Box::new(factory.clone())),
+    );
+    emitter.offer(attention("old", AttentionKind::AttentionRaised));
+    wait_for(|| link.batches.lock().unwrap().len() == 1);
+    emitter.offer(attention("new", AttentionKind::AttentionRaised));
+    wait_for(|| link.batches.lock().unwrap().len() == 2);
+    drop(emitter);
+    assert_eq!(link.revocations.load(Ordering::SeqCst), 0);
+    assert!(status_rx.try_recv().is_err(), "no stale stop warning");
+}

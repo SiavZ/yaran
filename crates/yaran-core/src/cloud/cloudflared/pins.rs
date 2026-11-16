@@ -25,7 +25,7 @@
 pub const PINNED_VERSION: &str = "2026.11.0";
 
 /// The pinned release's publication date (`YYYY-MM-DD`), for the support-window warning.
-pub const PINNED_RELEASED: &str = "2026-11-11";
+pub const PINNED_RELEASED: &str = "2026-11-12";
 
 /// How a release asset is packaged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,28 +59,28 @@ pub const PINS: &[Pin] = &[
         target: "x86_64-unknown-linux-musl",
         asset: "cloudflared-linux-amd64",
         kind: AssetKind::Raw,
-        asset_sha256: UNPINNED,
-        binary_sha256: UNPINNED,
+        asset_sha256: "51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd",
+        binary_sha256: "51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd",
     },
     Pin {
         target: "aarch64-unknown-linux-musl",
         asset: "cloudflared-linux-arm64",
         kind: AssetKind::Raw,
-        asset_sha256: UNPINNED,
-        binary_sha256: UNPINNED,
+        asset_sha256: "abe54a006acf9faf2d19ee9d953cb0d0804e92f59c5382a162e57b84d086f56f",
+        binary_sha256: "abe54a006acf9faf2d19ee9d953cb0d0804e92f59c5382a162e57b84d086f56f",
     },
     Pin {
         target: "x86_64-apple-darwin",
         asset: "cloudflared-darwin-amd64.tgz",
         kind: AssetKind::Tgz,
-        asset_sha256: UNPINNED,
-        binary_sha256: UNPINNED,
+        asset_sha256: "8a59d51120cebbe902f0a8d6e1b7a7fd4f9a5bb4dcb3e0f05872483e75e7db6b",
+        binary_sha256: "be6be8d4aa0c3ff66917e265002fc9f702d42eae877edf495143f5b874c424af",
     },
     Pin {
         target: "aarch64-apple-darwin",
         asset: "cloudflared-darwin-arm64.tgz",
         kind: AssetKind::Tgz,
-        asset_sha256: UNPINNED,
-        binary_sha256: UNPINNED,
+        asset_sha256: "8c2f90277ef06a6080bb40b964d33f09f1188102f8798f2e344174b6cf41accf",
+        binary_sha256: "97e24268d9704a570fab276293028f3580ae2c7d5d2678621a4809e90f776a5e",
     },
 ];

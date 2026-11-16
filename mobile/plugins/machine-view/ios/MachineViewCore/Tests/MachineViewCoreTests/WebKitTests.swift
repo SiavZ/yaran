@@ -26,11 +26,11 @@ import WebKit
 
 @MainActor @Suite struct WebKitTests {
     @Test func cookieShape() throws {
-        let c = try #require(CookieInjector.httpCookie(host: "laptop-ada.example.com", value: "a.b.c"))
-        #expect(c.name == "CF_Authorization" && c.value == "a.b.c" && c.path == "/")
-        #expect(c.domain == "laptop-ada.example.com") // host-only: no leading dot
-        #expect(c.isSecure && c.isSessionOnly && c.expiresDate == nil)
-        #expect(c.sameSitePolicy == .sameSiteLax)
+        let cookie = try #require(CookieInjector.httpCookie(host: "laptop-ada.example.com", value: "a.b.c"))
+        #expect(cookie.name == "CF_Authorization" && cookie.value == "a.b.c" && cookie.path == "/")
+        #expect(cookie.domain == "laptop-ada.example.com") // host-only: no leading dot
+        #expect(cookie.isSecure && cookie.isSessionOnly && cookie.expiresDate == nil)
+        #expect(cookie.sameSitePolicy == .sameSiteLax)
     }
 
     @Test func injectThenClearOnARealStoreThenRemoveIt() async throws {
@@ -55,18 +55,18 @@ import WebKit
     }
 
     @Test func dataStoreIdentifiers() {
-        let a = DataStores.identifier(host: "a.example.com")
-        #expect(a == DataStores.identifier(host: "a.example.com"))
-        #expect(a != DataStores.identifier(host: "b.example.com"))
-        #expect(a.uuidString.dropFirst(14).first == "5")
+        let identifier = DataStores.identifier(host: "a.example.com")
+        #expect(identifier == DataStores.identifier(host: "a.example.com"))
+        #expect(identifier != DataStores.identifier(host: "b.example.com"))
+        #expect(identifier.uuidString.dropFirst(14).first == "5")
     }
 
     @Test func delegateRoutesDecisions() {
-        let d = NavigationDelegate(pinnedHost: "laptop-ada.example.com", diagnostics: nil)
+        let delegate = NavigationDelegate(pinnedHost: "laptop-ada.example.com", diagnostics: nil)
         var actions: [(NavigationDecision, String)] = [], loads: [String] = []
-        d.onAction = { actions.append(($0, $1.absoluteString)) }
-        func run(_ s: String, newWindow: Bool = false, gesture: Bool = true) -> Bool {
-            d.apply(url: URL(string: s), mainFrame: true, newWindow: newWindow, gesture: gesture) { loads.append($0.absoluteString) }
+        delegate.onAction = { actions.append(($0, $1.absoluteString)) }
+        func run(_ url: String, newWindow: Bool = false, gesture: Bool = true) -> Bool {
+            delegate.apply(url: URL(string: url), mainFrame: true, newWindow: newWindow, gesture: gesture) { loads.append($0.absoluteString) }
         }
         #expect(run("https://laptop-ada.example.com/x"))
         #expect(!run("https://laptop-ada.example.com/e", newWindow: true))

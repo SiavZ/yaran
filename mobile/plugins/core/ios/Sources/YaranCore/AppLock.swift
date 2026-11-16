@@ -8,6 +8,9 @@
 /// - Settings (enabled, passcode fallback, grace) persist in a Vault metadata item, out of
 ///   reach of the JS namespaces.
 /// - `shouldLock` is the pure grace-period rule; the scene lifecycle feeds it timestamps.
+/// - A browser sign-in the app launched holds the lock open (`holdForExternalFlow`) until its
+///   callback is stored or it ends, never outside `[start, start + ttl]`; an unlock voids the
+///   background mark.
 /// - `lockStateChanged` notifications drive the native cover and the plugin event.
 ///
 /// <module-headers:begin>
@@ -21,6 +24,7 @@
 /// YaranCore/AppLock
 /// ├── App/SceneDelegate (inferred)
 /// ├── MachineViewCore/CoreAdapters (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// ├── YaranCore/PluginArguments (inferred)
 /// ├── YaranCore/ScreenPrivacy (inferred)
 /// ├── YaranCoreTests/VaultTests (inferred)
@@ -80,6 +84,7 @@ public final class AppLock: @unchecked Sendable {
     private let mutex = NSRecursiveLock()
     private var settings = Settings()
     private var backgroundedAtMs: Int64?
+    private var held: ClosedRange<Int64>?
     /// Prompt text shown by the Keychain read; set from the app's localized strings.
     public var prompt = "Unlock yaran"
     /// Posted (any thread) with `userInfo["locked"]: Bool` whenever `locked` changes.
@@ -199,12 +204,23 @@ public final class AppLock: @unchecked Sendable {
     @discardableResult
     public func willEnterForeground(nowMs: Int64) -> Bool {
         withLock {
-            if settings.enabled, Self.shouldLock(backgroundedAtMs: backgroundedAtMs, nowMs: nowMs, grace: settings.grace) {
+            if settings.enabled, held?.contains(nowMs) != true,
+               Self.shouldLock(backgroundedAtMs: backgroundedAtMs, nowMs: nowMs, grace: settings.grace) {
                 engage()
             }
             backgroundedAtMs = nil
             return locked
         }
+    }
+
+    /// A browser sign-in this app launched: coming back within `ttlMs` is not a return from the background.
+    public func holdForExternalFlow(ttlMs: Int64, nowMs: Int64) {
+        withLock { held = nowMs...(nowMs + ttlMs) }
+    }
+
+    /// That sign-in ended (stored, failed, cancelled): the background lock applies again.
+    public func releaseExternalFlow() {
+        withLock { held = nil }
     }
 
     /// After `Vault.eraseAll`: back to the defaults, unlocked.
@@ -232,6 +248,7 @@ public final class AppLock: @unchecked Sendable {
     }
 
     private func setLocked(_ value: Bool) {
+        if !value { backgroundedAtMs = nil } // an unlock proves the user is here
         guard value != locked else { return }
         locked = value
         NotificationCenter.default.post(name: Self.lockStateChanged, object: self, userInfo: ["locked": value])

@@ -21,6 +21,8 @@
 import Foundation
 
 public enum OrgApiResult: Equatable, Sendable {
+    // `ok` mirrors the org API client's result kind of the same name.
+    // swiftlint:disable:next identifier_name
     case ok(status: Int, body: Data)
     /// A 02 error envelope; `code` is its `error.code`.
     case apiError(status: Int, code: String)

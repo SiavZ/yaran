@@ -73,6 +73,8 @@ public final class OrgApiClient {
         return await perform(baseRequest(url, method: "GET"), orgId: nil, registration: false)
     }
 
+    // The request gate: one guard per refusal reason, in order, kept in one place for review.
+    // swiftlint:disable:next cyclomatic_complexity
     public func request(orgId: String, method: String, path: String, body: Any?) async -> ApiResult {
         guard Self.methods.contains(method) else { return .refused(.method) }
         guard Self.pathRe.matches(path), !path.contains(".."), !path.contains("//") else { return .refused(.path) }
@@ -143,16 +145,16 @@ public final class OrgApiClient {
             return .ok(status: status, body: body)
         }
         if (300..<400).contains(status) { return .sessionExpired }
-        guard let envelope = Self.envelope(data) else {
+        guard let envelope = Self.envelope(data), let error = envelope["error"] as? [String: Any],
+              let code = error["code"] as? String else {
             if status == 401 || status == 403 { return .sessionExpired }
             return .apiError(status: status, error: [
                 "error": ["code": status < 500 ? "bad_request" : "unavailable",
                           "message": "The server answered HTTP \(status) with no error details.", "retryable": status >= 500],
-                "request_id": "-",
+                "request_id": "-"
             ])
         }
-        let error = envelope["error"] as! [String: Any]
-        switch error["code"] as! String {
+        switch code {
         case "device_revoked" where status == 403 && orgId != nil:
             try? sessions.wipe(orgId: orgId!, deviceKeys: deviceKeys, cleaner: cleaner)
             return .deviceRevoked
@@ -173,8 +175,8 @@ public final class OrgApiClient {
         return obj
     }
 
-    static func isTls(_ e: URLError) -> Bool {
-        switch e.code {
+    static func isTls(_ error: URLError) -> Bool {
+        switch error.code {
         case .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
              .serverCertificateNotYetValid, .clientCertificateRejected, .clientCertificateRequired, .appTransportSecurityRequiresSecureConnection:
             return true

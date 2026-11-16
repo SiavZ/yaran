@@ -36,3 +36,20 @@ tools/module-headers/baseline-oversize.json @SiavZ
 
 # The cloud wire contract (phone-app plan, Phase 02).
 cloud/protocol/                     @SiavZ
+
+# Phone-app plan, Phase 18: the new subprojects, release trains and their
+# supply-chain pins, signing records and publisher identity.
+/cloud/                                         @SiavZ
+/cloud/**/wrangler.*                            @SiavZ
+/mobile/                                        @SiavZ
+/fastlane/                                      @SiavZ
+/tools/release-trains/                          @SiavZ
+/.node-version                                  @SiavZ
+/mobile/toolchain.env                           @SiavZ
+/publisher.json                                 @SiavZ
+/publisher-site/                                @SiavZ
+/mobile/android/signing/                        @SiavZ
+/mobile/android/gradle/verification-metadata.xml @SiavZ
+/mobile/Gemfile.lock                            @SiavZ
+/mobile/fdroid/                                 @SiavZ
+/.github/actions/                               @SiavZ

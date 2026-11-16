@@ -23,6 +23,7 @@
 /// ├── MachineView/AppServices (inferred)
 /// ├── MachineViewCore/HandoffClient (inferred)
 /// ├── MachineViewCore/OrgApiClient (inferred)
+/// ├── MachineViewCoreTests/LockTests (inferred)
 /// └── MachineViewCoreTests/StoreTests (inferred)
 /// <module-headers:end>
 import Foundation
@@ -73,13 +74,13 @@ public final class SessionStore {
     }
 
     public func status(_ host: String, now: Int64) -> (signedIn: Bool, expiresAt: Int64?) {
-        guard let s = try? get(host) else { return (false, nil) }
-        return (s.exp > now, s.exp)
+        guard let stored = try? get(host) else { return (false, nil) }
+        return (stored.exp > now, stored.exp)
     }
 
     public func hosts(orgId: String) throws -> [String] {
-        try vault.list(prefix: Self.prefix).compactMap { ns in
-            let host = String(ns.dropFirst(Self.prefix.count))
+        try vault.list(prefix: Self.prefix).compactMap { path in
+            let host = String(path.dropFirst(Self.prefix.count))
             return (try? get(host))?.orgId == orgId ? host : nil
         }
     }

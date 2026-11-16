@@ -10,6 +10,7 @@
  * <module-headers:begin>
  * Uses:
  * io.github.siavz.yaran.machineview.Fakes
+ * ├── io.github.siavz.yaran.core.AppLock
  * ├── io.github.siavz.yaran.machineview.B64url (inferred)
  * ├── io.github.siavz.yaran.machineview.CoreBindings (inferred)
  * ├── io.github.siavz.yaran.machineview.DeviceKeyStore (inferred)
@@ -23,11 +24,15 @@
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineWindowRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.OrgApiClientTest (inferred)
+ * ├── io.github.siavz.yaran.machineview.SignInLockRobolectricTest (inferred)
  * └── io.github.siavz.yaran.machineview.StoresTest (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview
 
+import io.github.siavz.yaran.core.ActivityForeground
+import io.github.siavz.yaran.core.LockGrace
+import io.github.siavz.yaran.core.LockTimer
 import org.json.JSONObject
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -44,9 +49,11 @@ class FakeVault : SecretVault {
     val data = linkedMapOf<String, ByteArray>()
     val classes = linkedMapOf<String, ProtectionClass>()
     val writes = mutableListOf<Pair<String, String>>()
+    val reads = mutableListOf<String>()
     var locked = false
 
     override fun read(ns: String): ByteArray? {
+        reads += ns
         if (locked && classes[ns] == ProtectionClass.LOCKED) throw VaultLockedException()
         return data[ns]
     }
@@ -74,10 +81,43 @@ class FakeDiagnostics : DiagnosticsSink {
     }
 }
 
-class FakeLock(var enabled: Boolean = false) : AppLockState {
+/** App Lock over core's real [LockTimer]; [tracker] is `AppLock.trackActivities`' wiring with this lock behind it. */
+class FakeLock(var enabled: Boolean = false, locked: Boolean = false) : AppLockState {
+    var prompts = 0
+
+    /** What the next prompt does: true unlocks, false is a cancel. */
+    var promptUnlocks = true
+    var now = 0L
+    var grace = LockGrace.ONE_MINUTE
+    var timer = LockTimer()
+
+    /** A vault whose locked class follows this lock, as the core vault's does. */
+    var vault: FakeVault? = null
+    var locked = locked
+        set(value) {
+            field = value
+            vault?.locked = value
+        }
+
     override fun lockEnabled() = enabled
 
-    override fun isLocked() = false
+    override fun isLocked() = locked
+
+    override fun unlock(activity: androidx.fragment.app.FragmentActivity, done: () -> Unit) {
+        prompts++
+        if (promptUnlocks) {
+            locked = false
+            timer.present()
+        }
+        done()
+    }
+
+    override fun holdForExternalFlow(ttlMs: Long) = timer.hold(now, ttlMs)
+
+    override fun releaseExternalFlow() = timer.release()
+
+    /** `AppLock.onForeground` / `onBackground` over this lock. */
+    fun tracker() = ActivityForeground({ if (timer.foreground(now, grace) && !locked && enabled) locked = true }, { timer.background(now) })
 }
 
 class SoftwareKeyBackend(private val level: SecurityLevel = SecurityLevel.TEE) : DeviceKeyBackend {

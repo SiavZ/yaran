@@ -9,6 +9,8 @@
  * "interrupted": the key never touched storage (02 §8 obligation 8).
  *
  * - One pending handoff at a time; a new [begin] replaces the old one. Thread-safe.
+ * - A launched handoff holds App Lock open for at most the callback TTL, released by every
+ *   ending after the session is stored, so the browser trip cannot relock the vault first.
  *
  * <module-headers:begin>
  * Uses:
@@ -32,7 +34,8 @@
  * ├── io.github.siavz.yaran.machineview.HandoffClientTest (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
  * ├── io.github.siavz.yaran.machineview.PluginRuntime (inferred)
- * └── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
+ * ├── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
+ * └── io.github.siavz.yaran.machineview.SignInLockRobolectricTest (inferred)
  * <module-headers:end>
  */
 package io.github.siavz.yaran.machineview
@@ -59,6 +62,7 @@ internal class HandoffClient(
     private val deviceLabel: String,
     private val now: () -> Long,
     private val diagnostics: DiagnosticsSink,
+    private val lock: AppLockState,
     private val random: SecureRandom = SecureRandom(),
 ) {
     private class Pending(
@@ -96,6 +100,7 @@ internal class HandoffClient(
             vault.write(MARKER_NS, marker.toString().toByteArray(Charsets.UTF_8), ProtectionClass.STANDARD)
             val dsig = deviceKeys.sign(orgId, HandoffSignature.canonical(host, recipient.pk, state, createdAt))
             pending = Pending(orgId, handoffTarget, host, kind, recipient, state, createdAt)
+            lock.holdForExternalFlow(CallbackUrl.TTL_S * 1000)
             diagnostics.append("machine-view handoff start target=$kind host=$host")
             val params = HandoffParams(recipient.pk, state, identity.publicKey, createdAt, dsig)
             Begin.Launch(HandoffUrl.build(handoffTarget, mode, Fallbacks.HANDOFF_MODE_FRAGMENT, deviceLabel, params))
@@ -180,7 +185,9 @@ internal class HandoffClient(
         null
     }
 
+    /** Every ending, after any session write: the hold [begin] took is over. */
     private fun finish(outcome: SignInOutcome, why: String?): SignInOutcome {
+        lock.releaseExternalFlow()
         diagnostics.append("machine-view handoff outcome kind=${outcome.kind}" + (why?.let { " ($it)" } ?: ""))
         return outcome
     }

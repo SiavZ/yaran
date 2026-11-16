@@ -16,6 +16,9 @@ androidxTestExtJunit = "1.2.1"
 ktlint = "14.0.1"
 detekt = "1.23.8"
 aboutlibraries = "15.3.0"
+# Phase 18 supply-chain gates (app/supply-chain.gradle).
+jk1License = "3.1.5"
+cyclonedx = "3.6.1"
 
 [libraries]
 android-gradle-plugin = { module = "com.android.tools.build:gradle", version.ref = "agp" }
@@ -35,3 +38,5 @@ androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "a
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
 aboutlibraries = { id = "com.mikepenz.aboutlibraries.plugin", version.ref = "aboutlibraries" }
+jk1-license = { id = "com.github.jk1.dependency-license-report", version.ref = "jk1License" }
+cyclonedx = { id = "org.cyclonedx.bom", version.ref = "cyclonedx" }

@@ -329,6 +329,75 @@ async fn cancel_ends_the_login() {
 }
 
 #[tokio::test]
+async fn a_cancel_or_new_start_during_the_claim_lets_the_login_finish() {
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    let (arrived_tx, arrived_rx) = mpsc::channel::<()>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (arrived_tx, release_rx) = (Mutex::new(arrived_tx), Arc::new(Mutex::new(release_rx)));
+    // The claim waits while the test cancels and restarts the login. A claim can tear a
+    // replaced machine down, so once it is sent the login must run to its real outcome.
+    let w = MockWorker::start(move |req| match req.path.as_str() {
+        "/v1/meta" => MockResponse::json(200, meta(1)),
+        "/v1/machine/claim" => {
+            let _ = arrived_tx.lock().unwrap().send(());
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10));
+            MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
+        }
+        "/v1/machine/unpair" => MockResponse::json(
+            202,
+            serde_json::json!({"machine_id": yaran_core::cloud::test_support::SAMPLE_MACHINE_ID, "state": "tearing_down"}),
+        ),
+        _ => MockResponse::error(404, "not_found", "nope"),
+    });
+    let (_tmp, app, paths) = app(&w);
+    let login = start(&app).await;
+    browser_hits_loopback(login["authorize_url"].as_str().unwrap()).await;
+    tokio::task::spawn_blocking(move || arrived_rx.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .expect("the claim was sent");
+    let (code, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cloud/login/cancel",
+        serde_json::json!({"login_id": login["login_id"]}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::NO_CONTENT);
+    assert_eq!(
+        status(&app).await["active_login"]["login_id"],
+        login["login_id"],
+        "the cancel lost the race, so the login keeps its slot"
+    );
+    let (code, text) = call(
+        &app,
+        "POST",
+        "/api/v1/cloud/login/start",
+        serde_json::json!({"org_url": SAMPLE_ORG}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::CONFLICT);
+    assert!(text.contains("finishing this machine's pairing"), "{text}");
+    release_tx.send(()).unwrap();
+    wait_for(&app, |s| s["active_login"].is_null()).await;
+    let stored = credentials::read(&paths)
+        .unwrap()
+        .expect("the claim was stored");
+    assert_eq!(
+        stored.machine_id,
+        yaran_core::cloud::test_support::SAMPLE_MACHINE_ID
+    );
+    assert!(
+        w.requests().iter().all(|r| r.path != "/v1/machine/unpair"),
+        "the claimed machine is kept"
+    );
+}
+
+#[tokio::test]
 async fn logout_unpairs_and_deletes_the_credentials() {
     let w = worker(1);
     let (_tmp, app, paths) = app(&w);

@@ -52,6 +52,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowManager
@@ -80,7 +81,10 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
     private val main = Handler(Looper.getMainLooper())
     private var timer: Runnable? = null
     @Volatile private var session: Session? = null
+    private var startRequested = false
     private var started = false
+    private var lockPrompted = false
+    private var reloadAtUnlock = false
     private var closedEmitted = false
     private var chooserCallback: ((Array<Uri>?) -> Unit)? = null
 
@@ -92,7 +96,8 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
 
     internal val backCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
-            web?.goBack()
+            // Under the lock cover, back leaves the window instead of driving the page behind it.
+            if (cover.shown != null) close("user", null) else web?.goBack()
         }
     }
 
@@ -111,7 +116,7 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
         root = FrameLayout(this)
         overlay = OverlayView(this, banner = false, ::onOverlayAction)
         banner = OverlayView(this, banner = true, ::onOverlayAction)
-        cover = OverlayView(this, banner = false) {}
+        cover = OverlayView(this, banner = false) { if (it == "unlock") unlockApp() }
         root.addView(overlay, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         root.addView(banner, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(cover, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -128,6 +133,13 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
                 }
             }
         }
+        // A window restored while locked (process death) starts only after the cover's unlock.
+        if (!rt.core.appLock.isLocked()) start()
+    }
+
+    private fun start() {
+        if (startRequested) return
+        startRequested = true
         refreshSession {
             started = true
             if (coordinator.onOpen()) {
@@ -154,6 +166,7 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
             }
         }
         w.setDownloadListener { _, _, _, _, _ -> toast(Messages.overlay.getValue("download_refused").message) }
+        if (::cover.isInitialized && cover.shown != null) w.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
         root.addView(w, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         web = w
     }
@@ -173,6 +186,7 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
     }
 
     private fun load(url: String) {
+        reloadAtUnlock = false
         val s = session ?: return onReauthSignal()
         val c = CookieSpec.setCookie(s.jwt, s.cookie, s.credentialKind) ?: return onReauthSignal()
         if (c.diagnostic) rt.core.diagnostics.append("machine-view cookie rung fell back to the jwt host=$host")
@@ -185,13 +199,46 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
         super.onResume()
         if (!::rt.isInitialized || !::state.isInitialized) return
         applyPrivacy()
-        if (rt.core.appLock.isLocked()) cover.showText(Messages.signIn.getValue("vault_locked").message)
+        // The lock is app-wide (AppLock.trackActivities): it may have engaged while this window was away.
+        if (rt.core.appLock.isLocked()) return showLockCover()
+        resumeSession()
+    }
+
+    private fun showLockCover() {
+        cover.showText(Messages.signIn.getValue("vault_locked").message, listOf("unlock"))
+        underCover(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS)
+        if (!lockPrompted) {
+            lockPrompted = true
+            unlockApp()
+        }
+    }
+
+    private fun unlockApp() = rt.core.appLock.unlock(this) {
+        if (rt.core.appLock.isLocked() || isFinishing) return@unlock
+        hideLockCover()
+        resumeSession()
+    }
+
+    private fun hideLockCover() {
+        lockPrompted = false
+        cover.hide()
+        underCover(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO)
+    }
+
+    /** The page, overlay and banner under the cover: TalkBack must not reach their Sign in or Renew. */
+    private fun underCover(importance: Int) {
+        listOfNotNull(web, overlay, banner).forEach { it.importantForAccessibility = importance }
+    }
+
+    private fun resumeSession() {
         if (SignInFlow.inFlight()) return SignInFlow.onCancelSoon(this)
-        if (!started) return
+        if (!started) return start()
         refreshSession {
             if (coordinator.onResume()) {
                 onReauthSignal()
                 coordinator.renewNow { }
+            } else if (reloadAtUnlock) {
+                load(state.url)
             } else {
                 session?.let { s -> CookieSpec.setCookie(s.jwt, s.cookie, s.credentialKind)?.let { rt.cookies.inject(host, it.setCookie) {} } }
             }
@@ -200,7 +247,7 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && ::rt.isInitialized && !rt.core.appLock.isLocked() && cover.shown != null) cover.hide()
+        if (hasFocus && ::rt.isInitialized && !rt.core.appLock.isLocked() && cover.shown != null) hideLockCover()
     }
 
     override fun onPause() {
@@ -271,7 +318,8 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
         view.destroy()
         if (web === view) web = null
         attachWebView()
-        load(state.url)
+        // Behind the lock nothing loads or injects the session: the unlock's resume reloads.
+        if (rt.core.appLock.isLocked() || cover.shown != null) reloadAtUnlock = true else load(state.url)
         toast(Messages.overlay.getValue("renderer_crashed").message)
     }
 
@@ -297,6 +345,7 @@ class MachineViewActivity : AppCompatActivity(), MachineWindow, RenewalUi {
     private fun onReauthSignal() = if (::coordinator.isInitialized) coordinator.onReauthSignal() else showOverlay("reauth")
 
     private fun onOverlayAction(action: String) {
+        if (rt.core.appLock.isLocked()) return // under the lock cover nothing behind it may act
         when (action) {
             "sign_in", "renew" -> coordinator.renewNow { }
             "back_to_machines" -> close("user", null)

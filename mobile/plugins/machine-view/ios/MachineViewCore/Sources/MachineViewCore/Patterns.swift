@@ -30,21 +30,22 @@
 import Foundation
 
 public struct Pattern {
-    private let re: NSRegularExpression
+    private let regex: NSRegularExpression
 
     public init(_ pattern: String) {
-        // The patterns are compile-time constants; a bad one is a programming error.
-        re = try! NSRegularExpression(pattern: "^(?:" + pattern + ")$")
+        // The patterns are compile-time constants, each exercised by tests; a bad one is a programming error.
+        // swiftlint:disable:next force_try
+        regex = try! NSRegularExpression(pattern: "^(?:" + pattern + ")$")
     }
 
-    public func matches(_ s: String) -> Bool {
-        re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    public func matches(_ text: String) -> Bool {
+        regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
     /// The capture groups of a whole-string match (nil for a group that did not take part).
-    public func groups(_ s: String) -> [String?]? {
-        guard let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { return nil }
-        return (1..<m.numberOfRanges).map { i in Range(m.range(at: i), in: s).map { String(s[$0]) } }
+    public func groups(_ text: String) -> [String?]? {
+        guard let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
+        return (1..<match.numberOfRanges).map { group in Range(match.range(at: group), in: text).map { String(text[$0]) } }
     }
 
     public static let hostname = Pattern(
@@ -61,9 +62,9 @@ public struct Pattern {
 }
 
 /// Constant-time byte comparison (length is not secret).
-public func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
-    guard a.count == b.count else { return false }
+public func constantTimeEqual(_ lhs: Data, _ rhs: Data) -> Bool {
+    guard lhs.count == rhs.count else { return false }
     var diff: UInt8 = 0
-    for (x, y) in zip(a, b) { diff |= x ^ y }
+    for (left, right) in zip(lhs, rhs) { diff |= left ^ right }
     return diff == 0
 }

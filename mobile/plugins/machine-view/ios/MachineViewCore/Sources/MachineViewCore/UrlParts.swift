@@ -30,9 +30,9 @@ public struct UrlParts: Equatable {
 
     private static let schemeRe = Pattern("([A-Za-z][A-Za-z0-9+.-]*):(.*)")
 
-    public static func parse(_ s: String) -> UrlParts? {
-        guard s.unicodeScalars.allSatisfy({ $0.value > 0x20 && $0.value < 0x7F }),
-              let g = schemeRe.groups(s), let scheme = g[0], let rest = g[1] else { return nil }
+    public static func parse(_ text: String) -> UrlParts? {
+        guard text.unicodeScalars.allSatisfy({ $0.value > 0x20 && $0.value < 0x7F }),
+              let groups = schemeRe.groups(text), let scheme = groups[0], let rest = groups[1] else { return nil }
         var tail = Substring(rest)
         var authority: String?
         if tail.hasPrefix("//") {
@@ -47,9 +47,9 @@ public struct UrlParts: Equatable {
             tail = tail[..<hash]
         }
         var query: String?
-        if let q = tail.firstIndex(of: "?") {
-            query = String(tail[tail.index(after: q)...])
-            tail = tail[..<q]
+        if let question = tail.firstIndex(of: "?") {
+            query = String(tail[tail.index(after: question)...])
+            tail = tail[..<question]
         }
         return UrlParts(scheme: scheme.lowercased(), rest: rest, authority: authority, path: String(tail),
                         query: query, fragment: fragment)

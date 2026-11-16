@@ -1,0 +1,6 @@
+# fastlane Appfile: deliberately sets nothing.
+#
+# The package name, bundle id and team id come from mobile/publisher.properties (D16,
+# Phase 14) and every lane passes them explicitly through Publisher.app_id! / team_id!
+# (fastlane/lib/publisher.rb), which fail loudly while that file holds placeholders.
+# Fastlane evaluates this file without a path, so it cannot load that helper itself.

@@ -32,7 +32,7 @@ final class KeychainAccessTests: XCTestCase {
             kSecAttrAccount as String: account,
             kSecUseDataProtectionKeychain as String: true,
             kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecMatchLimit as String: kSecMatchLimitOne
         ]
         var result: CFTypeRef?
         XCTAssertEqual(SecItemCopyMatching(query as CFDictionary, &result), errSecSuccess)
@@ -68,7 +68,7 @@ final class KeychainAccessTests: XCTestCase {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Vault.service,
             kSecAttrAccount as String: "ns.apptests-t",
-            kSecUseDataProtectionKeychain as String: true,
+            kSecUseDataProtectionKeychain as String: true
         ]
         let update = [kSecValueData as String: Data("garbage".utf8)]
         XCTAssertEqual(SecItemUpdate(query as CFDictionary, update as CFDictionary), errSecSuccess)

@@ -8,8 +8,9 @@
 ///
 /// - D22: no JWT, endpoint, key or auth secret crosses the bridge in either direction.
 /// - Bindings: the app sets `PushPlugin.orgApi` at launch to an adapter over Phase 15's
-///   `OrgApiClient`/`DeviceKeyStore`; Info.plist carries `YaranAppGroup`, `YaranRelayURL`,
-///   `YaranFlavor` and `YaranApnsEnvironment` from the publisher build config (Phase 14).
+///   `OrgApiClient`/`DeviceKeyStore`; Info.plist carries `YaranAppGroup`, `YaranRelayURL` and
+///   `YaranFlavor` from the publisher build config (Phase 14). The APNs environment comes from the
+///   signed `aps-environment` entitlement (`ApnsEnvironment`), never from build config.
 /// - Type-checked against Mac Catalyst by machine-view's typecheck-catalyst.sh; its logic lives in YaranPushRegistration.
 ///
 /// <module-headers:begin>
@@ -19,6 +20,7 @@
 /// ├── YaranPushCore/PushInbox (inferred)
 /// ├── YaranPushCore/PushSubscriptionStore (inferred)
 /// ├── YaranPushCore/SharedPushState (inferred)
+/// ├── YaranPushRegistration/ApnsEnvironment (inferred)
 /// ├── YaranPushRegistration/DeviceRegistrar (inferred)
 /// ├── YaranPushRegistration/OrgApiGateway (inferred)
 /// ├── YaranPushRegistration/PresentationPolicy (inferred)
@@ -54,7 +56,7 @@ public class PushPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "cacheMachineNames", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setVisibleAgent", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearDelivered", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "drainPendingRegistrations", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "drainPendingRegistrations", returnType: CAPPluginReturnPromise)
     ]
 
     /// Set by the app at launch: the adapter over Phase 15's native org client.
@@ -130,7 +132,7 @@ public class PushPlugin: CAPPlugin, CAPBridgedPlugin {
             "channel": subscription?.endpoint == nil ? NSNull() : "apns_relay",
             "endpointHost": subscription?.endpoint.flatMap { URL(string: $0)?.host } ?? NSNull(),
             "vapidPublicKey": subscription?.vapidPublicKey ?? NSNull(),
-            "relayKeyId": subscription?.endpointKeyId ?? NSNull(),
+            "relayKeyId": subscription?.endpointKeyId ?? NSNull()
         ])
     }
 
@@ -235,7 +237,16 @@ struct PushConfig {
             bundleId: bundleId, flavor: value("YaranFlavor").isEmpty ? "appstore" : value("YaranFlavor"),
             appVersion: value("CFBundleShortVersionString"),
             formFactor: UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone",
-            apnsEnvironment: value("YaranApnsEnvironment") == "sandbox" ? "sandbox" : "production"
+            apnsEnvironment: ApnsEnvironment.resolve(
+                embeddedProfile: bundle.url(forResource: "embedded", withExtension: "mobileprovision").flatMap { try? Data(contentsOf: $0) },
+                simulator: Self.simulator
+            )
         )
     }
+
+    #if targetEnvironment(simulator)
+    private static let simulator = true
+    #else
+    private static let simulator = false
+    #endif
 }

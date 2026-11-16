@@ -20,8 +20,9 @@ android {
         unitTests {
             includeAndroidResources = true
             all {
-                // 02's shared vectors, read by every suite (00-CONVENTIONS §3).
-                systemProperty 'yaran.protocol', file('../../../../cloud/protocol').absolutePath
+                // 02's shared vectors, read by every suite (00-CONVENTIONS §3). From the Gradle root:
+                // cap sync moves this project under mobile/app/node_modules, where a relative path misses.
+                systemProperty 'yaran.protocol', rootProject.file('../../cloud/protocol').absolutePath
             }
         }
     }

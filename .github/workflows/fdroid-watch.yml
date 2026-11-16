@@ -1,0 +1,42 @@
+# Weekly F-Droid drift watch: re-run the reproducibility proof on the newest stable
+# mobile release, so a buildserver toolchain change is caught before the next release.
+#
+# Responsibilities: no secrets, read-only. Finds the newest published (non-draft,
+# non-prerelease) yaran-mobile-vX.Y.Z release and calls _fdroid-verify.yml on it; with no
+# such release yet it reports that and succeeds. A failure is the signal (G7, R5).
+# Uses: _fdroid-verify.yml.
+name: F-Droid watch
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Newest stable mobile release
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' \
+            | grep -E '^yaran-mobile-v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+          if [ -z "$tag" ]; then echo "::notice::No stable yaran-mobile-v* release yet; nothing to verify."; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: F-Droid verify
+    needs: resolve
+    if: needs.resolve.outputs.tag != ''
+    uses: ./.github/workflows/_fdroid-verify.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}

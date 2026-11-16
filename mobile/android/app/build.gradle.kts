@@ -18,12 +18,16 @@
  *
  * <module-headers:begin>
  * Uses: none
- * External: com.android.build.api.artifact, java.util
+ * External: com.android.build.api.artifact, com.github.jk1.license.filter, com.github.jk1.license.render, java.util
  *
  * Used by: entry point (Gradle build script, read by ./gradlew in mobile/android)
  * <module-headers:end>
  */
 import com.android.build.api.artifact.SingleArtifact
+import com.github.jk1.license.filter.DependencyFilter
+import com.github.jk1.license.filter.LicenseBundleNormalizer
+import com.github.jk1.license.render.JsonReportRenderer
+import com.github.jk1.license.render.ReportRenderer
 import java.util.Properties
 
 plugins {
@@ -31,6 +35,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("yaran.android-guards")
     id("com.mikepenz.aboutlibraries.plugin")
+    id("com.github.jk1.dependency-license-report")
+    id("org.cyclonedx.bom")
 }
 
 val publisher =
@@ -228,4 +234,16 @@ aboutLibraries {
     export {
         prettyPrint = true
     }
+}
+
+// Supply-chain gates (Phase 18). checkLicense holds the release runtime classpaths to deny.toml's
+// allowlist, written to mobile/android/build/allowed-licenses.json (never committed) by
+// `node tools/release-trains/license-allowlist.mjs --jk1 <path>`; non-SPDX names go through
+// config/license-normalizer.json first. The JSON report (build/reports/dependency-license/index.json)
+// and cyclonedxBom's SBOM (build/reports/cyclonedx/bom.json) ride each mobile release.
+licenseReport {
+    configurations = arrayOf("fossReleaseRuntimeClasspath", "playReleaseRuntimeClasspath")
+    renderers = arrayOf<ReportRenderer>(JsonReportRenderer("index.json"))
+    filters = arrayOf<DependencyFilter>(LicenseBundleNormalizer("$rootDir/config/license-normalizer.json", true))
+    allowedLicensesFile = rootProject.file("build/allowed-licenses.json")
 }

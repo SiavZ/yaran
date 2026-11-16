@@ -16,6 +16,8 @@ plugins {
     alias(libs.plugins.ktlint) apply false
     alias(libs.plugins.detekt) apply false
     alias(libs.plugins.aboutlibraries) apply false
+    alias(libs.plugins.jk1.license) apply false
+    alias(libs.plugins.cyclonedx) apply false
 }
 
 apply from: "variables.gradle"

@@ -228,6 +228,21 @@ impl MachineApi {
         }
     }
 
+    /// W8 for a claim this machine is discarding (its login was cancelled or another
+    /// pairing won), signed with the claimed key; the stored credentials are not touched.
+    pub fn unpair_claimed(
+        &self,
+        identity: &MachineIdentity,
+        machine_id: &str,
+    ) -> Result<Unpaired, MachineApiError> {
+        let sign = Some((identity, Some(machine_id)));
+        match self.exchange::<TeardownStarted>("POST", "/v1/machine/unpair", sign, Vec::new()) {
+            Ok(_) => Ok(Unpaired::TeardownStarted),
+            Err(MachineApiError::Revoked) => Ok(Unpaired::AlreadyRevoked),
+            Err(e) => Err(e),
+        }
+    }
+
     /// W32: retarget the ingress to `port`; stores the answer's `origin_port`.
     pub fn set_origin(&self, port: u16) -> Result<OriginUpdateResult, MachineApiError> {
         let body = body_bytes(Some(&OriginUpdate {
@@ -275,9 +290,15 @@ impl MachineApi {
             body,
         );
         if matches!(result, Err(MachineApiError::Revoked)) {
-            RevocationSignal::global().raise();
-            if let Err(e) = credentials::stamp_revoked(&self.paths) {
-                tracing::warn!(target: "yaran::cloud", error = %e, "could not stamp revoked_at");
+            // The answer is about `creds`; a pairing made while it was in flight stays.
+            match credentials::stamp_revoked(&self.paths, &creds) {
+                Ok(true) => RevocationSignal::global().raise(),
+                Ok(false) => {
+                    tracing::info!(target: "yaran::cloud", "a revocation answer for an older pairing was ignored")
+                }
+                Err(e) => {
+                    tracing::warn!(target: "yaran::cloud", error = %e, "could not stamp revoked_at")
+                }
             }
         }
         result.map(|r| (creds.machine_id, r))

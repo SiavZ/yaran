@@ -66,6 +66,8 @@ public struct RegisterRequest: Equatable, Sendable {
 
 /// What crosses the bridge: the `Device` JSON or a reason, never key material.
 public enum RegisterOutcome: Error, Equatable, Sendable {
+    // `ok` is the `outcome` string the bridge returns for it.
+    // swiftlint:disable:next identifier_name
     case ok(device: Data)
     case api(OrgApiResult)
     case needsPermission
@@ -108,7 +110,7 @@ public struct DeviceRegistrar: Sendable {
                 }
                 push = [
                     "kind": "webpush", "channel": "apns_relay", "endpoint": endpoint,
-                    "keys": ["p256dh": p256dh, "auth": subscription.auth],
+                    "keys": ["p256dh": p256dh, "auth": subscription.auth]
                 ]
             }
         }
@@ -176,7 +178,7 @@ public struct DeviceRegistrar: Sendable {
             "label": String(request.label.prefix(64)), "push": push,
             "mute_all": request.mutes.muteAll,
             "muted_until": request.mutes.mutedUntil.map(timestamp) ?? NSNull(),
-            "muted_machine_ids": Array(request.mutes.mutedMachineIds.prefix(100)),
+            "muted_machine_ids": Array(request.mutes.mutedMachineIds.prefix(100))
         ]
         if let locale = request.locale { body["locale"] = locale }
         return body

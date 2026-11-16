@@ -3,11 +3,13 @@
 //! The fake `LoginIo` plays the browser: it reads the authorize URL and either GETs the
 //! loopback callback, or (a remote browser) hands the landing address to the paste
 //! channel. Covers success, paste, a failed browser open (19 H1), already-paired,
-//! protocol mismatch, claim refusal, timeout, cancel, and the D24 consent key.
+//! protocol mismatch, claim refusal, timeout, cancel (before and after the claim), a
+//! pairing changed during the claim, and the D24 consent key.
 //!
 //! <module-headers:begin>
 //! Uses:
 //! tests/cloud_login.rs
+//! ├── after_claim
 //! ├── yaran-core::cloud::credentials
 //! ├── yaran-core::cloud::login
 //! ├── yaran-core::cloud::machine_api
@@ -19,10 +21,14 @@
 //! External: serde_json, std, tempfile, url
 //!
 //! Used by: entry point (cargo test -p yaran-core --test <name> (integration tests))
+//! tests/cloud_login.rs
+//! └── after_claim
 //! <module-headers:end>
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
@@ -34,7 +40,8 @@ use yaran_core::cloud::paths::CloudPaths;
 use yaran_core::cloud::pkce::s256_challenge;
 use yaran_core::cloud::protocol::rules::b64url_decode;
 use yaran_core::cloud::test_support::{
-    MockResponse, MockWorker, SAMPLE_HOSTNAME, SAMPLE_ORG, pair_sample, sample_claim,
+    MockResponse, MockWorker, RecordedRequest, SAMPLE_HOSTNAME, SAMPLE_MACHINE_ID, SAMPLE_ORG,
+    pair_sample, sample_claim, sample_credentials,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -54,6 +61,10 @@ struct FakeIo {
     fingerprint: String,
     steps: Vec<LoginStep>,
     cancel_after_polls: Option<usize>,
+    /// Set from elsewhere (the mock Worker) to cancel at any moment.
+    cancel: Arc<AtomicBool>,
+    /// A cancel that wins the race at the commit point, just before the claim.
+    refuse_commit: bool,
 }
 
 impl FakeIo {
@@ -67,6 +78,8 @@ impl FakeIo {
             fingerprint: String::new(),
             steps: vec![],
             cancel_after_polls: None,
+            cancel: Arc::default(),
+            refuse_commit: false,
         }
     }
 }
@@ -130,6 +143,9 @@ impl LoginIo for FakeIo {
         self.rx.take().unwrap()
     }
     fn cancelled(&mut self) -> bool {
+        if self.cancel.load(Ordering::SeqCst) {
+            return true;
+        }
         match &mut self.cancel_after_polls {
             Some(0) => true,
             Some(n) => {
@@ -138,6 +154,9 @@ impl LoginIo for FakeIo {
             }
             None => false,
         }
+    }
+    fn commit(&mut self) -> bool {
+        !self.refuse_commit && !self.cancelled()
     }
     fn progress(&mut self, step: LoginStep) {
         self.steps.push(step);
@@ -364,3 +383,96 @@ fn timeout_and_cancel_end_the_wait() {
     );
     assert_eq!(credentials::read(&paths).unwrap(), None);
 }
+
+/// A Worker whose claim runs `during_claim` before answering, and which accepts W8.
+fn claim_side_effect(during_claim: impl Fn() + Send + Sync + 'static) -> MockWorker {
+    MockWorker::start(move |req| match req.path.as_str() {
+        "/v1/meta" => MockResponse::json(200, meta(1)),
+        "/v1/machine/claim" => {
+            during_claim();
+            MockResponse::json(200, serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap())
+        }
+        "/v1/machine/unpair" => MockResponse::json(
+            202,
+            serde_json::json!({"machine_id": SAMPLE_MACHINE_ID, "state": "tearing_down"}),
+        ),
+        _ => MockResponse::error(404, "not_found", "nope"),
+    })
+}
+
+/// Cleanup was requested once, signed with the key the discarded claim used.
+fn assert_claim_unpair_requested(w: &MockWorker, io: &FakeIo) {
+    let unpair: Vec<RecordedRequest> = w
+        .requests()
+        .into_iter()
+        .filter(|r| r.path == "/v1/machine/unpair")
+        .collect();
+    assert_eq!(
+        unpair.len(),
+        1,
+        "cleanup of the discarded claim is requested once"
+    );
+    assert_eq!(
+        unpair[0].header("Yaran-Machine-Id"),
+        Some(SAMPLE_MACHINE_ID)
+    );
+    let pubkey = b64url_decode(&query_of(io.authorize.as_ref().unwrap())["machine_pubkey"]);
+    assert!(unpair[0].signature_verifies(&pubkey.unwrap()));
+}
+
+/// This machine's current pairing, distinct from the one `sample_claim` answers with.
+fn pair_previous(paths: &CloudPaths) -> credentials::Credentials {
+    let mut previous = sample_credentials(SAMPLE_ORG);
+    previous.machine_id = "3c1f6a52-7e0b-4d8e-a1f2-9b8c7d6e5f40".into();
+    credentials::update(paths, |_| Ok(Some(previous.clone()))).unwrap();
+    previous
+}
+
+#[test]
+fn a_cancel_that_wins_before_the_claim_sends_nothing() {
+    let (_root, paths) = setup();
+    let previous = pair_previous(&paths);
+    let w = claim_side_effect(|| {});
+    let mut io = FakeIo::new(Browser::Loopback);
+    io.refuse_commit = true;
+    let out = login(&w, &paths, &mut io, Duration::from_secs(10));
+    assert_eq!(out, CloudActionOutcome::LoginCancelled);
+    assert!(out.report().message().contains("nothing was changed"));
+    assert_eq!(credentials::read(&paths).unwrap(), Some(previous));
+    assert!(
+        w.requests().iter().all(|r| r.path == "/v1/meta"),
+        "no claim (which could tear a replaced machine down) and no unpair was sent"
+    );
+}
+
+#[test]
+fn a_cancel_after_a_replace_claim_is_sent_is_too_late_and_the_login_completes() {
+    let (_root, paths) = setup();
+    let previous = pair_previous(&paths);
+    let mut io = FakeIo::new(Browser::Loopback);
+    let cancel = io.cancel.clone();
+    // The person chose Replace: the Worker tears the previous machine down at claim time,
+    // and the cancel lands while that claim is in flight.
+    let torn_down = Arc::new(AtomicBool::new(false));
+    let tear = torn_down.clone();
+    let w = claim_side_effect(move || {
+        tear.store(true, Ordering::SeqCst);
+        cancel.store(true, Ordering::SeqCst);
+    });
+    let out = login(&w, &paths, &mut io, Duration::from_secs(10));
+    assert!(torn_down.load(Ordering::SeqCst));
+    assert!(matches!(out, CloudActionOutcome::Paired { .. }), "{out:?}");
+    let stored = credentials::read(&paths).unwrap().unwrap();
+    assert_eq!(
+        stored.machine_id, SAMPLE_MACHINE_ID,
+        "the new pairing is installed"
+    );
+    assert_ne!(stored.machine_id, previous.machine_id);
+    assert!(
+        w.requests().iter().all(|r| r.path != "/v1/machine/unpair"),
+        "the claim is kept, so the machine is not left with both pairings dead"
+    );
+}
+
+#[path = "cloud_login/after_claim.rs"]
+mod after_claim;

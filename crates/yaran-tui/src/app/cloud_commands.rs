@@ -417,9 +417,9 @@ impl App {
         }
     }
 
-    /// Close the open Yaran Cloud modal the way Escape does. A running login is
-    /// cancelled, which also closes its loopback listener; its `LoginCancelled`
-    /// outcome then replaces the busy.
+    /// Close the open Yaran Cloud modal the way Escape does. A login still waiting for
+    /// the browser is cancelled, which also closes its loopback listener; one that has
+    /// already sent its claim runs on. Either way the login's final replaces the busy.
     pub(crate) fn cancel_cloud_prompt(&mut self) {
         if self.cloud_login_waiting().is_some()
             && let Some(handle) = &self.cloud.login

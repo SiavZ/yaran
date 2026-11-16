@@ -6,16 +6,19 @@
 /// Uses:
 /// YaranPushRegistrationTests/StubURLProtocol
 /// └── YaranPushRegistration/OrgApiGateway (inferred)
-/// External: Foundation
+/// External: Foundation, Testing
 ///
 /// Used by:
 /// YaranPushRegistrationTests/StubURLProtocol
 /// └── YaranPushRegistrationTests/RegistrationTests (inferred)
 /// <module-headers:end>
 import Foundation
+import Testing
 import YaranPushRegistration
 
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {
+    // A stub reply is a (status, headers, body) literal at every call site.
+    // swiftlint:disable:next large_tuple
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, [String: String], Data))?
     nonisolated(unsafe) static var requests: [URLRequest] = []
 
@@ -26,8 +29,8 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         return URLSession(configuration: config)
     }
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override static func canInit(with request: URLRequest) -> Bool { true }
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         var request = self.request
@@ -36,9 +39,9 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
             var data = Data()
             var buffer = [UInt8](repeating: 0, count: 4096)
             while stream.hasBytesAvailable {
-                let n = stream.read(&buffer, maxLength: buffer.count)
-                if n <= 0 { break }
-                data.append(buffer, count: n)
+                let readCount = stream.read(&buffer, maxLength: buffer.count)
+                if readCount <= 0 { break }
+                data.append(buffer, count: readCount)
             }
             stream.close()
             request.httpBody = data
@@ -62,11 +65,17 @@ final class FakeOrgApi: OrgApiGateway, @unchecked Sendable {
     func devicePublicKey(orgId: String) async throws -> String { deviceKey }
 
     func registerDevice(orgId: String, body: Data) async -> OrgApiResult {
-        bodies.append(try! JSONSerialization.jsonObject(with: body) as! [String: Any])
+        guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+            Issue.record("the registrar sent a body that is not a JSON object")
+            return result
+        }
+        bodies.append(object)
         return result
     }
 }
 
+/// The tests' own JSON literals (default arguments included, where `try` cannot go); failing is a test-authoring error.
 func json(_ object: Any) -> Data {
+    // swiftlint:disable:next force_try
     try! JSONSerialization.data(withJSONObject: object)
 }

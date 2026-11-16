@@ -33,7 +33,7 @@ public class BuildInfoPlugin: CAPPlugin, CAPBridgedPlugin {
             return [
                 "flavor": "appstore",
                 "e2e": e2e,
-                "e2eControlPlaneUrl": e2e ? (info["YaranE2EControlPlaneURL"] as? String ?? "") : "",
+                "e2eControlPlaneUrl": e2e ? (info["YaranE2EControlPlaneURL"] as? String ?? "") : ""
             ]
         }
     }

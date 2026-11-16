@@ -1,0 +1,120 @@
+# Shared publish leg of the yaran-cloud-v* and yaran-mobile-v* trains (D15).
+#
+# Responsibilities: the only job of either train holding id-token and attestations
+# write. It downloads the caller's release artifact, refuses anything but the exact
+# expected file list, writes the train's checksums file (one line per asset, verified
+# with sha256sum -c, generalising release.yml's fixed count of 4), attests build
+# provenance on every asset, and creates the GitHub release itself with --verify-tag and
+# --latest=false (R17: a new-train release must never become "latest", or install.sh's
+# default install breaks). A re-run replaces assets on the existing release instead.
+# Uses: actions/download-artifact, actions/attest-build-provenance (release.yml's pins).
+name: Publish train release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag (yaran-cloud-vX.Y.Z[-rc.N] or yaran-mobile-v...).
+        type: string
+        required: true
+      artifact:
+        description: Workflow artifact holding the assets and RELEASE_NOTES.md.
+        type: string
+        required: true
+      expected-files:
+        description: Newline-separated asset names; the artifact must hold exactly these.
+        type: string
+        required: true
+      checksums-file:
+        description: Name of the checksums asset written here (e.g. yaran-cloud-checksums.txt).
+        type: string
+        required: true
+      prerelease:
+        type: boolean
+        default: false
+      draft:
+        description: Create the release as a draft (stable mobile tags; 22 publishes it).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.tag }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ inputs.tag }}
+      EXPECTED: ${{ inputs.expected-files }}
+      CHECKSUMS: ${{ inputs.checksums-file }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.artifact }}
+          path: dist
+
+      - name: Exactly the expected files, checksummed
+        id: assets
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          printf '%s\n' "$EXPECTED" | sed '/^[[:space:]]*$/d' | sort > "$RUNNER_TEMP/expected"
+          { cat "$RUNNER_TEMP/expected"; echo RELEASE_NOTES.md; } | sort > "$RUNNER_TEMP/wanted"
+          find . -maxdepth 1 -type f -printf '%f\n' | sort > "$RUNNER_TEMP/actual"
+          if ! diff -u "$RUNNER_TEMP/wanted" "$RUNNER_TEMP/actual"; then
+            echo "The release artifact does not hold exactly the expected files (diff above)." >&2
+            exit 1
+          fi
+          xargs -d '\n' sha256sum -- < "$RUNNER_TEMP/expected" > "$CHECKSUMS"
+          want="$(wc -l < "$RUNNER_TEMP/expected")"
+          got="$(wc -l < "$CHECKSUMS")"
+          [ "$want" -eq "$got" ] || { echo "Expected $want checksum lines, got $got." >&2; exit 1; }
+          sha256sum -c "$CHECKSUMS"
+          {
+            echo 'subjects<<EOF'
+            sed 's|^|dist/|' "$RUNNER_TEMP/expected"
+            echo "dist/$CHECKSUMS"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo
+            echo '## Checksums'
+            echo
+            echo '```'
+            cat "$CHECKSUMS"
+            echo '```'
+            echo
+            echo "Verify any asset's provenance with \`gh attestation verify <file> --owner SiavZ\`."
+          } >> RELEASE_NOTES.md
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: ${{ steps.assets.outputs.subjects }}
+
+      - name: Create the release (never "latest")
+        working-directory: dist
+        env:
+          PRERELEASE: ${{ inputs.prerelease }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < "$RUNNER_TEMP/expected"
+          files+=("$CHECKSUMS")
+          flags=()
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+          [ "$DRAFT" = true ] && flags+=(--draft)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists (a re-run); replacing its assets."
+            gh release upload "$TAG" --clobber "${files[@]}"
+          else
+            gh release create "$TAG" --verify-tag --latest=false --title "$TAG" --notes-file RELEASE_NOTES.md "${flags[@]}" "${files[@]}"
+          fi

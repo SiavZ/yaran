@@ -49,9 +49,9 @@ final class OverlayView: UIView {
             var config: UIButton.Configuration = id == actions.first?.0 ? .filled() : .bordered()
             config.title = title
             config.baseBackgroundColor = id == actions.first?.0 ? Palette.primary : nil
-            let b = UIButton(configuration: config, primaryAction: UIAction { _ in onAction(id) })
-            b.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-            return b
+            let button = UIButton(configuration: config, primaryAction: UIAction { _ in onAction(id) })
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            return button
         }
         let row = UIStackView(arrangedSubviews: buttons)
         row.axis = style == .fullPane ? .vertical : .horizontal
@@ -68,7 +68,7 @@ final class OverlayView: UIView {
             stack.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -24),
             stack.topAnchor.constraint(greaterThanOrEqualTo: guide.topAnchor, constant: 12),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: guide.bottomAnchor, constant: -12),
-            stack.centerYAnchor.constraint(equalTo: guide.centerYAnchor),
+            stack.centerYAnchor.constraint(equalTo: guide.centerYAnchor)
         ])
         accessibilityViewIsModal = style == .fullPane
     }
@@ -119,7 +119,7 @@ extension UIView {
         addSubview(child)
         NSLayoutConstraint.activate([
             child.leadingAnchor.constraint(equalTo: leadingAnchor), child.trailingAnchor.constraint(equalTo: trailingAnchor),
-            child.topAnchor.constraint(equalTo: topAnchor), child.bottomAnchor.constraint(equalTo: bottomAnchor),
+            child.topAnchor.constraint(equalTo: topAnchor), child.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
     }
 
@@ -137,7 +137,7 @@ extension UIView {
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: centerXAnchor),
             label.leadingAnchor.constraint(greaterThanOrEqualTo: safeAreaLayoutGuide.leadingAnchor, constant: 16),
-            label.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -24),
+            label.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -24)
         ])
         UIAccessibility.post(notification: .announcement, argument: text)
         UIView.animate(withDuration: 0.3, delay: 4, options: []) { label.alpha = 0 } completion: { _ in label.removeFromSuperview() }
@@ -147,7 +147,7 @@ extension UIView {
 final class PaddedLabel: UILabel {
     override func drawText(in rect: CGRect) { super.drawText(in: rect.insetBy(dx: 12, dy: 8)) }
     override var intrinsicContentSize: CGSize {
-        let s = super.intrinsicContentSize
-        return CGSize(width: s.width + 24, height: s.height + 16)
+        let size = super.intrinsicContentSize
+        return CGSize(width: size.width + 24, height: size.height + 16)
     }
 }

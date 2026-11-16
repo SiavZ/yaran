@@ -103,23 +103,6 @@ fn subprocess_helper() {
             reserve_and_persist_session_at_root(&root, &store_id, &store, &mut candidate).unwrap();
             fs::write(output, candidate.agent_handle()).unwrap();
         }
-        "probe-lock" => {
-            let root = path("YARAN_AMQ_TEST_ROOT");
-            let output = path("YARAN_AMQ_TEST_OUTPUT");
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(root.join("meta/config.lock"))
-                .unwrap();
-            let message = match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-                Ok(()) => {
-                    flock(&file, FlockOperation::Unlock).unwrap();
-                    "acquired".to_string()
-                }
-                Err(err) => format!("blocked: {err}"),
-            };
-            fs::write(output, message).unwrap();
-        }
         other => panic!("unknown subprocess helper mode: {other}"),
     }
 }
@@ -717,18 +700,20 @@ fn wake_pid_guard_requires_the_recorded_handle_and_root() {
 fn tombstone_releases_the_registry_lock_before_waiting_for_wake_exit() {
     let dir = tempdir().unwrap();
     let root = dir.path().join("amq").tap_agents();
+    let ready = dir.path().join("wake-ready");
     let term_seen = dir.path().join("term-seen");
+    // The stand-in survives SIGTERM, so its handler runs while the tombstone waits
+    // for it to exit and try-locks the registry there. `ready` means the handler is
+    // installed; a SIGTERM before that would kill it with nothing observed.
     let child = Command::new("perl")
         .arg("-e")
         .arg(
-            "$SIG{TERM}=sub { open(my $f, '>', $ENV{WAKE_TERM_FILE}) or die $!; close($f); }; while (1) { select(undef, undef, undef, 0.05); }",
+            "use Fcntl qw(:flock); $SIG{TERM}=sub { open(my $l, '+<', \"$ENV{WAKE_ROOT}/meta/config.lock\") or die $!; my $r = flock($l, LOCK_EX|LOCK_NB) ? 'acquired' : 'blocked'; open(my $f, '>', \"$ENV{WAKE_TERM_FILE}.tmp\") or die $!; print $f $r; close($f); rename(\"$ENV{WAKE_TERM_FILE}.tmp\", $ENV{WAKE_TERM_FILE}) or die $!; }; open(my $r, '>', $ENV{WAKE_READY_FILE}) or die $!; close($r); while (1) { select(undef, undef, undef, 0.05); }",
         )
-        .arg("amq")
-        .arg("wake")
-        .arg("--me")
-        .arg("agent")
-        .arg("--root")
+        .args(["amq", "wake", "--me", "agent", "--root"])
         .arg(&root)
+        .env("WAKE_ROOT", &root)
+        .env("WAKE_READY_FILE", &ready)
         .env("WAKE_TERM_FILE", &term_seen)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -736,6 +721,34 @@ fn tombstone_releases_the_registry_lock_before_waiting_for_wake_exit() {
         .unwrap();
     let wake_pid = child.id();
     let reaper = std::thread::spawn(move || child.wait_with_output());
+    // Leave a reaper that has already reported completion alone during cleanup.
+    let kill_wake = |reaper: &std::thread::JoinHandle<_>| {
+        if let (false, Some(pid)) = (
+            reaper.is_finished(),
+            rustix::process::Pid::from_raw(wake_pid as i32),
+        ) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        }
+    };
+    // A hang guard only: every verdict below waits on an event, never a clock.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !ready.exists() {
+        if reaper.is_finished() {
+            panic!("wake stand-in exited early: {:?}", reaper.join());
+        }
+        if Instant::now() >= deadline {
+            kill_wake(&reaper);
+            panic!("wake stand-in never installed its SIGTERM handler");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The guard only signals a wake it can identify by argv; a sandbox that hides
+    // argv gets a safe leak and no SIGTERM to observe, so self-skip there.
+    if !is_amq_wake_process(wake_pid, &root, "agent") {
+        kill_wake(&reaper);
+        let _ = reaper.join().unwrap();
+        return;
+    }
     let session = session("session-a", "claude", "agent", &dir.path().join("agent"));
     ensure_owner_marker(
         &root,
@@ -749,44 +762,31 @@ fn tombstone_releases_the_registry_lock_before_waiting_for_wake_exit() {
     let tombstone = std::thread::spawn(move || {
         tombstone_amq_session_at_root(&tombstone_root, "store-a", &tombstone_session)
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !term_seen.exists() {
+    // The handler runs only after the SIGTERM; the tombstone ends only after the exit.
+    while !term_seen.exists() && !tombstone.is_finished() {
         if Instant::now() >= deadline {
-            // The wake-termination guard only signals a process it can
-            // positively identify by argv. Some sandboxed environments
-            // cannot read another process's argv, so the guard skips the
-            // kill (a safe leak, not a wrong kill) and there is no SIGTERM
-            // to observe; self-skip rather than fail.
-            if !is_amq_wake_process(wake_pid, &root, "agent") {
-                if let Some(pid) = rustix::process::Pid::from_raw(wake_pid as i32) {
-                    let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
-                }
-                tombstone.join().unwrap().unwrap();
-                let _ = reaper.join().unwrap();
-                return;
-            }
-            panic!("identifiable wake process never received SIGTERM");
+            kill_wake(&reaper);
+            panic!("tombstone neither signalled the wake process nor finished");
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-
-    let probe_output = dir.path().join("probe-output");
-    let status = Command::new(std::env::current_exe().unwrap())
-        .arg("peer::amq::tests::subprocess_helper")
-        .arg("--exact")
-        .arg("--nocapture")
-        .env("YARAN_AMQ_TEST_HELPER_MODE", "probe-lock")
-        .env("YARAN_AMQ_TEST_ROOT", &root)
-        .env("YARAN_AMQ_TEST_OUTPUT", &probe_output)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-    assert!(status.success());
-    assert_eq!(fs::read_to_string(probe_output).unwrap(), "acquired");
-
-    tombstone.join().unwrap().unwrap();
-    let _ = reaper.join().unwrap();
+    let probe = fs::read_to_string(&term_seen);
+    let result = tombstone.join().unwrap();
+    // A tombstone that skipped or failed the kill leaves the stand-in running.
+    if probe.is_err() || result.is_err() {
+        kill_wake(&reaper);
+    }
+    let wake_exit = reaper.join().unwrap();
+    let Ok(probe) = probe else {
+        panic!(
+            "identifiable wake process never handled SIGTERM: tombstone {result:?}, wake {wake_exit:?}"
+        );
+    };
+    assert_eq!(
+        probe, "acquired",
+        "the registry lock was still held while waiting for the wake process to exit"
+    );
+    result.unwrap();
 }
 
 #[test]

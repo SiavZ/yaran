@@ -10,6 +10,11 @@
  *   allows the device passcode (older releases cannot pair a credential with a CryptoObject).
  * - The grace period runs from going to the background, on the monotonic clock; the pure
  *   [shouldLock] decides. A cold start is always locked when the lock is enabled.
+ * - Background and foreground are the whole app's ([trackActivities]), never one Activity's:
+ *   a machine window is still the app, and the shell stopped behind it is not in the background.
+ * - A browser sign-in the app launched holds the lock open ([holdForExternalFlow]) until its
+ *   callback is stored or it ends, never past its TTL ([LockTimer]); an unlock voids a
+ *   background mark its own credential screen left.
  * - Whether the lock is enabled is derived from the vault; grace and passcode fallback are
  *   persisted options. Listeners hear every lock-state change (main thread or caller thread).
  *
@@ -17,13 +22,17 @@
  * Uses:
  * io.github.siavz.yaran.core.AppLock
  * └── io.github.siavz.yaran.core.Vault (inferred)
- * External: android.content, android.os, androidx.biometric, androidx.biometric.BiometricManager.Authenticators, androidx.core.content, androidx.fragment.app, java.util.concurrent, javax.crypto
+ * External: android.app, android.content, android.os, androidx.biometric, androidx.biometric.BiometricManager.Authenticators, androidx.core.content, androidx.fragment.app, java.util.concurrent, javax.crypto
  *
  * Used by:
  * io.github.siavz.yaran.core.AppLock
  * ├── io.github.siavz.yaran.app.MainActivity
+ * ├── io.github.siavz.yaran.app.YaranApplication
  * ├── io.github.siavz.yaran.core.AppLockPolicyTest (inferred)
  * ├── io.github.siavz.yaran.machineview.CoreAdapters
+ * ├── io.github.siavz.yaran.machineview.Fakes
+ * ├── io.github.siavz.yaran.machineview.MachineWindowRobolectricTest
+ * ├── io.github.siavz.yaran.machineview.SignInLockRobolectricTest
  * ├── io.github.siavz.yaran.securestore.AppLockPlugin
  * ├── io.github.siavz.yaran.securestore.SecureStorePlugin
  * ├── io.github.siavz.yaran.securestore.Validation
@@ -32,8 +41,11 @@
  */
 package io.github.siavz.yaran.core
 
+import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.os.Build
+import android.os.Bundle
 import android.os.SystemClock
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
@@ -108,7 +120,7 @@ class AppLock private constructor(
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val listeners = CopyOnWriteArraySet<(Boolean) -> Unit>()
-    private var backgroundedAt: Long? = null
+    private val timer = LockTimer()
 
     @Volatile
     var locked: Boolean = vault.isLockWrapped()
@@ -152,20 +164,25 @@ class AppLock private constructor(
     fun removeListener(listener: (Boolean) -> Unit) = listeners.remove(listener)
 
     /** Records the moment the app went to the background. */
-    fun onBackground(nowMs: Long = SystemClock.elapsedRealtime()) {
-        backgroundedAt = nowMs
-    }
+    fun onBackground(nowMs: Long = SystemClock.elapsedRealtime()) = timer.background(nowMs)
 
     /** Engages the lock when the grace period ran out; returns whether the app is locked. */
     fun onForeground(nowMs: Long = SystemClock.elapsedRealtime()): Boolean {
-        val since = backgroundedAt
-        backgroundedAt = null
-        if (!locked && since != null && vault.isLockWrapped() && shouldLock(since, nowMs, grace())) {
+        if (timer.foreground(nowMs, grace()) && !locked && vault.isLockWrapped()) {
             vault.relock()
             setLocked(true)
         }
         return locked
     }
+
+    /** A browser sign-in this app launched: coming back within [ttlMs] is not a return from the background. */
+    fun holdForExternalFlow(
+        ttlMs: Long,
+        nowMs: Long = SystemClock.elapsedRealtime(),
+    ) = timer.hold(nowMs, ttlMs)
+
+    /** The sign-in ended (stored, failed, cancelled): the background lock applies again. */
+    fun releaseExternalFlow() = timer.release()
 
     fun enable(
         activity: FragmentActivity,
@@ -268,6 +285,7 @@ class AppLock private constructor(
     private fun currentAuthenticators() = authenticators(prefs.getBoolean(KEY_PASSCODE, false))
 
     private fun setLocked(value: Boolean) {
+        if (!value) timer.present()
         if (locked == value) return
         locked = value
         listeners.forEach { it(value) }
@@ -324,6 +342,13 @@ class AppLock private constructor(
                 instance ?: AppLock(context, Vault.shared(context)).also { instance = it }
             }
 
+        /** Feeds the lock from every Activity of [app], so the shell and a machine window share one foreground. */
+        fun trackActivities(app: Application) {
+            app.registerActivityLifecycleCallbacks(
+                ActivityForeground({ shared(app).onForeground() }, { shared(app).onBackground() }),
+            )
+        }
+
         /** True when an app backgrounded at [backgroundedAtMs] must lock at [nowMs]; a clock that went backwards locks. */
         fun shouldLock(
             backgroundedAtMs: Long,
@@ -334,4 +359,84 @@ class AppLock private constructor(
         private fun authenticators(allowPasscode: Boolean): Int =
             if (allowPasscode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) BIOMETRIC_STRONG or DEVICE_CREDENTIAL else BIOMETRIC_STRONG
     }
+}
+
+/**
+ * When the app was backgrounded and the one external-flow hold, apart from the keystore so the
+ * policy is testable. A hold covers `[start, start + ttl]` only, so a clock that went backwards
+ * or a flow that never reported back cannot keep the lock open.
+ */
+class LockTimer {
+    private var backgroundedAt: Long? = null
+    private var held: LongRange? = null
+
+    @Synchronized
+    fun background(nowMs: Long) {
+        backgroundedAt = nowMs
+    }
+
+    /** Consumes the background mark; true when coming back at [nowMs] must engage the lock. */
+    @Synchronized
+    fun foreground(
+        nowMs: Long,
+        grace: LockGrace,
+    ): Boolean {
+        val since = backgroundedAt ?: return false
+        backgroundedAt = null
+        return held?.contains(nowMs) != true && AppLock.shouldLock(since, nowMs, grace)
+    }
+
+    @Synchronized
+    fun hold(
+        nowMs: Long,
+        ttlMs: Long,
+    ) {
+        held = nowMs..nowMs + ttlMs
+    }
+
+    @Synchronized
+    fun release() {
+        held = null
+    }
+
+    /** An unlock proves the user is here: a mark left by the prompt's own credential screen is void. */
+    @Synchronized
+    fun present() {
+        backgroundedAt = null
+    }
+}
+
+/**
+ * The app is in the foreground while any of its activities is started. Moving between the shell
+ * and a machine window, or a configuration change, never reaches zero, so it is not leaving the app.
+ */
+class ActivityForeground(
+    private val onForeground: () -> Unit,
+    private val onBackground: () -> Unit,
+) : Application.ActivityLifecycleCallbacks {
+    private var started = 0
+
+    override fun onActivityStarted(activity: Activity) {
+        if (started++ == 0) onForeground()
+    }
+
+    override fun onActivityStopped(activity: Activity) {
+        if (--started == 0 && !activity.isChangingConfigurations) onBackground()
+    }
+
+    override fun onActivityCreated(
+        activity: Activity,
+        savedInstanceState: Bundle?,
+    ) = Unit
+
+    override fun onActivityResumed(activity: Activity) = Unit
+
+    override fun onActivityPaused(activity: Activity) = Unit
+
+    override fun onActivitySaveInstanceState(
+        activity: Activity,
+        outState: Bundle,
+    ) = Unit
+
+    override fun onActivityDestroyed(activity: Activity) = Unit
 }

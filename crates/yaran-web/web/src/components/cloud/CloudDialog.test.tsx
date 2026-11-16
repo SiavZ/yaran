@@ -145,6 +145,19 @@ describe("CloudDialog", () => {
     await screen.findByLabelText("Organization address")
   })
 
+  it("keeps waiting when the cancel came after the claim was sent, then shows the pairing", async () => {
+    // The server answers 204 but keeps the login: its claim is out, so it finishes.
+    api.status.mockResolvedValueOnce(status({ active_login: LOGIN }))
+    api.status.mockResolvedValueOnce(status({ active_login: LOGIN }))
+    api.status.mockResolvedValue(PAIRED)
+    api.cancelLogin.mockResolvedValue(undefined)
+    render(<CloudDialog />)
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel login" }))
+    await waitFor(() => expect(api.status).toHaveBeenCalledTimes(2))
+    expect(await screen.findByRole("button", { name: "Cancel login" })).toBeTruthy()
+    await screen.findByRole("button", { name: "Disconnect…" }, { timeout: 5_000 })
+  })
+
   it("polls the status while a login waits on a browser", async () => {
     vi.useFakeTimers()
     try {

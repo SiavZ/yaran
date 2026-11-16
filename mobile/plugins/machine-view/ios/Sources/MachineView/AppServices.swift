@@ -67,7 +67,7 @@ final class AppServices {
         let device = UIDevice.current
         handoff = HandoffClient(vault: vault, deviceKeys: deviceKeys, sessions: sessions, orgs: orgs, launcher: launcher,
                                 mode: mode, deviceLabel: DeviceLabel.clean(name: device.name, model: device.model),
-                                clock: Self.now, diagnostics: diagnostics)
+                                clock: Self.now, diagnostics: diagnostics, appLock: appLock)
     }
 
     nonisolated static func now() -> Int64 { Int64(Date().timeIntervalSince1970) }

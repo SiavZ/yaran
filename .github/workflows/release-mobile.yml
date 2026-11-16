@@ -1,0 +1,229 @@
+# Release train yaran-mobile-vX.Y.Z[-rc.N] (D15): GitHub APKs, Play internal, TestFlight.
+#
+# Responsibilities: a tag push checks the literals, publisher config and listing, runs
+# mobile CI, builds and signs Android (app key on both APKs, upload key on the AAB) and
+# iOS (match, readonly), proves F-Droid can reproduce the foss APK, and publishes the
+# GitHub release with exactly five attested assets: never "latest" (R17), a prerelease
+# for -rc.N, a draft for stable tags (22 publishes it with mobile-store-promote.yml
+# channel github). Stable tags also require the live association files to match the
+# committed ones (T63). Store uploads run only after that release exists, and every
+# Play upload is gated on the D23 enrollment record (check-versions.mjs --play) and on
+# the AAB's signer being the enrolled upload key.
+# Uses: tools/release-trains/{versions,check-versions,check-association}.mjs, mobile-ci.yml,
+# _mobile-android-release.yml, _mobile-ios-release.yml, _fdroid-verify.yml,
+# _publish-train-release.yml, mobile/fastlane (lanes android internal, ios beta).
+name: Release (mobile)
+
+on:
+  push:
+    tags: ["yaran-mobile-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-mobile-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  check:
+    name: Check versions, publisher and listing
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - id: v
+        name: Parse the tag
+        run: |
+          node tools/release-trains/versions.mjs "$TAG" | tee -a "$GITHUB_OUTPUT"
+          grep -qx 'train=mobile' "$GITHUB_OUTPUT"
+      - name: Literals, toolchain targets, listing (and publisher on stable tags)
+        env:
+          PRERELEASE: ${{ steps.v.outputs.prerelease }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then node tools/release-trains/check-versions.mjs "$TAG" --metadata
+          else node tools/release-trains/check-versions.mjs "$TAG" --metadata --publisher; fi
+      - name: Live association files match the committed ones (T63)
+        if: steps.v.outputs.prerelease == 'false'
+        run: node tools/release-trains/check-association.mjs --live
+
+  ci:
+    name: Mobile CI
+    needs: check
+    uses: ./.github/workflows/mobile-ci.yml
+
+  android-build:
+    name: Android
+    needs: [check, ci]
+    uses: ./.github/workflows/_mobile-android-release.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+
+  ios-build:
+    name: iOS
+    needs: [check, ci]
+    uses: ./.github/workflows/_mobile-ios-release.yml
+
+  fdroid-verify:
+    name: F-Droid
+    needs: android-build
+    uses: ./.github/workflows/_fdroid-verify.yml
+    with:
+      tag: ${{ github.ref_name }}
+      apk-artifact: android-release
+
+  assets:
+    name: Assemble release assets
+    needs: [check, android-build, ios-build, fdroid-verify]
+    runs-on: ubuntu-24.04
+    env:
+      V: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: android-release
+          path: ${{ runner.temp }}/dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: "*-licenses"
+          path: ${{ runner.temp }}/licenses
+          merge-multiple: true
+      - name: License inventory and release notes
+        run: |
+          set -euo pipefail
+          code="$(node tools/release-trains/versions.mjs "$TAG" | sed -n 's/^version_code=//p')"
+          jq -n --slurpfile npm "$RUNNER_TEMP/licenses/npm.json" --slurpfile gradle "$RUNNER_TEMP/licenses/gradle.json" \
+            --slurpfile swiftpm "$RUNNER_TEMP/licenses/swiftpm.json" --arg v "$V" \
+            '{version: $v, npm: $npm[0], gradle: $gradle[0], swiftpm: $swiftpm[0]}' \
+            > "$RUNNER_TEMP/dist/yaran-mobile-$V-licenses.json"
+          cert="$(tr -d '[:space:]' < mobile/android/signing/app-signing-cert.sha256)"
+          {
+            cat "fastlane/metadata/android/en-US/changelogs/$code.txt"
+            echo
+            echo "## Verify the APK"
+            echo
+            echo "Both APKs are signed with the one Yaran app-signing key. Check it with"
+            echo "\`apksigner verify --print-certs yaran-mobile-$V-foss.apk\`: the SHA-256 digest must be"
+            echo
+            echo "\`$cert\`"
+          } > "$RUNNER_TEMP/dist/RELEASE_NOTES.md"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mobile-release
+          path: ${{ runner.temp }}/dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # Reserved for Phase 19: the end-to-end stage on release candidates. Its PR adds
+  #   e2e:
+  #     needs: assets
+  #     if: needs.check.outputs.prerelease == 'true'
+  #     uses: ./.github/workflows/e2e.yml
+  # and adds `e2e` to publish's needs, allowing it to be skipped on stable tags.
+
+  publish:
+    name: Publish
+    needs: [check, assets]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/_publish-train-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+      artifact: mobile-release
+      checksums-file: yaran-mobile-checksums.txt
+      prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
+      draft: ${{ needs.check.outputs.prerelease == 'false' }}
+      expected-files: |
+        yaran-mobile-${{ needs.check.outputs.version }}-foss.apk
+        yaran-mobile-${{ needs.check.outputs.version }}-play.apk
+        yaran-mobile-${{ needs.check.outputs.version }}-android-sbom.cdx.json
+        yaran-mobile-${{ needs.check.outputs.version }}-js-sbom.cdx.json
+        yaran-mobile-${{ needs.check.outputs.version }}-licenses.json
+
+  play-internal:
+    name: Play internal track
+    needs: [check, publish]
+    runs-on: ubuntu-24.04
+    environment: android-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+      - name: D23 enrollment gate (no Play upload before Play App Signing enrollment)
+        run: node tools/release-trains/check-versions.mjs --play
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: android-aab
+          path: ${{ runner.temp }}/aab
+      - name: The AAB is signed by the enrolled upload key
+        id: aab
+        run: |
+          set -euo pipefail
+          aab="$(find "$RUNNER_TEMP/aab" -name '*.aab' | head -1)"
+          got="$(keytool -printcert -jarfile "$aab" | sed -n 's/^[[:space:]]*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')"
+          want="$(jq -r .upload_cert_sha256 mobile/android/signing/play-enrollment.json)"
+          [ "$got" = "$want" ] || { echo "AAB signer $got is not the enrolled upload key $want." >&2; exit 1; }
+          echo "path=$aab" >> "$GITHUB_OUTPUT"
+      - name: Load toolchain pins
+        run: grep -E '^[A-Z0-9_]+=' mobile/toolchain.env >> "$GITHUB_ENV"
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: mobile
+      - name: fastlane android internal
+        working-directory: mobile
+        env:
+          PLAY_AAB_PATH: ${{ steps.aab.outputs.path }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: bundle exec fastlane android internal
+
+  testflight:
+    name: TestFlight
+    needs: [check, publish]
+    runs-on: macos-26
+    environment: ios-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Load toolchain pins
+        run: grep -E '^[A-Z0-9_]+=' mobile/toolchain.env >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios-ipa
+          path: ${{ runner.temp }}/ios
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+          working-directory: mobile
+      - name: fastlane ios beta
+        working-directory: mobile
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_B64: ${{ secrets.ASC_KEY_P8_B64 }}
+        run: |
+          IOS_IPA_PATH="$(find "$RUNNER_TEMP/ios" -name '*.ipa' | head -1)" bundle exec fastlane ios beta

@@ -28,6 +28,7 @@
  * io.github.siavz.yaran.machineview.PluginRuntime
  * ├── io.github.siavz.yaran.machineview.BrowserLauncher (inferred)
  * ├── io.github.siavz.yaran.machineview.MachineViewActivity (inferred)
+ * ├── io.github.siavz.yaran.machineview.MachineWindowRobolectricTest (inferred)
  * ├── io.github.siavz.yaran.machineview.NativeOrgApi (inferred)
  * └── io.github.siavz.yaran.machineview.SessionPlugin (inferred)
  * <module-headers:end>
@@ -66,7 +67,7 @@ internal class PluginRuntime private constructor(context: Context) {
         uaToken = UaToken.token(version, "android", UaToken.formFor(app.resources.configuration.smallestScreenWidthDp))
         val label = DeviceLabel.clean(Settings.Global.getString(app.contentResolver, Settings.Global.DEVICE_NAME), Build.MODEL ?: "")
         val now = { System.currentTimeMillis() / 1000 }
-        handoff = HandoffClient(core.vault, core.orgs, sessions, deviceKeys, mode, label, now, core.diagnostics)
+        handoff = HandoffClient(core.vault, core.orgs, sessions, deviceKeys, mode, label, now, core.diagnostics, core.appLock)
         orgApi = OrgApiClient(core.orgs, sessions, installIds, deviceKeys, ::wipeOrg, uaToken, now, core.diagnostics)
     }
 

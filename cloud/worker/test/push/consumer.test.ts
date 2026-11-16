@@ -79,9 +79,10 @@ describe("a delivered push", () => {
   });
 
   it("writes state only on change and the success time at most hourly", async () => {
-    await markOk(db, "d1", NOW);
-    expect(await markOk(db, "d1", NOW + 60)).toBe(0);
-    expect(await markOk(db, "d1", NOW + 3600)).toBe(1);
+    const sealed = String((await deviceRow(db, "d1")).endpoint_enc);
+    await markOk(db, "d1", sealed, NOW);
+    expect(await markOk(db, "d1", sealed, NOW + 60)).toBe(0);
+    expect(await markOk(db, "d1", sealed, NOW + 3600)).toBe(1);
     expect((await deviceRow(db, "d1")).last_push_ok_at).toBe(NOW + 3600);
   });
 });
@@ -147,6 +148,35 @@ describe("classification", () => {
   it("parses an HTTP-date Retry-After", () => {
     expect(parseRetryAfter(new Date((NOW + 30) * 1000).toUTCString(), NOW)).toBe(30);
     expect(classify(429, "garbage", 1, NOW)).toEqual({ kind: "retry", status: 429, delaySeconds: 60 });
+  });
+});
+
+describe("an answer for a subscription the phone has since replaced", () => {
+  // The phone re-registers (a fresh sealed endpoint and keys) while the old push is in flight.
+  const reRegisterThen = (status: number) =>
+    h.respond(async () => {
+      await db.prepare("UPDATE devices SET endpoint_enc = 'resealed-endpoint', auth_enc = 'resealed-auth', push_state = 'active', consecutive_failures = 4 WHERE id = 'd1'").run();
+      return new Response(null, { status });
+    });
+  const untouched = { endpoint_enc: "resealed-endpoint", auth_enc: "resealed-auth", push_state: "active", consecutive_failures: 4 };
+
+  it.each([404, 410, 401, 403])("%i leaves the new subscription alone and audits nothing", async (status) => {
+    reRegisterThen(status);
+    expect((await run()).acked).toBe(true);
+    expect(await deviceRow(db, "d1")).toMatchObject(untouched);
+    expect(h.audits).toEqual([]);
+  });
+
+  it("a late 2xx does not reset the new subscription's failure count", async () => {
+    reRegisterThen(201);
+    await run();
+    expect(await deviceRow(db, "d1")).toMatchObject({ ...untouched, last_push_ok_at: null });
+  });
+
+  it("an exhausted retry is not counted against the new subscription", async () => {
+    reRegisterThen(503);
+    await run(job(), MAX_RETRIES + 1);
+    expect(await deviceRow(db, "d1")).toMatchObject(untouched);
   });
 });
 

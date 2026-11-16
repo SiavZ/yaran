@@ -22,6 +22,7 @@
 //! Used by:
 //! cloud/test_support.rs
 //! ├── cloud
+//! ├── cloud::actions
 //! ├── cloud::cli::tests
 //! ├── cloud::credentials::tests
 //! ├── cloud::login_session

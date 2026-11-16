@@ -142,43 +142,56 @@ export async function loadSendDevices(db: D1Database, ids: string[]): Promise<Ma
   return out;
 }
 
+/*
+ * Every outcome writer below takes the sealed endpoint the push was sent to and changes the row
+ * only while it still holds that subscription: a re-registration reseals (fresh nonce), so a
+ * late answer for the old endpoint never touches the new one.
+ */
+
 /** 2xx: active with no failures (written only on change), success time at most hourly. */
 /** Records a 2xx; returns the rows written, so a test can see the write budget is kept. */
-export async function markOk(db: D1Database, id: string, now: number): Promise<number> {
+export async function markOk(db: D1Database, id: string, endpointEnc: string, now: number): Promise<number> {
   const results = await db.batch([
     db
-      .prepare("UPDATE devices SET push_state = 'active', consecutive_failures = 0 WHERE id = ? AND revoked_at IS NULL AND (push_state <> 'active' OR consecutive_failures <> 0)")
-      .bind(id),
+      .prepare(
+        "UPDATE devices SET push_state = 'active', consecutive_failures = 0 WHERE id = ? AND endpoint_enc = ? AND revoked_at IS NULL AND (push_state <> 'active' OR consecutive_failures <> 0)",
+      )
+      .bind(id, endpointEnc),
     db
-      .prepare("UPDATE devices SET last_push_ok_at = ? WHERE id = ? AND (last_push_ok_at IS NULL OR last_push_ok_at <= ?)")
-      .bind(now, id, now - OK_WRITE_INTERVAL_S),
+      .prepare("UPDATE devices SET last_push_ok_at = ? WHERE id = ? AND endpoint_enc = ? AND (last_push_ok_at IS NULL OR last_push_ok_at <= ?)")
+      .bind(now, id, endpointEnc, now - OK_WRITE_INTERVAL_S),
   ]);
   return results.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
 }
 
 /** 404/410: clears the subscription and marks gone, keeping the row; true when it changed. */
-export async function markGone(db: D1Database, id: string): Promise<boolean> {
+export async function markGone(db: D1Database, id: string, endpointEnc: string): Promise<boolean> {
   const r = await db
     .prepare(
       `UPDATE devices SET endpoint_enc = NULL, endpoint_host = NULL, p256dh = NULL, auth_enc = NULL, push_state = 'gone'
-        WHERE id = ? AND push_state <> 'gone'`,
+        WHERE id = ? AND endpoint_enc = ? AND push_state <> 'gone'`,
     )
-    .bind(id)
+    .bind(id, endpointEnc)
     .run();
   return r.meta.changes === 1;
 }
 
 /** 401/403: the subscription was made for another VAPID key; true when it changed. */
-export async function markAuthFailed(db: D1Database, id: string): Promise<boolean> {
-  const r = await db.prepare("UPDATE devices SET push_state = 'auth_failed' WHERE id = ? AND push_state IN ('active', 'failing')").bind(id).run();
+export async function markAuthFailed(db: D1Database, id: string, endpointEnc: string): Promise<boolean> {
+  const r = await db
+    .prepare("UPDATE devices SET push_state = 'auth_failed' WHERE id = ? AND endpoint_enc = ? AND push_state IN ('active', 'failing')")
+    .bind(id, endpointEnc)
+    .run();
   return r.meta.changes === 1;
 }
 
 /** An exhausted push: counts it and returns true when this one turned the device failing. */
-export async function recordExhausted(db: D1Database, id: string): Promise<boolean> {
+export async function recordExhausted(db: D1Database, id: string, endpointEnc: string | null): Promise<boolean> {
   const [, turned] = await db.batch([
-    db.prepare("UPDATE devices SET consecutive_failures = consecutive_failures + 1 WHERE id = ?").bind(id),
-    db.prepare("UPDATE devices SET push_state = 'failing' WHERE id = ? AND push_state = 'active' AND consecutive_failures >= ?").bind(id, FAILING_AFTER),
+    db.prepare("UPDATE devices SET consecutive_failures = consecutive_failures + 1 WHERE id = ? AND endpoint_enc = ?").bind(id, endpointEnc),
+    db
+      .prepare("UPDATE devices SET push_state = 'failing' WHERE id = ? AND endpoint_enc = ? AND push_state = 'active' AND consecutive_failures >= ?")
+      .bind(id, endpointEnc, FAILING_AFTER),
   ]);
   return turned!.meta.changes === 1;
 }
