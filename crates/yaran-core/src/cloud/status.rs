@@ -58,7 +58,6 @@ pub struct StatusReport {
     pub owner_email: Option<String>,
     /// The local port the tunnel forwards to.
     pub origin_port: Option<u16>,
-    /// The token issue it holds.
     /// The tunnel token's issue held here.
     pub token_version: Option<i64>,
     /// When it was paired, RFC 3339.
@@ -91,6 +90,7 @@ pub struct RemoteReport {
     pub reachable: bool,
     /// Whether it says the machine is revoked.
     pub revoked: bool,
+    /// The token issue it holds.
     pub token_version: Option<i64>,
     /// What went wrong, when it did not answer.
     pub detail: Option<String>,
