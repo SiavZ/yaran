@@ -45,8 +45,7 @@ fn stamp_publisher_domain() {
         .and_then(|(_, rest)| rest.split_once(':'))
         .and_then(|(_, rest)| rest.trim_start().strip_prefix('"'))
         .and_then(|rest| rest.split_once('"'))
-        .map(|(value, _)| value.trim().to_string())
-        .unwrap_or_default();
+        .map_or_default(|(value, _)| value.trim().to_string());
     println!("cargo:rustc-env=YARAN_PUBLISHER_DOMAIN={domain}");
 }
 

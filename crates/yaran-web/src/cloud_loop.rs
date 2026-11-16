@@ -241,10 +241,7 @@ impl CloudLoop {
                 CloudStep::StartLeg => self.start_leg(),
             }
         }
-        let hostname = self
-            .machine()
-            .map(|m| m.hostname.clone())
-            .unwrap_or_default();
+        let hostname = self.machine().map_or_default(|m| m.hostname.clone());
         match desired {
             Desired::Run if steps.contains(&CloudStep::StartLeg) => {
                 self.set_state(CloudLegState::Starting, None);
@@ -304,8 +301,7 @@ impl CloudLoop {
     fn leg_event(&mut self, event: &CloudLegEvent) {
         let (hostname, owner) = self
             .machine()
-            .map(|m| (m.hostname.clone(), m.owner_email.clone()))
-            .unwrap_or_default();
+            .map_or_default(|m| (m.hostname.clone(), m.owner_email.clone()));
         match event {
             CloudLegEvent::Acquiring { pct, .. } => {
                 self.set_state(CloudLegState::Acquiring { pct: *pct }, None);

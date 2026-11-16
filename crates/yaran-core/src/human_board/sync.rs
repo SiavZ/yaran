@@ -243,8 +243,7 @@ impl Repo {
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
         let relative = canonical_dir
             .strip_prefix(&canonical_root)
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
+            .map_or_default(Path::to_path_buf);
         let relative = relative.to_string_lossy().into_owned();
         // `top` anchors the path at the top level and `literal` keeps a
         // folder name holding `*` or `?` from being read as a pattern.

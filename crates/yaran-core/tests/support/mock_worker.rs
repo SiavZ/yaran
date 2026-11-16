@@ -296,9 +296,7 @@ fn serve(
             if let Some(d) = details {
                 error["details"] = d;
             }
-            let extra = retry_after
-                .map(|s| format!("Retry-After: {s}\r\n"))
-                .unwrap_or_default();
+            let extra = retry_after.map_or_default(|s| format!("Retry-After: {s}\r\n"));
             (
                 status,
                 extra,

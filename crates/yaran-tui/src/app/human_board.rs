@@ -459,8 +459,7 @@ impl HumanBoardState {
     /// The selectable card ids, in row order.
     pub(crate) fn slots(&self) -> Vec<CardId> {
         self.readable()
-            .map(|board| board_rows(board, &self.view()).1)
-            .unwrap_or_default()
+            .map_or_default(|board| board_rows(board, &self.view()).1)
     }
 
     /// The selected card's position among the selectable cards.
@@ -584,8 +583,7 @@ pub(crate) fn announcement(fresh: &[Card]) -> Option<String> {
     let from = newest
         .from
         .as_deref()
-        .map(|from| format!(" from {from}"))
-        .unwrap_or_default();
+        .map_or_default(|from| format!(" from {from}"));
     let urgency = if newest.priority.is_urgent() {
         format!("{} priority, ", newest.priority.label())
     } else {
@@ -860,8 +858,7 @@ impl App {
                         .human_board
                         .settings
                         .as_ref()
-                        .map(|settings| settings.sync_every.as_secs())
-                        .unwrap_or_default();
+                        .map_or_default(|settings| settings.sync_every.as_secs());
                     self.set_warning(format!(
                         "The shared board did not sync: {err}. Your board changes are kept here \
                          and it tries again every {every}s; \"yaran board sync\" runs one by hand."
@@ -1238,8 +1235,7 @@ impl App {
             .human_board
             .settings
             .as_ref()
-            .map(|settings| settings.people.clone())
-            .unwrap_or_default();
+            .map_or_default(|settings| settings.people.clone());
         let same = yaran_core::human_board::same_person;
         // Start on the first person whose queue the card is not in.
         let selected = people

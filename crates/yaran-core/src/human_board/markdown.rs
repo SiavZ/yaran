@@ -390,7 +390,7 @@ fn message_from(header: &str, text: &str, fallback: DateTime<Utc>) -> Option<Mes
         Some(at) => (&header[..at], Some(&header[at + MESSAGE_META.len()..])),
         None => (header, None),
     };
-    let fields = meta.map(meta_fields).unwrap_or_default();
+    let fields = meta.map_or_default(meta_fields);
     let field = |key: &str| {
         fields
             .iter()

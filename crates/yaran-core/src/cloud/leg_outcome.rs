@@ -203,8 +203,8 @@ pub fn leg_status(
     };
     match event {
         CloudLegEvent::Acquiring { pct, total_mb } => {
-            let size = total_mb.map(|mb| format!(" ({mb} MB)")).unwrap_or_default();
-            let pct = pct.map(|p| format!(": {p}%")).unwrap_or_default();
+            let size = total_mb.map_or_default(|mb| format!(" ({mb} MB)"));
+            let pct = pct.map_or_default(|p| format!(": {p}%"));
             Some(keyed_status(
                 CLOUD_CLOUDFLARED_KEY,
                 StatusTone::Busy,

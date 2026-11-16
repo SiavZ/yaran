@@ -284,8 +284,7 @@ fn load_folder(dir: &Path) -> Result<Board> {
                 if let Some(first) = board.files.get(&card.id) {
                     let first = first
                         .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                        .map_or_default(|n| n.to_string_lossy().into_owned());
                     board.problems.push(format!(
                         "{name} and {first} are both card #{}; {name} was left out",
                         card.id

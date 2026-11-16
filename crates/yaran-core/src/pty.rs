@@ -2348,8 +2348,7 @@ impl PtyClient {
     pub fn scan_recent_lines(&self, max_rows: usize) -> String {
         self.terminal
             .lock()
-            .map(|t| t.scan_recent_lines(max_rows))
-            .unwrap_or_default()
+            .map_or_default(|t| t.scan_recent_lines(max_rows))
     }
 
     /// Like [`Self::scan_recent_lines`], but skips the scan when the grid has

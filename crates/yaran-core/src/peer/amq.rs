@@ -115,8 +115,7 @@ pub fn sync_amq_agents_for_bootstrap(paths: &YaranPaths) {
                 &report
                     .root
                     .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
+                    .map_or_default(|p| p.display().to_string())
             ),
             report.configured_agents_added,
             report.stale_config_agents_removed,

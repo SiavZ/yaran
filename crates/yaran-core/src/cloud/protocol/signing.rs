@@ -208,8 +208,7 @@ pub fn sign_now(
         .map_err(|_| SigningError::Random)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
+        .map_or_default(|d| d.as_secs());
     sign(key, parts, now, &b64url_encode(&nonce), body)
 }
 

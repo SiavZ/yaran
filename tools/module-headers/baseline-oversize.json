@@ -148,7 +148,7 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/editor.rs (439 lines after rebrand 0956be7ac) with the fork's 477-line copy at c626621cd into 520 lines at 7e4a9c0f1; +33 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Finds the code editors installed on this machine (Cursor, VS Code, Zed and the rest), picks the one the config names, and opens a..."
   },
   "crates/yaran-core/src/engine/amq.rs": {
-    "lines": 2233,
+    "lines": 2230,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 2161 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +72 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Engine-side AMQ runtime: session settings, the inject-queue drainer, and the Orchestrator watchdog"
   },
   "crates/yaran-core/src/engine/attachment_guard.rs": {
@@ -244,7 +244,7 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/engine/test_support.rs (403 lines after rebrand 0956be7ac) with the fork's 374-line copy at c626621cd into 513 lines at 7e4a9c0f1; +45 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Shared test fixtures for engine submodule unit tests"
   },
   "crates/yaran-core/src/engine/watch_tick.rs": {
-    "lines": 1446,
+    "lines": 1445,
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-core/src/engine/worktree_removal_race_tests.rs": {
@@ -284,7 +284,7 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): new upstream module, upstream server-mode 7e80c7dd1:crates/dux-core/src/git/folding.rs (3654 lines; 3654 after rebrand 0956be7ac), 3655 lines at merge 7e4a9c0f1; module: Folding whole folders into one changed-files row"
   },
   "crates/yaran-core/src/human_board/cli.rs": {
-    "lines": 1376,
+    "lines": 1372,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1343 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+11); +22 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: `yaran board`: how agents put cards on the human board, and take them off"
   },
   "crates/yaran-core/src/human_board/markdown.rs": {
@@ -296,15 +296,15 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1139 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +78 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The human board: cards agents post for the people running yaran"
   },
   "crates/yaran-core/src/human_board/relay.rs": {
-    "lines": 535,
+    "lines": 534,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 503 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+8); +24 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Passing a card's conversation from people to agents (`[board] relay`)"
   },
   "crates/yaran-core/src/human_board/store.rs": {
-    "lines": 660,
+    "lines": 659,
     "reason": "baseline 2026-11-14"
   },
   "crates/yaran-core/src/human_board/sync.rs": {
-    "lines": 753,
+    "lines": 752,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 691 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+8); +54 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Keeping a folder board in step with the other machines that share it"
   },
   "crates/yaran-core/src/human_board/tests.rs": {
@@ -344,7 +344,7 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/palette/search.rs (496 lines after rebrand 0956be7ac) with the fork's 493-line copy at c626621cd into 501 lines at 7e4a9c0f1; module: A small tokenized relevance scorer over [`PALETTE_COMMANDS`]; steering port: add the new command to the pinned agent-command search corpus"
   },
   "crates/yaran-core/src/peer/amq.rs": {
-    "lines": 887,
+    "lines": 886,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 839 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +48 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Globally locked AMQ registry lifecycle"
   },
   "crates/yaran-core/src/peer/amq_tests.rs": {
@@ -360,7 +360,7 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 916 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+34); +16 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: router_tests (no header comment)"
   },
   "crates/yaran-core/src/peer/session_store.rs": {
-    "lines": 609,
+    "lines": 605,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 594 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+1); +14 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The adapter between upstream's session store and the peer router, plus the per-launch `YARAN_*` identity environment"
   },
   "crates/yaran-core/src/pr_list.rs": {
@@ -384,7 +384,7 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/prose.rs (643 lines after rebrand 0956be7ac) with the fork's 357-line copy at c626621cd into 643 lines at 7e4a9c0f1; module: A sentence that names things, kept as structure rather than as a finished string"
   },
   "crates/yaran-core/src/pty.rs": {
-    "lines": 10329,
+    "lines": 10328,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-core/src/pty.rs (8557 lines after rebrand 0956be7ac) with the fork's 8935-line copy at c626621cd into 10229 lines at 7e4a9c0f1; +100 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: PTY-based terminal client plus the surface-agnostic cell types for its terminal-grid snapshot"
   },
   "crates/yaran-core/src/pty_owners.rs": {
@@ -580,11 +580,11 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 874 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+50); +23 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Isolated host-selection regressions"
   },
   "crates/yaran-tui/src/app/human_board.rs": {
-    "lines": 1858,
+    "lines": 1854,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1827 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +31 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The human board pane ('Tasks for Human'): the cards agents post with `yaran board post`, shown in the right column while `[ui]..."
   },
   "crates/yaran-tui/src/app/human_board_dialog.rs": {
-    "lines": 916,
+    "lines": 915,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 875 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+33); +8 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The human board's card dialog and its Assign picker: how they are laid out and drawn, and the text selection the dialog's body supports"
   },
   "crates/yaran-tui/src/app/human_board_tests.rs": {
@@ -612,7 +612,7 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 708 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+3); +2 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The new-agent modal's harness picker and Advanced section (port of fork 6448c3f5 'configure agents at creation' and 3a8ad183 'wire new..."
   },
   "crates/yaran-tui/src/app/orphan_worktrees.rs": {
-    "lines": 683,
+    "lines": 681,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 665 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+11); +7 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The TUI half of the opt-in orphan-worktree cleaner (fork 5c9edb78): the `prune-orphan-worktrees` palette command"
   },
   "crates/yaran-tui/src/app/overlay_dismiss.rs": {
@@ -644,7 +644,7 @@
     "reason": "baseline 2026-11-14; phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-tui/src/app/redraw.rs (837 lines after rebrand 0956be7ac) with the fork's 918-line copy at c626621cd into 1034 lines at 7e4a9c0f1; +5 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The run loop's redraw gate"
   },
   "crates/yaran-tui/src/app/render.rs": {
-    "lines": 32608,
+    "lines": 32606,
     "reason": "baseline 2026-11-14; phase 09: module-headers block plus Yaran Cloud wiring (mod line, variants, match arms, one route merge or config hook); phase 10: set-cloud-mode picker and cloud crumb wiring; phase 10: the generated module-headers block required now that this file is in optIn; phase 10: cloud leg wiring stacked on the phase 09 wiring; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-tui/src/app/render.rs (29886 lines after rebrand 0956be7ac) with the fork's 27914-line copy at c626621cd into 32402 lines at 7e4a9c0f1; +197 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Rendering for the terminal UI: every pane, header and overlay, plus shared render helpers, drawn from the theme engine's tokens; it...; steering port: route rendering through the separate comment-view module and existing shared Configure Form renderer"
   },
   "crates/yaran-tui/src/app/reorder.rs": {
@@ -652,7 +652,7 @@
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): merges upstream server-mode 7e80c7dd1:crates/dux-tui/src/app/reorder.rs (443 lines after rebrand 0956be7ac) with the fork's 519-line copy at c626621cd into 558 lines at 7e4a9c0f1; module: Manual reordering of the agents list's rows, agents and project and standalone terminals together, driven by the `move-agent-*` /..."
   },
   "crates/yaran-tui/src/app/session_settings.rs": {
-    "lines": 1416,
+    "lines": 1415,
     "reason": "baseline 2026-11-14; upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 1375 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+11); +30 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The per-session settings modal (fork d0e601c5, keyboard nav 32f46d2b, mouse f1ec84d6, persist-before-commit 773a6b04)"
   },
   "crates/yaran-tui/src/app/sessions.rs": {
@@ -780,11 +780,11 @@
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 491 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+31); +30 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The cloud ingress: the live tunnel-hostname rule and the Cloudflare Access check in front of every request that arrives through it (Phase..."
   },
   "crates/yaran-web/src/cloud_loop.rs": {
-    "lines": 517,
+    "lines": 513,
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 493 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+0); +24 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: The serve loop's cloud arm: owns the one `CloudLeg`, plans every input, and is the only writer of the ingress cell and the shared view"
   },
   "crates/yaran-web/src/cloud_test_support.rs": {
-    "lines": 558,
+    "lines": 556,
     "reason": "upstream import 2026-11-16 (one-time rule, docs/contributing/module-headers.md): fork module with no upstream counterpart, 456 lines at c626621cd, adapted to upstream server-mode 7e80c7dd1 in merge 4fcad268a (+97); +5 in the post-merge lint and wiring pass 7e4a9c0f1..422fe5872; module: Shared harness for the cloud ingress and handoff tests: an app built by `build_app` around a `CloudIngress` with a fixture JWKS, a fixed..."
   },
   "crates/yaran-web/src/config_routes.rs": {

@@ -321,7 +321,7 @@ jobs:
           cd dist/artifacts
           # The glob sorts, so the file is byte-stable regardless of the order
           # the matrix jobs happened to finish in.
-          cat *.sha256 > yaran-checksums.txt
+          cat -- *.sha256 > yaran-checksums.txt
           echo "Combined checksums:"
           cat yaran-checksums.txt
           # Four archives in the matrix, so four lines. A short file means a
@@ -349,7 +349,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist/artifacts
-          gh release upload "${{ github.event.release.tag_name }}" --clobber \
+          gh release upload "${{ github.event.release.tag_name }}" --clobber -- \
             *.tar.gz *.tar.gz.sha256 yaran-checksums.txt sbom-*.cdx.json
           echo "Published:"
           ls -1

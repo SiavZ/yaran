@@ -155,9 +155,7 @@ impl Engine {
 
     /// Context mode for `session_id`.
     pub fn session_mode(&self, session_id: &str) -> ContextMode {
-        self.session_settings(session_id)
-            .map(|s| s.mode)
-            .unwrap_or_default()
+        self.session_settings(session_id).map_or_default(|s| s.mode)
     }
 
     /// Re-read every session's settings from SQLite. Called at engine
@@ -1006,8 +1004,7 @@ impl Engine {
         let depth = queue.map_or(0, VecDeque::len);
         let preview = queue
             .and_then(VecDeque::front)
-            .map(|h| queue::preview(&h.body, 80))
-            .unwrap_or_default();
+            .map_or_default(|h| queue::preview(&h.body, 80));
         let marker = match reason {
             HoldReason::BusyMarker(m) => format!(" marker={m:?}"),
             _ => String::new(),

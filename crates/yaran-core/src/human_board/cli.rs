@@ -151,10 +151,8 @@ pub fn run_with(
                 PostOutcome::Added(_) => "posted",
                 PostOutcome::Updated(_) => "updated",
             };
-            let kind = kind.map(CardKind::as_str).unwrap_or_default();
-            let whose = assignee
-                .map(|person| format!(", for {person}"))
-                .unwrap_or_default();
+            let kind = kind.map_or_default(CardKind::as_str);
+            let whose = assignee.map_or_default(|person| format!(", for {person}"));
             writeln!(out, "{verb} #{} ({kind}{whose})", outcome.id())?;
             Ok(())
         }
@@ -670,13 +668,11 @@ fn run_list(args: &[String], settings: &BoardSettings, out: &mut dyn std::io::Wr
         let whose = card
             .assignee
             .as_deref()
-            .map(|person| format!("  for {person}"))
-            .unwrap_or_default();
+            .map_or_default(|person| format!("  for {person}"));
         let from = card
             .from
             .as_deref()
-            .map(|from| format!("  from {from}"))
-            .unwrap_or_default();
+            .map_or_default(|from| format!("  from {from}"));
         writeln!(
             out,
             "{:<14} {:<22} {:>4}  {}{whose}{from}",

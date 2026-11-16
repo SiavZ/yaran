@@ -205,8 +205,7 @@ impl BoardSettings {
 /// letter of `me`, upper-cased. No `me`, no prefix.
 fn default_prefix(me: Option<&str>) -> String {
     me.and_then(|me| me.chars().find(char::is_ascii_alphabetic))
-        .map(|c| c.to_ascii_uppercase().to_string())
-        .unwrap_or_default()
+        .map_or_default(|c| c.to_ascii_uppercase().to_string())
 }
 
 /// The board folder `dir` names: `~` and `~/...` start at the home directory,

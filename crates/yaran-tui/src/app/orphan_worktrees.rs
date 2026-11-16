@@ -308,9 +308,7 @@ impl App {
                     format!(
                         " Remove {}?",
                         yaran_core::sanitize::for_terminal(
-                            &candidate
-                                .map(|c| c.worktree_path.display().to_string())
-                                .unwrap_or_default()
+                            &candidate.map_or_default(|c| c.worktree_path.display().to_string())
                         )
                     ),
                     Style::default().add_modifier(Modifier::BOLD),

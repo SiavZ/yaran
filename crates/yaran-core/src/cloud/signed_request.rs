@@ -44,9 +44,7 @@ pub struct SignedRequest {
 ///
 /// Never in practice: every wire type serializes.
 pub fn body_bytes<T: Serialize>(value: Option<&T>) -> Vec<u8> {
-    value
-        .map(|v| serde_json::to_vec(v).expect("wire types always serialize"))
-        .unwrap_or_default()
+    value.map_or_default(|v| serde_json::to_vec(v).expect("wire types always serialize"))
 }
 
 /// Sign `body` now, with a fresh nonce.

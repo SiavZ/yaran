@@ -82,7 +82,7 @@ fn style_hash() -> &'static str {
 
 /// The CSP of a page whose form may post to `form_action` besides itself.
 pub(crate) fn csp(form_action: Option<&str>) -> String {
-    let extra = form_action.map(|a| format!(" {a}")).unwrap_or_default();
+    let extra = form_action.map_or_default(|a| format!(" {a}"));
     format!(
         "default-src 'none'; style-src '{}'; form-action 'self'{extra}; frame-ancestors 'none'; base-uri 'none'",
         style_hash()
@@ -147,8 +147,7 @@ pub(crate) fn consent_page(view: &ConsentView<'_>) -> Response {
     let platform = view
         .platform
         .as_deref()
-        .map(|p| format!("<dt>Platform</dt><dd>{}</dd>", chip(p)))
-        .unwrap_or_default();
+        .map_or_default(|p| format!("<dt>Platform</dt><dd>{}</dd>", chip(p)));
     let warning = if view.dev_build {
         "<p class=\"warn\">This request comes from a development build of the yaran app. Continue only if you built or installed that build yourself.</p>"
     } else {

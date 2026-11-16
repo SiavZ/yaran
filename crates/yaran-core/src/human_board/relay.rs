@@ -65,8 +65,7 @@ impl RelayJob {
         let newest = self
             .messages
             .last()
-            .map(|(at, from, _)| format!("{}|{from}", at.timestamp_millis()))
-            .unwrap_or_default();
+            .map_or_default(|(at, from, _)| format!("{}|{from}", at.timestamp_millis()));
         format!("{}|{}|{newest}", self.card, self.card_itself)
     }
 }

@@ -263,7 +263,7 @@ impl App {
             .config
             .providers
             .get(provider.as_str())
-            .map(|cfg| {
+            .map_or_default(|cfg| {
                 cfg.watch
                     .iter()
                     .enumerate()
@@ -274,7 +274,6 @@ impl App {
                     })
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     /// Send the draft. On success the modal closes; on a store failure it

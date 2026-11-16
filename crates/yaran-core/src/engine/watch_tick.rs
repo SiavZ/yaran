@@ -182,8 +182,7 @@ impl Engine {
             .config
             .providers
             .get(provider.as_str())
-            .map(|cfg| cfg.watch.clone())
-            .unwrap_or_default();
+            .map_or_default(|cfg| cfg.watch.clone());
         let settings = self.watch_session_settings(&session_id);
         let auto_clear_idx = if settings.auto_clear {
             let clear = crate::watch::builtin::provider_clear_command(&provider);

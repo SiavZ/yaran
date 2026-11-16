@@ -423,8 +423,7 @@ impl Ask {
         self.params
             .iter()
             .find(|(k, _)| *k == name)
-            .map(|(_, v)| v.clone())
-            .unwrap_or_default()
+            .map_or_default(|(_, v)| v.clone())
     }
 }
 
@@ -495,8 +494,7 @@ pub(crate) async fn consent(
 pub(crate) fn location(r: &Response<Body>) -> String {
     r.headers()
         .get("location")
-        .map(|v| v.to_str().unwrap().to_string())
-        .unwrap_or_default()
+        .map_or_default(|v| v.to_str().unwrap().to_string())
 }
 
 pub(crate) fn param(location: &str, name: &str) -> Option<String> {

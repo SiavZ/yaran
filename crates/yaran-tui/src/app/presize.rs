@@ -249,8 +249,7 @@ mod tests {
         app.engine
             .providers
             .get(TabIdRef::new(tab))
-            .map(|client| client.visible_text_excerpt(200).matches("WINCH").count())
-            .unwrap_or_default()
+            .map_or_default(|client| client.visible_text_excerpt(200).matches("WINCH").count())
     }
 
     /// Wait until the child has reported `count` `SIGWINCHes`, then a little

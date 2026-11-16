@@ -383,14 +383,13 @@ impl CloudActionOutcome {
                 let detail = server_time
                     .as_deref()
                     .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .map(|t| {
+                    .map_or_default(|t| {
                         let offset = chrono::Utc::now().signed_duration_since(t).num_seconds();
                         format!(
                             " (the server time is {}, this clock is {offset:+} s off)",
                             t.format("%Y-%m-%dT%H:%M:%SZ")
                         )
-                    })
-                    .unwrap_or_default();
+                    });
                 status_text!(format!(
                     "The control plane rejected the request because this machine's clock is wrong{detail}; fix the system clock and try again."
                 ))

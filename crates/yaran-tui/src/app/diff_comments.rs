@@ -251,8 +251,7 @@ impl App {
             .queued
             .iter()
             .find(|c| c.session_id == session_id && c.anchor == anchor)
-            .map(|c| c.text.clone())
-            .unwrap_or_default();
+            .map_or_default(|c| c.text.clone());
         let rows = usize::from(self.engine.config.ui.diff_comment_editor_max_lines.max(1));
         self.input_target = InputTarget::None;
         self.prompt = PromptState::CommentDiffLine {

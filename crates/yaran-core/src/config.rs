@@ -3504,7 +3504,7 @@ mod rebrand_path_tests {
         fs::create_dir(&old).unwrap();
         fs::write(old.join("sessions.sqlite3"), b"old").unwrap();
         assert_eq!(
-            discover_root(home.path(), Some(xdg.path().as_os_str().to_owned())),
+            discover_root(home.path(), Some(xdg.path().as_os_str())),
             old
         );
     }

@@ -49,13 +49,11 @@ fn source(base: &str) -> ManagedSource {
 }
 
 fn bin_files(dir: &Path) -> Vec<String> {
-    let mut names: Vec<_> = fs::read_dir(dir.join("bin"))
-        .map(|it| {
-            it.flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<_> = fs::read_dir(dir.join("bin")).map_or_default(|it| {
+        it.flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    });
     names.sort();
     names
 }

@@ -108,15 +108,13 @@ pub const COMPACT_COMMAND: &str = "/compact";
 /// characters are dropped: an escape byte typed into a terminal is a
 /// keystroke, not text.
 pub fn compact_command_text(instructions: Option<&str>) -> String {
-    let collapsed = instructions
-        .map(|text| {
-            let printable: String = text
-                .chars()
-                .filter(|c| !c.is_control() || c.is_whitespace())
-                .collect();
-            printable.split_whitespace().collect::<Vec<_>>().join(" ")
-        })
-        .unwrap_or_default();
+    let collapsed = instructions.map_or_default(|text| {
+        let printable: String = text
+            .chars()
+            .filter(|c| !c.is_control() || c.is_whitespace())
+            .collect();
+        printable.split_whitespace().collect::<Vec<_>>().join(" ")
+    });
     if collapsed.is_empty() {
         COMPACT_COMMAND.to_string()
     } else {

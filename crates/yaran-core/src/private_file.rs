@@ -58,8 +58,7 @@ pub fn write_atomic(path: &Path, body: &[u8], mode: Option<u32>) -> Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     let tmp = dir.join(format!(
         ".{name}.tmp.{}.{}",
         std::process::id(),

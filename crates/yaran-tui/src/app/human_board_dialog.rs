@@ -228,8 +228,7 @@ impl App {
             let by = card
                 .resolved_by
                 .as_deref()
-                .map(|by| format!(" by {by}"))
-                .unwrap_or_default();
+                .map_or_default(|by| format!(" by {by}"));
             lines.push(field(
                 "Done:",
                 Span::styled(format!("{}{by}", age_words(&ago)), text),

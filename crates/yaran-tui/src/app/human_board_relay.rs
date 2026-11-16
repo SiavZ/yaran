@@ -235,8 +235,7 @@ impl App {
             .human_board
             .settings
             .as_ref()
-            .map(|settings| settings.people.clone())
-            .unwrap_or_default();
+            .map_or_default(|settings| settings.people.clone());
         people.push(RESOLVED_BY.to_string());
         if let Some(me) = self.me() {
             people.push(me);

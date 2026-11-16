@@ -6468,8 +6468,7 @@ impl App {
             .human_board
             .settings
             .as_ref()
-            .map(|settings| settings.people.clone())
-            .unwrap_or_default();
+            .map_or_default(|settings| settings.people.clone());
         let current = self.human_board.tab.clone();
         let pane_focused = self.focus == FocusPane::Files;
         let changed_files = self.engine.unstaged_files.len() + self.engine.staged_files.len();
@@ -7234,8 +7233,7 @@ impl App {
                         .assignee
                         .as_deref()
                         .filter(|_| show_assignee)
-                        .map(|person| format!("{person} "))
-                        .unwrap_or_default();
+                        .map_or_default(|person| format!("{person} "));
                     let fixed = display_width(marker)
                         + 1
                         + display_width(&reference)

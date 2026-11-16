@@ -163,15 +163,12 @@ fn launch_env_with_root(
     if let Some(root) = amq_root {
         // With a shared root the inbox is reserved up front, so the handle the
         // provider is told is one this session provably owns.
-        let used = rows
-            .as_ref()
-            .map(|(_, rows)| {
-                rows.iter()
-                    .filter(|row| row.id != session.id)
-                    .map(|row| row.agent_handle().to_string())
-                    .collect::<HashSet<_>>()
-            })
-            .unwrap_or_default();
+        let used = rows.as_ref().map_or_default(|(_, rows)| {
+            rows.iter()
+                .filter(|row| row.id != session.id)
+                .map(|row| row.agent_handle().to_string())
+                .collect::<HashSet<_>>()
+        });
         let owned = super::amq::claim_handle_at_root(root, &store_id, &peer, &used)?;
         if owned != peer.agent_handle {
             if stored && let Some((store, _)) = &rows {
@@ -340,8 +337,7 @@ fn write_private_atomic(path: &Path, body: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path
         .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().to_string());
     let tmp = dir.join(format!(
         ".{name}.tmp.{}.{}",
         std::process::id(),
