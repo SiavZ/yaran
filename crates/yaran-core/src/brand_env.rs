@@ -11,6 +11,12 @@ fn legacy_name(name: &str) -> Option<String> {
         .map(|suffix| format!("DUX_{suffix}"))
 }
 
+/// [`std::env::var`] for a `YARAN_*` setting, falling back to its `DUX_*`
+/// name only when the new one is absent: an empty new value still wins.
+///
+/// # Errors
+///
+/// Fails as [`std::env::var`] does, for the name that was read.
 pub fn var(name: &str) -> Result<String, VarError> {
     match std::env::var(name) {
         Err(VarError::NotPresent) => match legacy_name(name) {
@@ -21,6 +27,7 @@ pub fn var(name: &str) -> Result<String, VarError> {
     }
 }
 
+/// [`std::env::var_os`] with the same fallback as [`var`].
 pub fn var_os(name: &str) -> Option<OsString> {
     std::env::var_os(name).or_else(|| legacy_name(name).and_then(std::env::var_os))
 }
@@ -36,22 +43,24 @@ mod tests {
         let old = "DUX_REBRAND_ENV_TEST";
         // These dedicated names have no production meaning. The guard serializes
         // all tests that mutate this process's environment.
-        unsafe {
-            std::env::remove_var(new);
-            std::env::set_var(old, "legacy");
-        }
+        // SAFETY: the env test guard serializes every test that touches these.
+        unsafe { std::env::remove_var(new) };
+        // SAFETY: as above.
+        unsafe { std::env::set_var(old, "legacy") };
         assert_eq!(var(new).unwrap(), "legacy");
         assert_eq!(var_os(new).unwrap(), "legacy");
+        // SAFETY: as above.
         unsafe { std::env::set_var(new, "new") };
         assert_eq!(var(new).unwrap(), "new");
         assert_eq!(var_os(new).unwrap(), "new");
+        // SAFETY: as above.
         unsafe { std::env::set_var(new, "") };
         assert_eq!(var(new).unwrap(), "");
         assert_eq!(var_os(new).unwrap(), "");
-        unsafe {
-            std::env::remove_var(new);
-            std::env::remove_var(old);
-        }
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(new) };
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(old) };
         assert!(matches!(var(new), Err(VarError::NotPresent)));
         assert!(var_os(new).is_none());
     }

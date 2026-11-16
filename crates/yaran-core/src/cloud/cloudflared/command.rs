@@ -48,11 +48,17 @@ const LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error", "fatal"];
 /// Everything needed to start one cloudflared child.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChildSpec {
+    /// The cloudflared binary.
     pub binary: PathBuf,
+    /// Its metrics port on loopback.
     pub metrics_port: u16,
+    /// Its log level.
     pub loglevel: String,
+    /// How long it may drain connections when stopped.
     pub grace_seconds: u64,
+    /// Whether its remote management diagnostics are on.
     pub management_diagnostics: bool,
+    /// The owner-only file it reads the tunnel token from.
     pub token_file: PathBuf,
 }
 
@@ -130,6 +136,10 @@ fn set_parent_death_signal(_cmd: &mut Command) {}
 /// The metrics port to pass: the configured one, or a free loopback port when it is 0.
 /// cloudflared may lose the race for a probed port; it then exits 1 and the restart picks
 /// a new one.
+///
+/// # Errors
+///
+/// Fails when no free loopback port can be found.
 pub fn resolve_metrics_port(configured: u16) -> std::io::Result<u16> {
     if configured != 0 {
         return Ok(configured);
@@ -139,6 +149,10 @@ pub fn resolve_metrics_port(configured: u16) -> std::io::Result<u16> {
 }
 
 /// Write the tunnel token to a fresh 0600 file (any previous one is replaced).
+///
+/// # Errors
+///
+/// Fails when the owner-only file cannot be written.
 pub fn write_token_file(path: &Path, token: &str) -> std::io::Result<()> {
     let _ = std::fs::remove_file(path);
     let mut file = std::fs::OpenOptions::new()
@@ -233,7 +247,7 @@ mod tests {
     /// Offline: a nonexistent token file must fail with 255 and "Failed to read token file",
     /// proving every flag is accepted where yaran puts it.
     #[test]
-    #[ignore]
+    #[ignore = "needs the pinned cloudflared binary in YARAN_TEST_CLOUDFLARED"]
     fn real_cloudflared_accepts_the_flag_placement() {
         let Some(bin) = std::env::var_os("YARAN_TEST_CLOUDFLARED") else {
             panic!("set YARAN_TEST_CLOUDFLARED to the pinned cloudflared binary");

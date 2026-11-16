@@ -376,7 +376,7 @@ fn a_click_on_a_row_selects_that_agent() {
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: list.x + 2,
-        row: list.y + row as u16,
+        row: list.y + u16::try_from(row).unwrap_or(u16::MAX),
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(app.selected_left, 2);
@@ -651,7 +651,7 @@ fn a_narrow_project_header_keeps_its_name_over_its_count() {
     app.left_width_pct = 13;
     let buffer = draw(&mut app);
     let rows = sidebar_rows(&app, &buffer);
-    let text_width = app.mouse_layout.left_list.width as usize - 2;
+    let text_width = usize::from(app.mouse_layout.left_list.width) - 2;
     assert!(
         ("▾ Jobzy-web".len()..="▾ Jobzy-web".len() + 2).contains(&(text_width - 1))
             || text_width < 16,
@@ -699,7 +699,7 @@ fn compact_rows_name_live_states_flush_right_and_keep_them_when_narrow() {
         .iter()
         .find(|row| row.contains(&flagged))
         .unwrap_or_else(|| panic!("{flagged} missing: {rows:#?}"));
-    let text_width = app.mouse_layout.left_list.width as usize - 2;
+    let text_width = usize::from(app.mouse_layout.left_list.width) - 2;
     assert!((34..43).contains(&text_width), "test setup: {text_width}");
     assert!(line.ends_with("Needs you SHARED"), "{line:?}");
     assert!(
@@ -740,13 +740,13 @@ fn compact_heights_are_all_one_and_clicks_map_row_n_to_item_n() {
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: list.x + 2,
-            row: list.y + n as u16,
+            row: list.y + u16::try_from(n).unwrap_or(u16::MAX),
             modifiers: KeyModifiers::NONE,
         });
         app.handle_mouse(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
             column: list.x + 2,
-            row: list.y + n as u16,
+            row: list.y + u16::try_from(n).unwrap_or(u16::MAX),
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.selected_left, n, "click on row {n}");
@@ -766,7 +766,11 @@ fn compact_selection_tints_exactly_one_row_for_agents_and_headers() {
         let tinted: Vec<u16> = (list.y..list.y + list.height)
             .filter(|&y| (list.x..list.x + list.width).all(|x| buffer[(x, y)].bg == tint))
             .collect();
-        assert_eq!(tinted, vec![list.y + selected as u16], "item {selected}");
+        assert_eq!(
+            tinted,
+            vec![list.y + u16::try_from(selected).unwrap_or(u16::MAX)],
+            "item {selected}"
+        );
         // No half-cell frame edges anywhere in the list.
         for y in list.y..list.y + list.height {
             for x in list.x..list.x + list.width {
