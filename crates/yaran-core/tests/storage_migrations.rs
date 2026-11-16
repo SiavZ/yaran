@@ -30,8 +30,12 @@ fn fork_database_at(path: &std::path::Path, version: usize, seed_sql: &str) {
         conn.execute_batch(sql).expect("apply fork migration");
     }
     conn.execute_batch(seed_sql).expect("seed fork database");
-    conn.pragma_update(None, "user_version", version as i64)
-        .expect("stamp fork schema version");
+    conn.pragma_update(
+        None,
+        "user_version",
+        i64::try_from(version).expect("a small version"),
+    )
+    .expect("stamp fork schema version");
 }
 
 fn columns(path: &std::path::Path, table: &str) -> Vec<String> {

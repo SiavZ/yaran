@@ -933,7 +933,6 @@ mod tests {
     /// is left with no cursor after yaran exits.
     #[test]
     fn a_panic_mid_frame_still_closes_the_frame_and_shows_the_cursor() {
-        let wire = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
         impl std::io::Write for Shared {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -944,6 +943,7 @@ mod tests {
                 Ok(())
             }
         }
+        let wire = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let out = Shared(std::sync::Arc::<std::sync::Mutex<std::vec::Vec<u8>>>::clone(&wire));
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let _frame = FrameGuard::begin(out);

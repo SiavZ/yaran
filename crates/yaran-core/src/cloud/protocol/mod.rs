@@ -70,6 +70,7 @@ pub use signals::{REFUSAL_HEADER, RefusalCode, SESSION_EXPIRED_CLOSE_CODE};
 
 /// The protocol versions this build speaks.
 pub const PROTOCOL_MIN: i64 = 1;
+/// The newest protocol version this build speaks.
 pub const PROTOCOL_MAX: i64 = 1;
 
 /// The client's own range.
@@ -88,6 +89,10 @@ pub enum UpdateSide {
 }
 
 /// n = min(cmax, smax), required to be >= max(cmin, smin) (`protocol_unsupported` otherwise).
+///
+/// # Errors
+///
+/// Names the side that must be updated when the ranges do not overlap.
 pub fn negotiate(client: ProtocolRange, server: ProtocolRange) -> Result<i64, UpdateSide> {
     let n = client.max.min(server.max);
     if n >= client.min.max(server.min) {

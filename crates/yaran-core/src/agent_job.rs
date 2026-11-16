@@ -3831,7 +3831,7 @@ pub struct CreateJobRegistries {
 )]
 pub fn run_create_agent_job(
     request: CreateAgentRequest,
-    paths: YaranPaths,
+    paths: &YaranPaths,
     config: &Config,
     worker_tx: &Sender<WorkerEvent>,
     term_size: (u16, u16),
@@ -3861,7 +3861,7 @@ pub fn run_create_agent_job(
     {
         let gate = crate::process_sessions::SpawnGate::new(registry.clone(), worktrees.clone());
         run_create_standalone_agent_job(
-            &folder, &title, &provider, &paths, config, worker_tx, term_size, create_key, identity,
+            &folder, &title, &provider, paths, config, worker_tx, term_size, create_key, identity,
             &gate,
         );
         return;
@@ -3889,7 +3889,7 @@ pub fn run_create_agent_job(
     }
     let plan = {
         let mut context = CreatePlanContext {
-            paths: &paths,
+            paths,
             worker_tx,
             create_key: &create_key,
             creation_notes: &mut creation_notes,
@@ -4281,7 +4281,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         run_create_agent_job(
             request,
-            paths,
+            &paths,
             &Config::default(),
             &tx,
             (80, 24),
@@ -4595,7 +4595,7 @@ mod tests {
                 project: test_project(&inside),
                 custom_name: Some("shared-agent".into()),
             },
-            paths.clone(),
+            &paths.clone(),
             &Config::default(),
             &tx,
             (80, 24),
@@ -4793,7 +4793,7 @@ mod tests {
                 title: "notes".to_string(),
                 provider: ProviderKind::new("ghost"),
             },
-            paths,
+            &paths,
             config,
             &tx,
             (80, 24),

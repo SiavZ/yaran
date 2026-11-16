@@ -248,7 +248,10 @@ async fn handoff_get(
             ConsentDecision::ConsentPage => {}
         }
     }
-    let binding_for_csrf = CsrfBinding::new(&t.state, pk, &dk_fp24, verified);
+    let binding_for_csrf = CsrfBinding {
+        verified,
+        ..CsrfBinding::new(&t.state, pk, &dk_fp24)
+    };
     let Some(csrf) = ingress
         .csrf()
         .mint(binding_for_csrf, u64::try_from(now).unwrap_or(0))
@@ -269,7 +272,7 @@ async fn handoff_get(
     let user_agent = headers
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok());
-    pages::consent_page(ConsentView {
+    pages::consent_page(&ConsentView {
         device: &p["device"],
         platform: pages::platform_label(user_agent),
         host: &binding.hostname,

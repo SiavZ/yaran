@@ -257,7 +257,7 @@ fn open_cards_follow_the_column_order_newest_first() {
 #[test]
 fn prune_keeps_every_open_card_and_the_newest_history() {
     let mut board = Board::default();
-    for n in 0..(RESOLVED_HISTORY as i64 + 10) {
+    for n in 0..(i64::try_from(RESOLVED_HISTORY).unwrap() + 10) {
         board
             .post(&card(CardKind::Info, None, &format!("r{n}")), at(n))
             .unwrap();

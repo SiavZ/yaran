@@ -19,7 +19,9 @@ use super::Engine;
 /// `workspaces` checkouts that each have more than one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SharedMultiWriterSummary {
+    /// Live shared agents in those checkouts.
     pub writers: usize,
+    /// Checkouts with more than one of them.
     pub workspaces: usize,
 }
 

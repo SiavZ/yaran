@@ -384,7 +384,9 @@ pub enum Command {
     /// optionally, its title. Persists BEFORE touching live memory and leaves
     /// memory untouched on a store failure (fork 773a6b04, audit03 P1-16).
     SetSessionSettings {
+        /// The agent the settings belong to.
         session_id: String,
+        /// The settings to store.
         settings: Box<crate::session_settings::SessionSettings>,
         /// `Some` renames the agent; `Some(None)` clears a custom title.
         title: Option<Option<String>>,
@@ -1132,7 +1134,7 @@ impl Engine {
             move |tx| {
                 crate::agent_job::run_create_agent_job(
                     *request,
-                    paths,
+                    &paths,
                     &config,
                     &tx,
                     term_size,

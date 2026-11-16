@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AmqConfig {
+    /// `[amq.inject]`: how messages reach an agent's PTY.
     pub inject: AmqInjectConfig,
+    /// `[amq.orchestrator]`: the orchestrator's checkpoint prompts.
     pub orchestrator: AmqOrchestratorConfig,
 }
 

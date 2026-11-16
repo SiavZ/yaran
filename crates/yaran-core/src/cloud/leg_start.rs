@@ -41,7 +41,7 @@ use super::leg_identity::{CloudIdentity, MachineApiError, PairedMachine};
 
 /// What a successful start sequence hands the run loop.
 #[derive(Debug, Clone)]
-pub struct Prepared {
+pub(super) struct Prepared {
     pub binary: PathBuf,
     pub source: BinarySource,
     pub machine: PairedMachine,
@@ -57,7 +57,7 @@ fn stopped(stop: &AtomicBool) -> Result<(), LegStop> {
     }
 }
 
-pub fn prepare(
+pub(super) fn prepare(
     params: &LegParams,
     identity: &dyn CloudIdentity,
     stop: &AtomicBool,

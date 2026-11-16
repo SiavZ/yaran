@@ -32,6 +32,10 @@ use std::path::Path;
 
 /// Encode an absolute filesystem path the way Claude Code names its on-disk
 /// session dirs at `~/.claude/projects/<encoded>`.
+///
+/// # Errors
+///
+/// Fails when the path is not valid UTF-8 or cannot be encoded.
 pub fn encode_claude_project_dir(path: &Path) -> anyhow::Result<String> {
     let raw = path.to_str().ok_or_else(|| {
         anyhow::anyhow!(
@@ -43,6 +47,10 @@ pub fn encode_claude_project_dir(path: &Path) -> anyhow::Result<String> {
 }
 
 /// String-input variant of [`encode_claude_project_dir`], same rules.
+///
+/// # Errors
+///
+/// Fails when `raw` is empty or not an absolute path.
 pub fn encode_str(raw: &str) -> anyhow::Result<String> {
     if raw.is_empty() {
         anyhow::bail!("empty path is not encodable");

@@ -91,9 +91,9 @@ impl JwksCache {
         policy: CachePolicy,
     ) -> Result<Arc<Jwks>, String> {
         let mut state = self.state.lock().await;
-        self.reset_for(&mut state, team);
-        let stale = state.fresh_until.is_none_or(|t| Instant::now() >= t);
-        if stale {
+        Self::reset_for(&mut state, team);
+        let expired = state.fresh_until.is_none_or(|t| Instant::now() >= t);
+        if expired {
             self.fetch_unless_cooling(&mut state, team, policy).await;
         }
         Self::answer(&state)
@@ -107,12 +107,12 @@ impl JwksCache {
         policy: CachePolicy,
     ) -> Result<Arc<Jwks>, String> {
         let mut state = self.state.lock().await;
-        self.reset_for(&mut state, team);
+        Self::reset_for(&mut state, team);
         self.fetch_unless_cooling(&mut state, team, policy).await;
         Self::answer(&state)
     }
 
-    fn reset_for(&self, state: &mut CacheState, team: &TeamDomain) {
+    fn reset_for(state: &mut CacheState, team: &TeamDomain) {
         if state.team.as_ref() != Some(team) {
             *state = CacheState {
                 team: Some(team.clone()),

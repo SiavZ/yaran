@@ -83,10 +83,6 @@ pub(crate) struct CloudLoop {
 }
 
 impl CloudLoop {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every input of the loop, handed over once by the serve that starts it"
-    )]
     pub(crate) fn new(
         rx: tokio::sync::mpsc::Receiver<CloudInput>,
         control: CloudModeControl,
@@ -351,7 +347,7 @@ impl CloudLoop {
                 self.leg_stopped(stop);
             }
         }
-        if let Some(update) = leg_status(&event, &hostname, &owner, self.settings.mode) {
+        if let Some(update) = leg_status(event, &hostname, &owner, self.settings.mode) {
             self.post(update);
         }
     }

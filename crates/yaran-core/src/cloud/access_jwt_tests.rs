@@ -44,7 +44,7 @@ fn expectations(t: &Value) -> Expectations {
 }
 
 fn at(secs: i64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(secs as u64)
+    UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).unwrap())
 }
 
 fn token(t: &Value, name: &str) -> String {

@@ -26,6 +26,10 @@
 use crate::cloud::protocol::rules::is_org_url;
 
 /// The normalized `OrgUrl`, or a sentence saying what is wrong with `input`.
+///
+/// # Errors
+///
+/// Fails, with that sentence, when `input` is not an organization address.
 pub fn normalize_org_url(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {

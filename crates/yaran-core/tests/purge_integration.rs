@@ -60,6 +60,10 @@ struct PurgeHarness {
 }
 
 impl PurgeHarness {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "builds every artifact the purge must remove, so the contract is visible in one place"
+    )]
     fn new() -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().to_path_buf();
@@ -543,8 +547,6 @@ fn purge_executes_in_documented_order() {
         "purge order must match the contract: worktree, providers, amq, startup logs, log, sqlite"
     );
 
-    // And `purge` is the module path so dead-code-warning doesn't fire.
-    let _module_used: fn(&Path, &str) = |_, _| ();
     let _ = std::convert::identity::<&dyn std::fmt::Debug>(&purge::PurgeOutcome::Done);
 
     let _keep = h.tmp;

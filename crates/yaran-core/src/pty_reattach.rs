@@ -300,10 +300,8 @@ mod tests {
         // SAFETY: `F_GETFD` only reads this descriptor's flags.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
         // SAFETY: `F_SETFD` only sets this descriptor's flags.
-        assert_eq!(
-            unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) },
-            0
-        );
+        let set = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+        assert_eq!(set, 0);
         assert!(
             !survives_exec(fd).unwrap(),
             "a master with FD_CLOEXEC set must be reported as not surviving exec"
@@ -364,10 +362,8 @@ mod tests {
         // SAFETY: `F_GETFL` only reads this descriptor's status flags.
         let flags = unsafe { libc::fcntl(slave, libc::F_GETFL) };
         // SAFETY: `F_SETFL` only changes this descriptor's status flags.
-        assert_eq!(
-            unsafe { libc::fcntl(slave, libc::F_SETFL, flags | libc::O_NONBLOCK) },
-            0
-        );
+        let set = unsafe { libc::fcntl(slave, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        assert_eq!(set, 0);
         let mut buf = [0u8; 64];
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut got = String::new();

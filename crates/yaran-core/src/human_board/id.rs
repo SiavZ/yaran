@@ -43,10 +43,12 @@ impl CardId {
         Self::new("", number)
     }
 
+    /// The id's letters.
     pub fn prefix(&self) -> &str {
         &self.prefix
     }
 
+    /// The id's number.
     pub fn number(&self) -> u64 {
         self.number
     }

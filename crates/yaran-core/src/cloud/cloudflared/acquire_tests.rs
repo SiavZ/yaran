@@ -111,7 +111,7 @@ fn every_bad_download_fails_closed_and_leaves_no_file() {
         Reply {
             status: 200,
             body: Vec::new(),
-            claimed_len: Some(MAX_ASSET_BYTES as usize + 1),
+            claimed_len: Some(usize::try_from(MAX_ASSET_BYTES).unwrap() + 1),
         },
         Reply {
             status: 404,
