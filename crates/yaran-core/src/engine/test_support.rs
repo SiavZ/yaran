@@ -38,6 +38,7 @@
 //! ├── engine::shared_workspace
 //! ├── engine::status_op
 //! ├── engine::watch_tick
+//! ├── engine::watch_tick::schedule_tests
 //! ├── engine::worktree_link
 //! ├── flat_list
 //! ├── project_order
