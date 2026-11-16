@@ -77,7 +77,19 @@ pub trait MachineLink: Send {
     fn pairing_key(&mut self) -> Option<String> {
         self.org_name()
     }
+    /// /// Fetch the machine's push configuration from the control plane.
+    /// ///
+    /// /// # Errors
+    /// ///
+    /// /// Fails when the machine is not paired or the control plane refuses or
+    /// /// cannot be reached.
     fn machine_config(&mut self) -> Result<MachineConfig, MachineApiError>;
+    /// /// Send one batch of push events to the control plane.
+    /// ///
+    /// /// # Errors
+    /// ///
+    /// /// Fails when the machine is not paired or the control plane refuses or
+    /// /// cannot be reached.
     fn post_events(&mut self, batch: &EventBatch) -> Result<EventBatchResult, MachineApiError>;
     /// Raise the process-wide `RevocationSignal` (the cloud leg stops on it).
     fn report_revoked(&mut self);
@@ -86,7 +98,9 @@ pub trait MachineLink: Send {
 /// The production link: a client for whatever org the credentials name, built per call so
 /// a re-pair is picked up at the next flush.
 pub struct PairedLink {
+    /// /// Where the credentials are read from.
     pub paths: CloudPaths,
+    /// /// Builds the control-plane client for the org the credentials name.
     pub api: ApiFactory,
 }
 

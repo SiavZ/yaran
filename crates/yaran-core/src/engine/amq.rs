@@ -1302,7 +1302,11 @@ impl Engine {
                     &s.id,
                     s.project_id(),
                     self.session_mode(&s.id),
-                    self.session_is_live(s),
+                    if self.session_is_live(s) {
+                        orch::PeerLiveness::Live
+                    } else {
+                        orch::PeerLiveness::NotRunning
+                    },
                     orchestrator_id,
                     project,
                 )

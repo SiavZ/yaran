@@ -45,7 +45,7 @@ mod pair_phone;
 use std::io::{BufRead, Write};
 use std::time::Duration;
 
-pub use args::{CloudCommand, Verb, parse};
+pub use args::{CloudCommand, LoginArgs, LogoutArgs, RotateArgs, StatusArgs, Verb, parse};
 
 use crate::cloud::config::CloudConfig;
 use crate::cloud::machine_api::{ApiFactory, default_api_factory};
@@ -206,18 +206,10 @@ pub fn run_with(
             let _ = writeln!(out, "{}", help_for(verb));
             0
         }
-        CloudCommand::Login {
-            url,
-            name,
-            no_browser,
-        } => login::run(deps, url, name, no_browser, stdin, out),
-        CloudCommand::Logout { yes, local_only } => {
-            manage::logout(&deps, yes, local_only, stdin, out)
-        }
-        CloudCommand::Status { json, offline } => manage::status(&deps, json, offline, out),
-        CloudCommand::Rotate { yes, consent_key } => {
-            manage::rotate(&deps, yes, consent_key, stdin, out)
-        }
+        CloudCommand::Login(args) => login::run(deps, args, stdin, out),
+        CloudCommand::Logout(args) => manage::logout(&deps, args, stdin, out),
+        CloudCommand::Status(args) => manage::status(&deps, args, out),
+        CloudCommand::Rotate(args) => manage::rotate(&deps, args, stdin, out),
         CloudCommand::PairPhone { org } => pair_phone::run(&deps, org, out),
     }
 }
@@ -229,17 +221,14 @@ fn finish(outcome: &CloudActionOutcome, out: &mut dyn Write) -> i32 {
 }
 
 /// Ask a yes/no question on a terminal; off a terminal `--yes` is required.
-/// `Err(code)` means stop with that exit code.
+/// The caller skips it when `--yes` was given. `Err(code)` means stop with that
+/// exit code.
 fn confirm(
     deps: &CloudDeps,
-    yes: bool,
     question: &str,
     stdin: &mut dyn BufRead,
     out: &mut dyn Write,
 ) -> Result<(), i32> {
-    if yes {
-        return Ok(());
-    }
     if !deps.is_tty {
         let _ = writeln!(
             out,

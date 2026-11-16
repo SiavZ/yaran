@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::ProviderKind;
 
+/// /// One agent's own settings: its context mode, permission bypass, envelope
+/// /// check and prompts, stored with the agent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionSettings {
@@ -97,8 +99,10 @@ pub enum ContextMode {
 }
 
 impl ContextMode {
+    /// /// Every mode, in the order a chooser lists them.
     pub const ALL: [ContextMode; 3] = [Self::Attended, Self::Orchestrator, Self::Worker];
 
+    /// /// The mode's stored token.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Attended => "attended",
@@ -107,6 +111,7 @@ impl ContextMode {
         }
     }
 
+    /// /// The mode's display name.
     pub fn label(self) -> &'static str {
         match self {
             Self::Attended => "Attended",
@@ -119,6 +124,7 @@ impl ContextMode {
 /// Env vars derived from [`SessionSettings`] for a spawned agent PTY.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PerSessionEnv {
+    /// /// The variables, in the order they are set.
     pub vars: Vec<(String, String)>,
 }
 
@@ -144,6 +150,10 @@ impl SessionSettings {
     }
 
     /// Serialise for storage. Always valid JSON.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: every field serialises.
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("SessionSettings serialises")
     }
@@ -190,6 +200,10 @@ impl SessionSettings {
     /// Every agent launch appends these through
     /// [`crate::agent_env::session_settings_env`], after the YARAN_* identity
     /// and before the user's `[env]`.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "the bool is the `[amq.inject].verify_envelope` setting exactly as the config holds it"
+    )]
     pub fn to_pty_env(
         &self,
         provider: &ProviderKind,

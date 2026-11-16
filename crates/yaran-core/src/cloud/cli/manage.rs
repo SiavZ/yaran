@@ -27,30 +27,31 @@
 
 use std::io::{BufRead, Write};
 
+use super::args::{LogoutArgs, RotateArgs, StatusArgs};
 use super::{CloudDeps, confirm, finish};
 use crate::cloud::actions;
 use crate::cloud::credentials;
 use crate::cloud::outcome::CloudActionOutcome;
 use crate::cloud::status::{StatusReport, gather};
 
-pub(super) fn status(deps: &CloudDeps, json: bool, offline: bool, out: &mut dyn Write) -> i32 {
+pub(super) fn status(deps: &CloudDeps, args: StatusArgs, out: &mut dyn Write) -> i32 {
     let report = gather(
         &deps.paths,
         deps.config.mode(),
-        (!offline).then_some(&deps.api),
+        (!args.offline).then_some(&deps.api),
     );
-    print_status(&report, json, report.exit_code(), out)
-}
-
-fn print_status(r: &StatusReport, json: bool, code: i32, out: &mut dyn Write) -> i32 {
-    if json {
+    if args.json {
         let _ = writeln!(
             out,
             "{}",
-            serde_json::to_string_pretty(r).unwrap_or_default()
+            serde_json::to_string_pretty(&report).unwrap_or_default()
         );
-        return code;
+        return report.exit_code();
     }
+    print_status(&report, report.exit_code(), out)
+}
+
+fn print_status(r: &StatusReport, code: i32, out: &mut dyn Write) -> i32 {
     if let Some(e) = &r.error {
         let _ = writeln!(out, "{e}");
         return code;
@@ -111,15 +112,14 @@ fn print_status(r: &StatusReport, json: bool, code: i32, out: &mut dyn Write) ->
 
 pub(super) fn logout(
     deps: &CloudDeps,
-    yes: bool,
-    local_only: bool,
+    args: LogoutArgs,
     mut stdin: Box<dyn BufRead + Send>,
     out: &mut dyn Write,
 ) -> i32 {
     let creds = match credentials::read(&deps.paths) {
         Ok(Some(c)) => Some(c),
         Ok(None) => return finish(&CloudActionOutcome::NotPaired, out),
-        Err(e) if local_only => {
+        Err(e) if args.local_only => {
             let _ = writeln!(out, "{e}");
             None
         }
@@ -139,10 +139,12 @@ pub(super) fn logout(
         ),
         None => "Forget this machine's unreadable cloud credentials?".to_string(),
     };
-    if let Err(code) = confirm(deps, yes, &question, &mut *stdin, out) {
+    if !args.yes
+        && let Err(code) = confirm(deps, &question, &mut *stdin, out)
+    {
         return code;
     }
-    let outcome = actions::logout(&deps.paths, &deps.api, local_only);
+    let outcome = actions::logout(&deps.paths, &deps.api, args.local_only);
     let code = finish(&outcome, out);
     if !matches!(
         outcome,
@@ -161,8 +163,7 @@ pub(super) fn logout(
 
 pub(super) fn rotate(
     deps: &CloudDeps,
-    yes: bool,
-    consent_key: bool,
+    args: RotateArgs,
     mut stdin: Box<dyn BufRead + Send>,
     out: &mut dyn Write,
 ) -> i32 {
@@ -178,7 +179,7 @@ pub(super) fn rotate(
             );
         }
     };
-    let question = if consent_key {
+    let question = if args.consent_key {
         format!(
             "Replace the phone consent key of {}? Every phone will see the consent page once more on it.",
             creds.hostname
@@ -189,10 +190,12 @@ pub(super) fn rotate(
             creds.hostname
         )
     };
-    if let Err(code) = confirm(deps, yes, &question, &mut *stdin, out) {
+    if !args.yes
+        && let Err(code) = confirm(deps, &question, &mut *stdin, out)
+    {
         return code;
     }
-    let outcome = if consent_key {
+    let outcome = if args.consent_key {
         actions::rotate_consent_key(&deps.paths)
     } else {
         actions::rotate_token(&deps.paths, &deps.api)

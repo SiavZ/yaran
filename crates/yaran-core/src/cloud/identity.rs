@@ -47,6 +47,10 @@ impl std::fmt::Debug for MachineIdentity {
 
 impl MachineIdentity {
     /// A fresh key.
+    ///
+    /// # Errors
+    ///
+    /// Fails, with the sentence to show, when the system random source fails.
     pub fn generate() -> Result<Self, String> {
         let doc = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
             .map_err(|_| "the system random source failed while generating the machine key")?;
@@ -54,6 +58,10 @@ impl MachineIdentity {
     }
 
     /// Load a stored PKCS#8 document.
+    ///
+    /// # Errors
+    ///
+    /// Fails, with the sentence to show, when the document is not an Ed25519 key.
     pub fn from_pkcs8(pkcs8: &[u8]) -> Result<Self, String> {
         let key = Ed25519KeyPair::from_pkcs8(pkcs8)
             .map_err(|_| "the stored machine key is not a valid Ed25519 PKCS#8 document")?;
@@ -63,14 +71,17 @@ impl MachineIdentity {
         })
     }
 
+    /// /// The signing key.
     pub fn key_pair(&self) -> &Ed25519KeyPair {
         &self.key
     }
 
+    /// /// The key's PKCS#8 document, as stored.
     pub fn pkcs8(&self) -> &[u8] {
         &self.pkcs8
     }
 
+    /// /// The raw 32-byte public key.
     pub fn public_key(&self) -> [u8; 32] {
         let mut out = [0u8; 32];
         out.copy_from_slice(self.key.public_key().as_ref());
@@ -117,6 +128,10 @@ pub fn slugify_machine_name(host: &str) -> String {
 
 /// Check a `--name`: it must already be a `MachineName`. The error names the rule and
 /// suggests the slugified form.
+///
+/// # Errors
+///
+/// Fails with the sentence to show when the name breaks the rule.
 pub fn check_machine_name(name: &str) -> Result<(), String> {
     if is_machine_name(name) {
         return Ok(());

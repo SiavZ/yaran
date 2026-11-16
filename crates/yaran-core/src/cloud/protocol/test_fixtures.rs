@@ -38,6 +38,7 @@
 //! ```
 //! <module-headers:end>
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -47,12 +48,12 @@ use serde_json::Value;
 use super::rules::Validate;
 
 /// The `cloud/protocol` package root.
-pub fn protocol_root() -> PathBuf {
+pub(crate) fn protocol_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cloud/protocol")
 }
 
 /// Parses a JSON file under the package root (`fixtures/...` or `registry/...`).
-pub fn load(relative: &str) -> Value {
+pub(crate) fn load(relative: &str) -> Value {
     let path = protocol_root().join(relative);
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("fixture {} must be readable: {e}", path.display()));
@@ -60,14 +61,14 @@ pub fn load(relative: &str) -> Value {
 }
 
 /// Parses a fixture under `fixtures/`.
-pub fn fixture(relative: &str) -> Value {
+pub(crate) fn fixture(relative: &str) -> Value {
     load(&format!("fixtures/{relative}"))
 }
 
 type Cases = Vec<(String, Value)>;
 
 /// The `(valid, invalid)` named values of `fixtures/api/<Type>.json`.
-pub fn api_cases(type_name: &str) -> (Cases, Cases) {
+pub(crate) fn api_cases(type_name: &str) -> (Cases, Cases) {
     let file = fixture(&format!("api/{type_name}.json"));
     let list = |key: &str| -> Cases {
         file[key]
@@ -92,7 +93,7 @@ pub fn api_cases(type_name: &str) -> (Cases, Cases) {
 
 /// Every valid value deserializes, validates and re-serializes to an equal value; every
 /// invalid value fails to deserialize or fails validation.
-pub fn assert_api_type<T: DeserializeOwned + Serialize + Validate>(type_name: &str) {
+pub(crate) fn assert_api_type<T: DeserializeOwned + Serialize + Validate>(type_name: &str) {
     let (valid, invalid) = api_cases(type_name);
     for (name, value) in valid {
         let parsed: T = serde_json::from_value(value.clone())
@@ -116,12 +117,15 @@ pub fn assert_api_type<T: DeserializeOwned + Serialize + Validate>(type_name: &s
 }
 
 /// Lowercase hex of bytes.
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
 /// Bytes of a hex string.
-pub fn unhex(s: &str) -> Vec<u8> {
+pub(crate) fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))

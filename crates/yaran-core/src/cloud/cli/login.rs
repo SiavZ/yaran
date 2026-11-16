@@ -27,6 +27,7 @@ use std::io::{BufRead, Write};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use super::args::LoginArgs;
 use super::{CloudDeps, finish};
 use crate::cloud::leg_state;
 use crate::cloud::login::{LoginIo, LoginParams, LoginStep, run_login};
@@ -99,12 +100,15 @@ impl LoginIo for CliIo<'_> {
 
 pub(super) fn run(
     mut deps: CloudDeps,
-    url: Option<String>,
-    name: Option<String>,
-    no_browser: bool,
+    args: LoginArgs,
     stdin: Box<dyn BufRead + Send>,
     out: &mut dyn Write,
 ) -> i32 {
+    let LoginArgs {
+        url,
+        name,
+        no_browser,
+    } = args;
     let org_url = url.unwrap_or_else(|| deps.config.org_url.clone());
     if org_url.trim().is_empty() {
         let _ = writeln!(

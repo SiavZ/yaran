@@ -29,6 +29,10 @@ use ring::rand::{SecureRandom, SystemRandom};
 use crate::cloud::protocol::rules::b64url_encode;
 
 /// 32 random bytes, base64url (43 characters).
+///
+/// # Errors
+///
+/// Fails when the system random source fails.
 pub fn random_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     SystemRandom::new()
@@ -54,8 +58,11 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 /// One login attempt's secrets.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Pkce {
+    /// /// The code verifier, kept here and sent only when the code is redeemed.
     pub verifier: String,
+    /// /// The `S256` challenge of the verifier, sent with the authorize request.
     pub challenge: String,
+    /// /// The state value that ties the callback to this attempt.
     pub state: String,
 }
 
@@ -66,6 +73,11 @@ impl std::fmt::Debug for Pkce {
 }
 
 impl Pkce {
+    /// /// Fresh secrets for one attempt.
+    /// ///
+    /// /// # Errors
+    /// ///
+    /// /// Fails when the system random source fails.
     pub fn generate() -> Result<Self, String> {
         let verifier = random_token()?;
         Ok(Self {

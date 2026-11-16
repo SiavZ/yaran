@@ -209,6 +209,7 @@ pub enum Action {
     /// Show the right column's next / previous tab while the human board is
     /// on: a person's queue, every card, or the Changes list.
     NextRightTab,
+    /// The previous tab of the right column; see [`Action::NextRightTab`].
     PrevRightTab,
     // Commit message editor
     /// Exit the commit message editor.
@@ -399,9 +400,13 @@ pub enum Action {
     /// login, unpair it, rotate its tunnel token, show its pairing, and show the
     /// QR code that adds the organization to the phone app.
     CloudLogin,
+    /// Unpair this machine from Yaran Cloud.
     CloudLogout,
+    /// Rotate this machine's tunnel token.
     CloudRotateToken,
+    /// Show this machine's Yaran Cloud pairing.
     CloudStatus,
+    /// Show the QR code that adds the organization to the phone app.
     CloudPairPhone,
     /// Flip `ui.nerd_font_icons`: whether the terminal UI draws its icons from a
     /// Nerd Font instead of the plain Unicode set. TUI-only.
@@ -1092,8 +1097,8 @@ impl Action {
             | Action::CloudStatus
             | Action::CloudPairPhone
             | Action::WatchRules => None,
-            Action::SessionSettings => Some("Global"),
-            Action::OpenMacroBar
+            Action::SessionSettings
+            | Action::OpenMacroBar
             | Action::OpenCurrentPullRequest
             | Action::NextPullRequest
             | Action::ToggleFullscreen

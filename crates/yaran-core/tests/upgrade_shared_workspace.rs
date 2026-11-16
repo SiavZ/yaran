@@ -20,7 +20,7 @@
 //! because a fork user's database went through it.
 
 use rusqlite::Connection;
-use yaran_core::model::is_valid_agent_handle;
+use yaran_core::model::{SessionStatus, is_valid_agent_handle};
 use yaran_core::storage::SessionStore;
 
 const FORK_MIGRATIONS: &[&str] = &[
@@ -72,7 +72,7 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
                 PRAGMA foreign_keys = ON;
                 "#,
             )
-            .unwrap();
+            .expect("the fixture database");
         }
         let tx = conn.transaction().expect("the fixture database");
         if version == 5 {
@@ -97,13 +97,17 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
                 from agent_sessions;
                 ",
             )
-            .unwrap();
+            .expect("the fixture database");
             tx.execute_batch(after).expect("the fixture database");
         } else {
             tx.execute_batch(sql).expect("the fixture database");
         }
-        tx.pragma_update(None, "user_version", version as i64)
-            .expect("the fixture database");
+        tx.pragma_update(
+            None,
+            "user_version",
+            i64::try_from(version).expect("a small version"),
+        )
+        .expect("the fixture database");
         tx.commit().expect("the fixture database");
     }
     // Rows a fork build wrote after reaching schema 6.
@@ -124,7 +128,7 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
            '2026-02-03T00:00:00Z', null, null, 3, 0, 'gone', '2026-02-04T00:00:00+00:00', '{}');
         "#,
     )
-    .unwrap();
+    .expect("the fixture database");
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("the fixture database");
@@ -145,7 +149,7 @@ fn handles(path: &std::path::Path) -> Vec<(String, String, i64, Option<String>)>
     })
     .expect("the fixture database")
     .collect::<rusqlite::Result<Vec<_>>>()
-    .unwrap()
+    .expect("the fixture database")
 }
 
 #[test]
@@ -342,7 +346,6 @@ fn fork_state_json_rows_load_as_reconnectable_sessions() {
             .unwrap_or_else(|| panic!("{id} lost in the upgrade"))
             .status
     };
-    use yaran_core::model::SessionStatus;
     assert_eq!(
         status_of("spawning-1"),
         SessionStatus::Detached,

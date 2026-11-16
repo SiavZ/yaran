@@ -193,12 +193,12 @@ fn render_rust_section_text(
         );
     }
     out.push_str("\n== Sessions DB (Rust-side) ==\n");
-    let _ = write!(out, "{:<16} {}\n", "path:", doctor_db_path(paths, privacy));
-    let _ = write!(out, "{:<16} {}\n", "integrity:", snap.integrity);
-    let _ = write!(out, "{:<16} {}\n", "active:", snap.active);
-    let _ = write!(out, "{:<16} {}\n", "detached:", snap.detached);
-    let _ = write!(out, "{:<16} {}\n", "exited:", snap.exited);
-    let _ = write!(out, "{:<16} {}\n", "orphaned:", snap.orphaned_worktrees);
+    let _ = writeln!(out, "{:<16} {}", "path:", doctor_db_path(paths, privacy));
+    let _ = writeln!(out, "{:<16} {}", "integrity:", snap.integrity);
+    let _ = writeln!(out, "{:<16} {}", "active:", snap.active);
+    let _ = writeln!(out, "{:<16} {}", "detached:", snap.detached);
+    let _ = writeln!(out, "{:<16} {}", "exited:", snap.exited);
+    let _ = writeln!(out, "{:<16} {}", "orphaned:", snap.orphaned_worktrees);
     append_orphaned_sessions_text(&mut out, snap, privacy);
     out
 }
@@ -238,7 +238,7 @@ fn append_orphaned_sessions_text(out: &mut String, snap: &SessionsSnapshot, priv
     } else {
         shown.to_string()
     };
-    let _ = write!(out, "{:<16} {summary}\n", "orphaned_list:");
+    let _ = writeln!(out, "{:<16} {summary}", "orphaned_list:");
     for (index, session) in snap.orphaned_sessions.iter().enumerate() {
         let [id, provider, branch, worktree_path] = orphan_fields(session, index, privacy);
         let _ = write!(

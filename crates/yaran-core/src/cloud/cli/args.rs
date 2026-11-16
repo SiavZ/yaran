@@ -51,40 +51,56 @@ pub enum CloudCommand {
     /// Print help, for one verb or all of them.
     Help(Option<Verb>),
     /// Pair this machine.
-    Login {
-        /// The organization's address, when given.
-        url: Option<String>,
-        /// The machine name to ask for.
-        name: Option<String>,
-        /// Print the approval address instead of opening a browser.
-        no_browser: bool,
-    },
+    Login(LoginArgs),
     /// Disconnect this machine.
-    Logout {
-        /// Skip the confirmation.
-        yes: bool,
-        /// Forget the pairing here without telling the control plane.
-        local_only: bool,
-    },
+    Logout(LogoutArgs),
     /// Report the pairing and the tunnel.
-    Status {
-        /// Print JSON.
-        json: bool,
-        /// Report only what is on disk, asking nobody.
-        offline: bool,
-    },
+    Status(StatusArgs),
     /// Rotate the tunnel token, or the consent key.
-    Rotate {
-        /// Skip the confirmation.
-        yes: bool,
-        /// Rotate the consent key instead of the tunnel token.
-        consent_key: bool,
-    },
+    Rotate(RotateArgs),
     /// Show the QR code a phone pairs with.
     PairPhone {
         /// The organization to pair the phone with.
         org: Option<String>,
     },
+}
+
+/// The options of `yaran cloud login`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LoginArgs {
+    /// The organization's address, when given.
+    pub url: Option<String>,
+    /// The machine name to ask for.
+    pub name: Option<String>,
+    /// Print the approval address instead of opening a browser.
+    pub no_browser: bool,
+}
+
+/// The options of `yaran cloud logout`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogoutArgs {
+    /// Skip the confirmation.
+    pub yes: bool,
+    /// Forget the pairing here without telling the control plane.
+    pub local_only: bool,
+}
+
+/// The options of `yaran cloud status`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatusArgs {
+    /// Print JSON.
+    pub json: bool,
+    /// Report only what is on disk, asking nobody.
+    pub offline: bool,
+}
+
+/// The options of `yaran cloud rotate`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RotateArgs {
+    /// Skip the confirmation.
+    pub yes: bool,
+    /// Rotate the consent key instead of the tunnel token.
+    pub consent_key: bool,
 }
 
 /// Parse the arguments after `yaran cloud`.
@@ -140,23 +156,23 @@ pub fn parse(args: &[String]) -> Result<CloudCommand, String> {
         }
     }
     Ok(match verb {
-        Verb::Login => CloudCommand::Login {
+        Verb::Login => CloudCommand::Login(LoginArgs {
             url: positional.pop(),
             no_browser: flags.has(Switch::NoBrowser),
             name: flags.name,
-        },
-        Verb::Logout => CloudCommand::Logout {
+        }),
+        Verb::Logout => CloudCommand::Logout(LogoutArgs {
             yes: flags.has(Switch::Yes),
             local_only: flags.has(Switch::LocalOnly),
-        },
-        Verb::Status => CloudCommand::Status {
+        }),
+        Verb::Status => CloudCommand::Status(StatusArgs {
             json: flags.has(Switch::Json),
             offline: flags.has(Switch::Offline),
-        },
-        Verb::Rotate => CloudCommand::Rotate {
+        }),
+        Verb::Rotate => CloudCommand::Rotate(RotateArgs {
             yes: flags.has(Switch::Yes),
             consent_key: flags.has(Switch::ConsentKey),
-        },
+        }),
         Verb::PairPhone => CloudCommand::PairPhone { org: flags.org },
     })
 }
@@ -219,32 +235,32 @@ mod tests {
                 "box",
                 "--no-browser"
             ]),
-            Ok(CloudCommand::Login {
+            Ok(CloudCommand::Login(LoginArgs {
                 url: Some("https://c.example.com".into()),
                 name: Some("box".into()),
                 no_browser: true
-            })
+            }))
         );
         assert_eq!(
             p(&["logout", "--yes", "--local-only"]),
-            Ok(CloudCommand::Logout {
+            Ok(CloudCommand::Logout(LogoutArgs {
                 yes: true,
                 local_only: true
-            })
+            }))
         );
         assert_eq!(
             p(&["status", "--json", "--offline"]),
-            Ok(CloudCommand::Status {
+            Ok(CloudCommand::Status(StatusArgs {
                 json: true,
                 offline: true
-            })
+            }))
         );
         assert_eq!(
             p(&["rotate", "--consent-key", "-y"]),
-            Ok(CloudCommand::Rotate {
+            Ok(CloudCommand::Rotate(RotateArgs {
                 yes: true,
                 consent_key: true
-            })
+            }))
         );
         assert_eq!(
             p(&["pair-phone", "--org", "x"]),

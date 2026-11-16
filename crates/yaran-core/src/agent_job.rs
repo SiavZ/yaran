@@ -1113,6 +1113,10 @@ impl CreatePlanContext<'_> {
             })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match over every create request, each arm planning its own worktree"
+    )]
     fn plan(&mut self, request: CreateAgentRequest) -> Option<ManagedCreatePlan> {
         match request {
             CreateAgentRequest::Standalone { .. } => {
@@ -2966,11 +2970,15 @@ fn apply_pending_copy(
     clippy::too_many_arguments,
     reason = "every input of the create job, handed over once by the job that dispatches it"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the create job's steps in order, each reporting its own failure sentence"
+)]
 fn run_create_standalone_agent_job(
     folder: &Path,
     title: &str,
     provider: &crate::model::ProviderKind,
-    paths: YaranPaths,
+    paths: &YaranPaths,
     config: &Config,
     worker_tx: &Sender<WorkerEvent>,
     term_size: (u16, u16),
@@ -3035,7 +3043,7 @@ fn run_create_standalone_agent_job(
     // A brand-new agent has no saved settings row yet, so it launches with
     // the defaults; a later settings change applies at its next launch.
     let env = crate::agent_env::agent_launch_env(
-        &paths,
+        paths,
         config,
         &session,
         &crate::session_settings::SessionSettings::default(),
@@ -3129,6 +3137,10 @@ pub const SHARED_DETACHED_HEAD_LABEL: &str = "detached HEAD";
 #[expect(
     clippy::too_many_arguments,
     reason = "every input of the create job, handed over once by the job that planned it"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the create job's steps in order, each reporting its own failure sentence"
 )]
 fn run_create_shared_agent_job(
     project: &crate::model::Project,
@@ -3468,6 +3480,10 @@ impl ProvisionedCreate {
     /// Resolve the agent's environment, run the project's startup command, and
     /// launch the provider, reporting each step to `worker_tx` under
     /// `create_key`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "environment, startup command and provider launch in order, each reporting its own step"
+    )]
     fn launch(
         self,
         paths: &YaranPaths,
@@ -3845,7 +3861,7 @@ pub fn run_create_agent_job(
     {
         let gate = crate::process_sessions::SpawnGate::new(registry.clone(), worktrees.clone());
         run_create_standalone_agent_job(
-            &folder, &title, &provider, paths, config, worker_tx, term_size, create_key, identity,
+            &folder, &title, &provider, &paths, config, worker_tx, term_size, create_key, identity,
             &gate,
         );
         return;
@@ -3930,6 +3946,10 @@ fn roll_back_failed_create(request: &AgentLaunchRequest, rollback: Option<&Rollb
 
 /// [`run_agent_launch_job`], with what a create's launch needs to take its
 /// worktree back if the launch fails.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the launch's steps in order, each with the rollback a failure owes"
+)]
 fn run_agent_launch_job_with(
     request: AgentLaunchRequest,
     worker_tx: &Sender<WorkerEvent>,
