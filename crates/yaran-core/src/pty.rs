@@ -933,7 +933,7 @@ pub struct PtyClient {
     /// without any caller having to stamp a launch time of its own (a stamp in
     /// an engine map would have to be cleared on every teardown path, and the
     /// one that matters here is the teardown the prune itself performs).
-    spawned_at: Instant,
+    pub(crate) spawned_at: Instant,
     exited: Arc<AtomicBool>,
     /// When the reader thread reached end of input, written once immediately
     /// BEFORE it sets `exited`, so anyone who observes `exited` (an `Acquire`

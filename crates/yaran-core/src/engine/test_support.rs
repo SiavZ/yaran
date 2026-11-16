@@ -15,6 +15,7 @@
 //! ├── term_identity
 //! ├── test_provider
 //! ├── test_scratch
+//! ├── watch::runtime
 //! └── worker
 //! External: chrono, std, tempfile
 //!
@@ -121,7 +122,12 @@ pub(crate) fn test_engine() -> (Engine, ScratchDir) {
         providers: HashMap::new(),
         running_provider_pins: HashMap::new(),
         launched_drop_paste: HashMap::new(),
-        watch: Default::default(),
+        // Built-in rules fire on what a test prints right after its spawn,
+        // unless the test is about the startup settle window.
+        watch: crate::watch::runtime::WatchRuntime {
+            built_in_startup_settle: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        },
         companion_terminals: HashMap::new(),
         agent_tabs: HashMap::new(),
         terminating_ptys: Vec::new(),
