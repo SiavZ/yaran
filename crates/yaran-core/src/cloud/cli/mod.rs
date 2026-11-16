@@ -160,7 +160,16 @@ pub struct CloudDeps {
 /// `yaran cloud ...` from the binary. Returns the process exit code.
 pub fn run_cloud(args: &[String], paths: &crate::config::YaranPaths) -> i32 {
     use std::io::IsTerminal;
-    let config = crate::config::load_config(paths);
+    // A config that does not load (a broken `[server.auth]`, unreadable TOML)
+    // is refused, not replaced by the defaults: the defaults would point the
+    // pairing at the wrong control plane and server port.
+    let config = match crate::config::load_config(paths) {
+        Ok(config) => config,
+        Err(err) => {
+            let _ = writeln!(std::io::stdout(), "yaran cloud: {err}");
+            return 1;
+        }
+    };
     let deps = CloudDeps {
         paths: CloudPaths::new(paths),
         api: default_api_factory(Duration::from_secs(

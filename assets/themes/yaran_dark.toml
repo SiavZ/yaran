@@ -108,7 +108,6 @@ ansi_darkgray = "#808080"
 # ── Hint / footer bar ────────────────────────────────────────────────
 "yaran.hint_key_fg"          = "ansi_cyan"
 "yaran.hint_bracket_fg"      = "ansi_darkgray"
-"yaran.hint_key_bg"          = "#232323"
 "yaran.hint_desc_fg"         = "#a0a0a0"
 "yaran.hint_dim_key_fg"      = "#508ca0"
 "yaran.hint_dim_bracket_fg"  = "#3c3c3c"
@@ -121,6 +120,10 @@ ansi_darkgray = "#808080"
 # because it is holding unsaved work. Must contrast with yaran.overlay_border.
 "yaran.overlay_border_refused" = "ansi_red"
 "yaran.overlay_bg"           = "#141414"
+# In-pane cards (the quiet changes message, a tab that is not running) are
+# part of the pane, not dialogs, so they sit on yaran.app_bg by default. Set
+# this to give them a fill of their own:
+# "yaran.pane_card_bg"       = "#141414"
 "yaran.overlay_dim_bg"       = "#0a0a0a"
 "yaran.overlay_dim_fg"       = "ansi_darkgray"
 "yaran.prompt_cursor"        = "ansi_cyan"
@@ -132,6 +135,8 @@ ansi_darkgray = "#808080"
 "yaran.scroll_indicator_fg"  = "#d2d2d2"
 "yaran.scroll_indicator_bg"  = "#373737"
 "yaran.warning_fg"           = "ansi_yellow"
+# Text that reports success (an OK line or a 2xx status in the server log).
+"yaran.success_fg"           = "ansi_green"
 # Emphasis on the part of a row label the agent-list search matched.
 "yaran.search_match_fg"      = "ansi_yellow"
 

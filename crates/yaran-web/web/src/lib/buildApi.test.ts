@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { fetchServerIdentity, serverChanged } from "./buildApi"
+import { DEFAULT_RECONNECT_ATTEMPT_TIMEOUT_SECONDS } from "./connectionTiming"
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -49,16 +50,28 @@ describe("serverChanged", () => {
 })
 
 describe("fetchServerIdentity", () => {
-  it("reads the two documented fields", async () => {
+  it("reads the documented fields", async () => {
     stubFetch(() => ({
       ok: true,
       status: 200,
-      json: async () => ({ version: "development", process: "run-7" }),
+      json: async () => ({ version: "development", process: "run-7", instance: "yaran-a" }),
     }))
     await expect(fetchServerIdentity()).resolves.toEqual({
       version: "development",
       process: "run-7",
+      instance: "yaran-a",
     })
+  })
+
+  it("answers null when the build read never finishes, after the request deadline", async () => {
+    vi.useFakeTimers()
+    stubFetch(
+      () => new Response(new ReadableStream({ start() {} }), { status: 200 }) as unknown as Response,
+    )
+    const pending = fetchServerIdentity()
+    await vi.advanceTimersByTimeAsync(DEFAULT_RECONNECT_ATTEMPT_TIMEOUT_SECONDS * 1000)
+    await expect(pending).resolves.toBeNull()
+    vi.useRealTimers()
   })
 
   it("answers null rather than throwing when the server is unreachable", async () => {
@@ -84,5 +97,30 @@ describe("fetchServerIdentity", () => {
     await expect(fetchServerIdentity()).resolves.toBeNull()
     stubFetch(() => ({ ok: true, status: 200, json: async () => "nope" }))
     await expect(fetchServerIdentity()).resolves.toBeNull()
+  })
+})
+
+describe("a read the sign-in gate stopped", () => {
+  it("is thrown as the interruption, never answered as unknown", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        String(url).endsWith("/auth/status")
+          ? new Response(
+              JSON.stringify({ password_set: true, required_here: true, signed_in: false }),
+            )
+          : new Response("{}"),
+      ),
+    )
+    vi.resetModules()
+    const gate = await import("./authGate")
+    await gate.initAuthGate()
+    const { fetchServerIdentity: read } = await import("./buildApi")
+    const { isAuthInterruption } = await import("./apiFetch")
+    const err = await read().then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(isAuthInterruption(err)).toBe(true)
   })
 })

@@ -36,7 +36,9 @@ struct PrSyncState {
 
 impl PrSyncControl {
     fn lock(&self) -> MutexGuard<'_, PrSyncState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Arm pull-request work, and claim the poller slot if it is free.
@@ -64,7 +66,7 @@ impl PrSyncControl {
 
     /// The poller's own per-slice check. Returns `false` once, releasing the
     /// slot in the same critical section, when the loop must end.
-    pub fn poller_should_continue(&self) -> bool {
+    pub(crate) fn poller_should_continue(&self) -> bool {
         let mut state = self.lock();
         if state.enabled {
             return true;
@@ -76,12 +78,12 @@ impl PrSyncControl {
     /// Release the poller slot for a reason that is not a disarm: the event
     /// receiver was dropped, or the thread never started. A slot left claimed
     /// keeps pull-request polling dead for the rest of the process.
-    pub fn poller_stopped(&self) {
+    pub(crate) fn poller_stopped(&self) {
         self.lock().poller_live = false;
     }
 
     /// Record that a one-shot refresh was dispatched.
-    pub fn note_refresh(&self) {
+    pub(crate) fn note_refresh(&self) {
         self.lock().refresh_starts += 1;
     }
 

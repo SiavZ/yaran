@@ -23,6 +23,7 @@
 
 use std::collections::HashSet;
 
+use crate::engine::AttentionIndicator;
 use crate::engine::attention_decision::apply_attention_decision;
 use crate::ids::{TabId, TabIdRef};
 
@@ -56,7 +57,12 @@ impl PushEdges {
         live: impl Fn(&TabIdRef) -> bool,
     ) -> Vec<Edge> {
         let before = self.shadow.clone();
-        apply_attention_decision(&mut self.shadow, fired, enabled, engaged);
+        let indicator = if enabled {
+            AttentionIndicator::On
+        } else {
+            AttentionIndicator::Off
+        };
+        apply_attention_decision(&mut self.shadow, fired, indicator, engaged);
         self.shadow.retain(|tab| live(tab));
         let raised = self.shadow.difference(&before).map(|tab| Edge {
             tab: tab.clone(),
@@ -171,7 +177,7 @@ mod tests {
         for (i, fired) in ticks.into_iter().enumerate() {
             let engaged = |tab: &TabIdRef| i == 2 && tab.as_str() == "a";
             e.observe(fired, true, engaged, LIVE);
-            apply_attention_decision(&mut ui, fired, true, engaged);
+            apply_attention_decision(&mut ui, fired, AttentionIndicator::On, engaged);
             for tab in ["a", "b"] {
                 assert_eq!(
                     e.contains(TabIdRef::new(tab)),

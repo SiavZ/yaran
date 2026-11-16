@@ -54,7 +54,7 @@ const RELEASE_NOTES_STATUS_KEY: &str = "release-notes-fetch";
 /// the on-demand read talks to. Held in [`crate::server::AppState`] as an `Arc` so
 /// every request sees one decision. The screen is `None` until the resolver task
 /// finishes, and again once a client dismisses it.
-pub struct FirstLoadState {
+pub(crate) struct FirstLoadState {
     pending: Mutex<Option<PendingFirstLoadView>>,
     /// Where release-notes fetches point. Production passes
     /// `yaran_core::urls::GITHUB_API_BASE`; tests point it at a local server so no
@@ -63,7 +63,7 @@ pub struct FirstLoadState {
 }
 
 impl FirstLoadState {
-    pub fn new(api_base: impl Into<String>) -> Self {
+    pub(crate) fn new(api_base: impl Into<String>) -> Self {
         Self {
             pending: Mutex::new(None),
             api_base: api_base.into(),
@@ -72,12 +72,18 @@ impl FirstLoadState {
 
     /// The screen to show, for injection into the bootstrap document. A cheap
     /// clone under a short lock; the guard never crosses an `.await`.
-    pub fn pending(&self) -> Option<PendingFirstLoadView> {
-        self.pending.lock().unwrap().clone()
+    pub(crate) fn pending(&self) -> Option<PendingFirstLoadView> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn set_pending(&self, screen: Option<PendingFirstLoadView>) {
-        *self.pending.lock().unwrap() = screen;
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = screen;
     }
 }
 
@@ -93,7 +99,7 @@ pub fn routes() -> Router<AppState> {
 /// Spawned once from `build_app`. Requires a tokio runtime context, which every
 /// `build_app` caller provides (the CLI serve paths build inside `block_on`; the
 /// flip enters the runtime).
-pub fn spawn_first_load_resolver(
+pub(crate) fn spawn_first_load_resolver(
     engine: EngineHandle,
     bus: Arc<EventBus>,
     state: Arc<FirstLoadState>,
@@ -107,8 +113,10 @@ pub fn spawn_first_load_resolver(
         let plan = first_load::plan(
             inputs.last_seen.as_deref(),
             &inputs.running,
-            inputs.disable_welcome,
-            inputs.disable_release_notes,
+            first_load::AutomaticScreens {
+                disable_welcome: inputs.disable_welcome,
+                disable_release_notes: inputs.disable_release_notes,
+            },
         );
 
         match plan.screen {
@@ -255,15 +263,16 @@ async fn get_release_notes(State(state): State<AppState>, headers: HeaderMap) ->
     // being rejected, and usually answers from cache once it gets in. `None` means
     // the config value is 0, unlimited.
     let _permit = match &state.release_notes_semaphore {
-        Some(sem) => match Arc::clone(sem).acquire_owned().await {
-            Ok(permit) => Some(permit),
-            Err(_) => {
+        Some(sem) => {
+            if let Ok(permit) = Arc::clone(sem).acquire_owned().await {
+                Some(permit)
+            } else {
                 let message =
                     "the release-notes concurrency semaphore closed unexpectedly".to_string();
                 final_status("error", message.clone());
                 return (StatusCode::INTERNAL_SERVER_ERROR, message).into_response();
             }
-        },
+        }
         None => None,
     };
 

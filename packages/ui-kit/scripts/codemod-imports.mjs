@@ -9,6 +9,8 @@
  *
  * - `@/components/ui/<moved>` (or a relative `./ui/<moved>`) becomes `@yaran/ui-kit/<moved>`.
  * - `@/lib/utils` becomes `@yaran/ui-kit/cn`; `@/hooks/use-mobile` becomes `@yaran/ui-kit/use-mobile`.
+ * - `@/lib/focusRing`, `@/lib/modalHistory` and `@/hooks/use-back-dismiss`, which the
+ *   primitives themselves import, become `@yaran/ui-kit/<the same name>`.
  * - Usage: `node packages/ui-kit/scripts/codemod-imports.mjs [dir]` (default: the web's `src/`).
  *   Prints each file it changed; running it twice changes nothing.
  *
@@ -41,6 +43,8 @@ const UI_RE = new RegExp(`(["'])(?:@/components/|(?:\\.\\.?/)+(?:components/)?)u
 const RENAMES = [
   [new RegExp(`(["'])${PREFIX}lib/utils\\1`, "g"), "$1@yaran/ui-kit/cn$1"],
   [new RegExp(`(["'])${PREFIX}hooks/use-mobile\\1`, "g"), "$1@yaran/ui-kit/use-mobile$1"],
+  [new RegExp(`(["'])${PREFIX}lib/(focusRing|modalHistory)\\1`, "g"), "$1@yaran/ui-kit/$2$1"],
+  [new RegExp(`(["'])${PREFIX}hooks/use-back-dismiss\\1`, "g"), "$1@yaran/ui-kit/use-back-dismiss$1"],
   [UI_RE, "$1@yaran/ui-kit/$2$1"],
 ];
 

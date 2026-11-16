@@ -19,6 +19,7 @@
  * <module-headers:begin>
  * Uses:
  * src/lib/cloudApi.ts
+ * ├── src/lib/apiFetch.ts
  * ├── src/lib/connection.ts
  * └── src/lib/jsonRequest.ts
  * External: none
@@ -34,6 +35,7 @@
  * <module-headers:end>
  */
 
+import { apiFetch, rethrowAuthInterruption } from "./apiFetch"
 import { getConnectionId } from "./connection"
 import { createJsonRequest } from "./jsonRequest"
 
@@ -146,15 +148,16 @@ async function request<T>(
   if (id) headers["x-connection-id"] = id
   let resp: Response
   try {
-    resp = await fetch(path, {
+    resp = await apiFetch(path, {
       method,
       credentials: "same-origin",
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     })
-  } catch {
-    throw new Error("Could not reach the server.")
+  } catch (e) {
+    rethrowAuthInterruption(e)
+    throw new Error("Could not reach the server.", { cause: e })
   }
   if (!resp.ok) {
     const detail = (await resp.text().catch(() => "")).trim()

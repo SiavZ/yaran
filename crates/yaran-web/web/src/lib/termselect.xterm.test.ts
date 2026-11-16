@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { Unicode11Addon } from "@xterm/addon-unicode11"
 import { Terminal } from "@xterm/xterm"
 import { afterEach, describe, expect, it } from "vitest"
 
@@ -9,6 +10,7 @@ import {
   wordRangeAt,
   wordSpanAt,
 } from "./termselect"
+import { createSelectionDrag } from "@/components/terminal/selectionDrag"
 
 // Unlike every other terminal test in this repo, these mount the REAL
 // `@xterm/xterm`. jsdom cannot back its canvas, so the renderer never measures
@@ -80,12 +82,21 @@ interface OpenTerminal {
 
 async function openTerminal(
   text: string,
-  options: { cols?: number; rows?: number } = {},
+  options: { cols?: number; rows?: number; scrollback?: number } = {},
 ): Promise<OpenTerminal> {
   restoreMedia = stubMatchMedia()
   const host = document.createElement("div")
   document.body.appendChild(host)
-  const term = new Terminal({ cols: options.cols ?? 40, rows: options.rows ?? 10 })
+  const term = new Terminal({
+    cols: options.cols ?? 40,
+    rows: options.rows ?? 10,
+    ...(options.scrollback === undefined ? {} : { scrollback: options.scrollback }),
+    allowProposedApi: true,
+  })
+  // The width table every yaran pane runs with, so a glyph is as wide here as it
+  // is on screen.
+  term.loadAddon(new Unicode11Addon())
+  term.unicode.activeVersion = "11"
   term.open(host)
   opened.push(term)
   await new Promise<void>((resolve) => term.write(text, resolve))
@@ -100,6 +111,48 @@ async function openTerminal(
       return { cells: rowCells(line), isWrapped: line.isWrapped }
     },
   }
+}
+
+/**
+ * Lays the screen out at the origin in 10x20 cells, standing in for the
+ * browser's layout engine. Two private fields are forced (see the top of this
+ * file): without them the mouse finds no cell and the viewport cannot scroll.
+ */
+function layOut(opened: OpenTerminal): void {
+  const width = opened.term.cols * 10
+  const height = opened.term.rows * 20
+  opened.screen.getBoundingClientRect = () =>
+    ({
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: height,
+      width,
+      height,
+      x: 0,
+      y: 0,
+      toJSON() {},
+    }) as DOMRect
+  const core = (
+    opened.term as unknown as {
+      _core: { _renderService: object; _charSizeService: object }
+    }
+  )._core
+  Object.defineProperty(core._renderService, "dimensions", {
+    configurable: true,
+    value: {
+      css: { cell: { width: 10, height: 20 }, canvas: { width, height } },
+      device: {
+        cell: { width: 10, height: 20 },
+        canvas: { width, height },
+        char: { width: 10, height: 20, left: 0, top: 0 },
+      },
+    },
+  })
+  Object.defineProperty(core._charSizeService, "hasValidSize", {
+    configurable: true,
+    value: true,
+  })
 }
 
 /** A single-row word range pinned to one absolute row. */
@@ -157,21 +210,21 @@ describe("the pure helpers against a real xterm buffer", () => {
     }
   })
 
-  it("takes an emoji as ONE cell, because that is what xterm makes it", async () => {
-    // MEASURED, and it contradicts the obvious assumption, so it is pinned
-    // rather than left as folklore: under xterm's DEFAULT Unicode provider (v6
-    // wcwidth) an emoji from the U+1F300 block is width ONE, not two. The
-    // widths of "🎉😀★→日ａ" come back 1, 1, 1, 1, 2, 2. So the two-cell case
-    // this module cares about is CJK and the fullwidth forms; an emoji needs no
-    // special handling here at all, and a helper that assumed every emoji was
-    // wide would be wrong in this terminal. If yaran ever registers the v11
-    // provider, these widths move and the CJK tests above are what still hold.
+  it("keeps an emoji whole from either half of its two cells", async () => {
+    // Under the Unicode 11 table an emoji from the U+1F300 block is two cells,
+    // the same count the server's terminal model makes, so it follows the CJK
+    // rules above rather than being a one-cell glyph of its own.
     const { term, cells } = await openTerminal("ship 🎉 it\r\n")
     const row = cells(0)
-    expect(row[5]).toEqual({ chars: "🎉", width: 1 })
-    const word = wordRangeAt(row, 5)
-    term.select(word.startCol, 0, word.endColExclusive - word.startCol)
-    expect(term.getSelection()).toBe("🎉")
+    expect(row.slice(5, 7)).toEqual([
+      { chars: "🎉", width: 2 },
+      { chars: "", width: 0 },
+    ])
+    for (const col of [5, 6]) {
+      const word = wordRangeAt(row, col)
+      term.select(word.startCol, 0, word.endColExclusive - word.startCol)
+      expect(term.getSelection()).toBe("🎉")
+    }
   })
 
   it("keeps a fullwidth run whole from either half of any of its cells", async () => {
@@ -256,41 +309,7 @@ describe("a programmatic selection and the mouse afterwards", () => {
   // extending just changed under it) and costs the next drag nothing.
   async function openMouseable() {
     const opened = await openTerminal("hello world\r\n", { cols: 20, rows: 5 })
-    const rect = (el: HTMLElement) => {
-      el.getBoundingClientRect = () =>
-        ({
-          left: 0,
-          top: 0,
-          right: 200,
-          bottom: 100,
-          width: 200,
-          height: 100,
-          x: 0,
-          y: 0,
-          toJSON() {},
-        }) as DOMRect
-    }
-    rect(opened.screen)
-    const core = (
-      opened.term as unknown as {
-        _core: { _renderService: object; _charSizeService: object }
-      }
-    )._core
-    Object.defineProperty(core._renderService, "dimensions", {
-      configurable: true,
-      value: {
-        css: { cell: { width: 10, height: 20 }, canvas: { width: 200, height: 100 } },
-        device: {
-          cell: { width: 10, height: 20 },
-          canvas: { width: 200, height: 100 },
-          char: { width: 10, height: 20, left: 0, top: 0 },
-        },
-      },
-    })
-    Object.defineProperty(core._charSizeService, "hasValidSize", {
-      configurable: true,
-      value: true,
-    })
+    layOut(opened)
     return opened
   }
 
@@ -360,5 +379,123 @@ describe("a programmatic selection and the mouse afterwards", () => {
     expect(term.getSelection()).toBe("world")
     drag(screen, 0, 105)
     expect(term.getSelection()).toBe("hello worl")
+  })
+})
+
+// The touch selection gesture itself, over a real buffer that keeps receiving
+// output, because what goes wrong there is a question about how xterm moves its
+// viewport and trims its scrollback, which a stub would only answer with what
+// we already believed.
+describe("a touch selection while output streams", () => {
+  // A terminal laid out by `layOut`, 20x4 cells, filled with numbered lines.
+  async function openTouchable(lines: number, scrollback: number) {
+    let text = ""
+    for (let i = 0; i < lines; i++) text += `line ${i}\r\n`
+    const opened = await openTerminal(text, { cols: 20, rows: 4, scrollback })
+    layOut(opened)
+    return opened
+  }
+  const at = (col: number, row: number) =>
+    ({ clientX: col * 10 + 5, clientY: row * 20 + 10 }) as Touch
+  const write = (term: Terminal, text: string) =>
+    new Promise<void>((resolve) => term.write(text, resolve))
+  const topLine = (term: Terminal) =>
+    term.buffer.active.getLine(term.buffer.active.viewportY)?.translateToString(true)
+
+  it("holds the viewport still under the finger, then follows the output again", async () => {
+    const { term } = await openTouchable(8, 100)
+    const drag = createSelectionDrag(term)
+    const before = topLine(term)
+    drag.begin(at(5, 0))
+    await write(term, "line 8\r\nline 9\r\nline 10\r\n")
+    expect(topLine(term)).toBe(before)
+    drag.end()
+    expect(term.buffer.active.viewportY).toBe(term.buffer.active.baseY)
+  })
+
+  it("holds the viewport still when the scrollback is full and trimming", async () => {
+    const { term } = await openTouchable(12, 6)
+    const drag = createSelectionDrag(term)
+    const before = topLine(term)
+    drag.begin(at(5, 0))
+    await write(term, "line 12\r\nline 13\r\n")
+    expect(topLine(term)).toBe(before)
+  })
+
+  it("keeps the selection on the pressed word when a full scrollback trims under the drag", async () => {
+    const { term } = await openTouchable(12, 6)
+    const drag = createSelectionDrag(term)
+    // The top row on screen reads "line 9"; the press lands on its "9".
+    drag.begin(at(5, 0))
+    expect(term.getSelection()).toBe("9")
+    await write(term, "line 12\r\n")
+    drag.extend(at(6, 1))
+    // What the lift copies is what is highlighted: from the pressed word to the
+    // cell under the finger, both still where they were on screen.
+    expect(term.getSelection()).toBe("9\nline 10")
+    expect(term.getSelectionPosition()?.start.y).toBe(term.buffer.active.viewportY)
+  })
+
+  // A full-screen app on the alternate screen, cursor parked on its last row.
+  async function openFullScreenApp(screen: string) {
+    const opened = await openTouchable(0, 100)
+    await write(opened.term, `\x1b[?1049h\x1b[H${screen}`)
+    return opened
+  }
+
+  it("keeps the anchor on the pressed word when an app inserts a line below it", async () => {
+    const { term } = await openFullScreenApp("top\r\nhello there\r\nrow two\r\nrow three")
+    const drag = createSelectionDrag(term)
+    drag.begin(at(1, 1))
+    expect(term.getSelection()).toBe("hello")
+    // Cursor to row 2, insert a line there: rows below the word move, it does not.
+    await write(term, "\x1b[3;1H\x1b[L")
+    drag.extend(at(7, 1))
+    expect(term.getSelection()).toBe("hello th")
+  })
+
+  it("follows the pressed word when an app scrolls its screen up, cursor on the top row", async () => {
+    const { term } = await openFullScreenApp("top\r\nhello there\r\nrow two\r\nrow three")
+    await write(term, "\x1b[H")
+    const drag = createSelectionDrag(term)
+    drag.begin(at(1, 1))
+    await write(term, "\x1b[S")
+    // The word is on row 0 now and still on screen, so the drag carries on.
+    drag.extend(at(2, 1))
+    expect(drag.active()).toBe(true)
+    expect(term.getSelection()).toBe("hello there\nrow")
+  })
+
+  it("leaves the normal screen where it was when the gesture began in an app that then exits", async () => {
+    const { term } = await openTouchable(12, 100)
+    // One more line, so xterm's viewport measures the laid-out cells.
+    await write(term, "line 12\r\n")
+    term.scrollToLine(1)
+    expect(term.buffer.active.viewportY).toBe(1)
+    await write(term, "\x1b[?1049h\x1b[Hhello")
+    const drag = createSelectionDrag(term)
+    drag.begin(at(1, 0))
+    await write(term, "\x1b[?1049l")
+    drag.end()
+    expect(term.buffer.active.type).toBe("normal")
+    expect(term.buffer.active.viewportY).toBe(1)
+  })
+
+  it("keeps the viewport where it is when the app deletes the first line on screen", async () => {
+    const { term } = await openTouchable(12, 100)
+    const drag = createSelectionDrag(term)
+    const before = term.buffer.active.viewportY
+    drag.begin(at(5, 1))
+    // Cursor to the top row of the screen, delete that line.
+    await write(term, "\x1b[1;1H\x1b[M")
+    expect(term.buffer.active.viewportY).toBe(before)
+  })
+
+  it("ends the gesture when the terminal is resized under it", async () => {
+    const { term } = await openTouchable(12, 100)
+    const drag = createSelectionDrag(term)
+    drag.begin(at(5, 0))
+    term.resize(20, 5)
+    expect(drag.active()).toBe(false)
   })
 })

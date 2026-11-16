@@ -64,28 +64,29 @@ async fn boot() -> Harness {
     let root = tmp.path().to_path_buf();
     let repo = root.join("repo");
     let other = root.join("other");
-    std::fs::create_dir_all(&repo).unwrap();
-    std::fs::create_dir_all(&other).unwrap();
-    std::fs::write(repo.join("Cargo.toml"), "[package]\n").unwrap();
-    std::fs::write(repo.join(".bashrc"), "export X=1\n").unwrap();
-    std::fs::create_dir(repo.join("sub")).unwrap();
-    std::fs::write(repo.join("sub/child.rs"), "fn main() {}\n").unwrap();
-    std::fs::create_dir(repo.join(".cache")).unwrap();
-    std::fs::write(repo.join(".cache/blob"), "junk\n").unwrap();
+    std::fs::create_dir_all(&repo).expect("create the test directory");
+    std::fs::create_dir_all(&other).expect("create the test directory");
+    std::fs::write(repo.join("Cargo.toml"), "[package]\n").expect("write the test file");
+    std::fs::write(repo.join(".bashrc"), "export X=1\n").expect("write the test file");
+    std::fs::create_dir(repo.join("sub")).expect("create the test directory");
+    std::fs::write(repo.join("sub/child.rs"), "fn main() {}\n").expect("write the test file");
+    std::fs::create_dir(repo.join(".cache")).expect("create the test directory");
+    std::fs::write(repo.join(".cache/blob"), "junk\n").expect("write the test file");
     let wt1 = root.join("wt1");
-    std::fs::create_dir_all(&wt1).unwrap();
-    std::fs::write(wt1.join("agent.txt"), "agent\n").unwrap();
+    std::fs::create_dir_all(&wt1).expect("create the test directory");
+    std::fs::write(wt1.join("agent.txt"), "agent\n").expect("write the test file");
 
     let paths = YaranPaths {
         root: root.clone(),
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         for (id, path) in [("p1", &repo), ("p2", &other)] {
             store
                 .upsert_project(&ProjectConfig {
@@ -96,16 +97,16 @@ async fn boot() -> Harness {
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::new(),
                     workspace_mode: None,
                 })
-                .unwrap();
+                .expect("save the test project");
         }
         store
             .create_session(&sample_session("s1", wt1.to_string_lossy().as_ref()))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
@@ -118,15 +119,17 @@ async fn boot() -> Harness {
         Router::<AppState>::new(),
         RouterParams::plain_http(),
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     Harness {
         addr,
@@ -140,10 +143,13 @@ async fn create_project_terminal(addr: SocketAddr, project: &str) -> String {
         .post(format!("http://{addr}/api/v1/projects/{project}/terminals"))
         .send()
         .await
-        .unwrap();
+        .expect("send the request");
     assert_eq!(resp.status(), 201);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    body["terminal_id"].as_str().unwrap().to_string()
+    let body: serde_json::Value = resp.json().await.expect("the response body is JSON");
+    body["terminal_id"]
+        .as_str()
+        .expect("the response names the terminal")
+        .to_string()
 }
 
 async fn create_standalone_terminal(addr: SocketAddr) -> String {
@@ -151,10 +157,13 @@ async fn create_standalone_terminal(addr: SocketAddr) -> String {
         .post(format!("http://{addr}/api/v1/terminals"))
         .send()
         .await
-        .unwrap();
+        .expect("send the request");
     assert_eq!(resp.status(), 201);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    body["terminal_id"].as_str().unwrap().to_string()
+    let body: serde_json::Value = resp.json().await.expect("the response body is JSON");
+    body["terminal_id"]
+        .as_str()
+        .expect("the response names the terminal")
+        .to_string()
 }
 
 async fn post(addr: SocketAddr, path: &str, body: serde_json::Value) -> reqwest::Response {
@@ -163,7 +172,7 @@ async fn post(addr: SocketAddr, path: &str, body: serde_json::Value) -> reqwest:
         .json(&body)
         .send()
         .await
-        .unwrap()
+        .expect("send the request")
 }
 
 #[tokio::test]
@@ -370,4 +379,66 @@ async fn an_unknown_terminal_id_is_a_404_in_both_namespaces() {
         let resp = post(h.addr, &format!("{prefix}/tree"), serde_json::json!({})).await;
         assert_eq!(resp.status(), 404, "unknown terminal served at {prefix}");
     }
+}
+
+/// Wait for the published workspace to show `terminal_id`'s list anchor as
+/// `expected`: the workspace is a cached projection refreshed on the engine's
+/// tick, so a change lands on it shortly after the request that made it.
+async fn wait_for_list_after(addr: SocketAddr, terminal_id: &str, expected: serde_json::Value) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let body: serde_json::Value = reqwest::get(format!("http://{addr}/api/v1/workspace"))
+            .await
+            .expect("send the request")
+            .json()
+            .await
+            .expect("the response body is JSON");
+        let anchor = body["terminals"].as_array().and_then(|terminals| {
+            terminals
+                .iter()
+                .find(|terminal| terminal["id"] == terminal_id)
+                .map(|terminal| terminal["list_after"].clone())
+        });
+        if anchor.as_ref() == Some(&expected) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{terminal_id}'s list anchor never became {expected}; last seen {anchor:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn placing_a_terminal_in_the_list_moves_its_anchor_and_refuses_an_agents_own() {
+    let h = boot().await;
+    let terminal = create_project_terminal(h.addr, "p1").await;
+    // A new list row lands after the last agent.
+    wait_for_list_after(h.addr, &terminal, serde_json::json!("s1")).await;
+
+    let resp = post(
+        h.addr,
+        "/api/v1/terminals/place",
+        serde_json::json!({ "terminal_id": terminal, "after_agent": null }),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    // The top of the list carries no anchor.
+    wait_for_list_after(h.addr, &terminal, serde_json::Value::Null).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{}/api/v1/sessions/s1/terminals", h.addr))
+        .send()
+        .await
+        .expect("send the request");
+    assert_eq!(resp.status(), 201);
+    let own: serde_json::Value = resp.json().await.expect("the response body is JSON");
+    let resp = post(
+        h.addr,
+        "/api/v1/terminals/place",
+        serde_json::json!({ "terminal_id": own["terminal_id"], "after_agent": "s1" }),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
 }

@@ -210,7 +210,7 @@ async fn read_project_startup_log(
 /// So only `root_cause()` is kept, the OS error that tells the user something, with
 /// a prefix naming what yaran was trying to do. The full chain still reaches
 /// `yaran.log` from the code that logs these failures.
-fn listing_failed(e: anyhow::Error) -> String {
+fn listing_failed(e: &anyhow::Error) -> String {
     format!(
         "Could not list this project's startup command logs: {}",
         e.root_cause()
@@ -218,7 +218,7 @@ fn listing_failed(e: anyhow::Error) -> String {
 }
 
 /// The read half of [`listing_failed`], for one log file. See its docs.
-fn read_failed(e: anyhow::Error) -> String {
+fn read_failed(e: &anyhow::Error) -> String {
     format!("Could not read the startup command log: {}", e.root_cause())
 }
 
@@ -229,11 +229,12 @@ fn collect_logs(
     paths: &YaranPaths,
     scope: StartupCommandLogScope,
 ) -> Result<StartupLogsReply, String> {
-    let entries = yaran_core::startup::list_logs_for_scope(paths, scope).map_err(listing_failed)?;
+    let entries =
+        yaran_core::startup::list_logs_for_scope(paths, scope).map_err(|e| listing_failed(&e))?;
     let selected = match entries.first() {
         Some(entry) => Some(StartupLogContentView {
             name: entry.display_name.clone(),
-            content: yaran_core::startup::read_log(&entry.path).map_err(read_failed)?,
+            content: yaran_core::startup::read_log(&entry.path).map_err(|e| read_failed(&e))?,
         }),
         None => None,
     };
@@ -260,7 +261,8 @@ fn read_named_log(
     scope: StartupCommandLogScope,
     name: &str,
 ) -> Result<Option<StartupLogContentView>, String> {
-    let entries = yaran_core::startup::list_logs_for_scope(paths, scope).map_err(listing_failed)?;
+    let entries =
+        yaran_core::startup::list_logs_for_scope(paths, scope).map_err(|e| listing_failed(&e))?;
     let entry = if name.is_empty() {
         entries.first()
     } else {
@@ -270,7 +272,7 @@ fn read_named_log(
         None => Ok(None),
         Some(entry) => Ok(Some(StartupLogContentView {
             name: entry.display_name.clone(),
-            content: yaran_core::startup::read_log(&entry.path).map_err(read_failed)?,
+            content: yaran_core::startup::read_log(&entry.path).map_err(|e| read_failed(&e))?,
         })),
     }
 }
@@ -291,7 +293,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         }
     }
 
@@ -612,9 +615,8 @@ mod tests {
         let dir = yaran_core::startup::agent_log_dir(&paths, "p1", "s1");
         std::fs::create_dir_all(dir.join("20260101T000000Z-feat.log")).unwrap();
 
-        let err = match collect_logs(&paths, agent_scope("s1")) {
-            Err(e) => e,
-            Ok(_) => panic!("reading a directory as a log file must fail"),
+        let Err(err) = collect_logs(&paths, agent_scope("s1")) else {
+            panic!("reading a directory as a log file must fail");
         };
         let root = tmp.path().to_string_lossy().into_owned();
         assert!(

@@ -12,6 +12,7 @@
 // Everything below registers inside the one effect and is disposed by the one
 // cleanup. The pane's own separate registration effects are inventoried in
 // `TerminalPane` beside their code.
+import { resyncOnSignIn } from "./authResync"
 import { useEffect, useRef, type RefObject } from "react"
 import type { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
@@ -20,7 +21,6 @@ import "@xterm/xterm/css/xterm.css"
 import {
   PtySocket,
   agentPtyUrl,
-  setActivePtySocket,
   tabPtyUrl,
   terminalSocketUrl,
 } from "@/lib/ptySocket"
@@ -41,7 +41,7 @@ import type {
   OwnershipVerdict,
   TakeoverIntent,
 } from "./channels"
-import type { HandshakeOwner } from "@/lib/ptyOwnership"
+import { isForeground, type HandshakeOwner } from "@/lib/ptyOwnership"
 import { createResizeCoordinator } from "./resizeCoordinator"
 import { createAttachReplay } from "./attachReplay"
 import { plainBounce } from "./plainBounce"
@@ -138,6 +138,12 @@ export type TerminalLifecyclePorts = {
   /// The rendered ownership verdict, read for one thing: the periodic frame's
   /// cadence depends on it, and a change must clear the armed timer.
   isOwnerRendered: boolean
+  /// Whether the server has named this pane's driver id as its row's owner on
+  /// the current connection (see `ownership.ts`), read live by the coordinator.
+  readRowConfirmed: () => boolean
+  /// Installed here over this mount's socket and coordinator: the pane calls it
+  /// when it comes on screen (true) or goes off screen (false).
+  onScreenChangeRef: RefObject<((onScreen: boolean) => void) | null>
 }
 
 export function useTerminalLifecycle(
@@ -193,6 +199,8 @@ export function useTerminalLifecycle(
     setReconnecting,
     resetReplayWait,
     isOwnerRendered,
+    readRowConfirmed,
+    onScreenChangeRef,
   } = ports
 
   // This mount's heartbeat, so the cadence can be retimed from outside the big
@@ -210,15 +218,14 @@ export function useTerminalLifecycle(
     const container = containerRef.current
     if (!host || !container) return
 
-    const terminalSetup = createTerminalSetup({ host, id, live })
+    const terminalSetup = createTerminalSetup({ host, id, live, ownership })
     const { term, links, isMac } = terminalSetup
     // Opening the socket is the subscription: it launches the tab if it is not
     // running, with resume decided server-side. A dormant tab is never
     // auto-mounted, so reaching here for one is an intentional launch.
-    // Registered as the active socket so the macro picker can write to it.
     const pty = new PtySocket(ptyUrl)
+    pty.onScreen = () => live.current.onScreen !== false
     ptyRef.current = pty
-    setActivePtySocket(pty)
     // Constructed before the addon so the coordinator below can be given the
     // socket's own `sendResize`; `connect()` is still the explicit act below.
     const fit = new FitAddon()
@@ -238,6 +245,20 @@ export function useTerminalLifecycle(
       // a CONNECTING or CLOSED socket discards the frame silently, and clearing
       // on a discarded one spends the take-over on nothing.
       sendResize: (rows, cols) => {
+        // A self-succession is a foreground act. A page hidden since it was
+        // armed (during the replay, say) drops it and stays a watcher, as its
+        // own handshake would have decided had it arrived hidden: the server
+        // would grant the frame on a free row, and a hidden page claims nothing.
+        if (
+          takeoverIntent.read() &&
+          takeoverIntent.expectedOwner() !== undefined &&
+          !isForeground()
+        ) {
+          takeoverIntent.clear()
+          ownership.write(false)
+          lastSendFlagged = false
+          return false
+        }
         const takeover = takeoverIntent.read()
         // A self-succession names the ghost it expects to displace; a pressed
         // take-over names nobody, because a press may take from anyone. The
@@ -256,6 +277,10 @@ export function useTerminalLifecycle(
       lastSendWasFlagged: () => lastSendFlagged,
       isOwner: () => ownership.read(),
       onViewerLayout: () => viewerRelayoutRef.current?.(),
+      onScreen: () => live.current.onScreen !== false,
+      // An armed claim is how a pane off screen asks for its row back (a
+      // self-succession), so it counts as reason enough to send.
+      rowConfirmed: () => readRowConfirmed() || takeoverIntent.read(),
     })
     // The pane's handle on this mount's grid adoption (see the port's doc).
     viewerRegridRef.current = () => resize.applyViewerGrid()
@@ -338,6 +363,7 @@ export function useTerminalLifecycle(
         shouldSendViewed({
           isOwner: ownership.read(),
           visible: document.visibilityState === "visible",
+          onScreen: live.current.onScreen !== false,
           now: Date.now(),
           visibleSince: visibleSinceRef.current,
           graceMs: live.current.attentionGraceMs,
@@ -345,6 +371,19 @@ export function useTerminalLifecycle(
       onStalled: () => pty.dropForRetry(),
     })
     beatRef.current = beat
+    // Coming on screen is looking at the tab, whoever drives it, and it is the
+    // moment a part over a row nobody has claimed yet claims it, through the
+    // coordinator's own gates; going off screen stops being looked at at once
+    // rather than at the next beat.
+    onScreenChangeRef.current = (onScreen) => {
+      if (onScreen) {
+        pty.sendShown()
+        resize.resyncToForeground()
+      } else {
+        pty.sendUnviewed()
+      }
+      beat.resync()
+    }
     registerTerminalSocketCallbacks({
       pty,
       kind,
@@ -396,6 +435,14 @@ export function useTerminalLifecycle(
     }
     document.addEventListener("visibilitychange", noteVisibility)
 
+    // Every resize sent while the page was signed out was refused; the window
+    // may have moved meanwhile. Re-asserted through the coordinator, so a
+    // watcher still sends nothing and an unowned pty is not claimed.
+    const stopAuthResync = resyncOnSignIn({
+      isOpen: () => pty.isOpen,
+      resync: () => resize.resyncToForeground(),
+    })
+
     // An animated layout gesture outside this pane moves the host box on every
     // frame, and the ResizeObserver would answer each with a fit. The gesture
     // holds for its whole transition, so those coalesce into one fit and one
@@ -409,6 +456,8 @@ export function useTerminalLifecycle(
     })
 
     return () => {
+      if (onScreenChangeRef.current !== null) onScreenChangeRef.current = null
+      stopAuthResync()
       unregisterLayoutGesture()
       disposeTerminalLifecycle({
         resize,

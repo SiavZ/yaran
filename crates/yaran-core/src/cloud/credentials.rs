@@ -178,17 +178,17 @@ impl fmt::Display for CredentialsError {
             Self::NewerSchema(found) => write!(
                 f,
                 "the cloud credentials file was written by a newer yaran (schema {found}); \
-                 upgrade yaran or run `yaran cloud logout --local-only`"
+                 upgrade yaran or run \"yaran cloud logout --local-only\""
             ),
             Self::Symlink => write!(
                 f,
                 "the cloud credentials file is a symlink, which yaran refuses to follow; \
-                 replace it with a regular file or run `yaran cloud logout --local-only`"
+                 replace it with a regular file or run \"yaran cloud logout --local-only\""
             ),
             Self::Malformed(why) => write!(
                 f,
                 "the cloud credentials file is unreadable ({why}); run \
-                 `yaran cloud logout --local-only` and log in again"
+                 \"yaran cloud logout --local-only\" and log in again"
             ),
             Self::Io(why) => write!(f, "the cloud credentials file could not be used: {why}"),
         }

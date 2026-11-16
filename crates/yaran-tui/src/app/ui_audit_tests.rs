@@ -10,6 +10,7 @@ fn configure_prompt(app: &App, startup: bool) -> PromptState {
             project_name: project.name.clone(),
             input,
             focus: ConfigureFieldFocus::Save,
+            return_to: None,
         }
     } else {
         PromptState::ConfigureProjectEnv {
@@ -17,6 +18,7 @@ fn configure_prompt(app: &App, startup: bool) -> PromptState {
             project_name: project.name.clone(),
             input,
             focus: ConfigureFieldFocus::Save,
+            return_to: None,
         }
     }
 }
@@ -248,10 +250,16 @@ fn tall_forms_leave_the_complete_status_footer_visible() {
         app.set_error("Could not save project environment variables: the second line is invalid; use KEY=value syntax and retry.");
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
+        // The status wraps by word over the footer's rows, so the rows are
+        // read as one run of words.
         let footer: String = terminal.backend().buffer().content()[22 * 80..]
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
+            .chunks(80)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             footer.contains("Could not save project environment variables"),
             "{footer}"
@@ -282,6 +290,7 @@ fn narrow_changed_file_rows_keep_stats_for_selected_and_wide_paths() {
         binary: false,
         diff_excluded: false,
         renamed_from: None,
+        kind: yaran_core::model::ChangedFileKind::File,
     })
     .collect();
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();

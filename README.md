@@ -24,7 +24,7 @@ Keep several coding agents in one workspace without losing track of which checko
 
 Fresh configurations default to **shared workspaces**. Agents in that mode share files, the git index, and branch state. Choose `workspace.default_mode = "worktree"` when you need isolation. [Workspace modes](#workspace-modes) explains the settings and the upgrade behavior for older configurations.
 
-Every agent runs through a PTY, the same pseudo-terminal your shell uses. That means the CLI tool (Claude, Codex, Copilot, OpenCode, or literally anything else) runs exactly like it would in your regular terminal. Your MCP servers, hooks, skills, slash commands, and permission dialogs all work. We don't mess with your setup.
+Every agent runs through a PTY, the same pseudo-terminal your shell uses. That means the CLI tool (Claude, Codex, Copilot, Grok, OpenCode, or literally anything else) runs exactly like it would in your regular terminal. Your MCP servers, hooks, skills, slash commands, and permission dialogs all work. We don't mess with your setup.
 
 ## Two front ends, one workspace
 
@@ -34,14 +34,16 @@ They are not identical, on purpose. Each surface does what its medium is good at
 
 You won't find a per-feature comparison table here, because a table like that is stale the week after it's written. The app is the reference: in the terminal, the help overlay and the command palette; in the browser, the cog menu and the row `⋯` menus.
 
-One thing worth knowing before you point a browser at anything: **there is no login.** [Server Mode](#server-mode) explains exactly what that means and which shapes are safe; read it before you bind anything but loopback. Yaran has no login of its own; if you use [Cloud Connect](#phone-app-and-cloud-connect), Cloudflare Access is the login for that one machine address, and Yaran double-checks it.
+Beside the two front ends there is a command line, for scripts and for the times a shell is quicker than a pane: `yaran agents ls`, `yaran agents rm`, `yaran macros add` and the rest list and change the same workspace through whichever yaran is running. [Command Line](#command-line) has the tour.
+
+One thing worth knowing before you point a browser at anything: **the web UI's password is optional, and off until you set one.** [Server Mode](#server-mode) explains who can get in and which shapes are safe; read it before you bind anything but loopback.
 
 ## Prerequisites
 
 - **Rust stable** and **Node 22.12 or newer with npm** to build the executable and its embedded web UI.
 - **`git`** on your PATH for project and worktree operations.
 - The coding-agent CLIs you want to run, installed and authenticated through their own tools.
-- **`gh` CLI** *(optional)*: authenticate it with your GitHub account and yaran can pull PR statuses, check details, and show them right in the interface. Not required, but you'll miss it once you've tried it.
+- **`gh` CLI** *(optional)*: authenticate it with your GitHub account and yaran can pull PR statuses, check details, and show them right in the interface (GitHub and GitHub Enterprise only; plain git works with any host). Not required, but you'll miss it once you've tried it.
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) covers build and test commands, including the Rust-only option for contributors who do not need the web UI.
 
@@ -115,7 +117,10 @@ The documentation sources live in [website/docs/](website/docs/). The README is 
 - **The in-browser editor's reach**: a real Monaco editor over any file in a worktree, with previews, path search, and diffs against `HEAD`, or rooted at a terminal's directory (no diff view there, since a plain directory has nothing committed to compare against).
 - **Pull request banner settings**: including whether the banner sits above or below the terminal.
 - **Naming a web instance**: `[server] title` and `favicon`, so you can tell several yaran tabs apart.
-- **Hosting yaran behind a login**: a reverse proxy and oauth2-proxy in front, since yaran has no login of its own.
+- **The web password**: who is asked for it, failed sign-ins and blocked addresses, reverse proxies, Tailscale Funnel, and what a password cannot protect against.
+- **The command line**: every command and flag, the output forms, the exit codes, and reaching a yaran on another machine.
+- **Hosting yaran on the public internet**: TLS in front, with the yaran password or oauth2-proxy and GitHub sign-in as the gate.
+- **Known issues**: the things that look broken until you know why, such as signing in to an agent CLI from another device, and what to do about each.
 - **Cloud Connect**: an overview, setting up your org's control plane on Cloudflare, connecting a machine with `yaran cloud login` and every `[cloud]` key, and troubleshooting.
 - **The phone app and push notifications**: install channels, signing in and its confirmation page, the machines list, and what a notification contains.
 - **Cloud Connect security and privacy**: who can see what, revocation, and the accepted risks.
@@ -124,14 +129,14 @@ The documentation sources live in [website/docs/](website/docs/). The README is 
 
 Yaran organizes work around **projects**, which are git repositories, and **agents**, which run provider sessions. A shared agent uses the registered checkout directly. In worktree mode, Yaran creates a separate checkout and branch for the agent, leaving the registered checkout in place. The project's workspace setting determines which mode a new agent uses.
 
-You can also point an agent at a folder you already have, with no project, no branch and no worktree of yaran's: a **standalone agent**. In the terminal UI it has a key of its own in the agents pane and inside the project chooser (the `?` help overlay names both, and they are rebindable), plus the `new-standalone-agent` palette command; in the browser it lives in the launcher's `⋯` menu. Both surfaces ask you to name it once you have picked the folder, and the name is optional: a blank name means the folder's name, and a typed one is used as you typed it, interior spaces and punctuation included, with surrounding whitespace trimmed. yaran runs the provider there and never creates, moves or removes that folder. The branch-identity features (push, pull, fork, pull requests) do not exist for one, and the changes panel follows the folder: you get a real one when the folder is itself a git repository. Having no project, it gets the global `[env]` table with no project overlay on top, and no startup command runs, because a startup command is a provisioning step for a worktree yaran just made. One more thing to know: the hidden upload directory yaran keeps inside the folder for files you drop on the agent outlives the agent, since deleting a standalone agent removes yaran's own record and nothing of yours; remove that directory yourself if you don't want it.
+You can also point an agent at a folder you already have, with no project, no branch and no worktree of yaran's: a **standalone agent**. In the terminal UI it has a key of its own in the agents pane and inside the project chooser (the `?` help overlay names both, and they are rebindable), plus the `new-standalone-agent` palette command; in the browser it lives in the menu behind the **▾** beside **New agent…** at the bottom of the sidebar. Both surfaces ask you to name it once you have picked the folder, and the name is optional: a blank name means the folder's name turned into a valid agent name (`My Notes! (2026)` becomes `My-Notes-2026`), and a typed one follows the same rules as any agent's name, spaces becoming dashes as you type. yaran runs the provider there and never creates, moves or removes that folder. The branch-identity features (push, pull, fork, pull requests) do not exist for one, and the changes panel follows the folder: you get a real one when the folder is itself a git repository. Having no project, it gets the global `[env]` table with no project overlay on top, and no startup command runs, because a startup command is a provisioning step for a worktree yaran just made. One more thing to know: the hidden upload directory yaran keeps inside the folder for files you drop on the agent outlives the agent, since deleting a standalone agent removes yaran's own record and nothing of yours; remove that directory yourself if you don't want it.
 
 Already have a Git worktree you want yaran to use? In the browser, **Worktrees…** in a project's `⋯` menu; in the terminal UI, the `new-agent-from-worktree` palette command lets you pick a project from the chooser and then choose from its existing worktrees. If the worktree is already managed by yaran, yaran reuses it and reconnects like a continuable session; if it's outside yaran's managed worktree directory (terminal UI only), yaran forks it: a new managed worktree branched from that worktree's current `HEAD`, with dirty and untracked files copied across, so the original checkout is left alone. Gitignored files do not travel.
 
 In the terminal UI, the interface has three panes:
 
-- **Left:** a flat list of your agents, most-active first by default, with search and a project chooser
-- **Center:** the agent's live terminal (or a file diff). Focus it and type: your keystrokes go straight to the agent, right there in the window, while yaran's own shortcuts keep working around it
+- **Left:** one flat list of your agents and your project and standalone terminals, most-active first by default, with search and a project chooser
+- **Center:** the agent's live terminal (or a file diff), with its companion terminals docked underneath. Focus it and type: your keystrokes go straight to the agent or the terminal you focused, right there in the window, while yaran's own shortcuts keep working around it. When the agent and its terminals share the pane, the part without focus is drawn grey and faded
 - **Right:** changed files, staging, and diffs
 
 That sort order is one setting shared by the terminal UI and the browser (activity, last updated, recently created, name, or your own hand-placed order), so whichever surface you change it on, the other follows.
@@ -142,7 +147,7 @@ You can also end an agent's session from outside its own CLI. **Detach agent…*
 
 ### Bring Any CLI
 
-Any terminal command can be a provider. The defaults (Claude, Cline, Codex, OpenCode, Kilo Code, NTL, Copilot, and [jcode](https://github.com/1jehuang/jcode)) are pre-configured, but adding your own is a config-only change:
+Any terminal command can be a provider. The defaults (Claude, Cline, Codex, OpenCode, Kilo Code, NTL, Copilot, [jcode](https://github.com/1jehuang/jcode), and Grok) are pre-configured, but adding your own is a config-only change:
 
 ```toml
 [providers.my-agent]
@@ -233,15 +238,19 @@ Each macro can be scoped to the agent pane, the companion terminal, or both.
 
 The right pane is a full git staging area. Stage and unstage files, view syntax-highlighted diffs, write your commit message, push, and pull, all without leaving yaran. Want help wording it? Just ask your agent in its terminal to draft the commit for you.
 
-**PR tracking:** With the `gh` CLI installed, yaran tracks pull requests for your agent branches and shows status pills right in the interface. A push, or selecting an agent, refreshes that agent's pull request there and then, and a slow background check picks up anything else, so the pills stay current without burning through your GitHub API quota.
+A folder with nothing tracked inside it, like a fresh `node_modules`, is one row with its file count rather than one row per file, the way `git status` shows it; staged whole, it stays one row. Stage or unstage the whole folder from that row, or delete its untracked files (ignored files and repositories of their own inside it are kept). Staging a folder leaves out the repositories inside it, nested clones and worktrees alike, so none is recorded as a link, and its staged row says how many it left out. Expand it to see what is inside, a level at a time: click its name in the browser, or press the diff key in the terminal UI.
+
+**PR tracking:** With the `gh` CLI installed, yaran tracks the pull requests of every branch an agent's worktree has been on, plus any you attach yourself, from any repository, and shows status pills right in the interface. An agent with several steps through them on its banner, and you can hide the ones you are done with or put them in your own order. Selecting or creating an agent refreshes its pull requests there and then, and a background check every few minutes picks up pushes and anything else, so the pills stay current without burning through your GitHub API quota.
 
 ### Companion Terminals
 
 Each agent gets its own companion terminal: a separate shell session in the same worktree. Use it for builds, tests, git operations, or anything else you'd normally do in a terminal. You can spawn multiple companion terminals per agent.
 
-Projects get terminals too. A **project terminal** is a plain shell opened at the project's repo root with no agent attached, handy for repo-wide chores (and, over the web UI, for reaching the machine when there is no local terminal to fall back to). Spawn one from the project's menu on either surface; removing the project closes its project terminals.
+In the terminal UI an agent's terminals dock right under it in the center pane, one numbered pill each in the dock's own strip, so the dev server stays in view while you talk to the agent. One key cycles the pane between the agent alone, the agent and its terminals split, and the terminals alone, and the `agent | split | term` control on the strip does the same with a click. Drag the divider between them to give either part more room, or all the way to an edge to show one part alone. Tab moves focus into the dock, and while it has focus the tab keys walk its terminals and the close and fullscreen keys act on the terminal you are looking at. The `?` overlay names every key. The browser docks them the same way, with **Hide terminals** and **Maximize terminal** on the dock's strip, and a phone shows the agent or its terminals one at a time, swapped by a switch in the action flap. On both surfaces the part you are not typing in is drawn grey and faded. An agent you stopped while its terminals keep running opens on its terminal, with a band saying it is not running and how to start it.
 
-And a **standalone terminal** belongs to nothing at all: no agent, no project. It opens in your home directory, so you can reach for one before you have added a single project. Open it from the `new-standalone-terminal` palette command in the TUI, or in the browser from the `⋯` menu beside the launcher button at the bottom of the sidebar, under **Terminals** (the cog menu's **New** submenu has the same entry, and the Terminals divider in the sidebar carries a **+** once you have one). Its sidebar row shows the directory it opened in rather than an owner. Nothing closes it for you: removing a project or deleting an agent closes their own terminals and leaves this one alone, so it ends when you close it or when yaran shuts down.
+Projects get terminals too. A **project terminal** is a plain shell opened at the project's repo root with no agent attached, handy for repo-wide chores (and, over the web UI, for reaching the machine when there is no local terminal to fall back to). Spawn one from the project's menu on either surface; removing the project closes its project terminals. On both surfaces, project and standalone terminals are rows of the agents list, sorted with the agents, and selecting one shows it in the center pane the way selecting an agent does.
+
+And a **standalone terminal** belongs to nothing at all: no agent, no project. It opens in your home directory, so you can reach for one before you have added a single project. Open it from the `new-standalone-terminal` palette command in the TUI, or in the browser from the **▾** beside **New agent…** at the bottom of the sidebar, under **Terminals** (the cog menu's **New** submenu has the same entry). Its sidebar row shows the directory it opened in rather than an owner. Nothing closes it for you: removing a project or deleting an agent closes their own terminals and leaves this one alone, so it ends when you close it or when yaran shuts down.
 
 ### Forking Sessions
 
@@ -303,6 +312,8 @@ Every agent has its own settings drawer (the `session-settings` palette command,
 
 Point yaran at any folder. A git repository joins the workspace as-is; a plain folder gets an offer to become one: yaran runs `git init`, seeds a commented starter `.gitignore` for the dependency and build directories it finds (`node_modules`, `target`, and friends), creates an empty initial commit, and registers the project. Your existing files are left untouched (untracked). Folders inside an existing repository are refused with a pointer to the repository root, so projects never nest inside each other's history. In the web UI the picker can even create a new folder first, which makes starting a brand-new project from a phone entirely shell-free.
 
+Not on the machine yet? Clone it from yaran: **Clone a repository…** beside Add project in the browser, or the `clone-project` palette command in the terminal UI. Paste the remote's address and yaran clones its default branch, adds it as a project and starts the first agent on it, using your own git credentials and never stopping to ask for one.
+
 ### First Run and What's New
 
 The first time Yaran launches, it opens a welcome screen explaining projects, agents, providers, and the actual config path on your machine. You can add your first project or dismiss the screen and explore. The web UI's **View project** link opens this GitHub repository. Yaran does not send you to the upstream dux website as if it were the fork's own site.
@@ -337,15 +348,21 @@ That serves the same workspace, not a copy of it and not a dashboard bolted on t
 
 You get the workspace, not a read-only view of it: attach to any agent's terminal and its provider tabs, spawn companion and project terminals, create, fork and adopt agents, stage and commit and push, review diffs, edit any file in a worktree with a real editor right in the page (your `config.toml` included), add a project by browsing the server's filesystem, and get desktop notifications when an agent wants you.
 
-Already in the TUI with agents running? You don't need a second yaran, and you couldn't have one anyway: only one yaran can use your yaran directory at a time, so a second one refuses to start and says another yaran is already running there. The one you have can serve the browser two ways instead. Run the `start-web-server` palette command and your running TUI starts serving in place: your agents keep running, no relaunch and no lost conversations; your terminal becomes a status screen, and leaving that screen drops you back into the TUI with everything still running. Or set `serve_while_tui = true` under `[server]` (the `start-background-server` palette command does it live, and `stop-background-server` stops it again with your agents still running) and yaran serves the browser *behind* the TUI, so the same workspace is on your terminal and your phone at once. The TUI then joins the same one-driver-at-a-time model the browsers use: one device drives a terminal, everyone else watches the live output, nothing passive ever takes it away or hands it back, and a card covers any terminal that is not yours to type into, naming the device that is driving it or saying Running in the background when nobody is. Its Take over button is the one way to claim it. The terminal and the browser show the same card. The top bar says `● serving :3890` for as long as the listener is up, growing a `· 2 connected` when browsers are on it, which, since there is no login, is worth knowing.
+Already in the TUI with agents running? You don't need a second yaran, and you couldn't have one anyway: only one yaran can use your yaran directory at a time, so a second one refuses to start and says another yaran is already running there. The one you have can serve the browser two ways instead. Run the `start-web-server` palette command and your running TUI starts serving in place: your agents keep running, no relaunch and no lost conversations; your terminal becomes a status screen, and leaving that screen drops you back into the TUI with everything still running. Or set `serve_while_tui = true` under `[server]` (the `start-background-server` palette command does it live, and `stop-background-server` stops it again with your agents still running) and yaran serves the browser *behind* the TUI, so the same workspace is on your terminal and your phone at once. The TUI then joins the same one-driver-at-a-time model the browsers use: one device drives a terminal, everyone else watches the live output, nothing passive ever takes it away or hands it back, and a card covers any terminal that is not yours to type into, naming the device that is driving it or saying Running in the background when nobody is. Its Take over button is the one way to claim it. The terminal and the browser show the same card. The top bar says `● serving :3890` for as long as the listener is up, growing a `· 2 browsers` when browsers are on it, which is worth knowing whether or not you have set a password.
 
-**How it binds.** By default `yaran server` binds `127.0.0.1:3890`, loopback only, so nothing leaves the machine. If the `tailscale` CLI is around it also binds this machine's Tailscale address on the same port, so your own tailnet devices reach yaran over WireGuard. On the default `tailscale = "auto"` that leg follows the interface: yaran binds it whenever your tailnet address is there, drops that one listener when it goes away, and binds it again when it comes back, all while serving. Set `tailscale = "yes"` under `[server]` to look once and keep what it finds, `"no"` (or `--no-tailscale` for a single run) to skip it, and when Tailscale isn't there yaran warns and serves the configured host only. You can change the mode while yaran is serving, from the TUI palette's `set-tailscale-mode` or the browser's Preferences dialog: it moves the listener there and then and saves your choice. `--bind <ADDR:PORT>` sets an exact address and port, and it wants an IP literal and a port (`0.0.0.0:3890`, `127.0.0.1:9000`): hostnames are not resolved, and the flag may be given only once. `--port <PORT>` overrides just the port, and is ignored when `--bind` is set. A required address that can't bind is fatal and says so; the Tailscale leg failing to bind is only a warning. Both of the in-app ways, `start-web-server` and `serve_while_tui`, always serve loopback plus Tailscale and never a custom host, so reach for `yaran server` when you need a specific interface.
+**How it binds.** By default `yaran server` binds `127.0.0.1:3890` and `[::1]:3890`, loopback only, so nothing leaves the machine. Both are yaran's, because `localhost` can mean either: a program already listening on either one stops yaran from starting, and a machine without IPv6 just uses `127.0.0.1`. If the `tailscale` CLI is around it also binds this machine's Tailscale address on the same port, so your own tailnet devices reach yaran over WireGuard. On the default `tailscale = "auto"` that leg follows the interface: yaran binds it whenever your tailnet address is there, drops that one listener when it goes away, and binds it again when it comes back, all while serving. Set `tailscale = "yes"` under `[server]` to look once and keep what it finds, `"no"` (or `--no-tailscale` for a single run) to skip it, and when Tailscale isn't on the machine at all yaran warns and serves the configured host only. While it consults Tailscale, yaran also watches for a Tailscale Funnel publishing it: with a password set, Funnel visitors get the sign-in page, and with none yaran serves and warns loudly. Whenever yaran cannot rule such a relay out (always on `"no"`, and while it cannot ask Tailscale), a browser on this machine is asked for the password too; the [Tailscale docs](https://getdux.app/docs/tailscale) cover exactly how. You can change the mode while yaran is serving, from the TUI palette's `set-tailscale-mode` or the browser's Preferences dialog: it moves the listener there and then and saves your choice. `--bind <ADDR:PORT>` sets an exact address and port, and it wants an IP literal and a port (`0.0.0.0:3890`, `127.0.0.1:9000`): hostnames are not resolved, and the flag may be given only once. `--port <PORT>` overrides just the port, and is ignored when `--bind` is set. A required address that can't bind is fatal and says so; the Tailscale leg failing to bind is only a warning. Both of the in-app ways, `start-web-server` and `serve_while_tui`, always serve loopback plus Tailscale and never a custom host, so reach for `yaran server` when you need a specific interface. On a tailnet, `yaran server` and the `start-web-server` flip also show QR codes for this machine's Tailscale IP and MagicDNS URLs, so your phone opens yaran from the screen; `qr_codes = false` under `[server]` hides them.
 
-**And there is no login.** None: no password, no token, no user accounts. yaran is a single-tenant, trusted-access tool, and server mode is honest about that instead of pretending otherwise. Everyone who can reach the address shares one workspace: they can drive any agent or terminal, browse the server's filesystem, edit files in your worktrees, and see every session. That's deliberate, and it means access control is entirely a question of where you bind. Yaran has no login of its own; with [Cloud Connect](#phone-app-and-cloud-connect), Cloudflare Access is the login for that one machine address, and yaran double-checks it.
+**Who gets in.** yaran is a single-tenant, trusted-access tool: one owner, one workspace, no user accounts. Everyone who gets in can drive any agent or terminal, browse the server's filesystem, edit files in your worktrees, and see every session. What decides who gets in is where you bind and, optionally, a password:
 
-The safe shapes are loopback (the default), your own tailnet, Cloud Connect, or a reverse proxy you put in front and authenticate yourself, which is also where TLS would live, since yaran itself serves plain HTTP. The shape that isn't safe is a LAN or public address, `--bind 0.0.0.0:3890` and friends: that puts your agents and your worktrees in reach of anyone who can hit it. yaran prints a loud warning before it does that, but the warning is the only thing standing there. Don't serve it to anyone you wouldn't hand a shell on that machine.
+```bash
+yaran config set server.auth.password   # asks twice, rates it as you type, stores only a hash
+```
 
-Two defenses do always run, and they're about hostile web pages rather than about users: a Host-header allowlist, so a malicious site can't DNS-rebind your browser into the server, and a same-origin check on every live terminal connection and every request that changes something, so another site can't ride along. Both are automatic. If you reach yaran by a name rather than an IP literal, a tailnet MagicDNS name or a proxy hostname, add it to `allowed_hosts` under `[server]` or the host guard answers `403`. That one is read when serving starts, so it takes a server restart rather than a config reload; yaran says so when you reload a config that changed it.
+One password for one owner, kept in `config.toml` only as an Argon2id hash. `[server.auth] require` decides who is asked for it: by default everyone except this machine and your own tailnet, or `"tailnet"` to ask your tailnet too, or `"everywhere"`, which is the one to use behind a reverse proxy. Repeated wrong guesses slow down, and an address yaran can verify then lands in `blocked_addresses`, a list in your config you can edit yourself. You can change the password from the browser's Preferences too.
+
+The safe shapes are loopback (the default), your own tailnet, [Cloud Connect](#phone-app-and-cloud-connect) (your org's Cloudflare Access sign-in in front of the machine's address, where the password is not asked a second time), or a LAN or public address with a password, ideally over HTTPS from `tailscale serve` or a proxy of your own, since yaran itself serves plain HTTP and a password typed over plain HTTP can be read on the way. The shape that isn't safe is a LAN or public address with no password: anyone who can hit it gets your agents and your worktrees. yaran still serves it, warns as it starts and puts a red banner in every browser (until you choose "Don't show again"), but those warnings are the only thing standing there. Don't let anyone in you wouldn't hand a shell on that machine.
+
+Two defenses do always run, and they're about hostile web pages rather than about users: a Host-header allowlist, so a malicious site can't DNS-rebind your browser into the server, and a same-origin check on every live terminal connection and every request that changes something, so another site can't ride along. Both are automatic. This machine's own Tailscale MagicDNS name is accepted by itself (yaran reads it from Tailscale and follows a tailnet rename), and when `tailscale serve --bg 3890` points at yaran it picks up the `https://` URL too and lists it with the others; yaran never runs that command for you. Any other name, such as a proxy hostname, goes in `allowed_hosts` under `[server]` or the host guard answers `403`, and a config reload applies a change to it with no restart.
 
 The rest of `[server]` tunes presentation and limits: console color, the per-request access log, the shutdown grace period, and how many live connections of each kind yaran accepts at once. As ever, each key explains itself inline in your config file.
 
@@ -439,18 +456,71 @@ Once the Cloud Connect and phone app code is on `main`:
 
 More on each part: [Cloud Connect overview](website/docs/cloud-connect.md), [Connecting a machine](website/docs/cloud-connect-machine.md), [The phone app](website/docs/mobile-apps.md), and [Troubleshooting Cloud Connect](website/docs/cloud-troubleshooting.md).
 
+### Command Line
+
+`yaran` is also a command-line tool for the workspace it runs:
+
+```bash
+yaran projects ls                                  # aligned table; --format json or -q for ids
+yaran agents add --project web --name fix-login    # waits until the agent exists, prints its id last
+yaran agents tabs add fix-login --provider codex   # a second provider tab in the same worktree
+yaran agents rm fix-login --delete-worktree        # asks first; --yes for scripts
+yaran terminals ls
+yaran macros add Review "review this diff for bugs"
+yaran server logs -f                               # follow server.log
+yaran server connections ls                        # who is connected right now
+yaran remote add box https://box.tailnet-name.ts.net
+yaran --remote box agents ls                       # the same commands, another machine
+```
+
+Projects, agents, tabs, worktrees and terminals go through the yaran that is running (the terminal UI, the flip, background serving or `yaran server`, whichever it is); with none running the command says so and stops, and never reads yaran's database behind its back. Macros, providers, keys, themes and the global environment live in `config.toml`, so those work with yaran stopped too. A change waits until it has really finished, says how it went, and exits with a code a script can trust; one that would cut off somebody connected to an agent or a terminal is refused unless you add `--dangerously-ignore-connected`. A yaran on another machine is a saved remote, signed in with its web password. The [command-line docs](https://getdux.app/docs/command-line) cover every command, flag and exit code.
+
 ### Configuration
 
 The config file at `~/.config/yaran/config.toml` (Linux, or `$XDG_CONFIG_HOME/yaran/config.toml` when you have set that variable to an absolute path) or `~/.yaran/config.toml` (macOS) is exhaustively commented. Every setting is explained inline, so you should never need to leave the file to understand an option. Every keybinding is rebindable. Every pane width, scrollback limit, default provider, and startup agent reopening behavior is configurable.
 
 ```bash
 yaran config path          # Print the config file path
+yaran config get ui.theme  # Print one setting
+yaran config set ui.theme catppuccin_mocha   # Change one setting; a running yaran reloads
 yaran config diff          # Show what you've changed from defaults
 yaran config diff --raw    # Unified diff against the default config (prints [env])
-yaran config reset         # Remove config and logs (keeps agents)
-yaran config reset --all   # Full factory reset
+yaran config reset         # Remove config, the logs (server log included) and saved remotes (keeps agents)
+yaran config reset --all   # Full factory reset; keeps the welcome-seen note, deletes nothing if a program yaran started still runs
 yaran config regenerate    # Preview a fresh default config
 yaran config restore-docs  # Preview re-adding the comments, keeping your values
+```
+
+The resources kept in `config.toml` have commands of their own. They read the file
+whether or not yaran is running; a change goes through a running yaran so it applies at
+once, or into the file, comments kept, when yaran is stopped. `--remote <name>` asks a
+remote yaran instead.
+
+```bash
+yaran macros ls            # Also: show <name>, add <name> <text> [--surface], rm <name>
+yaran env ls               # Names only; --show prints the values too
+yaran env set API_TOKEN    # Asks for the value; --stdin reads it from a pipe. Also: rm <name>
+yaran providers ls         # Also: show <name>
+yaran keys ls              # Every action, its keys, and whether you changed them
+yaran themes ls            # The themes the picker offers, the current one marked
+```
+
+Projects, agents, their tabs and worktrees, and terminals live in the running yaran, so
+their commands talk to it (over its control socket on this machine, or `--remote <name>`)
+and say so when no yaran is running. A change asks first (`--yes` answers for you, and is
+needed without a terminal), waits until it has really finished and prints how it went,
+ending with the id of anything it created. One that would cut off somebody attached to a
+terminal is refused, naming them, unless you add `--dangerously-ignore-connected`.
+
+```bash
+yaran projects ls                     # Also: show <p>, add <path> [--name] [--checkout-default] [--init], rm <p> [--delete-worktrees]
+yaran projects worktrees ls <p>       # The project's worktrees, and which agent holds each
+yaran agents ls                       # Also: --project <p>, --worktrees; show <a>, stop <a>, start <a>
+yaran agents add --project <p> --name feat   # Also: --existing-branch, --copy-uncommitted, --from-pr <pr> [--review-copy], --from-worktree <path>, --fork <a>, --standalone <folder> [--provider]
+yaran agents add --from-pr <url>        # No project needed: clones the repository (or adds a checkout of it) when none has it; also: --path <folder>, --review-copy
+yaran agents rm <a> --delete-worktree --keep-branch   # Also: --delete-branch, --delete-other-branches, --keep-other-branches; with no branch flag only the branch yaran created goes
+yaran agents tabs ls <a>              # Also: add <a> [--provider], rm|start|stop <a> <tab>
+yaran terminals ls                    # Also: add [--agent <a> | --project <p>], rm <t>
 ```
 
 `yaran config diff` is derived from the config structure rather than from a list
@@ -461,10 +531,10 @@ paths out of the output, which makes the summary safe to paste into a bug report
 `--raw` is the opposite: it prints your whole config, `[env]` values and all, so
 redact it before you share it.
 
-If your `config.toml` is missing its explanatory comments (older versions could
-create one without them), `yaran config restore-docs` puts them back without
-touching a single value. It previews the change by default; `--yes` applies it
-and writes a timestamped backup first.
+If your `config.toml` is missing its explanatory comments,
+`yaran config restore-docs` puts them back without touching a single value. It
+previews the change by default; `--yes` applies it and writes a timestamped
+backup first.
 
 Override the config directory with the `YARAN_HOME` environment variable.
 

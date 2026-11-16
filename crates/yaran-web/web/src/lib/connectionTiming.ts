@@ -3,6 +3,12 @@
 // server does not answer. The defaults are duplicated literals of
 // `yaran_core::config::ServerConfig`, so nothing enforces the two staying equal.
 //
+// The server sends each value as yaran uses it: every rule about what a value
+// means (zero meaning the default, a ceiling, a deadline kept above the beat)
+// is applied there, once, by the function `yaran config get` reports too
+// (`yaran_core::config_effective`). So a published value is run as sent, and the
+// only thing decided here is what to do with no usable answer at all.
+//
 // Published at module scope so a long-lived socket or timer callback reads the live
 // value rather than pinning whatever its render closure captured at mount.
 import type { Bootstrap } from "./bootstrapApi"
@@ -25,6 +31,11 @@ export const DEFAULT_RECONNECT_ATTEMPTS = 8
 /// is what turns waiting into a failed attempt the user can see.
 export const DEFAULT_RECONNECT_ATTEMPT_TIMEOUT_SECONDS = 10
 
+/// How long the Changes pane waits for one changed-files request, body
+/// included, before giving it up with an error the pane shows. A half-open
+/// connection never settles, and the pane would otherwise sit loading forever.
+export const DEFAULT_CHANGES_REQUEST_TIMEOUT_SECONDS = 30
+
 /// How often a visible page sends its one periodic frame while it is NOT the
 /// owner-and-visible pair that owes the engine a faster viewed ping.
 export const DEFAULT_HEARTBEAT_SECONDS = 15
@@ -45,6 +56,7 @@ export type ConnectionTimingDoc = Partial<
     | "heartbeat_deadline_seconds"
     | "reconnect_attempts"
     | "reconnect_attempt_timeout_seconds"
+    | "changes_request_timeout_seconds"
   >
 >
 
@@ -65,29 +77,24 @@ function count(value: number | undefined, fallback: number): number {
   return value
 }
 
-/// A configured value in milliseconds, or the default. `allowZero` says whether
-/// zero is a real answer: it is for the replay wait, where it means "wait
-/// forever", and it is not for a period or a deadline, where it would mean a hot
-/// loop. Anything negative or non-finite is not an answer at all.
-function seconds(value: number | undefined, fallback: number, allowZero: boolean): number {
+/// A published value in milliseconds, as sent, or the default when there is no
+/// usable answer (absent, negative or non-finite). Zero is passed through: the
+/// server sends it only where it is the setting's meaning (the replay wait,
+/// where it means "wait forever").
+function seconds(value: number | undefined, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback * 1000
   if (value < 0) return fallback * 1000
-  if (value === 0 && !allowZero) return fallback * 1000
   return value * 1000
 }
 
 /// `[server] replay_wait_seconds` in ms. Zero means the wait is disabled.
 export function replayWaitMs(): number {
-  return seconds(published?.replay_wait_seconds, DEFAULT_REPLAY_WAIT_SECONDS, true)
+  return seconds(published?.replay_wait_seconds, DEFAULT_REPLAY_WAIT_SECONDS)
 }
 
 /// `[server] reconnect_backoff_cap_seconds` in ms.
 export function reconnectBackoffCapMs(): number {
-  return seconds(
-    published?.reconnect_backoff_cap_seconds,
-    DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS,
-    false,
-  )
+  return seconds(published?.reconnect_backoff_cap_seconds, DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS)
 }
 
 /// `[server] reconnect_attempts` as a count, where `0` means unlimited.
@@ -100,29 +107,25 @@ export function reconnectAttemptTimeoutMs(): number {
   return seconds(
     published?.reconnect_attempt_timeout_seconds,
     DEFAULT_RECONNECT_ATTEMPT_TIMEOUT_SECONDS,
-    false,
+  )
+}
+
+/// `[server] changes_request_timeout_seconds` in ms.
+export function changesRequestTimeoutMs(): number {
+  return seconds(
+    published?.changes_request_timeout_seconds,
+    DEFAULT_CHANGES_REQUEST_TIMEOUT_SECONDS,
   )
 }
 
 /// `[server] heartbeat_seconds` in ms.
 export function heartbeatPeriodMs(): number {
-  return seconds(published?.heartbeat_seconds, DEFAULT_HEARTBEAT_SECONDS, false)
+  return seconds(published?.heartbeat_seconds, DEFAULT_HEARTBEAT_SECONDS)
 }
 
-/// What an inverted pair is clamped to, as a multiple of the beat period.
-const INVERTED_DEADLINE_PERIODS = 2
-
-/// `[server] heartbeat_deadline_seconds` in ms, clamped above the send period: the
-/// deadline is checked on the send timer, so a deadline at or below the period finds
-/// itself elapsed on the first tick and drops a healthy socket forever. Clamped
-/// rather than refused, since a working terminal beats a rejected config.
+/// `[server] heartbeat_deadline_seconds` in ms. The server keeps it above the
+/// send period before sending it (a deadline at or below the period would find
+/// itself elapsed on the first tick and drop a healthy socket forever).
 export function heartbeatDeadlineMs(): number {
-  const configured = seconds(
-    published?.heartbeat_deadline_seconds,
-    DEFAULT_HEARTBEAT_DEADLINE_SECONDS,
-    false,
-  )
-  const period = heartbeatPeriodMs()
-  if (configured > period) return configured
-  return period * INVERTED_DEADLINE_PERIODS
+  return seconds(published?.heartbeat_deadline_seconds, DEFAULT_HEARTBEAT_DEADLINE_SECONDS)
 }

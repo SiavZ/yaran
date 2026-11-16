@@ -51,9 +51,9 @@ async fn boot() -> (
     let tmp = yaran_core::test_scratch::ScratchDir::new();
     let root = tmp.path().to_path_buf();
     let wt1 = root.join("wt1");
-    std::fs::create_dir_all(&wt1).unwrap();
+    std::fs::create_dir_all(&wt1).expect("create the test directory");
     for i in 0..8 {
-        std::fs::write(wt1.join(format!("file{i}.txt")), "x\n").unwrap();
+        std::fs::write(wt1.join(format!("file{i}.txt")), "x\n").expect("write the test file");
     }
 
     let paths = YaranPaths {
@@ -61,11 +61,12 @@ async fn boot() -> (
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -75,15 +76,15 @@ async fn boot() -> (
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session("s1", wt1.to_string_lossy().as_ref()))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     yaran_core::test_provider::defuse_config(&mut engine.config);
     let (handle, _join) = spawn_engine_thread(engine);
     let limits = handle.live_limits();
@@ -92,15 +93,17 @@ async fn boot() -> (
         Router::<AppState>::new(),
         RouterParams::plain_http(),
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, limits, tmp)
 }
@@ -110,10 +113,10 @@ async fn list_files(addr: SocketAddr) -> serde_json::Value {
         .post(format!("http://{addr}/api/v1/sessions/s1/files/list"))
         .send()
         .await
-        .unwrap()
+        .expect("send the request")
         .json()
         .await
-        .unwrap()
+        .expect("the response body is JSON")
 }
 
 #[tokio::test]
@@ -122,7 +125,7 @@ async fn a_reloaded_search_index_cap_bounds_the_next_walk() {
 
     // `truncated` is omitted when false, so absence is the uncapped answer.
     let full = list_files(addr).await;
-    assert!(full["truncated"].as_bool() != Some(true));
+    assert_ne!(full["truncated"].as_bool(), Some(true));
     assert_eq!(full["files"].as_array().unwrap().len(), 8);
 
     limits.set_search_index_max_files(3);

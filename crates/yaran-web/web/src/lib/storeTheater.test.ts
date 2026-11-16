@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 import type { Spine } from "./workspaceApi"
 
 // Theater mode in the store: the live flag, the address modifier, the
@@ -69,6 +76,13 @@ let loc: {
 let holdSpine = false
 
 const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (u.includes("/api/v1/workspace")) {
     if (holdSpine) await new Promise(() => {})
@@ -113,12 +127,23 @@ beforeEach(() => {
   holdSpine = false
   spineBody = makeSpine([])
   store = new Map<string, string>()
-  replaceStateMock = vi.fn((_s: unknown, _t: string, url: string) => {
+  // Both writers keep the state they were handed, as the entry a browser
+  // parks on does, so the router reads back the label it wrote.
+  const fakeHistory = {
+    pushState: null as unknown,
+    replaceState: null as unknown,
+    state: null as unknown,
+  }
+  replaceStateMock = vi.fn((s: unknown, _t: string, url: string) => {
     loc.hash = url.startsWith("#") ? url : ""
+    fakeHistory.state = s
   })
-  pushStateMock = vi.fn((_s: unknown, _t: string, url: string) => {
+  pushStateMock = vi.fn((s: unknown, _t: string, url: string) => {
     loc.hash = url.startsWith("#") ? url : ""
+    fakeHistory.state = s
   })
+  fakeHistory.pushState = pushStateMock
+  fakeHistory.replaceState = replaceStateMock
   vi.stubGlobal("localStorage", {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => void store.set(k, String(v)),
@@ -131,17 +156,18 @@ beforeEach(() => {
       windowListeners.set(type, fn)
     },
   })
-  vi.stubGlobal("history", {
-    pushState: pushStateMock,
-    replaceState: replaceStateMock,
-    state: null,
-  })
+  vi.stubGlobal("history", fakeHistory)
   vi.stubGlobal("WebSocket", FakeWebSocket)
   vi.stubGlobal("fetch", fetchMock)
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -216,26 +242,50 @@ describe("entering and leaving theater", () => {
     expect(loc.hash).toBe("")
   })
 
-  it("switching tab from the pill carries the mode to a tab that never had it", async () => {
-    // The real journey: theater is entered on ONE tab, and the pill's mini
-    // strip switches to a sibling that has never been in theater. Reading the
-    // destination's memory would drop the mode mid-gesture, so the switch says
-    // the mode explicitly and the destination remembers it from then on.
+  it("keeps the mode across the row's tabs and terminals, a step for each", async () => {
+    // Theater is the row's: switching tabs or terminals of one agent never
+    // enters or leaves it, while each switch is still a position of its own.
     const mod = await loadStore("", [
-      { id: "s1", project_id: "p1", tabs: ["t2"] },
+      { id: "s1", project_id: "p1", tabs: ["t2"], terminals: ["tm1", "tm2"] },
     ])
     mod.selectSession("s1")
     mod.enterTheater()
     pushStateMock.mockClear()
-    replaceStateMock.mockClear()
 
-    mod.selectTab("s1", "t2", { theater: true })
+    mod.selectTab("s1", "t2")
     expect(mod.getSnapshot().theater).toBe(true)
+    mod.selectTerminal("tm2", { kind: "session", sessionId: "s1" })
+    expect(mod.getSnapshot().theater).toBe(true)
+    mod.chooseStackPart("s1", "t2")
+    expect(mod.getSnapshot().theater).toBe(true)
+    // The press into the tab moved typing back to the agent: a rewrite.
     expect(loc.hash).toBe("#/agent/s1/tab/t2?view=theater")
-    expect(store.get("yaran:theater:agent:t2")).toBe("on")
-    // A move within a screen, so it replaces like every other tab switch.
-    expect(pushStateMock).not.toHaveBeenCalled()
-    expect(replaceStateMock).toHaveBeenCalled()
+    expect(pushStateMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("swaps between the agent and the terminal used last from the pill's switch on a phone, staying in theater", async () => {
+    const wide = window.innerWidth
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true })
+    try {
+      const mod = await loadStore("", [
+        { id: "s1", project_id: "p1", terminals: ["tm1", "tm2"] },
+      ])
+      mod.selectSession("s1")
+      mod.selectTerminal("tm2", { kind: "session", sessionId: "s1" })
+      mod.switchPhonePart("s1")
+      mod.enterTheater()
+      pushStateMock.mockClear()
+
+      mod.switchPhonePart("s1")
+      expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "terminal", terminalId: "tm2" })
+      expect(mod.getSnapshot().theater).toBe(true)
+      mod.switchPhonePart("s1")
+      expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "agent", sessionId: "s1" })
+      expect(mod.getSnapshot().theater).toBe(true)
+      expect(pushStateMock).toHaveBeenCalledTimes(2)
+    } finally {
+      Object.defineProperty(window, "innerWidth", { value: wide, configurable: true })
+    }
   })
 
   it("a plain tab switch after leaving theater never resurrects it", async () => {
@@ -270,31 +320,60 @@ describe("entering and leaving theater", () => {
   })
 })
 
-describe("the per-pane memory", () => {
-  it("restores the mode when the pane is selected again", async () => {
-    const mod = await loadStore("", [
-      { id: "s1", project_id: "p1", tabs: ["t2"] },
+describe("theater shows what the address is about", () => {
+  it("reopens on the agent after a reload, its terminals beside it", async () => {
+    const mod = await loadStore("#/agent/s1/tab/t2?view=theater", [
+      { id: "s1", project_id: "p1", tabs: ["t2"], terminals: ["tm1"] },
     ])
-    mod.selectSession("s1")
-    mod.enterTheater()
-
-    mod.selectTab("s1", "t2")
-    expect(mod.getSnapshot().theater).toBe(false)
-
-    mod.selectTab("s1", "s1")
     expect(mod.getSnapshot().theater).toBe(true)
-    expect(loc.hash).toBe("#/agent/s1?view=theater")
+    expect(mod.getSnapshot().selectedTarget).toEqual({ kind: "agent", sessionId: "s1", tabId: "t2" })
   })
 
-  it("is per tab, so one tab's mode never follows its sibling", async () => {
+  it("comes back to the agent on Back from one of its terminals", async () => {
     const mod = await loadStore("", [
-      { id: "s1", project_id: "p1", tabs: ["t2"] },
+      { id: "s1", project_id: "p1", terminals: ["tm1"] },
     ])
     mod.selectSession("s1")
     mod.enterTheater()
-    mod.selectTab("s1", "t2")
+    const agentEntry = loc.hash
+    mod.selectTerminal("tm1", { kind: "session", sessionId: "s1" })
+    expect(loc.hash).toBe("#/agent/s1/terminal/tm1?view=theater")
+    loc.hash = agentEntry
+    windowListeners.get("popstate")?.()
+    expect(mod.getSnapshot().theater).toBe(true)
+    expect(mod.getSnapshot().selectedTarget).toMatchObject({ kind: "agent", sessionId: "s1" })
+  })
+})
+
+describe("the per-row memory", () => {
+  it("restores the mode when the row is selected again", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", tabs: ["t2"] },
+      { id: "s2", project_id: "p1" },
+    ])
+    mod.selectSession("s1")
+    mod.enterTheater()
+
+    mod.selectSession("s2")
     expect(mod.getSnapshot().theater).toBe(false)
-    expect(loc.hash).toBe("#/agent/s1/tab/t2")
+
+    mod.selectTab("s1", "t2")
+    expect(mod.getSnapshot().theater).toBe(true)
+    expect(loc.hash).toBe("#/agent/s1/tab/t2?view=theater")
+  })
+
+  it("keeps a project terminal row's mode its own", async () => {
+    const mod = await loadStore(
+      "",
+      [{ id: "s1", project_id: "p1" }],
+      [{ id: "p1", terminals: ["pt1"] }],
+    )
+    mod.selectTerminal("pt1", { kind: "project", projectId: "p1" })
+    mod.enterTheater()
+    mod.selectSession("s1")
+    expect(mod.getSnapshot().theater).toBe(false)
+    mod.selectTerminal("pt1", { kind: "project", projectId: "p1" })
+    expect(mod.getSnapshot().theater).toBe(true)
   })
 
   it("forgets the mode once the user leaves it", async () => {
@@ -360,7 +439,7 @@ describe("theater in the address", () => {
   })
 
   it("never boots into theater on an address that names no pane", async () => {
-    // Home has nothing to fill the screen, and `withTheaterHash` refuses to
+    // Home has nothing to fill the screen, and the address writer refuses to
     // write the modifier there, so a bare one is a hand-made address that must
     // not blank the chrome while the route resolves to home anyway.
     holdSpine = true
@@ -468,8 +547,8 @@ describe("the editor and the changes screen", () => {
     expect(loc.hash).toBe("#/agent/s1")
   })
 
-  it("suspends and restores across the phone's changes screen too", async () => {
-    const mod = await loadStore("", [{ id: "s1", project_id: "p1" }])
+  it("suspends and restores across the phone's changes screen, and the count leaves it on a computer without that screen", async () => {
+    const mod = await loadStore("", [{ id: "s1", project_id: "p1", tabs: ["t2"] }])
     mod.selectSession("s1")
     mod.enterTheater()
 
@@ -480,6 +559,27 @@ describe("the editor and the changes screen", () => {
     mod.navigateUp()
     expect(mod.getSnapshot().theater).toBe(true)
     expect(loc.hash).toBe("#/agent/s1?view=theater")
+
+    // On a computer the pill's count is the way to the Changes pane, which
+    // theater hides: it leaves the mode, shows the pane if it was hidden, and
+    // writes no phone screen into the address.
+    void mod.setChangesPaneVisibility(false)
+    pushStateMock.mockClear()
+    replaceStateMock.mockClear()
+    mod.openChangedFiles()
+    expect(mod.getSnapshot().theater).toBe(false)
+    expect(mod.getSnapshot().mobileScreen).toBe("terminal")
+    expect(loc.hash).toBe("#/agent/s1")
+    expect(mod.changesPaneVisible(mod.getSnapshot())).toBe(true)
+    // Leaving theater pushes, as it does from the toggle.
+    expect(pushStateMock).toHaveBeenCalledTimes(1)
+
+    // Another tab is a position of its own, and the row is out of theater.
+    pushStateMock.mockClear()
+    mod.selectTab("s1", "t2")
+    expect(loc.hash).toBe("#/agent/s1/tab/t2")
+    expect(mod.getSnapshot().theater).toBe(false)
+    expect(pushStateMock).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -509,9 +609,10 @@ describe("losing input ownership", () => {
     expect(mod.getSnapshot().theater).toBe(false)
   })
 
-  it("leaves another pane's mode alone", async () => {
+  it("leaves another row's mode alone", async () => {
     const mod = await loadStore("", [
-      { id: "s1", project_id: "p1", tabs: ["t2"] },
+      { id: "s1", project_id: "p1" },
+      { id: "s2", project_id: "p1", tabs: ["t2"] },
     ])
     mod.selectSession("s1")
     mod.enterTheater()
@@ -520,7 +621,7 @@ describe("losing input ownership", () => {
     expect(store.get("yaran:theater:agent:s1")).toBe("on")
   })
 
-  it("clears a terminal pane's memory too", async () => {
+  it("forgets the agent row's mode when the terminal theater shows is lost", async () => {
     const mod = await loadStore("", [
       { id: "s1", project_id: "p1", terminals: ["tm1"] },
     ])
@@ -528,7 +629,18 @@ describe("losing input ownership", () => {
     mod.enterTheater()
     mod.noteTheaterOwnershipLost("terminal", "tm1")
     expect(mod.getSnapshot().theater).toBe(false)
-    expect(store.has("yaran:theater:terminal:tm1")).toBe(false)
+    expect(store.has("yaran:theater:agent:s1")).toBe(false)
+  })
+
+  it("stays in theater when only the part off screen is lost", async () => {
+    const mod = await loadStore("", [
+      { id: "s1", project_id: "p1", terminals: ["tm1"] },
+    ])
+    mod.selectSession("s1")
+    mod.enterTheater()
+    mod.noteTheaterOwnershipLost("terminal", "tm1")
+    expect(mod.getSnapshot().theater).toBe(true)
+    expect(store.get("yaran:theater:agent:s1")).toBe("on")
   })
 })
 

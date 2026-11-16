@@ -1,0 +1,63 @@
+//! A name that is not a setting name (here a token pasted where a key goes)
+//! must never be printed or logged without `--show`.
+
+const TOKEN: &str = "sk-proj-AbCdEf0123456789";
+
+fn paths(dir: &std::path::Path) -> yaran_core::config::YaranPaths {
+    yaran_core::config::YaranPaths {
+        root: dir.to_path_buf(),
+        config_path: dir.join("config.toml"),
+        sessions_db_path: dir.join("sessions.sqlite3"),
+        worktrees_root: dir.join("worktrees"),
+        lock_path: dir.join("dux.lock"),
+        socket_path: dir.join("yaran.sock"),
+    }
+}
+
+/// A token pasted as a key inside an `[env]` value written as a table: the
+/// start checks never name the entry by it, so it reaches neither the
+/// terminal UI's start error nor any `yaran config set`/`get` that lists the
+/// problem.
+#[test]
+fn a_token_pasted_as_a_key_inside_an_env_value_is_not_quoted_by_the_start_checks() {
+    let raw = format!("[env]\nA = {{ \"{TOKEN} x\" = 1 }}\n");
+    let problems = yaran_core::config::start_problems_of(&raw);
+    assert!(
+        !problems.is_empty(),
+        "precondition: it stops the terminal UI"
+    );
+    for p in &problems {
+        assert!(
+            !p.message.contains(TOKEN),
+            "start check quotes the token: {}",
+            p.message
+        );
+    }
+}
+
+/// A token pasted as a key under `[defaults]`, holding a misplaced password
+/// hash: neither the start checks nor `yaran server`'s start error quote it.
+#[test]
+fn a_token_pasted_as_a_key_holding_a_misplaced_hash_is_not_quoted_by_the_start_checks() {
+    let raw = format!("[defaults]\n\"{TOKEN}\" = {{ password_hash = \"x\" }}\n");
+    let problems = yaran_core::config::start_problems_of(&raw);
+    assert!(!problems.is_empty(), "precondition: both surfaces refuse");
+    for p in &problems {
+        assert!(
+            !p.message.contains(TOKEN),
+            "start check quotes the token: {}",
+            p.message
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(dir.path());
+    std::fs::write(&paths.config_path, &raw).unwrap();
+    let error = format!(
+        "{:#}",
+        yaran_core::config::load_config(&paths).expect_err("refused")
+    );
+    assert!(
+        !error.contains(TOKEN),
+        "yaran server's start error quotes the token: {error}"
+    );
+}

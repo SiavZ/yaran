@@ -5,20 +5,28 @@
  * Uses:
  * src/lib/store.ts
  * ├── @yaran/ui-kit:src/use-mobile.ts
+ * ├── src/components/agentStackModel.ts
  * ├── src/lib/agentName.ts
  * ├── src/lib/agentTabs.ts
  * ├── src/lib/agentWorkspace.ts
+ * ├── src/lib/apiBase.ts
+ * ├── src/lib/apiFetch.ts
  * ├── src/lib/appSocketGiveUp.ts
  * ├── src/lib/assertNever.ts
+ * ├── src/lib/attached.ts
  * ├── src/lib/attention.ts
+ * ├── src/lib/authGate.ts
  * ├── src/lib/bootstrapApi.ts
  * ├── src/lib/browseApi.ts
  * ├── src/lib/buildApi.ts
+ * ├── src/lib/changedFiles.ts
  * ├── src/lib/changesApi.ts
- * ├── src/lib/composeInsert.ts
+ * ├── src/lib/cloneDirName.ts
+ * ├── src/lib/cloneProjectPr.ts
  * ├── src/lib/configApi.ts
  * ├── src/lib/connection.ts
  * ├── src/lib/connectionTiming.ts
+ * ├── src/lib/discardOutcome.ts
  * ├── src/lib/editorDrafts.ts
  * ├── src/lib/editorPreview.ts
  * ├── src/lib/editorRoot.ts
@@ -29,24 +37,33 @@
  * ├── src/lib/flatList.ts
  * ├── src/lib/git.ts
  * ├── src/lib/instanceTitle.ts
+ * ├── src/lib/layoutGesture.ts
+ * ├── src/lib/layoutModel.ts
+ * ├── src/lib/leftoverFolder.ts
  * ├── src/lib/macros.ts
  * ├── src/lib/native/accessSession.ts
  * ├── src/lib/notify.ts
  * ├── src/lib/pageLifecycle.ts
  * ├── src/lib/paneDivider.ts
+ * ├── src/lib/paneMacroTarget.ts
+ * ├── src/lib/projectSettingsNotice.ts
  * ├── src/lib/projectsApi.ts
  * ├── src/lib/prose.tsx
  * ├── src/lib/ptyOwnership.ts
- * ├── src/lib/ptySocket.ts
  * ├── src/lib/reconnectingSocket.ts
  * ├── src/lib/reloadPage.ts
+ * ├── src/lib/renameAgent.ts
  * ├── src/lib/reorder.ts
+ * ├── src/lib/routeQuery.ts
+ * ├── src/lib/serverClock.ts
  * ├── src/lib/serverRun.ts
  * ├── src/lib/serverValidated.ts
  * ├── src/lib/sessionsApi.ts
  * ├── src/lib/sidebarResize.ts
  * ├── src/lib/sortSessions.ts
+ * ├── src/lib/stackMemory.ts
  * ├── src/lib/statusRouting.ts
+ * ├── src/lib/tabTitle.ts
  * ├── src/lib/tabsApi.ts
  * ├── src/lib/terminalOwner.ts
  * ├── src/lib/terminals.ts
@@ -55,8 +72,9 @@
  * ├── src/lib/types.ts
  * ├── src/lib/uid.ts
  * ├── src/lib/workspaceApi.ts
- * └── src/lib/worktreeDelete.ts
- * External: react
+ * ├── src/lib/worktreeDelete.ts
+ * └── src/lib/yaranInstance.ts
+ * External: @yaran/ui-kit, react
  *
  * Used by:
  * src/lib/store.ts
@@ -73,16 +91,28 @@
  * ├── src/components/AgentInfoDialog.test.tsx
  * ├── src/components/AgentInfoDialog.tsx
  * ├── src/components/AgentNotFound.tsx
+ * ├── src/components/AgentStack.tsx
  * ├── src/components/AgentStartupCommandDialog.tsx
  * ├── src/components/AgentTabsStrip.test.tsx
  * ├── src/components/AgentTabsStrip.tsx
+ * ├── src/components/AppMenuSheet.test.tsx
  * ├── src/components/AttachPullRequestDialog.test.tsx
  * ├── src/components/AttachPullRequestDialog.tsx
+ * ├── src/components/AttachedSection.tsx
+ * ├── src/components/AuthBanners.tsx
+ * ├── src/components/ChangeBaseBranchDialog.test.tsx
+ * ├── src/components/ChangeBaseBranchDialog.tsx
  * ├── src/components/ChangeProviderDialog.tsx
  * ├── src/components/ChangedFiles.test.tsx
  * ├── src/components/ChangedFiles.tsx
+ * ├── src/components/ChangedFilesExpand.test.tsx
  * ├── src/components/CheckoutDefaultBranchDialog.test.tsx
  * ├── src/components/CheckoutDefaultBranchDialog.tsx
+ * ├── src/components/CloneProjectDialog.test.tsx
+ * ├── src/components/CloneProjectDialog.tsx
+ * ├── src/components/CommitDialog.review26.test.tsx
+ * ├── src/components/CommitDialog.review28.test.tsx
+ * ├── src/components/CommitDialog.test.tsx
  * ├── src/components/CommitDialog.tsx
  * ├── src/components/ConfigEditorDialog.test.tsx
  * ├── src/components/ConfigEditorDialog.tsx
@@ -94,6 +124,7 @@
  * ├── src/components/ConfirmDeleteTerminalDialog.tsx
  * ├── src/components/ConfirmDetachAgentDialog.test.tsx
  * ├── src/components/ConfirmDetachAgentDialog.tsx
+ * ├── src/components/ConfirmDiscardDialogs.test.tsx
  * ├── src/components/ConfirmDiscardFileDialog.tsx
  * ├── src/components/ConfirmForceReconnectDialog.test.tsx
  * ├── src/components/ConfirmForceReconnectDialog.tsx
@@ -101,6 +132,8 @@
  * ├── src/components/ConfirmForceStopAgentDialog.tsx
  * ├── src/components/ConfirmRecreateWorkingCopyDialog.test.tsx
  * ├── src/components/ConfirmRecreateWorkingCopyDialog.tsx
+ * ├── src/components/ConfirmStopTabDialog.test.tsx
+ * ├── src/components/ConfirmStopTabDialog.tsx
  * ├── src/components/ConfirmUseExistingBranchDialog.tsx
  * ├── src/components/ConfirmVanishedEditorDialog.test.tsx
  * ├── src/components/ConfirmVanishedEditorDialog.tsx
@@ -109,13 +142,15 @@
  * ├── src/components/ConnectPhoneDialog.tsx
  * ├── src/components/CreateAgentDialog.test.tsx
  * ├── src/components/CreateAgentDialog.tsx
- * ├── src/components/CreationOverflowMenuItems.tsx
  * ├── src/components/CustomizeWebappDialog.test.tsx
  * ├── src/components/CustomizeWebappDialog.tsx
+ * ├── src/components/CustomizeWebappPassword.test.tsx
  * ├── src/components/DeleteProjectDialog.test.tsx
  * ├── src/components/DeleteProjectDialog.tsx
  * ├── src/components/DeleteSessionDialog.test.tsx
  * ├── src/components/DeleteSessionDialog.tsx
+ * ├── src/components/DockStrip.test.tsx
+ * ├── src/components/DockStrip.tsx
  * ├── src/components/DormantTabCard.tsx
  * ├── src/components/DormantTabSurface.tsx
  * ├── src/components/EditorBody.tsx
@@ -128,11 +163,11 @@
  * ├── src/components/FlatAgentList.test.tsx
  * ├── src/components/FlatAgentList.tsx
  * ├── src/components/GlobalEnvDialog.tsx
- * ├── src/components/InputMenu.test.tsx
  * ├── src/components/InputMenuItems.tsx
  * ├── src/components/InsetHeader.test.tsx
  * ├── src/components/InsetHeader.tsx
  * ├── src/components/LauncherCorner.tsx
+ * ├── src/components/LoginPage.tsx
  * ├── src/components/MacroPopover.test.tsx
  * ├── src/components/MacroPopover.tsx
  * ├── src/components/MacrosDialog.test.tsx
@@ -143,24 +178,37 @@
  * ├── src/components/MobileShell.tsx
  * ├── src/components/NewAgentPickerDialog.test.tsx
  * ├── src/components/NewAgentPickerDialog.tsx
+ * ├── src/components/NewLauncherDialog.tsx
  * ├── src/components/OfflineOverlay.dom.test.tsx
  * ├── src/components/OfflineOverlay.test.tsx
  * ├── src/components/OfflineOverlay.tsx
  * ├── src/components/PaneActionCluster.tsx
  * ├── src/components/PaneMenu.test.tsx
  * ├── src/components/PaneMenu.tsx
+ * ├── src/components/ProjectInfoDialog.test.tsx
  * ├── src/components/ProjectInfoDialog.tsx
+ * ├── src/components/ProjectList.test.tsx
+ * ├── src/components/ProjectList.tsx
  * ├── src/components/ProjectMenuItems.tsx
  * ├── src/components/ProjectSettingsDialog.tsx
+ * ├── src/components/ProjectsDialog.test.tsx
+ * ├── src/components/ProjectsDialog.tsx
+ * ├── src/components/PullRequestsDialog.test.tsx
+ * ├── src/components/PullRequestsDialog.tsx
  * ├── src/components/RemoveProjectDialog.tsx
+ * ├── src/components/RenameSessionDialog.test.tsx
  * ├── src/components/RenameSessionDialog.tsx
+ * ├── src/components/RouteNotFoundScreen.tsx
  * ├── src/components/Sidebar.test.tsx
  * ├── src/components/Sidebar.tsx
+ * ├── src/components/SidebarFlyout.test.tsx
+ * ├── src/components/StackNewDialog.tsx
  * ├── src/components/StandaloneAgentDialog.tsx
  * ├── src/components/StandaloneEditor.test.tsx
  * ├── src/components/StandaloneEditor.tsx
  * ├── src/components/StartupLogsDialog.test.tsx
  * ├── src/components/StartupLogsDialog.tsx
+ * ├── src/components/StoppedAgentParts.tsx
  * ├── src/components/TaskManagerDialog.test.tsx
  * ├── src/components/TaskManagerDialog.tsx
  * ├── src/components/TerminalActionsMenu.test.tsx
@@ -171,8 +219,8 @@
  * ├── src/components/TerminalPane.filedrop.test.tsx
  * ├── src/components/TerminalPane.strictMode.test.tsx
  * ├── src/components/TerminalPane.test.tsx
- * ├── src/components/TerminalPane.tsx
  * ├── src/components/TerminalPaneLinks.test.tsx
+ * ├── src/components/TerminalStack.tsx
  * ├── src/components/Theater.test.tsx
  * ├── src/components/TheaterFlight.test.tsx
  * ├── src/components/TheaterPill.test.tsx
@@ -181,9 +229,9 @@
  * ├── src/components/Welcome.tsx
  * ├── src/components/WorktreesDialog.test.tsx
  * ├── src/components/WorktreesDialog.tsx
+ * ├── src/components/agentStackModel.ts
  * ├── src/components/cloud/CloudDialog.tsx
  * ├── src/components/createAgentDialogView.ts
- * ├── src/components/inputWayBack.test.tsx
  * ├── src/components/insetHeaderView.test.ts
  * ├── src/components/insetHeaderView.ts
  * ├── src/components/paneDividerParity.test.tsx
@@ -191,19 +239,23 @@
  * ├── src/components/startupLogsCopy.ts
  * ├── src/components/terminal/inputSurface.ts
  * ├── src/components/terminal/ownership.ts
+ * ├── src/components/terminal/partSetup.tsx
  * ├── src/components/terminal/socketCallbacks.ts
  * ├── src/components/terminal/useTerminalLifecycle.ts
  * ├── src/components/terminalAreaModel.ts
  * ├── src/components/useChangedFilesController.ts
  * ├── src/components/useEditorFileReads.ts
  * ├── src/components/useEditorSave.ts
+ * ├── src/hooks/use-changes-pane-controller.gate.test.tsx
  * ├── src/hooks/use-changes-pane-controller.ts
+ * ├── src/hooks/use-reveal-selected-row.ts
  * ├── src/hooks/use-theater-flight.test.tsx
  * ├── src/hooks/use-theater-flight.ts
  * ├── src/hooks/use-theater.test.tsx
  * ├── src/hooks/use-theater.ts
  * ├── src/lib/agentTabs.test.ts
  * ├── src/lib/agentTabs.ts
+ * ├── src/lib/agentVitals.test.ts
  * ├── src/lib/agentVitals.ts
  * ├── src/lib/appMenu.ts
  * ├── src/lib/changesSummary.test.ts
@@ -214,6 +266,7 @@
  * ├── src/lib/restActionsStore.test.ts
  * ├── src/lib/storeAddProject.test.ts
  * ├── src/lib/storeAttentionChrome.test.tsx
+ * ├── src/lib/storeAuth.test.ts
  * ├── src/lib/storeBootNoAuth.test.ts
  * ├── src/lib/storeBootstrap.test.ts
  * ├── src/lib/storeChanges.test.ts
@@ -226,15 +279,19 @@
  * ├── src/lib/storeFocusMemory.test.ts
  * ├── src/lib/storeForceRefreshChanges.test.ts
  * ├── src/lib/storeHashchange.dom.test.ts
+ * ├── src/lib/storeLateIdentity.test.ts
  * ├── src/lib/storeMacros.test.ts
  * ├── src/lib/storeMobileBars.test.ts
  * ├── src/lib/storeOffline.test.ts
  * ├── src/lib/storePrReference.test.ts
  * ├── src/lib/storePtyOwnership.test.ts
  * ├── src/lib/storeReconnectDeepLink.test.ts
+ * ├── src/lib/storeRename.test.ts
  * ├── src/lib/storeRouting.test.ts
+ * ├── src/lib/storeSelector.dom.test.tsx
  * ├── src/lib/storeServerReload.test.ts
  * ├── src/lib/storeServerValidated.test.ts
+ * ├── src/lib/storeSortAgents.test.ts
  * ├── src/lib/storeSpine.test.ts
  * ├── src/lib/storeSpineRace.test.ts
  * ├── src/lib/storeStartupLogs.test.ts
@@ -251,29 +308,60 @@
  */
 
 import { useSyncExternalStore } from "react"
-import { sanitizeAgentName } from "./agentName"
+import { wsUrl } from "./apiBase"
+import { isAuthInterruption } from "./apiFetch"
+import {
+  authPaused,
+  getAuthPhase,
+  initAuthGate,
+  onAuthOpen,
+  probeAfterDrop,
+  refreshAuthStatus,
+  authEpoch,
+  reportOtherYaran,
+  sameYaranBeforeReconnect,
+  subscribeAuth,
+} from "./authGate"
+import { noteBootInstance, noteReportedInstance, openedInstance } from "./yaranInstance"
+import {
+  draftAfterRandomizeOff,
+  generatedNameAfterEdit,
+  isValidAgentName,
+  sanitizeAgentName,
+} from "./agentName"
+import { cloneDirName, GITHUB_COM_ONLY } from "./cloneDirName"
 import { git } from "./git"
 import {
   projectsApi,
   ProjectsApiError,
   type PatchProjectBody,
 } from "./projectsApi"
-import { existingBranchConflict, sessionsApi, SessionsApiError } from "./sessionsApi"
+import { type AttachedBlocker, AttachedError } from "./attached"
+import {
+  type DeleteBranchAnswers,
+  existingBranchConflict,
+  type PullRequestCloneOffer,
+  type ReviewCopyOutlook,
+  sessionsApi,
+  SessionsApiError,
+} from "./sessionsApi"
 
-import { ordersMatch, reorderById } from "./reorder"
+import { overlayShown, reorderById } from "./reorder"
 import { sortedSessionIds, type SortKey } from "./sortSessions"
 import { nextActiveSessionId, type FlatSortKey } from "./flatList"
 import { isMobileViewport } from "@yaran/ui-kit/use-mobile"
 import { EventsSocket } from "./eventsSocket"
-import { getActivePtySocket } from "./ptySocket"
 import type { ReconnectPlanEvent } from "./reconnectingSocket"
-import { getComposeInsertSink } from "./composeInsert"
+import { paneMacroTargetFor } from "./paneMacroTarget"
 import { notifyPtyOwner, resetPtyOwnerEpochs } from "./ptyOwnership"
 import { macroPayloadBytes } from "./macros"
+import { normalizeLeftover } from "./leftoverFolder"
+import { reuseUnchangedFiles } from "./changedFiles"
+import { discardConfirmation, discardOutcome } from "./discardOutcome"
 import { terminalsApi } from "./terminalsApi"
 import { tabsApi } from "./tabsApi"
 import { browseApi } from "./browseApi"
-import { configApi } from "./configApi"
+import { ConfigChangedError, SetChangedError, configApi } from "./configApi"
 import { setConnectionId } from "./connection"
 import {
   fetchServerIdentity,
@@ -292,6 +380,7 @@ import {
 } from "./paneDivider"
 import { DEFAULT_SIDEBAR_WIDTH } from "./sidebarResize"
 import {
+  ChangesFetchAborted,
   ChangesFetchError,
   fetchChanges,
   type SessionChangesResponse,
@@ -314,29 +403,47 @@ import {
   notifyWarning,
   setStatusClearSeconds,
 } from "./notify"
-import { chip, type Prose, prose, wireProse } from "./prose"
+import { chip, type Prose, type ProseName, prose, wireProse } from "./prose"
+import {
+  type ProjectSettingsSubject,
+  projectSettingsSaved,
+  projectSettingsUnchanged,
+} from "./projectSettingsNotice"
+import {
+  type CloneProjectPr,
+  foldFolderAnswer,
+  looksLikeReviewCopy,
+  reviewCopyAgreement,
+  reviewCopyBlocksSubmit,
+} from "./cloneProjectPr"
 import { publishConnectionTiming } from "./connectionTiming"
 import { clearServerValidated, noteServerValidated } from "./serverValidated"
 import { registerPageLifecycle } from "./pageLifecycle"
-import { worktreeDeleteReport } from "./worktreeDelete"
-import { attentionCountForSurface, formatTabTitle } from "./attention"
+import { leftoverDeleteReport, worktreeDeleteReport } from "./worktreeDelete"
+import { attentionCountForSurface } from "./attention"
 import { applyAttentionFavicon } from "./favicon"
 import { statusToastAllowed } from "./statusRouting"
-import { pageTitle, resolveInstanceTitle } from "./instanceTitle"
+import { resolveInstanceTitle } from "./instanceTitle"
+import { tabPosition, tabTitle } from "./tabTitle"
 import {
   type RawWorkspace,
   type Spine,
   fetchWorkspace,
   normalizeWorkspace,
+  withClock,
 } from "./workspaceApi"
+import { noteServerClock } from "./serverClock"
 import {
   type PendingSlotTab,
+  type PendingTabOrder,
+  sessionAsShown,
   isFirstTab,
   isSlotTabTarget,
   resolveFocusedTab,
   shouldRefireFocusPut,
   slotTabIdOf,
   slotTabTargetId,
+  tabAfterClose,
 } from "./agentTabs"
 import {
   activateTab as editorActivateTabPure,
@@ -374,18 +481,39 @@ import {
   ownerSessionId,
   type TerminalOwnerRef,
 } from "./terminalOwner"
-import { ownerHasTerminal } from "./terminals"
+import { ownerHasTerminal, spineListsTerminal } from "./terminals"
+import {
+  layoutOnStart,
+  resolvePhoneView,
+  resolveStackOpening,
+  type ComputerLayout,
+  type PhoneView,
+} from "./layoutModel"
+import { readStackMemory, writeStackMemory } from "./stackMemory"
+import { agentStackModel } from "@/components/agentStackModel"
+import { holdLayoutForGesture } from "./layoutGesture"
+import { closeModals, onModalsChange, openModals, spendModals } from "@yaran/ui-kit/modalHistory"
 import {
   clearTheaterMemory,
   readTheaterMemory,
-  splitTheaterHash,
   theaterMemoryKey,
-  theaterMemoryKeyForPty,
+  theaterRowKey,
   theaterSerializable,
-  withTheaterHash,
   writeTheaterMemory,
 } from "./theater"
+import {
+  canonicalEditorView,
+  editorViewFromQuery,
+  queryTheater,
+  sameEditorView,
+  splitRouteQuery,
+  withRouteQuery,
+  DEFAULT_EDITOR_VIEW,
+  type EditorViewState,
+} from "./routeQuery"
 import type {
+  AcceptedOperation,
+  BranchChoiceView,
   BranchWarningView,
   InspectKind,
   ChangedFileView,
@@ -393,14 +521,21 @@ import type {
   DirEntryView,
   EventsServerMessage,
   MacroView,
+  OperationView,
   ProjectWorktreeEntryView,
+  LeftoverFolderView,
+  PrKeyView,
   SessionView,
   StartupLogContent,
   StartupLogEntry,
   TerminalView,
 } from "./types"
-import { workspaceProjectId } from "@/lib/agentWorkspace"
+import { sessionLabel, supportsBranchGit, workspaceProjectId } from "@/lib/agentWorkspace"
 import { accessSession, configureAccessSession } from "@/lib/native/accessSession"
+import {
+  renameBlockedReason,
+  renamePayload,
+} from "@/lib/renameAgent"
 
 // Who a companion terminal belongs to, defined in `lib/terminalOwner.ts`
 // alongside the exhaustive switches that consume it and re-exported here for
@@ -431,13 +566,12 @@ export type SelectedTarget =
 // reads this; it renders all three panes at once.
 export type MobileScreen = "home" | "terminal" | "changes"
 
-// A route the URL names but the workspace cannot resolve. Only agents get one:
-// a session id is stable and a link to one is worth telling the truth about,
-// whereas terminal ids are ephemeral by design and fall back to their owner.
-export interface RouteNotFound {
-  kind: "agent"
-  sessionId: string
-}
+// A route the URL names but the workspace cannot resolve: an agent that is gone,
+// or a terminal that has closed, with the owner the address names it under so
+// the screen can offer a new terminal there.
+export type RouteNotFound =
+  | { kind: "agent"; sessionId: string }
+  | { kind: "terminal"; terminalId: string; owner: TerminalOwnerRef }
 
 /** Which of the two first-load screens the dialog is showing. */
 export type FirstLoadScreen = "welcome" | "whats_new"
@@ -487,6 +621,15 @@ export type CreateAgentTarget =
   // shape, opened from a project's own menu, which behaves exactly as before.
   | { kind: "pr"; projectId: string | null }
 
+// A from-PR create the server will only make on a review copy, with the
+// warning it showed (in parts, so names are chips) and whether the user has
+// agreed to exactly that.
+export interface ReviewCopyAsk {
+  warned: string
+  warning: Prose
+  agreed: boolean
+}
+
 // The file pending discard-confirmation, or null. `untracked` drives the
 // dialog's warning copy (a tracked file is restored from HEAD; an untracked
 // file is permanently deleted). Derived from the file's git status at the moment
@@ -496,6 +639,10 @@ export interface DiscardTarget {
   sessionId: string
   path: string
   untracked: boolean
+  // The row as it was when the dialog opened. The dialog is worded from it
+  // and sends its kind, because that is what the user is confirming; a live
+  // row that has since changed kind closes the dialog instead.
+  row: ChangedFileView
 }
 
 // Where the agent this client is creating will land, which is what makes a new
@@ -508,6 +655,45 @@ export interface DiscardTarget {
 export type CreateFocusScope =
   | { kind: "project"; projectId: string }
   | { kind: "standalone" }
+  // A clone makes its project and then its agent, so nothing about the request
+  // can recognize the agent: another client may clone the same address, and a
+  // blank name is resolved on the server. The clone's operation record names
+  // it instead, and follows the agent's create to its own outcome, so the
+  // token lives exactly as long as the operation. `request` tells this
+  // submit's replies from a later submit's; `opId` is the record, null until
+  // the 202 names it; `created` is every id the record has named so far;
+  // `finished` is set once the record has an outcome.
+  | {
+      kind: "clone"
+      request: number
+      opId: string | null
+      created: string[]
+      finished: boolean
+    }
+
+/** The clone dialog's form. Null while the dialog is closed. */
+export interface CloneProjectForm {
+  /** Which opening of the dialog this is, so a reply to an earlier opening
+   * cannot write into this one. */
+  openId: number
+  url: string
+  path: string
+  /** Whether the user has typed in the destination, after which the address
+   * stops choosing it. */
+  pathEdited: boolean
+  /** The folder the destination defaults into, once the server has answered. */
+  startFolder: string | null
+  name: string
+  randomize: boolean
+  generatedName: string | null
+  namePending: boolean
+  submitting: boolean
+  /** The sentence a refused submit came back with. */
+  error: string | null
+  /** Set when the dialog is offering a pull request's repository; the address
+   * is then the server's to build and is shown, not edited. */
+  pr: CloneProjectPr | null
+}
 
 // The changed-files request state machine for the selected session, and the one
 // source of changed-files data in the app.
@@ -531,6 +717,19 @@ export interface ChangesSlice {
   unstaged: ChangedFileView[]
   error: string | null
 }
+
+// The branch listing behind the "Change base branch" picker: loading while the
+// server fetches origin, the branches once it answers (with whether origin was
+// fetched just now, and why not), or the reason it could not list them.
+export type ChangeBaseBranchListing =
+  | { kind: "loading" }
+  | {
+      kind: "loaded"
+      branches: BranchChoiceView[]
+      fetched: boolean
+      fetchError: string | null
+    }
+  | { kind: "failed"; message: string }
 
 // A tiny external store backed by `useSyncExternalStore`. A single module-level
 // `EventsSocket` (`/ws/events`) feeds it: resource-change events plus the
@@ -598,15 +797,21 @@ export interface YaranState {
   composeDrafts: Record<string, string>
   commitTarget: string | null
   commitDraft: string
+  // Bumped each time the commit dialog opens, so a commit's answer can tell
+  // whether the dialog on screen is still the one it was sent from.
+  commitOpening: number
   deleteTarget: string | null
   // The companion terminal id pending close confirmation, or null. Mirrors the
   // TUI, which ALWAYS confirms terminal deletion (the running process is killed).
   deleteTerminalTarget: string | null
   // The tab pending close confirmation, or null. Closing always confirms.
   // Closing a tab ends it, closing the tab in the session slot hands the slot
-  // to the next tab in strip order, and closing the agent's last live tab
+  // to the leftmost other tab, and closing the agent's last live tab
   // detaches the agent (which stays in Projects, reopenable).
   closeTabTarget: { sessionId: string; tabId: string } | null
+  // The tab pending stop confirmation, or null. Stopping keeps the tab, dormant;
+  // stopping the agent's last running tab detaches the agent.
+  stopTabTarget: { sessionId: string; tabId: string } | null
   // The agent pending the POLITE detach confirmation, or null. Distinct from
   // `closeTabTarget`: detaching ends the agent's processes and leaves the tab
   // and the agent in the list, where closing destroys the tab for good. Raised
@@ -632,10 +837,26 @@ export interface YaranState {
   // process, so the card does not sit in front of a launch already on its way.
   // See `markTabStarted`; every other launch needs no entry here.
   startedDormantTabs: string[]
+  // The first tab whose run ended cleanly while this client was looking at it.
+  // It rests on the idle screen instead of relaunching under the user who just
+  // quit it, until a press starts it or the selection moves to another tab
+  // (`setState` drops it then), after which selecting the agent starts it as
+  // usual. See `settleSlotTabExit`.
+  endedInViewTab: string | null
   // The unstaged file pending discard confirmation, or null. The TUI confirms
   // every discard (it's destructive); the web mirrors that.
   discardTarget: DiscardTarget | null
   globalEnvOpen: boolean
+  // Stale-save state, shaped like the macro editor's: the version the dialog read, a
+  // refused edit to reseed from (null: the bootstrap), the refusal, a remount counter.
+  globalEnvVersion: string | null
+  globalEnvDraft: Record<string, string> | null
+  globalEnvConflict: string | null
+  globalEnvEpoch: number
+  // Which opening of the dialog is on screen: a refusal answering an earlier
+  // opening is kept aside rather than put back over the newer edit.
+  globalEnvSession: number
+  globalEnvRejected: Record<string, string> | null
   projectSettingsTarget: string | null
   // The agent (session) whose startup-command / project-env editor is open, or
   // null. Both edit the agent's PROJECT (env and startup command are
@@ -679,6 +900,7 @@ export interface YaranState {
     location: "local" | "remote"
   } | null
   addProjectOpen: boolean
+  cloneProject: CloneProjectForm | null
   /** The standalone-agent folder picker. It shares the `browse*` slice with the
    * add-project picker, which is right: only one folder picker is open at a
    * time, and the browsing itself is the same act. What differs is what
@@ -727,6 +949,14 @@ export interface YaranState {
   // checkout moves the source checkout's HEAD, so the web confirms first (the
   // TUI runs it straight from a deliberate palette/keybinding action).
   checkoutDefaultBranchTarget: string | null
+  // The project whose base branch is being changed, or null (closed). Opening
+  // it requests the branch listing, which fetches origin first, so
+  // `changeBaseBranchListing` starts loading and fills when the reply lands.
+  changeBaseBranchTarget: string | null
+  changeBaseBranchListing: ChangeBaseBranchListing
+  // Whether the Projects list (app menu → "Projects…") is open. Every project
+  // dialog opens over it, and closing one lands back on it.
+  projectsDialogOpen: boolean
   // The project whose managed worktrees are being browsed for adoption, or null
   // (closed). The dialog requests the listing on open; `attachWorktreeEntries`
   // holds the server's classification and `attachWorktreeLoading` drives the
@@ -734,6 +964,9 @@ export interface YaranState {
   // `new-agent-from-worktree` picker.
   attachWorktreeTarget: string | null
   attachWorktreeEntries: ProjectWorktreeEntryView[]
+  // The left-over folders the same listing reports: folders git let go of
+  // whose delete could not finish. Filled and cleared with the entries.
+  attachWorktreeLeftovers: LeftoverFolderView[]
   attachWorktreeLoading: boolean
   // True when the Worktrees dialog was reached by drilling through the project
   // picker, which is when a Back control makes sense: it returns to the project
@@ -744,6 +977,10 @@ export interface YaranState {
   // (not just its path) so the confirmation can name the branch and say whether
   // there is uncommitted work to lose without re-deriving either.
   deleteWorktreeTarget: { projectId: string; entry: ProjectWorktreeEntryView } | null
+  // The left-over folder pending a delete confirmation, or null. Carries the
+  // whole row so the confirmation can name its kept branches and their
+  // provenance.
+  deleteLeftoverTarget: { projectId: string; folder: LeftoverFolderView } | null
   // Managed-worktree counts per project id for the project picker's row labels,
   // or null before the first answer lands. Fetched when the picker opens in the
   // worktree intent, not kept live: it is a label, not a live view.
@@ -755,6 +992,11 @@ export interface YaranState {
   // title (or empty, so the placeholder shows the branch name).
   renameTarget: string | null
   renameDraft: string
+  // The dialog's "Also rename the git branch" box, unticked on every open.
+  renameBranch: boolean
+  // A rename request is on its way. Save waits for it, because a second request
+  // races the first to the server and the loser is refused as already running.
+  renamePending: boolean
   // The session pending a provider swap, or null. The dialog pre-selects the
   // session's current provider; the swap takes effect on the next launch
   // (mirroring the TUI's `change-agent-provider`, which never kills a running
@@ -765,6 +1007,9 @@ export interface YaranState {
   // (like renameDraft) so the input stays fully store-controlled.
   attachPullRequestTarget: string | null
   attachPullRequestDraft: string
+  // The agent whose Pull requests dialog is open, or null. Keyed to the
+  // agent, so the dialog closes itself when the agent leaves the spine.
+  pullRequestsTarget: string | null
   // New-agent dialog state lives in the store so the input is fully
   // store-controlled: the server's generated-name reply fills it through a
   // callback, never a set-state-in-effect. `createAgentGeneratedName` is the
@@ -788,6 +1033,11 @@ export interface YaranState {
   //     inferred from an empty draft, so manually clearing the input doesn't
   //     fake a phantom "generating" state.
   createAgentNamePending: boolean
+  //   - `createAgentReviewCopy`: set when the server refused a from-PR create
+  //     because it would need a review copy nobody agreed to. The reopened
+  //     dialog shows `warning` beside an unticked box; `warned` goes back with
+  //     the agreement so the server can tell this copy from a different one.
+  createAgentReviewCopy: ReviewCopyAsk | null
   // The Task Manager (the app menu's "Task Manager…"). Lists every running agent
   // tab and companion terminal with its CPU/memory/process count, and stops each
   // on demand (agents detach and can be reconnected; terminals are destroyed).
@@ -814,6 +1064,11 @@ export interface YaranState {
   configEditorContent: string
   configEditorLoading: boolean
   configEditorError: string | null
+  /// The token the open editor's read was given; its save carries it back.
+  configEditorToken: string | null
+  /// Set when a save met a file that changed on disk since it was read: the
+  /// server's sentence, shown with the choice to reload or keep editing.
+  configEditorConflict: string | null
   // The Preferences dialog (the app menu's "Preferences…"). Gates the
   // modal that sets the browser tab title + favicon colour + Changes pane
   // visibility; the dialog seeds its fields from the bootstrap document, so it
@@ -835,23 +1090,55 @@ export interface YaranState {
   // there is no set-state-in-effect. Empty draft when closed.
   macrosDialogOpen: boolean
   macrosDraft: MacroView[]
+  // The `macros_version` the draft was read at, sent with every save so a list that
+  // changed since is refused; moves on with each save this dialog makes.
+  macrosDraftVersion: string | null
+  // The server's sentence while a refused save's notice is on screen.
+  macrosConflict: string | null
+  // Bumped whenever the draft is reseeded under an open dialog, so the editor
+  // remounts with it.
+  macrosDraftEpoch: number
+  // Which opening of the editor is on screen, as `globalEnvSession` is, and
+  // the edits of an earlier save refused under a newer one.
+  macrosEditSession: number
+  macrosRejected: MacroView[] | null
   // Which screen the mobile shell is showing. DERIVED from the route, never kept
   // independently of it: no focused target is home, a focused target is the
   // terminal screen, and the changes screen is a `/changes` suffix on the
   // target's hash. Desktop maintains it the same way and simply ignores it.
   mobileScreen: MobileScreen
-  // Set when the URL names an agent this workspace does not have, which happens
-  // on a stale bookmark and on pressing Back onto an agent that has since been
-  // deleted. The surfaces render `AgentNotFound` for it rather than quietly
-  // pretending the link said nothing. Null whenever the route resolves.
+  // Set when the URL names an agent this workspace does not have, or a terminal
+  // that has closed, which happens on a stale bookmark and on pressing Back onto
+  // something that has since gone. The surfaces render `RouteNotFoundScreen`
+  // for it rather than quietly pretending the link said nothing. Null whenever
+  // the route resolves.
   routeNotFound: RouteNotFound | null
   // Optimistic overlay for the flat model's GLOBAL agent order: the complete list
   // of session ids in the just-dragged order, cleared once the spine confirms it.
   pendingAgentOrder: string[] | null
-  // Optimistic overlay for the flat Terminals section's GLOBAL order: the complete
+  // Optimistic overlay for the terminals' GLOBAL order: the complete
   // list of terminal ids (any owner) in the just-dragged order, cleared once the
   // spine confirms it. Mirrors `pendingAgentOrder` exactly (see `reorderTerminals`).
   pendingTerminalOrder: string[] | null
+  // The layout each agent's stack is in on this page, keyed by session id. No
+  // entry means the agent is being opened, and its opening rule decides (see
+  // `resolveStackOpening`); the entry is dropped whenever the agent is arrived
+  // at again, so every opening is judged afresh.
+  stackLayouts: Record<string, ComputerLayout>
+  // The dock terminal last in front, per agent. Mirrored into this device's
+  // stack memory, so a reload keeps it while the terminal lives.
+  stackTerminals: Record<string, string>
+  // The provider tab this page last showed on top of each agent's stack.
+  stackTabs: Record<string, string>
+  // Optimistic overlay for project and standalone terminals' places in the
+  // agents list, keyed by terminal id: the agent each row now sits after (null
+  // for the top), each dropped once the spine shows it (see
+  // `placeTerminalsInList`).
+  pendingTerminalPlacement: Record<string, string | null>
+  // Optimistic overlay for an agent's tab strip, keyed by session id: the complete
+  // list of its tab ids in the just-dragged order, cleared once the spine confirms
+  // it (see `reorderTabs`).
+  pendingTabOrder: Record<string, PendingTabOrder>
   // Optimistic overlay for a session's slot pointer, keyed by session id: the
   // tab a slot-tab close just promoted, and the tab that close destroyed. The
   // DELETE's answer is the only thing that knows this until the next spine, and
@@ -887,13 +1174,18 @@ export interface YaranState {
   // The shared search query filtering the flat agent/terminal list on both
   // surfaces. Empty string shows everything.
   agentSearch: string
+  // Whether the launcher's New dialog (every way to create something) is open,
+  // and which step it opened on: its list, or the agent-picking step behind
+  // "New terminal for an agent" on its own, as the launcher corner's menu opens it.
+  newLauncherOpen: boolean
+  newLauncherStep: "list" | "pick-agent"
   // Whether the New-agent picker dialog is open. The picker is the home for agent
   // creation and every project action now that there are no project headers.
   newAgentPickerOpen: boolean
   // How the New-agent picker was opened, so it can guide the right creation flow:
   // "new" (pick project + provider + Create), "from_pr" (pick a project to create
   // an agent from a PR), or "from_worktree" (pick a project to adopt an existing
-  // worktree). The launcher corner's ⋯ menu sets this; a bare open defaults to
+  // worktree). The New dialog and the cog menu set this; a bare open defaults to
   // "new".
   newAgentPickerIntent: "new" | "from_pr" | "from_worktree"
   // When set, the picker lists ONLY these project ids. Used when a pull-request
@@ -941,8 +1233,8 @@ export interface YaranState {
   // Runtime-only and not persisted: this reports the split, never decides it.
   changesPanePercent: number
   // Optimistic override for the touch terminal-keys bar. `null` follows the
-  // persisted config (`bootstrap.mobile_accessory_bar`); the input ⋯ menu's
-  // quick toggle sets an explicit bool for instant feedback. Reconciled
+  // persisted config (`bootstrap.mobile_accessory_bar`); the top menu's and the
+  // action cluster's keys toggle set an explicit bool for instant feedback. Reconciled
   // against the next bootstrap exactly like `changesPaneOverride` above, and
   // rolled back (with a toast) when the settings PATCH fails.
   mobileAccessoryBarOverride: boolean | null
@@ -979,6 +1271,12 @@ export interface YaranState {
     root: EditorRoot
     mode: EditorViewMode
     path: string | null
+    // How the active file is being looked at, in canonical form (see
+    // `canonicalEditorView`); absent when there is nothing beyond mode and
+    // path to say. Its `line` and `top` are a one-shot arrival from an
+    // address, cleared by `editorConsumeArrival` once the editor has gone
+    // there.
+    view?: EditorViewState
   } | null
   // True while this tab is the standalone editor surface: `App()` renders
   // `StandaloneEditorShell` and `EditorOverlay` stands down, so the two can
@@ -1148,7 +1446,7 @@ function loadingChanges(sessionId: string): ChangesSlice {
 // route-correction path rather than marooning the tab on an empty one.
 function bootIsStandaloneEditor(): boolean {
   if (typeof location === "undefined") return false
-  return parseStandaloneEditorRoute(location.hash ?? "") !== null
+  return parseStandaloneEditorRoute(splitRouteQuery(location.hash ?? "").hash) !== null
 }
 
 // Whether this tab booted on a theater address, so the first painted layout is
@@ -1162,8 +1460,8 @@ function bootIsStandaloneEditor(): boolean {
 // resolution commits the honest value for the position it lands on.
 function bootIsTheater(): boolean {
   if (typeof location === "undefined") return false
-  const { hash, theater } = splitTheaterHash(location.hash ?? "")
-  return theater && hash !== "" && hash !== "#"
+  const { hash, params } = splitRouteQuery(location.hash ?? "")
+  return queryTheater(params) && hash !== "" && hash !== "#"
 }
 
 let state: YaranState = {
@@ -1180,16 +1478,25 @@ let state: YaranState = {
   composeDrafts: {},
   commitTarget: null,
   commitDraft: "",
+  commitOpening: 0,
   deleteTarget: null,
   deleteTerminalTarget: null,
   closeTabTarget: null,
+  stopTabTarget: null,
   stopAgentTarget: null,
   recreateWorkingCopyTarget: null,
   forceStopAgentTarget: null,
   createTabInFlight: [],
   startedDormantTabs: [],
+  endedInViewTab: null,
   discardTarget: null,
   globalEnvOpen: false,
+  globalEnvVersion: null,
+  globalEnvDraft: null,
+  globalEnvConflict: null,
+  globalEnvEpoch: 0,
+  globalEnvSession: 0,
+  globalEnvRejected: null,
   projectSettingsTarget: null,
   agentStartupCommandTarget: null,
   agentEnvTarget: null,
@@ -1204,6 +1511,7 @@ let state: YaranState = {
   forceReconnectTarget: null,
   existingBranchTarget: null,
   addProjectOpen: false,
+  cloneProject: null,
   standaloneAgentPickerOpen: false,
   addProjectIntent: "add",
   browsePath: "",
@@ -1213,18 +1521,26 @@ let state: YaranState = {
   removeProjectTarget: null,
   deleteProjectTarget: null,
   checkoutDefaultBranchTarget: null,
+  changeBaseBranchTarget: null,
+  changeBaseBranchListing: { kind: "loading" },
+  projectsDialogOpen: false,
   attachWorktreeTarget: null,
   attachWorktreeEntries: [],
+  attachWorktreeLeftovers: [],
   attachWorktreeLoading: false,
   attachWorktreeFromPicker: false,
   deleteWorktreeTarget: null,
+  deleteLeftoverTarget: null,
   projectWorktreeCounts: null,
   createAgentTarget: null,
   renameTarget: null,
   renameDraft: "",
+  renameBranch: false,
+  renamePending: false,
   changeProviderTarget: null,
   attachPullRequestTarget: null,
   attachPullRequestDraft: "",
+  pullRequestsTarget: null,
   createAgentDraft: "",
   createAgentRandomize: false,
   createAgentCopyChanges: true,
@@ -1239,26 +1555,41 @@ let state: YaranState = {
   configEditorContent: "",
   configEditorLoading: false,
   configEditorError: null,
+  configEditorToken: null,
+  configEditorConflict: null,
   customizeWebappOpen: false,
   firstLoad: null,
   firstLoadDismissed: false,
   macrosDialogOpen: false,
   macrosDraft: [],
+  macrosDraftVersion: null,
+  macrosConflict: null,
+  macrosDraftEpoch: 0,
+  macrosEditSession: 0,
+  macrosRejected: null,
   mobileScreen: "home",
   routeNotFound: null,
   pendingAgentOrder: null,
   pendingTerminalOrder: null,
+  stackLayouts: {},
+  stackTerminals: {},
+  stackTabs: {},
+  pendingTerminalPlacement: {},
+  pendingTabOrder: {},
   pendingSlotTab: {},
   pendingCreateFocus: null,
   projectOpen: {},
   agentSort: null,
   agentSearch: "",
+  newLauncherOpen: false,
+  newLauncherStep: "list",
   newAgentPickerOpen: false,
   newAgentPickerIntent: "new",
   newAgentPickerOnlyIds: null,
   pendingPrReference: null,
   createAgentPrResolving: false,
   createAgentPrError: null,
+  createAgentReviewCopy: null,
   createAgentPrRequestId: null,
   sidebarOpen: loadSidebarOpen(),
   sidebarWidth: SIDEBAR_INITIAL_WIDTH,
@@ -1291,14 +1622,84 @@ function emit(): void {
 // changes screen opens and how a URL naming a deleted agent is recorded.
 function setState(patch: Partial<YaranState>): void {
   const next = { ...state, ...patch }
+  // Arriving at an agent opens it afresh: whatever layout it was left in on
+  // this page is forgotten, and the opening rule (memory, the address, a
+  // stopped agent's terminal) decides again.
+  const arriving = patch.selectedSessionId
+  if (
+    arriving != null &&
+    arriving !== state.selectedSessionId &&
+    !("stackLayouts" in patch) &&
+    arriving in next.stackLayouts
+  ) {
+    const { [arriving]: _forgotten, ...rest } = next.stackLayouts
+    next.stackLayouts = rest
+  }
   if ("selectedTarget" in patch) {
     if (!("mobileScreen" in patch)) {
       next.mobileScreen = patch.selectedTarget ? "terminal" : "home"
     }
     if (!("routeNotFound" in patch)) next.routeNotFound = null
+    const target = patch.selectedTarget
+    // A tab resting on its idle screen stays resting while the view moves
+    // within its own agent, to another of its tabs or into its dock: none of
+    // that is asking for the tab again. An explicit request says so in the
+    // patch.
+    const sameAgent =
+      target != null &&
+      state.selectedSessionId !== null &&
+      (target.kind === "agent"
+        ? target.sessionId === state.selectedSessionId
+        : target.owner.kind === "session" && target.owner.sessionId === state.selectedSessionId)
+    if (!("endedInViewTab" in patch) && !sameAgent) {
+      next.endedInViewTab = null
+    }
+    // The tab this page last showed for an agent, which stays on top of its
+    // stack while typing goes to the dock, and comes back after a reload.
+    if (target?.kind === "agent" && state.stackTabs[target.sessionId] !== target.tabId) {
+      next.stackTabs = { ...next.stackTabs, [target.sessionId]: target.tabId }
+      writeStackMemory(target.sessionId, { tab: target.tabId })
+    }
+    // A phone shows the part the selection names, so whatever it lands on is the
+    // view this device left the agent in, however it got there.
+    if (target != null && isMobileViewport()) rememberPhoneView(target)
   }
+  const held = heldFirstTab(next)
+  if (held !== null && next.endedInViewTab !== held) next.endedInViewTab = held
   state = next
   emit()
+  // Every position change (a selection, the typing target, an editor buffer or
+  // its dirty flag, a rename in the spine) passes through here.
+  refreshTabTitle()
+}
+
+function rememberPhoneView(target: SelectedTarget): void {
+  const sessionId = target.kind === "agent" ? target.sessionId : ownerSessionId(target.owner)
+  if (sessionId === null) return
+  const view: PhoneView = target.kind === "agent" ? "agent" : "terminals"
+  if (readStackMemory(sessionId).view !== view) writeStackMemory(sessionId, { view })
+}
+
+// The one rule that keeps a dormant first tab from starting on sight once the
+// view or the workspace changes under the user: while the selected agent's first
+// tab is dormant beside a running terminal of its own, it is held resting, so
+// neither that terminal ending nor a layout bringing the agent on screen starts
+// it. Only an explicit act does: its Start (which latches it started) or
+// selecting the agent from the list once nothing of its own is running. Both
+// shells read the hold through `dormantTabNeedsCard`.
+function heldFirstTab(s: YaranState): string | null {
+  const sessionId = s.selectedSessionId
+  if (sessionId === null || s.spine === null) return null
+  const session = s.spine.sessions.find((x) => x.id === sessionId)
+  if (session === undefined) return null
+  const slot = slotTabIdOf(sessionId, session, s.pendingSlotTab)
+  const tab = session.tabs.find((t) => t.id === slot)
+  if (slot === undefined || tab === undefined || tab.has_live_process) return null
+  if (s.startedDormantTabs.includes(slot)) return null
+  const terminalRunning = s.spine.terminals.some(
+    (t) => t.owner.kind === "session" && t.owner.session_id === sessionId,
+  )
+  return terminalRunning ? slot : null
 }
 
 function subscribe(listener: () => void): () => void {
@@ -1324,14 +1725,11 @@ export function seedStaticSnapshot(patch: Partial<YaranState>): void {
   setState(patch)
 }
 
-// Derive the WebSocket scheme from the page protocol so an HTTPS deployment uses
-// `wss://` (a hardcoded `ws://` would be blocked as mixed content under HTTPS).
-const wsScheme = hasBrowser && location.protocol === "https:" ? "wss:" : "ws:"
-
-// The host half of the same URL. Off-browser there is no page to derive it from
-// and no socket will ever be opened (`boot()` is skipped), so the placeholder
-// only has to keep the `EventsSocket` constructor happy.
-const wsHost = hasBrowser ? location.host : "localhost"
+// The app socket's URL, from the one helper every socket URL comes from.
+// Off-browser there is no page to derive it from and no socket will ever be
+// opened (`boot()` is skipped), so the placeholder only has to keep the
+// `EventsSocket` constructor happy.
+const eventsSocketUrl = hasBrowser ? wsUrl("/ws/events") : "ws://localhost/ws/events"
 
 // The single JSON socket for the whole app (`/ws/events`), separate from the
 // per-PTY byte sockets (`lib/ptySocket.ts`). It carries resource-change events
@@ -1339,9 +1737,9 @@ const wsHost = hasBrowser ? location.host : "localhost"
 // `status`/`status_cleared` toasts), and owns the connection-state UX (the
 // status-bar indicator). Exported so tests can drive
 // its callbacks / inspect its interest set; connected on boot.
-export const eventsSocket = new EventsSocket(
-  `${wsScheme}//${wsHost}/ws/events`,
-)
+export const eventsSocket = new EventsSocket(eventsSocketUrl, {
+  preflight: sameYaranBeforeReconnect,
+})
 
 // App-wide coarse topics, subscribed once at module load: added to the interest
 // set immediately (sent on the first open, re-sent on every reconnect), so the
@@ -1366,6 +1764,16 @@ configureAccessSession({
 function handleStatusEvent(event: EventsServerMessage): void {
   if (event.tone === "error") setState({ ...clearPendingClientIntent() })
   if (!statusToastAllowed(event.scope, state.standaloneEditor)) return
+  if (event.tone === "error") {
+    // The same refusal again, replayed after the question was already put to
+    // the user, would stack a long toast over the dialog that asks it, and
+    // must not take a newer submission's place either.
+    if (event.key && askedKeys.has(event.key)) return
+    if (askReviewCopy(event)) return
+    // The final still reaches the toast; the dialog opens beside it.
+    askReviewCopyForPrClone(event)
+  }
+  forgetFinishedPrClone(event)
   showStatusToast(
     event.key,
     event.tone ?? "info",
@@ -1377,8 +1785,9 @@ function handleStatusEvent(event: EventsServerMessage): void {
 function applyPushedWorkspace(event: EventsServerMessage): void {
   try {
     applyWorkspace(
-      normalizeWorkspace(event.workspace as RawWorkspace),
+      withClock(normalizeWorkspace(event.workspace as RawWorkspace), event.clock),
       loadWorkspaceSeq,
+      true,
     )
     serverPushesWorkspace = true
   } catch (error) {
@@ -1390,10 +1799,14 @@ function handleSessionChanges(event: EventsServerMessage): void {
   const id = event.id
   if (id === undefined || id !== state.selectedSessionId) return
   const rev = event.rev
+  // Strictly newer only: an event at the rev already applied reports nothing
+  // this pane does not have, and at tens of thousands of files a refetch is
+  // megabytes of JSON. A revless event (a cold-cache catch-up) and the error
+  // state still always refetch.
   if (
     state.changes.phase === "error" ||
     rev === undefined ||
-    rev >= state.changes.rev
+    rev > state.changes.rev
   ) {
     loadChanges(id)
   }
@@ -1414,6 +1827,9 @@ function routeEvent(event: EventsServerMessage): void {
     case "cloud.changed":
     case "config.changed":
       loadBootstrap()
+      // A password or a `[server.auth]` change (from the CLI, a hand edit plus
+      // reload, or another browser) moves what the banners and Preferences show.
+      void refreshAuthStatus()
       return
     case "workspace":
       applyPushedWorkspace(event)
@@ -1433,7 +1849,88 @@ function routeEvent(event: EventsServerMessage): void {
   }
 }
 
-eventsSocket.onEvent = routeEvent
+// While a reopened app socket's yaran is not yet known to be this page's, what it
+// pushes is held here rather than applied, with the refetch the open owes; the
+// identity answer then applies both, or drops both for a different yaran.
+//
+// The hold belongs to the newest open: only that open's check settles it. A
+// reopen before it settles keeps what the replaced open held, in order, ahead of
+// what the new one brings, so a one-shot frame is never lost on the same run.
+// Each open's frames remember the run its own check named: a replaced open's
+// frames are applied only when that is the very run the newest open confirms,
+// because a document from an older run would outrank the new run's revisions.
+type HeldOpen = {
+  owner: number
+  frames: EventsServerMessage[]
+  run: ServerIdentity | null
+}
+let held: HeldOpen[] | null = null
+let heldRecovery: (() => void) | null = null
+let openSeq = 0
+
+eventsSocket.onEvent = (event) => {
+  if (held !== null) {
+    held[held.length - 1].frames.push(event)
+    return
+  }
+  routeEvent(event)
+}
+
+function sameRun(a: ServerIdentity | null, b: ServerIdentity | null): boolean {
+  return (
+    a !== null &&
+    b !== null &&
+    a.instance !== null &&
+    a.instance === b.instance &&
+    a.process === b.process
+  )
+}
+
+// Settle what the open `owner` held, on its own check's answer `current`. The
+// newest open's settles the hold: `apply` applies the frames of every replaced
+// open on the same run, then its own, in the order they arrived, then the held
+// refetch; otherwise everything is dropped. A replaced open's check only names
+// the run of its own frames, or drops them. A check that belongs to no open
+// settles nothing.
+function settleHeldOpen(
+  owner: number | null,
+  apply: boolean,
+  current: ServerIdentity | null = null,
+): void {
+  if (held === null || owner === null) return
+  const index = held.findIndex((open) => open.owner === owner)
+  if (index === -1) return
+  if (index !== held.length - 1) {
+    if (apply && current !== null) held[index].run = current
+    else held.splice(index, 1)
+    return
+  }
+  const opens = held
+  const recovery = heldRecovery
+  held = null
+  heldRecovery = null
+  if (!apply) return
+  const newest = opens[opens.length - 1]
+  for (const open of opens.slice(0, -1)) {
+    if (!sameRun(open.run, current)) continue
+    for (const frame of open.frames) routeEvent(frame)
+  }
+  for (const frame of newest.frames) routeEvent(frame)
+  recovery?.()
+}
+
+// Whether what an open held may be applied, on its own check's answer: an
+// unknown answer is today's behaviour; a different yaran or a new run is not.
+function heldMayApply(current: ServerIdentity | null): boolean {
+  if (current === null) return true
+  if (noteReportedInstance(current.instance) === "different") return false
+  return !serverChanged(serverIdentityBaseline, current)
+}
+
+function gateCovered(): boolean {
+  const kind = getAuthPhase().kind
+  return kind === "other_yaran" || kind === "not_yaran"
+}
 
 // `boot()` starts the first bootstrap and spine load alongside
 // `eventsSocket.connect()`, so the first `onOpen` consumes this flag rather
@@ -1443,26 +1940,65 @@ eventsSocket.onEvent = routeEvent
 let skipNextEventsOnOpenLoad = false
 
 // Which run of which build of yaran this tab loaded against, read once at boot
-// (see `buildApi.ts`). `null` until that read lands, or forever if it failed,
-// and a null baseline never forces a reload: unknown is not "changed".
+// (see `buildApi.ts`). `null` until a read of it lands, and a null baseline
+// never forces a reload: unknown is not "changed".
 let serverIdentityBaseline: ServerIdentity | null = null
 
-// How long before an identity read that answered UNKNOWN is asked again. A blip
+// The gaps before each re-ask of an identity read that answered UNKNOWN. A blip
 // on the one endpoint that decides whether this tab is running against the
-// server that served it is not a reason to stop asking, and re-asking is one
-// small GET.
-const IDENTITY_REPROBE_MS = 5000
+// server that served it is not a reason to stop asking at once, but a server
+// that never answers it is not worth a request every few seconds either.
+//
+// Without a baseline the asking never stops: it carries on at the last gap,
+// because a reconnect compares against the baseline, and a tab that has none
+// cannot notice a restart however many times it reconnects. A run check that
+// follows a known baseline stops after the last gap (about three minutes in
+// all) until the events socket reconnects, which is the moment yaran can have
+// been restarted underneath the page and so the moment the question matters.
+const IDENTITY_REPROBE_BACKOFF_MS = [5000, 10000, 20000, 40000, 60000, 60000]
+const IDENTITY_REPROBE_FLOOR_MS = IDENTITY_REPROBE_BACKOFF_MS[IDENTITY_REPROBE_BACKOFF_MS.length - 1]
 let identityReprobeTimer: ReturnType<typeof setTimeout> | null = null
+let identityReprobesUsed = 0
+// Set when the app socket is disposed: the page is torn down and nothing may
+// be left scheduled behind it.
+let identityReprobesStopped = false
 
-// Ask again, once, after the gap. Idempotent: several unknown answers in flight
-// at once still schedule a single re-ask.
-function scheduleIdentityReprobe(again: () => void): void {
-  if (!hasBrowser) return
+function cancelIdentityReprobe(): void {
+  if (identityReprobeTimer === null) return
+  clearTimeout(identityReprobeTimer)
+  identityReprobeTimer = null
+}
+
+// A known answer ends the sequence, and a reconnect starts it over.
+function resetIdentityReprobes(): void {
+  cancelIdentityReprobe()
+  identityReprobesUsed = 0
+}
+
+// Ask again, once, after the next gap. Idempotent: several unknown answers in
+// flight at once still schedule a single re-ask. The re-ask asks whichever
+// question is still open: without a baseline, a run check could never see a
+// change, so it is the baseline that is asked for.
+function scheduleIdentityReprobe(): void {
+  if (!hasBrowser || identityReprobesStopped) return
   if (identityReprobeTimer !== null) return
+  const gap =
+    IDENTITY_REPROBE_BACKOFF_MS[identityReprobesUsed] ??
+    (serverIdentityBaseline === null ? IDENTITY_REPROBE_FLOOR_MS : undefined)
+  if (gap === undefined) return
+  identityReprobesUsed += 1
   identityReprobeTimer = setTimeout(() => {
     identityReprobeTimer = null
-    again()
-  }, IDENTITY_REPROBE_MS)
+    if (serverIdentityBaseline === null) void loadServerIdentityBaseline()
+    else void reloadIfServerChanged()
+  }, gap)
+}
+
+// The identity re-asks are scheduled for the app socket's sake, so they end
+// with it.
+eventsSocket.onDispose = () => {
+  identityReprobesStopped = true
+  cancelIdentityReprobe()
 }
 
 // Learn the run-identity baseline the hard reload compares against. A tab that
@@ -1474,13 +2010,23 @@ function scheduleIdentityReprobe(again: () => void): void {
 // run cannot have moved unnoticed. A failed read validates too, since holding
 // every terminal shut over one unreachable endpoint is the wrong failure.
 async function loadServerIdentityBaseline(): Promise<void> {
-  serverIdentityBaseline = await fetchServerIdentity()
-  noteServerValidated()
-  if (serverIdentityBaseline === null) {
-    scheduleIdentityReprobe(() => {
-      void loadServerIdentityBaseline()
-    })
+  let answer: ServerIdentity | null
+  try {
+    answer = await fetchServerIdentity()
+  } catch (e) {
+    // Never sent, or refused for the session: nothing was checked. The
+    // sign-in that ends this runs the check again (`resumeAfterSignIn`).
+    if (isAuthInterruption(e)) return
+    throw e
   }
+  if (answer !== null && noteBootInstance(answer.instance) === "different") {
+    reportOtherYaran()
+    return
+  }
+  serverIdentityBaseline = answer
+  noteServerValidated()
+  if (serverIdentityBaseline === null) scheduleIdentityReprobe()
+  else resetIdentityReprobes()
 }
 
 // Is this the server that served this tab? A reconnect is the only moment yaran
@@ -1490,17 +2036,51 @@ async function loadServerIdentityBaseline(): Promise<void> {
 // It runs alongside that refetch rather than gating it: blocking recovery on a
 // network round-trip would strand the app whenever the probe hung, and a reload
 // discards whatever the early refetch produced.
-async function reloadIfServerChanged(): Promise<void> {
-  const current = await fetchServerIdentity()
+let identityProbeSeq = 0
+
+async function reloadIfServerChanged(owner: number | null = null): Promise<void> {
+  const seq = ++identityProbeSeq
+  const epoch = authEpoch()
+  let current: ServerIdentity | null
+  try {
+    current = await fetchServerIdentity()
+  } catch (e) {
+    // As above: no answer is no check, and the gate stays shut. What a held
+    // open was waiting for is today's unchecked recovery.
+    settleHeldOpen(owner, !gateCovered())
+    if (isAuthInterruption(e)) return
+    throw e
+  }
+  // A newer check was asked since: it decides the page; this one only settles
+  // what its own open held.
+  if (seq !== identityProbeSeq) {
+    settleHeldOpen(owner, !gateCovered() && heldMayApply(current), current)
+    return
+  }
+  // A late answer decides nothing: the page left its session, or it is
+  // already covered by the gate.
+  if (authEpoch() !== epoch || authPaused()) {
+    settleHeldOpen(owner, !gateCovered())
+    return
+  }
+  // A different yaran is not a restart of this one: the page is covered and asks,
+  // rather than reloading itself into somebody else's yaran.
+  if (current !== null && noteReportedInstance(current.instance) === "different") {
+    settleHeldOpen(owner, false)
+    reportOtherYaran()
+    return
+  }
   if (serverChanged(serverIdentityBaseline, current)) {
     // Published BEFORE the reload, because the reload is not instantaneous and
     // the memories keyed to the old run's counters (a pane's ghost connection
     // ids, the applied replay generation) can be read in the meantime. See
     // `serverRun.ts`.
     noteServerRunProbe("changed")
-    reloadPage()
+    settleHeldOpen(owner, false)
+    reloadLeavingNoModalEntry()
     return
   }
+  settleHeldOpen(owner, true, current)
   noteServerRunProbe(current === null ? "unknown" : "same")
   // The check has RESOLVED and the run has not moved, which is the moment a PTY
   // socket may attach again. `conn === "open"` is true a whole round trip before
@@ -1512,11 +2092,8 @@ async function reloadIfServerChanged(): Promise<void> {
   // re-ask, one transient failure on a reconnect after a restart left the tab
   // running old code against a new run indefinitely, which is the exact thing
   // this check exists to prevent.
-  if (current === null) {
-    scheduleIdentityReprobe(() => {
-      void reloadIfServerChanged()
-    })
-  }
+  if (current === null) scheduleIdentityReprobe()
+  else if (serverIdentityBaseline !== null) resetIdentityReprobes()
 }
 
 // After a (re)connect the socket has re-sent the whole interest set; re-fetch so
@@ -1526,6 +2103,7 @@ async function reloadIfServerChanged(): Promise<void> {
 // outage would otherwise leave stale providers/macros/UI flags until the next
 // config edit. The selected session's changes are also recovered when one is set.
 eventsSocket.onOpen = () => {
+  const skippedBootLoad = skipNextEventsOnOpenLoad
   if (skipNextEventsOnOpenLoad) {
     // First open after a boot/login load: skip the duplicate fetch this once.
     skipNextEventsOnOpenLoad = false
@@ -1538,10 +2116,32 @@ eventsSocket.onOpen = () => {
     //
     // The identity probe comes first: yaran may have been restarted during the
     // outage, and refetching state into old code is the wrong recovery.
-    void reloadIfServerChanged()
     armReconnectDeepLink()
-    loadBootstrap()
-    loadWorkspace()
+    // The probe below is this reconnect's own ask, so the backoff of any earlier
+    // unknown answer starts over behind it. Its answer cannot fill a missing
+    // baseline, so that ask is queued at the first step whatever it says.
+    resetIdentityReprobes()
+    if (serverIdentityBaseline === null) scheduleIdentityReprobe()
+    const recover = () => {
+      loadBootstrap()
+      loadWorkspace()
+      const id = state.selectedSessionId
+      if (id === null) return
+      setState({ changes: loadingChanges(id) })
+      void restartChanges(id)
+    }
+    if (openedInstance() !== null) {
+      // A page that knows its yaran applies nothing from this socket until the
+      // answer to this open's check says it is that yaran.
+      const owner = ++openSeq
+      if (held === null) held = []
+      held.push({ owner, frames: [], run: null })
+      heldRecovery = recover
+      void reloadIfServerChanged(owner).catch(() => settleHeldOpen(owner, !gateCovered()))
+    } else {
+      void reloadIfServerChanged()
+      recover()
+    }
     // The server's ownership epoch counter restarts at zero if the server itself
     // restarted during the outage; clear our per-pty high-water marks so a fresh
     // post-restart `pty.owner` is not wrongly ignored as stale. A reconnect is the
@@ -1555,10 +2155,37 @@ eventsSocket.onOpen = () => {
   // this generation lands. (On the boot open this only risks re-applying the
   // document the boot fetch just applied, which is idempotent.)
   resetAppliedWorkspaceRev()
+  // The reconnect's own recovery restarts the changes above.
+  if (!skippedBootLoad) return
   const id = state.selectedSessionId
   if (id === null) return
   setState({ changes: loadingChanges(id) })
-  loadChanges(id)
+  void restartChanges(id)
+}
+
+// Signed back in after the session ended underneath the page. Everything that
+// failed while signed out was dropped, so the app refetches as it does after an
+// outage. An app socket that stayed open has no `onOpen` coming, so this does
+// the refetch itself; one that was closed is reopened by its own sign-in
+// subscription, and its `onOpen` refetches. The boot latch is cleared either
+// way: a boot whose first loads were refused must not skip the recovery.
+function resumeAfterSignIn(): void {
+  skipNextEventsOnOpenLoad = false
+  // The run check owed since the sign-out (see the `subscribeAuth` below). Run
+  // here as well as by a reopening socket's `onOpen`, because a socket that
+  // stayed open has no `onOpen` coming. Like a reconnect, it is a fresh ask,
+  // so any earlier backoff starts over behind it.
+  resetIdentityReprobes()
+  if (serverIdentityBaseline === null) void loadServerIdentityBaseline()
+  else void reloadIfServerChanged()
+  if (state.conn !== "open") return
+  armReconnectDeepLink()
+  loadBootstrap()
+  loadWorkspace()
+  const id = state.selectedSessionId
+  if (id === null) return
+  setState({ changes: loadingChanges(id) })
+  void restartChanges(id)
 }
 
 // Move the changed-files subscription from one session to another. A null side
@@ -1576,10 +2203,87 @@ function switchChangesSubscription(
 // guarded apply and error handlers, so a failed fetch never surfaces as an
 // unhandled rejection. The returned promise never rejects; it exists for a
 // caller that must report on the result, such as the forced refresh.
-function loadChanges(sessionId: string): Promise<void> {
-  return fetchChanges(sessionId)
-    .then((resp) => applyChangesResponse(sessionId, resp))
-    .catch((err) => applyChangesError(sessionId, err))
+//
+// One fetch per session at a time. A request made while one is in flight for
+// the same session does not race it: it books ONE follow-up that starts when
+// the current fetch settles, because the fetch in flight may predate whatever
+// prompted the request, and any further requests share that follow-up. The
+// promise a caller gets settles once the fetch that answers its request has.
+//
+// Coalescing is for ordinary events only. Anything that puts the slice back
+// into loading (a reconnect, Refresh, a forced refresh, a session switch)
+// starts a new generation instead: it aborts the fetch in flight and starts its
+// own, so a request stuck on a half-open connection can never hold the pane in
+// loading behind it. A superseded fetch's late answer, success or failure, is
+// dropped by its generation.
+interface ChangesFetchEntry {
+  sessionId: string
+  generation: number
+  controller: AbortController
+  settled: Promise<void>
+  followUp: Promise<void> | null
+}
+let changesFetch: ChangesFetchEntry | null = null
+let changesGeneration = 0
+// The fetch that opened the current loading window, and so the only one whose
+// failure may turn that window into the error state.
+let changesWindowOpener: ChangesFetchEntry | null = null
+
+// Abandon whatever is in flight: the next fetch starts a new generation.
+function supersedeChangesFetch(): void {
+  changesGeneration += 1
+  changesFetch?.controller.abort()
+  changesFetch = null
+  changesWindowOpener = null
+}
+
+// Put the slice into loading for `sessionId` and start the fetch that answers
+// for that loading window, superseding any fetch in flight.
+function restartChanges(sessionId: string): Promise<void> {
+  return loadChanges(sessionId, { opensWindow: true })
+}
+
+function loadChanges(
+  sessionId: string,
+  { opensWindow = false }: { opensWindow?: boolean } = {},
+): Promise<void> {
+  const current = changesFetch
+  if (!opensWindow && current !== null && current.sessionId === sessionId) {
+    current.followUp ??= current.settled.then(() =>
+      // Nobody needs it any more: the session was switched away from, or a
+      // reset started a newer fetch that answers for this request too.
+      state.selectedSessionId === sessionId &&
+      current.generation === changesGeneration
+        ? loadChanges(sessionId)
+        : undefined,
+    )
+    return current.followUp
+  }
+  if (opensWindow) supersedeChangesFetch()
+  const entry: ChangesFetchEntry = {
+    sessionId,
+    generation: changesGeneration,
+    controller: new AbortController(),
+    settled: Promise.resolve(),
+    followUp: null,
+  }
+  const live = () => entry.generation === changesGeneration
+  entry.settled = fetchChanges(sessionId, entry.controller.signal)
+    .then((resp) => {
+      if (live()) applyChangesResponse(sessionId, resp)
+    })
+    .catch((err) => {
+      if (live() && !(err instanceof ChangesFetchAborted)) {
+        applyChangesError(sessionId, err, entry === changesWindowOpener)
+      }
+    })
+    .finally(() => {
+      if (changesFetch === entry) changesFetch = null
+      if (changesWindowOpener === entry) changesWindowOpener = null
+    })
+  changesFetch = entry
+  if (opensWindow) changesWindowOpener = entry
+  return entry.settled
 }
 
 // Apply a fetch response, dropping it when it lost a race. Two guards:
@@ -1594,13 +2298,29 @@ function applyChangesResponse(
   if (state.selectedSessionId !== sessionId) return
   if (state.changes.sessionId !== sessionId) return
   if (resp.rev < state.changes.rev) return
+  const previous = state.changes
+  // Everything downstream memoizes by reference, so an answer that repeats
+  // what is on screen keeps the arrays and file objects already there, and one
+  // that changes nothing at all is not applied: every `setState` re-renders
+  // every unselective subscriber in the app.
+  const staged = reuseUnchangedFiles(previous.staged, resp.staged)
+  const unstaged = reuseUnchangedFiles(previous.unstaged, resp.unstaged)
+  if (
+    previous.phase === "loaded" &&
+    previous.rev === resp.rev &&
+    previous.error === null &&
+    staged === previous.staged &&
+    unstaged === previous.unstaged
+  ) {
+    return
+  }
   setState({
     changes: {
       sessionId,
       phase: "loaded",
       rev: resp.rev,
-      staged: resp.staged,
-      unstaged: resp.unstaged,
+      staged,
+      unstaged,
       error: null,
     },
   })
@@ -1611,7 +2331,11 @@ function applyChangesResponse(
 // (409 git lock, 5xx, network) lands in `error` so the pane shows a Refresh
 // affordance; the poller's eventual recovery event self-heals it. Same staleness
 // guards as the success path so a late failure can't clobber a newer state.
-function applyChangesError(sessionId: string, err: unknown): void {
+function applyChangesError(
+  sessionId: string,
+  err: unknown,
+  opensWindow: boolean,
+): void {
   if (state.selectedSessionId !== sessionId) return
   if (state.changes.sessionId !== sessionId) return
   if (err instanceof ChangesFetchError && err.status === 404) {
@@ -1619,11 +2343,11 @@ function applyChangesError(sessionId: string, err: unknown): void {
     return
   }
   // Only the fetch that opened the current loading window may flip the slice to
-  // error. A late failure that lost the race to a successful concurrent fetch
-  // (e.g. a slow 409 arriving after a newer 200 already loaded the pane) must
-  // not turn a loaded pane into an error pane. The next `session.changes` event
-  // still self-heals an error state regardless.
-  if (state.changes.phase !== "loading") return
+  // error. A failure from any other fetch (a follow-up, or one that lost the
+  // race to a successful one) must not turn a loading or loaded pane into an
+  // error pane. The next `session.changes` event still self-heals an error
+  // state regardless.
+  if (!opensWindow || state.changes.phase !== "loading") return
   const message =
     err instanceof Error ? err.message : "Could not load changed files."
   setState({
@@ -1640,7 +2364,7 @@ export function refreshChanges(): void {
   const id = state.selectedSessionId
   if (id === null) return
   setState({ changes: loadingChanges(id) })
-  loadChanges(id)
+  void restartChanges(id)
 }
 
 // Force the server to ask git again, then re-read. Rejects when the forcing
@@ -1653,10 +2377,13 @@ export async function forceRefreshChanges(): Promise<void> {
   const id = state.selectedSessionId
   if (id === null) return
   setState({ changes: loadingChanges(id) })
+  // A fetch already in flight predates the forced refresh and answers nothing
+  // the pane is now waiting for.
+  supersedeChangesFetch()
   try {
     await git.refreshChanges(id)
   } finally {
-    await loadChanges(id)
+    await restartChanges(id)
   }
 }
 
@@ -1687,6 +2414,16 @@ function loadBootstrap(): void {
       // first boot that stays empty) is visible in the console rather than silent.
       console.warn("[yaran] bootstrap fetch failed; will retry on reconnect", err)
     })
+}
+
+// `loadBootstrap` under the same newest-wins rule, but resolving the document for
+// a caller that reseeds from it and letting a failure reach that caller.
+function refetchBootstrap(): Promise<Bootstrap> {
+  const seq = ++loadBootstrapSeq
+  return fetchBootstrap().then((b) => {
+    if (seq === loadBootstrapSeq) applyBootstrap(b)
+    return b
+  })
 }
 
 function reconcileConfirmedOverride<T>(
@@ -1738,6 +2475,9 @@ function applyBootstrap(b: Bootstrap): void {
   // emits the moment the decision resolves (which is how a browser already open
   // during a slow release-notes fetch still gets the screen). Guarded inside.
   offerAutomaticFirstLoad(b.pending_first_load ?? null)
+  // The GitHub hosts may have moved under an open clone dialog; a destination
+  // the user has not edited follows them, as it follows the address.
+  if (state.cloneProject) patchCloneProject({}, false)
 }
 
 // Repaint the tab title's `(N) ` prefix and the favicon's attention dot from
@@ -1747,16 +2487,36 @@ function applyBootstrap(b: Bootstrap): void {
 // every spine apply. Self-guards on the DOM.
 function refreshAttentionChrome(): void {
   if (typeof document === "undefined") return
-  const count = attentionCountForSurface(
-    state.spine?.sessions ?? [],
-    state.standaloneEditor,
-  )
-  const base = pageTitle(
+  refreshTabTitle()
+  applyAttentionFavicon(state.bootstrap?.favicon, attentionCount() > 0)
+}
+
+// The flagged agents this surface counts. The server stops flagging agents
+// once `ui.attention_indicator` is off, but a live toggle can arrive before the
+// spine that drops the flags; the setting wins, so neither the count nor the
+// favicon dot outlives it.
+function attentionCount(): number {
+  return state.bootstrap?.attention_indicator === false
+    ? 0
+    : attentionCountForSurface(state.spine?.sessions ?? [], state.standaloneEditor)
+}
+
+// Write the browser-tab title for where this tab is (see `lib/tabTitle.ts`).
+// Runs on every state change, so it writes only when the string moved. The
+// last string written is kept rather than read back from `document.title`,
+// which the browser hands back with its whitespace collapsed.
+let writtenTabTitle: string | null = null
+
+function refreshTabTitle(): void {
+  if (typeof document === "undefined") return
+  const title = tabTitle(
+    tabPosition(state),
     resolveInstanceTitle(state.bootstrap?.title),
-    state.standaloneEditor,
+    attentionCount(),
   )
-  document.title = formatTabTitle(base, count)
-  applyAttentionFavicon(state.bootstrap?.favicon, count > 0)
+  if (title === writtenTabTitle) return
+  writtenTabTitle = title
+  document.title = title
 }
 
 // Monotonic sequence for spine loads: rapid change events fire concurrent
@@ -1767,6 +2527,10 @@ function refreshAttentionChrome(): void {
 // It orders fetch against fetch and nothing else. Fetch against push is ordered
 // by the server's `rev` below, since only the server knows which is later.
 let loadWorkspaceSeq = 0
+
+// How many workspace documents have been applied, so an operation can tell
+// whether one landed while it was in flight.
+let workspaceApplies = 0
 
 // Whether this server pushes the workspace document. Set by the first pushed
 // frame this client could actually process, never unset: until then (an older
@@ -1830,7 +2594,7 @@ function loadWorkspace(): void {
 // `seq` is the `loadWorkspaceSeq` the originating `loadWorkspace` captured; a
 // stale result is discarded so a slow reply cannot overwrite a fresher spine or
 // re-run focus and prune against outdated data.
-function applyWorkspace(rawSpine: Spine, seq: number): void {
+function applyWorkspace(rawSpine: Spine, seq: number, pushed = false): void {
   if (seq < loadWorkspaceSeq) return
   // The server's ordering, applied to both delivery paths from one place. A
   // document with no revision at all comes from a server that predates the
@@ -1844,14 +2608,20 @@ function applyWorkspace(rawSpine: Spine, seq: number): void {
     // so), and a rev recorded before a failed apply would make the fallback
     // refetch of this same document read as stale and be discarded.
   }
+  // Only the document being applied moves the clock reading: a stale one was
+  // sent earlier and would put an older reading back.
+  noteServerClock(rawSpine.clock)
   // `tabs` is normalized to an array at the fetch boundary (`fetchWorkspace`), so an
   // older server that omits the field degrades to an empty strip rather than
   // throwing on the `session.tabs` derefs downstream.
   const spine = rawSpine
+  workspaceApplies += 1
   // The outgoing session list, captured before `setState` swaps the spine. A
   // vanished agent picks its replacement from this ordering (see
   // `navigateAfterVanish`), since the new list no longer holds its position.
   const previousSessions = state.spine?.sessions ?? []
+  const previousTerminals = state.spine?.terminals ?? []
+  const previousTerminalOrder = state.pendingTerminalOrder
   // Retire the "explicitly started" latch for any tab whose launch has been
   // answered, either way: the process is up, or the run is recorded as failed.
   // Dropping it on liveness lets a later exit re-show the card, and dropping it
@@ -1874,6 +2644,15 @@ function applyWorkspace(rawSpine: Spine, seq: number): void {
     composeDrafts: pruneComposeDrafts(state.composeDrafts, spine),
     pendingAgentOrder: reconcilePendingAgentOrder(spine, state.pendingAgentOrder),
     pendingTerminalOrder: reconcilePendingTerminalOrder(spine, state.pendingTerminalOrder),
+    pendingTerminalPlacement: reconcilePendingTerminalPlacement(
+      spine,
+      state.pendingTerminalPlacement,
+    ),
+    pendingTabOrder: reconcilePendingTabOrder(spine, state.pendingTabOrder, {
+      seq,
+      pushed,
+      rev: rawSpine.rev,
+    }),
     pendingSlotTab: reconcilePendingSlotTab(spine, state.pendingSlotTab),
   })
   // Restore a boot-time deep-link before focus/prune: it selects only a session
@@ -1894,7 +2673,7 @@ function applyWorkspace(rawSpine: Spine, seq: number): void {
   // why, and on either surface the editor prune would silently delete the
   // tabs a dirty hold exists to protect.
   if (!endOpenEditorIfRootGone(spine)) {
-    pruneSelectionIfGone(spine, previousSessions)
+    pruneSelectionIfGone(spine, previousSessions, previousTerminals, previousTerminalOrder)
     pruneEditorStateIfGone(spine)
   }
   // Re-restore a reconnect deep-link once its agent is present and back to
@@ -1962,22 +2741,24 @@ function pruneDeadEditorTabs(live: Set<string>, heldKey: string | null): void {
 }
 
 // Drop the global agent-order overlay once the server's session order (spine is
-// already in global sort_order) matches what we optimistically applied. The
-// server's list is the full session set, so compare against every session id.
+// already in global sort_order) shows what we optimistically applied, judged
+// over the sessions both still name, so an agent created or deleted before the
+// confirming spine cannot pin the overlay.
 function reconcilePendingAgentOrder(
   spine: Spine,
   pending: string[] | null,
 ): string[] | null {
   if (!pending) return null
   const serverIds = spine.sessions.map((s) => s.id)
-  return ordersMatch(serverIds, pending) ? null : pending
+  return overlayShown(serverIds, pending) ? null : pending
 }
 
-// Mirror of `reconcilePendingAgentOrder` for the flat Terminals section. The
+// Mirror of `reconcilePendingAgentOrder` for the terminals' global order. The
 // spine carries EVERY terminal (any owner) in one flat collection, and the
 // authoritative flat order is that collection sorted by the global `sort_order`
 // (which a reorder restamps to the dragged order). The overlay clears once that
-// server order matches what we optimistically applied.
+// server order shows what we optimistically applied, over the terminals both
+// still name.
 function reconcilePendingTerminalOrder(
   spine: Spine,
   pending: string[] | null,
@@ -1987,7 +2768,57 @@ function reconcilePendingTerminalOrder(
     .slice()
     .sort((a, b) => a.sort_order - b.sort_order)
     .map((t) => t.id)
-  return ordersMatch(serverIds, pending) ? null : pending
+  return overlayShown(serverIds, pending) ? null : pending
+}
+
+// Drop each list-place overlay once the spine shows the terminal there, or the
+// terminal is gone. Kept as the same object when nothing changed, so an
+// unrelated spine does not re-render the list.
+function reconcilePendingTerminalPlacement(
+  spine: Spine,
+  pending: Record<string, string | null>,
+): Record<string, string | null> {
+  const entries = Object.entries(pending)
+  if (entries.length === 0) return pending
+  const kept = entries.filter(([terminalId, after]) => {
+    const terminal = spine.terminals.find((t) => t.id === terminalId)
+    return terminal !== undefined && (terminal.list_after ?? null) !== after
+  })
+  return kept.length === entries.length ? pending : Object.fromEntries(kept)
+}
+
+// Drop each tab-strip overlay once it has done its job: the spine's strip shows
+// it, the agent is gone, or the request was answered and this document was made
+// after that answer (whatever order it shows: another screen's reorder in
+// between must not stay hidden behind ours until a reload). A fetch is newer
+// when it started after the answer; a pushed document when its revision reaches
+// the one the answer named, since a push made before the reorder can still
+// arrive after the answer.
+function reconcilePendingTabOrder(
+  spine: Spine,
+  pending: Record<string, PendingTabOrder>,
+  doc: { seq: number; pushed: boolean; rev: number | undefined },
+): Record<string, PendingTabOrder> {
+  const entries = Object.entries(pending).filter(([sessionId, entry]) => {
+    const session = spine.sessions.find((s) => s.id === sessionId)
+    if (session === undefined) return false
+    if (
+      overlayShown(
+        session.tabs.map((t) => t.id),
+        entry.ids,
+      )
+    ) {
+      return false
+    }
+    const answered = entry.answered
+    if (answered === null) return true
+    const newer = doc.pushed
+      ? doc.rev !== undefined && answered.minRev !== null && doc.rev >= answered.minRev
+      : doc.seq > answered.seq
+    return !newer
+  })
+  if (entries.length === Object.keys(pending).length) return pending
+  return Object.fromEntries(entries)
 }
 
 // Drop a promoted-slot overlay once the spine has caught up with the close it
@@ -2043,7 +2874,12 @@ function isSlotTabOf(sessionId: string, tabId: string): boolean {
 // outright when their PTY exits. `previous` is the session list from the spine
 // before this one, which is what gives the gone agent a position to pick a
 // neighbour from.
-function pruneSelectionIfGone(spine: Spine, previous: SessionView[]): void {
+function pruneSelectionIfGone(
+  spine: Spine,
+  previous: SessionView[],
+  previousTerminals: readonly TerminalView[],
+  previousTerminalOrder: string[] | null,
+): void {
   const target = state.selectedTarget
   if (!target) return
   if (target.kind === "agent") {
@@ -2063,11 +2899,28 @@ function pruneSelectionIfGone(spine: Spine, previous: SessionView[]): void {
       // the tab, so pushing would leave the dead tab's entry underneath. The
       // `changes` flag is carried across because changed files are
       // session-scoped, so the screen being read survives the tab going away.
-      selectSessionRoute(
-        target.sessionId,
-        "replace",
-        state.mobileScreen === "changes",
+      //
+      // The landing is the neighbour the strip showed before the tab went, like
+      // a browser tab, whoever closed it. A neighbour that is gone too, or a
+      // tab this client never saw, falls back to the slot tab.
+      const neighbour = tabAfterClose(
+        previous.find((s) => s.id === target.sessionId)?.tabs ?? [],
+        target.tabId,
       )
+      if (neighbour !== undefined && session.tabs.some((t) => t.id === neighbour)) {
+        selectTab(target.sessionId, neighbour, {
+          urlMode: "replace",
+          changes: state.mobileScreen === "changes",
+        })
+      } else {
+        selectSessionRoute(
+          target.sessionId,
+          "replace",
+          state.mobileScreen === "changes",
+        )
+      }
+    } else {
+      followDockAfterClose(spine, previousTerminals, previousTerminalOrder, target.sessionId)
     }
     return
   }
@@ -2076,11 +2929,34 @@ function pruneSelectionIfGone(spine: Spine, previous: SessionView[]): void {
   // in hand, so nothing here knows how each owner kind nests.
   const owner = target.owner
   const stillExists = ownerHasTerminal(spine.terminals, owner, target.terminalId)
+  const dockSession = owner.kind === "session" ? owner.sessionId : null
+  if (stillExists && dockSession !== null) {
+    followStackTabAfterClose(spine, previous, dockSession)
+    return
+  }
+  if (!stillExists && dockSession !== null && spine.sessions.some((s) => s.id === dockSession)) {
+    // Like a browser tab: the terminal on screen ending shows its neighbour in
+    // the dock, the one to its right or else the one to its left, and with
+    // none left the agent alone.
+    const neighbour = dockNeighbour(
+      previousTerminals,
+      previousTerminalOrder,
+      spine.terminals,
+      dockSession,
+      target.terminalId,
+    )
+    if (neighbour !== null) {
+      fallBackTo(() => selectTerminal(neighbour, owner, { urlMode: "replace" }))
+      return
+    }
+    fallBackTo(() => showAgentAfterDock(spine, dockSession))
+    return
+  }
   if (!stillExists) {
     // A terminal that exited has no "next terminal" worth guessing at, so the
     // destination is one level up: the owning agent, or home when there is
-    // none. Like the deep-link path, this rewrites the current entry rather
-    // than stepping history.
+    // none. A fallback: it rewrites the current entry, or goes back to the
+    // entry behind when that entry is the destination.
     //
     // The lossy `ownerSessionId` suffices because "is there an agent above this
     // terminal" is the whole decision.
@@ -2089,15 +2965,58 @@ function pruneSelectionIfGone(spine: Spine, previous: SessionView[]): void {
       ownerSession !== null && spine.sessions.some((s) => s.id === ownerSession)
         ? ownerSession
         : null
-    selectSessionRoute(fallback, "replace")
+    fallBackTo(() => selectSessionRoute(fallback, "replace"))
   }
+}
+
+// The tab on top of the dock closed, here or on another device, while typing
+// goes to the dock. Like a browser tab, the tab beside it takes its place, and
+// the address, which names the tab on top, is rewritten to say so.
+function followStackTabAfterClose(spine: Spine, previous: SessionView[], sessionId: string): void {
+  const onTop = state.stackTabs[sessionId] ?? readStackMemory(sessionId).tab
+  const session = spine.sessions.find((s) => s.id === sessionId)
+  if (onTop === null || onTop === undefined || session === undefined) return
+  if (session.tabs.some((t) => t.id === onTop)) return
+  const neighbour = tabAfterClose(previous.find((s) => s.id === sessionId)?.tabs ?? [], onTop)
+  const landing =
+    neighbour !== undefined && session.tabs.some((t) => t.id === neighbour)
+      ? neighbour
+      : session.slot_tab_id
+  writeStackMemory(sessionId, { tab: landing })
+  setState({ stackTabs: { ...state.stackTabs, [sessionId]: landing } })
+  syncUrl("replace")
+}
+
+// The terminal in front of the dock ended while typing goes to the agent. The
+// dock shows its neighbour, like a browser tab. The address names the agent,
+// not the dock, so nothing is written.
+function followDockAfterClose(
+  spine: Spine,
+  previousTerminals: readonly TerminalView[],
+  previousTerminalOrder: string[] | null,
+  sessionId: string,
+): void {
+  const front = state.stackTerminals[sessionId] ?? readStackMemory(sessionId).terminal
+  if (front === null || front === undefined) return
+  if (ownerHasTerminal(spine.terminals, { kind: "session", sessionId }, front)) return
+  const neighbour = dockNeighbour(
+    previousTerminals,
+    previousTerminalOrder,
+    spine.terminals,
+    sessionId,
+    front,
+  )
+  if (neighbour === null) return
+  writeStackMemory(sessionId, { terminal: neighbour })
+  setState({ stackTerminals: { ...state.stackTerminals, [sessionId]: neighbour } })
 }
 
 // The destination when the focused agent vanishes under the user: the hub on a
 // phone, and on a computer the next active agent in the order already on screen
-// (`nextActiveSessionId`), or home when every remaining agent is dormant. The
-// URL is rewritten rather than pushed, so one Back can land on the screen the
-// user is already on. Accepted: it beats being thrown out of the app.
+// (`nextActiveSessionId`), or home when every remaining agent is dormant. A
+// fallback (`fallBackTo`): the entry is rewritten rather than pushed, or, when
+// the entry behind is already the destination, the app goes back to it so the
+// next Back still moves.
 function navigateAfterVanish(
   spine: Spine,
   previous: SessionView[],
@@ -2111,7 +3030,7 @@ function navigateAfterVanish(
   // A rewrite either way: the entry pushed on the way in names an agent that no
   // longer exists, so pushing over it leaves Back on a not-found screen.
   if (isMobileViewport()) {
-    selectSessionRoute(null, "replace")
+    fallBackTo(() => selectSessionRoute(null, "replace"))
     return
   }
   // The overlay first, exactly as `FlatAgentList` does before it partitions and
@@ -2124,8 +3043,9 @@ function navigateAfterVanish(
     pending ? reorderById(spine.sessions, pending) : spine.sessions,
     goneSessionId,
     agentSortValue(state),
+    spine.terminals,
   )
-  selectSessionRoute(next, "replace")
+  fallBackTo(() => selectSessionRoute(next, "replace"))
 }
 
 // How long an armed create-focus token stays live. Above the longest
@@ -2133,6 +3053,27 @@ function navigateAfterVanish(
 // create still auto-focuses, but bounded so a create that never lands cannot
 // keep a stale token armed to grab a later, unrelated session.
 const CREATE_FOCUS_TTL_MS = 90_000
+
+// Whether an armed token has outlived its window. A clone's token has none
+// while its operation runs: the record ends it, and it can only ever select the
+// agent the record names, so a long wait cannot mis-focus anything. Once the
+// record has an outcome, the agent it named gets the usual window to show up.
+function createFocusExpired(
+  pending: NonNullable<YaranState["pendingCreateFocus"]>,
+  now: number,
+): boolean {
+  const age = now - pending.armedAt
+  const scope = pending.scope
+  switch (scope.kind) {
+    case "project":
+    case "standalone":
+      return age > CREATE_FOCUS_TTL_MS
+    case "clone":
+      return scope.finished && age > CREATE_FOCUS_TTL_MS
+    default:
+      return assertNever(scope)
+  }
+}
 
 // Snapshot the session ids that exist now and arm auto-focus for an agent this
 // client is creating. Call it immediately before dispatching the create.
@@ -2143,6 +3084,11 @@ function armCreateFocus(scope: CreateFocusScope): void {
   const knownIds = (state.spine?.sessions ?? []).map((s) => s.id)
   setState({
     pendingCreateFocus: { knownIds, scope, armedAt: Date.now() },
+    // Every way to create an agent arms this token, and the new agent is where
+    // the user is going, so the Projects list must not be left covering it
+    // (it may have been opened from there several dialogs deep, through
+    // Worktrees… for instance).
+    projectsDialogOpen: false,
   })
 }
 
@@ -2162,6 +3108,10 @@ function sessionInCreateScope(
     // was handed and may answer with a different string than the one typed.
     case "standalone":
       return projectId === null
+    // Whatever the clone's record named. It names the new project too, which
+    // is harmless here: only sessions are looked for.
+    case "clone":
+      return scope.created.includes(session.id)
     default:
       return assertNever(scope)
   }
@@ -2178,15 +3128,21 @@ function focusNewlyCreatedSession(spine: Spine): void {
   // Expire a stale token rather than letting it focus an unrelated session that
   // appears long after the create it was armed for (a silently-failed create, or
   // one that never completed). Disarm and bail.
-  if (Date.now() - pending.armedAt > CREATE_FOCUS_TTL_MS) {
+  if (createFocusExpired(pending, Date.now())) {
     setState({ pendingCreateFocus: null })
     return
   }
   const known = new Set(pending.knownIds)
+  const scope = pending.scope
+  // The record names the clone's agent exactly, so it may already have been on
+  // screen when the token learned its id.
   const created = spine.sessions.find(
-    (s) => !known.has(s.id) && sessionInCreateScope(s, pending.scope),
+    (s) => (scope.kind === "clone" || !known.has(s.id)) && sessionInCreateScope(s, scope),
   )
-  if (!created) return
+  if (!created) {
+    if (scope.kind === "clone") askCloneRecordAboutNewAgents(spine, pending.knownIds, scope)
+    return
+  }
   // Consume the token before selecting so a later spine can't re-fire.
   setState({ pendingCreateFocus: null })
   // Force the owning project open so the new agent is actually visible: a
@@ -2199,6 +3155,88 @@ function focusNewlyCreatedSession(spine: Spine): void {
   // first tab has no recorded failure behind it, so selecting it shows the pane
   // and not the card, whether or not the PTY is up yet.
   selectSession(created.id)
+}
+
+// How long one read of a clone's record may wait for its outcome (the server's
+// own cap), and the pause before the next read, so a server answering at once
+// (handing its engine over, or failing) is not asked again in a tight loop.
+const CLONE_RECORD_WAIT_SECONDS = 25
+const CLONE_RECORD_PAUSE_MS = 2_000
+
+type CloneScope = Extract<CreateFocusScope, { kind: "clone" }>
+
+// The clone token armed by submit `request`, while it is still the armed one.
+function cloneFocusFor(request: number): CloneScope | null {
+  const scope = state.pendingCreateFocus?.scope
+  return scope?.kind === "clone" && scope.request === request ? scope : null
+}
+
+// Fold what the clone's record says into its token, then look for the agent it
+// names. An outcome that named no agent the workspace shows ends the token
+// unless it succeeded, when the agent gets the usual window to arrive.
+function applyCloneRecord(request: number, view: OperationView): void {
+  const pending = state.pendingCreateFocus
+  const scope = cloneFocusFor(request)
+  if (!pending || !scope || scope.finished) return
+  const finished = view.state === "succeeded" || view.state === "failed" || view.state === "partial"
+  const created = Array.isArray(view.created) ? view.created : []
+  setState({
+    pendingCreateFocus: {
+      ...pending,
+      scope: { ...scope, created, finished },
+      armedAt: finished ? Date.now() : pending.armedAt,
+    },
+  })
+  if (state.spine) focusNewlyCreatedSession(state.spine)
+  if (finished && view.state !== "succeeded" && cloneFocusFor(request)) {
+    setState({ pendingCreateFocus: null })
+  }
+}
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+// Follow a clone's record until it has an outcome or the token is no longer
+// this submit's. A record the server does not know (past its retention, or a
+// server that restarted) can name nothing, so the token goes; any other failure
+// is tried again, since the record outlives a dropped connection.
+async function followCloneRecord(request: number, opId: string): Promise<void> {
+  while (cloneFocusFor(request) && !cloneFocusFor(request)?.finished) {
+    try {
+      const view = await projectsApi.operation(opId, CLONE_RECORD_WAIT_SECONDS)
+      applyCloneRecord(request, view)
+    } catch (e) {
+      if (e instanceof ProjectsApiError && e.status === 404) {
+        if (cloneFocusFor(request)) setState({ pendingCreateFocus: null })
+        return
+      }
+    }
+    if (cloneFocusFor(request)?.finished !== false) return
+    await pause(CLONE_RECORD_PAUSE_MS)
+  }
+}
+
+// A long read of the record answers only at the outcome, which for a clone is
+// the agent's provider coming up. So when the workspace shows an agent the
+// token has not seen, ask the record at once whether it is the one, and only
+// once per such agent.
+function askCloneRecordAboutNewAgents(
+  spine: Spine,
+  knownIds: string[],
+  scope: CloneScope,
+): void {
+  if (scope.opId === null || scope.finished) return
+  const known = new Set(knownIds)
+  if (spine.sessions.every((s) => known.has(s.id))) return
+  const pending = state.pendingCreateFocus
+  if (!pending) return
+  setState({
+    pendingCreateFocus: { ...pending, knownIds: spine.sessions.map((s) => s.id) },
+  })
+  const { request, opId } = scope
+  projectsApi
+    .operation(opId, 0)
+    .then((view) => applyCloneRecord(request, view))
+    .catch(() => {})
 }
 
 // Record an explicit expand/collapse choice for a project. The sidebar reads
@@ -2223,7 +3261,8 @@ eventsSocket.onConn = (conn) => {
   // command or its rejection may have been lost, and nothing would reconcile
   // the overlay afterwards. It also voids a pending create-focus, whose
   // `knownIds` snapshot predates the disconnect and could mis-identify an
-  // unrelated session as ours.
+  // unrelated session as ours (a clone's excepted, see
+  // `clearPendingClientIntent`).
   const patch =
     conn === "closed" || conn === "failed" ? clearPendingClientIntent() : {}
   // Latch the sticky offline flag that drives the full-screen `OfflineOverlay`.
@@ -2252,6 +3291,10 @@ eventsSocket.onConn = (conn) => {
   if (conn === "closed" || conn === "failed") clearServerValidated()
   // A failed attempt may be an expired Access session rather than an outage.
   if (conn === "closed" || conn === "failed") accessSession.noteConnectionTrouble()
+  // A server refuses the upgrade of a signed-out socket before it can send a
+  // close code, and the browser reports that as an ordinary failure. So a drop
+  // asks the status route whether the session is still there.
+  if (conn === "closed" || conn === "failed") void probeAfterDrop()
   // The per-session changed-files subscription re-establishes on reconnect in
   // `eventsSocket.onOpen` (which also refetches); nothing to re-arm here.
 }
@@ -2261,12 +3304,15 @@ eventsSocket.onConn = (conn) => {
 // as `status`/`status_cleared` events over `/ws/events` (see
 // `eventsSocket.onEvent`).
 
-// Reset the optimistic agent-order overlay. Returned as a patch so callers can
-// fold it into a single `setState`. Used on every error path so a rejected
-// reorder snaps the UI back to the server's authoritative order.
+// Reset the optimistic agent- and terminal-order overlays. Returned as a patch
+// so callers can fold it into a single `setState`. Used on every error path so
+// a rejected reorder snaps the UI back to the server's authoritative order.
 function clearPendingOrders(): Partial<YaranState> {
   return {
     pendingAgentOrder: null,
+    pendingTerminalOrder: null,
+    pendingTerminalPlacement: {},
+    pendingTabOrder: {},
   }
 }
 
@@ -2274,12 +3320,15 @@ function clearPendingOrders(): Partial<YaranState> {
 // paths where an in-flight create can no longer be trusted to resolve: a
 // surviving create-focus token would mis-identify a later session as ours, and
 // a surviving pane override would strand the pane until reload. Deliberately
-// not folded into `clearPendingOrders`, which user actions like sorting also
-// call and which must not cancel an in-flight create-focus.
+// not folded into `clearPendingOrders`, which must not cancel an in-flight
+// create-focus.
 function clearPendingClientIntent(): Partial<YaranState> {
   return {
     ...clearPendingOrders(),
-    pendingCreateFocus: null,
+    // Except a clone's, which mis-identifies nothing: it selects only what its
+    // operation's record names, and ends on that record's outcome.
+    pendingCreateFocus:
+      state.pendingCreateFocus?.scope.kind === "clone" ? state.pendingCreateFocus : null,
     changesPaneOverride: null,
     mobileAccessoryBarOverride: null,
   }
@@ -2307,9 +3356,10 @@ function showStatusToast(
   notifyStatus(tone, message, { id, sticky })
 }
 
-// Boot: connect the events socket and fetch the initial workspace data. No
-// /api/me round-trip is needed -- the server is a trusted-local tool with no
-// login gate. Setting booted synchronously lets tests use it as a settled signal.
+// Boot: connect the events socket and fetch the initial workspace data. Runs
+// once the sign-in gate opens (`authGate.ts`): straight away for a signed-in
+// browser or a server with no password in the way, after the login otherwise.
+// Setting booted synchronously lets tests use it as a settled signal.
 function boot(): void {
   setState({ booted: true })
   // This driver owns the initial load, so the first onOpen must not duplicate it
@@ -2326,26 +3376,58 @@ function boot(): void {
 }
 // Off-browser (a build-time static render) there is no server to talk to and no
 // socket to open, so the store simply stays at its initial state until whoever
-// is rendering seeds it. In a browser and under jsdom this runs exactly as before.
-if (hasBrowser) boot()
+// is rendering seeds it. In a browser and under jsdom the sign-in gate decides
+// when: every move into signed-in boots the app the first time and refetches
+// after that. The URL is never touched on the way, so the position the page was
+// loaded at (or was on when the session ended) is the one it lands on.
+// A page that is signed out has checked nothing about the server since, so
+// the terminals' attach gate shuts until a real check answers after the next
+// sign-in: a server that restarted meanwhile must be noticed before any PTY
+// socket attaches (attaching launches a provider).
+subscribeAuth(() => {
+  if (authPaused()) clearServerValidated()
+  // A different yaran at this address: the app socket stops talking to it, so
+  // the tab neither listens to it nor counts among its browsers.
+  if (getAuthPhase().kind === "other_yaran") eventsSocket.close()
+})
+
+if (hasBrowser) {
+  onAuthOpen(() => {
+    if (state.booted) resumeAfterSignIn()
+    else boot()
+  })
+  void initAuthGate()
+}
 
 // Browser/hardware Back and Forward. Registered ONCE at module scope (never in a
 // React effect) so it survives re-renders and shell switches. The browser has
 // already moved its own cursor by the time this fires, so the only job here is
 // to read the URL it landed on and make the app match it. Nothing is derived
 // from `event.state`, and nothing is counted: the hash alone says where we are.
+// A traversal while a fallback's own is pending lands that one instead
+// (`landTraversal`).
 if (hasBrowser) {
   window.addEventListener("popstate", () => {
-    applyUrlRoute()
+    onTraversal()
   })
-  // Fragment navigation the page itself initiates (the standalone header's
-  // plain-anchor "Open in yaran" link is the one shipping case) is delivered
+  // Fragment navigation the page itself initiates (`openStandaloneEditorInThisTab`
+  // assigning the hash, or a plain in-page hash anchor) is delivered
   // as `hashchange`, and whether a `popstate` accompanies it varies by
   // environment (jsdom fires only `hashchange`; browsers fire both). Listen
   // to both: `applyUrlRoute` is idempotent and by contract never writes the
   // URL back, so a double delivery settles on the same state.
   window.addEventListener("hashchange", () => {
-    applyUrlRoute()
+    onTraversal()
+  })
+  // An open dialog, sheet or menu gets a history entry of its own (see "Modal
+  // entries").
+  onModalsChange(scheduleModalReconcile)
+  // A load onto a modal entry (a reload while one was open) steps off it. After
+  // this module has finished loading, since the history state it uses is
+  // declared further down.
+  queueMicrotask(() => {
+    recoverFromStrandedModalEntry()
+    rememberEntryIndex()
   })
 }
 
@@ -2358,17 +3440,32 @@ export function useYaran(): YaranState {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+// The selective form of `useYaran`: the component re-renders only when what
+// `select` returns changes by reference, not on every `setState` anywhere in
+// the app. `select` must return something the store already holds (a slice, a
+// field, an element of an array), never a freshly built object or array, or
+// every read looks like a change and React loops. For a pane whose render cost
+// grows with its data (the Changes pane at tens of thousands of files) this is
+// the difference between rendering when its data moves and rendering on every
+// keystroke, tick and toast.
+export function useYaranSelector<T>(select: (state: YaranState) => T): T {
+  const read = () => select(state)
+  return useSyncExternalStore(subscribe, read, read)
+}
+
 // --- Routing (a tiny hash router) -----------------------------------------
 //
 // `location.hash` is the source of truth for the whole position, the mobile
-// screen included. Session ids are stable across a reload; terminal ids are
-// ephemeral, so a hash whose terminal is gone falls back to the agent, and a
-// hash naming an absent session resolves to `routeNotFound`, never home.
+// screen included. A hash naming an absent session or a closed terminal
+// resolves to `routeNotFound`, never home and never another part of the agent.
 //
 // A screen change pushes, in both directions; a move within one screen
-// replaces. The app never steps history relatively (`history.go` appears
-// nowhere). The only screen changes that replace are a restore and a
-// correction, both of which name a position the browser is already parked on.
+// replaces. The only screen changes that replace are a restore, a correction
+// and a fallback. The app never steps history relatively (it never calls
+// `history.go` or `history.back`). Its one traversal is a fallback whose
+// destination is the entry right behind, when this page wrote that entry: it
+// goes to that exact entry by its Navigation API key rather than writing a
+// duplicate over the current one (`traverseOnto`).
 
 // Parse a deep-link hash into a target, or null when it is absent/malformed.
 // The three shapes are mutually exclusive, so the first one that MATCHES
@@ -2378,20 +3475,40 @@ export function useYaran(): YaranState {
 // module init, where a constant declared further down the file is still in the
 // temporal dead zone.
 function parseSelectionHash(hash: string): SelectedTarget | null {
+  return parseAddress(hash)?.target ?? null
+}
+
+// What an agent's address names: the provider tab on top of its stack and the
+// terminal in front of its dock, when it has one. The part typing goes to rides
+// no address.
+export interface AgentAddress {
+  tabId: string
+  terminalId: string | null
+}
+
+// A parsed position: the part the address puts first (the named terminal when
+// there is one, else the tab), plus, for an agent, everything its address names.
+function parseAddress(
+  hash: string,
+): { target: SelectedTarget; stack?: AgentAddress } | null {
   // A project terminal has its own grammar, because the agent shapes embed a
   // session id and it has none.
   const project = hash.match(/^#\/project\/([^/]+)\/terminal\/([^/]+)$/)
-  if (project) return projectTerminalTarget(project)
+  if (project) return withoutStack(projectTerminalTarget(project))
   // A standalone terminal deep-links with no owner segment, because it has no
   // owner. It cannot be confused with the two nested shapes, which both begin
   // `#/agent/` or `#/project/`.
   const standalone = hash.match(/^#\/terminal\/([^/]+)$/)
-  if (standalone) return standaloneTerminalTarget(standalone)
-  // The bare agent (its session-slot tab), an extra tab, or a companion
-  // terminal, disambiguated by the literal `tab` or `terminal` keyword so a tab
-  // named "tab" cannot be confused.
-  const agent = hash.match(/^#\/agent\/([^/]+)(?:\/(tab|terminal)\/([^/]+))?$/)
-  return agent ? agentTarget(agent) : null
+  if (standalone) return withoutStack(standaloneTerminalTarget(standalone))
+  // The bare agent (its session-slot tab), with an extra tab, a terminal of its
+  // dock, or both, each after its literal keyword so a tab named "tab" or
+  // "terminal" cannot be confused. The tab comes first when both are named.
+  const agent = hash.match(/^#\/agent\/([^/]+)(?:\/tab\/([^/]+))?(?:\/terminal\/([^/]+))?$/)
+  return agent ? agentAddress(agent) : null
+}
+
+function withoutStack(target: SelectedTarget | null): { target: SelectedTarget } | null {
+  return target === null ? null : { target }
 }
 
 // One decoded path segment, or null when it is empty or its encoding is
@@ -2418,23 +3535,28 @@ function standaloneTerminalTarget(m: RegExpMatchArray): SelectedTarget | null {
   return { kind: "terminal", terminalId, owner: { kind: "standalone" } }
 }
 
-function agentTarget(m: RegExpMatchArray): SelectedTarget | null {
+// The stack is carried only when it says more than the target does: a terminal
+// named under an extra tab. Every other address is its target alone.
+function agentAddress(
+  m: RegExpMatchArray,
+): { target: SelectedTarget; stack?: AgentAddress } | null {
   const sessionId = decodeSegment(m[1])
   if (!sessionId) return null
-  if (m[2] === "terminal") {
-    const terminalId = decodeSegment(m[3])
-    if (!terminalId) return null
-    return { kind: "terminal", terminalId, owner: { kind: "session", sessionId } }
+  // A self-aliased `#/agent/<sid>/tab/<sid>` is the session-slot tab written
+  // the long way; the writer normalizes it back to the canonical bare form on
+  // the way out, so there is only ever one representation of it.
+  const tabId = m[2] === undefined ? slotTabTargetId(sessionId) : decodeSegment(m[2])
+  if (!tabId) return null
+  const terminalId = m[3] === undefined ? null : decodeSegment(m[3])
+  if (terminalId === "") return null
+  if (m[3] !== undefined && terminalId === null) return null
+  if (terminalId !== null) {
+    return {
+      target: { kind: "terminal", terminalId, owner: { kind: "session", sessionId } },
+      ...(m[2] === undefined ? {} : { stack: { tabId, terminalId } }),
+    }
   }
-  if (m[2] === "tab") {
-    const tabId = decodeSegment(m[3])
-    if (!tabId) return null
-    // A self-aliased `#/agent/<sid>/tab/<sid>` is the session-slot tab written
-    // the long way, `selectionHash` normalizes it back to the canonical bare
-    // form on the way out, so there is only ever one representation of it.
-    return { kind: "agent", sessionId, tabId }
-  }
-  return { kind: "agent", sessionId, tabId: slotTabTargetId(sessionId) }
+  return { target: { kind: "agent", sessionId, tabId } }
 }
 
 // The hash for a target (or the bare path when nothing is selected). The `/tab/`
@@ -2461,12 +3583,33 @@ function selectionHash(target: SelectedTarget | null): string {
         return assertNever(owner)
     }
   }
-  const base = `#/agent/${encodeURIComponent(target.sessionId)}`
+  return agentAddressHash(target.sessionId, { tabId: target.tabId, terminalId: null })
+}
+
+// The hash an agent's address is written as. The slot tab stays the bare
+// `#/agent/<sid>` so existing bookmarks remain valid; an extra tab adds its
+// `/tab/` segment and a terminal in the dock its `/terminal/` one, tab first.
+function agentAddressHash(sessionId: string, stack: AgentAddress): string {
+  const base = `#/agent/${encodeURIComponent(sessionId)}`
   // Spine-aware: the slot tab's real id is a generated one, and emitting it as
   // a `/tab/` segment would change every bookmark an agent already has.
-  return isSlotTabOf(target.sessionId, target.tabId)
-    ? base
-    : `${base}/tab/${encodeURIComponent(target.tabId)}`
+  const tab = isSlotTabOf(sessionId, stack.tabId)
+    ? ""
+    : `/tab/${encodeURIComponent(stack.tabId)}`
+  const terminal =
+    stack.terminalId === null ? "" : `/terminal/${encodeURIComponent(stack.terminalId)}`
+  return base + tab + terminal
+}
+
+// The hash of a route's position without its suffixes: an agent's whole
+// address when the route carries one, else the target's own.
+function targetHash(route: Route): string {
+  const target = route.target
+  if (route.stack && target !== null) {
+    const sessionId = target.kind === "agent" ? target.sessionId : ownerSessionId(target.owner)
+    if (sessionId !== null) return agentAddressHash(sessionId, route.stack)
+  }
+  return selectionHash(target)
 }
 
 // A position in the app: what is focused, whether the changes screen is open
@@ -2479,8 +3622,9 @@ export interface Route {
   // The editor suffix: the active tab's mode and path, path null when the
   // editor is open with no file. Mutually exclusive with `changes` in the
   // SERIALIZED form: `routeHash` emits at most one suffix (editor wins), and
-  // `parseRoute` tries the editor suffix first.
-  editor: { mode: EditorViewMode; path: string | null } | null
+  // `parseRoute` tries the editor suffix first. `view` rides the query tail
+  // and is canonical (see `canonicalEditorView`): absent when it says nothing.
+  editor: { mode: EditorViewMode; path: string | null; view?: EditorViewState } | null
   // Theater mode: the focused pane with yaran's chrome taken away. A MODIFIER on
   // the position rather than a shape of its own, so it is spelled as a trailing
   // `?view=theater` on whatever grammar the position already has (see
@@ -2492,6 +3636,9 @@ export interface Route {
   // suffix. Only meaningful with a non-null `editor`; it decides which shell
   // `App()` renders and which grammar `routeHash` writes back.
   standalone: boolean
+  // For an agent, or a terminal of its dock: the tab and the terminal its
+  // address names. Absent, the target alone is written, as it always was.
+  stack?: AgentAddress | null
 }
 
 // The changes screen rides as a suffix on the focused target's hash, so it
@@ -2516,10 +3663,16 @@ function parseEditorRoute(hash: string): Route | null {
     const tail = hash.slice(at + EDITOR_SUFFIX.length)
     const tm = tail.match(/^(?:\/(file|diff)\/([^/]+))?$/)
     if (!tm) continue
-    const target = parseSelectionHash(hash.slice(0, at))
-    if (!target) continue
+    const address = parseAddress(hash.slice(0, at))
+    if (!address) continue
     const editor = parseEditorSegment(tm[1], tm[2])
-    return { target, changes: false, editor, standalone: false, theater: false }
+    return {
+      ...address,
+      changes: false,
+      editor,
+      standalone: false,
+      theater: false,
+    }
   }
   return null
 }
@@ -2581,14 +3734,22 @@ function parseEditorSegment(
 // Exported for the round-trip tests only (`routeHash` likewise): the grammar
 // must stay an exact inverse pair, and that is only checkable from outside.
 export function parseRoute(rawHash: string): Route {
-  // THE MODIFIER COMES OFF FIRST. Every grammar below is end-anchored, so a
-  // trailing `?view=theater` would make each of them fail to match; peeling it
-  // here is what lets one modifier ride every position shape without a second
-  // parser per shape. It goes back on only where a pane exists to fill the
-  // screen, which is the same rule `routeHash` serializes by.
-  const { hash, theater } = splitTheaterHash(rawHash)
+  // THE QUERY TAIL COMES OFF FIRST. Every grammar below is end-anchored, so a
+  // trailing `?view=theater` or editor view would make each of them fail to
+  // match; peeling it here is what lets one tail ride every position shape
+  // without a second parser per shape. Each part goes back on only where the
+  // position can carry it: theater where a pane fills the screen, the view
+  // where an editor has a file, which is the same rule `routeHash` writes by.
+  const { hash, params } = splitRouteQuery(rawHash)
   const route = parsePosition(hash)
-  return theater && theaterSerializable(route) ? { ...route, theater: true } : route
+  if (route.editor !== null) {
+    const view = editorViewFromQuery(params, route.editor.mode, route.editor.path)
+    if (view !== undefined) return { ...route, editor: { ...route.editor, view } }
+    return route
+  }
+  return queryTheater(params) && theaterSerializable(route)
+    ? { ...route, theater: true }
+    : route
 }
 
 function parsePosition(hash: string): Route {
@@ -2598,8 +3759,10 @@ function parsePosition(hash: string): Route {
   // specific shape.
   const standalone = parseStandaloneEditorRoute(hash)
   if (standalone) return standalone
-  const direct = parseSelectionHash(hash)
-  if (direct) return { target: direct, changes: false, editor: null, standalone: false, theater: false }
+  const direct = parseAddress(hash)
+  if (direct) {
+    return { ...direct, changes: false, editor: null, standalone: false, theater: false }
+  }
   // The editor suffix is tried before the changes suffix, which is what keeps
   // the two mutually exclusive: a file literally named "changes" must resolve
   // as an editor route, never as a changes route with a mangled tail. Every
@@ -2607,8 +3770,8 @@ function parsePosition(hash: string): Route {
   const editor = parseEditorRoute(hash)
   if (editor) return editor
   if (hash.endsWith(CHANGES_SUFFIX)) {
-    const target = parseSelectionHash(hash.slice(0, -CHANGES_SUFFIX.length))
-    if (target) return { target, changes: true, editor: null, standalone: false, theater: false }
+    const address = parseAddress(hash.slice(0, -CHANGES_SUFFIX.length))
+    if (address) return { ...address, changes: true, editor: null, standalone: false, theater: false }
   }
   return { target: null, changes: false, editor: null, standalone: false, theater: false }
 }
@@ -2619,10 +3782,14 @@ function parsePosition(hash: string): Route {
 // editor suffix carries no mode segment, so a pathless route's mode normalizes
 // to "file" on the way back in.
 export function routeHash(route: Route): string {
-  return withTheaterHash(
-    positionHash(route),
-    route.theater && theaterSerializable(route),
-  )
+  const editor = route.editor
+  return withRouteQuery(positionHash(route), {
+    theater: route.theater && theaterSerializable(route),
+    view:
+      editor === null || route.target === null
+        ? undefined
+        : canonicalEditorView(editor.mode, editor.path, editor.view),
+  })
 }
 
 function positionHash(route: Route): string {
@@ -2638,7 +3805,7 @@ function positionHash(route: Route): string {
     if (route.editor.path === null) return base
     return `${base}/${route.editor.mode}/${encodeURIComponent(route.editor.path)}`
   }
-  const base = selectionHash(route.target)
+  const base = targetHash(route)
   if (base === "") return base
   if (route.editor) {
     if (route.editor.path === null) return base + EDITOR_SUFFIX
@@ -2679,15 +3846,30 @@ function routeScreen(route: Route): MobileScreen {
 // The subject leads it, so moving to another agent or terminal pushes and Back
 // walks the ones the user visited in reverse.
 export function routePushKey(route: Route): string {
-  return `${routeSubject(route.target)}|${routeScreen(route)}${route.editor ? "+editor" : ""}${route.standalone ? "+standalone" : ""}`
+  return `${routeSubject(route)}|${routeScreen(route)}${route.editor ? "+editor" : ""}${route.standalone ? "+standalone" : ""}`
 }
 
-// Which entity a route is about, at the granularity Back moves by. The tab id
-// is left out: an agent's own tabs are one position, so a switch replaces.
-function routeSubject(target: SelectedTarget | null): string {
+// What a route is about, at the granularity Back moves by: every tab and every
+// terminal is a position of its own, an agent's dock terminals included. The
+// part typing goes to is not, so moving focus between the parts on screen, or
+// changing the layout, never makes a step.
+function routeSubject(route: Route): string {
+  const target = route.target
   if (!target) return ""
-  if (target.kind === "terminal") return `terminal:${target.terminalId}`
-  return `agent:${target.sessionId}`
+  const sessionId = target.kind === "agent" ? target.sessionId : ownerSessionId(target.owner)
+  if (target.kind === "terminal" && sessionId === null) return `terminal:${target.terminalId}`
+  if (sessionId === null) return ""
+  const stack = route.stack ?? impliedAgentAddress(target)
+  const tab = isSlotTabOf(sessionId, stack.tabId) ? "" : stack.tabId
+  return `agent:${sessionId}|tab:${tab}|terminal:${stack.terminalId ?? ""}`
+}
+
+// What an agent's address names when it names its target alone: an agent tab
+// with no terminal, or a terminal of the dock under the first tab.
+function impliedAgentAddress(target: SelectedTarget): AgentAddress {
+  if (target.kind === "agent") return { tabId: target.tabId, terminalId: null }
+  const sessionId = ownerSessionId(target.owner) ?? ""
+  return { tabId: slotTabTargetId(sessionId), terminalId: target.terminalId }
 }
 
 // The standalone editor's address for a root, optionally carrying the file
@@ -2695,7 +3877,7 @@ function routeSubject(target: SelectedTarget | null): string {
 // the open-in-new-tab anchors can never drift from the parser's grammar.
 export function standaloneEditorHash(
   root: EditorRoot,
-  editor: { mode: EditorViewMode; path: string | null } | null = null,
+  editor: Route["editor"] = null,
 ): string {
   return routeHash({
     target: slotTargetFor(root),
@@ -2706,6 +3888,73 @@ export function standaloneEditorHash(
     // the modifier. Stated rather than left to `theaterSerializable` to drop.
     theater: false,
   })
+}
+
+// Move THIS tab to the standalone editor at a file, for the phone, where the
+// in-page overlay does not render. It is a plain fragment navigation, the same
+// one an anchor to that address makes: the browser pushes an entry from the
+// address the user is on, and the router follows the URL into the standalone
+// surface, so Back lands exactly where the user came from.
+export function openStandaloneEditorInThisTab(
+  root: EditorRoot,
+  editor: NonNullable<Route["editor"]>,
+): void {
+  pushHashAfterModals(standaloneEditorHash(root, editor))
+}
+
+// Where the standalone editor's Up control goes on a phone, by name: the
+// editor's parent, the screen it is about, whichever surface opened it (the
+// Changes list, an agent's or a terminal's menu, or a link). An agent's is its
+// Changes screen, the screen about its files, and a standalone agent has one
+// too (it asks the folder). A terminal root has no Changes screen, so it is the terminal's
+// own screen; a session-owned terminal never gets here, because its editor is
+// its agent's (`editorRootForTarget`).
+export function standaloneEditorUpHash(root: EditorRoot): string {
+  switch (root.kind) {
+    case "agent":
+      return routeHash({
+        target: slotTargetFor(root),
+        changes: true,
+        editor: null,
+        standalone: false,
+        theater: false,
+      })
+    case "terminal":
+      return routeHash({
+        target: root,
+        changes: false,
+        editor: null,
+        standalone: false,
+        theater: false,
+      })
+    default:
+      return assertNever(root)
+  }
+}
+
+// The standalone editor's Up: a PUSH to the named destination above, never a
+// step back through history, which has no floor when the editor was opened in
+// a fresh tab. The router follows the address out of the standalone surface;
+// the open buffers' drafts are kept in the draft cache as for any other exit.
+export function leaveStandaloneEditor(root: EditorRoot): void {
+  pushHashAfterModals(standaloneEditorUpHash(root))
+}
+
+// A plain fragment navigation, which pushes an entry the router then follows.
+// Started from a menu, it waits for the menu's own entry to go first, or Back
+// from the destination would land on that entry and not move.
+function pushHashAfterModals(hash: string): void {
+  if (typeof location === "undefined") return
+  const go = () => {
+    location.hash = hash
+  }
+  if (!dropModalEntriesBeforeMove(go)) go()
+}
+
+// The address the screen currently stands for. Exported for the routing tests
+// only, which hold it against the address bar after every move.
+export function screenAddress(): string {
+  return routeHash(currentRoute())
 }
 
 // The route the app currently holds in state.
@@ -2719,10 +3968,22 @@ function currentRoute(): Route {
   // suffix on the new address.
   const editor =
     er !== null && target !== null && sameRoot(editorRootForTarget(target), er.root)
-      ? { mode: er.mode, path: er.path }
+      ? { mode: er.mode, path: er.path, view: er.view }
       : null
+  if (target === null && state.routeNotFound?.kind === "terminal") {
+    // The address of a terminal that is not found is that terminal's.
+    const missing = state.routeNotFound
+    return {
+      target: { kind: "terminal", terminalId: missing.terminalId, owner: missing.owner },
+      changes: false,
+      editor: null,
+      theater: false,
+      standalone: false,
+    }
+  }
   return {
     target,
+    stack: target === null ? null : currentAgentAddress(target),
     changes: state.mobileScreen === "changes",
     editor,
     theater: state.theater,
@@ -2733,16 +3994,55 @@ function currentRoute(): Route {
   }
 }
 
+// What the address of the agent behind a target names: the part typing goes
+// to. An agent's tab is named alone; a terminal of its dock is named with the
+// tab on top of the agent on a computer, so a reload or Back puts that tab back
+// above it. A phone shows one part, and its address names that part alone.
+function currentAgentAddress(target: SelectedTarget): AgentAddress | null {
+  if (target.kind === "agent") return { tabId: target.tabId, terminalId: null }
+  if (target.owner.kind !== "session") return null
+  const sessionId = target.owner.sessionId
+  return {
+    tabId: isMobileViewport() ? slotTabIdFor(sessionId) : shownStackTab(sessionId),
+    terminalId: target.terminalId,
+  }
+}
+
+// The provider tab on top of an agent's stack while typing goes to its dock:
+// the one this page last showed, a reload included, while it still exists.
+function shownStackTab(sessionId: string): string {
+  const session = state.spine?.sessions.find((s) => s.id === sessionId)
+  const shown = state.stackTabs[sessionId] ?? readStackMemory(sessionId).tab
+  if (shown !== null && session?.tabs.some((t) => t.id === shown)) return shown
+  return slotTabIdFor(sessionId)
+}
+
+
 // Bring the URL in line with the app's current position: pushes on a screen
 // change, replaces within one screen. `mode: "replace"` forces a replace for a
 // move the user did not ask for (a restore, or leaving the not-found screen).
+// A replace made inside `fallBackTo` may instead go back to the exact entry
+// behind (see `traverseOnto`).
 //
 // Best-effort and never throws at its caller: browsers rate-limit history calls
 // and every call site runs after the screen has already moved, so a refusal
 // propagating would leave the screen and the URL disagreeing. This is the one
-// place a history call is made, which is what makes the one guard enough.
+// place a position is written, which is what makes the one guard enough. The
+// only other history writes are an open modal's own entry, which names no
+// position (`reconcileModalEntries`, guarded the same way); a write while one
+// is up takes those entries away first (`dropModalEntriesBeforeMove`).
 function syncUrl(mode?: "replace" | "push"): void {
   if (typeof history === "undefined" || typeof history.replaceState !== "function") {
+    return
+  }
+  // A fallback's traversal is pending: anything written now would land on the
+  // entry being left. The newer position is kept in state instead, and the
+  // landing writes it (`landTraversal`).
+  if (pendingTraversal !== null) {
+    pendingTraversal.newerIntent = true
+    // A newer write is what the landing writes now, not the fallback that was
+    // waiting for it.
+    pendingTraversal.fallback = undefined
     return
   }
   const next = routeHash(currentRoute())
@@ -2752,14 +4052,668 @@ function syncUrl(mode?: "replace" | "push"): void {
   // unchanged screen) and rewrite the identical URL. Skipping the write is
   // cheaper and keeps `history.state` untouched, but nothing depends on it.
   if (current === next) return
+  if (dropModalEntriesBeforeWrite(mode)) return
   const url = historyUrlFor(next)
   const movedScreen = movesScreen(mode, next, current)
+  const key = positionKey(parseRoute(next))
   try {
     if (mode !== "replace" && movedScreen && typeof history.pushState === "function") {
-      history.pushState({ yaranRoute: next }, "", url)
+      const behind = labelCurrentEntry(current)
+      const label = { session: PAGE_SESSION, id: nextEntryId++, key, prev: behind }
+      history.pushState(entryState(null, next, label), "", url)
+      labelledEntryKeys.set(label.id, key)
+      cursorMoves += 1
+      noteWrittenEntry(next)
+      rememberEntryIndex()
       return
     }
-    history.replaceState(history.state, "", url)
+    rewriteEntry(next)
+  } catch (err) {
+    console.warn("[yaran] history write refused", err)
+  }
+}
+
+// THE ONE PATH EVERY IN-PLACE REWRITE TAKES. When the entry right behind or
+// right ahead, written by this page, already holds the address, the page goes
+// onto that entry by its exact key instead of writing a copy beside it, so no
+// two neighbouring entries are ever the same place. Otherwise the entry the
+// page is on is rewritten. Without the Navigation API there is no exact key to
+// go to, and it rewrites.
+function rewriteEntry(next: string): void {
+  const nav = navigationApi()
+  const here = nav?.currentEntry
+  if (nav && here && !nav.transition) {
+    const twin = nav
+      .entries()
+      .filter((entry) => Math.abs(entry.index - here.index) === 1)
+      .sort((a, b) => a.index - b.index)
+      .find((entry) => writtenAddresses.get(entry.key) === next)
+    if (twin && traverseExactly(nav, twin.key, { newerIntent: true }, () => replaceEntry(next))) {
+      return
+    }
+  }
+  replaceEntry(next)
+}
+
+function replaceEntry(next: string): void {
+  try {
+    // A rewrite keeps the entry's identity and what is behind it, and records
+    // its new position.
+    const key = positionKey(parseRoute(next))
+    const own = ownLabel(history.state)
+    const label = {
+      session: PAGE_SESSION,
+      id: own?.id ?? nextEntryId++,
+      key,
+      prev: own?.prev ?? null,
+    }
+    history.replaceState(entryState(history.state, next, label), "", historyUrlFor(next))
+    labelledEntryKeys.set(label.id, key)
+    noteWrittenEntry(next)
+    if (landedAt !== null && landedAt.moves === cursorMoves) landedAt.hash = next
+  } catch (err) {
+    console.warn("[yaran] history write refused", err)
+  }
+}
+
+// The address this page wrote into each entry, by Navigation API key: what a
+// rewrite compares its neighbours against. Only entries this page load wrote
+// or labelled are here, so nothing outside yaran is ever gone onto.
+const writtenAddresses = new Map<string, string>()
+
+function noteWrittenEntry(address: string): void {
+  const here = navigationApi()?.currentEntry
+  if (here) writtenAddresses.set(here.key, address)
+}
+
+// --- History entry labels ---------------------------------------------------
+//
+// Every entry yaran writes carries a label in `history.state`: this page load's
+// token, an id, the position the entry holds, and the entry immediately behind
+// it. It exists for ONE decision, `traverseOnto`.
+
+// This page load's token. A label written by an earlier load of the page, or
+// by another browser tab, carries a different one and is never trusted. Not a
+// secret, only a disambiguator, so no secure-context API is needed (yaran is
+// routinely served over plain HTTP).
+const PAGE_SESSION = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+
+interface EntryLabel {
+  session: string
+  id: number
+  // `positionKey` of the address the entry was written with.
+  key: string
+  // The entry immediately behind, as it was when this one was pushed: its
+  // label, its position then, and the Navigation API key of its slot (absent
+  // where the browser has no Navigation API). Null when nothing behind is
+  // known (the entry was not pushed by this page).
+  prev: { id: number; key: string; navKey?: string } | null
+}
+
+let nextEntryId = 1
+
+// The position every entry this page labelled holds NOW, by id. A label's
+// `prev.key` is what that entry held at push time, but the entry can be
+// rewritten afterwards (a correction, a fallback), and only this record sees
+// that.
+const labelledEntryKeys = new Map<number, string>()
+
+// What counts as "the same place" for the fallback: the position Back moves by
+// (`routePushKey`), plus theater, which pushes an entry of its own.
+function positionKey(route: Route): string {
+  return `${routePushKey(route)}${route.theater ? "+theater" : ""}`
+}
+
+function ownLabel(entryState: unknown): EntryLabel | null {
+  if (typeof entryState !== "object" || entryState === null) return null
+  const label = (entryState as { yaranEntry?: EntryLabel }).yaranEntry
+  return label?.session === PAGE_SESSION ? label : null
+}
+
+function entryState(previous: unknown, route: string, label: EntryLabel): object {
+  const base = typeof previous === "object" && previous !== null ? previous : {}
+  return { ...base, yaranRoute: route, yaranEntry: label }
+}
+
+// The browser's Navigation API, or null where it has none. It is what lets the
+// fallback name an exact entry: `history.back()` is relative, and a relative
+// step queued behind a Back the user already pressed lands one entry further,
+// possibly outside yaran.
+function navigationApi(): Navigation | null {
+  if (typeof window === "undefined") return null
+  const nav = (window as { navigation?: Navigation }).navigation
+  if (!nav || typeof nav.traverseTo !== "function" || typeof nav.entries !== "function") {
+    return null
+  }
+  return nav
+}
+
+// The entry the page is on, for the entry about to be pushed over it. An entry
+// this page did not write (the one the page loaded on, or a fragment
+// navigation) is labelled first, with nothing known behind it: it is this
+// page's own entry from now on.
+function labelCurrentEntry(current: string): EntryLabel["prev"] {
+  const navKey = navigationApi()?.currentEntry?.key || undefined
+  const own = ownLabel(history.state)
+  if (own) return { id: own.id, key: labelledEntryKeys.get(own.id) ?? own.key, navKey }
+  const label = {
+    session: PAGE_SESSION,
+    id: nextEntryId++,
+    key: positionKey(parseRoute(current)),
+    prev: null,
+  }
+  history.replaceState(entryState(history.state, current, label), "", historyUrlFor(current))
+  labelledEntryKeys.set(label.id, label.key)
+  noteWrittenEntry(current)
+  return { id: label.id, key: label.key, navKey }
+}
+
+// Set while a fallback runs (`fallBackTo`): its replace may become a traversal.
+let fallbackWrite = false
+
+// yaran's own traversal while it is pending (a fallback's, or one taking modal
+// entries away). `newerIntent` records that something asked for a URL write
+// meanwhile: a click, or another fallback. That position is held in state, and
+// the landing writes it rather than letting the landed entry's older address
+// overwrite it. `fallback` says that write is a fallback's (`fallBackTo`) and
+// keeps its mode, so the landing runs it as one, with its step back onto an
+// entry that already names the destination. `then` is a move waiting for the
+// landing that state does not hold (a fragment navigation, a reload).
+interface PendingTraversal {
+  newerIntent: boolean
+  fallback?: { mode: "replace" | "push" | undefined }
+  then?: () => void
+}
+let pendingTraversal: PendingTraversal | null = null
+
+// Run a navigation that falls back from something that disappeared. Its write
+// is a rewrite like any other (`rewriteEntry`); the mark carries it across a
+// modal entry being taken away first, so it still runs as a fallback there.
+function fallBackTo(navigate: () => void): void {
+  const outer = fallbackWrite
+  fallbackWrite = true
+  try {
+    navigate()
+  } finally {
+    fallbackWrite = outer
+  }
+}
+
+// Leave an entry whose tab went away, moving the way the user was going so
+// every Back and Forward visibly moves, and say where they are now:
+//
+// - Forward goes on to the entry ahead by its exact key; with nothing ahead it
+//   lands on the agent, or, when that is the place Forward just left, goes back
+//   onto the entry it came from.
+// - Back lands on the agent, onto the entry behind when that already names it;
+//   when the agent is the place Back just left, it goes on past it to the next
+//   place behind.
+//
+// `destination` is the address the fallback shows; `fallback` shows it.
+function leaveTakenAwayEntry(
+  closed: Prose | null,
+  agentName: string,
+  destination: string,
+  fallback: () => void,
+): void {
+  const quiet = quietLanding
+  const say = (where: Prose) => {
+    if (!quiet && closed !== null) notifyWarning(prose`${closed} ${where}`)
+  }
+  const onAgent = prose`You are on ${chip(agentName)}'s first tab.`
+  const nav = navigationApi()
+  const here = nav?.currentEntry
+  if (nav && here && !nav.transition && landing !== "new") {
+    const places = nav
+      .entries()
+      .filter((entry) => writtenAddresses.has(entry.key) && !retiredModalKeys.has(entry.key))
+    const go = (entry: NavigationHistoryEntry | undefined, where: Prose): boolean => {
+      if (!entry) return false
+      walkingPastTo = entry.key
+      if (traverseExactly(nav, entry.key, { newerIntent: false }, () => fallBackTo(fallback))) {
+        say(where)
+        return true
+      }
+      walkingPastTo = null
+      return false
+    }
+    if (landing === "forward") {
+      const ahead = places.find((entry) => entry.index === here.index + 1)
+      if (ahead && go(ahead, prose`You moved on to ${placeName(addressOf(ahead.url))}.`)) return
+      if (!ahead && destination === addressLeft) {
+        const behind = places.find((entry) => entry.index === here.index - 1)
+        if (go(behind, prose`There is nothing after it, so you are back on ${chip(agentName)}'s first tab.`)) {
+          return
+        }
+      }
+    } else if (destination === addressLeft) {
+      const further = places
+        .filter((entry) => entry.index < here.index && addressOf(entry.url) !== destination)
+        .pop()
+      if (further && go(further, prose`You moved on to ${placeName(addressOf(further.url))}.`)) return
+    }
+  }
+  say(onAgent)
+  fallBackTo(fallback)
+}
+
+// The address a fallback onto `target` will show from the route being resolved:
+// its editor, changes screen and theater ride along.
+function addressShowing(target: SelectedTarget, changes?: boolean): string {
+  return routeHash({
+    ...currentRoute(),
+    target,
+    stack: null,
+    changes: changes ?? false,
+    theater: pendingTheater ?? state.theater,
+  })
+}
+
+// The entry the page is walking onto by itself past a taken-away one, and
+// whether the landing being handled is that walk's: it was already announced,
+// so it does not announce itself a second time.
+let walkingPastTo: string | null = null
+let quietLanding = false
+
+// The fragment of a history entry's URL: the address yaran reads.
+function addressOf(url: string | null | undefined): string {
+  if (!url) return ""
+  const at = url.indexOf("#")
+  return at === -1 ? "" : url.slice(at)
+}
+
+// What an address is, in the words a toast uses.
+function placeName(address: string): Prose {
+  const target = parseRoute(address).target
+  if (target === null) return prose`the workspace`
+  const sessionId = targetSessionId(target)
+  const session = state.spine?.sessions.find((s) => s.id === sessionId)
+  if (session) return prose`${chip(sessionLabel(session))}`
+  return prose`a terminal`
+}
+
+// Whether the entry holding `navKey` sits exactly `steps` entries behind the
+// one the browser is on.
+function exactlyBehind(nav: Navigation, navKey: string, steps: number): boolean {
+  const here = nav.currentEntry
+  const target = nav.entries().find((entry) => entry.key === navKey)
+  return !!here && !!target && target.index === here.index - steps
+}
+
+// Traverse to the entry holding `navKey`, by its key and never relatively, as
+// the pending traversal (`PendingTraversal` says what waits for the landing).
+// Returns false when the browser refused to start it.
+function traverseExactly(
+  nav: Navigation,
+  navKey: string,
+  pending: PendingTraversal,
+  onFail: () => void,
+): boolean {
+  pendingTraversal = pending
+  let committed: Promise<unknown> | undefined
+  try {
+    committed = nav.traverseTo(navKey).committed
+  } catch (err) {
+    console.warn("[yaran] history traversal refused", err)
+  }
+  if (committed === undefined) {
+    pendingTraversal = null
+    return false
+  }
+  // A traversal onto the entry the page is already on (the user's own Back got
+  // there first) fires no popstate, so the promise lands it too.
+  committed.then(
+    () => {
+      if (pendingTraversal === pending) landTraversal()
+    },
+    () => {
+      if (pendingTraversal !== pending) return
+      pendingTraversal = null
+      scheduleModalReconcile()
+      onFail()
+    },
+  )
+  return true
+}
+
+// The browser has traversed while yaran's own traversal was pending. With
+// nothing newer asked for, the app renders the entry it landed on. Otherwise
+// the newer position, which state still holds, is written: over the landed
+// entry when that names the same position or something that has since
+// vanished, as a new entry when it is a different position. A fragment
+// navigation waiting for the landing runs last.
+function landTraversal(): void {
+  const pending = pendingTraversal
+  pendingTraversal = null
+  // Modal entries wait for a pending traversal; this is where they stop.
+  scheduleModalReconcile()
+  const fallback = pending?.fallback
+  if (!pending?.newerIntent) applyUrlRoute()
+  else if (fallback) fallBackTo(() => syncUrl(fallback.mode))
+  else writeNewerIntent()
+  pending?.then?.()
+}
+
+function writeNewerIntent(): void {
+  const landed = parseRoute(currentHash())
+  const spine = state.spine
+  if (spine !== null && !routeTargetLive(spine, landed)) {
+    syncUrl("replace")
+    return
+  }
+  syncUrl(positionKey(landed) === positionKey(currentRoute()) ? "replace" : "push")
+}
+
+function routeTargetLive(spine: Spine, route: Route): boolean {
+  const target = route.target
+  if (target === null) return true
+  if (target.kind === "agent") {
+    return spine.sessions.some((session) => session.id === target.sessionId)
+  }
+  return ownerHasTerminal(spine.terminals, target.owner, target.terminalId)
+}
+
+// What a popstate or hashchange does: land a pending traversal of yaran's own,
+// close the modals whose entries the browser left, or otherwise follow the URL.
+// A landing on a modal entry that is no longer a place moves on instead.
+function onTraversal(): void {
+  // A browser fires popstate and then hashchange for one navigation: the second
+  // event is the same landing, not a new one.
+  if (sameLandingAgain()) return
+  addressLeft = routeHash(currentRoute())
+  const arrivedAt = navigationApi()?.currentEntry?.key ?? null
+  quietLanding = walkingPastTo !== null && arrivedAt === walkingPastTo
+  walkingPastTo = null
+  cursorMoves += 1
+  landedAt = { key: navigationApi()?.currentEntry?.key ?? null, hash: currentHash(), moves: cursorMoves }
+  if (pendingTraversal !== null) landTraversal()
+  else if (stepOffRetiredEntry()) return
+  else if (!leaveModalEntries()) applyUrlRoute()
+  rememberEntryIndex()
+}
+
+// --- Modal entries ------------------------------------------------------------
+//
+// An open dialog, sheet or menu (`modalHistory`) holds ONE history entry of its
+// own, pushed at the address the page is already on, so the browser's Back and
+// a phone's back gesture close it and leave the page where it is. The entry
+// names no position: its address is the page's, and only `history.state`
+// (`yaranModal`) tells it apart. Closing the modal any other way (Cancel, a
+// confirm, Escape, an outside press, its target vanishing) takes the entry
+// away again, so a later Back never stops on something already closed. Taking
+// it away is a traversal to the exact entry behind it, by key, made only while
+// the browser is parked on that modal's own labelled entry and nothing else is
+// traversing. Where the browser has no Navigation API none of this happens and
+// no entry is pushed, so Back behaves as it always did there.
+
+interface ModalEntry {
+  // The `OpenModal` the entry belongs to.
+  modalId: number
+  // The Navigation API keys of the entry and of the entry pushed over.
+  navKey: string
+  behindNavKey: string
+}
+
+// The modal entries above the page's own entry, oldest first. Unless the user
+// has just traversed, the browser is parked on the last one.
+let modalEntries: ModalEntry[] = []
+let modalReconcileQueued = false
+
+// Bring the modal entries in line with the open modals once the commit that
+// opened or closed them has finished, so a menu that closes in the same commit
+// as the dialog it opened is seen as one change.
+function scheduleModalReconcile(): void {
+  if (modalReconcileQueued) return
+  modalReconcileQueued = true
+  queueMicrotask(() => {
+    modalReconcileQueued = false
+    reconcileModalEntries()
+  })
+}
+
+function modalEntryState(modalId: number): object {
+  return { yaranRoute: currentHash(), yaranModal: { session: PAGE_SESSION, id: modalId } }
+}
+
+// Whether the browser is parked on this modal entry: its key, and its label.
+function parkedOn(entry: ModalEntry, nav: Navigation): boolean {
+  if (nav.currentEntry?.key !== entry.navKey) return false
+  const state: unknown = history.state
+  if (typeof state !== "object" || state === null) return false
+  const label = (state as { yaranModal?: { session?: unknown; id?: unknown } }).yaranModal
+  return label?.session === PAGE_SESSION && label.id === entry.modalId
+}
+
+function reconcileModalEntries(): void {
+  const nav = navigationApi()
+  if (nav === null || typeof history === "undefined") return
+  if (typeof history.pushState !== "function") return
+  // Nothing is written while a traversal is pending: yaran's own lands through
+  // `landTraversal`, and the browser's through popstate, both of which come
+  // back here.
+  if (pendingTraversal !== null) return
+  if (nav.transition) {
+    nav.transition.finished.then(scheduleModalReconcile, scheduleModalReconcile)
+    return
+  }
+  const wanted = openModals().filter((modal) => !modal.spent)
+  let kept = 0
+  while (
+    kept < modalEntries.length &&
+    kept < wanted.length &&
+    modalEntries[kept].modalId === wanted[kept].id
+  ) {
+    kept += 1
+  }
+  const stale = modalEntries.slice(kept)
+  let fresh = wanted.slice(kept)
+  modalEntries = modalEntries.slice(0, kept)
+  if (stale.length > 0) {
+    const top = stale[stale.length - 1]
+    if (!parkedOn(top, nav)) {
+      // The browser is somewhere else: those entries are not yaran's to remove,
+      // and no longer places either.
+      retireModalEntries(stale)
+    } else if (stale.length === 1 && fresh.length > 0) {
+      // A modal closed and another opened in the same commit (a menu item
+      // opening its dialog): the entry passes to the new one rather than being
+      // taken away and pushed again.
+      try {
+        history.replaceState(modalEntryState(fresh[0].id), "", historyUrlFor(currentHash()))
+        modalEntries.push({ ...top, modalId: fresh[0].id })
+        fresh = fresh.slice(1)
+      } catch (err) {
+        console.warn("[yaran] history write refused", err)
+        return
+      }
+    } else if (exactlyBehind(nav, stale[0].behindNavKey, stale.length)) {
+      retireModalEntries(stale)
+      // Pushing waits for the landing, which reconciles again.
+      if (traverseExactly(nav, stale[0].behindNavKey, { newerIntent: false }, () => {})) {
+        return
+      }
+    }
+  }
+  if (fresh.length > 0 && !userActivated()) {
+    // Chrome marks the entry a page pushes over without a user activation as
+    // one its Back skips, which would carry the Back meant for this modal past
+    // the page, possibly out of yaran. A modal nobody opened by hand (one the
+    // app raised by itself) therefore keeps today's Back.
+    spendModals(fresh.map((modal) => modal.id))
+    return
+  }
+  for (const modal of fresh) {
+    const behind = nav.currentEntry?.key
+    if (!behind) return
+    try {
+      history.pushState(modalEntryState(modal.id), "", historyUrlFor(currentHash()))
+      cursorMoves += 1
+    } catch (err) {
+      console.warn("[yaran] history write refused", err)
+      return
+    }
+    const navKey = nav.currentEntry?.key
+    if (!navKey || navKey === behind) return
+    modalEntries.push({ modalId: modal.id, navKey, behindNavKey: behind })
+    rememberEntryIndex()
+  }
+}
+
+// A popstate while modal entries are up. The modals whose entries the browser
+// left are closed, top first, exactly as their own Cancel would close them.
+// Returns true when the browser is still on the page those modals were opened
+// over (one of their entries, or the page's own), so the page must not move.
+function leaveModalEntries(): boolean {
+  if (modalEntries.length === 0) return false
+  const here = navigationApi()?.currentEntry?.key
+  const at = modalEntries.findIndex((entry) => entry.navKey === here)
+  if (at === modalEntries.length - 1) return false
+  const left = modalEntries.slice(at + 1)
+  const stayed = at >= 0 || here === modalEntries[0].behindNavKey
+  modalEntries = modalEntries.slice(0, at + 1)
+  retireModalEntries(left)
+  closeModals(left.map((entry) => entry.modalId))
+  return stayed
+}
+
+// Whether the page holds a user activation now. A browser that cannot say is
+// taken at its word that the push is the user's.
+function userActivated(): boolean {
+  if (typeof navigator === "undefined") return true
+  const activation = (navigator as { userActivation?: { isActive?: boolean } }).userActivation
+  return activation?.isActive ?? true
+}
+
+// A move while the browser is parked on a modal entry would land on top of
+// that entry and strand the page's own entry behind it. So the modal entries
+// are taken away first and the move is made on landing. Every modal still open
+// loses its entry for good: the page moved under it. Returns true when the move
+// was deferred.
+//
+// A URL write (`syncUrl`) is made on landing from the position state holds, as
+// a fallback's newer position is (`landTraversal`), and a fallback's write runs
+// as a fallback again, so it can still step onto an entry that already names
+// its destination.
+function dropModalEntriesBeforeWrite(mode: "replace" | "push" | undefined): boolean {
+  const fallback = fallbackWrite ? { mode } : undefined
+  return dropModalEntries({ newerIntent: true, fallback }, () => {
+    if (fallback) fallBackTo(() => syncUrl(mode))
+    else syncUrl(mode)
+  })
+}
+
+// Any other move (a fragment navigation, a reload) runs as `then` on landing.
+function dropModalEntriesBeforeMove(then: () => void): boolean {
+  return dropModalEntries({ newerIntent: false, then }, then)
+}
+
+function dropModalEntries(pending: PendingTraversal, onFail: () => void): boolean {
+  if (modalEntries.length === 0) return false
+  const nav = navigationApi()
+  const dropped = modalEntries
+  modalEntries = []
+  retireModalEntries(dropped)
+  spendModals(openModals().map((modal) => modal.id))
+  if (nav === null || nav.transition || !parkedOn(dropped[dropped.length - 1], nav)) {
+    return false
+  }
+  const behind = dropped[0].behindNavKey
+  if (!exactlyBehind(nav, behind, dropped.length)) return false
+  return traverseExactly(nav, behind, pending, onFail)
+}
+
+// Reload the page, the one place the app does (`reloadPage`), with the modal
+// entries taken away first: a reload starts with no modals open, so an entry
+// left current would be a stop Back spends on nothing.
+export function reloadLeavingNoModalEntry(): void {
+  if (!dropModalEntriesBeforeMove(reloadPage)) reloadPage()
+}
+
+// The Navigation API keys of every modal entry this page has taken away or
+// left. Those entries are still in the browser's list, ahead of the page (a
+// Back that closes a modal leaves its entry as the Forward one), and none of
+// them is a place: a traversal that lands on one moves on (`stepOffRetiredEntry`).
+const retiredModalKeys = new Set<string>()
+
+function retireModalEntries(entries: readonly ModalEntry[]): void {
+  for (const entry of entries) retiredModalKeys.add(entry.navKey)
+}
+
+// Where the browser was before the traversal now being handled, so a landing on
+// a retired modal entry knows which way the user was going. Recorded after
+// every push and every traversal.
+let lastEntryIndex: number | null = null
+
+function rememberEntryIndex(): void {
+  const nav = navigationApi()
+  const here = nav?.currentEntry
+  if (here) lastEntryIndex = here.index
+  for (const entry of nav?.entries() ?? []) knownEntryKeys.add(entry.key)
+}
+
+// Every entry the browser has listed while this page was loaded, by Navigation
+// API key, so a landing can tell an entry it already had (Back or Forward) from
+// a new one (a link, an address typed into the bar).
+const knownEntryKeys = new Set<string>()
+
+// A traversal landed on a modal entry that holds no open modal: one this page
+// retired, or one an earlier load of the page left behind. It moves on, by
+// exact key, to the nearest entry that is a place, in the direction the user
+// was going (or the other way when there is none that way). Returns true when
+// it did.
+function stepOffRetiredEntry(): boolean {
+  const nav = navigationApi()
+  if (nav === null || nav.transition) return false
+  const here = nav.currentEntry
+  if (!here) return false
+  if (modalEntries.some((entry) => entry.navKey === here.key)) return false
+  if (!retiredModalKeys.has(here.key) && !carriesModalLabel(history.state)) return false
+  const forward = lastEntryIndex !== null && here.index > lastEntryIndex
+  const places = nav
+    .entries()
+    .filter((entry) => !retiredModalKeys.has(entry.key) && entry.key !== here.key)
+  const ahead = places.filter((entry) => entry.index > here.index)
+  const behind = places.filter((entry) => entry.index < here.index)
+  const nearestAhead = ahead[0]
+  const nearestBehind = behind[behind.length - 1]
+  const target = forward ? (nearestAhead ?? nearestBehind) : (nearestBehind ?? nearestAhead)
+  if (!target) return false
+  return traverseExactly(nav, target.key, { newerIntent: false }, () => {})
+}
+
+function carriesModalLabel(entryState: unknown): boolean {
+  return (
+    typeof entryState === "object" &&
+    entryState !== null &&
+    "yaranModal" in (entryState as Record<string, unknown>)
+  )
+}
+
+// A page loaded onto a modal entry (a reload, by yaran or by the browser, while a
+// modal was open) has no modal for it: the modal state did not survive the
+// load. The entry was pushed at the address of the one behind it, so the page
+// steps back onto that one by its exact key, or, where it cannot, rewrites the
+// entry as a plain one, so the first Back is never spent on nothing.
+function recoverFromStrandedModalEntry(): void {
+  if (typeof history === "undefined" || !carriesModalLabel(history.state)) return
+  const nav = navigationApi()
+  const here = nav?.currentEntry
+  if (nav && here && !nav.transition) {
+    const behind = nav.entries().find((entry) => entry.index === here.index - 1)
+    if (behind && behind.url === here.url) {
+      retiredModalKeys.add(here.key)
+      if (traverseExactly(nav, behind.key, { newerIntent: false }, stripModalLabel)) return
+    }
+  }
+  stripModalLabel()
+}
+
+function stripModalLabel(): void {
+  if (!carriesModalLabel(history.state)) return
+  const rest: Record<string, unknown> = { ...(history.state as Record<string, unknown>) }
+  delete rest.yaranModal
+  try {
+    history.replaceState(rest, "", historyUrlFor(currentHash()))
   } catch (err) {
     console.warn("[yaran] history write refused", err)
   }
@@ -2787,8 +4741,9 @@ function historyUrlFor(hash: string): string {
 // `routePushKey`, not `routeScreen`: the editor-open bit must push and pop like
 // a screen without being one. `mode: "push"` is for a move the key cannot
 // describe: entering theater is a position Back must come out of, while still
-// being the terminal screen. Leaving replaces, so Back never re-enters a mode
-// just dismissed.
+// being the terminal screen. Leaving theater and closing the editor push as
+// well, deliberately, so Back after leaving re-enters the mode just dismissed
+// rather than being a dead press.
 function movesScreen(
   mode: "replace" | "push" | undefined,
   next: string,
@@ -2810,8 +4765,8 @@ function applyUrlRoute(): void {
   // swap surfaces with no code of its own.
   if (route.standalone !== state.standaloneEditor) {
     setState({ standaloneEditor: route.standalone })
-    // The tab title carries an "Editor" prefix on the standalone surface, so
-    // it must re-render the moment the surface bit flips (the other refresh
+    // The surface bit decides which agents the attention count covers, so the
+    // favicon dot must re-render the moment it flips (the other refresh
     // triggers are spine applies and bootstraps, which need not coincide).
     refreshAttentionChrome()
   }
@@ -2827,6 +4782,7 @@ function applyUrlRoute(): void {
     // naming home replaces it with null. Resolving a target needs a session
     // list, so nothing more can happen here.
     pendingDeepLink = route.target
+    pendingDeepLinkStack = route.stack ?? null
     pendingDeepLinkChanges = route.changes
     pendingDeepLinkEditor = route.editor
     pendingDeepLinkTheater = route.theater
@@ -2844,8 +4800,53 @@ function applyUrlRoute(): void {
     selectSessionRoute(null)
     return
   }
-  resolveRoute(spine, route)
+  // Back and Forward land on an entry the browser already had; a link or an
+  // address typed into the bar arrives on a new one, and resolves the way a
+  // boot does.
+  landing = landingKind()
+  traversing = landing !== "new"
+  try {
+    resolveRoute(spine, route)
+  } finally {
+    traversing = false
+    landing = "new"
+  }
 }
+
+// How the page arrived at the entry it is on: back or forward onto one it
+// already had, or onto a new one. Without the Navigation API an entry this page
+// labelled is the only sign of a traversal, and its direction is unknown.
+function landingKind(): "back" | "forward" | "new" {
+  const here = navigationApi()?.currentEntry
+  if (!here) return ownLabel(history.state) !== null ? "back" : "new"
+  if (!knownEntryKeys.has(here.key)) return "new"
+  return lastEntryIndex !== null && here.index > lastEntryIndex ? "forward" : "back"
+}
+
+let landing: "back" | "forward" | "new" = "new"
+
+// The entry the last landing arrived on, and how many times the cursor had
+// moved by then (pushes and landings). A rewrite since keeps the entry, so it
+// updates the address this landing stands at.
+let landedAt: { key: string | null; hash: string; moves: number } | null = null
+let cursorMoves = 0
+
+// Where the screen was before the landing being handled: the place Back or
+// Forward left.
+let addressLeft = ""
+
+function sameLandingAgain(): boolean {
+  if (landedAt === null || landedAt.moves !== cursorMoves) return false
+  const key = navigationApi()?.currentEntry?.key ?? null
+  return key !== null ? key === landedAt.key : currentHash() === landedAt.hash
+}
+
+// Set while a route Back or Forward landed on is being resolved. That entry was
+// a position the user was on, so a bare agent address there means its first
+// tab, the one it was written for, rather than whichever tab the agent
+// remembers: following the memory would make Back land on the tab it was
+// meant to leave.
+let traversing = false
 
 // Clear the editor's open state WITHOUT writing the URL, for the paths that
 // must not write it: reconstitution, where the browser is already parked on an
@@ -2924,8 +4925,9 @@ export function discardVanishedEditor(): void {
   // selection named the vanished root itself. Landing on home is the one URL
   // write in the pass, and it is a replace, because the address behind it
   // names a target that no longer exists and must not be re-enterable by
-  // Back. Both surfaces take this same exit.
-  selectSessionRoute(null, "replace")
+  // Back. A fallback, so when home is already the entry behind, the app goes
+  // back to it instead. Both surfaces take this same exit.
+  fallBackTo(() => selectSessionRoute(null, "replace"))
 }
 
 // Keep it open: the text stays on screen to be copied out, and nothing asks
@@ -2957,7 +4959,17 @@ function syncEditorStateFromRoute(spine: Spine, route: Route): void {
     state.editorTarget !== null && sameRoot(state.editorTarget.root, root)
       ? state.editorTarget
       : { root, initialPath: path, initialMode: mode }
-  setState({ editorTarget, editorRoute: { root, mode, path } })
+  // Re-canonical for the mode the store settled on (a terminal root's diff is
+  // its file mode). An equal view keeps its object, so the paired popstate and
+  // hashchange a fragment navigation delivers hand the editor ONE arrival, and
+  // it can tell a spot it already went to from a new one by identity.
+  const cur = state.editorRoute
+  const parsed = canonicalEditorView(mode, path, route.editor.view)
+  const view =
+    cur !== null && sameRoot(cur.root, root) && cur.path === path && sameEditorView(cur.view, parsed)
+      ? cur.view
+      : parsed
+  setState({ editorTarget, editorRoute: { root, mode, path, view } })
   if (path !== null) editorOpenFile(root, path, { mode })
 }
 
@@ -2985,7 +4997,7 @@ function resolveRoute(spine: Spine, route: Route): void {
   // the override armed for the next selection.
   pendingTheater = route.theater
   try {
-    resolveRouteTarget(spine, route.target, route.changes)
+    resolveRouteTarget(spine, route.target, route.changes, route.stack ?? null, route.editor !== null)
   } finally {
     pendingTheater = undefined
   }
@@ -2999,14 +5011,11 @@ let pendingTheater: boolean | undefined
 
 // The theater half of a selection commit, landing in the SAME state patch as
 // the target so `syncUrl` never writes an address from a half-applied
-// position. With no route override in flight it is the pane's own remembered
+// position. With no route override in flight it is the row's own remembered
 // mode; with one, the address wins and is written back to the memory, because
 // following a link into theater is as much a choice as pressing the button.
-function theaterPatch(
-  target: SelectedTarget | null,
-  override?: boolean,
-): { theater: boolean } {
-  const explicit = override ?? pendingTheater
+function theaterPatch(target: SelectedTarget | null): { theater: boolean } {
+  const explicit = pendingTheater
   // Always dropped, override or not: a route's flag belongs to the very next
   // commit and nothing else.
   pendingTheater = undefined
@@ -3034,6 +5043,8 @@ function resolveRouteTarget(
   spine: Spine,
   target: SelectedTarget,
   changes: boolean,
+  stack: AgentAddress | null,
+  withEditor = false,
 ): void {
   let sessionId: string
   if (target.kind === "terminal") {
@@ -3077,6 +5088,23 @@ function resolveRouteTarget(
     setRouteNotFound(sessionId)
     return
   }
+  // A terminal the address names that has closed is reported where the user
+  // asked for it, on every arrival, Back included, never quietly swapped for
+  // another part of the agent.
+  if (target.kind === "terminal" && !ownerHasTerminal(spine.terminals, target.owner, target.terminalId)) {
+    // An editor address is about the agent's worktree, which is still there:
+    // the terminal it passed through is incidental, so the agent opens with its
+    // editor and the address drops the terminal.
+    if (withEditor) {
+      const firstTab: SelectedTarget = { kind: "agent", sessionId, tabId: session.slot_tab_id }
+      leaveTakenAwayEntry(null, sessionLabel(session), addressShowing(firstTab, changes), () =>
+        selectTab(firstTab.sessionId, firstTab.tabId, { persist: false, urlMode: "replace", changes }),
+      )
+      return
+    }
+    setTerminalNotFound(target.terminalId, target.owner)
+    return
+  }
   // `changes` travels with the target rather than after it: `syncUrl` reads the
   // screen off state, so committing them separately would write the address
   // from a half-applied route and strip `/changes` off the URL being resolved.
@@ -3084,7 +5112,7 @@ function resolveRouteTarget(
   // The `"replace"` is belt and braces (every caller is already parked on this
   // hash), passed so the call site states the intent: a restore, not a new
   // position.
-  applyDeepLinkSelection(session, spine.terminals, target, "replace", changes)
+  applyDeepLinkSelection(session, spine.terminals, target, "replace", changes, stack)
 }
 
 // The session a route target belongs to, or null for a terminal owned by
@@ -3109,9 +5137,31 @@ function retryRouteNotFound(spine: Spine): void {
   if (!missing) return
   const route = parseRoute(currentHash())
   if (!route.target) return
-  if (targetSessionId(route.target) !== missing.sessionId) return
-  if (!spine.sessions.some((s) => s.id === missing.sessionId)) return
+  if (!missingIsBack(spine, missing, route.target)) return
   resolveRoute(spine, route)
+}
+
+// Whether the address still names what was missing and the spine now has it.
+function missingIsBack(
+  spine: Spine,
+  missing: RouteNotFound,
+  target: SelectedTarget,
+): boolean {
+  switch (missing.kind) {
+    case "agent":
+      return (
+        targetSessionId(target) === missing.sessionId &&
+        spine.sessions.some((s) => s.id === missing.sessionId)
+      )
+    case "terminal":
+      return (
+        target.kind === "terminal" &&
+        target.terminalId === missing.terminalId &&
+        ownerHasTerminal(spine.terminals, missing.owner, missing.terminalId)
+      )
+    default:
+      return assertNever(missing)
+  }
 }
 
 // The URL names an agent this workspace does not have. Clear the selection and
@@ -3127,9 +5177,36 @@ function setRouteNotFound(sessionId: string): void {
       mobileScreen: "home",
       theater: false,
       routeNotFound: { kind: "agent", sessionId },
+      ...notFoundEditorPatch(),
     }),
   )
   switchChangesSubscription(prev, null)
+}
+
+// The URL names a terminal that has closed. Like an agent that is gone, the
+// address stays as it is and the surfaces say so (see `TerminalNotFound`),
+// offering a new terminal for the same owner.
+function setTerminalNotFound(terminalId: string, owner: TerminalOwnerRef): void {
+  const prev = state.selectedSessionId
+  setState(
+    withTheaterLayout({
+      selectedTarget: null,
+      selectedSessionId: null,
+      changes: emptyChanges(),
+      mobileScreen: "home",
+      theater: false,
+      routeNotFound: { kind: "terminal", terminalId, owner },
+      ...notFoundEditorPatch(),
+    }),
+  )
+  switchChangesSubscription(prev, null)
+}
+
+// A not-found screen has nothing for the in-app editor to be about, so it closes
+// with no write: the address keeps naming what was asked for. The standalone tab
+// keeps its surface, and says not found itself.
+function notFoundEditorPatch(): Partial<YaranState> {
+  return state.standaloneEditor ? {} : { editorTarget: null, editorRoute: null }
 }
 
 // The route parsed from the URL at module load, restored once the first spine
@@ -3145,6 +5222,7 @@ const bootRoute: Route =
 // `applyUrlRoute`), so the restore resolves that rather than a boot hash the
 // user has already left.
 let pendingDeepLink: SelectedTarget | null = bootRoute.target
+let pendingDeepLinkStack: AgentAddress | null = bootRoute.stack ?? null
 let pendingDeepLinkChanges = bootRoute.changes
 let pendingDeepLinkEditor = bootRoute.editor
 let pendingDeepLinkTheater = bootRoute.theater
@@ -3160,6 +5238,7 @@ function applyDeepLinkSelection(
   target: SelectedTarget,
   urlMode?: "replace",
   changes?: boolean,
+  stack?: AgentAddress | null,
 ): void {
   if (target.kind === "terminal") {
     // A handler per owner variant, not `if (owner.kind !== "session") return`.
@@ -3172,13 +5251,13 @@ function applyDeepLinkSelection(
     matchOwner(target.owner, {
       session: (owner) => {
         if (ownerHasTerminal(terminals, owner, terminal.terminalId)) {
-          selectTerminal(terminal.terminalId, owner, { urlMode, changes })
+          selectAgentAddress(session, terminal.terminalId, stack?.tabId ?? null, urlMode, changes)
           return
         }
-        // Terminal id gone, so fall back to the owning agent, keeping the
-        // changes screen: changed files are SESSION-scoped, so they survive any
-        // fallback that stays inside the same session.
-        selectSessionRoute(owner.sessionId, urlMode, changes)
+        // The terminal the address was about has closed: say so, and put that
+        // address back if something rewrote it meanwhile.
+        setTerminalNotFound(terminal.terminalId, owner)
+        syncUrl("replace")
       },
       // Project-terminal links restore through `applyProjectTerminalDeepLink`,
       // which resolves them against the project rather than a session, so they
@@ -3201,7 +5280,51 @@ function applyDeepLinkSelection(
     selectTab(target.sessionId, target.tabId, { persist: false, urlMode, changes })
     return
   }
+  if (!isFirstTab(session, target.tabId) && !isSlotTabOf(target.sessionId, target.tabId)) {
+    // The tab the address names has closed, here or on another device.
+    const firstTab: SelectedTarget = {
+      kind: "agent",
+      sessionId: target.sessionId,
+      tabId: session.slot_tab_id,
+    }
+    leaveTakenAwayEntry(
+      prose`That tab has closed, so its place in your history is gone.`,
+      sessionLabel(session),
+      addressShowing(firstTab, changes),
+      () =>
+        selectTab(target.sessionId, session.slot_tab_id, {
+          persist: false,
+          urlMode: "replace",
+          changes,
+        }),
+    )
+    return
+  }
+  if (traversing) {
+    selectTab(target.sessionId, session.slot_tab_id, { persist: false, urlMode, changes })
+    return
+  }
   selectSessionRoute(target.sessionId, urlMode, changes)
+}
+
+// Arrive at an address naming one of an agent's terminals and the tab above it.
+// The terminal is what the address is about, so typing goes to it.
+function selectAgentAddress(
+  session: Spine["sessions"][number],
+  terminalId: string,
+  tabId: string | null,
+  urlMode?: "replace",
+  changes?: boolean,
+): void {
+  const sessionId = session.id
+  const tab =
+    tabId !== null && session.tabs.some((t) => t.id === tabId) ? tabId : session.slot_tab_id
+  writeStackMemory(sessionId, { tab })
+  selectTerminal(terminalId, { kind: "session", sessionId }, {
+    urlMode,
+    changes,
+    extra: { stackTabs: { ...state.stackTabs, [sessionId]: tab } },
+  })
 }
 
 // Restore the boot URL against the first spine: the terminal when it still
@@ -3215,6 +5338,7 @@ function restoreDeepLink(spine: Spine): void {
   pendingDeepLink = null // one-shot, whatever the outcome
   resolveRoute(spine, {
     target: link,
+    stack: pendingDeepLinkStack,
     changes: pendingDeepLinkChanges,
     editor: pendingDeepLinkEditor,
     standalone: state.standaloneEditor,
@@ -3222,11 +5346,8 @@ function restoreDeepLink(spine: Spine): void {
   })
 }
 
-// Restore a project-terminal route against a spine, landing home when either
-// the project or the terminal is gone. Landing home writes the URL too, or the
-// address bar would name a terminal the app is not showing. There is
-// deliberately no not-found screen here: terminal ids are ephemeral, so a
-// closed terminal is ordinary rather than a broken link.
+// Restore a project-terminal route against a spine, or say the terminal is not
+// found when either the project or the terminal is gone.
 function applyProjectTerminalDeepLink(
   spine: Spine,
   terminalId: string,
@@ -3242,13 +5363,12 @@ function applyProjectTerminalDeepLink(
     selectTerminal(terminalId, owner, { urlMode, changes })
     return
   }
-  selectSessionRoute(null, urlMode)
+  setTerminalNotFound(terminalId, owner)
 }
 
 // The standalone twin of `applyProjectTerminalDeepLink`: select the terminal
-// when the workspace still carries it, and land home (URL included, never
-// silently) when it is gone. There is no owner to check first, which is the only
-// difference; a standalone terminal that is gone is gone.
+// when the workspace still carries it, and say it is not found when it is gone.
+// There is no owner to check first, which is the only difference.
 function applyStandaloneTerminalDeepLink(
   spine: Spine,
   terminalId: string,
@@ -3260,7 +5380,7 @@ function applyStandaloneTerminalDeepLink(
     selectTerminal(terminalId, owner, { urlMode, changes })
     return
   }
-  selectSessionRoute(null, urlMode)
+  setTerminalNotFound(terminalId, owner)
 }
 
 // Deep-link intent re-armed on an events-socket reconnect, distinct from the
@@ -3275,6 +5395,7 @@ function applyStandaloneTerminalDeepLink(
 // a user reading changed files onto the terminal screen.
 interface ReconnectDeepLink {
   target: SelectedTarget
+  stack: AgentAddress | null
   changes: boolean
   armedAt: number
 }
@@ -3312,6 +5433,7 @@ function armReconnectDeepLink(): void {
   if (route.target) {
     reconnectDeepLink = {
       target: route.target,
+      stack: route.stack ?? null,
       changes: route.changes,
       armedAt: Date.now(),
     }
@@ -3471,6 +5593,7 @@ function restoreSessionScopedReconnect(
       armed.target,
       "replace",
       armed.changes,
+      armed.stack,
     )
   }
   reconnectDeepLink = null
@@ -3482,8 +5605,22 @@ function restoreSessionScopedReconnect(
 // `SessionView.last_focused_tab`) by routing through `selectTab` when that tab
 // is still live, so the wiring matches an explicit tab click. A read of the
 // memory only: `selectTab` owns persisting an actual switch.
+//
+// Every caller is a user's request for the agent, so it also lets go of a tab
+// resting on the idle screen after a clean exit (`endedInViewTab`): clicking the
+// agent already in view is how the user asks for it to start again.
 export function selectSession(id: string | null): void {
-  selectSessionRoute(id, undefined)
+  const extra = id === null ? undefined : { endedInViewTab: null }
+  // Asking for an agent names no part of it, so a phone opens it on the part
+  // this device left it on. An address that names the agent is a position and
+  // never comes through here.
+  const session = id === null ? undefined : state.spine?.sessions.find((s) => s.id === id)
+  const phoneTerminal = session === undefined ? null : phoneOpeningTerminal(session)
+  if (id !== null && phoneTerminal !== null) {
+    selectTerminal(phoneTerminal, { kind: "session", sessionId: id }, { extra })
+    return
+  }
+  selectSessionRoute(id, undefined, undefined, extra)
 }
 
 // The screen half of a route commit. A selection carries it so the target and
@@ -3562,7 +5699,55 @@ function selectSessionRoute(
   // before the GET means an invalidation that races the fetch is never missed.
   switchChangesSubscription(prev, id)
   syncUrl(urlMode)
-  if (prev !== id) loadChanges(id)
+  if (prev !== id) void restartChanges(id)
+}
+
+// The terminal a phone opens an agent on when the request names no part of it
+// (a row of the list), or null when it opens on the agent: the view this
+// device last left the agent in, or its terminals when the agent is stopped
+// while one of them runs, because that is the only part with anything live in
+// it. Opening it never starts the agent.
+function phoneOpeningTerminal(session: SessionView): string | null {
+  if (!isMobileViewport()) return null
+  const dock = dockTerminalIds(session.id)
+  const memory = readStackMemory(session.id)
+  const agentStopped = session.status !== "active"
+  const view = resolvePhoneView({
+    terminalCount: dock.length,
+    addressNamesTerminal: false,
+    agentStopped,
+    anyTerminalRunning: dock.length > 0,
+    remembered: memory.view,
+  })
+  if (view !== "terminals") return null
+  return lastShownTerminal(session.id, dock)
+}
+
+// The agent's terminal shown last on this device while it is still running,
+// else the first in its dock.
+function lastShownTerminal(sessionId: string, dock: string[]): string | null {
+  return resolveStackOpening({
+    addressTerminal: null,
+    rememberedTerminal: state.stackTerminals[sessionId] ?? readStackMemory(sessionId).terminal,
+    rememberedLayout: null,
+    dockTerminals: dock,
+    agentStopped: false,
+    anyTerminalRunning: dock.length > 0,
+  }).activeTerminal
+}
+
+// The phone's agent/terminals switch: show the part that is not on screen, the
+// agent's tab this page showed last or the terminal used last. Another part is
+// another position, so it pushes and Back flips back.
+export function switchPhonePart(sessionId: string): void {
+  const target = state.selectedTarget
+  if (target?.kind === "terminal" && target.owner.kind === "session") {
+    selectTab(sessionId, shownStackTab(sessionId), { persist: false })
+    return
+  }
+  const terminal = lastShownTerminal(sessionId, dockTerminalIds(sessionId))
+  if (terminal === null) return
+  selectTerminal(terminal, { kind: "session", sessionId })
 }
 
 // Drop the focused target and land on home. The target is cleared FIRST so any
@@ -3602,6 +5787,36 @@ export function ejectSelectionForReconnect(): void {
   lastClearWasReconnectEject = true
 }
 
+// The center pane saw its agent's first tab end cleanly (`slotTabEndedInView`).
+// The agent is still there, so its address is still true: the user stays on
+// it, with no history write, and the tab rests on the idle screen rather than
+// relaunching under someone who just quit it.
+//
+// The one exception is a reconnect still settling for this agent: there the
+// stop is the transient one an events-socket drop reports, and the eject the
+// reconnect restore knows how to undo is kept exactly as it was.
+export function settleSlotTabExit(sessionId: string, tabId: string): void {
+  if (reconnectArmedFor(sessionId)) {
+    ejectSelectionForReconnect()
+    return
+  }
+  const target = state.selectedTarget
+  if (target?.kind !== "agent" || target.tabId !== tabId) return
+  setState({ endedInViewTab: tabId })
+}
+
+// Whether a reconnect deep-link intent is live and names this agent, or a
+// terminal it owns.
+function reconnectArmedFor(sessionId: string): boolean {
+  const armed = reconnectDeepLink
+  if (!armed) return false
+  if (Date.now() - armed.armedAt > RECONNECT_DEEPLINK_TTL_MS) return false
+  const target = armed.target
+  const armedSession =
+    target.kind === "agent" ? target.sessionId : ownerSessionId(target.owner)
+  return armedSession === sessionId
+}
+
 // Focus a specific provider tab of a session. Naming the session-slot tab is
 // equivalent to `selectSession`. The changed files belong to the SESSION, so the
 // subscription/fetch key off `sessionId` regardless of tab.
@@ -3621,11 +5836,6 @@ export function selectTab(
     // setState, threaded through when a remembered tab diverts an
     // `openEditor` selection here.
     extra?: Partial<YaranState>
-    // The mode the switch carries. A tab switch made from inside theater must
-    // not consult the destination's memory: the user asked for a different tab
-    // in a full-screen pane, so the mode follows and the destination remembers
-    // it. The same override the route path arms, stated at the call site.
-    theater?: boolean
   },
 ): void {
   const prev = state.selectedSessionId
@@ -3633,7 +5843,7 @@ export function selectTab(
     withTheaterLayout({
       selectedTarget: { kind: "agent", sessionId, tabId },
       selectedSessionId: sessionId,
-      ...theaterPatch({ kind: "agent", sessionId, tabId }, opts?.theater),
+      ...theaterPatch({ kind: "agent", sessionId, tabId }),
       changes: prev === sessionId ? state.changes : loadingChanges(sessionId),
       ...editorSelectionPatch({ kind: "agent", sessionId, tabId }),
       ...screenPatch(opts?.changes),
@@ -3642,9 +5852,16 @@ export function selectTab(
   )
   switchChangesSubscription(prev, sessionId)
   syncUrl(opts?.urlMode)
-  if (prev !== sessionId) loadChanges(sessionId)
+  if (prev !== sessionId) void restartChanges(sessionId)
   if (opts?.persist === false) return
   persistFocusedTab(sessionId, isSlotTabOf(sessionId, tabId) ? null : tabId)
+}
+
+// A click on a pill in the tab strip. Like `selectSession`, it is a request for
+// the tab, so a tab resting on the idle screen after a clean exit lets go and
+// can start again; `selectTab` itself keeps the rest for its internal callers.
+export function clickTab(sessionId: string, tabId: string): void {
+  selectTab(sessionId, tabId, { extra: { endedInViewTab: null } })
 }
 
 // Per-session bookkeeping for the fire-and-forget focus-tab PUT: only the
@@ -3718,6 +5935,7 @@ export function selectTerminal(
       // same rule as an agent selection.
       ...editorSelectionPatch({ kind: "terminal", terminalId, owner }),
       ...screenPatch(opts?.changes),
+      ...(sessionId === null ? {} : dockTerminalPatch(sessionId, terminalId)),
       ...(opts?.extra ?? {}),
     }),
   )
@@ -3726,7 +5944,189 @@ export function selectTerminal(
   // terminal drops the subscription entirely.
   switchChangesSubscription(prev, sessionId)
   syncUrl(opts?.urlMode)
-  if (sessionId !== null && prev !== sessionId) loadChanges(sessionId)
+  if (sessionId !== null && prev !== sessionId) void restartChanges(sessionId)
+}
+
+// What bringing one of an agent's terminals to the front of its dock changes:
+// the dock remembers it, and a layout with the dock folded away opens so the
+// terminal asked for is on screen. Arriving at the agent this way opens it the
+// way a link naming the terminal does.
+function dockTerminalPatch(sessionId: string, terminalId: string): Partial<YaranState> {
+  writeStackMemory(sessionId, { terminal: terminalId })
+  const stackTerminals = { ...state.stackTerminals, [sessionId]: terminalId }
+  const dock = dockTerminalIds(sessionId)
+  // A dock that was empty had no layout of its own: its first terminal opens
+  // the way an arrival does.
+  const current =
+    sessionId === state.selectedSessionId && dock.some((id) => id !== terminalId)
+      ? state.stackLayouts[sessionId]
+      : undefined
+  let layout: ComputerLayout
+  if (current === undefined) {
+    const session = state.spine?.sessions.find((s) => s.id === sessionId)
+    layout = resolveStackOpening({
+      addressTerminal: terminalId,
+      rememberedTerminal: null,
+      rememberedLayout: readStackMemory(sessionId).layout,
+      dockTerminals: dock.includes(terminalId) ? dock : [...dock, terminalId],
+      agentStopped: session !== undefined && session.status !== "active",
+      anyTerminalRunning: true,
+    }).layout
+  } else {
+    layout = current === "agent" ? "split" : current
+  }
+  return { stackTerminals, stackLayouts: { ...state.stackLayouts, [sessionId]: layout } }
+}
+
+// An agent's own terminals, in its dock's order.
+function dockTerminalIds(sessionId: string): string[] {
+  const own = (state.spine?.terminals ?? [])
+    .filter((t) => t.owner.kind === "session" && t.owner.session_id === sessionId)
+    .sort((a, b) => a.sort_order - b.sort_order)
+  // A drag just made is the order on screen until the server confirms it.
+  const order = state.pendingTerminalOrder
+  return (order ? reorderById(own, order) : own).map((t) => t.id)
+}
+
+// Put an agent's stack in a layout from one of its controls (the dock strip's
+// buttons, the floating layout pill, a divider drag that folded a part). The
+// choice is remembered for this device, so the agent reopens in it. Both parts
+// are held through the change and refit once at the layout they land in.
+export function setStackLayout(sessionId: string, layout: ComputerLayout): void {
+  if (state.stackLayouts[sessionId] === layout) return
+  holdLayoutForGesture(0)
+  writeStackMemory(sessionId, { layout })
+  const stackLayouts = { ...state.stackLayouts, [sessionId]: layout }
+  // A layout the user chose that folds away the part typing goes to moves
+  // typing to the part left on screen, and the address, which names that part,
+  // follows: a press, with no dialog up. The layout itself rides no address.
+  const typing = typingAfterLayout(sessionId, stackLayouts)
+  const moved = typing === null ? null : stackPartPatch(sessionId, typing)
+  setState({ stackLayouts, ...(moved ?? {}) })
+  if (moved !== null) fallBackTo(() => syncUrl("replace"))
+}
+
+// The part typing goes to once the selected agent's stack is in `stackLayouts`,
+// read off the same model the stack draws from, or null when it is not on
+// screen here.
+function typingAfterLayout(
+  sessionId: string,
+  stackLayouts: YaranState["stackLayouts"],
+): string | null {
+  const target = state.selectedTarget
+  const session = state.spine?.sessions.find((s) => s.id === sessionId)
+  if (target === null || session === undefined || state.selectedSessionId !== sessionId) return null
+  if (isMobileViewport()) return null
+  return agentStackModel({
+    target,
+    session,
+    terminals: state.spine?.terminals ?? [],
+    stackLayouts,
+    stackTerminals: state.stackTerminals,
+    stackTabs: state.stackTabs,
+    memory: readStackMemory(sessionId),
+    startedDormantTabs: state.startedDormantTabs,
+    pendingSlotTab: state.pendingSlotTab,
+    endedInViewTab: state.endedInViewTab,
+    pendingTerminalOrder: state.pendingTerminalOrder,
+    alwaysShowTabStrip: state.bootstrap?.always_show_tab_strip ?? false,
+    theater: state.theater,
+  }).typingPtyId
+}
+
+// Record the layout an agent opened in, so it holds while the user works in
+// it: the opening rule reads the address and the agent's state, and either can
+// change under an open agent without that being a request to move anything.
+// Not remembered: memory is what the user chose, not what an opening decided.
+export function settleStackOpening(sessionId: string, layout: ComputerLayout): void {
+  if (sessionId !== state.selectedSessionId) return
+  if (state.stackLayouts[sessionId] !== undefined) return
+  setState({ stackLayouts: { ...state.stackLayouts, [sessionId]: layout } })
+}
+
+// Make one part of an agent's stack the one typing goes to: a press into its
+// terminal does it. Focus moving between the parts on screen is not a move to
+// another position, so the address, which names the part typing goes to, is
+// rewritten rather than pushed.
+export function chooseStackPart(sessionId: string, ptyId: string): void {
+  const patch = stackPartPatch(sessionId, ptyId)
+  if (patch === null) return
+  setState(patch)
+  // Through the fallback's collapse: when the entry behind already names the
+  // part pressed into, the page goes back onto it rather than writing a copy.
+  fallBackTo(() => syncUrl("replace"))
+}
+
+// The store's half of moving typing to one part of an agent's stack, or null
+// when it is already there.
+function stackPartPatch(sessionId: string, ptyId: string): Partial<YaranState> | null {
+  const cur = state.selectedTarget
+  if (cur?.kind === "terminal" && cur.terminalId === ptyId) return null
+  if (cur?.kind === "agent" && cur.tabId === ptyId) return null
+  const isDockTerminal = dockTerminalIds(sessionId).includes(ptyId)
+  if (isDockTerminal) writeStackMemory(sessionId, { terminal: ptyId })
+  return {
+    selectedTarget: isDockTerminal
+      ? { kind: "terminal", terminalId: ptyId, owner: { kind: "session", sessionId } }
+      : { kind: "agent", sessionId, tabId: ptyId },
+    ...(isDockTerminal ? { stackTerminals: { ...state.stackTerminals, [sessionId]: ptyId } } : {}),
+  }
+}
+
+// Hand the store the part typing actually goes to when the one it names is
+// folded away. The view changed, not the position, so nothing is written to the
+// address or to history: the address keeps naming what the link or Back named,
+// and an open dialog keeps its own entry.
+export function reconcileStackPart(sessionId: string, ptyId: string): void {
+  setState(stackPartPatch(sessionId, ptyId) ?? {})
+}
+
+// The Start on a stopped agent's band or its short card: start its first tab,
+// and put the stack back in the layout this device last chose for it, or the
+// split.
+export function startStoppedAgent(sessionId: string, tabId: string): void {
+  setStackLayout(sessionId, layoutOnStart(readStackMemory(sessionId).layout))
+  startDormantTab(sessionId, tabId)
+}
+
+// The terminal beside a closed one in an agent's dock, read off the dock as it
+// stood before the close: the one to its right, else the one to its left, as
+// long as it is still there.
+function dockNeighbour(
+  before: readonly TerminalView[],
+  pendingOrder: string[] | null,
+  now: readonly TerminalView[],
+  sessionId: string,
+  closedId: string,
+): string | null {
+  const own = (list: readonly TerminalView[]) =>
+    list
+      .filter((t) => t.owner.kind === "session" && t.owner.session_id === sessionId)
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order)
+  // The dock as it was drawn: a drag the server has not confirmed yet included.
+  const drawn = own(before)
+  const order = (pendingOrder ? reorderById(drawn, pendingOrder) : drawn).map((t) => t.id)
+  const alive = new Set(own(now).map((t) => t.id))
+  const at = order.indexOf(closedId)
+  if (at === -1) return null
+  for (const id of [...order.slice(at + 1), ...order.slice(0, at).reverse()]) {
+    if (alive.has(id)) return id
+  }
+  return null
+}
+
+// The agent alone once its dock has emptied under the user: the tab this page
+// last showed. A dormant first tab stays resting (`heldFirstTab`).
+function showAgentAfterDock(spine: Spine, sessionId: string): void {
+  const session = spine.sessions.find((s) => s.id === sessionId)
+  if (session === undefined) return
+  const shown = state.stackTabs[sessionId]
+  const tabId =
+    shown !== undefined && session.tabs.some((t) => t.id === shown)
+      ? shown
+      : session.slot_tab_id
+  selectTab(sessionId, tabId, { urlMode: "replace", persist: false })
 }
 
 // Spawn a new companion terminal for a session via REST. The 201 reply
@@ -3736,11 +6136,26 @@ export function selectTerminal(
 // fills in its label/status; focusing first is safe because the PTY socket only
 // needs the ids the create returned. A failure surfaces as a toast.
 export function createTerminal(sessionId: string): void {
+  const appliedAtStart = workspaceApplies
   terminalsApi
     .create(sessionId)
-    .then((created) =>
-      selectTerminal(created.terminal_id, { kind: "session", sessionId }),
-    )
+    .then(async (created) => {
+      const id = created.terminal_id
+      // A workspace that landed while the create was in flight and does not
+      // list the new terminal may already have seen it end, and nothing would
+      // clear a selection of a terminal that is gone. Ask the server again
+      // before opening it; when it cannot answer, open it as usual.
+      if (workspaceApplies !== appliedAtStart && !spineListsTerminal(state.spine?.terminals, id)) {
+        const fresh = await fetchWorkspace().catch(() => null)
+        if (fresh !== null && !spineListsTerminal(fresh.terminals, id)) {
+          notifyWarning(
+            "The new terminal ended before it opened, so you are still where you were. Its shell may have exited at once; check the agent's environment and try again.",
+          )
+          return
+        }
+      }
+      selectTerminal(id, { kind: "session", sessionId })
+    })
     .catch((e) =>
       notifyError(
         e instanceof Error ? e.message : "Could not create the terminal.",
@@ -3807,15 +6222,16 @@ export function findTerminalOwner(
 function terminalDeleteRequest(
   owner: TerminalOwnerRef,
   terminalId: string,
+  accepted: readonly string[] | null,
 ): Promise<void> {
   switch (owner.kind) {
     case "session":
-      return terminalsApi.remove(owner.sessionId, terminalId)
+      return terminalsApi.remove(owner.sessionId, terminalId, accepted)
     case "project":
-      return terminalsApi.removeForProject(owner.projectId, terminalId)
+      return terminalsApi.removeForProject(owner.projectId, terminalId, accepted)
     // Un-nested, because there is no owner to nest under.
     case "standalone":
-      return terminalsApi.removeStandalone(terminalId)
+      return terminalsApi.removeStandalone(terminalId, accepted)
     default:
       return assertNever(owner)
   }
@@ -3825,11 +6241,13 @@ function terminalDeleteRequest(
 // owner kind, since a session-only scan would make project terminals
 // undeletable, and a terminal that already vanished is a no-op. A focused
 // terminal's selection clears through the spine prune, not from here.
-export function deleteTerminal(terminalId: string): void {
+export function deleteTerminal(
+  terminalId: string,
+  accepted: readonly string[] | null = null,
+): Promise<AttachedBlocker[] | null> {
   const owner = findTerminalOwner(terminalId)
-  if (owner === undefined) return
-  const request = terminalDeleteRequest(owner, terminalId)
-  request.catch((e) =>
+  if (owner === undefined) return Promise.resolve(null)
+  return guardedChange(terminalDeleteRequest(owner, terminalId, accepted), (e) =>
     notifyError(
       e instanceof Error ? e.message : "Could not close the terminal.",
     ),
@@ -3875,6 +6293,28 @@ export function closeCloseTab(): void {
   setState({ closeTabTarget: null })
 }
 
+// Open the stop-tab confirmation, from a running tab's menu. Stopping always
+// confirms: it ends whatever the tab's session was doing.
+export function openStopTab(sessionId: string, tabId: string): void {
+  setState({ stopTabTarget: { sessionId, tabId } })
+}
+
+export function closeStopTab(): void {
+  setState({ stopTabTarget: null })
+}
+
+// The server raises a stop's outcome as a status, so only a refused request
+// toasts here; focus stays, since the pane now shows the tab's dormant card.
+export function stopTab(
+  sessionId: string,
+  tabId: string,
+  accepted: readonly string[] | null = null,
+): Promise<AttachedBlocker[] | null> {
+  return guardedChange(tabsApi.stop(sessionId, tabId, accepted), (e) =>
+    notifyError(e instanceof Error ? e.message : "Could not stop the tab."),
+  )
+}
+
 // Open the POLITE detach confirmation, from the agent's row menu.
 // `killSessionPty` behind it asks every one of the agent's provider processes to
 // shut down, waits the configured grace, then forces whatever is left; the agent
@@ -3918,10 +6358,25 @@ export function closeForceStopAgent(): void {
 // Nothing is optimistic: focus and latches move only once the DELETE resolves,
 // or a failed request would leave the UI navigated away from a live tab with no
 // rollback. Focus must leave the closed tab, since subscribing relaunches it.
-export function closeTab(sessionId: string, tabId: string): void {
-  tabsApi
-    .remove(sessionId, tabId)
-    .then((closed) => {
+export function closeTab(
+  sessionId: string,
+  tabId: string,
+  accepted: readonly string[] | null = null,
+): Promise<AttachedBlocker[] | null> {
+  // The neighbour is read from the strip the user is looking at when they ask,
+  // before the answer can change it.
+  const listed = state.spine?.sessions.find((s) => s.id === sessionId)
+  const neighbour = tabAfterClose(
+    listed
+      ? sessionAsShown(
+          listed,
+          state.pendingTabOrder[sessionId],
+          state.pendingSlotTab[sessionId],
+        ).tabs
+      : [],
+    tabId,
+  )
+  const closing = tabsApi.remove(sessionId, tabId, accepted).then((closed) => {
       dropTabStarted(tabId)
       // Record the promotion before anything reads the slot: the spine is still
       // the pre-close one here, so `slotTabIdFor` would otherwise answer with
@@ -3942,18 +6397,75 @@ export function closeTab(sessionId: string, tabId: string): void {
         target?.kind === "agent" &&
         target.sessionId === sessionId &&
         target.tabId === tabId
-      if (!focused) return
-      // Focus whichever tab holds the slot NOW (the promoted one after a slot
-      // close, the unchanged one after an extra tab's) DIRECTLY via
+      if (!focused) {
+        // Typing is in the dock, but the closed tab was the one on top of it,
+        // and the address names it: both move to the neighbour.
+        if (state.selectedSessionId === sessionId && shownStackTab(sessionId) === tabId) {
+          const onTop = neighbour ?? slotTabIdFor(sessionId)
+          writeStackMemory(sessionId, { tab: onTop })
+          setState({ stackTabs: { ...state.stackTabs, [sessionId]: onTop } })
+          fallBackTo(() => syncUrl("replace"))
+        }
+        return
+      }
+      // Land on the tab beside the closed one, like a browser tab, DIRECTLY via
       // `selectTab`, not `selectSession`: the spine may still be stale at this
       // point (no `sessions.changed` refetch has pruned it yet), and
       // `selectSession` would resolve the remembered tab against that stale
-      // spine, which can still name the tab we just deleted.
-      selectTab(sessionId, slotTabIdFor(sessionId))
+      // spine, which can still name the tab we just deleted. With no neighbour
+      // to name, whichever tab holds the slot NOW (the promoted one after a
+      // slot close) is the answer.
+      //
+      // A replace, through a fallback: the closed tab is no place to come back
+      // to, so its entry becomes the neighbour's, or the entry behind is gone
+      // back to when it already names the neighbour.
+      const landing = neighbour ?? slotTabIdFor(sessionId)
+      fallBackTo(() => selectTab(sessionId, landing, { urlMode: "replace" }))
     })
-    .catch((e) =>
-      notifyError(e instanceof Error ? e.message : "Could not close the tab."),
-    )
+  return guardedChange(closing, (e) =>
+    notifyError(e instanceof Error ? e.message : "Could not close the tab."),
+  )
+}
+
+// Reorder one agent's tab strip. `orderedIds` must be the complete set of its tab
+// ids, validated server-side as a strict permutation. The optimistic overlay
+// clears when the next spine confirms the order, or on error. Which tab holds
+// the slot does not change.
+export function reorderTabs(sessionId: string, orderedIds: string[]): void {
+  const entry: PendingTabOrder = { ids: orderedIds, answered: null }
+  setState({ pendingTabOrder: { ...state.pendingTabOrder, [sessionId]: entry } })
+  const drop = () => {
+    // Only this request's own overlay: a later reorder that replaced it is still
+    // waiting on its own answer.
+    if (state.pendingTabOrder[sessionId] !== entry) return
+    const { [sessionId]: _dropped, ...rest } = state.pendingTabOrder
+    setState({ pendingTabOrder: rest })
+  }
+  tabsApi.reorder(sessionId, orderedIds).then(
+    (reordered) => {
+      // Answered: the overlay now only bridges the wait for a document made
+      // after this answer, which retires it whatever order it shows.
+      if (state.pendingTabOrder[sessionId] !== entry) return
+      setState({
+        pendingTabOrder: {
+          ...state.pendingTabOrder,
+          [sessionId]: {
+            ids: orderedIds,
+            answered: {
+              seq: loadWorkspaceSeq,
+              minRev: reordered?.min_workspace_rev ?? null,
+            },
+          },
+        },
+      })
+    },
+    (e) => {
+      // A rejected reorder is never reconciled by a spine, so the overlay would
+      // linger forever.
+      drop()
+      notifyError(e instanceof Error ? e.message : "Could not reorder the tabs.")
+    },
+  )
 }
 
 // Retarget a tab's provider (effective on its next launch). Validated up front
@@ -4037,14 +6549,25 @@ export function closeDiscard(): void {
 // the tracked/untracked distinction from live git status and rejects the command
 // if the file is staged, so this never trusts the client about the destructive
 // outcome.
-export function discardFile(sessionId: string, path: string): void {
+//
+// A destructive act is always confirmed once it lands, in words that say what
+// went, so the caller hands over the row it discarded: a folded folder is many
+// files, and a repository of its own goes with its history.
+export function discardFile(sessionId: string, row: ChangedFileView): void {
   git
-    .discard(sessionId, path)
+    .discard(sessionId, row.path, discardConfirmation(row))
+    .then((went) =>
+      notifySuccess(discardOutcome([row], went === undefined ? {} : { [row.path]: went })),
+    )
     .catch((e) => notifyError(e instanceof Error ? e.message : "discard failed"))
 }
 
 export function openCommit(sessionId: string): void {
-  setState({ commitTarget: sessionId, commitDraft: "" })
+  setState({
+    commitTarget: sessionId,
+    commitDraft: "",
+    commitOpening: getSnapshot().commitOpening + 1,
+  })
 }
 
 export function closeCommit(): void {
@@ -4073,6 +6596,14 @@ export function openEditor(
   // is the open choke point; `editorOpenFile` coerces too, and the render
   // keeps the image arm above the diff arm as defense in depth.
   const effectiveMode: EditorViewMode = editorMode(root, mode, initialPath)
+  // The overlay does not render on a phone, so its address would be one the
+  // screen cannot show (and would outrank the changes screen in the hash).
+  // The phone's editor is the standalone surface in this same tab, the road
+  // the Changes list takes, so an opener that reaches here goes there too.
+  if (isMobileViewport()) {
+    openStandaloneEditorInThisTab(root, { mode: effectiveMode, path: initialPath })
+    return
+  }
   const editorPatch: Partial<YaranState> & { theater: boolean } = {
     editorTarget: { root, initialPath, initialMode: effectiveMode },
     editorRoute: { root, mode: effectiveMode, path: initialPath },
@@ -4145,15 +6676,62 @@ export function closeEditor(opts?: { urlMode?: "replace" }): void {
 // files inside the editor never piles up history entries. A report for a
 // session whose editor is not open is dropped: a late effect from an
 // unmounting body must not resurrect a closed editor's suffix.
+//
+// `view` is how the editor is looking at the newly active file. It is taken
+// only on a MOVE to another file or mode: a report of the file the route
+// already names keeps the route's view, which is what lets an address's view
+// survive the editor mounting with its defaults. A spot still waiting to be
+// gone to (`line`, `top`) never moves with it: it was about the other file.
 export function editorSyncActiveTab(
   root: EditorRoot,
   mode: EditorViewMode,
   path: string | null,
+  view: EditorViewState | undefined,
 ): void {
   const cur = state.editorRoute
   if (cur === null || !sameRoot(cur.root, root)) return
   if (cur.mode === mode && cur.path === path) return
-  setState({ editorRoute: { root, mode, path } })
+  const settled =
+    view === undefined ? undefined : { ...view, line: null, top: null }
+  setState({
+    editorRoute: { root, mode, path, view: canonicalEditorView(mode, path, settled) },
+  })
+  syncUrl()
+}
+
+// How the editor is looking at its active file changed by the person's hand
+// (Preview, a language picked, a reopen in another encoding): written in place,
+// a replace, since it is the same position. A report about a file the route no
+// longer names is dropped.
+export function editorSyncView(
+  root: EditorRoot,
+  path: string,
+  patch: Partial<Pick<EditorViewState, "preview" | "language" | "encoding">>,
+): void {
+  const cur = state.editorRoute
+  if (cur === null || !sameRoot(cur.root, root) || cur.path !== path) return
+  const next = canonicalEditorView(cur.mode, path, {
+    ...(cur.view ?? DEFAULT_EDITOR_VIEW),
+    ...patch,
+  })
+  if (sameEditorView(next, cur.view)) return
+  setState({ editorRoute: { ...cur, view: next } })
+  syncUrl()
+}
+
+// The arrival's cursor and scroll have been gone to, or cannot be (the file is
+// showing a preview, or is binary): they leave the route and the address, and
+// the rest of the view stays.
+export function editorConsumeArrival(root: EditorRoot, path: string): void {
+  const cur = state.editorRoute
+  if (cur === null || !sameRoot(cur.root, root) || cur.path !== path) return
+  if (cur.view === undefined || (cur.view.line === null && cur.view.top === null)) return
+  setState({
+    editorRoute: {
+      ...cur,
+      view: canonicalEditorView(cur.mode, path, { ...cur.view, line: null, top: null }),
+    },
+  })
   syncUrl()
 }
 
@@ -4262,12 +6840,35 @@ export function editorCloseTab(root: EditorRoot, tabId: string): void {
 // or folder from `from` to `to`. See `lib/editorTabs.ts` `renameTabPaths` for
 // the folder-prefix rewrite and the pre-existing-destination-tab collision
 // close.
+//
+// The route moves in the same step when it names a file under `from`, its view
+// with it: the editor's own reports would otherwise name the new path before
+// the editor's per-path state (a picked language, a chosen encoding) had
+// followed, and the view the address carried would be lost in between.
 export function editorRenameTabPaths(
   root: EditorRoot,
   from: string,
   to: string,
 ): void {
+  const cur = state.editorRoute
+  const moved =
+    cur !== null && cur.path !== null && sameRoot(cur.root, root)
+      ? renamedUnder(cur.path, from, to)
+      : null
+  if (cur !== null && moved !== null) {
+    setState({
+      editorRoute: { ...cur, path: moved, view: canonicalEditorView(cur.mode, moved, cur.view) },
+    })
+  }
   setEditorTabsFor(root, editorRenameTabPathsPure(editorTabsFor(root), from, to))
+  if (moved !== null) syncUrl()
+}
+
+// Where `path` lands when `from` is renamed to `to`, a folder's contents
+// included, or null when the rename does not touch it.
+function renamedUnder(path: string, from: string, to: string): string | null {
+  if (path === from) return to
+  return path.startsWith(`${from}/`) ? to + path.slice(from.length) : null
 }
 
 // Close every tab under a deleted file or folder path. See
@@ -4313,16 +6914,16 @@ export function closeDelete(): void {
 
 // Ask the server to delete an agent session. `deleteWorktree` opts into the
 // destructive removal of the git worktree on disk (default off in the UI).
-// `deleteBranch` is the dialog's branch answer, or `null` when it had no
-// checkbox to answer with.
+// `branches` is the dialog's two branch boxes, or `null` when it showed none.
 export function deleteSession(
   sessionId: string,
   deleteWorktree: boolean,
-  deleteBranch: boolean | null = null,
-): void {
-  sessionsApi
-    .remove(sessionId, deleteWorktree, deleteBranch)
-    .catch((e) => {
+  branches: DeleteBranchAnswers | null = null,
+  accepted: readonly string[] | null = null,
+): Promise<AttachedBlocker[] | null> {
+  return guardedChange(
+    sessionsApi.remove(sessionId, deleteWorktree, branches, accepted),
+    (e) => {
       // A 409 is a refusal (a tab is still launching, or a delete is already in
       // flight). The server already surfaces that message over the `/ws/events`
       // status stream, so don't toast it a second time. Mirrors
@@ -4331,37 +6932,51 @@ export function deleteSession(
       notifyError(
         e instanceof Error ? e.message : "Could not delete the session.",
       )
-    })
+    },
+  )
 }
 
 // Open the rename dialog for a session, pre-filling the current custom title
-// (empty when none, so the placeholder shows the branch name).
+// (empty when none, so the placeholder shows the branch or folder name).
 export function openRename(sessionId: string): void {
   const session = state.spine?.sessions.find((s) => s.id === sessionId)
-  setState({ renameTarget: sessionId, renameDraft: session?.title ?? "" })
+  setState({
+    renameTarget: sessionId,
+    renameDraft: session?.title ?? "",
+    renameBranch: false,
+  })
 }
 
 export function closeRename(): void {
-  setState({ renameTarget: null, renameDraft: "" })
+  setState({ renameTarget: null, renameDraft: "", renameBranch: false })
+}
+
+// Whether the agent being renamed has a branch its name can become. An agent
+// the spine no longer has is treated as having one, the stricter reading.
+function renameTargetBranchNamed(): boolean {
+  const session = state.spine?.sessions.find((s) => s.id === state.renameTarget)
+  return session ? supportsBranchGit(session.workspace) : true
 }
 
 export function setRenameDraft(raw: string): void {
-  // Sanitize like the new-agent input: a custom title is validated as an agent
-  // name server-side, so keep the dialog from accepting characters the server
-  // would reject. Empty stays empty (clears the title back to the branch name).
   setState({ renameDraft: sanitizeAgentName(raw) })
 }
 
-// Ask the server to set a session's display title. An empty title clears it
-// back to the branch name; a non-empty title is validated server-side. Resolves
-// `true` on success, `false` (after toasting) on failure, so the rename dialog can
-// stay open and preserve the user's input when the PATCH is rejected.
+export function setRenameBranch(renameBranch: boolean): void {
+  setState({ renameBranch })
+}
+
+// Ask the server to rename an agent, and its git branch when `renameBranch`. An
+// empty title clears the custom name. Resolves `true` on success, `false` (after
+// toasting the server's refusal) on failure, so the dialog can stay open and keep
+// what the user typed. A branch rename's outcome arrives later as a status.
 export async function renameSession(
   sessionId: string,
   title: string,
+  renameBranch = false,
 ): Promise<boolean> {
   try {
-    await sessionsApi.patch(sessionId, { title })
+    await sessionsApi.patch(sessionId, { title, rename_branch: renameBranch })
     return true
   } catch (e) {
     notifyError(e instanceof Error ? e.message : "Could not rename the session.")
@@ -4374,18 +6989,35 @@ export async function renameSession(
 // they typed and can retry or cancel.
 export async function submitRename(): Promise<void> {
   const id = state.renameTarget
-  if (!id) return
-  if (await renameSession(id, state.renameDraft.trim())) closeRename()
+  if (!id || state.renamePending) return
+  const branchNamed = renameTargetBranchNamed()
+  if (renameBlockedReason(state.renameDraft, state.renameBranch, branchNamed)) return
+  const body = renamePayload(state.renameDraft, state.renameBranch, branchNamed)
+  setState({ renamePending: true })
+  try {
+    if (await renameSession(id, body.title, body.rename_branch)) closeRename()
+  } finally {
+    setState({ renamePending: false })
+  }
 }
 
-// Open the attach-pull-request dialog for a session with an empty draft. The
-// dialog body names the currently shown PR (if any) so overriding is explicit.
+// Open the attach-pull-request dialog for a session with an empty draft. It
+// takes the Pull requests dialog's place rather than stacking over it, and
+// gives it back when it closes, however it closes.
 export function openAttachPullRequest(sessionId: string): void {
-  setState({ attachPullRequestTarget: sessionId, attachPullRequestDraft: "" })
+  setState({
+    attachPullRequestTarget: sessionId,
+    attachPullRequestDraft: "",
+    pullRequestsTarget: null,
+  })
 }
 
 export function closeAttachPullRequest(): void {
-  setState({ attachPullRequestTarget: null, attachPullRequestDraft: "" })
+  setState({
+    attachPullRequestTarget: null,
+    attachPullRequestDraft: "",
+    pullRequestsTarget: state.attachPullRequestTarget,
+  })
 }
 
 export function setAttachPullRequestDraft(raw: string): void {
@@ -4410,27 +7042,73 @@ export function submitAttachPullRequest(): void {
   })
 }
 
-// Detach a session's pull request: the pin goes if there is one, the badge
-// clears, and yaran stops looking for a PR on this agent. No confirm: nothing is
-// destroyed and there are two ways back (attach one by hand, or resume
-// autodetection from the same menu), so a dialog would only be in the way. The
-// server's info status rides the toast stream.
-export function detachPullRequest(sessionId: string): void {
-  sessionsApi.detachPullRequest(sessionId).catch((e) => {
-    notifyError(
-      e instanceof Error ? e.message : "Could not detach the pull request.",
-    )
-  })
+export function openPullRequests(sessionId: string): void {
+  setState({ pullRequestsTarget: sessionId })
 }
 
-// The way back from a detach: autodetection is switched on again and one check
-// runs now. No confirm, for the same reason as the detach it undoes.
-export function resumePullRequestAutodetection(sessionId: string): void {
-  sessionsApi.resumePullRequestAutodetection(sessionId).catch((e) => {
+export function closePullRequests(): void {
+  setState({ pullRequestsTarget: null })
+}
+
+function toastPullRequestRefusal(fallback: string): (e: unknown) => void {
+  return (e) => notifyError(e instanceof Error ? e.message : fallback)
+}
+
+// Hide a pull request yaran found. Reversible from the dialog's Hidden section,
+// so no confirm; the server's info status says where it went.
+export function hidePullRequest(sessionId: string, pr: PrKeyView): void {
+  sessionsApi
+    .hidePullRequest(sessionId, pr)
+    .catch(toastPullRequestRefusal("Could not hide the pull request."))
+}
+
+export function showPullRequest(sessionId: string, pr: PrKeyView): void {
+  sessionsApi
+    .showPullRequest(sessionId, pr)
+    .catch(toastPullRequestRefusal("Could not show the pull request again."))
+}
+
+export function setPullRequestSort(
+  sessionId: string,
+  mode: "automatic" | "manual",
+): void {
+  sessionsApi
+    .setPullRequestSort(sessionId, mode)
+    .catch(toastPullRequestRefusal("Could not change how the pull requests are sorted."))
+}
+
+export function movePullRequest(
+  sessionId: string,
+  pr: PrKeyView,
+  to: "top" | "up" | "down",
+): void {
+  sessionsApi
+    .movePullRequest(sessionId, pr, to)
+    .catch(toastPullRequestRefusal("Could not move the pull request."))
+}
+
+// Resolves whether the server took the order, so a drag shown ahead of the
+// server can snap back when it did not.
+export function reorderPullRequests(
+  sessionId: string,
+  order: PrKeyView[],
+): Promise<boolean> {
+  return sessionsApi.reorderPullRequests(sessionId, order).then(
+    () => true,
+    (e: unknown) => {
+      toastPullRequestRefusal("Could not reorder the pull requests.")(e)
+      return false
+    },
+  )
+}
+
+// Detach one pull request the user attached to a session. No confirm: nothing
+// is destroyed and attaching it again is the way back, so a dialog would only
+// be in the way. The server's info status rides the toast stream.
+export function detachPullRequest(sessionId: string, pr: PrKeyView): void {
+  sessionsApi.detachPullRequest(sessionId, pr).catch((e) => {
     notifyError(
-      e instanceof Error
-        ? e.message
-        : "Could not resume pull-request autodetection.",
+      e instanceof Error ? e.message : "Could not detach the pull request.",
     )
   })
 }
@@ -4502,14 +7180,18 @@ export function toggleSessionAutoReopen(
 // the provider supports it. `terminalEpoch` is bumped so the pane remounts and
 // re-subscribes: the reconnect swaps in a new provider and the attached
 // forwarder is dead, so even an already-focused pane must re-issue `subscribe`.
-export function reconnectSession(sessionId: string, force: boolean): void {
-  sessionsApi
-    .reconnect(sessionId, force)
-    .catch((e) =>
+export function reconnectSession(
+  sessionId: string,
+  force: boolean,
+  accepted: readonly string[] | null = null,
+): Promise<AttachedBlocker[] | null> {
+  const answer = guardedChange(
+    sessionsApi.reconnect(sessionId, force, accepted),
+    (e) =>
       notifyError(
         e instanceof Error ? e.message : "Could not reconnect the session.",
       ),
-    )
+  )
   // No latch: the reconnect dispatches a launch server-side, and dispatching is
   // what clears the tab's recorded failure, so the card cannot show for the
   // reconnect's own tab.
@@ -4534,26 +7216,81 @@ export function reconnectSession(sessionId: string, force: boolean): void {
   // too: a position the address bar does not name is a position Back cannot
   // return to.
   syncUrl()
+  return answer
 }
 
 export function openGlobalEnv(): void {
-  setState({ globalEnvOpen: true })
+  setState({
+    globalEnvOpen: true,
+    globalEnvVersion: state.bootstrap?.global_env_version ?? null,
+    globalEnvDraft: null,
+    globalEnvConflict: null,
+    globalEnvRejected: null,
+    globalEnvSession: state.globalEnvSession + 1,
+  })
 }
 
 export function closeGlobalEnv(): void {
-  setState({ globalEnvOpen: false })
+  setState({ globalEnvOpen: false, globalEnvDraft: null, globalEnvConflict: null })
 }
 
+// The dialog stays open until the save settles; a save refused because the
+// table changed since the dialog read it keeps these edits with the refusal on it.
 export async function saveGlobalEnv(env: Record<string, string>): Promise<boolean> {
+  const version = state.globalEnvVersion
+  const session = state.globalEnvSession
   try {
-    await configApi.persistGlobalEnv(env)
+    await configApi.persistGlobalEnv(env, version ?? undefined)
     return true
   } catch (e) {
+    if (e instanceof SetChangedError) {
+      if (state.globalEnvOpen && state.globalEnvSession !== session) {
+        // The dialog was opened again since: leave that edit as it is.
+        setState({
+          globalEnvRejected: env,
+          globalEnvConflict: earlierSaveRefused("global environment"),
+        })
+        return false
+      }
+      setState({
+        globalEnvOpen: true,
+        globalEnvVersion: version,
+        globalEnvDraft: env,
+        globalEnvConflict: e.message,
+        globalEnvEpoch: state.globalEnvEpoch + 1,
+        globalEnvSession: state.globalEnvSession + 1,
+      })
+      return false
+    }
     notifyError(
       e instanceof Error ? e.message : "Could not save the global environment.",
     )
     return false
   }
+}
+
+/// Drop the refused edits and reseed the dialog from the server's table as
+/// it is now.
+export function reloadGlobalEnvDraft(): Promise<void> {
+  return refetchBootstrap()
+    .then((b) =>
+      setState({
+        globalEnvVersion: b.global_env_version ?? null,
+        globalEnvDraft: null,
+        globalEnvConflict: null,
+        globalEnvRejected: null,
+        globalEnvEpoch: state.globalEnvEpoch + 1,
+      }),
+    )
+    .catch(() =>
+      notifyError("Could not reload the global environment. Try again in a moment."),
+    )
+}
+
+/// Close the refusal and keep the edits; the next save still meets the
+/// changed table until the dialog reloads it.
+export function dismissGlobalEnvConflict(): void {
+  setState({ globalEnvConflict: null })
 }
 
 export function openProjectSettings(projectId: string): void {
@@ -4813,8 +7550,8 @@ export function openAddProject(): void {
   runBrowse(null)
 }
 
-// Open the same picker with the "init" intent (the launcher corner's
-// "Initialize a repository…" entry). The intent only changes a header hint;
+// Open the same picker with the "init" intent (the "Initialize a
+// repository" entry of the New dialog and the cog menu). The intent only changes a header hint;
 // the primary-action ladder decides the real action from the inspection.
 export function openAddProjectForInit(): void {
   setState({
@@ -4835,6 +7572,482 @@ export function closeAddProject(): void {
     addProjectIntent: "add",
     projectPathInspection: null,
   })
+}
+
+// The clone dialog's destination while the user has not typed one: the start
+// folder plus the folder the address would clone into, or nothing until both
+// are known. The hosts are the server's, so the folder is the one its clone
+// reads out of the address; before the bootstrap document arrives (or from a
+// server that does not send them) only github.com is GitHub's.
+function defaultCloneDestination(url: string, startFolder: string | null): string {
+  const name = cloneDirName(url, state.bootstrap?.github_hosts ?? GITHUB_COM_ONLY)
+  if (startFolder === null || name === null) return ""
+  return `${startFolder.replace(/\/+$/, "")}/${name}`
+}
+
+// Counters behind the clone dialog's replies: each opening of the dialog, each
+// pet-name request and each submit gets the next number, and a reply acts only
+// while its number is still the current one.
+let cloneOpenSeq = 0
+let cloneNameRequestSeq = 0
+let cloneSubmitSeq = 0
+// Each look at the folder in pull-request mode gets the next number, so a
+// reply about a folder the user has since changed (or about a closed dialog)
+// acts on nothing.
+let cloneCheckSeq = 0
+// The check a button press is waiting on, or null when none is: while it is
+// out, an edit cancels the press; once the request is sent, nothing does.
+let submitCheckSeq: number | null = null
+
+// What a press that did not go ahead leaves on the form: the press is over,
+// so the button is free again.
+function cancelSubmitCheck(): Partial<CloneProjectForm> {
+  if (submitCheckSeq === null) return {}
+  cloneCheckSeq++
+  submitCheckSeq = null
+  return { submitting: false }
+}
+
+// What the form held when a pull request clone was sent.
+interface PrCloneSnapshot {
+  reference: string
+  repository: string
+  incompleteSummary: string | null
+  hasProjects: boolean
+  offer: PullRequestCloneOffer
+  folder: "free" | "checkout"
+  path: string
+  name: string
+}
+
+// The pull request clones this tab started and has not yet heard the end of.
+// A question found after the clone (or before it, by the worker) arrives on a
+// status of its own, so it is matched on the pull request it names. An entry
+// is registered before the request goes out, so an answer that beats the reply
+// is not lost, and it goes when its answer arrives; the age bound is only for
+// the ones that never get one.
+const pendingPrClones = new Map<number, { snapshot: PrCloneSnapshot; opId: string | null; at: number }>()
+let pendingPrCloneSeq = 0
+const PENDING_PR_CLONE_MS = 2 * 60 * 60 * 1000
+
+// Write the form, refreshing the destination the address chooses. A change the
+// user made is the answer to a refusal, so it retires the refusal's sentence; a
+// reply landing in the background (the start folder, a pet name) is not, and
+// leaves it on screen.
+function patchCloneProject(patch: Partial<CloneProjectForm>, byUser: boolean): void {
+  const form = state.cloneProject
+  if (!form) return
+  const next = { ...form, ...patch }
+  if (byUser) next.error = null
+  if (!next.pathEdited) {
+    next.path = defaultCloneDestination(next.url, next.startFolder)
+  }
+  setState({ cloneProject: next })
+}
+
+// The dialog as opening `openId` left it, or null once it closed or reopened.
+function cloneFormFor(openId: number): CloneProjectForm | null {
+  const form = state.cloneProject
+  return form?.openId === openId ? form : null
+}
+
+/** What the reference dialog hands the clone dialog when it offers a pull
+ * request's repository. */
+export interface ClonePullRequestInit {
+  reference: string
+  repository: string
+  incompleteSummary: string | null
+  hasProjects: boolean
+  name: string
+  offer: PullRequestCloneOffer
+  /** Reopening a clone the server refused for want of an answer: the folder
+   * as it was, what it held, and the question to put. */
+  reopened?: {
+    path: string
+    folder: "free" | "checkout"
+    asked: ReviewCopyOutlook
+  }
+}
+
+export function openCloneProject(pull?: ClonePullRequestInit): void {
+  // A pull request's agent is named after its branch, never a pet name: the
+  // branch is what the pull request's head is fetched into.
+  const randomize = pull ? false : (state.bootstrap?.randomize_agent_names_by_default ?? false)
+  const openId = ++cloneOpenSeq
+  cloneCheckSeq++
+  submitCheckSeq = null
+  const reopened = pull?.reopened
+  setState({
+    cloneProject: {
+      openId,
+      url: pull?.offer.address ?? "",
+      path: reopened?.path ?? "",
+      pathEdited: reopened !== undefined,
+      startFolder: null,
+      name: pull?.name ?? "",
+      randomize,
+      generatedName: null,
+      namePending: randomize,
+      submitting: false,
+      error: null,
+      pr: pull
+        ? {
+            reference: pull.reference,
+            repository: pull.repository,
+            incompleteSummary: pull.incompleteSummary,
+            hasProjects: pull.hasProjects,
+            offer: pull.offer,
+            folder: reopened?.folder ?? "free",
+            // The question the server put, for the name it was put for.
+            reviewCopy:
+              reopened && pull.name.trim() === pull.offer.head_branch
+                ? reopened.asked
+                : pull.offer.review_copy,
+            typed:
+              reopened && pull.name.trim() !== pull.offer.head_branch
+                ? { name: pull.name.trim(), outlook: reopened.asked }
+                : null,
+            reviewCopyAgreed: false,
+          }
+        : null,
+    },
+  })
+  if (randomize) requestCloneAgentName()
+  // A reopened form has its folder already, and its question is the server's.
+  if (reopened) return
+  // The destination defaults into the server's configured start folder. A
+  // failed read leaves it unknown and the destination to be typed, which the
+  // server checks like any other, so there is nothing to toast.
+  browseApi
+    .browse(null)
+    .then((res) => {
+      if (cloneFormFor(openId)?.startFolder === null) {
+        patchCloneProject({ startFolder: res.path }, false)
+        // Late news about the default must not disturb a folder the user has
+        // chosen or a press already out.
+        const form = cloneFormFor(openId)
+        if (form && !form.pathEdited && !form.submitting) lookAtCloneFolder(openId)
+      }
+    })
+    .catch(() => {})
+}
+
+export function closeCloneProject(): void {
+  if (state.cloneProject) setState({ cloneProject: null })
+}
+
+export function setCloneProjectUrl(raw: string): void {
+  patchCloneProject({ url: raw }, true)
+}
+
+export function setCloneProjectPath(raw: string): void {
+  const pr = state.cloneProject?.pr
+  if (!pr) {
+    patchCloneProject({ path: raw, pathEdited: true }, true)
+    return
+  }
+  // A check already out was about the old folder, and so is a tick and any
+  // answer the old folder gave: the review-copy answer is the folder's, so it
+  // goes back to the offer's. The next press checks this one.
+  cloneCheckSeq++
+  patchCloneProject(
+    {
+      path: raw,
+      pathEdited: true,
+      ...cancelSubmitCheck(),
+      pr: {
+        ...pr,
+        reviewCopy: pr.offer.review_copy,
+        typed: null,
+        reviewCopyAgreed: false,
+      },
+    },
+    true,
+  )
+}
+
+export function setCloneProjectReviewCopyAgreed(agreed: boolean): void {
+  const pr = state.cloneProject?.pr
+  if (pr) {
+    patchCloneProject({ pr: { ...pr, reviewCopyAgreed: agreed }, ...cancelSubmitCheck() }, true)
+  }
+}
+
+// Keep the dialog's reference and open the picker over every project, the way
+// the reference dialog's own link does.
+export function chooseExistingProjectForClone(): void {
+  const pr = state.cloneProject?.pr
+  if (!pr) return
+  setState({ pendingPrReference: pr.reference })
+  closeCloneProject()
+  openNewAgentPicker("from_pr")
+}
+
+export function setCloneProjectName(raw: string): void {
+  const form = state.cloneProject
+  if (!form) return
+  const name = sanitizeAgentName(raw)
+  // The tick answers the question for the name it was given beside; another
+  // name asks again.
+  const pr =
+    form.pr && name.trim() !== form.name.trim()
+      ? { ...form.pr, reviewCopyAgreed: false }
+      : form.pr
+  patchCloneProject(
+    {
+      name,
+      generatedName: generatedNameAfterEdit(name, form.generatedName),
+      pr,
+      ...cancelSubmitCheck(),
+    },
+    true,
+  )
+  // Whether such a name needs a review copy is the server's to say.
+  if (pr && looksLikeReviewCopy(pr, name) && !form.submitting) lookAtCloneFolder(form.openId)
+}
+
+// The pet-name preview for the clone dialog. Only the latest request's reply
+// is shown, and only in the opening that asked while the box is still checked;
+// a failure stops the spinner so a name can be typed by hand.
+function requestCloneAgentName(): void {
+  const form = state.cloneProject
+  if (!form) return
+  const openId = form.openId
+  const request = ++cloneNameRequestSeq
+  const current = () =>
+    request === cloneNameRequestSeq && cloneFormFor(openId) !== null
+  browseApi
+    .agentName()
+    .then((res) => {
+      if (current() && state.cloneProject?.randomize) {
+        patchCloneProject(
+          {
+            name: res.name,
+            generatedName: res.name,
+            namePending: false,
+          },
+          false,
+        )
+      }
+    })
+    .catch(() => {
+      if (current()) patchCloneProject({ namePending: false }, false)
+    })
+}
+
+export function toggleCloneProjectRandomize(): void {
+  const form = state.cloneProject
+  if (!form) return
+  if (!form.randomize) {
+    patchCloneProject({ randomize: true, namePending: true }, true)
+    requestCloneAgentName()
+    return
+  }
+  patchCloneProject(
+    {
+      randomize: false,
+      name: draftAfterRandomizeOff(form.name, form.generatedName),
+      generatedName: null,
+      namePending: false,
+    },
+    true,
+  )
+}
+
+// Ask the server to clone the address into the destination and start the agent.
+// The token is armed before the request; a refusal disarms it and keeps the
+// dialog open with the sentence, and the 202 closes the dialog and hands the
+// token the operation whose record names the agent. Each reply acts only on
+// the dialog opening and the token this submit made: the dialog may have been
+// closed, reopened and submitted again while it was on the way.
+export function submitCloneProject(): void {
+  const form = state.cloneProject
+  if (!form || form.submitting) return
+  if (form.pr) {
+    submitCloneProjectForPullRequest(form, form.pr)
+    return
+  }
+  const url = form.url.trim()
+  const path = form.path.trim()
+  const name = form.name.trim()
+  if (url === "" || path === "") return
+  patchCloneProject({ submitting: true }, true)
+  postCloneProject(form.openId, {
+    path,
+    clone_url: url,
+    agent_name: name,
+    random_name: form.randomize,
+  })
+}
+
+// Look at the folder for the name as it stands, without a press behind it: when
+// the dialog opens, and when the name becomes one that may need a review copy.
+// A refusal shows as the dialog's own error.
+function lookAtCloneFolder(openId: number): void {
+  const form = cloneFormFor(openId)
+  if (!form?.pr || form.path.trim() === "") return
+  const seq = ++cloneCheckSeq
+  checkCloneFolder(form, form.pr)
+    .then((answer) => {
+      const current = cloneFormFor(openId)
+      if (seq !== cloneCheckSeq || !current?.pr) return
+      const next = foldFolderAnswer(current.pr, answer, current.name)
+      if (next) patchCloneProject({ pr: next }, false)
+    })
+    .catch((e) => {
+      if (seq !== cloneCheckSeq || !cloneFormFor(openId)) return
+      patchCloneProject({ error: errorText(e, "Could not check the folder.") }, false)
+    })
+}
+
+function checkCloneFolder(form: CloneProjectForm, pr: CloneProjectPr) {
+  const name = form.name.trim()
+  return sessionsApi.checkCloneDestination({
+    path: form.path.trim(),
+    host: pr.offer.host,
+    owner_repo: pr.offer.owner_repo,
+    number: pr.offer.number,
+    head_branch: pr.offer.head_branch,
+    ...(pr.offer.head_oid ? { head_oid: pr.offer.head_oid } : {}),
+    ...(name !== "" && name !== pr.offer.head_branch ? { agent_name: name } : {}),
+  })
+}
+
+function errorText(e: unknown, fallback: string): string {
+  return e instanceof Error ? e.message : fallback
+}
+
+// The button press in pull-request mode: look at the folder again, and send
+// only when it holds what the dialog said it did. A different answer (a folder
+// that became a checkout, a review-copy question that changed) is shown and
+// waits for another press, so the user agrees to what will actually happen.
+function submitCloneProjectForPullRequest(form: CloneProjectForm, pr: CloneProjectPr): void {
+  if (!pressCanGoAhead(form, pr)) return
+  const openId = form.openId
+  const seq = ++cloneCheckSeq
+  submitCheckSeq = seq
+  patchCloneProject({ submitting: true }, true)
+  checkCloneFolder(form, pr)
+    .then((answer) => {
+      const current = cloneFormFor(openId)
+      if (seq !== cloneCheckSeq || !current?.pr) return
+      submitCheckSeq = null
+      const next = foldFolderAnswer(current.pr, answer, current.name)
+      if (next) {
+        patchCloneProject({ pr: next, submitting: false }, false)
+        return
+      }
+      // Whatever the form says now is what goes, under the same rules the
+      // press was held to.
+      if (!pressCanGoAhead(current, current.pr)) {
+        patchCloneProject({ submitting: false }, false)
+        return
+      }
+      const name = current.name.trim()
+      const agreement = reviewCopyAgreement(current.pr, name)
+      const snapshot: PrCloneSnapshot = {
+        reference: current.pr.reference,
+        repository: current.pr.repository,
+        incompleteSummary: current.pr.incompleteSummary,
+        hasProjects: current.pr.hasProjects,
+        offer: current.pr.offer,
+        folder: current.pr.folder,
+        path: current.path.trim(),
+        name,
+      }
+      postCloneProject(
+        openId,
+        {
+          path: snapshot.path,
+          agent_name: name,
+          pull_request: {
+            host: current.pr.offer.host,
+            owner_repo: current.pr.offer.owner_repo,
+            number: current.pr.offer.number,
+          },
+          add_existing: current.pr.folder === "checkout",
+          ...(agreement ?? {}),
+        },
+        snapshot,
+      )
+    })
+    .catch((e) => {
+      const current = cloneFormFor(openId)
+      if (seq !== cloneCheckSeq || !current) return
+      submitCheckSeq = null
+      patchCloneProject(
+        { submitting: false, error: errorText(e, "Could not check the folder.") },
+        false,
+      )
+    })
+}
+
+// A press may go ahead only with a usable name, a folder, and no review-copy
+// question still unanswered.
+function pressCanGoAhead(form: CloneProjectForm, pr: CloneProjectPr): boolean {
+  const name = form.name.trim()
+  return (
+    name !== "" &&
+    isValidAgentName(name) &&
+    form.path.trim() !== "" &&
+    !reviewCopyBlocksSubmit(pr, name)
+  )
+}
+
+// Send the clone. The token is armed before the request; a refusal disarms it
+// and keeps the dialog open with the sentence, and the 202 closes the dialog
+// and hands the token the operation whose record names the agent. Each reply
+// acts only on the dialog opening and the token this submit made: the dialog
+// may have been closed, reopened and submitted again while it was on the way.
+function postCloneProject(
+  openId: number,
+  body: Parameters<typeof projectsApi.create>[0],
+  pull?: PrCloneSnapshot,
+): void {
+  const request = ++cloneSubmitSeq
+  armCreateFocus({ kind: "clone", request, opId: null, created: [], finished: false })
+  const registered = pull ? rememberPrClone(pull) : null
+  projectsApi
+    .create(body)
+    .then((accepted) => {
+      const opId = (accepted as AcceptedOperation | undefined)?.op_id ?? null
+      const pending = state.pendingCreateFocus
+      const scope = cloneFocusFor(request)
+      if (pending && scope) {
+        if (opId) {
+          setState({ pendingCreateFocus: { ...pending, scope: { ...scope, opId } } })
+          void followCloneRecord(request, opId)
+        } else {
+          setState({ pendingCreateFocus: null })
+        }
+      }
+      const entry = registered === null ? undefined : pendingPrClones.get(registered)
+      if (entry) entry.opId = opId
+      if (cloneFormFor(openId)) closeCloneProject()
+    })
+    .catch((e) => {
+      if (registered !== null) pendingPrClones.delete(registered)
+      if (cloneFocusFor(request)) setState({ pendingCreateFocus: null })
+      const current = cloneFormFor(openId)
+      if (!current) return
+      setState({
+        cloneProject: {
+          ...current,
+          submitting: false,
+          error: e instanceof Error ? e.message : "Could not start the clone.",
+        },
+      })
+    })
+}
+
+function rememberPrClone(snapshot: PrCloneSnapshot): number {
+  const now = Date.now()
+  for (const [id, old] of pendingPrClones) {
+    if (now - old.at > PENDING_PR_CLONE_MS) pendingPrClones.delete(id)
+  }
+  const id = ++pendingPrCloneSeq
+  pendingPrClones.set(id, { snapshot, opId: null, at: now })
+  return id
 }
 
 export function browseDir(path: string | null): void {
@@ -4951,12 +8164,13 @@ export function closeRemoveProject(): void {
   setState({ removeProjectTarget: null })
 }
 
-export function removeProject(projectId: string): void {
-  projectsApi
-    .remove(projectId)
-    .catch((e) =>
-      notifyError(e instanceof Error ? e.message : "Could not remove the project."),
-    )
+export function removeProject(
+  projectId: string,
+  accepted: readonly string[] | null = null,
+): Promise<AttachedBlocker[] | null> {
+  return guardedChange(projectsApi.remove(projectId, accepted), (e) =>
+    notifyError(e instanceof Error ? e.message : "Could not remove the project."),
+  )
 }
 
 export function openDeleteProject(projectId: string): void {
@@ -4968,27 +8182,38 @@ export function closeDeleteProject(): void {
 }
 
 // The destructive cascade: removes the project, its agents, AND their worktrees
-// from disk (delete_worktrees=true → WireCommand::DeleteProject). The plain
-// keep-worktrees variant is `removeProject`. Fire-and-forget like the other
-// project mutations; the keyed status stream reports the outcome, and a refusal
-// (e.g. a tab still launching) surfaces as an error toast.
-export function deleteProject(projectId: string): void {
-  projectsApi
-    .deleteWithWorktrees(projectId)
-    .catch((e) =>
-      notifyError(e instanceof Error ? e.message : "Could not delete the project."),
-    )
+// from disk, where `removeProject` keeps the worktrees. The keyed status stream
+// reports the outcome.
+export function deleteProject(
+  projectId: string,
+  accepted: readonly string[] | null = null,
+): Promise<AttachedBlocker[] | null> {
+  return guardedChange(projectsApi.deleteWithWorktrees(projectId, accepted), (e) =>
+    notifyError(e instanceof Error ? e.message : "Could not delete the project."),
+  )
 }
 
 // Update a project's settings (provider / auto-reopen / startup-command / env)
-// in one tri-state PATCH. The caller (ProjectSettingsDialog) includes only the
-// fields that changed; an omitted field is left untouched, `null` clears it.
+// in one tri-state PATCH. The caller includes only the fields that changed; an
+// omitted field is left untouched, `null` clears it. `subject` names what the
+// calling dialog edits, for the nothing-to-save sentence.
+//
+// Every outcome is said here, because the engine raises no status for a project
+// settings change and the dialog closing is not proof that anything was saved:
+// success names what was saved, an empty patch says nothing changed (the state
+// already held), and a refusal keeps its error.
 export async function updateProjectSettings(
   projectId: string,
   patch: PatchProjectBody,
+  subject: ProjectSettingsSubject = "settings",
 ): Promise<boolean> {
+  const projectName =
+    state.spine?.projects.find((p) => p.id === projectId)?.name ?? projectId
   // Empty patch (nothing changed) is a successful no-op, let the dialog close.
-  if (Object.keys(patch).length === 0) return true
+  if (Object.keys(patch).length === 0) {
+    notifyInfo(projectSettingsUnchanged(projectName, subject))
+    return true
+  }
   // Validate a provider SET (a non-null provider) up front: the PATCH dispatches
   // its fields as independent wire sub-commands with no rollback, so a provider the
   // server rejects mid-sequence would leave the earlier fields already committed.
@@ -5003,10 +8228,19 @@ export async function updateProjectSettings(
   }
   try {
     await projectsApi.patch(projectId, patch)
+    notifySuccess(projectSettingsSaved(projectName, patch))
     return true
   } catch (e) {
+    // Sticky (weighed): a 500 is the one answer that means a field reached
+    // the session database but not config.toml, so it can quietly revert the
+    // next time yaran starts, and fixing that means editing config.toml, outside
+    // anything the toast can offer. Every other refusal names what it saved
+    // and what it did not, and the dialog shows the settings as they now
+    // stand, so it is not sticky.
+    const halfSaved = e instanceof ProjectsApiError && e.status === 500
     notifyError(
       e instanceof Error ? e.message : "Could not update project settings.",
+      { sticky: halfSaved },
     )
     return false
   }
@@ -5045,6 +8279,86 @@ export function checkoutDefaultBranch(projectId: string): void {
     )
 }
 
+// Open the "Change base branch" picker for a project and request its branch
+// listing at once, from the click handler that opens it (never an effect), the
+// way `openAttachWorktree` requests its listing. The server fetches origin
+// first, bounded, so the reply can take a few seconds; the dialog shows that
+// it is loading until then.
+// Bumped on every open, so a reply is kept only by the open that asked for it:
+// the target id alone cannot tell a second open of the same project from the
+// first.
+let changeBaseBranchOpenToken = 0
+
+export function openChangeBaseBranch(projectId: string): void {
+  const token = ++changeBaseBranchOpenToken
+  // Only this open's own reply, and only while it is still the open one.
+  const current = () =>
+    token === changeBaseBranchOpenToken &&
+    state.changeBaseBranchTarget === projectId
+  setState({
+    changeBaseBranchTarget: projectId,
+    changeBaseBranchListing: { kind: "loading" },
+  })
+  projectsApi
+    .branches(projectId)
+    .then((reply) => {
+      // A reply for a dialog that closed, was reopened, or moved to another
+      // project is somebody else's answer.
+      if (!current()) return
+      setState({
+        changeBaseBranchListing: {
+          kind: "loaded",
+          branches: reply.branches,
+          fetched: reply.fetched,
+          fetchError: reply.fetch_error ?? null,
+        },
+      })
+    })
+    .catch((e) => {
+      if (!current()) return
+      // Said inside the dialog, which is where the user is looking, rather
+      // than in a toast behind it.
+      setState({
+        changeBaseBranchListing: {
+          kind: "failed",
+          message:
+            e instanceof Error ? e.message : "Could not list the branches.",
+        },
+      })
+    })
+}
+
+export function closeChangeBaseBranch(): void {
+  // A reply still in flight belongs to the open that just ended.
+  changeBaseBranchOpenToken++
+  setState({
+    changeBaseBranchTarget: null,
+    changeBaseBranchListing: { kind: "loading" },
+  })
+}
+
+// Switch the project folder to `branch` and make it the base new agents start
+// from. The server answers at once and reports the outcome (busy, then the
+// checkout's success or a sticky failure) on the status stream, so only a
+// refusal needs a toast of yaran's own.
+export function changeBaseBranch(projectId: string, branch: string): void {
+  projectsApi
+    .changeBaseBranch(projectId, branch)
+    .catch((e) =>
+      notifyError(
+        e instanceof Error ? e.message : "Could not change the base branch.",
+      ),
+    )
+}
+
+export function openProjects(): void {
+  setState({ projectsDialogOpen: true })
+}
+
+export function closeProjects(): void {
+  setState({ projectsDialogOpen: false })
+}
+
 // Open the attach-worktree dialog for a project and immediately request its
 // managed-worktree listing (the server classifies in spawn_blocking). The
 // listing reply fills `attachWorktreeEntries` when it lands. Runs in
@@ -5057,6 +8371,7 @@ export function openAttachWorktree(
   setState({
     attachWorktreeTarget: projectId,
     attachWorktreeEntries: [],
+    attachWorktreeLeftovers: [],
     attachWorktreeLoading: true,
     attachWorktreeFromPicker: fromPicker,
   })
@@ -5074,12 +8389,17 @@ function loadProjectWorktrees(projectId: string): void {
       if (state.attachWorktreeTarget !== projectId) return
       setState({
         attachWorktreeEntries: res.entries,
+        attachWorktreeLeftovers: (res.leftovers ?? []).map(normalizeLeftover),
         attachWorktreeLoading: false,
       })
     })
     .catch((e) => {
       if (state.attachWorktreeTarget !== projectId) return
-      setState({ attachWorktreeEntries: [], attachWorktreeLoading: false })
+      setState({
+        attachWorktreeEntries: [],
+        attachWorktreeLeftovers: [],
+        attachWorktreeLoading: false,
+      })
       notifyError(
         e instanceof Error ? e.message : "Could not list the worktrees.",
       )
@@ -5139,13 +8459,57 @@ export function deleteProjectWorktree(
     )
 }
 
+// Arm the delete confirmation for one left-over folder. Only ever called from
+// a row with nothing using the folder; the server refuses one in use too.
+export function openDeleteLeftover(
+  projectId: string,
+  folder: LeftoverFolderView,
+): void {
+  setState({ deleteLeftoverTarget: { projectId, folder } })
+}
+
+export function closeDeleteLeftover(): void {
+  setState({ deleteLeftoverTarget: null })
+}
+
+// Delete one left-over folder, and the kept branches in `deleteBranches` with
+// it, then reload the listing so the row reflects the server's answer. A
+// refusal is a 200 like any other decided outcome, so it arrives here as a
+// warning rather than as an error. See lib/worktreeDelete.ts for the tone, and
+// for why no outcome is sticky.
+export function deleteLeftoverFolder(
+  projectId: string,
+  path: string,
+  deleteBranches: string[],
+): void {
+  projectsApi
+    .deleteLeftoverFolder(projectId, path, deleteBranches)
+    .then((reply) => {
+      const report = leftoverDeleteReport(reply)
+      notify(report.tone, report.message)
+      if (state.attachWorktreeTarget === projectId) {
+        loadProjectWorktrees(projectId)
+      }
+      loadProjectWorktreeCounts()
+    })
+    .catch((e) =>
+      notifyError(
+        e instanceof Error && e.message
+          ? e.message
+          : "Could not delete the left-over folder.",
+      ),
+    )
+}
+
 export function closeAttachWorktree(): void {
   setState({
     attachWorktreeTarget: null,
     attachWorktreeEntries: [],
+    attachWorktreeLeftovers: [],
     attachWorktreeLoading: false,
     attachWorktreeFromPicker: false,
     deleteWorktreeTarget: null,
+    deleteLeftoverTarget: null,
   })
 }
 
@@ -5259,6 +8623,7 @@ export function closeCreateAgent(): void {
     createAgentPrInput: "",
     createAgentPrResolving: false,
     createAgentPrError: null,
+    createAgentReviewCopy: null,
     // Closing retires the resolve. The reply cannot be recalled, so it has to
     // land on nothing when it arrives.
     createAgentPrRequestId: null,
@@ -5296,8 +8661,7 @@ export function setCreateAgentPrInput(raw: string): void {
 // generated name clears the remembered name so a later uncheck keeps the edits.
 export function setCreateAgentDraft(raw: string): void {
   const draft = sanitizeAgentName(raw)
-  const generated =
-    draft === state.createAgentGeneratedName ? state.createAgentGeneratedName : null
+  const generated = generatedNameAfterEdit(draft, state.createAgentGeneratedName)
   setState({
     createAgentDraft: draft,
     createAgentGeneratedName: generated,
@@ -5323,10 +8687,12 @@ export function toggleCreateAgentRandomize(): void {
     })
     requestAgentName()
   } else {
-    const keepText = state.createAgentDraft !== state.createAgentGeneratedName
     setState({
       createAgentRandomize: false,
-      createAgentDraft: keepText ? state.createAgentDraft : "",
+      createAgentDraft: draftAfterRandomizeOff(
+        state.createAgentDraft,
+        state.createAgentGeneratedName,
+      ),
       createAgentGeneratedName: null,
       // Unchecking abandons any in-flight request; its reply is dropped
       // (randomize is false by then), so stop the spinner now.
@@ -5439,6 +8805,20 @@ export function setAgentSearch(query: string): void {
   setState({ agentSearch: query })
 }
 
+export function openNewLauncher(): void {
+  setState({ newLauncherOpen: true, newLauncherStep: "list" })
+}
+
+/** Opens the New dialog's agent-picking step as a dialog of its own: which
+ *  agent's copy of the code a new terminal opens in. */
+export function openAgentTerminalPicker(): void {
+  setState({ newLauncherOpen: true, newLauncherStep: "pick-agent" })
+}
+
+export function closeNewLauncher(): void {
+  setState({ newLauncherOpen: false })
+}
+
 export function openNewAgentPicker(
   intent: YaranState["newAgentPickerIntent"] = "new",
   onlyIds: string[] | null = null,
@@ -5488,10 +8868,215 @@ export function forkAgent(sessionId: string, name: string): void {
 // `gh pr view`. An empty `name` falls back to the PR head branch, matching the
 // TUI prompt default. The lookup+create runs asynchronously: the command returns
 // a busy status synchronously and the outcome arrives on the status stream.
-export function createAgentFromPr(projectId: string, pr: string, name: string): void {
+export function createAgentFromPr(
+  projectId: string,
+  pr: string,
+  name: string,
+  reviewCopyWarned: string | null = null,
+): void {
+  // Remembered so a refusal that asks about a review copy can reopen the
+  // dialog on what was typed. Without this tab having asked for a create, the
+  // same refusal is an ordinary error toast.
+  //
+  // Each submission has an id of its own, which the server echoes on the
+  // question it asks, so a question is put back to the submission it answers
+  // even when a later one has been sent since.
+  const now = Date.now()
+  for (const [id, old] of pendingPrSubmissions) {
+    if (now - old.at > PENDING_PR_SUBMISSION_MS) pendingPrSubmissions.delete(id)
+  }
+  const askId = randomAskId()
+  pendingPrSubmissions.set(askId, { projectId, pr, name, at: now })
+  // The request ends the wait when it fails or the agent exists. A reply of
+  // "under way" does not: the answer comes later on the events socket.
+  const settle = () => {
+    pendingPrSubmissions.delete(askId)
+  }
   sessionsApi
-    .create({ kind: "from_pr", project_id: projectId, pr, name })
-    .catch((e) => toastCreateError(e, "Could not create the agent from the PR."))
+    .create({
+      kind: "from_pr",
+      project_id: projectId,
+      pr,
+      name,
+      ask_id: askId,
+      ...(reviewCopyWarned === null
+        ? {}
+        : { review_copy: true, review_copy_warned: reviewCopyWarned }),
+    })
+    .then((created) => {
+      if (!("op_id" in created)) settle()
+    })
+    .catch((e) => {
+      settle()
+      toastCreateError(e, "Could not create the agent from the PR.")
+    })
+}
+
+// The from-PR create this tab last sent, kept for as long as an answer to it
+// can still arrive. The refusal comes later over the events socket, not in the
+// reply to the request, which only says the create is under way.
+const pendingPrSubmissions = new Map<
+  string,
+  { projectId: string; pr: string; name: string; at: number }
+>()
+
+// 128 random bits as hex, from `getRandomValues`: `randomUUID` does not exist
+// on the plain-HTTP origins yaran is served from, and two tabs must not collide.
+function randomAskId(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return `pr-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`
+}
+const PENDING_PR_SUBMISSION_MS = 120_000
+// Keys of the refusals already put to the user as a question.
+const askedKeys = new Set<string>()
+
+function readReviewCopyAsk(
+  ask: unknown,
+): (Omit<ReviewCopyAsk, "agreed"> & { request: string }) | null {
+  const parts = readReviewCopyParts(ask)
+  const request = (ask as Record<string, unknown> | null)?.request
+  if (!parts || typeof request !== "string") return null
+  return { ...parts, request }
+}
+
+// The warned word and the warning, checked for shape alone: a malformed one is
+// no question.
+function readReviewCopyParts(
+  ask: unknown,
+): Omit<ReviewCopyAsk, "agreed"> | null {
+  if (typeof ask !== "object" || ask === null) return null
+  const { kind, warned, warning } = ask as Record<string, unknown>
+  if (kind !== "review_copy" || typeof warned !== "string") return null
+  // The warning has no plain spelling beside it to check the parts against,
+  // so they are checked for shape alone and a malformed one is no question.
+  const wellFormed =
+    Array.isArray(warning) &&
+    warning.length > 0 &&
+    warning.every(
+      (part) =>
+        typeof part === "string" ||
+        (typeof part === "object" &&
+          part !== null &&
+          typeof (part as ProseName).name === "string" &&
+          typeof (part as ProseName).quoted === "boolean"),
+    )
+  if (!wellFormed) return null
+  return { warned, warning: warning as Prose }
+}
+
+// A pull request clone this tab started ended short of an agent for want of an
+// answer on a review copy. Either the worker refused it before cloning or
+// adding (the question names the pull request and no project), or the project
+// was made and the create refused (it names the project too). The status is the
+// create's own, so it is matched on the pull request, not on the operation. A
+// dialog the user has open is never overwritten: the toast alone says it.
+function askReviewCopyForPrClone(event: EventsServerMessage): void {
+  const parts = readReviewCopyParts(event.ask)
+  const ask = event.ask as Record<string, unknown> | undefined
+  const target = ask?.pull_request as
+    | { host?: unknown; owner_repo?: unknown; number?: unknown }
+    | undefined
+  if (!parts || !target) return
+  const found = [...pendingPrClones].find(
+    ([, entry]) =>
+      entry.snapshot.offer.host.toLowerCase() === String(target.host).toLowerCase() &&
+      entry.snapshot.offer.owner_repo.toLowerCase() === String(target.owner_repo).toLowerCase() &&
+      entry.snapshot.offer.number === target.number,
+  )
+  if (!found) return
+  const [id, { snapshot }] = found
+  pendingPrClones.delete(id)
+  if (state.createAgentTarget !== null || state.cloneProject !== null) return
+  if (typeof ask?.project_id === "string") {
+    setState({
+      createAgentTarget: { kind: "pr", projectId: ask.project_id },
+      createAgentDraft: snapshot.name,
+      createAgentRandomize: false,
+      createAgentGeneratedName: null,
+      createAgentNamePending: false,
+      createAgentPrInput: snapshot.reference,
+      createAgentPrResolving: false,
+      createAgentPrError: null,
+      createAgentPrRequestId: null,
+      createAgentReviewCopy: { ...parts, agreed: false },
+    })
+    return
+  }
+  // Nothing exists yet: the question is `reason:copy branch`, and the form
+  // comes back as it was, to be answered and pressed again.
+  const split = parts.warned.indexOf(":")
+  if (split < 0) return
+  openCloneProject({
+    reference: snapshot.reference,
+    repository: snapshot.repository,
+    incompleteSummary: snapshot.incompleteSummary,
+    hasProjects: snapshot.hasProjects,
+    name: snapshot.name,
+    offer: snapshot.offer,
+    reopened: {
+      path: snapshot.path,
+      folder: snapshot.folder,
+      asked: {
+        state: "needed",
+        reason: parts.warned.slice(0, split),
+        branch: snapshot.offer.head_branch,
+        copy_branch: parts.warned.slice(split + 1),
+        warning: parts.warning,
+      },
+    },
+  })
+}
+
+// A final for a clone that asked nothing ends its wait; one that asked has
+// already been taken above.
+function forgetFinishedPrClone(event: EventsServerMessage): void {
+  if (!event.key || event.tone === "busy") return
+  for (const [id, entry] of pendingPrClones) {
+    if (entry.opId === event.key && event.tone === "error") pendingPrClones.delete(id)
+  }
+}
+
+// Reopen the dialog on the refused create, showing why. Returns whether this
+// tab took the question: only the tab that sent the create has the typed
+// values to put back.
+function askReviewCopy(event: EventsServerMessage): boolean {
+  const asked = readReviewCopyAsk(event.ask)
+  if (!asked) return false
+  // Only the create this tab sent under that id: another surface's question,
+  // or one for a create this tab no longer waits for, is an ordinary refusal.
+  const pending = pendingPrSubmissions.get(asked.request)
+  if (!pending) return false
+  pendingPrSubmissions.delete(asked.request)
+  if (Date.now() - pending.at > PENDING_PR_SUBMISSION_MS) return false
+  if (event.key) {
+    if (askedKeys.size >= 20) askedKeys.clear()
+    askedKeys.add(event.key)
+  }
+  // The create's spinner would otherwise outlive the answer that replaces it.
+  dismissNotification(event.key ?? ANON_TOAST_ID)
+  setState({
+    createAgentTarget: { kind: "pr", projectId: pending.projectId },
+    createAgentDraft: pending.name,
+    createAgentRandomize: false,
+    createAgentGeneratedName: null,
+    createAgentNamePending: false,
+    createAgentPrInput: pending.pr,
+    createAgentPrResolving: false,
+    createAgentPrError: null,
+    createAgentPrRequestId: null,
+    createAgentReviewCopy: {
+      warned: asked.warned,
+      warning: asked.warning,
+      agreed: false,
+    },
+  })
+  return true
+}
+
+export function setCreateAgentReviewCopyAgreed(agreed: boolean): void {
+  const ask = state.createAgentReviewCopy
+  if (ask) setState({ createAgentReviewCopy: { ...ask, agreed } })
 }
 
 // Text that names a pull request number and nothing else, with or without the
@@ -5552,15 +9137,34 @@ function submitPrReferenceFirst(reference: string, name: string): void {
         return
       }
       if (resolved.projects.length === 0) {
+        if (resolved.clone) {
+          // The repository can be fetched: offer that, and keep the picker one
+          // click away. Nothing here is a failure, so there is no toast.
+          const typed = name.trim()
+          const branch = resolved.clone.head_branch
+          closeCreateAgent()
+          openCloneProject({
+            reference,
+            repository,
+            incompleteSummary: resolved.uninspected_summary,
+            hasProjects: (state.spine?.projects.length ?? 0) > 0,
+            name: typed !== "" ? typed : isValidAgentName(branch) ? branch : "",
+            offer: resolved.clone,
+          })
+          return
+        }
         // What yaran may claim depends on whether the server managed to look at
         // everything. With a project it could not inspect, "no project is a
         // checkout of this" is a certainty yaran does not have, and the one
-        // project that mattered may be exactly the unreadable one. yaran does not
-        // clone, and neither wording may imply it might.
+        // project that mattered may be exactly the unreadable one. A lookup
+        // that failed is why there is no offer, and is said beside it.
+        const why = resolved.clone_unavailable
+          ? prose` yaran could not look the pull request up to offer a clone: ${resolved.clone_unavailable}`
+          : []
         notifyError(
           resolved.uninspected_summary
-            ? prose`No project yaran could check is a checkout of ${chip(repository)}, and yaran could not check every project (${resolved.uninspected_summary}). Choose a project that already has it, or add one from a directory on disk.`
-            : prose`No project in yaran is a checkout of ${chip(repository)}. Choose a project that already has it, or add one from a directory on disk.`,
+            ? prose`No project yaran could check is a checkout of ${chip(repository)}, and yaran could not check every project (${resolved.uninspected_summary}). Choose a project that already has it, or add one from a directory on disk.${why}`
+            : prose`No project in yaran is a checkout of ${chip(repository)}. Choose a project that already has it, or add one from a directory on disk.${why}`,
         )
       } else {
         notifyInfo(
@@ -5620,8 +9224,17 @@ export function submitNameDialog(name: string): void {
     submitPrReferenceFirst(state.createAgentPrInput.trim(), name)
     return
   } else {
+    // A refusal asked about a review copy: nothing goes out until the box is
+    // ticked, and what goes out names the warning it answers.
+    const ask = state.createAgentReviewCopy
+    if (ask && !ask.agreed) return
     armCreateFocus({ kind: "project", projectId: target.projectId })
-    createAgentFromPr(target.projectId, state.createAgentPrInput.trim(), name)
+    createAgentFromPr(
+      target.projectId,
+      state.createAgentPrInput.trim(),
+      name,
+      ask ? ask.warned : null,
+    )
   }
   closeCreateAgent()
 }
@@ -5635,8 +9248,9 @@ export function reorderAgents(orderedIds: string[]): void {
   sessionsApi.reorderGlobal(orderedIds).catch((e) => {
     // A rejected reorder is never reconciled by a spine, so the overlay would
     // linger forever. Clear it so the UI snaps back to the authoritative order,
-    // then surface the failure.
-    setState({ pendingAgentOrder: null })
+    // then surface the failure. Only this request's own overlay: a later
+    // reorder or sort that replaced it is still waiting on its own answer.
+    if (state.pendingAgentOrder === orderedIds) setState({ pendingAgentOrder: null })
     notifyError(e instanceof Error ? e.message : "Could not reorder the agents.")
   })
 }
@@ -5650,72 +9264,110 @@ export function reorderTerminals(orderedIds: string[]): void {
   terminalsApi.reorder(orderedIds).catch((e) => {
     // A rejected reorder is never reconciled by a spine, so the overlay would
     // linger forever. Clear it so the UI snaps back to the authoritative order,
-    // then surface the failure.
-    setState({ pendingTerminalOrder: null })
+    // then surface the failure. Only this request's own overlay: a later
+    // reorder that replaced it is still waiting on its own answer.
+    if (state.pendingTerminalOrder === orderedIds) setState({ pendingTerminalOrder: null })
     notifyError(e instanceof Error ? e.message : "Could not reorder the terminals.")
   })
 }
 
-// One-shot reorder of every project's sessions, distinct from `setAgentSort`,
-// which sets the shared display mode. It persists through `reorder_sessions`,
-// so the manual order the terminal UI shows stays in step by construction.
-//
-// No optimistic overlay: a sort touches every project's sessions at once, so
-// nothing local could cover them all and the rows snap on the next spine.
-export function sortAgents(by: SortKey): void {
-  const sessions = state.spine?.sessions ?? []
-  const projects = state.spine?.projects ?? []
-  // A sort supersedes any in-flight drag: drop its overlay up front, or a
-  // superseded drag order would linger on screen until something else clears
-  // it (the overlay only retires on match/error/disconnect).
-  setState(clearPendingOrders())
-  for (const project of projects) {
-    const projectSessions = sessions.filter(
-      (s) => workspaceProjectId(s.workspace) === project.id,
-    )
-    if (projectSessions.length < 2) continue
-    const orderedIds = sortedSessionIds(projectSessions, by)
-    sessionsApi
-      .reorder(project.id, orderedIds)
-      .catch((e) =>
-        notifyError(
-          e instanceof Error ? e.message : "Could not reorder the sessions.",
-        ),
-      )
+// Place project and standalone terminals' rows in the agents list, each right
+// after the agent it names (null for the top). Silent like the other reorders:
+// the list moving is the feedback. A refusal drops that terminal's overlay so
+// the row snaps back, then says why.
+export function placeTerminalsInList(placements: Record<string, string | null>): void {
+  setState({
+    pendingTerminalPlacement: { ...state.pendingTerminalPlacement, ...placements },
+  })
+  for (const [terminalId, afterAgent] of Object.entries(placements)) {
+    terminalsApi.place(terminalId, afterAgent).catch((e) => {
+      const current = state.pendingTerminalPlacement
+      if (terminalId in current && current[terminalId] === afterAgent) {
+        const rest = { ...current }
+        delete rest[terminalId]
+        setState({ pendingTerminalPlacement: rest })
+      }
+      notifyError(e instanceof Error ? e.message : "Could not move the terminal in the list.")
+    })
   }
 }
 
+// Reorder one agent's terminal dock, a drag along its strip. The dock's order
+// is each terminal's place in the one runtime terminal order, so the agent's
+// terminals trade the places they already hold and nothing else moves: no
+// other dock, and no row of the agents list, whose sort mode stays as it is.
+export function reorderDock(sessionId: string, dockOrder: string[]): void {
+  const all = (state.spine?.terminals ?? [])
+    .slice()
+    .sort((a, b) => a.sort_order - b.sort_order)
+  const pending = state.pendingTerminalOrder
+  const base = (pending ? reorderById(all, pending) : all).map((t) => t.id)
+  const mine = new Set(dockTerminalIds(sessionId))
+  const next = dockOrder.filter((id) => mine.has(id))
+  if (next.length !== mine.size) return
+  let i = 0
+  reorderTerminals(base.map((id) => (mine.has(id) ? next[i++] : id)))
+}
 
-// Where a picked macro landed: the compose draft, the PTY, or nowhere (unknown
-// macro, no focused target, no active socket). The macro popover reads this to
-// decide its close-focus target: a compose insert must land focus in the
-// draft, while the PTY path keeps today's focus behavior.
+// One-shot reorder of every agent, distinct from `setAgentSort`, which sets the
+// shared display mode. Agents are one global list, so the sort persists one
+// global order through `reorderAgents`, which the terminal UI's manual order
+// shows too, and the optimistic overlay covers every row at once.
+export function sortAgents(by: SortKey): void {
+  const sessions = state.spine?.sessions ?? []
+  if (sessions.length < 2) return
+  // The sort's order replaces any in-flight drag's overlay.
+  reorderAgents(sortedSessionIds(sessions, by))
+}
+
+
+// Where a picked macro landed: the compose draft, the PTY, or nowhere (an
+// unknown macro, or a refusal). The macro popover reads this to decide its
+// close-focus target: a compose insert must land focus in the draft, while the
+// PTY path keeps today's focus behavior.
 export type MacroDestination = "compose" | "pty" | "none"
 
-// Run a macro by name on the focused target, client-side: the text comes from
-// the bootstrap document and goes to one of two destinations.
+// Run a macro by name on the pane the picker belongs to, client-side: the text
+// comes from the bootstrap document and goes to that pane, resolved by its pty
+// id, never to whichever pane mounted last.
 //
-// With a compose-insert sink registered, the RAW text joins the compose draft
-// at the caret, because the Send path owns the newline to keystroke transform.
-// Otherwise `macroPayloadBytes` applies that transform and writes to the active
-// PTY socket, which the picker's own filtering guarantees is the macro's
-// target. Neither path appends a submit: the user presses Enter.
-export function runMacro(name: string): MacroDestination {
+// With the pane's compose bar up, the RAW text joins the compose draft at the
+// caret, because the Send path owns the newline to keystroke transform.
+// Otherwise `macroPayloadBytes` applies that transform and the pane writes it
+// down its own socket. Neither path appends a submit: the user presses Enter.
+//
+// A pane this tab does not drive is refused here as well as by its disabled
+// control, because a write to a pty nobody drives would claim it: a macro must
+// never be how a terminal changes hands. The refusal says so rather than doing
+// nothing.
+export function runMacro(name: string, target: SelectedTarget): MacroDestination {
   const macro = (state.bootstrap?.macros ?? []).find((m) => m.name === name)
   if (!macro) return "none"
-  // Defensive: only inject when a terminal is actually focused. During a focus
-  // switch the outgoing pane may not have cleared its registration yet; without
-  // a selected target the active socket (or compose sink) is stale, and writing
-  // to it would paste the macro into the wrong (just-detached) surface.
-  if (state.selectedTarget === null) return "none"
-  const compose = getComposeInsertSink()
-  if (compose !== null) {
-    compose.insert(macro.text)
+  const pane = paneMacroTargetFor(
+    target.kind === "agent" ? target.tabId : target.terminalId,
+  )
+  if (pane === null) {
+    notifyWarning(
+      "The macro was not sent: this terminal is not open on this page. Open it, then pick the macro again.",
+    )
+    return "none"
+  }
+  if (pane.send === null) {
+    notifyWarning(
+      "The macro was not sent: this page is not driving this terminal. Take over to send macros.",
+    )
+    return "none"
+  }
+  if (pane.compose !== null) {
+    pane.compose.insert(macro.text)
     return "compose"
   }
-  const pty = getActivePtySocket()
-  if (pty === null) return "none"
-  pty.sendInput(macroPayloadBytes(macro.text))
+  if (!pane.send(macroPayloadBytes(macro.text))) {
+    notifyWarning(
+      "The macro was not sent: this terminal is reconnecting, and nothing was sent to it. Pick the macro again once it is back.",
+    )
+    return "none"
+  }
   return "pty"
 }
 
@@ -5727,17 +9379,50 @@ export function openMacrosDialog(): void {
   setState({
     macrosDialogOpen: true,
     macrosDraft: macros.map((m) => ({ ...m })),
+    macrosDraftVersion: state.bootstrap?.macros_version ?? null,
+    macrosConflict: null,
+    macrosRejected: null,
+    macrosEditSession: state.macrosEditSession + 1,
   })
 }
 
 export function closeMacrosDialog(): void {
-  setState({ macrosDialogOpen: false, macrosDraft: [] })
+  setState({ macrosDialogOpen: false, macrosDraft: [], macrosConflict: null })
 }
 
-// Persist the draft wholesale via `update_macros`. The server validates
-// (empty/duplicate names, empty text, unknown surface) and reports the outcome
-// on the status lane; a config reload emits `config.changed`, refetching
-// `bootstrap.macros`. The editor keeps its draft until this write succeeds.
+/// The notice for a whole-set save refused after its dialog was opened again.
+function earlierSaveRefused(what: string): string {
+  return `An earlier save of the ${what} was not written: it changed after that save's dialog read it. What you are editing now is untouched. Reload to see the change.`
+}
+
+/// Drop the refused edits and reseed the editor from the server's list as it
+/// is now.
+export function reloadMacrosDraft(): Promise<void> {
+  return refetchBootstrap()
+    .then((b) =>
+      setState({
+        macrosDraft: b.macros.map((m) => ({ ...m })),
+        macrosDraftVersion: b.macros_version ?? null,
+        macrosConflict: null,
+        macrosRejected: null,
+        macrosDraftEpoch: state.macrosDraftEpoch + 1,
+      }),
+    )
+    .catch(() => notifyError("Could not reload the macros. Try again in a moment."))
+}
+
+/// Close the refusal and keep the edits; the next save still meets the
+/// changed list until the editor reloads it.
+export function dismissMacrosConflict(): void {
+  setState({ macrosConflict: null })
+}
+
+// Persist the draft wholesale via `update_macros`, with the version the editor
+// read. The server validates (empty/duplicate names, empty text, unknown
+// surface) and reports the outcome on the status lane; a config reload emits
+// `config.changed`, refetching `bootstrap.macros`. The editor keeps its draft
+// until this write succeeds, and a save refused because the list changed since
+// keeps it open with these edits and the refusal on it.
 export async function saveMacros(macros: MacroView[]): Promise<boolean> {
   // `update_macros` is a WHOLESALE replace of the entire `[macros]` map. Before
   // the bootstrap document has loaded, `openMacrosDialog` seeded an EMPTY draft,
@@ -5747,10 +9432,31 @@ export async function saveMacros(macros: MacroView[]): Promise<boolean> {
     notifyError("Macros aren't loaded yet. Try again in a moment.")
     return false
   }
+  const version = state.macrosDraftVersion
+  const session = state.macrosEditSession
   try {
-    await configApi.updateMacros(macros)
+    await configApi.updateMacros(macros, version ?? undefined)
     return true
   } catch (e) {
+    if (e instanceof SetChangedError) {
+      if (state.macrosDialogOpen && state.macrosEditSession !== session) {
+        // The editor was opened again since: leave that edit as it is.
+        setState({
+          macrosRejected: macros.map((m) => ({ ...m })),
+          macrosConflict: earlierSaveRefused("macro list"),
+        })
+        return false
+      }
+      setState({
+        macrosDialogOpen: true,
+        macrosDraft: macros.map((m) => ({ ...m })),
+        macrosDraftVersion: version,
+        macrosConflict: e.message,
+        macrosDraftEpoch: state.macrosDraftEpoch + 1,
+        macrosEditSession: state.macrosEditSession + 1,
+      })
+      return false
+    }
     notifyError(e instanceof Error ? e.message : "Could not save the macros.")
     return false
   }
@@ -5767,10 +9473,24 @@ export function persistMacroOrder(macros: MacroView[]): Promise<boolean> {
     notifyError("Macros aren't loaded yet. Try again in a moment.")
     return Promise.resolve(false)
   }
+  const session = state.macrosEditSession
   return configApi
-    .updateMacros(macros)
-    .then(() => true)
+    .updateMacros(macros, state.macrosDraftVersion ?? undefined)
+    .then((version) => {
+      // This dialog's own save moved the list on; its next save is based on
+      // it, unless the editor has been opened again since.
+      if (state.macrosEditSession === session) {
+        setState({ macrosDraftVersion: version ?? null })
+      }
+      return true
+    })
     .catch((e) => {
+      if (e instanceof SetChangedError) {
+        if (state.macrosEditSession === session) {
+          setState({ macrosConflict: e.message })
+        }
+        return false
+      }
       notifyError(
         e instanceof Error ? e.message : "Could not reorder the macros.",
       )
@@ -5883,18 +9603,40 @@ export function toggleTheater(): void {
  * deciding what to do about a take-over wants the chrome in view, and
  * re-entering is then a fresh press. Losing ownership itself stays sticky.
  *
- * Keyed on the PTY, not the selection, so an unfocused pane forgets too.
+ * Keyed on the PTY's row, not the selection, so an unfocused row forgets too.
+ * Within the row on screen only the part shown counts, as for the cover that
+ * brings the top bar back: a take-over moves the whole row, so the shown part
+ * loses too, and a part off screen losing on its own is not what anybody is
+ * looking at.
  */
 export function noteTheaterOwnershipLost(
   kind: "agent" | "terminal",
   id: string,
 ): void {
-  const key = theaterMemoryKeyForPty(kind, id)
+  const key = theaterRowKeyForPty(kind, id)
+  if (key === null) return
+  const shown = state.selectedTarget
+  const shownPty = shown === null ? null : shown.kind === "agent" ? shown.tabId : shown.terminalId
+  if (theaterMemoryKey(shown) === key && shownPty !== id) return
   clearTheaterMemory(key)
   if (!state.theater) return
   if (theaterMemoryKey(state.selectedTarget) !== key) return
   setState(withTheaterLayout({ theater: false }))
   syncUrl("replace")
+}
+
+// The theater memory of the row a pty belongs to: an agent tab's agent, a dock
+// terminal's agent, or a project or standalone terminal's own row. Null when the
+// workspace no longer carries the pty, which leaves nothing to forget.
+function theaterRowKeyForPty(kind: "agent" | "terminal", id: string): string | null {
+  const spine = state.spine
+  if (kind === "agent") {
+    const session = spine?.sessions.find((s) => s.id === id || s.tabs.some((t) => t.id === id))
+    return session ? theaterRowKey({ kind: "agent", sessionId: session.id }) : null
+  }
+  const terminal = spine?.terminals.find((t) => t.id === id)
+  if (!terminal) return null
+  return theaterMemoryKey({ kind: "terminal", terminalId: id, owner: ownerRefFromWire(terminal.owner) })
 }
 
 // Open the mobile changes screen over the focused agent. It is a position of its
@@ -5908,8 +9650,24 @@ export function openChangesScreen(): void {
   syncUrl()
 }
 
+// What the theater pill's changed-file count does. On a phone that is the
+// changes screen. On a computer there is no such screen (the address would
+// look like the plain layout and Back would seem to do nothing): the Changes
+// pane is the place the files are, and theater is what hides it, so the count
+// leaves the mode the way the toggle does and shows the pane if the user had
+// hidden it.
+export function openChangedFiles(): void {
+  if (isMobileViewport()) {
+    openChangesScreen()
+    return
+  }
+  exitTheater()
+  if (changesPaneEffectivelyHidden(state)) showChangesPane()
+}
+
 // Navigate to the parent route rather than stepping browser history. Real route
-// changes push; correcting a not-found URL replaces so Back cannot reopen it.
+// changes push; leaving a not-found URL is a fallback, which replaces so Back
+// cannot reopen it, or goes back when home is the entry right behind.
 export function navigateUp(): void {
   const urlMode = state.routeNotFound ? ("replace" as const) : undefined
   // Belt and braces for the standalone shell: with no editor state left there
@@ -5934,7 +9692,8 @@ export function navigateUp(): void {
     syncUrl(urlMode)
     return
   }
-  selectSessionRoute(null, urlMode)
+  if (urlMode === "replace") fallBackTo(() => selectSessionRoute(null, urlMode))
+  else selectSessionRoute(null)
 }
 
 /// Drop every draft whose target is no longer in the spine. Returns the SAME
@@ -6251,14 +10010,31 @@ export function noteAgentPtyOwnership(
   setState({ ptyOwnership: map })
 }
 
+// Which of this page's sockets hold each id. Every terminal this page has open
+// on one row acts as one driver and is handed the SAME id, so an id leaves the
+// set only when the last socket holding it retires it, never when a sibling
+// that is still open does.
+const ownPtyConnHolders = new Map<string, Set<unknown>>()
+
 // TerminalPane's other reporter: register (live) or retire (dead) one of this
 // client's OWN PTY-socket connection ids, from the socket's `connected` frame
-// and its reconnect/close paths. See the `ownPtyConnIds` field doc.
-export function noteOwnPtyConnection(connId: string, live: boolean): void {
-  const has = Boolean(state.ownPtyConnIds[connId])
-  if (has === live) return
+// and its reconnect/close paths. See the `ownPtyConnIds` field doc. `holder`
+// names the socket holding it, and defaults to the id itself for a caller with
+// one socket per id.
+export function noteOwnPtyConnection(
+  connId: string,
+  live: boolean,
+  holder: unknown = connId,
+): void {
+  const holders = ownPtyConnHolders.get(connId) ?? new Set<unknown>()
+  if (live) holders.add(holder)
+  else holders.delete(holder)
+  if (holders.size > 0) ownPtyConnHolders.set(connId, holders)
+  else ownPtyConnHolders.delete(connId)
+  const held = holders.size > 0
+  if (Boolean(state.ownPtyConnIds[connId]) === held) return
   const next = { ...state.ownPtyConnIds }
-  if (live) next[connId] = true
+  if (held) next[connId] = true
   else delete next[connId]
   setState({ ownPtyConnIds: next })
 }
@@ -6324,26 +10100,44 @@ export function closeStopAll(): void {
   setState({ stopAllOpen: false })
 }
 
-// Stop every running agent and companion terminal. Agents are DETACHED (the
-// worktree and session survive and can be reconnected), which is why this stops
-// each agent as a whole rather than closing its tabs one by one: closing tabs
-// would also destroy the extra tabs' pills, and the panic button should leave as
-// much recoverable as possible. Terminals have no detached state (existence ==
-// running), so they are destroyed. Gated by its own confirmation.
-//
-// FORCED, like every other stop on the Task Manager: this is the escape hatch
-// somebody reaches for when the machine is already in trouble, and waiting out a
-// shutdown grace per agent is the opposite of what they asked for. The polite
-// path is the agent row menu's Detach agent. Both dialogs say "immediately" so
-// the difference is stated, not implied.
-export function stopAllRunning(): void {
-  const sessions = state.spine?.sessions ?? []
-  for (const s of sessions) {
-    if (s.status === "active") killSessionPty(s.id, true)
-  }
+// Force-stop every running agent (detached, not closed, so its tabs survive) and every
+// terminal. Stops refused for somebody attached come back; `only` retries exactly those.
+export async function stopAllRunning(
+  only: StopAllRefusal | null = null,
+  accepted: readonly string[] | null = null,
+): Promise<StopAllRefusal | null> {
+  const agents =
+    only?.agents ??
+    (state.spine?.sessions ?? [])
+      .filter((s) => s.status === "active")
+      .map((s) => s.id)
   // One flat collection, so every terminal of every owner is reached by one
   // loop and no owner kind can be missed.
-  for (const t of state.spine?.terminals ?? []) deleteTerminal(t.id)
+  const terminals = only?.terminals ?? (state.spine?.terminals ?? []).map((t) => t.id)
+  const [agentAnswers, terminalAnswers] = await Promise.all([
+    Promise.all(agents.map((id) => killSessionPty(id, true, accepted))),
+    Promise.all(terminals.map((id) => deleteTerminal(id, accepted))),
+  ])
+  const refusedAgents = agents.filter((_, i) => agentAnswers[i] !== null)
+  const refusedTerminals = terminals.filter((_, i) => terminalAnswers[i] !== null)
+  if (refusedAgents.length === 0 && refusedTerminals.length === 0) return null
+  const blockers = new Map<string, AttachedBlocker>()
+  for (const answer of [...agentAnswers, ...terminalAnswers]) {
+    for (const blocker of answer ?? []) blockers.set(blocker.key, blocker)
+  }
+  return {
+    agents: refusedAgents,
+    terminals: refusedTerminals,
+    blockers: [...blockers.values()],
+  }
+}
+
+/** The stops "Force stop everything" could not make because somebody else is
+ * attached, and who. */
+export interface StopAllRefusal {
+  agents: string[]
+  terminals: string[]
+  blockers: AttachedBlocker[]
 }
 
 // The Preferences dialog (the app menu's "Preferences…"). Open/close just flip the
@@ -6531,29 +10325,49 @@ export function saveSettings(
 // Manager, which is the panic surface: both its per-row Force stop and its
 // "Force stop everything" pass it, and the polite detach in the agent's row
 // menu is the only caller that does not.
-// Put a managed agent's working copy back at the path it already had. The
+// Put a managed agent's working copy back at the path it already had, and with
+// `restartTabs` restart the running tabs that cannot follow the folder. The
 // outcome rides the status stream, like every other keyed operation; only a
-// synchronous refusal is reported here.
-export function recreateWorkingCopy(sessionId: string): void {
-  sessionsApi
-    .recreateWorkingCopy(sessionId)
-    .catch((e) =>
+// synchronous refusal is reported here. Resolves with who is attached when the
+// restart was refused for them, so the dialog can name them and ask again.
+export function recreateWorkingCopy(
+  sessionId: string,
+  restartTabs: boolean,
+  accepted: readonly string[] | null = null,
+): Promise<AttachedBlocker[] | null> {
+  return guardedChange(
+    sessionsApi.recreateWorkingCopy(sessionId, restartTabs, accepted),
+    (e) =>
       notifyError(
-        e instanceof Error
-          ? e.message
-          : "Could not recreate the working copy.",
+        e instanceof Error ? e.message : "Could not recreate the working copy.",
       ),
-    )
+  )
 }
 
-export function killSessionPty(sessionId: string, force = false): void {
-  sessionsApi
-    .kill(sessionId, force)
-    .catch((e) =>
-      notifyError(
-        e instanceof Error ? e.message : "Could not kill the agent.",
-      ),
-    )
+export function killSessionPty(
+  sessionId: string,
+  force = false,
+  accepted: readonly string[] | null = null,
+): Promise<AttachedBlocker[] | null> {
+  return guardedChange(sessionsApi.kill(sessionId, force, accepted), (e) =>
+    notifyError(e instanceof Error ? e.message : "Could not kill the agent."),
+  )
+}
+
+// Resolves the blockers when somebody else is attached to what the change would
+// end; `null` when it went ahead or failed some other way, which `onError` reports.
+function guardedChange(
+  request: Promise<unknown>,
+  onError: (e: unknown) => void,
+): Promise<AttachedBlocker[] | null> {
+  return request.then(
+    () => null,
+    (e) => {
+      if (e instanceof AttachedError) return e.blockers
+      onError(e)
+      return null
+    },
+  )
 }
 
 // The Monaco config.toml editor (the app menu's "Edit config file…"). Open fetches the raw
@@ -6570,12 +10384,18 @@ export function openConfigEditor(): void {
     configEditorLoading: true,
     configEditorError: null,
     configEditorContent: "",
+    configEditorToken: null,
+    configEditorConflict: null,
   })
   configApi
     .readRawConfig()
-    .then((content) => {
+    .then(({ content, token }) => {
       if (configEditorEpoch !== epoch) return
-      setState({ configEditorContent: content, configEditorLoading: false })
+      setState({
+        configEditorContent: content,
+        configEditorToken: token,
+        configEditorLoading: false,
+      })
     })
     .catch((e) => {
       if (configEditorEpoch !== epoch) return
@@ -6595,7 +10415,15 @@ export function closeConfigEditor(): void {
     configEditorContent: "",
     configEditorLoading: false,
     configEditorError: null,
+    configEditorToken: null,
+    configEditorConflict: null,
   })
+}
+
+/// Close the conflict notice and keep editing; the next save still meets the
+/// changed file until the editor reloads it.
+export function dismissConfigEditorConflict(): void {
+  setState({ configEditorConflict: null })
 }
 
 // Save the edited config.toml. The server validates the TOML before writing: a
@@ -6603,9 +10431,9 @@ export function closeConfigEditor(): void {
 // modal open so the user can fix it. On a successful write we adopt it with the
 // existing reload (best-effort: the file is already persisted), close, and toast.
 export function saveConfigEditor(content: string): void {
-  setState({ configEditorError: null })
+  setState({ configEditorError: null, configEditorConflict: null })
   configApi
-    .writeRawConfig(content)
+    .writeRawConfig(content, state.configEditorToken ?? "")
     .then(() => {
       // Save persists but does not apply: config.toml is written and the running
       // config is untouched until the user runs "Reload config", which the toast
@@ -6615,6 +10443,12 @@ export function saveConfigEditor(content: string): void {
       notifySuccess("Saved config.toml. Run “Reload config” to apply it.")
     })
     .catch((e) => {
+      if (e instanceof ConfigChangedError) {
+        // Nothing was written; the edits stay in the editor, and the dialog
+        // offers to reload the file or keep editing.
+        setState({ configEditorConflict: e.message })
+        return
+      }
       setState({
         configEditorError:
           e instanceof Error ? e.message : "Could not save config.toml.",

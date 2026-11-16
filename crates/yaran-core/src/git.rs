@@ -1,3 +1,7 @@
+//! The git commands yaran runs: worktrees, branches, status, diffs, pushes and
+//! pulls, each shelled out in a form immune to the user's own git
+//! configuration.
+
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -14,15 +18,39 @@ use crate::logger;
 use crate::model::{ChangedFile, ProjectBranchStatus};
 use crate::worker::BranchWarningKind;
 
+mod clone;
+mod folding;
+pub(crate) mod listing_child;
+pub use clone::{CloneError, CloneProcesses, clone_repository};
+pub(crate) use clone::{clone_repository_with_env, remote_default_branch_from_remote};
+pub use folding::{
+    ChangesSide, FolderAction, UntrackedDirectoryKind, changed_dir_children, nothing_in_folder,
+    rows_answering, untracked_directory_kind,
+};
+
+/// Run `read` as a folder expansion: a git child of it stopped at its deadline
+/// says only that it was stopped, because nothing lists the folder again by
+/// itself and no change was waiting on it. Every read inside it, a whole
+/// listing on a cold cache included, says the same.
+pub fn as_folder_read<T>(read: impl FnOnce() -> T) -> T {
+    listing_child::with_purpose(listing_child::Purpose::Neutral, read)
+}
+
+/// One entry of `git worktree list`: a working tree and what it has checked out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitWorktree {
+    /// The worktree's path.
     pub path: PathBuf,
+    /// The commit its HEAD points at, when git reported one.
     pub head: Option<String>,
+    /// The branch it has checked out, or `None` when HEAD is detached.
     pub branch_name: Option<String>,
+    /// Whether HEAD is detached.
     pub detached: bool,
 }
 
 impl GitWorktree {
+    /// The branch name, or `detached` and a short commit id when HEAD is detached.
     pub fn label(&self) -> String {
         if let Some(branch_name) = &self.branch_name {
             return branch_name.clone();
@@ -53,7 +81,10 @@ pub enum CreateAgentBranchPlan {
     /// No branch of that name exists (local or remote): a new branch is created.
     Fresh,
     /// A branch of that name already exists; attaching would adopt its history.
-    ExistingBranch { location: BranchLocation },
+    ExistingBranch {
+        /// Where the existing branch lives.
+        location: BranchLocation,
+    },
 }
 
 /// Inspect whether creating an agent named `name` in the repo at `repo_path`
@@ -103,13 +134,40 @@ const BINARY_SNIFF_BYTES: usize = 8000;
 /// as an empty file does, and stay out of the panel's totals.
 const UNTRACKED_STATS_MAX_FILES: usize = 2000;
 
-pub fn current_branch(repo_path: &Path) -> Result<String> {
-    let output = Command::new("git")
+/// `git symbolic-ref --quiet HEAD`, the FULL ref. Never `--short`: with a tag
+/// of the same name the short form is `heads/<branch>`, which matches no
+/// branch, so every caller derives the name with [`branch_name_from_head_ref`].
+fn symbolic_head(repo_path: &Path) -> Result<std::process::Output> {
+    Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .args(["symbolic-ref", "--quiet", "HEAD"])
+        .stdin(Stdio::null())
         .output()
-        .with_context(|| format!("failed to inspect {}", repo_path.display()))?;
+        .with_context(|| format!("failed to inspect {}", repo_path.display()))
+}
+
+/// The branch name in the full ref `symbolic-ref` printed: `refs/heads/`
+/// stripped. A HEAD pointing anywhere else is returned whole, so it can never
+/// pass for a branch. Only the newline git ends the line with comes off: a
+/// branch name may end in Unicode whitespace, and trimming it would name a
+/// different branch.
+fn branch_name_from_head_ref(stdout: &[u8]) -> String {
+    let full = stdout_without_line_ends(stdout);
+    match full.strip_prefix("refs/heads/") {
+        Some(name) => name.to_string(),
+        None => full,
+    }
+}
+
+/// The branch the checkout at `repo_path` is on; an `Err` for a detached HEAD
+/// as for any failure.
+///
+/// # Errors
+///
+/// Fails when git cannot be run, the path is not a repository, or HEAD is detached.
+pub fn current_branch(repo_path: &Path) -> Result<String> {
+    let output = symbolic_head(repo_path)?;
     if !output.status.success() {
         return Err(anyhow!(
             "git symbolic-ref failed for {}: {}",
@@ -117,24 +175,21 @@ pub fn current_branch(repo_path: &Path) -> Result<String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(branch_name_from_head_ref(&output.stdout))
 }
 
 /// Like [`current_branch`], but tolerates a detached HEAD: `Ok(None)` when HEAD
 /// is not a symbolic ref (`symbolic-ref` exit code 1, `--quiet` suppressing the
 /// message), and `Err` for any real failure (exit 128 = not a repo, git
 /// missing). For inspection sites that must not treat a detached HEAD as fatal.
+///
+/// # Errors
+///
+/// Fails when git cannot be run or the path is not a repository.
 pub fn current_branch_opt(repo_path: &Path) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .output()
-        .with_context(|| format!("failed to inspect {}", repo_path.display()))?;
+    let output = symbolic_head(repo_path)?;
     if output.status.success() {
-        return Ok(Some(
-            String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        ));
+        return Ok(Some(branch_name_from_head_ref(&output.stdout)));
     }
     // Exit code 1 = "ref is not a symbolic ref" (detached HEAD). Anything else
     // (128 = not a repo / fatal) is a real error. `--quiet` silenced stderr for
@@ -153,7 +208,7 @@ pub fn current_branch_opt(repo_path: &Path) -> Result<Option<String>> {
 /// `refs/remotes/origin/HEAD`. `git clone` sets that ref; repos created with
 /// `git init` plus a manual remote typically lack it, so `None` also means
 /// "unknown" and callers fall back to a heuristic.
-pub fn remote_default_branch(repo_path: &Path) -> Option<String> {
+pub(crate) fn remote_default_branch(repo_path: &Path) -> Option<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
@@ -163,11 +218,11 @@ pub fn remote_default_branch(repo_path: &Path) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let full_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let full_ref = stdout_without_line_ends(&output.stdout);
     // e.g. "refs/remotes/origin/main" → "main"
     full_ref
         .strip_prefix("refs/remotes/origin/")
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Classifies a checked-out branch against the repo's known default branch.
@@ -184,30 +239,32 @@ pub fn branch_warning_kind(path: &Path, branch: &str) -> Option<BranchWarningKin
         Some(default) if default != branch => Some(BranchWarningKind::Known {
             default_branch: default,
         }),
-        Some(_) => None,
         None if branch != "main" && branch != "master" => Some(BranchWarningKind::Heuristic),
-        None => None,
+        Some(_) | None => None,
     }
 }
 
 /// Translates a `BranchWarningKind` from [`branch_warning_kind`] into the
 /// corresponding `ProjectBranchStatus`. `Some(_) -> NotLeading`,
 /// `None -> Leading`.
-pub fn branch_status_from_warning(warning_kind: Option<&BranchWarningKind>) -> ProjectBranchStatus {
+pub(crate) fn branch_status_from_warning(
+    warning_kind: Option<&BranchWarningKind>,
+) -> ProjectBranchStatus {
     match warning_kind {
         Some(_) => ProjectBranchStatus::NotLeading,
         None => ProjectBranchStatus::Leading,
     }
 }
 
+/// Whether git finds a repository at or above `path` (`git rev-parse --git-dir` succeeds);
+/// deliberately loose, a bare repository or a `.git` directory included.
 pub fn is_git_repo(path: &Path) -> bool {
     Command::new("git")
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--git-dir"])
         .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|out| out.status.success())
 }
 
 /// Where a path sits relative to git repositories, for the add-project and
@@ -221,10 +278,16 @@ pub enum RepoPathKind {
     /// The root of a bare repository.
     BareRoot,
     /// A directory inside a work tree but not its root.
-    InsideWorkTree { root: PathBuf },
+    InsideWorkTree {
+        /// The work tree's root.
+        root: PathBuf,
+    },
     /// A directory inside git's internal directory (`.git/` of a normal repo,
     /// or the internals of a bare repo such as `objects/`).
-    InsideGitDir { git_dir: PathBuf },
+    InsideGitDir {
+        /// The git directory the path is inside.
+        git_dir: PathBuf,
+    },
     /// Not inside any git repository.
     NotARepo,
     /// Git could not be consulted (spawn failure, unparseable output). Gates
@@ -310,7 +373,7 @@ impl FolderRepoStatus {
     /// else's repository still gets the self-gitignoring seed, though its own
     /// panel stays quiet, or an unignored upload directory pollutes their
     /// `git status`. A plain folder and an unconsultable git get nothing.
-    pub fn git_can_see_path(self) -> bool {
+    pub(crate) fn git_can_see_path(self) -> bool {
         match self {
             Self::WorkingRepo | Self::InsideRepoRootedElsewhere => true,
             Self::NoRepo | Self::Indeterminate | Self::Unprobed | Self::Missing => false,
@@ -430,12 +493,23 @@ pub fn folder_repo_status(path: &Path) -> FolderRepoStatus {
 /// offering to recreate a working copy because its mount is unreachable would
 /// have yaran check the branch out somewhere else while the real one is still
 /// sitting there.
-pub fn managed_worktree_status(path: &Path) -> FolderRepoStatus {
+pub(crate) fn managed_worktree_status(path: &Path) -> FolderRepoStatus {
     match directory_presence(path) {
         DirectoryPresence::Present => FolderRepoStatus::WorkingRepo,
         DirectoryPresence::Missing => FolderRepoStatus::Missing,
         DirectoryPresence::Indeterminate => FolderRepoStatus::Indeterminate,
     }
+}
+
+/// A path git printed, from its raw bytes with the line ending trimmed: git
+/// prints path bytes verbatim, so a name that is not UTF-8 keeps its bytes.
+fn path_from_git_output(stdout: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    let mut bytes = stdout;
+    while let [rest @ .., b'\n' | b'\r'] = bytes {
+        bytes = rest;
+    }
+    PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
 }
 
 /// Classify `path` per [`RepoPathKind`] using plumbing only.
@@ -473,14 +547,9 @@ pub fn repo_path_kind(path: &Path) -> RepoPathKind {
     // fail canonicalization and fall to Indeterminate, which the fail-open add
     // gate accepts.
     let capture_path = |args: &[&str]| -> Option<PathBuf> {
-        use std::os::unix::ffi::OsStrExt;
-        run(args).filter(|out| out.status.success()).map(|out| {
-            let mut bytes = out.stdout.as_slice();
-            while let [rest @ .., b'\n' | b'\r'] = bytes {
-                bytes = rest;
-            }
-            PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
-        })
+        run(args)
+            .filter(|out| out.status.success())
+            .map(|out| path_from_git_output(&out.stdout))
     };
     // Rung 2: bare repositories. The bare root is addable; a folder inside a
     // bare repo (objects/, refs/, ...) is git internals and must not be.
@@ -531,6 +600,10 @@ pub fn repo_path_kind(path: &Path) -> RepoPathKind {
 /// honors the user's `init.defaultBranch` (no `-b` override). `git init` runs
 /// no hooks; the initial-commit step already pins `core.hooksPath=/dev/null`,
 /// which also neutralizes hook scripts an `init.templateDir` might copy in.
+///
+/// # Errors
+///
+/// Fails when git cannot be run or `git init` fails, with git's own reason.
 pub fn init_repo(path: &Path) -> Result<()> {
     let out = Command::new("git")
         .arg("-C")
@@ -713,6 +786,11 @@ fn commit_tree(
 /// may want in the first commit), when git's state cannot be determined, on a
 /// detached HEAD, and on a genuine git failure, surfaced verbatim. The CAS is
 /// the cross-process backstop behind the engine's own in-flight gate.
+///
+/// # Errors
+///
+/// Fails when the index holds staged changes, git's state cannot be determined, HEAD is detached,
+/// another writer created the first commit meanwhile, or a git step fails.
 pub fn create_initial_commit(path: &Path) -> Result<String> {
     let repo = path.as_os_str();
     // Fail closed on commit state: only bootstrap a confirmed-unborn repo. A
@@ -734,7 +812,13 @@ pub fn create_initial_commit(path: &Path) -> Result<String> {
     let staged = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["diff", "--cached", "--quiet"])
+        .args([
+            "diff",
+            "--cached",
+            "--quiet",
+            // A submodule `.gitmodules` or the config ignores still counts.
+            "--ignore-submodules=none",
+        ])
         .stdin(Stdio::null())
         .output()
         .with_context(|| format!("failed to inspect the index of {}", path.display()))?;
@@ -838,8 +922,18 @@ pub fn create_initial_commit(path: &Path) -> Result<String> {
     Ok(short)
 }
 
-/// Run a git command that produces a single trimmed line of stdout (a SHA, a
-/// ref, …). Returns `Err` with the stderr on non-zero exit. Stdin is detached.
+/// `stdout` with only the line ends git printed taken off. Never a whole
+/// trim: a branch name may end in Unicode whitespace, and trimming it would
+/// name a different branch.
+fn stdout_without_line_ends(stdout: &[u8]) -> String {
+    String::from_utf8_lossy(stdout)
+        .trim_end_matches(['\n', '\r'])
+        .to_string()
+}
+
+/// Run a git command that produces a single line of stdout (a SHA, a ref, …),
+/// with its line end taken off. Returns `Err` with the stderr on non-zero
+/// exit. Stdin is detached.
 fn run_git_capture(path: &Path, args: &[&str], what: &str) -> Result<String> {
     let out = Command::new("git")
         .arg("-C")
@@ -855,9 +949,14 @@ fn run_git_capture(path: &Path, args: &[&str], what: &str) -> Result<String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(stdout_without_line_ends(&out.stdout))
 }
 
+/// Every worktree of the repository at `repo_path`, the main one included.
+///
+/// # Errors
+///
+/// Fails when git cannot be run or `git worktree list` fails.
 pub fn list_worktrees(repo_path: &Path) -> Result<Vec<GitWorktree>> {
     let output = Command::new("git")
         .arg("-C")
@@ -872,10 +971,11 @@ pub fn list_worktrees(repo_path: &Path) -> Result<Vec<GitWorktree>> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    parse_worktree_list_porcelain_z(&output.stdout)
+    Ok(parse_worktree_list_porcelain_z(&output.stdout))
 }
 
-pub fn parse_worktree_list_porcelain_z(bytes: &[u8]) -> Result<Vec<GitWorktree>> {
+pub(crate) fn parse_worktree_list_porcelain_z(bytes: &[u8]) -> Vec<GitWorktree> {
+    use std::os::unix::ffi::OsStrExt;
     let mut worktrees = Vec::new();
     let mut current: Option<GitWorktree> = None;
 
@@ -886,18 +986,20 @@ pub fn parse_worktree_list_porcelain_z(bytes: &[u8]) -> Result<Vec<GitWorktree>>
             }
             continue;
         }
-        let token = String::from_utf8_lossy(raw);
-        if let Some(path) = token.strip_prefix("worktree ") {
+        if let Some(path) = raw.strip_prefix(b"worktree ") {
             if let Some(entry) = current.take() {
                 worktrees.push(entry);
             }
             current = Some(GitWorktree {
-                path: PathBuf::from(path),
+                path: PathBuf::from(std::ffi::OsStr::from_bytes(path)),
                 head: None,
                 branch_name: None,
                 detached: false,
             });
-        } else if let Some(head) = token.strip_prefix("HEAD ") {
+            continue;
+        }
+        let token = String::from_utf8_lossy(raw);
+        if let Some(head) = token.strip_prefix("HEAD ") {
             if let Some(entry) = &mut current {
                 entry.head = Some(head.to_string());
             }
@@ -921,39 +1023,54 @@ pub fn parse_worktree_list_porcelain_z(bytes: &[u8]) -> Result<Vec<GitWorktree>>
         worktrees.push(entry);
     }
 
-    Ok(worktrees)
+    worktrees
 }
 
-pub fn pull_current_branch(repo_path: &Path) -> Result<()> {
-    let branch = match current_branch_opt(repo_path)? {
-        Some(b) => b,
-        None => {
-            return Err(anyhow!(
-                "HEAD is detached; check out a branch before pulling"
-            ));
-        }
+/// Fast-forwards the checked-out branch from `origin`; see
+/// [`pull_origin_branch`]. The fetch is stopped at `timeout`, or never when it
+/// is `None` (`[git] network_timeout_seconds`).
+pub(crate) fn pull_current_branch(
+    repo_path: &Path,
+    guard: &crate::checkout_move::CheckoutMoveGuard,
+    timeout: Option<std::time::Duration>,
+) -> Result<()> {
+    let Some(branch) = current_branch_opt(repo_path)? else {
+        return Err(anyhow!(
+            "HEAD is detached; check out a branch before pulling"
+        ));
     };
-    pull_origin_branch(repo_path, &branch)
+    pull_origin_branch(repo_path, &branch, guard, timeout)
 }
 
-pub fn pull_branch(repo_path: &Path, branch: &str) -> Result<()> {
-    switch_branch_if_needed(repo_path, branch)?;
-    pull_origin_branch(repo_path, branch)
+/// Switches to `branch` and fast-forwards it from `origin`, the fetch stopped
+/// at `timeout` as [`pull_current_branch`]'s is.
+pub(crate) fn pull_branch(
+    repo_path: &Path,
+    branch: &str,
+    guard: &crate::checkout_move::CheckoutMoveGuard,
+    timeout: Option<std::time::Duration>,
+) -> Result<()> {
+    switch_branch_if_needed(repo_path, branch, guard)?;
+    pull_origin_branch(repo_path, branch, guard, timeout)
 }
 
-pub fn switch_branch_if_needed(repo_path: &Path, branch: &str) -> Result<()> {
+pub(crate) fn switch_branch_if_needed(
+    repo_path: &Path,
+    branch: &str,
+    guard: &crate::checkout_move::CheckoutMoveGuard,
+) -> Result<()> {
     // On a detached HEAD there is no current branch to compare against, so we
     // simply switch. Only skip the switch when already on the target branch.
     let current = current_branch_opt(repo_path)?;
     if current.as_deref() != Some(branch) {
-        switch_branch(repo_path, branch)?;
+        switch_branch(repo_path, branch, guard)?;
     }
     Ok(())
 }
 
 /// True when the repo has an `origin` remote. Exit-status only, per the
 /// git-safety rules for imperative commands.
-pub fn has_origin_remote(repo_path: &Path) -> Result<bool> {
+pub(crate) fn has_origin_remote(repo_path: &Path) -> Result<bool> {
     let status = Command::new("git")
         .arg("-C")
         .arg(repo_path)
@@ -970,57 +1087,315 @@ pub fn has_origin_remote(repo_path: &Path) -> Result<bool> {
     Ok(status.success())
 }
 
-/// Fast-forwards `branch` from `origin`.
+/// A git command yaran runs that moves files in a working tree, or fills a new
+/// one. THE one way to build such a command, so none can forget what follows.
+#[derive(Clone, Copy, Debug)]
+enum TreeMove {
+    Switch,
+    Merge,
+    /// Restoring a path from the index (a discard).
+    Checkout,
+    WorktreeAdd,
+}
+
+/// A `git` command with background auto-maintenance turned off for this
+/// invocation and whatever it runs, hooks included. `fetch`, `merge` and
+/// `commit` end by starting a detached `maintenance run --auto`, which since
+/// git 2.54 prunes worktrees. A `git worktree add` yaran runs next creates
+/// `.git/worktrees/<name>` and then writes its `locked` file; a prune landing
+/// between the two sees neither `locked` nor `gitdir` and deletes the folder,
+/// and it can also remove an empty `.git/worktrees` before the first add
+/// creates its folder there. Every tree-moving command goes through this for
+/// simplicity, though `switch`, `checkout` and `worktree add` start none.
+/// It narrows the race rather than closing it: an agent CLI running its own
+/// `git commit` or `fetch` in a sibling worktree can still start maintenance
+/// on the shared repository, which is why a `worktree add` that loses the
+/// race is retried once ([`add_worktree_retrying_a_pruned_admin_folder`]).
+fn git_without_auto_maintenance() -> Command {
+    let mut command = Command::new("git");
+    command.args(["-c", "maintenance.auto=false"]);
+    command
+}
+
+/// Run `git <args>` in `repo` against a remote: it has no terminal to ask on
+/// and only an askpass the user configured can answer for it
+/// ([`clone::no_prompt_git_command`]),
+/// it starts no auto-maintenance, and it is stopped, its process group with
+/// it, at `timeout` (`[git] network_timeout_seconds`), or never when that is
+/// `None`. `label` names the command in failure text.
+fn network_git(
+    repo: &Path,
+    args: &[&str],
+    label: &str,
+    timeout: Option<std::time::Duration>,
+) -> Result<std::process::Output> {
+    let mut command = clone::no_prompt_git_command(&[]);
+    command
+        .args(["-c", "maintenance.auto=false", "-C"])
+        .arg(repo)
+        .args(args);
+    let Some(timeout) = timeout else {
+        return command
+            .output()
+            .with_context(|| format!("failed to run {label} in {}", repo.display()));
+    };
+    match crate::bounded_command::run_command_with_timeout(
+        command,
+        crate::bounded_command::ChildGroup::SessionSetByCaller,
+        timeout,
+        crate::bounded_command::DEFAULT_READER_DRAIN,
+        label,
+    ) {
+        crate::bounded_command::CommandOutcome::Completed(output) => Ok(output),
+        crate::bounded_command::CommandOutcome::TimedOut => Err(anyhow!(
+            "{label} in {} timed out after {}s and was stopped",
+            repo.display(),
+            crate::duration_text::whole_seconds(timeout)
+        )),
+        crate::bounded_command::CommandOutcome::Failed(err)
+        | crate::bounded_command::CommandOutcome::NotFound(err) => Err(anyhow!(
+            "failed to run {label} in {}: {err}",
+            repo.display()
+        )),
+    }
+}
+
+/// `git <subcommand>` in `repo` for a [`TreeMove`], never recursing into
+/// submodules whatever `submodule.recurse` the user has set: the move check
+/// ([`crate::checkout_move`]) looks at this repository's own tree only, so git
+/// must change exactly that and nothing inside a submodule. The
+/// `--no-recurse-submodules` flag goes wherever the subcommand takes it
+/// (measured on git 2.53: `switch` and `checkout` take it; `merge` and
+/// `worktree add` refuse it, and the config override is what keeps them out).
+fn tree_move(repo: &Path, kind: TreeMove) -> Command {
+    let mut command = git_without_auto_maintenance();
+    command
+        .args(["-c", "submodule.recurse=false", "-C"])
+        .arg(repo);
+    match kind {
+        TreeMove::Switch => command.args(["switch", "--no-recurse-submodules"]),
+        TreeMove::Checkout => command.args(["checkout", "--no-recurse-submodules"]),
+        TreeMove::Merge => command.arg("merge"),
+        TreeMove::WorktreeAdd => command.args(["worktree", "add"]),
+    };
+    command
+}
+
+/// Fast-forwards `branch` from `origin`: a fetch, the check that the move
+/// removes no folder something lives in ([`crate::checkout_move`]), then a
+/// fast-forward merge of exactly what was fetched. A `git pull` would fetch and
+/// move the working tree in one step, with no room to ask before git deletes
+/// an ignored folder standing where the incoming commit tracks a file.
 ///
-/// The refspec is FULLY QUALIFIED (`refs/heads/<branch>`), and that, not a `--`
-/// separator, is what makes an option-looking branch name safe. MEASURED on git
-/// 2.55 with `GIT_TRACE=1`:
-///
-/// ```text
-/// $ git pull --ff-only origin -- --force
-/// trace: run_command: git fetch --update-head-ok origin --force
-/// ```
-///
-/// `pull` consumes the separator and forwards the refspec to an internal
-/// `fetch` carrying none of its own, so `--force`/`--prune`/`--all` are read as
-/// flags and the branch is silently never pulled, while `--depth=1` converts the
-/// user's source checkout to a shallow clone. A `refs/heads/` prefix cannot lead
-/// with a dash, so the internal fetch always reads it as a ref (measured:
-/// `git pull --ff-only origin -- refs/heads/--force` fast-forwards correctly).
-///
-/// Resolving the name to an object id first, the way
-/// `create_worktree_from_start_point` does, is not possible here: the refspec
-/// names a ref on the REMOTE. The `--` stays as defence in depth for the
-/// `origin` argument's sake.
-fn pull_origin_branch(repo_path: &Path, branch: &str) -> Result<()> {
+/// The refspec is FULLY QUALIFIED (`refs/heads/<branch>`), and that is what
+/// makes an option-looking branch name safe wherever it travels. MEASURED on
+/// git 2.55 with `GIT_TRACE=1`: `git pull --ff-only origin -- --force` consumes
+/// the separator and forwards the refspec to an internal `fetch` carrying none
+/// of its own, so `--force`/`--prune`/`--all` are read as flags and
+/// `--depth=1` converts the user's source checkout to a shallow clone. A
+/// `refs/heads/` prefix cannot lead with a dash, and the `--` stays as defence
+/// in depth. The merge takes the fetched commit's object id, which cannot lead
+/// with a dash either, read from this checkout's own `FETCH_HEAD` (per
+/// worktree, measured), the ref `git pull` itself merges.
+fn pull_origin_branch(
+    repo_path: &Path,
+    branch: &str,
+    guard: &crate::checkout_move::CheckoutMoveGuard,
+    timeout: Option<std::time::Duration>,
+) -> Result<()> {
     let refspec = format!("refs/heads/{branch}");
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["pull", "--ff-only", "origin", "--", &refspec])
+    let output = network_git(
+        repo_path,
+        &["fetch", "origin", "--", &refspec],
+        "git fetch",
+        timeout,
+    )?;
+    if !output.status.success() {
+        return Err(git_failure("git fetch", repo_path, &output));
+    }
+    let incoming = crate::checkout_move::commit_id(repo_path, "FETCH_HEAD")?
+        .ok_or_else(|| anyhow!("git fetch of {branch} from origin left no commit to merge"))?;
+    // Only a fast-forward moves the tree: an up-to-date or diverged checkout
+    // is left where it is (git says which below), so there is nothing to ask.
+    let head = crate::checkout_move::commit_id(repo_path, "HEAD")?;
+    let moves = match &head {
+        None => true,
+        Some(head) => head != &incoming && is_ancestor(repo_path, head, &incoming)?,
+    };
+    let _clearance = if moves {
+        Some(guard.clear(repo_path, &incoming, "pull")?)
+    } else {
+        None
+    };
+    // The merge changes the index, so it takes its turn in the checkout's lane
+    // like every other change yaran makes there; the fetch above does not, and
+    // never holds a turn across the network.
+    let _turn = crate::changes_lane::ticket(repo_path).wait();
+    let lock = IndexLockWait::before_change(repo_path);
+    let output = tree_move(repo_path, TreeMove::Merge)
+        .args(["--ff-only", "--no-edit", &incoming])
         .output()?;
     if !output.status.success() {
-        return Err(git_failure("git pull", repo_path, &output));
+        return Err(lock.explain(
+            git_failure("git merge --ff-only", repo_path, &output),
+            Some(repo_path),
+        ));
     }
     Ok(())
 }
 
-/// Switches `repo_path` to `branch_name`. `git switch` rather than `git
-/// checkout` because it is single-purpose and rejects the detached-HEAD and
-/// file-restore surprises `checkout` silently allows. Returns git's raw stderr
-/// on failure so callers can surface the concrete reason. Requires git >= 2.23.
-pub fn switch_branch(repo_path: &Path, branch_name: &str) -> Result<()> {
+/// Whether commit `ancestor` is an ancestor of commit `descendant` (both
+/// object ids). Exit status only.
+fn is_ancestor(repo_path: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("failed to run git merge-base in {}", repo_path.display()))?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(anyhow!(
+            "git merge-base could not compare the checkout with what was fetched in {}",
+            repo_path.display()
+        )),
+    }
+}
+
+/// The remote a local branch `branch` would be started from, chosen the way
+/// the base-branch change chooses: `origin` when it has the branch, else the
+/// one remote that has it. Refused with a sentence when no remote has it, or
+/// several do and none is `origin`: yaran never lets git pick unchecked.
+fn tracking_remote(repo_path: &Path, branch: &str) -> Result<String> {
+    if crate::checkout_move::commit_id(repo_path, &format!("refs/remotes/origin/{branch}"))?
+        .is_some()
+    {
+        return Ok("origin".to_string());
+    }
+    // A remote's name may hold a slash, so each remote this clone has is
+    // asked for the branch rather than a ref split at a slash.
+    let names = run_git_capture(repo_path, &["remote"], "list the remotes")?;
+    let mut remotes = Vec::new();
+    for remote in names.lines().map(str::trim).filter(|name| !name.is_empty()) {
+        if crate::checkout_move::commit_id(repo_path, &format!("refs/remotes/{remote}/{branch}"))?
+            .is_some()
+        {
+            remotes.push(remote.to_string());
+        }
+    }
+    match remotes.as_slice() {
+        [only] => Ok(only.clone()),
+        [] => Err(anyhow!(
+            "yaran did not switch to branch {branch}: there is no branch by that name in this \
+             checkout or on any of its remotes"
+        )),
+        several => Err(anyhow!(
+            "yaran did not switch to branch {branch}: it exists on several remotes ({}) and none \
+             of them is origin, so yaran cannot tell which one to start it from; create the local \
+             branch from the remote you want, then switch again",
+            several.join(", ")
+        )),
+    }
+}
+
+/// Create local branch `name` tracking `<remote>/<name>`, without switching
+/// to it. The start point is fully qualified and the name follows `--`, so a
+/// dash-leading name is refused as a branch name, never obeyed as a flag.
+fn create_tracking_branch_from(repo_path: &Path, name: &str, remote: &str) -> Result<()> {
+    let start = format!("refs/remotes/{remote}/{name}");
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args([
-            "switch",
-            // `--` so the branch is read as a REF and never as an option.
-            // Without it `git switch --detach` detaches HEAD instead of
-            // failing. Measured on git 2.55.
-            "--",
-            branch_name,
-        ])
+        .args(["branch", "--track", "--", name, &start])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("failed to run git branch in {}", repo_path.display()))?;
+    if !output.status.success() {
+        return Err(git_failure("git branch --track", repo_path, &output));
+    }
+    Ok(())
+}
+
+/// Switches `repo_path` to the local branch `branch_name`, once `guard` has
+/// cleared the move (see [`crate::checkout_move`]). With no local branch yet,
+/// yaran first creates it from the remote [`tracking_remote`] picks, so the
+/// commit checked is exactly the one `git switch` then checks out: left to
+/// itself, `git switch` would pick a remote by `checkout.defaultRemote` and
+/// `checkout.guess`, which yaran cannot see through. `git switch` rather than
+/// `git checkout` because it is single-purpose and rejects the detached-HEAD
+/// and file-restore surprises `checkout` silently allows. Returns git's raw
+/// stderr on failure so callers can surface the concrete reason. A switch
+/// that fails removes the local branch it created. Requires git >= 2.23.
+pub(crate) fn switch_branch(
+    repo_path: &Path,
+    branch_name: &str,
+    guard: &crate::checkout_move::CheckoutMoveGuard,
+) -> Result<()> {
+    let local = format!("refs/heads/{branch_name}");
+    let (target, created) = if let Some(id) = crate::checkout_move::commit_id(repo_path, &local)? {
+        (id, false)
+    } else {
+        let remote = tracking_remote(repo_path, branch_name)?;
+        create_tracking_branch_from(repo_path, branch_name, &remote)?;
+        let id = crate::checkout_move::commit_id(repo_path, &local)?.ok_or_else(|| {
+            anyhow!(
+                "yaran did not switch to branch {branch_name}: the local branch it created \
+                 from {remote} cannot be read back"
+            )
+        })?;
+        (id, true)
+    };
+    let switched = guard
+        .clear(repo_path, &target, "switch to the branch")
+        .and_then(|_clearance| run_switch(repo_path, branch_name));
+    // A switch that did not happen, refused by the move check or by git
+    // itself, leaves nothing behind: the branch yaran created for it a moment
+    // ago goes again, unless something has moved it.
+    if switched.is_err() && created {
+        remove_created_branch(repo_path, branch_name, &target);
+    }
+    switched
+}
+
+/// Delete local branch `name`, which yaran created at `created_at` a moment
+/// ago, only while it still points there. Best-effort: a branch that cannot
+/// be removed is logged and kept.
+fn remove_created_branch(repo_path: &Path, name: &str, created_at: &str) {
+    let still_there = crate::checkout_move::commit_id(repo_path, &format!("refs/heads/{name}"))
+        .ok()
+        .flatten()
+        .is_some_and(|id| id == created_at);
+    if !still_there {
+        return;
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["branch", "-D", "--", name])
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => crate::logger::warn(&format!(
+            "{:#}",
+            git_failure("git branch -D", repo_path, &output)
+        )),
+        Err(err) => crate::logger::warn(&format!(
+            "could not remove branch {name} that yaran created for a refused switch in {}: {err}",
+            repo_path.display()
+        )),
+    }
+}
+
+fn run_switch(repo_path: &Path, branch_name: &str) -> Result<()> {
+    let output = tree_move(repo_path, TreeMove::Switch)
+        // `--` so the branch is read as a REF and never as an option.
+        // Without it `git switch --detach` detaches HEAD instead of failing.
+        // Measured on git 2.55.
+        .args(["--", branch_name])
         .output()?;
     if !output.status.success() {
         return Err(anyhow!(
@@ -1047,16 +1422,114 @@ pub fn branch_exists(repo_path: &Path, name: &str) -> Option<BranchLocation> {
         .arg(repo)
         .args(["rev-parse", "--verify", "--quiet", &remote_ref])
         .output()
-        .ok()
-        .is_some_and(|o| o.status.success());
+        .is_ok_and(|o| o.status.success());
     if remote {
         return Some(BranchLocation::Remote);
     }
     None
 }
 
+/// Whether the repository has a local branch named `name`.
 pub fn local_branch_exists(repo_path: &Path, name: &str) -> bool {
     ref_exists(repo_path, &format!("refs/heads/{name}"))
+}
+
+/// How long the pushed-branch probe waits for git before giving up. It reads
+/// only local refs, so a healthy repository answers in milliseconds; the bound
+/// is for a wedged filesystem or lock, where waiting longer helps nobody.
+pub(crate) const PUSHED_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether branch `name` has been pushed anywhere this clone knows of: it
+/// tracks a remote branch, or some remote-tracking ref carries its name.
+///
+/// Answered from this clone's refs, never by asking a remote, so it is as
+/// fresh as the last fetch or push. It shells out to git, so callers run it in
+/// a background worker, and each git call is bounded by
+/// [`PUSHED_PROBE_TIMEOUT`]. `for-each-ref` is plumbing; the branch is matched
+/// by comparing whole refnames here, because its own patterns also match every
+/// ref below a slash (`feat` would match `feat/x`), and against the remotes
+/// this clone has, because a remote's name may hold a slash as well.
+///
+/// # Errors
+///
+/// Fails when git cannot be run, fails, or does not answer within [`PUSHED_PROBE_TIMEOUT`].
+pub fn branch_is_pushed(repo_path: &Path, name: &str) -> Result<bool> {
+    branch_is_pushed_within(repo_path, name, PUSHED_PROBE_TIMEOUT)
+}
+
+fn branch_is_pushed_within(
+    repo_path: &Path,
+    name: &str,
+    timeout: std::time::Duration,
+) -> Result<bool> {
+    let what = format!("look for a pushed copy of branch \"{name}\"");
+    let local = format!("refs/heads/{name}");
+    let remotes = run_git_capture_bounded(repo_path, &["remote"], timeout, &what)?;
+    let listing = run_git_capture_bounded(
+        repo_path,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(upstream)",
+            &local,
+            "refs/remotes/",
+        ],
+        timeout,
+        &what,
+    )?;
+    let tracking: Vec<String> = remotes
+        .lines()
+        .map(str::trim)
+        .filter(|remote| !remote.is_empty())
+        .map(|remote| format!("refs/remotes/{remote}/{name}"))
+        .collect();
+    Ok(listing.lines().any(|line| {
+        let (refname, upstream) = line.split_once(' ').unwrap_or((line, ""));
+        if refname == local {
+            return upstream.starts_with("refs/remotes/");
+        }
+        // A remote's own `HEAD` is a pointer, not a branch anybody pushed.
+        name != "HEAD" && tracking.iter().any(|tracked| tracked == refname)
+    }))
+}
+
+/// [`run_git_capture`] bounded by `timeout`: past it the git process is killed
+/// and the call fails, so a wedged repository cannot hold the thread asking.
+fn run_git_capture_bounded(
+    path: &Path,
+    args: &[&str],
+    timeout: std::time::Duration,
+    what: &str,
+) -> Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(path).args(args);
+    let output = match crate::bounded_command::run_command_with_timeout(
+        cmd,
+        crate::bounded_command::ChildGroup::New,
+        timeout,
+        crate::bounded_command::DEFAULT_READER_DRAIN,
+        "git",
+    ) {
+        crate::bounded_command::CommandOutcome::Completed(output) => output,
+        crate::bounded_command::CommandOutcome::TimedOut => {
+            return Err(anyhow!(
+                "failed to {what} for {}: git did not answer within {}s",
+                path.display(),
+                crate::duration_text::whole_seconds(timeout)
+            ));
+        }
+        crate::bounded_command::CommandOutcome::Failed(err)
+        | crate::bounded_command::CommandOutcome::NotFound(err) => {
+            return Err(anyhow!("failed to {what} for {}: {err}", path.display()));
+        }
+    };
+    if !output.status.success() {
+        return Err(anyhow!(
+            "failed to {what} for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(stdout_without_line_ends(&output.stdout))
 }
 
 /// Whether origin has branch `name` right now, asked of origin itself with
@@ -1066,24 +1539,21 @@ pub fn local_branch_exists(repo_path: &Path, name: &str) -> bool {
 ///
 /// `ls-remote` patterns match a ref's tail, so the answer is the exact ref in
 /// its output, not the exit status alone. The refspec is fully qualified, so
-/// a dash-leading branch name cannot be read as an option.
-pub fn origin_has_branch(repo_path: &Path, name: &str) -> Result<bool> {
+/// a dash-leading branch name cannot be read as an option. Stopped at
+/// `timeout`, or never when it is `None` (`[git] network_timeout_seconds`).
+pub(crate) fn origin_has_branch(
+    repo_path: &Path,
+    name: &str,
+    timeout: Option<std::time::Duration>,
+) -> Result<bool> {
     let full_ref = format!("refs/heads/{name}");
-    let output = Command::new("git")
-        .args([
-            "-C",
-            repo_path.to_string_lossy().as_ref(),
-            "ls-remote",
-            "--exit-code",
-            "origin",
-            "--",
-            &full_ref,
-        ])
-        // Never stop to ask for credentials: this is a question, not a login.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("failed to run git ls-remote in {}", repo_path.display()))?;
+    // Never stop to ask for credentials: this is a question, not a login.
+    let output = network_git(
+        repo_path,
+        &["ls-remote", "--exit-code", "origin", "--", &full_ref],
+        "git ls-remote",
+        timeout,
+    )?;
     match output.status.code() {
         Some(0) => Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -1097,6 +1567,216 @@ pub fn origin_has_branch(repo_path: &Path, name: &str) -> Result<bool> {
     }
 }
 
+/// One branch a project's base could move to, as [`list_branches`] reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchChoice {
+    /// The short branch name (`develop`, `feature/x`), the same for a local
+    /// branch and for one that exists only on origin.
+    pub name: String,
+    /// `Local` when `refs/heads/<name>` exists; `Remote` when only
+    /// `refs/remotes/origin/<name>` does, so switching to it first creates
+    /// the local branch ([`switch_branch`]).
+    pub location: BranchLocation,
+    /// The folder of ANOTHER worktree that has this branch checked out, which
+    /// makes git refuse to check it out in the project folder too. `None` for a
+    /// free branch and for the branch the project folder itself is on.
+    pub held_by: Option<PathBuf>,
+}
+
+/// Every branch the folder at `repo_path` could be switched to: each local
+/// branch, then each branch that exists only on `origin`, in refname order. A
+/// branch present on both sides is listed once, as its local entry.
+/// `origin/HEAD` (a pointer, not a branch) and any name
+/// `git check-ref-format --branch` refuses are left out.
+///
+/// Reads `for-each-ref` (plumbing) with NUL-separated fields, so a worktree
+/// path with any byte in it cannot break the parse. It shells out, so callers
+/// run it in a background worker.
+///
+/// # Errors
+///
+/// Fails when git cannot be run or `for-each-ref` fails.
+pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchChoice>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args([
+            "for-each-ref",
+            "--format=%(refname)%00%(worktreepath)%00",
+            "--",
+            "refs/heads",
+            "refs/remotes/origin",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("failed to list branches for {}", repo_path.display()))?;
+    if !output.status.success() {
+        return Err(git_failure("git for-each-ref", repo_path, &output));
+    }
+    let mut locals: Vec<BranchChoice> = Vec::new();
+    let mut remotes: Vec<BranchChoice> = Vec::new();
+    for (refname, worktree) in parse_ref_worktree_records(&output.stdout) {
+        if let Some(name) = refname.strip_prefix("refs/heads/") {
+            let held_by = (!worktree.is_empty())
+                .then(|| PathBuf::from(&worktree))
+                .filter(|holder| !same_folder(holder, repo_path));
+            locals.push(BranchChoice {
+                name: name.to_string(),
+                location: BranchLocation::Local,
+                held_by,
+            });
+        } else if let Some(name) = refname.strip_prefix("refs/remotes/origin/")
+            && name != "HEAD"
+        {
+            remotes.push(BranchChoice {
+                name: name.to_string(),
+                location: BranchLocation::Remote,
+                held_by: None,
+            });
+        }
+    }
+    let local_names: HashSet<String> = locals.iter().map(|c| c.name.clone()).collect();
+    remotes.retain(|remote| !local_names.contains(&remote.name));
+    let mut choices = locals;
+    choices.extend(remotes);
+    choices.retain(|choice| is_valid_branch_name(repo_path, &choice.name));
+    Ok(choices)
+}
+
+/// Split `for-each-ref --format=%(refname)%00%(worktreepath)%00` output into
+/// `(refname, worktreepath)` pairs. Each record ends in `NUL` plus the newline
+/// `for-each-ref` appends, so the newline leads the NEXT refname and is
+/// stripped there (a refname cannot begin with one).
+fn parse_ref_worktree_records(bytes: &[u8]) -> Vec<(String, String)> {
+    let mut fields = bytes.split(|byte| *byte == 0);
+    let mut records = Vec::new();
+    while let (Some(refname), Some(worktree)) = (fields.next(), fields.next()) {
+        let refname = String::from_utf8_lossy(refname);
+        let refname = refname.trim_start_matches('\n');
+        if refname.is_empty() {
+            continue;
+        }
+        records.push((
+            refname.to_string(),
+            String::from_utf8_lossy(worktree).into_owned(),
+        ));
+    }
+    records
+}
+
+/// Whether git accepts `name` as a branch name (`check-ref-format --branch`).
+///
+/// Every name [`list_branches`] reads already passed git's refname rules
+/// (`for-each-ref` skips a ref with a broken name), so the only names the
+/// branch form can still refuse are the ones its extra rules are about: a
+/// leading dash, the name `HEAD`, and the `@` shorthands. Only those are put
+/// to git, which keeps a repository with thousands of branches from paying one
+/// process per branch; git stays the one that decides. `check-ref-format`
+/// takes no `--`, but a dash-leading argument after `--branch` is read as the
+/// name and refused (measured on git 2.53 with `--normalize`).
+pub(crate) fn is_valid_branch_name(repo_path: &Path, name: &str) -> bool {
+    if !(name.starts_with('-') || name == "HEAD" || name.contains('@')) {
+        return true;
+    }
+    Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["check-ref-format", "--branch", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// The error [`fetch_origin_bounded`] answers when the fetch ran into its
+/// bound and was stopped, typed so a caller can tell "out of time" apart from
+/// a reason git gave (`anyhow::Error::downcast_ref`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FetchTimedOut {
+    pub timeout: std::time::Duration,
+}
+
+impl std::fmt::Display for FetchTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "git fetch origin timed out after {}s and was stopped",
+            crate::duration_text::whole_seconds(self.timeout)
+        )
+    }
+}
+
+impl std::error::Error for FetchTimedOut {}
+
+/// Run one `git fetch origin` in `repo_path`, stopped at `timeout`.
+///
+/// The fetch runs in a session (and so a process group) of its own and the
+/// whole group is killed at the bound, so a transport helper (`ssh`, a
+/// credential helper, a stand-in `upload-pack`) cannot outlive it. It never
+/// prompts on yaran's terminal ([`clone::no_prompt_git_command`]). A
+/// failure or a timeout is an `Err` naming what happened; callers report it
+/// and carry on from the refs they already have.
+pub(crate) fn fetch_origin_bounded(repo_path: &Path, timeout: std::time::Duration) -> Result<()> {
+    use std::io::Read as _;
+
+    let mut child = clone::no_prompt_git_command(&[])
+        .arg("-c")
+        .arg("maintenance.auto=false")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["fetch", "--quiet", "origin"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to run git fetch in {}", repo_path.display()))?;
+    // Drained on its own thread so a chatty stderr cannot fill the pipe and
+    // stall the fetch into a false timeout, and handed back over a channel that
+    // is waited on with a bound: a helper that escaped the group (an ssh
+    // ControlPersist master inherits stderr) must not hold the caller.
+    let mut stderr_pipe = child.stderr.take();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        let _ = stderr_tx.send(text);
+    });
+    let drain = || {
+        stderr_rx
+            .recv_timeout(crate::bounded_command::DEFAULT_READER_DRAIN)
+            .unwrap_or_default()
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            // The group, not just git: `bounded_command` stops only its child,
+            // and a fetch's transport helper is exactly what hangs.
+            if let Some(group) = rustix::process::Pid::from_raw(child.id().cast_signed()) {
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = drain();
+            return Err(FetchTimedOut { timeout }.into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let stderr = drain();
+    if !status.success() {
+        return Err(anyhow!(
+            "git fetch origin failed in {}: {}",
+            repo_path.display(),
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
 /// How much of a branch exists only on this machine, and whether there was
 /// anywhere for it to have been pushed to in the first place.
 ///
@@ -1104,8 +1784,9 @@ pub fn origin_has_branch(repo_path: &Path, name: &str) -> Result<bool> {
 /// flag: with no remote-tracking refs at all, `--not --remotes` excludes nothing
 /// and the count is the branch's whole history, which reads as an accusation
 /// about work that was never going anywhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct UnpushedCommits {
+    /// How many commits on the branch no remote-tracking ref holds.
     pub count: u32,
     /// Whether `refs/remotes/` holds anything. It is about remote-tracking
     /// refs rather than configured remotes on purpose: a remote that has never
@@ -1117,7 +1798,7 @@ pub struct UnpushedCommits {
 ///
 /// `for-each-ref` is plumbing and prints nothing at all for an empty namespace,
 /// so "no output" is the whole answer and no parsing is involved.
-fn has_remote_tracking_refs(repo_path: &Path) -> bool {
+pub(crate) fn has_remote_tracking_refs(repo_path: &Path) -> bool {
     let repo = repo_path.as_os_str();
     Command::new("git")
         .arg("-C")
@@ -1150,18 +1831,52 @@ fn has_remote_tracking_refs(repo_path: &Path) -> bool {
 /// one integer, each branch is passed fully qualified as `refs/heads/<name>`,
 /// which cannot begin with a dash, and the trailing `--` pins the pathspec
 /// boundary so nothing after the revision list is read as a path.
+///
+/// # Errors
+///
+/// Fails when git cannot be run, `rev-list` fails, or it prints something other than a count.
 pub fn unpushed_commit_count(repo_path: &Path, branches: &[&str]) -> Result<UnpushedCommits> {
+    let revisions: Vec<String> = branches
+        .iter()
+        .map(|branch| format!("refs/heads/{branch}"))
+        .collect();
+    count_unpushed(repo_path, &revisions)
+}
+
+/// How many commits reachable from `oids` are reachable from no
+/// remote-tracking ref and from none of the `keep` branches: what deleting
+/// the branches the delete dialog pinned loses, counted from the very commits
+/// a delete would remove rather than from wherever the names point by now. An
+/// object id is hex, and each kept branch is a fully qualified `^refs/heads/`
+/// exclusion, so neither can be read as an option.
+///
+/// # Errors
+///
+/// Fails when git cannot be run, `rev-list` fails, or it prints something other than a count.
+pub fn unpushed_commits_at(
+    repo_path: &Path,
+    oids: &[&str],
+    keep: &[&str],
+) -> Result<UnpushedCommits> {
+    let mut revisions: Vec<String> = oids.iter().map(|oid| (*oid).to_string()).collect();
+    if !revisions.is_empty() {
+        revisions.extend(keep.iter().map(|branch| format!("^refs/heads/{branch}")));
+    }
+    count_unpushed(repo_path, &revisions)
+}
+
+fn count_unpushed(repo_path: &Path, revisions: &[String]) -> Result<UnpushedCommits> {
     // No branches means nothing would be deleted, so nothing is at risk. Git
     // would refuse an empty revision list, and an error here would read to the
     // caller as "git could not answer" about a question nobody asked.
-    if branches.is_empty() {
+    if revisions.is_empty() {
         return Ok(UnpushedCommits {
             count: 0,
             has_remote_refs: has_remote_tracking_refs(repo_path),
         });
     }
     let mut args: Vec<String> = vec!["rev-list".to_string(), "--count".to_string()];
-    args.extend(branches.iter().map(|branch| format!("refs/heads/{branch}")));
+    args.extend(revisions.iter().cloned());
     args.push("--not".to_string());
     args.push("--remotes".to_string());
     args.push("--".to_string());
@@ -1169,17 +1884,15 @@ pub fn unpushed_commit_count(repo_path: &Path, branches: &[&str]) -> Result<Unpu
         .arg("-C")
         .arg(repo_path)
         .args(&args)
-        .output()?;
+        .output()
+        .map_err(|err| anyhow!("git could not be run: {err}"))?;
+    // The caller names the branches; the error says only what git said.
     if !output.status.success() {
-        let named = branches
-            .iter()
-            .map(|branch| format!("\"{branch}\""))
-            .collect::<Vec<_>>()
-            .join(" and ");
-        return Err(anyhow!(
-            "git rev-list failed for branch {named}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        let said = String::from_utf8_lossy(&output.stderr);
+        return Err(match said.trim() {
+            "" => anyhow!("git rev-list failed ({})", output.status),
+            said => anyhow!("git rev-list failed: {said}"),
+        });
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let count = text
@@ -1192,6 +1905,565 @@ pub fn unpushed_commit_count(repo_path: &Path, branches: &[&str]) -> Result<Unpu
     })
 }
 
+/// Why [`unpushed_commit_count`] could not answer, short enough to sit inside
+/// a sentence: git's own `fatal:` or `error:` line when it printed one (a
+/// hint or warning can come first), else the error's first line, without its
+/// closing full stop.
+pub fn unpushed_count_failure_reason(err: &anyhow::Error) -> String {
+    let full = format!("{err:#}");
+    let said = full
+        .lines()
+        .find_map(|line| {
+            ["fatal:", "error:"]
+                .iter()
+                .filter_map(|marker| line.find(marker))
+                .min()
+                .map(|at| &line[at..])
+        })
+        .or_else(|| full.lines().next())
+        .unwrap_or_default();
+    said.trim().trim_end_matches('.').to_string()
+}
+
+/// How many commits branch `have` has that branch `want` lacks.
+///
+/// It compares the two local branches directly, never either one against a
+/// remote, so the answer does not depend on what this clone last fetched.
+///
+/// It shells out to git, so callers run it in a background worker. Git-config
+/// immune by construction: `rev-list --count` is plumbing and prints one
+/// integer, both branches are passed fully qualified as `refs/heads/<name>`,
+/// which cannot begin with a dash, and the trailing `--` pins the pathspec
+/// boundary.
+pub(crate) fn commits_missing_from(repo_path: &Path, have: &str, want: &str) -> Result<u32> {
+    let have_ref = format!("refs/heads/{have}");
+    let want_ref = format!("refs/heads/{want}");
+    let text = run_git_capture(
+        repo_path,
+        &["rev-list", "--count", &have_ref, "--not", &want_ref, "--"],
+        &format!("count the commits \"{have}\" has and \"{want}\" lacks"),
+    )?;
+    text.parse::<u32>()
+        .map_err(|_| anyhow!("git rev-list printed an unexpected count: {text}"))
+}
+
+/// Whether branch `ancestor` is an ancestor of branch `descendant` (a branch
+/// counts as its own ancestor).
+///
+/// It shells out to git, so callers run it in a background worker. Both
+/// branches are passed fully qualified as `refs/heads/<name>`, which cannot
+/// begin with a dash, and the trailing `--` pins the pathspec boundary.
+/// `merge-base --is-ancestor` answers through its exit status alone: 0 is yes,
+/// 1 is no, and anything else (a branch that does not exist) is an error.
+pub(crate) fn branch_is_ancestor(
+    repo_path: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool> {
+    let ancestor_ref = format!("refs/heads/{ancestor}");
+    let descendant_ref = format!("refs/heads/{descendant}");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            &ancestor_ref,
+            &descendant_ref,
+            "--",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to ask whether \"{ancestor}\" is an ancestor of \"{descendant}\" for {}",
+                repo_path.display()
+            )
+        })?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(anyhow!(
+            "failed to ask whether \"{ancestor}\" is an ancestor of \"{descendant}\" for {}: {}",
+            repo_path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
+}
+
+/// Whether the commit named by the object id `commit` is in the history of
+/// the local branch `branch` (the tip itself counts).
+///
+/// Answers only yes or no, and every doubt is a no: see
+/// [`branch_contains_commit`] for the cases. The caller adopts something on a
+/// yes. It shells out to git, so callers run it in a background worker.
+pub(crate) fn commit_is_in_branch_history(repo_path: &Path, commit: &str, branch: &str) -> bool {
+    branch_contains_commit(repo_path, commit, branch).unwrap_or(false)
+}
+
+/// Whether the local branch `branch` contains the commit named by the object
+/// id `commit`: the commit is the branch's tip or behind it.
+///
+/// Yes and no are answers; anything else is an error, so a caller that must
+/// tell "does not contain it" from "could not check" can: a `commit` that is
+/// not a full hexadecimal object id, a commit this clone does not have, a
+/// branch that does not exist, and git failing to run. It shells out to git, so
+/// callers run it in a background worker. The branch is passed fully qualified
+/// as `refs/heads/<name>`, which cannot begin with a dash, the object id is hex
+/// and cannot either, and the trailing `--` pins the pathspec boundary.
+pub(crate) fn branch_contains_commit(repo_path: &Path, commit: &str, branch: &str) -> Result<bool> {
+    let is_object_id =
+        matches!(commit.len(), 40 | 64) && commit.bytes().all(|b| b.is_ascii_hexdigit());
+    if !is_object_id {
+        return Err(anyhow!("\"{commit}\" is not a full commit id"));
+    }
+    let branch_ref = format!("refs/heads/{branch}");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["merge-base", "--is-ancestor", commit, &branch_ref, "--"])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to ask whether \"{branch}\" contains {commit} for {}",
+                repo_path.display()
+            )
+        })?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(anyhow!(
+            "git could not tell whether \"{branch}\" contains {commit}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
+}
+
+/// Whether the commit `ancestor` is in the history of the commit
+/// `descendant` (a commit counts as its own ancestor). Both must be full
+/// object ids, and a commit this clone does not have is a no: the question is
+/// asked to prove a pull request is a branch's, and an unanswerable one proves
+/// nothing. It shells out to git, so callers run it in a background worker.
+pub(crate) fn commit_is_ancestor_of(repo_path: &Path, ancestor: &str, descendant: &str) -> bool {
+    if !is_object_id(ancestor) || !is_object_id(descendant) {
+        return false;
+    }
+    Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant, "--"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.code() == Some(0))
+}
+
+fn is_object_id(text: &str) -> bool {
+    matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The commit local branch `branch` points at now. The branch is passed fully
+/// qualified, so a dash-leading name is a ref and not an option.
+pub(crate) fn branch_tip(repo_path: &Path, branch: &str) -> Result<String> {
+    let branch_ref = format!("refs/heads/{branch}");
+    run_git_capture(
+        repo_path,
+        &["rev-parse", "--verify", "--end-of-options", &branch_ref],
+        &format!("read the tip of branch \"{branch}\""),
+    )
+}
+
+/// Whether `commit`, a full object id, is a commit this repository has. Reads
+/// only; nothing is fetched.
+pub(crate) fn commit_is_present(repo_path: &Path, commit: &str) -> bool {
+    is_object_id(commit)
+        && Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
+            .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
+            .stdin(Stdio::null())
+            .output()
+            .is_ok_and(|out| out.status.success())
+}
+
+/// The tip of local branch `branch` when it is strictly BEHIND `commit`: the
+/// tip is an ancestor of the commit and not the commit itself, so the branch
+/// holds nothing of its own and moving it to `commit` loses no work. `None`
+/// for a branch at the commit, one ahead of it, and one that has diverged.
+///
+/// Errors when git cannot answer (`commit` not a full object id, a commit this
+/// clone lacks, a branch that does not exist), so a caller can tell "not
+/// behind" from "could not check". It shells out to git, so callers run it in
+/// a background worker. The branch is passed fully qualified as
+/// `refs/heads/<name>`, which cannot begin with a dash.
+pub(crate) fn branch_behind_commit(
+    repo_path: &Path,
+    branch: &str,
+    commit: &str,
+) -> Result<Option<String>> {
+    if !is_object_id(commit) {
+        return Err(anyhow!("\"{commit}\" is not a full commit id"));
+    }
+    let tip = branch_tip(repo_path, branch)?;
+    if tip == commit {
+        return Ok(None);
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["merge-base", "--is-ancestor", &tip, commit, "--"])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to ask whether \"{branch}\" is behind {commit} for {}",
+                repo_path.display()
+            )
+        })?;
+    match out.status.code() {
+        Some(0) => Ok(Some(tip)),
+        Some(1) => Ok(None),
+        _ => Err(anyhow!(
+            "git could not tell whether \"{branch}\" is behind {commit}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
+}
+
+/// `git <args>` inside the worktree `worktree`, with nothing from the user's
+/// configuration able to change what it does: no hooks run, submodules are not
+/// entered, and no automatic maintenance starts.
+fn worktree_git(worktree: &Path, args: &[&str]) -> Command {
+    let mut command = git_without_auto_maintenance();
+    command
+        .args([
+            "-c",
+            "submodule.recurse=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+        ])
+        .arg(worktree)
+        .args(args);
+    command
+}
+
+/// Whether the commit `commit` is in the history of what `worktree` has checked
+/// out now. Answers through the exit status of `merge-base --is-ancestor`, so a
+/// commit this clone lacks is an error and not a no.
+pub(crate) fn worktree_head_contains(worktree: &Path, commit: &str) -> Result<bool> {
+    if !is_object_id(commit) {
+        return Err(anyhow!("\"{commit}\" is not a full commit id"));
+    }
+    let out = worktree_git(
+        worktree,
+        &["merge-base", "--is-ancestor", commit, "HEAD", "--"],
+    )
+    .stdin(Stdio::null())
+    .output()
+    .with_context(|| format!("failed to inspect {}", worktree.display()))?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(anyhow!(
+            "git could not tell whether {} holds {commit}: {}",
+            worktree.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
+}
+
+/// Fast-forward what `worktree` has checked out to `commit`, files and index
+/// with it, and confirm it got there. The target must descend from where the
+/// worktree is, and `reset --keep` then moves the branch, index and files:
+/// unlike `merge`, nothing in the user's configuration (`mergeOptions`,
+/// `merge.ff`, a pull strategy) is consulted, and it refuses to overwrite a
+/// local change instead of losing it. The worktree holds the branch, so git
+/// keeps every other worktree from checking it out while this runs.
+pub(crate) fn fast_forward_worktree(worktree: &Path, commit: &str) -> Result<()> {
+    if !is_object_id(commit) {
+        return Err(anyhow!("a branch moves to a full commit id only"));
+    }
+    let head = head_commit(worktree)?;
+    let descends = worktree_git(
+        worktree,
+        &["merge-base", "--is-ancestor", &head, commit, "--"],
+    )
+    .stdin(Stdio::null())
+    .output()
+    .with_context(|| format!("failed to inspect {}", worktree.display()))?;
+    if descends.status.code() != Some(0) {
+        return Err(anyhow!(
+            "{commit} is not a fast-forward of {} at {head}",
+            worktree.display()
+        ));
+    }
+    // `--` after the id: a file named like it would otherwise make the
+    // argument ambiguous, and git would refuse the move. The worktree is one
+    // an agent create is still making, with no session in any lane yet, so
+    // this waits only for another program's index lock.
+    let lock = IndexLockWait::before_change(worktree);
+    let out = worktree_git(worktree, &["reset", "--keep", "--quiet", commit, "--"])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("failed to fast-forward {}", worktree.display()))?;
+    if !out.status.success() {
+        return Err(lock.explain(
+            git_failure("git reset --keep", worktree, &out),
+            Some(worktree),
+        ));
+    }
+    let now = head_commit(worktree)?;
+    if now != commit {
+        return Err(anyhow!(
+            "{} is at {now} after the move, not at {commit}",
+            worktree.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Put what `worktree` has checked out back from `from` to `to`, the undo of
+/// [`fast_forward_worktree`]. Refused unless the worktree is still at `from`,
+/// so a branch that has moved on since is not rewound over somebody's work.
+pub(crate) fn rewind_worktree(worktree: &Path, from: &str, to: &str) -> Result<()> {
+    if !is_object_id(to) {
+        return Err(anyhow!("a branch moves to a full commit id only"));
+    }
+    let head = head_commit(worktree)?;
+    if head != from {
+        return Err(anyhow!(
+            "{} is at {head}, not at {from}, so it was left alone",
+            worktree.display()
+        ));
+    }
+    // Undoing a create that failed, so no session holds a lane here either.
+    let lock = IndexLockWait::before_change(worktree);
+    let out = worktree_git(worktree, &["reset", "--hard", "--quiet", to, "--"])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("failed to rewind {}", worktree.display()))?;
+    if !out.status.success() {
+        return Err(lock.explain(
+            git_failure("git reset --hard", worktree, &out),
+            Some(worktree),
+        ));
+    }
+    Ok(())
+}
+
+/// Move local branch `branch` from `old_tip` to `commit` without touching any
+/// checkout. `update-ref` is given the old value, so a branch that moved since
+/// `old_tip` was read is refused and keeps wherever it went, instead of being
+/// overwritten. The caller has established that `old_tip` is behind `commit`
+/// ([`branch_behind_commit`]) and that no worktree has the branch checked out,
+/// because a checkout would not follow the ref. The ref is fully qualified, so
+/// a dash-leading name is a ref and not an option.
+pub(crate) fn fast_forward_branch(
+    repo_path: &Path,
+    branch: &str,
+    old_tip: &str,
+    commit: &str,
+) -> Result<()> {
+    if !is_object_id(old_tip) || !is_object_id(commit) {
+        return Err(anyhow!("a branch moves between full commit ids only"));
+    }
+    let branch_ref = format!("refs/heads/{branch}");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args([
+            "update-ref",
+            "-m",
+            "yaran: move forward to the pull request's latest commit",
+            &branch_ref,
+            commit,
+            old_tip,
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to move branch \"{branch}\" forward in {}",
+                repo_path.display()
+            )
+        })?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "git did not move branch \"{branch}\" forward: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Whether any local or `origin` remote-tracking branch lives BELOW `name`,
+/// such as `<name>/x`. Git stores refs as paths, so a branch `<name>` cannot
+/// be created while one of those exists, even though no branch is called
+/// `<name>` itself (which is [`branch_exists`]'s question).
+///
+/// It shells out to git, so callers run it in a background worker.
+/// `for-each-ref` is plumbing; the patterns are fully qualified, so they
+/// cannot begin with a dash, and they follow `--` besides.
+pub(crate) fn refs_exist_below(repo_path: &Path, name: &str) -> Result<bool> {
+    let local = format!("refs/heads/{name}/");
+    let remote = format!("refs/remotes/origin/{name}/");
+    let text = run_git_capture(
+        repo_path,
+        &[
+            "for-each-ref",
+            "--count=1",
+            "--format=%(refname)",
+            "--",
+            &local,
+            &remote,
+        ],
+        &format!("list the branches below \"{name}\""),
+    )?;
+    Ok(!text.is_empty())
+}
+
+/// A worktree that keeps a branch from being checked out anywhere else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchHolder {
+    /// The worktree holding the branch.
+    pub worktree: GitWorktree,
+    /// The worktree is the folder the caller asked about (the project's own
+    /// path), compared by canonical path. That is the repository's own folder
+    /// for an ordinary project, and a linked worktree for a project added from
+    /// one.
+    pub(crate) is_project_folder: bool,
+}
+
+/// The worktree that reserves branch `name`, if any, by the same rules git
+/// applies before it refuses `git worktree add` with "is already used by
+/// worktree".
+///
+/// A worktree reserves a branch when it has it checked out, and also when it
+/// is DETACHED in the middle of a rebase or a bisect that started from it: git
+/// lists no branch for such a worktree but still refuses a second checkout.
+/// The rebase and bisect state is read from the worktree's administrative
+/// directory inside the repository, not through the worktree's own folder, so
+/// a worktree whose folder is gone (listed as prunable) still counts, exactly
+/// as it does for git until the entry is pruned.
+///
+/// `repo_path` is the project's own folder, and the holder is flagged as the
+/// project folder when it is that path.
+///
+/// It shells out to git and reads files, so callers run it in a background
+/// worker.
+pub(crate) fn worktree_holding_branch(
+    repo_path: &Path,
+    name: &str,
+) -> Result<Option<BranchHolder>> {
+    let worktrees = list_worktrees(repo_path)?;
+    if let Some(worktree) = worktrees
+        .iter()
+        .find(|w| w.branch_name.as_deref() == Some(name))
+    {
+        return Ok(Some(BranchHolder {
+            worktree: worktree.clone(),
+            is_project_folder: same_folder(&worktree.path, repo_path),
+        }));
+    }
+    if !worktrees.iter().any(|w| w.detached) {
+        return Ok(None);
+    }
+    let common_dir = PathBuf::from(run_git_capture(
+        repo_path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        "find the repository's git directory",
+    )?);
+    let linked_admin_dirs = linked_worktree_admin_dirs(&common_dir);
+    for (index, worktree) in worktrees.iter().enumerate() {
+        if !worktree.detached {
+            continue;
+        }
+        let admin_dir = if index == 0 {
+            Some(common_dir.clone())
+        } else {
+            linked_admin_dirs
+                .iter()
+                .find(|(path, _)| *path == normalize_lexically(&worktree.path))
+                .map(|(_, admin)| admin.clone())
+        };
+        if admin_dir.is_some_and(|admin| admin_dir_reserves_branch(&admin, name)) {
+            return Ok(Some(BranchHolder {
+                worktree: worktree.clone(),
+                is_project_folder: same_folder(&worktree.path, repo_path),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether two paths name the same folder: compared canonically, so a symlink
+/// or a relative spelling cannot tell them apart, and lexically when either
+/// cannot be canonicalized (a worktree whose folder is gone).
+pub(crate) fn same_folder(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => normalize_lexically(a) == normalize_lexically(b),
+    }
+}
+
+/// Every linked worktree's administrative directory under
+/// `<common dir>/worktrees/`, keyed by the worktree folder its `gitdir` file
+/// points at. The file may hold a path relative to the administrative
+/// directory (git's `worktree.useRelativePaths`), so it is resolved against it.
+fn linked_worktree_admin_dirs(common_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let Ok(entries) = fs::read_dir(common_dir.join("worktrees")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let admin = entry.path();
+            let recorded = fs::read_to_string(admin.join("gitdir")).ok()?;
+            let dot_git = admin.join(recorded.trim_end_matches(['\n', '\r']));
+            let folder = normalize_lexically(&dot_git).parent()?.to_path_buf();
+            Some((folder, admin))
+        })
+        .collect()
+}
+
+/// Resolve `.` and `..` components without touching the filesystem, so a path
+/// to a folder that no longer exists can still be compared.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Whether a detached worktree's administrative directory records a rebase or
+/// a bisect that started from branch `name`. Git writes the rebase's branch as
+/// `refs/heads/<name>` in `head-name`, and the bisect's as the plain name in
+/// `BISECT_START`; both spellings are accepted for either.
+fn admin_dir_reserves_branch(admin_dir: &Path, name: &str) -> bool {
+    let full = format!("refs/heads/{name}");
+    [
+        admin_dir.join("rebase-merge").join("head-name"),
+        admin_dir.join("rebase-apply").join("head-name"),
+        admin_dir.join("BISECT_START"),
+    ]
+    .iter()
+    .filter_map(|file| fs::read_to_string(file).ok())
+    .any(|recorded| {
+        let recorded = recorded.trim_end_matches(['\n', '\r']);
+        recorded == full || recorded == name
+    })
+}
+
 fn ref_exists(repo_path: &Path, ref_name: &str) -> bool {
     let repo = repo_path.as_os_str();
     Command::new("git")
@@ -1199,8 +2471,1645 @@ fn ref_exists(repo_path: &Path, ref_name: &str) -> bool {
         .arg(repo)
         .args(["rev-parse", "--verify", "--quiet", ref_name])
         .output()
-        .ok()
-        .is_some_and(|o| o.status.success())
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Where [`create_worktree_existing_branch`] puts the worktree for `branch_name`
+/// of project `project_name`, so a caller can ask whether that folder is free
+/// before asking git to create it. The folder is the flattened name
+/// ([`agent_folder_name`]), so this is only ever the answer for a create.
+pub(crate) fn managed_worktree_path(
+    worktrees_root: &Path,
+    project_name: &str,
+    branch_name: &str,
+) -> PathBuf {
+    worktrees_root
+        .join(project_name)
+        .join(agent_folder_name(branch_name))
+}
+
+/// Creates a worktree that checks out an **existing** branch (no `-b`).
+///
+/// When the branch exists only as a remote tracking ref, git automatically
+/// creates a local branch that tracks the remote.
+///
+/// # Errors
+///
+/// Fails when the worktree's folder cannot be created or `git worktree add` fails.
+pub fn create_worktree_existing_branch(
+    repo_path: &Path,
+    worktrees_root: &Path,
+    project_name: &str,
+    branch_name: &str,
+) -> Result<(String, PathBuf)> {
+    create_worktree_existing_branch_claimed(
+        repo_path,
+        worktrees_root,
+        project_name,
+        branch_name,
+        &|_| Ok(()),
+    )
+}
+
+/// [`create_worktree_existing_branch`], calling `claim` with the worktree's
+/// path once it is known and BEFORE `git worktree add` runs. An agent create
+/// takes its hold on the folder there, so a removal claimed on the same path
+/// refuses the create rather than having the folder created under it, and the
+/// worktree manager sees the folder as occupied for the whole create. An `Err`
+/// from `claim` stops the create with nothing made.
+pub(crate) fn create_worktree_existing_branch_claimed(
+    repo_path: &Path,
+    worktrees_root: &Path,
+    project_name: &str,
+    branch_name: &str,
+    claim: &dyn Fn(&Path) -> Result<()>,
+) -> Result<(String, PathBuf)> {
+    let worktree_path = managed_worktree_path(worktrees_root, project_name, branch_name);
+    claim(&worktree_path)?;
+    fs::create_dir_all(worktrees_root.join(project_name))?;
+    let canonical = add_worktree_existing_branch_at(repo_path, &worktree_path, branch_name)?;
+    Ok((branch_name.to_string(), canonical))
+}
+
+/// Check an existing branch out as a worktree at an EXACT path.
+///
+/// The path-taking half of [`create_worktree_existing_branch`], which derives
+/// its path from the worktrees root. Recreating a working copy has to land on
+/// the path the agent already has, so it needs this one.
+///
+/// The `--` separator makes git read the name as a REF, and that is all it
+/// does: git still declines to ATTACH a dash-leading one. MEASURED on git 2.55
+/// against a `refs/heads/--force` created with `update-ref`:
+///
+/// ```text
+/// $ git worktree add ../wt -- --force
+/// Preparing worktree (detached HEAD 3427328)
+/// ```
+///
+/// Exit 0, right commit, wrong HEAD. The DWIM that turns a commit-ish into a
+/// checked-out branch only fires for a plain name, and a fully qualified
+/// `refs/heads/<name>` does not rescue it: measured the same way, that form
+/// detaches for an ORDINARY branch too, and it also loses the DWIM that gives a
+/// remote-only branch a local tracking branch. So the branch is attached in a
+/// second step, `git switch -- <name>`, whose own separator is enough.
+pub(crate) fn add_worktree_existing_branch_at(
+    repo_path: &Path,
+    worktree_path: &Path,
+    branch_name: &str,
+) -> Result<PathBuf> {
+    if let Some(parent) = worktree_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    add_readable_worktree(repo_path, worktree_path, branch_name)?;
+    // Attach the branch the add left detached. Gated on the local ref so a
+    // commit-ish naming a tag keeps checking out detached, as it does today.
+    let attached = current_branch_opt(worktree_path).unwrap_or(None);
+    if attached.as_deref() != Some(branch_name) && local_branch_exists(repo_path, branch_name) {
+        // The add created this checkout a moment ago, so no folder in it can
+        // hold anything yaran knows about yet: there is nothing for the move
+        // check to ask.
+        run_switch(worktree_path, branch_name)?;
+    }
+    Ok(worktree_path
+        .canonicalize()
+        .unwrap_or_else(|_| worktree_path.to_path_buf()))
+}
+
+/// One worktree registration, as `git worktree list --porcelain -z` reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorktreeRegistration {
+    /// The directory git has this worktree registered at.
+    pub path: PathBuf,
+    /// git's own verdict that the directory behind this registration is gone.
+    pub(crate) prunable: bool,
+    /// The registration is locked (`git worktree lock`): git never calls a
+    /// locked worktree prunable, even with its directory gone.
+    pub locked: bool,
+}
+
+/// Parse `git worktree list --porcelain -z` output into registrations.
+///
+/// `-z` rather than plain `--porcelain`, measured rather than assumed: plain
+/// porcelain writes the path raw and separates records with a blank line, so a
+/// worktree whose path contains a newline is indistinguishable from two
+/// records. Under `-z` every attribute is NUL-terminated and an empty attribute
+/// ends the record, which a path cannot forge.
+pub(crate) fn parse_worktree_registrations(output: &[u8]) -> Vec<WorktreeRegistration> {
+    let mut registrations = Vec::new();
+    let mut current: Option<WorktreeRegistration> = None;
+    for field in output.split(|byte| *byte == 0) {
+        if field.is_empty() {
+            if let Some(done) = current.take() {
+                registrations.push(done);
+            }
+            continue;
+        }
+        if let Some(path) = field.strip_prefix(b"worktree ") {
+            if let Some(done) = current.take() {
+                registrations.push(done);
+            }
+            current = Some(WorktreeRegistration {
+                path: PathBuf::from(std::ffi::OsString::from_vec(path.to_vec())),
+                prunable: false,
+                locked: false,
+            });
+        } else if (field == b"prunable" || field.starts_with(b"prunable "))
+            && let Some(entry) = current.as_mut()
+        {
+            entry.prunable = true;
+        } else if (field == b"locked" || field.starts_with(b"locked "))
+            && let Some(entry) = current.as_mut()
+        {
+            entry.locked = true;
+        }
+    }
+    if let Some(done) = current.take() {
+        registrations.push(done);
+    }
+    registrations
+}
+
+/// Forget the registration of ONE worktree whose directory is already gone.
+///
+/// Needed before re-adding a worktree at a path whose directory was deleted:
+/// git refuses with "missing but already registered worktree" and holds the
+/// branch as checked out, so both halves of a recreate fail without it.
+///
+/// Deliberately not `git worktree prune`, which is repository-wide. Measured on
+/// git 2.55: with one worktree deleted and a sibling's directory merely renamed
+/// away, a single prune removed BOTH registrations, and moving the sibling's
+/// directory back left it severed, with `git status` in it answering "not a git
+/// repository". A sibling agent on a mount that is down is exactly that case.
+///
+/// So the target is found in the registration list and removed by name, and
+/// only when git itself calls it prunable. `git worktree remove --force` on a
+/// registration whose directory is still there DELETES that directory, also
+/// measured, which is why the prunable check gates the call rather than merely
+/// informing it.
+pub(crate) fn forget_missing_worktree_registration(
+    repo_path: &Path,
+    worktree_path: &Path,
+) -> Result<()> {
+    let repo = repo_path.as_os_str();
+    let listed = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .output()?;
+    if !listed.status.success() {
+        return Err(anyhow!(
+            "git worktree list failed: {}",
+            String::from_utf8_lossy(&listed.stderr).trim()
+        ));
+    }
+    let Some(target) = parse_worktree_registrations(&listed.stdout)
+        .into_iter()
+        .find(|entry| same_worktree_path(&entry.path, worktree_path))
+    else {
+        // Nothing registered here, so nothing to forget and the add below is
+        // free to run.
+        return Ok(());
+    };
+    // A locked registration is never called prunable, so its directory being
+    // gone is checked here, without following a link (measured on git 2.53:
+    // a locked worktree whose directory is deleted lists as `locked` only,
+    // and is removed only by a doubled `--force`).
+    let gone_but_locked = target.locked && std::fs::symlink_metadata(&target.path).is_err();
+    if !target.prunable && !gone_but_locked {
+        return Err(anyhow!(
+            "git still has a working copy registered at {}, so yaran left the registration alone \
+             rather than removing a directory that is in use.",
+            target.path.display()
+        ));
+    }
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo)
+        .args(["worktree", "remove", "--force"]);
+    if gone_but_locked {
+        command.arg("--force");
+    }
+    let output = command.arg("--").arg(&target.path).output()?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git worktree remove failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a registered worktree path names the same directory yaran is asking
+/// about.
+///
+/// A plain comparison first, then one that canonicalizes the PARENT: the
+/// directory itself is gone by the time this is asked, so it cannot be
+/// canonicalized, while a symlinked ancestor (`/tmp` on macOS) makes git's
+/// resolved path and yaran's stored one differ by that link alone.
+fn same_worktree_path(registered: &Path, target: &Path) -> bool {
+    if registered == target {
+        return true;
+    }
+    let resolved = |path: &Path| {
+        let parent = path.parent()?.canonicalize().ok()?;
+        Some(parent.join(path.file_name()?))
+    };
+    match (resolved(registered), resolved(target)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Fetches pull request `pr_number`'s head from `origin` into the local branch `branch_name`,
+/// stopped at `timeout` (`[git] network_timeout_seconds`; `None` is no limit).
+///
+/// # Errors
+///
+/// Fails when git cannot be run, the fetch fails, or it outlives `timeout`.
+pub fn fetch_pull_request_head(
+    repo_path: &Path,
+    pr_number: u64,
+    branch_name: &str,
+    timeout: Option<std::time::Duration>,
+) -> Result<()> {
+    let refspec = format!("pull/{pr_number}/head:refs/heads/{branch_name}");
+    let output = network_git(
+        repo_path,
+        &["fetch", "origin", &refspec],
+        "git fetch",
+        timeout,
+    )?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git fetch failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Fetch the pull request's head into a ref only yaran writes and return its
+/// object id, so a caller can compare it with a local branch before deciding
+/// whether to reuse that branch.
+///
+/// The ref (`refs/yaran/pull-request-check/<N>`) is deleted again before this
+/// returns; a failed delete is logged and does not fail the call. One create
+/// runs at a time, so two calls never share the ref. It shells out to git and
+/// talks to the network, so callers run it in a background worker. The fetch
+/// is stopped at `timeout`, or never when it is `None`.
+pub(crate) fn fetch_pull_request_head_commit(
+    repo_path: &Path,
+    pr_number: u64,
+    timeout: Option<std::time::Duration>,
+) -> Result<String> {
+    let repo = repo_path.as_os_str();
+    let check_ref = format!("refs/yaran/pull-request-check/{pr_number}");
+    let refspec = format!("+pull/{pr_number}/head:{check_ref}");
+    let fetched = network_git(
+        repo_path,
+        &["fetch", "origin", &refspec],
+        "git fetch",
+        timeout,
+    );
+    let commit = match fetched {
+        Err(err) => Err(err),
+        Ok(output) if !output.status.success() => Err(anyhow!(
+            "git fetch failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+        Ok(_) => run_git_capture(
+            repo_path,
+            &["rev-parse", "--verify", "--end-of-options", &check_ref],
+            "read the fetched pull request head",
+        ),
+    };
+    // A fetch may write the ref and then fail, so the ref goes on every path.
+    let deleted = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["update-ref", "-d", &check_ref])
+        .stdin(Stdio::null())
+        .output();
+    match deleted {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => crate::logger::warn(&format!(
+            "could not delete {check_ref} in {}: {}",
+            repo_path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(err) => crate::logger::warn(&format!(
+            "could not delete {check_ref} in {}: {err}",
+            repo_path.display()
+        )),
+    }
+    commit
+}
+
+/// Creates a branch from `start_point` (HEAD when `None`) and checks it out as a new worktree under
+/// `worktrees_root`, returning the branch name and the worktree's canonical path. A `custom_name`
+/// names the branch; without one a random name is generated.
+///
+/// # Errors
+///
+/// Fails when the worktree's folder cannot be created, the branch name is invalid or taken, the
+/// start point names nothing, or `git worktree add` fails.
+pub fn create_worktree_from_start_point(
+    repo_path: &Path,
+    worktrees_root: &Path,
+    project_name: &str,
+    start_point: Option<&str>,
+    custom_name: Option<&str>,
+) -> Result<(String, PathBuf)> {
+    create_worktree_from_start_point_claimed(
+        repo_path,
+        worktrees_root,
+        project_name,
+        start_point,
+        custom_name,
+        &|_| Ok(()),
+    )
+}
+
+/// [`create_worktree_from_start_point`], calling `claim` with the worktree's
+/// path once it is known (a generated name included) and BEFORE
+/// `git worktree add` runs. See [`create_worktree_existing_branch_claimed`].
+pub(crate) fn create_worktree_from_start_point_claimed(
+    repo_path: &Path,
+    worktrees_root: &Path,
+    project_name: &str,
+    start_point: Option<&str>,
+    custom_name: Option<&str>,
+    claim: &dyn Fn(&Path) -> Result<()>,
+) -> Result<(String, PathBuf)> {
+    let branch_name = custom_name.map_or_else(docker_style_name, std::string::ToString::to_string);
+    let worktree_path = managed_worktree_path(worktrees_root, project_name, &branch_name);
+    claim(&worktree_path)?;
+    fs::create_dir_all(worktrees_root.join(project_name))?;
+    let canonical =
+        add_worktree_new_branch_at(repo_path, &worktree_path, &branch_name, start_point)?;
+    Ok((branch_name, canonical))
+}
+
+/// Create a branch and check it out as a worktree at an EXACT path.
+///
+/// The path-taking half of [`create_worktree_from_start_point`].
+///
+/// The branch is created FIRST, on its own, and the worktree then attaches it,
+/// rather than `worktree add -b` doing both. That makes the branch provably
+/// this call's: the create is an atomic create-only ref update, so it either
+/// made the branch or failed because one was there. Every `worktree add` after
+/// it, a retry included, only attaches, and a failed one leaves a branch this
+/// call is entitled to remove.
+///
+/// # Errors
+///
+/// Fails when the parent folder cannot be created, the branch name is invalid or taken, the start
+/// point names nothing, or `git worktree add` fails (the branch it made is then removed again).
+pub fn add_worktree_new_branch_at(
+    repo_path: &Path,
+    worktree_path: &Path,
+    branch_name: &str,
+    start_point: Option<&str>,
+) -> Result<PathBuf> {
+    if let Some(parent) = worktree_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // The refusal `git branch` makes before creating a branch: a dash-leading
+    // name could never be attached by `worktree add` (it detaches, see
+    // [`add_worktree_existing_branch_at`]), and `HEAD` is not a branch name.
+    // Everything else about the name is checked by the ref update itself.
+    if branch_name.starts_with('-') || branch_name == "HEAD" {
+        return Err(anyhow!("'{branch_name}' is not a valid branch name"));
+    }
+    // Resolve the start point to an object id first: the ref update takes
+    // nothing else, an object id can never be read as an option, and
+    // `--end-of-options` protects the resolve step itself, so a start point
+    // naming nothing fails loudly here.
+    let start_point = start_point.unwrap_or("HEAD");
+    let start = run_git_capture(
+        repo_path,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{start_point}^{{commit}}"),
+        ],
+        &format!("resolve start point '{start_point}'"),
+    )?;
+    let refname = format!("refs/heads/{branch_name}");
+    // The empty old value makes the update create-only: it fails rather than
+    // move a branch that already exists. The message is the one `git branch`
+    // writes to the reflog.
+    run_ref_update(
+        repo_path,
+        &[
+            "update-ref",
+            "--no-deref",
+            "-m",
+            &format!("branch: Created from {start_point}"),
+            &refname,
+            &start,
+            "",
+        ],
+    )
+    .with_context(|| format!("failed to create branch '{branch_name}'"))?;
+    if let Err(err) = add_readable_worktree(repo_path, worktree_path, branch_name) {
+        remove_branch_minted_for_failed_add(repo_path, &refname, &start);
+        return Err(err);
+    }
+    Ok(worktree_path
+        .canonicalize()
+        .unwrap_or_else(|_| worktree_path.to_path_buf()))
+}
+
+/// A ref update under the same overrides as every tree-moving command
+/// ([`tree_move`]): no background maintenance, no submodule recursion.
+fn run_ref_update(repo_path: &Path, args: &[&str]) -> Result<()> {
+    let output = git_without_auto_maintenance()
+        .args(["-c", "submodule.recurse=false", "-C"])
+        .arg(repo_path)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git update-ref failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Remove the branch [`add_worktree_new_branch_at`] created once its worktree
+/// add has failed for good, so a failed create leaves no branch behind.
+///
+/// Kept whenever there is any doubt: while ANY worktree has it checked out
+/// (another process may have checked it out since; a ref update has no such
+/// guard of its own, and deleting it would leave that worktree on a branch
+/// that is gone), when the worktree list cannot be read, and when it no longer
+/// points at the commit it was created at (the old-value guard). `--no-deref`
+/// so a symbolic ref swapped in at that name is removed as itself rather than
+/// followed. A checkout landing between the list and the delete is not caught;
+/// `git branch -D` checks the same way.
+fn remove_branch_minted_for_failed_add(repo_path: &Path, refname: &str, created_at: &str) {
+    let kept = |why: String| {
+        logger::warn(&format!(
+            "yaran kept {refname}, which it created for a worktree add that failed, because {why}"
+        ));
+    };
+    let listed = match Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(listed) if listed.status.success() => listed,
+        Ok(listed) => {
+            return kept(format!(
+                "git worktree list failed: {}",
+                String::from_utf8_lossy(&listed.stderr).trim()
+            ));
+        }
+        Err(err) => return kept(format!("git worktree list could not run: {err}")),
+    };
+    let checked_out = format!("branch {refname}");
+    if listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .any(|field| field == checked_out.as_bytes())
+    {
+        return kept("a worktree has it checked out".to_string());
+    }
+    if let Err(err) = run_ref_update(
+        repo_path,
+        &["update-ref", "--no-deref", "-d", refname, created_at],
+    ) {
+        kept(format!("{err:#}"));
+    }
+}
+
+fn worktree_add_command(repo_path: &Path, worktree_path: &Path, branch: &str) -> Command {
+    let mut command = tree_move(repo_path, TreeMove::WorktreeAdd);
+    // `--` so the commit-ish is read as a REF and never as an option. Without
+    // it `git worktree add <path> --force` obeys the flag and checks out HEAD
+    // instead. Measured on git 2.55.
+    command.arg(worktree_path).args(["--", branch]);
+    command
+}
+
+#[cfg(test)]
+type WorktreeAddFault = Box<dyn FnOnce(&mut Command) -> io::Result<std::process::Output>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Runs in place of the next `git worktree add` on this thread, so a test
+    /// can make that one attempt lose the prune race.
+    static WORKTREE_ADD_FAULT: std::cell::RefCell<Option<WorktreeAddFault>> =
+        std::cell::RefCell::new(None);
+}
+
+fn run_worktree_add(mut command: Command) -> io::Result<std::process::Output> {
+    #[cfg(test)]
+    if let Some(fault) = WORKTREE_ADD_FAULT.with(|slot| slot.borrow_mut().take()) {
+        return fault(&mut command);
+    }
+    command.output()
+}
+
+/// `git worktree add <path> -- <branch>`, retried ONCE when the attempt lost
+/// the race against a worktree prune.
+///
+/// Since git 2.54 a detached `git maintenance run --auto`, which a fetch,
+/// commit or merge in the repository can start, prunes worktrees. `worktree
+/// add` creates `.git/worktrees/<name>` and only then writes the `locked` file
+/// that keeps a prune off it, so a prune landing in between deletes the folder
+/// and the add dies naming it. yaran keeps its own git from starting maintenance
+/// ([`git_without_auto_maintenance`]), but an agent CLI running git in a
+/// sibling worktree still can. Every other failure is returned as it is.
+///
+/// The add only ever attaches a branch that already exists (a new one is
+/// created beforehand by [`add_worktree_new_branch_at`]), so running it again
+/// cannot collide with anything the first attempt made. yaran deletes nothing to
+/// make room for the retry: measured on git 2.53 with a loop deleting admin
+/// folders during adds (standing in for the 2.54 prune), git removes the
+/// checkout folder and admin folder it created on its way out, so the retry
+/// runs only when nothing is left at the target path and no registration
+/// names it.
+fn add_worktree_retrying_a_pruned_admin_folder(
+    repo_path: &Path,
+    worktree_path: &Path,
+    branch: &str,
+    before_each_add: &mut dyn FnMut() -> Result<()>,
+) -> Result<()> {
+    // Read before the add runs, because the prune can remove the very
+    // `worktrees` folder these name.
+    let admin_roots = admin_folder_roots(repo_path);
+    before_each_add()?;
+    let first = run_worktree_add(worktree_add_command(repo_path, worktree_path, branch))?;
+    if first.status.success() {
+        return Ok(());
+    }
+    let git_error = String::from_utf8_lossy(&first.stderr).trim().to_string();
+    let failed = || anyhow!("git worktree add failed: {git_error}");
+    if !admin_roots
+        .as_deref()
+        .is_some_and(|roots| lost_the_prune_race(roots, &git_error))
+    {
+        return Err(failed());
+    }
+    let declined = |why: &str| {
+        logger::warn(&format!(
+            "git worktree add for {} lost a race with a worktree prune, and yaran did not retry \
+             it because {why}. git said: {git_error}",
+            worktree_path.display()
+        ));
+    };
+    if !matches!(
+        fs::symlink_metadata(worktree_path),
+        Err(err) if err.kind() == io::ErrorKind::NotFound
+    ) {
+        declined("something is still at the worktree path");
+        return Err(failed());
+    }
+    if !matches!(registration_at(repo_path, worktree_path), Ok(false)) {
+        declined("git still has a working copy registered at the worktree path");
+        return Err(failed());
+    }
+    logger::warn(&format!(
+        "git worktree add for {} lost a race with a worktree prune (most likely a background \
+         git maintenance run), so yaran is retrying it once. git said: {git_error}",
+        worktree_path.display()
+    ));
+    before_each_add()?;
+    let second = run_worktree_add(worktree_add_command(repo_path, worktree_path, branch))?;
+    if !second.status.success() {
+        return Err(anyhow!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&second.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// [`add_worktree_retrying_a_pruned_admin_folder`], then proof that git can
+/// read the copy it reported as created, with ONE more add when it cannot.
+///
+/// A worktree prune run by another program (the user's own git, an editor's
+/// `git maintenance`) can delete `.git/worktrees/<name>` after git's checkout
+/// step. `worktree add` then exits 0 and leaves a folder whose `.git` file
+/// points at nothing, which every git command inside it answers with "not a
+/// git repository". The folder is removed before the second add only when it
+/// is provably the one yaran made: when the path is free, yaran creates the empty
+/// folder itself ([`OwnedFolder`]) and git checks out into it, so ownership is
+/// settled before git runs rather than inferred afterwards. A folder that was
+/// already there is never touched. A branch minted for the add stays for the
+/// second attempt, which only attaches it, and the caller rolls it back if
+/// that attempt fails too.
+fn add_readable_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
+    // Every step works on the path under the folder's canonical parent, so a
+    // symlink in the parent chain retargeted mid-way cannot point the cleanup
+    // at another directory without the parent check in the removal seeing it.
+    let name = worktree_path
+        .file_name()
+        .ok_or_else(|| anyhow!("{} does not name a folder", worktree_path.display()))?;
+    let parent = match worktree_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let parent = parent
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", parent.display()))?;
+    let target = parent.join(name);
+    let path_was_free = matches!(
+        fs::symlink_metadata(&target),
+        Err(err) if err.kind() == io::ErrorKind::NotFound
+    );
+    let owned = add_into_owned_folder(
+        repo_path,
+        &parent,
+        &target,
+        branch,
+        if path_was_free {
+            AddFolder::YaranCreatesIt
+        } else {
+            AddFolder::AlreadyThere
+        },
+    )?;
+    if worktree_is_readable(&target) {
+        return Ok(());
+    }
+    let unreadable = |what_yaran_did: &str| {
+        anyhow!(
+            "git reported the working copy at {} as created, but git cannot read it: the \
+             repository's record of it was removed while it was being made, most likely by \
+             another program cleaning up this repository's worktrees (a git maintenance or \
+             worktree prune run) at the same time. {what_yaran_did} Wait for that program to \
+             finish, then try again.",
+            worktree_path.display()
+        )
+    };
+    let Some(owned) = owned else {
+        return Err(unreadable(
+            "The folder was already there before yaran added the working copy, so git checked \
+             the copy out into it and it now holds a checkout git cannot read. yaran did not \
+             remove it because yaran did not create it, so check it before you try again.",
+        ));
+    };
+    remove_unreadable_worktree(repo_path, &owned).map_err(|why| {
+        unreadable(&format!(
+            "yaran did not remove the folder because {why}, so check it before you try again."
+        ))
+    })?;
+    logger::warn(&format!(
+        "git reported the working copy at {} as created but cannot read it (its admin folder \
+         was removed during the add), so yaran removed the folder and is adding it once more",
+        worktree_path.display()
+    ));
+    let owned = add_into_owned_folder(
+        repo_path,
+        &parent,
+        &target,
+        branch,
+        AddFolder::YaranCreatesIt,
+    )?
+    .expect("an owned add always returns the folder it made");
+    if worktree_is_readable(&target) {
+        return Ok(());
+    }
+    Err(match remove_unreadable_worktree(repo_path, &owned) {
+        Ok(()) => unreadable("yaran tried twice and removed the folder it made both times."),
+        Err(why) => unreadable(&format!(
+            "yaran tried twice and left the second folder in place because {why}, so check it \
+             before you try again."
+        )),
+    })
+}
+
+/// Whether yaran makes the folder a worktree add goes into, or the add finds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AddFolder {
+    /// yaran creates the empty folder first and owns it.
+    YaranCreatesIt,
+    /// The folder is there already (or git makes it); yaran owns nothing.
+    AlreadyThere,
+}
+
+/// Run the add, into an empty folder yaran creates first when `folder` says so, and
+/// hand that folder back once the add has proved to have filled it. A failed
+/// add discards the folder yaran made; a folder found swapped after the add
+/// fails it without anything being deleted.
+fn add_into_owned_folder(
+    repo_path: &Path,
+    parent: &Path,
+    target: &Path,
+    branch: &str,
+    folder: AddFolder,
+) -> Result<Option<OwnedFolder>> {
+    let mut owned = None;
+    let added = add_worktree_retrying_a_pruned_admin_folder(repo_path, target, branch, &mut || {
+        if folder == AddFolder::YaranCreatesIt {
+            owned =
+                Some(OwnedFolder::create(parent, target).with_context(|| {
+                    format!("failed to create the folder {}", target.display())
+                })?);
+        }
+        Ok(())
+    });
+    if let Err(err) = added {
+        if let Some(folder) = &owned
+            && let Err(why) = remove_unreadable_worktree(repo_path, folder)
+        {
+            logger::warn(&format!(
+                "git worktree add for {} failed, and yaran left the empty folder it made for it \
+                 because {why}",
+                target.display()
+            ));
+        }
+        return Err(err);
+    }
+    if let Some(folder) = &owned {
+        folder.confirm_checkout(repo_path).map_err(|why| {
+            anyhow!(
+                "git reported the working copy at {} as created, but yaran removed nothing there \
+                 because {why}. Another program may be moving folders in {}; check that folder \
+                 before you try again.",
+                target.display(),
+                parent.display()
+            )
+        })?;
+    }
+    Ok(owned)
+}
+
+/// Whether git, run inside `worktree_path`, finds a working copy whose top
+/// level is that very folder. Comparing the top level, not only asking for
+/// success, keeps an enclosing repository that git would walk up to from
+/// passing for the copy.
+fn worktree_is_readable(worktree_path: &Path) -> bool {
+    let Some(toplevel) = git_printed_path(worktree_path, &["rev-parse", "--show-toplevel"]) else {
+        return false;
+    };
+    match (toplevel.canonicalize(), worktree_path.canonicalize()) {
+        (Ok(found), Ok(expected)) => found == expected,
+        _ => false,
+    }
+}
+
+/// The one path a git command run in `dir` prints, byte for byte: a folder
+/// name may end in a space or hold bytes that are not UTF-8, so only the
+/// newline git ends the line with is taken off. `None` when git fails or
+/// prints nothing.
+fn git_printed_path(dir: &Path, args: &[&str]) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let printed = out.stdout.strip_suffix(b"\n").unwrap_or(&out.stdout);
+    (!printed.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(printed)))
+}
+
+/// The empty folder yaran created for a `worktree add` to fill, pinned by its
+/// device and inode so a cleanup removes that folder and nothing that comes to
+/// stand at its path later.
+struct OwnedFolder {
+    /// The canonical folder it was made in.
+    parent: PathBuf,
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+impl OwnedFolder {
+    /// Create the folder at `path`, inside the canonical `parent`. Only the
+    /// final component is created, so an occupied path fails rather than being
+    /// adopted.
+    fn create(parent: &Path, path: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        fs::create_dir(path)?;
+        let meta = fs::symlink_metadata(path)?;
+        if !meta.file_type().is_dir() {
+            return Err(io::Error::other(
+                "the new folder was replaced as it was made",
+            ));
+        }
+        Ok(Self {
+            parent: parent.to_path_buf(),
+            path: path.to_path_buf(),
+            device: meta.dev(),
+            inode: meta.ino(),
+        })
+    }
+
+    /// Whether `path` is this folder itself: a real directory, never followed
+    /// through a symlink, with the pinned device and inode.
+    fn is_at(&self, path: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        fs::symlink_metadata(path).is_ok_and(|meta| {
+            meta.file_type().is_dir() && (meta.dev(), meta.ino()) == (self.device, self.inode)
+        })
+    }
+
+    /// After the add: the path still holds this folder, its `.git` file points
+    /// into this repository's `worktrees/` admin folder as git writes it into a
+    /// copy it has just made, and it is still this folder once that file has
+    /// been read.
+    fn confirm_checkout(&self, repo_path: &Path) -> Result<(), String> {
+        let moved = || "the folder at that path is no longer the one yaran made for it".to_string();
+        if !self.is_at(&self.path) {
+            return Err(moved());
+        }
+        let admin = admin_folder_named_by_dot_git(&self.path)?;
+        let roots = admin_worktrees_folders(repo_path);
+        if roots.is_empty() {
+            return Err("git could not name this repository's own folder".to_string());
+        }
+        if !roots
+            .iter()
+            .any(|root| admin.parent() == Some(root.as_path()))
+        {
+            return Err("its .git file does not point at this repository".to_string());
+        }
+        if !self.is_at(&self.path) {
+            return Err(moved());
+        }
+        Ok(())
+    }
+
+    /// Remove this folder by identity: move whatever is at the path aside to a
+    /// fresh sibling name only yaran uses (an atomic rename that never replaces
+    /// anything), then delete it only if what moved is this folder. Anything
+    /// else is moved back and left. The aside name is yaran's own, so the delete
+    /// cannot reach a folder another program swapped in at the path.
+    fn discard(&self) -> Result<(), String> {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        use rustix::io::Errno;
+        let Some(name) = self.path.file_name() else {
+            return Err("the path names no folder".to_string());
+        };
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let mut aside = std::ffi::OsString::from(".");
+        aside.push(name);
+        aside.push(format!(".yaran-discard-{}-{nanos}", std::process::id()));
+        let aside = self.parent.join(aside);
+        match renameat_with(CWD, &self.path, CWD, &aside, RenameFlags::NOREPLACE) {
+            Ok(()) => {}
+            Err(err) if err == Errno::NOENT => return Ok(()),
+            Err(err) => {
+                return Err(format!("moving it aside failed ({})", io::Error::from(err)));
+            }
+        }
+        if self.is_at(&aside) {
+            return fs::remove_dir_all(&aside)
+                .map_err(|err| format!("removing it from {} failed ({err})", aside.display()));
+        }
+        match renameat_with(CWD, &aside, CWD, &self.path, RenameFlags::NOREPLACE) {
+            Ok(()) => Err("the folder at that path is no longer the one yaran made".to_string()),
+            Err(err) => Err(format!(
+                "the folder at that path is no longer the one yaran made, and moving it back \
+                 from {} failed ({})",
+                aside.display(),
+                io::Error::from(err)
+            )),
+        }
+    }
+}
+
+/// The admin folder a working copy's `.git` file names, read as raw bytes and
+/// never through a symlink. A relative record (git's
+/// `worktree.useRelativePaths`) is resolved against the copy itself.
+fn admin_folder_named_by_dot_git(worktree: &Path) -> Result<PathBuf, String> {
+    use std::io::Read as _;
+    use std::os::unix::ffi::OsStrExt;
+    let not_git_file = || "its .git entry is not the file git writes into a working copy";
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(worktree.join(".git"))
+        .map_err(|_| not_git_file().to_string())?;
+    if !file.metadata().is_ok_and(|meta| meta.file_type().is_file()) {
+        return Err(not_git_file().to_string());
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|err| format!("its .git file could not be read ({err})"))?;
+    let recorded = bytes
+        .strip_prefix(b"gitdir: ")
+        .map(|rest| rest.strip_suffix(b"\n").unwrap_or(rest))
+        .filter(|rest| !rest.is_empty())
+        .ok_or_else(|| not_git_file().to_string())?;
+    Ok(normalize_lexically(
+        &worktree.join(std::ffi::OsStr::from_bytes(recorded)),
+    ))
+}
+
+/// This repository's `<common dir>/worktrees` as git names it and, when it
+/// still exists, canonical. Empty when git cannot say.
+fn admin_worktrees_folders(repo_path: &Path) -> Vec<PathBuf> {
+    let Some(common) = git_printed_path(
+        repo_path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) else {
+        return Vec::new();
+    };
+    let mut folders = vec![normalize_lexically(&common.join("worktrees"))];
+    if let Ok(canonical) = common.canonicalize() {
+        folders.push(canonical.join("worktrees"));
+    }
+    folders
+}
+
+/// Remove the folder yaran made for an add, or say why it was left. It goes only
+/// while git has no registration for it and its parent still resolves to the
+/// canonical folder it was made in, and then only by identity
+/// ([`OwnedFolder::discard`]): anything swapped in since, or reached through a
+/// retargeted symlink, stays. `remove_dir_all` does not follow symlinks inside
+/// the folder.
+fn remove_unreadable_worktree(repo_path: &Path, owned: &OwnedFolder) -> Result<(), String> {
+    match registration_at(repo_path, &owned.path) {
+        Ok(false) => {}
+        Ok(true) => return Err("git still has a working copy registered there".to_string()),
+        Err(err) => {
+            return Err(format!(
+                "git's list of working copies could not be read ({err:#})"
+            ));
+        }
+    }
+    match owned.parent.canonicalize() {
+        Ok(parent) if parent == owned.parent => {}
+        Ok(_) => return Err("the folder it sits in now resolves somewhere else".to_string()),
+        Err(err) => return Err(format!("the folder it sits in could not be read ({err})")),
+    }
+    owned.discard()
+}
+
+/// The repository's `<common dir>/worktrees/` in every form git may print it:
+/// as `rev-parse` reports it (relative to the repository for a main checkout,
+/// which is how `git -C <repo> worktree add` names it), absolute, and
+/// canonical. `None` when git cannot say, and then nothing is retried.
+fn admin_folder_roots(repo_path: &Path) -> Option<Vec<String>> {
+    let printed = run_git_capture(
+        repo_path,
+        &["rev-parse", "--git-common-dir"],
+        "find the git directory",
+    )
+    .ok()?;
+    let absolute = PathBuf::from(
+        run_git_capture(
+            repo_path,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            "find the git directory",
+        )
+        .ok()?,
+    );
+    let mut roots = vec![
+        format!("{printed}/worktrees/"),
+        format!("{}/worktrees/", absolute.display()),
+    ];
+    if let Ok(canonical) = absolute.canonicalize() {
+        roots.push(format!("{}/worktrees/", canonical.display()));
+    }
+    Some(roots)
+}
+
+/// Whether git's stderr reads as an add whose admin folder was taken from
+/// under it: a line naming the repository's admin `worktrees/` folder in one of
+/// the ways git fails to use a folder that is gone, or git's own whole-line
+/// "could not find created worktree". Messages that name no path are never
+/// read as the race. The match is deliberately loose about WHICH admin folder:
+/// the retry deletes nothing and runs only when the target path is still free,
+/// so a false match costs one more harmless attempt.
+fn lost_the_prune_race(admin_roots: &[String], git_error: &str) -> bool {
+    const GONE: [&str; 5] = [
+        "could not open '",
+        "cannot open '",
+        "could not create directory of '",
+        "Unable to create '",
+        "not a git repository",
+    ];
+    git_error.lines().any(|line| {
+        let line = line.trim_end();
+        let created_worktree_missing = ["fatal: ", "error: "].iter().any(|level| {
+            line.strip_prefix(level)
+                .and_then(|rest| rest.strip_prefix("could not find created worktree '"))
+                .is_some_and(|rest| rest.ends_with('\''))
+        });
+        created_worktree_missing
+            || (GONE.iter().any(|gone| line.contains(gone))
+                && admin_roots.iter().any(|root| line.contains(root.as_str())))
+    })
+}
+
+/// Whether git has a worktree registered at `worktree_path`.
+fn registration_at(repo_path: &Path, worktree_path: &Path) -> Result<bool> {
+    let listed = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .output()?;
+    if !listed.status.success() {
+        return Err(anyhow!(
+            "git worktree list failed: {}",
+            String::from_utf8_lossy(&listed.stderr).trim()
+        ));
+    }
+    Ok(parse_worktree_registrations(&listed.stdout)
+        .iter()
+        .any(|entry| same_worktree_path(&entry.path, worktree_path)))
+}
+
+/// The commit id HEAD points at in the repository at `repo_path`.
+///
+/// # Errors
+///
+/// Fails when git cannot be run or `git rev-parse HEAD` fails.
+pub fn head_commit(repo_path: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .with_context(|| format!("failed to inspect HEAD for {}", repo_path.display()))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git rev-parse HEAD failed for {}: {}",
+            repo_path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// What copying a checkout's uncommitted changes into a new worktree did.
+#[derive(Debug, Default)]
+pub struct UncommittedCopySummary {
+    /// How many files were copied.
+    pub copied: usize,
+    /// How many paths gone from the source were removed from the new worktree too.
+    pub deleted: usize,
+    /// Records skipped because the source is not a regular file or symlink:
+    /// dirty submodules (" M dir"), untracked embedded repos ("?? dir/"), and
+    /// non-regular files such as FIFOs, sockets, and devices (which would
+    /// block or fail a byte copy). Relative paths, for the user-facing note.
+    pub(crate) skipped_paths: Vec<String>,
+}
+
+#[derive(Default)]
+struct UncommittedCopyPlan {
+    deletions: Vec<PathBuf>,
+    copies: Vec<PathBuf>,
+    skipped_paths: Vec<String>,
+}
+
+/// Copies exactly what `git status --porcelain=v1 -z --untracked-files=all`
+/// reports in `source` into `destination`. Nothing gitignored travels.
+/// PRECONDITION: both worktrees are at the SAME HEAD commit; callers enforce
+/// this with the HEAD-equality guard (`agent_job.rs`), because status deltas
+/// are relative to the HEAD commit's tree.
+///
+/// # Errors
+///
+/// Fails when either worktree cannot be resolved, the two are the same folder, git status cannot be
+/// read, or a copy or deletion fails part way.
+pub fn copy_uncommitted_changes(
+    source: &Path,
+    destination: &Path,
+) -> Result<UncommittedCopySummary> {
+    let source = source
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", source.display()))?;
+    let destination = destination
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", destination.display()))?;
+    if source == destination {
+        return Err(anyhow!(
+            "source and destination worktrees must be different"
+        ));
+    }
+
+    let plan = classify_uncommitted_records(&uncommitted_status(&source)?)?;
+    let mut summary = UncommittedCopySummary {
+        skipped_paths: plan.skipped_paths,
+        ..Default::default()
+    };
+    apply_uncommitted_deletions(&destination, &plan.deletions, &mut summary)?;
+    apply_uncommitted_copies(&source, &destination, &plan.copies, &mut summary)?;
+    Ok(summary)
+}
+
+fn uncommitted_status(source: &Path) -> Result<Vec<u8>> {
+    // Read only, so it never takes the source's index lock.
+    let output = Command::new("git")
+        .arg("--no-optional-locks")
+        .arg("-C")
+        .arg(source)
+        .args([
+            // Pin rename/copy detection off so every record carries exactly
+            // one path (rename records are two-path and config-dependent).
+            "-c",
+            "status.renames=false",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            // Every submodule change, whatever `.gitmodules` or the config
+            // says to ignore.
+            "--ignore-submodules=none",
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn classify_uncommitted_records(status: &[u8]) -> Result<UncommittedCopyPlan> {
+    let mut plan = UncommittedCopyPlan::default();
+    for record in status.split(|byte| *byte == 0) {
+        classify_uncommitted_record(record, &mut plan)?;
+    }
+    Ok(plan)
+}
+
+fn classify_uncommitted_record(record: &[u8], plan: &mut UncommittedCopyPlan) -> Result<()> {
+    if record.len() < 4 {
+        return Ok(());
+    }
+    let index_status = char::from(record[0]);
+    let worktree_status = char::from(record[1]);
+    if matches!(index_status, 'R' | 'C') || matches!(worktree_status, 'R' | 'C') {
+        return Err(anyhow!(
+            "rename/copy detection produced a two-path record despite -c status.renames=false; this needs git >= 2.18"
+        ));
+    }
+    let path_bytes = &record[3..];
+    let relative: &Path =
+        <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path_bytes).as_ref();
+    if !is_safe_status_path(relative) {
+        return Ok(());
+    }
+    if path_bytes.ends_with(b"/") {
+        plan.skipped_paths
+            .push(relative.to_string_lossy().trim_end_matches('/').to_string());
+    } else if is_unmerged_status(index_status, worktree_status) {
+        plan.copies.push(relative.to_path_buf());
+    } else if worktree_status == 'D' || (index_status == 'D' && worktree_status == ' ') {
+        plan.deletions.push(relative.to_path_buf());
+    } else {
+        plan.copies.push(relative.to_path_buf());
+    }
+    Ok(())
+}
+
+fn is_safe_status_path(relative: &Path) -> bool {
+    let first_is_git_dir = matches!(
+        relative.components().next(),
+        Some(Component::Normal(name)) if name == ".git"
+    );
+    !relative.is_absolute()
+        && !first_is_git_dir
+        && !relative
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+}
+
+fn is_unmerged_status(index_status: char, worktree_status: char) -> bool {
+    index_status == 'U'
+        || worktree_status == 'U'
+        || (index_status == 'A' && worktree_status == 'A')
+        || (index_status == 'D' && worktree_status == 'D')
+}
+
+fn apply_uncommitted_deletions(
+    destination: &Path,
+    deletions: &[PathBuf],
+    summary: &mut UncommittedCopySummary,
+) -> Result<()> {
+    for relative in deletions {
+        remove_path_if_exists(&destination.join(relative))?;
+        summary.deleted += 1;
+        prune_empty_ancestors(destination, relative);
+    }
+    Ok(())
+}
+
+fn apply_uncommitted_copies(
+    source: &Path,
+    destination: &Path,
+    copies: &[PathBuf],
+    summary: &mut UncommittedCopySummary,
+) -> Result<()> {
+    for relative in copies {
+        let source_path = source.join(relative);
+        let destination_path = destination.join(relative);
+        let metadata = match fs::symlink_metadata(&source_path) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                remove_path_if_exists(&destination_path)?;
+                summary.deleted += 1;
+                continue;
+            }
+            Err(err) => return Err(err.into()),
+        };
+        if !metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+            summary
+                .skipped_paths
+                .push(relative.to_string_lossy().to_string());
+            continue;
+        }
+        ensure_destination_parents(source, destination, relative)?;
+        sync_entry(&source_path, &destination_path)?;
+        summary.copied += 1;
+    }
+    Ok(())
+}
+
+/// Best-effort removal of now-empty ancestor directories of `rel` inside
+/// `destination`, walking up toward (never past) `destination` and stopping
+/// at the first non-empty directory. Errors are ignored.
+fn prune_empty_ancestors(destination: &Path, rel: &Path) {
+    let mut ancestor = rel.parent();
+    while let Some(dir) = ancestor {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        // `remove_dir` refuses to remove a non-empty directory.
+        if fs::remove_dir(destination.join(dir)).is_err() {
+            break;
+        }
+        ancestor = dir.parent();
+    }
+}
+
+/// Create the missing parent directories of `rel` under `destination`,
+/// copying the corresponding source directory's mode when it exists (see the
+/// umask-safety rationale in `sync_entry`), and tolerating races.
+fn ensure_destination_parents(source: &Path, destination: &Path, rel: &Path) -> Result<()> {
+    let Some(parent) = rel.parent() else {
+        return Ok(());
+    };
+    let mut prefix = PathBuf::new();
+    for component in parent.components() {
+        prefix.push(component);
+        let destination_dir = destination.join(&prefix);
+        if fs::symlink_metadata(&destination_dir).is_ok() {
+            continue;
+        }
+        let mut builder = fs::DirBuilder::new();
+        if let Ok(source_meta) = fs::symlink_metadata(source.join(&prefix))
+            && source_meta.file_type().is_dir()
+        {
+            builder.mode(source_meta.permissions().mode());
+        }
+        match builder.create(&destination_dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Like `remove_path`, but an already-absent path is success.
+fn remove_path_if_exists(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => remove_path(path),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// What a worktree removal did to the branches involved.
+///
+/// Two branches, because an agent's branch can DRIFT: `branch_name` is kept in
+/// step with whatever the worktree is on, while `initial_branch` is the branch
+/// the agent was born on and never moves. Delete only the first and the birth
+/// branch survives the agent, which is how "create foo, delete foo, recreate
+/// foo" ends in "branch already exists".
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RemoveResult {
+    /// What happened to the branch the worktree was on.
+    pub branch: BranchDeletion,
+    /// What happened to a DISTINCT birth branch, and `None` when there was no
+    /// distinct birth branch to delete (the agent never drifted, or the caller
+    /// passed none).
+    pub initial_branch: Option<BranchDeletion>,
+}
+
+/// What `git branch -D` did to one branch.
+///
+/// A failed `git branch -D` is distinct from an absent branch: a branch checked
+/// out in another worktree is refused and remains present.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum BranchDeletion {
+    /// git deleted the branch here.
+    #[default]
+    Deleted,
+    /// There was no such branch to delete. Not an error: somebody else already
+    /// removed it, or yaran was told about a branch that never existed.
+    AlreadyGone,
+    /// git refused, and the branch is STILL THERE. Carries git's own reason
+    /// line so the message can say why rather than guessing.
+    Refused {
+        /// git's own reason line.
+        reason: String,
+    },
+}
+
+impl BranchDeletion {
+    /// git's reason for refusing, or `None` when it did not refuse.
+    pub(crate) fn refused_reason(&self) -> Option<&str> {
+        match self {
+            BranchDeletion::Refused { reason } => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+/// The recovery sentence for a branch git REFUSED to delete: what happened, why
+/// in git's own words, and the two ways out. Shared so the TUI status line and
+/// the web toast say the same thing, which both need because a surviving branch
+/// makes recreating an agent under the same name fail far from the deletion that
+/// caused it.
+pub(crate) fn branch_refusal_note(branch: &str, reason: &str) -> crate::status_text::StatusText {
+    let reason = clean_git_reason(reason);
+    crate::status_text![
+        "Git refused to delete branch ",
+        q(branch),
+        format!(": {reason} Delete it yourself with "),
+        n(branch_delete_command(branch)),
+        ", or give the next agent a different name."
+    ]
+}
+
+/// The command a status tells the user to run to remove a branch by hand, as
+/// one string so it can travel as one name (the web draws it as a single chip).
+/// The branch is single-quoted, because a branch name can come from a pull
+/// request somebody else opened and the user is being invited to paste this.
+pub(crate) fn branch_delete_command(branch: &str) -> String {
+    format!("git branch -D {}", crate::shell_quote::single_quote(branch))
+}
+
+/// git's stderr line, tidied for a status message: the "error: " prefix dropped,
+/// since the sentence around it already says something went wrong, and a full
+/// stop added when git did not end with one. An empty reason becomes a plain
+/// statement rather than a dangling colon.
+fn clean_git_reason(reason: &str) -> String {
+    let trimmed = reason.trim();
+    let trimmed = trimmed
+        .strip_prefix("error: ")
+        .or_else(|| trimmed.strip_prefix("fatal: "))
+        .unwrap_or(trimmed);
+    if trimmed.is_empty() {
+        return "git gave no reason.".to_string();
+    }
+    if trimmed.ends_with('.') || trimmed.ends_with('!') || trimmed.ends_with('?') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.")
+    }
+}
+
+impl RemoveResult {
+    /// Whether git refused either branch, which leaves it on disk for the user
+    /// to remove by hand. The one copy of the question every surface asks.
+    pub fn refused_a_branch(&self) -> bool {
+        self.branch.refused_reason().is_some()
+            || self
+                .initial_branch
+                .as_ref()
+                .is_some_and(|deletion| deletion.refused_reason().is_some())
+    }
+
+    /// A sentence naming what happened to the agent's ORIGINAL branch, for the
+    /// status message. `None` when the agent never drifted, so the message says
+    /// nothing extra rather than mentioning a branch the user never saw.
+    ///
+    /// Lives here so the TUI status line and the web toast say the same thing.
+    pub(crate) fn initial_branch_note(
+        &self,
+        initial_branch: &str,
+    ) -> Option<crate::status_text::StatusText> {
+        match self.initial_branch.as_ref()? {
+            BranchDeletion::Deleted => Some(crate::status_text![
+                "Its original branch ",
+                q(initial_branch),
+                " was deleted too."
+            ]),
+            BranchDeletion::AlreadyGone => Some(crate::status_text![
+                "Its original branch ",
+                q(initial_branch),
+                " was already gone."
+            ]),
+            BranchDeletion::Refused { reason } => Some(crate::status_text![
+                "Its original branch ",
+                q(initial_branch),
+                " is still there. ",
+                branch_refusal_note(initial_branch, reason)
+            ]),
+        }
+    }
+}
+
+/// Force-delete one branch, best effort, reporting which of the three things
+/// happened.
+///
+/// `--` so the name is read as a REF and never as an option: without it a ref
+/// that plumbing created as `--delete` is parsed as the flag and survives the
+/// cleanup (measured on git 2.55). A failure is then disambiguated with PLUMBING
+/// rather than by reading git's prose: `show-ref --verify` answers whether the
+/// ref is still there. `--end-of-options` guards that positional too (MEASURED:
+/// `show-ref` accepts it), belt and braces over a fully qualified
+/// `refs/heads/...` that cannot lead with a dash anyway.
+fn delete_branch_force(repo_path: &Path, branch_name: &str) -> Result<BranchDeletion> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["branch", "-D", "--", branch_name])
+        .output()?;
+    if output.status.success() {
+        return Ok(BranchDeletion::Deleted);
+    }
+    if !branch_still_exists(repo_path, branch_name) {
+        return Ok(BranchDeletion::AlreadyGone);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .to_string();
+    Ok(BranchDeletion::Refused { reason })
+}
+
+/// Force-delete a branch yaran minted moments ago and then failed to build the
+/// agent around, best effort.
+///
+/// It covers the one window the worktree rollback cannot: a branch that exists
+/// while its worktree does not, so there is nothing for [`remove_worktree`] to
+/// remove. It routes through `delete_branch_force`, sharing the `--` guard and
+/// the plumbing disambiguation, and discards the outcome: the caller is already
+/// reporting a failure and a stubborn ref is not a second thing to say.
+pub(crate) fn delete_created_branch_best_effort(repo_path: &Path, branch_name: &str) {
+    let _ = delete_branch_force(repo_path, branch_name);
+}
+
+/// The object id `refs/heads/<branch_name>` points at, `None` when there is no
+/// such branch. Read with `for-each-ref`, whose pattern is fully qualified (so
+/// a dash-leading name is a ref) and whose answer is matched on the exact ref
+/// name, because a pattern also matches the refs below it.
+///
+/// # Errors
+///
+/// Fails when git cannot be run or cannot read the repository's refs: that is
+/// never "no such branch".
+pub fn resolve_branch_oid(repo_path: &Path, branch_name: &str) -> Result<Option<String>> {
+    let reference = format!("refs/heads/{branch_name}");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args([
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            &reference,
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "{}",
+            clean_git_reason(&String::from_utf8_lossy(&output.stderr))
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .find(|(_, name)| *name == reference)
+        .map(|(oid, _)| oid.to_string()))
+}
+
+/// What became of a branch kept with a left-over folder when the folder was
+/// deleted and the user asked for the branch too.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeptBranchDeletion {
+    /// Deleted.
+    Deleted,
+    /// It did not exist any more.
+    AlreadyGone,
+    /// It points somewhere else than when the folder was left behind, so it
+    /// was kept: what is on it now is not what the user was shown.
+    Moved,
+    /// git refused (or another worktree has it checked out), and the branch
+    /// is still there. git's reason, or yaran's.
+    Refused {
+        /// Why.
+        reason: String,
+    },
+    /// No commit was recorded for it (git could not be asked when the folder
+    /// was left behind), so whether it moved since cannot be known: kept.
+    Unverifiable,
+}
+
+/// The worktree that has `branch_name` checked out, if any.
+///
+/// # Errors
+///
+/// Fails when git cannot list the repository's worktrees.
+pub fn branch_checked_out_in(repo_path: &Path, branch_name: &str) -> Result<Option<PathBuf>> {
+    Ok(list_worktrees(repo_path)?
+        .into_iter()
+        .find(|worktree| worktree.branch_name.as_deref() == Some(branch_name))
+        .map(|worktree| worktree.path))
+}
+
+/// Delete a branch kept with a left-over folder, only while it still points at
+/// `kept.oid`: `update-ref -d` with the old value, so a branch somebody moved
+/// since is kept. A branch another worktree has checked out is refused first,
+/// as `git branch -D` would; a checkout landing between that look and the
+/// delete is not caught, which is `git branch -D`'s own gap too, so the two run
+/// back to back. `--no-deref`, so a symbolic ref swapped in at the name is
+/// removed as itself and its target is never followed. The ref is fully
+/// qualified and after `--`, so a dash-leading name is read as a ref (measured
+/// on git 2.53).
+///
+/// # Errors
+///
+/// Fails when git cannot be run or cannot say where the branch points.
+pub fn delete_kept_branch(repo_path: &Path, kept: &KeptBranch) -> Result<KeptBranchDeletion> {
+    let Some(recorded) = kept.oid.as_deref() else {
+        return Ok(KeptBranchDeletion::Unverifiable);
+    };
+    let Some(now) = resolve_branch_oid(repo_path, &kept.name)? else {
+        return Ok(KeptBranchDeletion::AlreadyGone);
+    };
+    if now != recorded {
+        return Ok(KeptBranchDeletion::Moved);
+    }
+    if let Some(holder) = branch_checked_out_in(repo_path, &kept.name)? {
+        return Ok(KeptBranchDeletion::Refused {
+            reason: format!(
+                "it is checked out in {}",
+                crate::home_path::shorten_home(&holder)
+            ),
+        });
+    }
+    let reference = format!("refs/heads/{}", kept.name);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["update-ref", "--no-deref", "-d", "--", &reference, recorded])
+        .output()?;
+    if output.status.success() {
+        return Ok(KeptBranchDeletion::Deleted);
+    }
+    Ok(match resolve_branch_oid(repo_path, &kept.name)? {
+        None => KeptBranchDeletion::AlreadyGone,
+        Some(now) if now != recorded => KeptBranchDeletion::Moved,
+        Some(_) => KeptBranchDeletion::Refused {
+            reason: clean_git_reason(&String::from_utf8_lossy(&output.stderr)),
+        },
+    })
+}
+
+/// Delete the branches a left-over folder kept, once the folder itself is
+/// gone, each only while it still points at its recorded commit: factory
+/// reset's own cleanup, which deletes the folder as its last resort and must
+/// not leave yaran's branches behind. Best effort.
+pub fn delete_kept_branches_after_folder(repo_path: &Path, leftover: &LeftoverWorktreeFolder) {
+    for kept in &leftover.kept_branches {
+        let _ = delete_kept_branch(repo_path, kept);
+    }
+}
+
+/// Whether `refs/heads/<branch_name>` still resolves. Best effort: a git that
+/// cannot answer is read as "gone", which keeps the old behaviour rather than
+/// inventing a refusal nobody can act on.
+fn branch_still_exists(repo_path: &Path, branch_name: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &format!("refs/heads/{branch_name}"),
+        ])
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// Name of the link yaran places in a project checkout pointing at that
@@ -1375,740 +4284,6 @@ fn ensure_project_worktrees_link_ignored(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Creates a worktree that checks out an **existing** branch (no `-b`).
-///
-/// When the branch exists only as a remote tracking ref, git automatically
-/// creates a local branch that tracks the remote.
-pub fn create_worktree_existing_branch(
-    repo_path: &Path,
-    worktrees_root: &Path,
-    project_name: &str,
-    branch_name: &str,
-) -> Result<(String, PathBuf)> {
-    let project_root = worktrees_root.join(project_name);
-    fs::create_dir_all(&project_root)?;
-    let worktree_path = project_root.join(branch_name);
-    let canonical = add_worktree_existing_branch_at(repo_path, &worktree_path, branch_name)?;
-    Ok((branch_name.to_string(), canonical))
-}
-
-/// Check an existing branch out as a worktree at an EXACT path.
-///
-/// The path-taking half of [`create_worktree_existing_branch`], which derives
-/// its path from the worktrees root. Recreating a working copy has to land on
-/// the path the agent already has, so it needs this one.
-///
-/// The `--` separator makes git read the name as a REF, and that is all it
-/// does: git still declines to ATTACH a dash-leading one. MEASURED on git 2.55
-/// against a `refs/heads/--force` created with `update-ref`:
-///
-/// ```text
-/// $ git worktree add ../wt -- --force
-/// Preparing worktree (detached HEAD 3427328)
-/// ```
-///
-/// Exit 0, right commit, wrong HEAD. The DWIM that turns a commit-ish into a
-/// checked-out branch only fires for a plain name, and a fully qualified
-/// `refs/heads/<name>` does not rescue it: measured the same way, that form
-/// detaches for an ORDINARY branch too, and it also loses the DWIM that gives a
-/// remote-only branch a local tracking branch. So the branch is attached in a
-/// second step, `git switch -- <name>`, whose own separator is enough.
-pub fn add_worktree_existing_branch_at(
-    repo_path: &Path,
-    worktree_path: &Path,
-    branch_name: &str,
-) -> Result<PathBuf> {
-    if let Some(parent) = worktree_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let repo = repo_path.as_os_str();
-    let worktree = worktree_path.as_os_str();
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["worktree", "add"])
-        .arg(worktree)
-        // `--` so the commit-ish is read as a REF and never as an option.
-        // Without it `git worktree add <path> --force` obeys the flag and
-        // checks out HEAD instead. Measured on git 2.55.
-        .args(["--", branch_name])
-        .output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git worktree add failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    // Attach the branch the add left detached. Gated on the local ref so a
-    // commit-ish naming a tag keeps checking out detached, as it does today.
-    let attached = current_branch_opt(worktree_path).unwrap_or(None);
-    if attached.as_deref() != Some(branch_name) && local_branch_exists(repo_path, branch_name) {
-        switch_branch(worktree_path, branch_name)?;
-    }
-    Ok(worktree_path
-        .canonicalize()
-        .unwrap_or_else(|_| worktree_path.to_path_buf()))
-}
-
-/// One worktree registration, as `git worktree list --porcelain -z` reports it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorktreeRegistration {
-    /// The directory git has this worktree registered at.
-    pub path: PathBuf,
-    /// git's own verdict that the directory behind this registration is gone.
-    pub prunable: bool,
-}
-
-/// Parse `git worktree list --porcelain -z` output into registrations.
-///
-/// `-z` rather than plain `--porcelain`, measured rather than assumed: plain
-/// porcelain writes the path raw and separates records with a blank line, so a
-/// worktree whose path contains a newline is indistinguishable from two
-/// records. Under `-z` every attribute is NUL-terminated and an empty attribute
-/// ends the record, which a path cannot forge.
-pub fn parse_worktree_registrations(output: &[u8]) -> Vec<WorktreeRegistration> {
-    let mut registrations = Vec::new();
-    let mut current: Option<WorktreeRegistration> = None;
-    for field in output.split(|byte| *byte == 0) {
-        if field.is_empty() {
-            if let Some(done) = current.take() {
-                registrations.push(done);
-            }
-            continue;
-        }
-        if let Some(path) = field.strip_prefix(b"worktree ") {
-            if let Some(done) = current.take() {
-                registrations.push(done);
-            }
-            current = Some(WorktreeRegistration {
-                path: PathBuf::from(std::ffi::OsString::from_vec(path.to_vec())),
-                prunable: false,
-            });
-        } else if (field == b"prunable" || field.starts_with(b"prunable "))
-            && let Some(entry) = current.as_mut()
-        {
-            entry.prunable = true;
-        }
-    }
-    if let Some(done) = current.take() {
-        registrations.push(done);
-    }
-    registrations
-}
-
-/// Forget the registration of ONE worktree whose directory is already gone.
-///
-/// Needed before re-adding a worktree at a path whose directory was deleted:
-/// git refuses with "missing but already registered worktree" and holds the
-/// branch as checked out, so both halves of a recreate fail without it.
-///
-/// Deliberately not `git worktree prune`, which is repository-wide. Measured on
-/// git 2.55: with one worktree deleted and a sibling's directory merely renamed
-/// away, a single prune removed BOTH registrations, and moving the sibling's
-/// directory back left it severed, with `git status` in it answering "not a git
-/// repository". A sibling agent on a mount that is down is exactly that case.
-///
-/// So the target is found in the registration list and removed by name, and
-/// only when git itself calls it prunable. `git worktree remove --force` on a
-/// registration whose directory is still there DELETES that directory, also
-/// measured, which is why the prunable check gates the call rather than merely
-/// informing it.
-pub fn forget_missing_worktree_registration(repo_path: &Path, worktree_path: &Path) -> Result<()> {
-    let repo = repo_path.as_os_str();
-    let listed = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["worktree", "list", "--porcelain", "-z"])
-        .output()?;
-    if !listed.status.success() {
-        return Err(anyhow!(
-            "git worktree list failed: {}",
-            String::from_utf8_lossy(&listed.stderr).trim()
-        ));
-    }
-    let Some(target) = parse_worktree_registrations(&listed.stdout)
-        .into_iter()
-        .find(|entry| same_worktree_path(&entry.path, worktree_path))
-    else {
-        // Nothing registered here, so nothing to forget and the add below is
-        // free to run.
-        return Ok(());
-    };
-    if !target.prunable {
-        return Err(anyhow!(
-            "git still has a working copy registered at {}, so yaran left the registration alone \
-             rather than removing a directory that is in use.",
-            target.path.display()
-        ));
-    }
-    let path = target.path.as_os_str();
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["worktree", "remove", "--force", "--"])
-        .arg(path)
-        .output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git worktree remove failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(())
-}
-
-/// Whether a registered worktree path names the same directory yaran is asking
-/// about.
-///
-/// A plain comparison first, then one that canonicalizes the PARENT: the
-/// directory itself is gone by the time this is asked, so it cannot be
-/// canonicalized, while a symlinked ancestor (`/tmp` on macOS) makes git's
-/// resolved path and yaran's stored one differ by that link alone.
-fn same_worktree_path(registered: &Path, target: &Path) -> bool {
-    if registered == target {
-        return true;
-    }
-    let resolved = |path: &Path| {
-        let parent = path.parent()?.canonicalize().ok()?;
-        Some(parent.join(path.file_name()?))
-    };
-    match (resolved(registered), resolved(target)) {
-        (Some(left), Some(right)) => left == right,
-        _ => false,
-    }
-}
-
-pub fn fetch_pull_request_head(repo_path: &Path, pr_number: u64, branch_name: &str) -> Result<()> {
-    let repo = repo_path.as_os_str();
-    let refspec = format!("pull/{pr_number}/head:refs/heads/{branch_name}");
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["fetch", "origin", &refspec])
-        .output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git fetch failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(())
-}
-
-pub fn create_worktree_from_start_point(
-    repo_path: &Path,
-    worktrees_root: &Path,
-    project_name: &str,
-    start_point: Option<&str>,
-    custom_name: Option<&str>,
-) -> Result<(String, PathBuf)> {
-    let branch_name = custom_name
-        .map(|s| s.to_string())
-        .unwrap_or_else(docker_style_name);
-    let project_root = worktrees_root.join(project_name);
-    fs::create_dir_all(&project_root)?;
-    let worktree_path = project_root.join(&branch_name);
-    let canonical =
-        add_worktree_new_branch_at(repo_path, &worktree_path, &branch_name, start_point)?;
-    Ok((branch_name, canonical))
-}
-
-/// Create a branch and check it out as a worktree at an EXACT path.
-///
-/// The path-taking half of [`create_worktree_from_start_point`]. Same start
-/// point discipline, for the same measured reason.
-pub fn add_worktree_new_branch_at(
-    repo_path: &Path,
-    worktree_path: &Path,
-    branch_name: &str,
-    start_point: Option<&str>,
-) -> Result<PathBuf> {
-    if let Some(parent) = worktree_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let repo = repo_path.as_os_str();
-    let worktree = worktree_path.as_os_str();
-    // Resolve the start point to an object id BEFORE handing it to
-    // `worktree add`: a `--` separator is not enough at this call shape
-    // (measured on git 2.55), because `worktree add` consumes the separator and
-    // forwards the start point to an internal `git branch <name> <start-point>`
-    // with none of its own, where `--force` or `--quiet` is obeyed as a FLAG,
-    // the worktree is branched from HEAD and git exits 0. An object id can never
-    // be read as an option; `--end-of-options` protects the resolve step itself,
-    // so a start point naming nothing fails loudly here.
-    let resolved_start = match start_point {
-        Some(start_point) => Some(run_git_capture(
-            repo_path,
-            &[
-                "rev-parse",
-                "--verify",
-                "--end-of-options",
-                &format!("{start_point}^{{commit}}"),
-            ],
-            &format!("resolve start point '{start_point}'"),
-        )?),
-        None => None,
-    };
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(repo)
-        .args(["worktree", "add", "-b", branch_name])
-        .arg(worktree);
-    if let Some(resolved_start) = resolved_start.as_deref() {
-        // Defence in depth alongside the resolve above.
-        command.arg("--").arg(resolved_start);
-    }
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git worktree add failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(worktree_path
-        .canonicalize()
-        .unwrap_or_else(|_| worktree_path.to_path_buf()))
-}
-
-pub fn head_commit(repo_path: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .with_context(|| format!("failed to inspect HEAD for {}", repo_path.display()))?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git rev-parse HEAD failed for {}: {}",
-            repo_path.display(),
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-#[derive(Debug, Default)]
-pub struct UncommittedCopySummary {
-    pub copied: usize,
-    pub deleted: usize,
-    /// Records skipped because the source is not a regular file or symlink:
-    /// dirty submodules (" M dir"), untracked embedded repos ("?? dir/"), and
-    /// non-regular files such as FIFOs, sockets, and devices (which would
-    /// block or fail a byte copy). Relative paths, for the user-facing note.
-    pub skipped_paths: Vec<String>,
-}
-
-#[derive(Default)]
-struct UncommittedCopyPlan {
-    deletions: Vec<PathBuf>,
-    copies: Vec<PathBuf>,
-    skipped_paths: Vec<String>,
-}
-
-/// Copies exactly what `git status --porcelain=v1 -z --untracked-files=all`
-/// reports in `source` into `destination`. Nothing gitignored travels.
-/// PRECONDITION: both worktrees are at the SAME HEAD commit; callers enforce
-/// this with the HEAD-equality guard (agent_job.rs), because status deltas
-/// are relative to the HEAD commit's tree.
-pub fn copy_uncommitted_changes(
-    source: &Path,
-    destination: &Path,
-) -> Result<UncommittedCopySummary> {
-    let source = source
-        .canonicalize()
-        .with_context(|| format!("failed to resolve {}", source.display()))?;
-    let destination = destination
-        .canonicalize()
-        .with_context(|| format!("failed to resolve {}", destination.display()))?;
-    if source == destination {
-        return Err(anyhow!(
-            "source and destination worktrees must be different"
-        ));
-    }
-
-    let plan = classify_uncommitted_records(&uncommitted_status(&source)?)?;
-    let mut summary = UncommittedCopySummary {
-        skipped_paths: plan.skipped_paths,
-        ..Default::default()
-    };
-    apply_uncommitted_deletions(&destination, &plan.deletions, &mut summary)?;
-    apply_uncommitted_copies(&source, &destination, &plan.copies, &mut summary)?;
-    Ok(summary)
-}
-
-fn uncommitted_status(source: &Path) -> Result<Vec<u8>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(source)
-        .args([
-            // Pin rename/copy detection off so every record carries exactly
-            // one path (rename records are two-path and config-dependent).
-            "-c",
-            "status.renames=false",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-        ])
-        .output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git status failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(output.stdout)
-}
-
-fn classify_uncommitted_records(status: &[u8]) -> Result<UncommittedCopyPlan> {
-    let mut plan = UncommittedCopyPlan::default();
-    for record in status.split(|byte| *byte == 0) {
-        classify_uncommitted_record(record, &mut plan)?;
-    }
-    Ok(plan)
-}
-
-fn classify_uncommitted_record(record: &[u8], plan: &mut UncommittedCopyPlan) -> Result<()> {
-    if record.len() < 4 {
-        return Ok(());
-    }
-    let index_status = record[0] as char;
-    let worktree_status = record[1] as char;
-    if matches!(index_status, 'R' | 'C') || matches!(worktree_status, 'R' | 'C') {
-        return Err(anyhow!(
-            "rename/copy detection produced a two-path record despite `-c status.renames=false`; this needs git >= 2.18"
-        ));
-    }
-    let path_bytes = &record[3..];
-    let relative: &Path =
-        <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path_bytes).as_ref();
-    if !is_safe_status_path(relative) {
-        return Ok(());
-    }
-    if path_bytes.ends_with(b"/") {
-        plan.skipped_paths
-            .push(relative.to_string_lossy().trim_end_matches('/').to_string());
-    } else if is_unmerged_status(index_status, worktree_status) {
-        plan.copies.push(relative.to_path_buf());
-    } else if worktree_status == 'D' || (index_status == 'D' && worktree_status == ' ') {
-        plan.deletions.push(relative.to_path_buf());
-    } else {
-        plan.copies.push(relative.to_path_buf());
-    }
-    Ok(())
-}
-
-fn is_safe_status_path(relative: &Path) -> bool {
-    let first_is_git_dir = matches!(
-        relative.components().next(),
-        Some(Component::Normal(name)) if name == ".git"
-    );
-    !relative.is_absolute()
-        && !first_is_git_dir
-        && !relative
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
-}
-
-fn is_unmerged_status(index_status: char, worktree_status: char) -> bool {
-    index_status == 'U'
-        || worktree_status == 'U'
-        || (index_status == 'A' && worktree_status == 'A')
-        || (index_status == 'D' && worktree_status == 'D')
-}
-
-fn apply_uncommitted_deletions(
-    destination: &Path,
-    deletions: &[PathBuf],
-    summary: &mut UncommittedCopySummary,
-) -> Result<()> {
-    for relative in deletions {
-        remove_path_if_exists(&destination.join(relative))?;
-        summary.deleted += 1;
-        prune_empty_ancestors(destination, relative);
-    }
-    Ok(())
-}
-
-fn apply_uncommitted_copies(
-    source: &Path,
-    destination: &Path,
-    copies: &[PathBuf],
-    summary: &mut UncommittedCopySummary,
-) -> Result<()> {
-    for relative in copies {
-        let source_path = source.join(relative);
-        let destination_path = destination.join(relative);
-        let metadata = match fs::symlink_metadata(&source_path) {
-            Ok(metadata) => metadata,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                remove_path_if_exists(&destination_path)?;
-                summary.deleted += 1;
-                continue;
-            }
-            Err(err) => return Err(err.into()),
-        };
-        if !metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
-            summary
-                .skipped_paths
-                .push(relative.to_string_lossy().to_string());
-            continue;
-        }
-        ensure_destination_parents(source, destination, relative)?;
-        sync_entry(&source_path, &destination_path)?;
-        summary.copied += 1;
-    }
-    Ok(())
-}
-
-/// Best-effort removal of now-empty ancestor directories of `rel` inside
-/// `destination`, walking up toward (never past) `destination` and stopping
-/// at the first non-empty directory. Errors are ignored.
-fn prune_empty_ancestors(destination: &Path, rel: &Path) {
-    let mut ancestor = rel.parent();
-    while let Some(dir) = ancestor {
-        if dir.as_os_str().is_empty() {
-            break;
-        }
-        // `remove_dir` refuses to remove a non-empty directory.
-        if fs::remove_dir(destination.join(dir)).is_err() {
-            break;
-        }
-        ancestor = dir.parent();
-    }
-}
-
-/// Create the missing parent directories of `rel` under `destination`,
-/// copying the corresponding source directory's mode when it exists (see the
-/// umask-safety rationale in `sync_entry`), and tolerating races.
-fn ensure_destination_parents(source: &Path, destination: &Path, rel: &Path) -> Result<()> {
-    let Some(parent) = rel.parent() else {
-        return Ok(());
-    };
-    let mut prefix = PathBuf::new();
-    for component in parent.components() {
-        prefix.push(component);
-        let destination_dir = destination.join(&prefix);
-        if fs::symlink_metadata(&destination_dir).is_ok() {
-            continue;
-        }
-        let mut builder = fs::DirBuilder::new();
-        if let Ok(source_meta) = fs::symlink_metadata(source.join(&prefix))
-            && source_meta.file_type().is_dir()
-        {
-            builder.mode(source_meta.permissions().mode());
-        }
-        match builder.create(&destination_dir) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(err) => return Err(err.into()),
-        }
-    }
-    Ok(())
-}
-
-/// Like `remove_path`, but an already-absent path is success.
-fn remove_path_if_exists(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => remove_path(path),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err.into()),
-    }
-}
-
-/// What a worktree removal did to the branches involved.
-///
-/// Two branches, because an agent's branch can DRIFT: `branch_name` is kept in
-/// step with whatever the worktree is on, while `initial_branch` is the branch
-/// the agent was born on and never moves. Delete only the first and the birth
-/// branch survives the agent, which is how "create foo, delete foo, recreate
-/// foo" ends in "branch already exists".
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RemoveResult {
-    /// What happened to the branch the worktree was on.
-    pub branch: BranchDeletion,
-    /// What happened to a DISTINCT birth branch, and `None` when there was no
-    /// distinct birth branch to delete (the agent never drifted, or the caller
-    /// passed none).
-    pub initial_branch: Option<BranchDeletion>,
-}
-
-/// What `git branch -D` did to one branch.
-///
-/// A failed `git branch -D` is distinct from an absent branch: a branch checked
-/// out in another worktree is refused and remains present.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub enum BranchDeletion {
-    /// git deleted the branch here.
-    #[default]
-    Deleted,
-    /// There was no such branch to delete. Not an error: somebody else already
-    /// removed it, or yaran was told about a branch that never existed.
-    AlreadyGone,
-    /// git refused, and the branch is STILL THERE. Carries git's own reason
-    /// line so the message can say why rather than guessing.
-    Refused { reason: String },
-}
-
-impl BranchDeletion {
-    /// git's reason for refusing, or `None` when it did not refuse.
-    pub fn refused_reason(&self) -> Option<&str> {
-        match self {
-            BranchDeletion::Refused { reason } => Some(reason),
-            _ => None,
-        }
-    }
-}
-
-/// The recovery sentence for a branch git REFUSED to delete: what happened, why
-/// in git's own words, and the two ways out. Shared so the TUI status line and
-/// the web toast say the same thing, which both need because a surviving branch
-/// makes recreating an agent under the same name fail far from the deletion that
-/// caused it.
-pub fn branch_refusal_note(branch: &str, reason: &str) -> crate::status_text::StatusText {
-    let reason = clean_git_reason(reason);
-    crate::status_text![
-        "Git refused to delete branch ",
-        q(branch),
-        format!(": {reason} Delete it yourself with "),
-        n(branch_delete_command(branch)),
-        ", or give the next agent a different name."
-    ]
-}
-
-/// The command a status tells the user to run to remove a branch by hand, as
-/// one string so it can travel as one name (the web draws it as a single chip).
-/// The branch is single-quoted, because a branch name can come from a pull
-/// request somebody else opened and the user is being invited to paste this.
-pub fn branch_delete_command(branch: &str) -> String {
-    format!("git branch -D {}", crate::shell_quote::single_quote(branch))
-}
-
-/// git's stderr line, tidied for a status message: the "error: " prefix dropped,
-/// since the sentence around it already says something went wrong, and a full
-/// stop added when git did not end with one. An empty reason becomes a plain
-/// statement rather than a dangling colon.
-fn clean_git_reason(reason: &str) -> String {
-    let trimmed = reason.trim();
-    let trimmed = trimmed
-        .strip_prefix("error: ")
-        .or_else(|| trimmed.strip_prefix("fatal: "))
-        .unwrap_or(trimmed);
-    if trimmed.is_empty() {
-        return "git gave no reason.".to_string();
-    }
-    if trimmed.ends_with('.') || trimmed.ends_with('!') || trimmed.ends_with('?') {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}.")
-    }
-}
-
-impl RemoveResult {
-    /// Whether git refused either branch, which leaves it on disk for the user
-    /// to remove by hand. The one copy of the question every surface asks.
-    pub fn refused_a_branch(&self) -> bool {
-        self.branch.refused_reason().is_some()
-            || self
-                .initial_branch
-                .as_ref()
-                .is_some_and(|deletion| deletion.refused_reason().is_some())
-    }
-
-    /// A sentence naming what happened to the agent's ORIGINAL branch, for the
-    /// status message. `None` when the agent never drifted, so the message says
-    /// nothing extra rather than mentioning a branch the user never saw.
-    ///
-    /// Lives here so the TUI status line and the web toast say the same thing.
-    pub fn initial_branch_note(
-        &self,
-        initial_branch: &str,
-    ) -> Option<crate::status_text::StatusText> {
-        match self.initial_branch.as_ref()? {
-            BranchDeletion::Deleted => Some(crate::status_text![
-                "Its original branch ",
-                q(initial_branch),
-                " was deleted too."
-            ]),
-            BranchDeletion::AlreadyGone => Some(crate::status_text![
-                "Its original branch ",
-                q(initial_branch),
-                " was already gone."
-            ]),
-            BranchDeletion::Refused { reason } => Some(crate::status_text![
-                "Its original branch ",
-                q(initial_branch),
-                " is still there. ",
-                branch_refusal_note(initial_branch, reason)
-            ]),
-        }
-    }
-}
-
-/// Force-delete one branch, best effort, reporting which of the three things
-/// happened.
-///
-/// `--` so the name is read as a REF and never as an option: without it a ref
-/// that plumbing created as `--delete` is parsed as the flag and survives the
-/// cleanup (measured on git 2.55). A failure is then disambiguated with PLUMBING
-/// rather than by reading git's prose: `show-ref --verify` answers whether the
-/// ref is still there. `--end-of-options` guards that positional too (MEASURED:
-/// `show-ref` accepts it), belt and braces over a fully qualified
-/// `refs/heads/...` that cannot lead with a dash anyway.
-fn delete_branch_force(repo_path: &Path, branch_name: &str) -> Result<BranchDeletion> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["branch", "-D", "--", branch_name])
-        .output()?;
-    if output.status.success() {
-        return Ok(BranchDeletion::Deleted);
-    }
-    if !branch_still_exists(repo_path, branch_name) {
-        return Ok(BranchDeletion::AlreadyGone);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let reason = stderr
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("")
-        .to_string();
-    Ok(BranchDeletion::Refused { reason })
-}
-
-/// Force-delete a branch yaran minted moments ago and then failed to build the
-/// agent around, best effort.
-///
-/// It covers the one window the worktree rollback cannot: a branch that exists
-/// while its worktree does not, so there is nothing for [`remove_worktree`] to
-/// remove. It routes through `delete_branch_force`, sharing the `--` guard and
-/// the plumbing disambiguation, and discards the outcome: the caller is already
-/// reporting a failure and a stubborn ref is not a second thing to say.
-pub(crate) fn delete_created_branch_best_effort(repo_path: &Path, branch_name: &str) {
-    let _ = delete_branch_force(repo_path, branch_name);
-}
-
-/// Whether `refs/heads/<branch_name>` still resolves. Best effort: a git that
-/// cannot answer is read as "gone", which keeps the old behaviour rather than
-/// inventing a refusal nobody can act on.
-fn branch_still_exists(repo_path: &Path, branch_name: &str) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            "--end-of-options",
-            &format!("refs/heads/{branch_name}"),
-        ])
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
-}
-
 /// The registered project checkouts, expanded to absolute paths, for
 /// [`guard_whole_workspace_removal`]. Fails closed: one project path that does
 /// not expand to a safe absolute path makes the whole inventory an error,
@@ -2231,18 +4406,65 @@ fn resolve_for_removal(path: &Path) -> Result<PathBuf> {
 /// `--force`, so a worktree with uncommitted work is removed anyway: every
 /// caller must confirm with the user first.
 ///
-/// `protected` is every registered project checkout (see
-/// [`registered_project_paths`]). A target that overlaps any of them is
-/// refused before git runs, see [`guard_whole_workspace_removal`]. It is an
-/// explicit argument, not derived from `repo_path`, so every caller has to say
-/// what it protects.
+/// One attempt. A failure git may get past on a second try (the worktree is
+/// still registered and still there) is a [`RemovalWorthRetrying`]; the
+/// caller retries, and only after looking at the folder again, because a
+/// retry made on the strength of the first look could delete something that
+/// walked in since.
+///
+/// # Errors
+///
+/// Fails when git cannot be run or `git worktree remove` fails; a failure worth a second try is a
+/// [`RemovalWorthRetrying`].
 pub fn remove_worktree_keep_branch(
     repo_path: &Path,
     worktree_path: &Path,
     protected: &[PathBuf],
 ) -> Result<()> {
+    // Fork f4f2257a: a whole-worktree removal is refused, with nothing
+    // touched, when the target overlaps any registered project checkout.
     guard_whole_workspace_removal(worktree_path, protected)?;
-    let output = Command::new("git")
+    let output = run_worktree_remove(repo_path, worktree_path)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    if worktree_path.exists() && worktree_is_registered(repo_path, worktree_path) {
+        return Err(anyhow::Error::new(RemovalWorthRetrying {
+            git_error: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        }));
+    }
+    finish_failed_removal(repo_path, worktree_path, &output)
+}
+
+/// How long a worktree removal that failed while git still had the worktree
+/// registered waits before its one retry (which looks at the folder again
+/// first). Long enough for a process that was writing into the folder to have
+/// been stopped, short enough to sit inside the removal's spinner. Not a user
+/// setting: the removal is already bounded by the close grace, and this is
+/// one pause on a failure path.
+pub(crate) const WORKTREE_REMOVAL_RETRY_PAUSE: std::time::Duration =
+    std::time::Duration::from_secs(1);
+
+/// `git worktree remove --force` failed while git still lists the worktree
+/// and its folder is still there: a transient refusal (something writing into
+/// it a moment ago) a second attempt may get past, once the folder has been
+/// looked at again.
+#[derive(Debug)]
+pub struct RemovalWorthRetrying {
+    /// git's own error text from the failed removal.
+    pub git_error: String,
+}
+
+impl std::fmt::Display for RemovalWorthRetrying {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "git worktree remove failed: {}", self.git_error)
+    }
+}
+
+impl std::error::Error for RemovalWorthRetrying {}
+
+fn run_worktree_remove(repo_path: &Path, worktree_path: &Path) -> Result<std::process::Output> {
+    Ok(Command::new("git")
         .arg("-C")
         .arg(repo_path)
         .args([
@@ -2252,23 +4474,241 @@ pub fn remove_worktree_keep_branch(
             "--",
         ])
         .arg(worktree_path)
-        .output()?;
-    if !output.status.success() {
-        if worktree_path.exists() {
-            return Err(anyhow!(
-                "git worktree remove failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+        .output()?)
+}
+
+/// What a failed `git worktree remove --force` leaves, said. A failure is
+/// usually the "Directory not empty" case when something is still writing
+/// into the folder. git deletes the files, finds the folder refilled, and
+/// fails its last `rmdir`; by then it has ALREADY dropped the worktree's
+/// registration (it carries on to the admin directory whatever the work tree
+/// did), so the same command a second time can only answer "is not a working
+/// tree". The folder is then reported with a [`LeftoverWorktreeFolder`]
+/// saying exactly that: yaran never deletes the folder on its own. The worktree
+/// manager lists it, and deletes it only once the user confirms a dialog that
+/// names it.
+fn finish_failed_removal(
+    repo_path: &Path,
+    worktree_path: &Path,
+    output: &std::process::Output,
+) -> Result<()> {
+    if !worktree_path.exists() {
+        // The worktree is already gone from disk. Forget THIS registration, if
+        // git still has one, and nothing else: a bare `git worktree prune` is
+        // repository-wide and severs any sibling whose directory happens to be
+        // unreachable at this moment (see `forget_missing_worktree_registration`).
+        if let Err(err) = forget_missing_worktree_registration(repo_path, worktree_path) {
+            crate::logger::warn(&format!(
+                "removed worktree {} is gone from disk, but its registration could not be \
+                 forgotten: {err:#}",
+                worktree_path.display()
             ));
         }
-        // Worktree already gone from disk: prune stale git refs.
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(repo_path)
-            .args(["worktree", "prune"])
-            .output();
+        return Ok(());
     }
-    Ok(())
+    let git_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if worktree_is_registered(repo_path, worktree_path) {
+        return Err(anyhow!("git worktree remove failed: {git_error}"));
+    }
+    let (leftovers, more) = list_leftovers(worktree_path, LEFTOVERS_NAMED);
+    Err(anyhow::Error::new(LeftoverWorktreeFolder {
+        path: worktree_path.to_path_buf(),
+        leftovers,
+        more,
+        git_error,
+        kept_branches: Vec::new(),
+        gone_branches: Vec::new(),
+        unchecked_branches: Vec::new(),
+        in_manager: false,
+    }))
 }
+
+/// How many leftover paths a [`LeftoverWorktreeFolder`] names.
+pub(crate) const LEFTOVERS_NAMED: usize = 5;
+
+/// Whether git lists `worktree_path` among the repository's worktrees, as a
+/// question that can fail: a git that cannot answer is an error, never "not
+/// registered", because the caller is about to delete the folder on the
+/// strength of the answer.
+///
+/// # Errors
+///
+/// Fails when git cannot list the repository's worktrees.
+pub(crate) fn worktree_registration_checked(
+    repo_path: &Path,
+    worktree_path: &Path,
+) -> Result<bool> {
+    Ok(list_worktrees(repo_path)?
+        .iter()
+        .any(|entry| same_worktree_path(&entry.path, worktree_path)))
+}
+
+/// Whether git still lists `worktree_path` among the repository's worktrees.
+/// Read from `worktree list --porcelain -z`, the machine-stable form, through
+/// the same parser and path comparison the targeted forget uses. A git that
+/// cannot answer reads as "not registered", which only skips the retry.
+pub(crate) fn worktree_is_registered(repo_path: &Path, worktree_path: &Path) -> bool {
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .output()
+    else {
+        return false;
+    };
+    output.status.success()
+        && parse_worktree_registrations(&output.stdout)
+            .iter()
+            .any(|entry| same_worktree_path(&entry.path, worktree_path))
+}
+
+/// Up to `limit` of what is left in a folder git could not finish deleting,
+/// as relative paths, innermost first (an empty directory names itself), plus
+/// how many more there are.
+pub(crate) fn list_leftovers(folder: &Path, limit: usize) -> (Vec<String>, usize) {
+    let mut leaves: Vec<String> = walkdir::WalkDir::new(folder)
+        .follow_links(false)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| {
+            !entry.file_type().is_dir()
+                || std::fs::read_dir(entry.path()).is_ok_and(|mut dir| dir.next().is_none())
+        })
+        .filter_map(|entry| {
+            entry
+                .path()
+                .strip_prefix(folder)
+                .ok()
+                .map(|relative| relative.to_string_lossy().into_owned())
+        })
+        .collect();
+    leaves.sort();
+    let more = leaves.len().saturating_sub(limit);
+    leaves.truncate(limit);
+    (leaves, more)
+}
+
+/// A worktree removal git could only half finish: the registration is gone,
+/// the folder is not, because something kept writing into it while git was
+/// deleting it. yaran does not finish the job on its own: the message says what
+/// is left, and the worktree manager offers a confirmed delete of the folder.
+/// The branches the removal was asked to delete are KEPT, because the folder
+/// still holds their files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeftoverWorktreeFolder {
+    /// The worktree folder that was left behind.
+    pub path: std::path::PathBuf,
+    /// Up to a handful of what is left, relative to `path`.
+    pub leftovers: Vec<String>,
+    /// How many more leftovers there are beyond `leftovers`.
+    pub more: usize,
+    /// git's own last word on it.
+    pub git_error: String,
+    /// The branches the removal was asked to delete, kept because the folder
+    /// is still on disk, each at the commit it pointed at then.
+    pub kept_branches: Vec<KeptBranch>,
+    /// Branches the removal was asked to delete that did not exist any more.
+    pub gone_branches: Vec<String>,
+    /// Branches git could not be asked about, with why. Each is also in
+    /// `kept_branches`, with no commit, so no later delete removes it.
+    pub unchecked_branches: Vec<(String, String)>,
+    /// Whether the worktree manager lists the folder (its record was written),
+    /// which is when the message may send the user there.
+    pub in_manager: bool,
+}
+
+/// A branch kept because the folder that holds its files was left behind, and
+/// the commit it pointed at then: a later delete removes it only while it
+/// still points there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptBranch {
+    /// The branch's name.
+    pub name: String,
+    /// The object id `refs/heads/<name>` pointed at, `None` when git could
+    /// not be asked; such a branch is never deleted by yaran.
+    pub oid: Option<String>,
+    /// Where the branch came from, as the agent that held it recorded it;
+    /// `None` when the worktree manager's own removal kept it.
+    pub provenance: Option<crate::model::BranchProvenance>,
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn and_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => (*only).to_string(),
+        [head @ .., last] => format!("{} and {last}", head.join(", ")),
+    }
+}
+
+impl std::fmt::Display for LeftoverWorktreeFolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let path = crate::home_path::shorten_home(&self.path);
+        write!(f, "something kept writing into {path}")?;
+        if !self.leftovers.is_empty() {
+            write!(f, " ({}", self.leftovers.join(", "))?;
+            if self.more > 0 {
+                write!(f, " and {} more", self.more)?;
+            }
+            write!(f, ")")?;
+        }
+        if self.in_manager {
+            write!(
+                f,
+                ", so the folder is still there. Stop it, then delete the folder from the \
+                 project's worktree manager."
+            )?;
+        } else {
+            write!(
+                f,
+                ", so the folder is still there. Stop it, then delete the folder yourself."
+            )?;
+        }
+        let kept: Vec<&str> = self
+            .kept_branches
+            .iter()
+            .filter(|b| b.oid.is_some())
+            .map(|b| b.name.as_str())
+            .collect();
+        if !kept.is_empty() {
+            let (noun, verb, pronoun) = if kept.len() == 1 {
+                ("Branch", "was", "it")
+            } else {
+                ("Branches", "were", "them")
+            };
+            write!(
+                f,
+                " {noun} {} {verb} kept because the folder is still on disk; ",
+                and_list(&kept)
+            )?;
+            if self.in_manager {
+                write!(
+                    f,
+                    "the worktree manager can delete {pronoun} with the folder."
+                )?;
+            } else {
+                write!(
+                    f,
+                    "delete {pronoun} with git branch -D once the folder is gone."
+                )?;
+            }
+        }
+        for name in &self.gone_branches {
+            write!(f, " Branch {name} was already gone.")?;
+        }
+        for (name, reason) in &self.unchecked_branches {
+            write!(
+                f,
+                " git could not check branch {name} ({reason}), so it was kept; delete it \
+                 with git branch -D once the folder is gone."
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for LeftoverWorktreeFolder {}
 
 /// Whether the worktree has anything uncommitted: staged changes, unstaged
 /// changes, or untracked files. Untracked files count deliberately, because
@@ -2277,11 +4717,20 @@ pub fn remove_worktree_keep_branch(
 ///
 /// Uses `--porcelain=v1 -z`, the machine-stable form; only the presence of the
 /// records is read, never the paths.
-pub fn worktree_is_dirty(worktree_path: &Path) -> Result<bool> {
+pub(crate) fn worktree_is_dirty(worktree_path: &Path) -> Result<bool> {
+    // A scan that only reads: it never takes the index lock.
     let output = Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C")
         .arg(worktree_path)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            // A submodule `.gitmodules` or the config ignores is still dirty.
+            "--ignore-submodules=none",
+        ])
         .output()?;
     if !output.status.success() {
         return Err(anyhow!(
@@ -2291,6 +4740,97 @@ pub fn worktree_is_dirty(worktree_path: &Path) -> Result<bool> {
         ));
     }
     Ok(!output.stdout.is_empty())
+}
+
+/// How many files in the worktree are not committed: modified, staged,
+/// deleted, renamed, or untracked, which is what `git worktree remove --force`
+/// destroys with the directory. Ignored files do not count. A renamed or
+/// copied file is one file, though its record carries two paths. A worktree
+/// directory that is not there has nothing to lose, so it counts 0.
+///
+/// It shells out to git, so callers run it in a background worker. Immune to
+/// user config: `--porcelain=v1 -z` is the machine-stable form, every flag
+/// that config could change (`status.showUntrackedFiles`, `status.renames`,
+/// `diff.ignoreSubmodules`) is passed explicitly, and only the records'
+/// status columns are read, never their paths.
+///
+/// # Errors
+///
+/// Fails when git cannot be run, `git status` fails, or it does not answer
+/// within [`UNCOMMITTED_COUNT_TIMEOUT`] (then with "git timed out").
+pub fn uncommitted_file_count(worktree_path: &Path) -> Result<u32> {
+    uncommitted_file_count_within(worktree_path, UNCOMMITTED_COUNT_TIMEOUT)
+}
+
+/// How long one worktree's uncommitted-file count waits for `git status`
+/// before giving up. A delete dialog and `yaran projects rm --delete-worktrees`
+/// ask it once per worktree, so a wedged filesystem or lock must cost a failed
+/// count, said as "yaran could not look", rather than holding the question.
+/// Longer than the ref probes' bound, because a status walks the whole tree.
+pub(crate) const UNCOMMITTED_COUNT_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(15);
+
+fn uncommitted_file_count_within(
+    worktree_path: &Path,
+    timeout: std::time::Duration,
+) -> Result<u32> {
+    if !worktree_path.is_dir() {
+        return Ok(0);
+    }
+    // A scan that only reads: it never takes the index lock.
+    let mut command = Command::new("git");
+    command
+        .arg("--no-optional-locks")
+        .arg("-C")
+        .arg(worktree_path)
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--renames",
+            "--ignore-submodules=none",
+        ]);
+    let output = match crate::bounded_command::run_command_with_timeout(
+        command,
+        crate::bounded_command::ChildGroup::New,
+        timeout,
+        crate::bounded_command::DEFAULT_READER_DRAIN,
+        "git",
+    ) {
+        crate::bounded_command::CommandOutcome::Completed(output) => output,
+        crate::bounded_command::CommandOutcome::TimedOut => return Err(anyhow!("git timed out")),
+        crate::bounded_command::CommandOutcome::Failed(err)
+        | crate::bounded_command::CommandOutcome::NotFound(err) => {
+            return Err(anyhow!("git could not be run: {err}"));
+        }
+    };
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr);
+        return Err(match said.trim() {
+            "" => anyhow!("git status failed ({})", output.status),
+            said => anyhow!("git status failed: {said}"),
+        });
+    }
+    Ok(count_status_records(&output.stdout))
+}
+
+/// The number of files in `git status --porcelain=v1 -z` output: one per
+/// record, where a rename or copy record's second path is part of the same
+/// file and is skipped.
+fn count_status_records(stdout: &[u8]) -> u32 {
+    let mut records = stdout.split(|byte| *byte == 0).filter(|r| !r.is_empty());
+    let mut count: u32 = 0;
+    while let Some(record) = records.next() {
+        count = count.saturating_add(1);
+        let renamed = record
+            .get(..2)
+            .is_some_and(|xy| xy.iter().any(|column| matches!(column, b'R' | b'C')));
+        if renamed {
+            records.next();
+        }
+    }
+    count
 }
 
 /// Remove a worktree and delete the branches the agent owned.
@@ -2304,6 +4844,10 @@ pub fn worktree_is_dirty(worktree_path: &Path) -> Result<bool> {
 /// Both deletions are BEST EFFORT: a branch git will not delete is reported in
 /// the [`RemoveResult`] for the status message, never as an error. Only the
 /// worktree removal itself can fail this call.
+///
+/// # Errors
+///
+/// Fails when the worktree removal fails, or git cannot be run to delete a branch.
 pub fn remove_worktree(
     repo_path: &Path,
     worktree_path: &Path,
@@ -2313,7 +4857,48 @@ pub fn remove_worktree(
 ) -> Result<RemoveResult> {
     // The worktree half is shared with `remove_worktree_keep_branch`; only the
     // branch deletions below are this function's own.
-    remove_worktree_keep_branch(repo_path, worktree_path, protected)?;
+    if let Err(err) = remove_worktree_keep_branch(repo_path, worktree_path, protected) {
+        // git let go of the worktree but its folder is left, still holding
+        // the branches' files: they are KEPT, each recorded at the commit it
+        // points at now, so the worktree manager's later delete of the folder
+        // can remove them only while they still point there.
+        return Err(match err.downcast::<LeftoverWorktreeFolder>() {
+            Ok(mut leftover) => {
+                for name in [Some(branch_name), initial_branch]
+                    .into_iter()
+                    .flatten()
+                    .filter(|name| !name.is_empty())
+                {
+                    let seen = leftover.kept_branches.iter().any(|kept| kept.name == name)
+                        || leftover.gone_branches.iter().any(|gone| gone == name);
+                    if seen {
+                        continue;
+                    }
+                    match resolve_branch_oid(repo_path, name) {
+                        Ok(Some(oid)) => leftover.kept_branches.push(KeptBranch {
+                            name: name.to_string(),
+                            oid: Some(oid),
+                            provenance: None,
+                        }),
+                        Ok(None) => leftover.gone_branches.push(name.to_string()),
+                        // Not "gone": kept, with no commit to delete it by.
+                        Err(err) => {
+                            leftover.kept_branches.push(KeptBranch {
+                                name: name.to_string(),
+                                oid: None,
+                                provenance: None,
+                            });
+                            leftover
+                                .unchecked_branches
+                                .push((name.to_string(), format!("{err:#}")));
+                        }
+                    }
+                }
+                anyhow::Error::new(leftover)
+            }
+            Err(err) => err,
+        });
+    }
     let branch = delete_branch_force(repo_path, branch_name)?;
     // Only a DISTINCT, non-empty birth branch is a second thing to delete. An
     // empty one comes from a session record that never had it recorded.
@@ -2332,6 +4917,7 @@ pub fn remove_worktree(
 /// The file listing returned by [`worktree_files`].
 #[derive(Debug, Clone)]
 pub struct WorktreeFileList {
+    /// The worktree's files, relative to its root.
     pub files: Vec<String>,
     /// `true` when the walk hit the caller's `max_files` cap and some entries
     /// were omitted. The client may surface a subtle hint.
@@ -2347,8 +4933,12 @@ pub struct WorktreeFileList {
 /// This feeds the web editor's file-SEARCH index, not its tree ([`list_dir`]
 /// backs that). Returns at most `max_files` entries and sets `truncated` if more
 /// exist; `max_files == 0` disables the cap entirely.
+///
+/// # Errors
+///
+/// Never fails today: entries the walk cannot read are skipped.
 pub fn worktree_files(worktree_path: &Path, max_files: usize) -> Result<WorktreeFileList> {
-    walk_files(worktree_path, max_files, DotDirectories::Walked)
+    Ok(walk_files(worktree_path, max_files, DotDirectories::Walked))
 }
 
 /// The same flat walk for a root that is NOT a worktree: the directory a
@@ -2366,8 +4956,12 @@ pub fn worktree_files(worktree_path: &Path, max_files: usize) -> Result<Worktree
 /// `[server] search_index_max_files` cap every other walk gets, plus the
 /// single-tenant trusted-access model: a client that reaches this can already
 /// browse the filesystem.
+///
+/// # Errors
+///
+/// Never fails today: entries the walk cannot read are skipped.
 pub fn rooted_files(root: &Path, max_files: usize) -> Result<WorktreeFileList> {
-    walk_files(root, max_files, DotDirectories::Pruned)
+    Ok(walk_files(root, max_files, DotDirectories::Pruned))
 }
 
 /// Whether a flat walk descends into directories whose name starts with a dot.
@@ -2383,7 +4977,7 @@ fn walk_files(
     worktree_path: &Path,
     max_files: usize,
     dot_dirs: DotDirectories,
-) -> Result<WorktreeFileList> {
+) -> WorktreeFileList {
     use walkdir::WalkDir;
 
     let wt = worktree_path.to_path_buf();
@@ -2442,7 +5036,7 @@ fn walk_files(
     }
 
     files.sort();
-    Ok(WorktreeFileList { files, truncated })
+    WorktreeFileList { files, truncated }
 }
 
 /// One entry in a single-directory listing for the web editor's lazy file tree.
@@ -2473,6 +5067,10 @@ pub struct DirEntryInfo {
 /// relative; `""` lists the worktree root. Containment reuses the
 /// read-permissive resolver (`.git/` is listable; traversal, absolute paths,
 /// and symlinks that escape the worktree are refused).
+///
+/// # Errors
+///
+/// Fails when `rel_dir` escapes the worktree or the directory cannot be read.
 pub fn list_dir(worktree: &Path, rel_dir: &str) -> Result<Vec<DirEntryInfo>> {
     let abs_dir = if rel_dir.is_empty() {
         worktree.to_path_buf()
@@ -2513,16 +5111,13 @@ pub fn list_dir(worktree: &Path, rel_dir: &str) -> Result<Vec<DirEntryInfo>> {
         let (is_dir, expandable) = if is_symlink {
             // Follow the link to learn whether the target is a directory; a
             // dangling symlink is a plain non-expandable leaf.
-            let target_is_dir = std::fs::metadata(entry.path())
-                .map(|m| m.is_dir())
-                .unwrap_or(false);
+            let target_is_dir = std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir());
             if target_is_dir {
                 // Expandable only when the resolved target stays inside the
                 // worktree: an escaping symlinked dir is shown but can never
                 // be walked out of the tree.
                 let in_tree = crate::worktree_file::resolve_worktree_path_for_read(worktree, &path)
-                    .map(|(_, _, is_outside)| !is_outside)
-                    .unwrap_or(false);
+                    .is_ok_and(|(_, _, is_outside)| !is_outside);
                 (in_tree, in_tree)
             } else {
                 (false, false)
@@ -2540,10 +5135,19 @@ pub fn list_dir(worktree: &Path, rel_dir: &str) -> Result<Vec<DirEntryInfo>> {
         });
     }
 
-    // `file_name().to_string_lossy()` replaces invalid UTF-8 bytes with U+FFFD,
-    // so two distinct non-UTF-8 names can collide onto one lossy `path` and the
-    // client, which keys tree rows by path, would lose one of them. Drop later
-    // duplicates and warn rather than build an escaping scheme.
+    drop_lossy_duplicates(&mut entries);
+
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    Ok(entries)
+}
+
+/// Drop later entries whose lossy path repeats an earlier one: two non-UTF-8
+/// names can collide there, and the client keys tree rows by path.
+fn drop_lossy_duplicates(entries: &mut Vec<DirEntryInfo>) {
     let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
     entries.retain(|e| {
         if seen_paths.insert(e.path.clone()) {
@@ -2556,29 +5160,29 @@ pub fn list_dir(worktree: &Path, rel_dir: &str) -> Result<Vec<DirEntryInfo>> {
             false
         }
     });
-
-    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
-    Ok(entries)
 }
 
 /// The source path a row carries, which is only ever a rename's or a copy's:
 /// the other side of the same record may be an ordinary modification.
-fn rename_source(status: char, source: &Option<String>) -> Option<String> {
+fn rename_source(status: char, source: Option<&String>) -> Option<String> {
     if matches!(status, 'R' | 'C') {
-        source.clone()
+        source.cloned()
     } else {
         None
     }
 }
 
-/// Every git process `changed_files` starts goes through here, so a test can
-/// count them: the panel is polled, and a per-file subprocess (the fork's
-/// P1-24, one `git diff --no-index` per untracked file) turns a big untracked
-/// tree into hundreds of spawns per tick.
+/// The changed files as the Changes views show them: a submodule the
+/// repository's `.gitmodules` or config says to ignore is left out, as `git
+/// status` leaves it out. For rendering only; anything that decides from the
+/// listing asks [`changed_files_for_decisions`].
+///
+/// # Errors
+///
+/// Fails when git cannot be run or its status or numstat cannot be read.
+/// Every `git` child the changed-files listing starts, counted in tests so the
+/// number of processes per listing is pinned (fork: it must not grow with the
+/// number of untracked files).
 fn changed_files_git_command() -> Command {
     #[cfg(test)]
     CHANGED_FILES_GIT_COMMANDS.with(|count| count.set(count.get() + 1));
@@ -2590,31 +5194,98 @@ thread_local! {
     static CHANGED_FILES_GIT_COMMANDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-pub fn changed_files(worktree_path: &Path) -> Result<(Vec<ChangedFile>, Vec<ChangedFile>)> {
-    let wt = worktree_path.as_os_str();
+pub fn changed_files_for_display(
+    worktree_path: &Path,
+) -> Result<(Vec<ChangedFile>, Vec<ChangedFile>)> {
+    changed_files_with(
+        worktree_path,
+        Submodules::AsConfigured,
+        ListingLocks::Refresh,
+    )
+}
 
-    let output = changed_files_git_command()
-        .arg("-C")
-        .arg(wt)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git status failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
+/// [`changed_files_for_display`], taking the index lock only as `locks` says.
+/// The caller owns the lane: [`crate::changes_lane::poll_changed_files`] and
+/// [`crate::changes_lane::request_changed_files`] pick the mode from the turn
+/// they got.
+///
+/// # Errors
+///
+/// Fails when git cannot be run, its status or numstat cannot be read, or one
+/// of its git children does not finish within its deadline.
+pub fn changed_files_for_display_with(
+    worktree_path: &Path,
+    locks: ListingLocks,
+) -> Result<(Vec<ChangedFile>, Vec<ChangedFile>)> {
+    changed_files_with(worktree_path, Submodules::AsConfigured, locks)
+}
 
+/// Which of a listing's git children may take the worktree's `index.lock`.
+/// `git status` and `git diff` take it to write refreshed file times back,
+/// which is what spares the next read from hashing a file whose content did
+/// not change, and a change git is asked for meanwhile is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListingLocks {
+    /// Every child as git runs it: the listing holds the lane's turn.
+    Refresh,
+    /// A poll holding the turn: `git status` takes no lock, which on a clean
+    /// tree leaves the index untouched, and the unstaged numstat still writes
+    /// back the file times of files only touched, so they are hashed once.
+    Poll,
+    /// Read while somebody else holds the turn: nothing takes the lock.
+    LockFree,
+}
+
+/// The changed files for a decision (a discard's classification, the commit
+/// preflight, which paths a stage, unstage or discard may touch): every
+/// submodule change, whatever `.gitmodules` or the config says to ignore, so
+/// the decision agrees with what git itself would act on.
+///
+/// # Errors
+///
+/// Fails when git cannot be run or its status or numstat cannot be read.
+pub fn changed_files_for_decisions(
+    worktree_path: &Path,
+) -> Result<(Vec<ChangedFile>, Vec<ChangedFile>)> {
+    changed_files_with(worktree_path, Submodules::All, ListingLocks::Refresh)
+}
+
+/// Which submodule changes a listing includes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Submodules {
+    /// What the repository's own `ignore` settings leave in.
+    AsConfigured,
+    /// Every one (`--ignore-submodules=none`).
+    All,
+}
+
+/// Sort `git status --porcelain=v1 -z` output into the staged rows, the unstaged
+/// rows (untracked ones included, a whole untracked folder as one row), and the
+/// untracked folders, whose files are counted afterwards.
+fn sort_status_entries(stdout: &[u8]) -> (Vec<ChangedFile>, Vec<ChangedFile>, Vec<String>) {
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
+    let mut untracked_folders = Vec::new();
 
-    for entry in parse_status_porcelain_z(&output.stdout) {
+    for entry in parse_status_porcelain_z(stdout) {
         let index_status = entry.index_status;
         let worktree_status = entry.worktree_status;
         let path = entry.path;
         let source = entry.renamed_from;
 
         if index_status == '?' && worktree_status == '?' {
+            // A trailing slash is how git says "this whole folder": the row
+            // keeps the bare path and says so in its kind, counted below.
+            let (path, kind) = match path.strip_suffix('/') {
+                Some(folder) => {
+                    untracked_folders.push(folder.to_string());
+                    (
+                        folder.to_string(),
+                        crate::model::ChangedFileKind::directory(0),
+                    )
+                }
+                None => (path, crate::model::ChangedFileKind::File),
+            };
             unstaged.push(ChangedFile {
                 status: "?".to_string(),
                 path,
@@ -2623,6 +5294,7 @@ pub fn changed_files(worktree_path: &Path) -> Result<(Vec<ChangedFile>, Vec<Chan
                 binary: false,
                 diff_excluded: false,
                 renamed_from: None,
+                kind,
             });
             continue;
         }
@@ -2635,7 +5307,8 @@ pub fn changed_files(worktree_path: &Path) -> Result<(Vec<ChangedFile>, Vec<Chan
                 deletions: 0,
                 binary: false,
                 diff_excluded: false,
-                renamed_from: rename_source(index_status, &source),
+                renamed_from: rename_source(index_status, source.as_ref()),
+                kind: crate::model::ChangedFileKind::File,
             });
         }
 
@@ -2647,18 +5320,162 @@ pub fn changed_files(worktree_path: &Path) -> Result<(Vec<ChangedFile>, Vec<Chan
                 deletions: 0,
                 binary: false,
                 diff_excluded: false,
-                renamed_from: rename_source(worktree_status, &source),
+                renamed_from: rename_source(worktree_status, source.as_ref()),
+                kind: crate::model::ChangedFileKind::File,
             });
         }
     }
+    (staged, unstaged, untracked_folders)
+}
+
+/// The staged numstat, and each folder staged whole given its files' line sums,
+/// read within the same budget the unstaged side reads under.
+fn staged_stats_with_folder_sums(
+    worktree: &std::ffi::OsStr,
+    staged: &mut [ChangedFile],
+) -> HashMap<String, DiffStat> {
+    let mut staged_budget = UNTRACKED_STATS_MAX_FILES;
+    let mut summed_folders: HashSet<String> = HashSet::new();
+    let mut skipped_folders: Vec<String> = Vec::new();
+    for file in staged.iter().filter(|file| file.is_folder()) {
+        let files = file.file_count();
+        if file.is_expandable() && files <= staged_budget {
+            staged_budget -= files;
+            summed_folders.insert(file.path.clone());
+        } else {
+            skipped_folders.push(file.path.clone());
+        }
+    }
+    let staged_stats = staged_numstat(worktree, &skipped_folders);
+    if !summed_folders.is_empty() {
+        let mut sums: HashMap<&str, (usize, usize)> = HashMap::new();
+        for (path, stat) in &staged_stats {
+            let DiffStat::Text(additions, deletions) = stat else {
+                continue;
+            };
+            if let Some(owner) = path
+                .match_indices('/')
+                .map(|(index, _)| &path[..index])
+                .find(|ancestor| summed_folders.contains(*ancestor))
+            {
+                let sum = sums.entry(owner).or_default();
+                sum.0 += additions;
+                sum.1 += deletions;
+            }
+        }
+        let sums: HashMap<String, (usize, usize)> =
+            sums.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        for file in staged
+            .iter_mut()
+            .filter(|file| summed_folders.contains(&file.path))
+        {
+            if let Some((additions, deletions)) = sums.get(&file.path) {
+                file.additions = *additions;
+                file.deletions = *deletions;
+            }
+        }
+    }
+    staged_stats
+}
+
+/// One listing, failed whole when any git child it ran was stopped at its
+/// deadline (see [`listing_child`]), with what a lock left behind means.
+fn changed_files_with(
+    worktree_path: &Path,
+    submodules: Submodules,
+    locks: ListingLocks,
+) -> Result<(Vec<ChangedFile>, Vec<ChangedFile>)> {
+    // The display listing feeds the changes list; the decision listing is the
+    // one a change runs before it acts (see `Submodules`).
+    let read = || list_changed_files(worktree_path, submodules, locks);
+    let purpose = match submodules {
+        Submodules::AsConfigured => listing_child::Purpose::Display,
+        Submodules::All => listing_child::Purpose::Change,
+    };
+    let (listing, stopped) =
+        listing_child::stopped_within(|| listing_child::with_purpose(purpose, read));
+    let Some(stopped) = stopped else {
+        return listing;
+    };
+    let lock = IndexLockWait::unwaited(worktree_path);
+    Err(match lock.leftover_note() {
+        Some(note) => anyhow!("{stopped} {note}"),
+        None => anyhow!("{stopped}"),
+    })
+}
+
+/// The listing's `git status --porcelain=v1 -z`, its standard output.
+fn status_porcelain(
+    worktree_path: &Path,
+    submodules: Submodules,
+    locks: ListingLocks,
+) -> Result<Vec<u8>> {
+    let mut command = changed_files_git_command();
+    if locks != ListingLocks::Refresh {
+        command.arg("--no-optional-locks");
+    }
+    command.arg("-C").arg(worktree_path).args([
+        "status",
+        "--porcelain=v1",
+        "-z",
+        // git's own default: a folder with nothing tracked inside it is ONE
+        // entry, `dir/`, rather than one entry per file. `all` listed a
+        // 30,000-file `node_modules` as 30,000 rows; see `folding`.
+        "--untracked-files=normal",
+    ]);
+    if submodules == Submodules::All {
+        command.arg("--ignore-submodules=none");
+    }
+    let output = listing_child::output(&mut command, "git status")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn list_changed_files(
+    worktree_path: &Path,
+    submodules: Submodules,
+    locks: ListingLocks,
+) -> Result<(Vec<ChangedFile>, Vec<ChangedFile>)> {
+    let wt = worktree_path.as_os_str();
+    let status = status_porcelain(worktree_path, submodules, locks)?;
+    let (staged, mut unstaged, untracked_folders) = sort_status_entries(&status);
+
+    // What each folded folder holds. A count git could not produce fails the
+    // read rather than claiming an empty folder.
+    // One budget for every untracked file this read opens, folders' files and
+    // loose ones alike: folding must not make a listing read more than it did.
+    // Loose files are served first, exactly as before folding, and folders
+    // share only what they leave, so a file beside a large folder keeps its
+    // count.
+    let loose_untracked = unstaged
+        .iter()
+        .filter(|file| file.status == "?" && !file.is_folder())
+        .count();
+    let mut read_budget = UNTRACKED_STATS_MAX_FILES.saturating_sub(loose_untracked);
+    if !untracked_folders.is_empty() {
+        let counts =
+            folding::count_untracked_folders(worktree_path, &untracked_folders, &mut read_budget)?;
+        folding::apply_folder_counts(&mut unstaged, counts);
+    }
+    let mut staged = folding::fold_added_directories(worktree_path, staged, &unstaged);
 
     // The tracked diff and the untracked counting are two independent sources,
     // so the git call's answer is resolved to a map FIRST and the loop runs
     // whatever came back. A failed `git diff` yields an empty map, which costs
     // tracked rows their line counts and nothing else; running the loop inside
     // the call's `Ok` would take the untracked files' in-process counts with it.
-    let tracked_stats = unstaged_numstat(wt);
-    let staged_stats = staged_numstat(wt);
+    let tracked_stats = unstaged_numstat(wt, locks);
+    // A folder staged whole carries its files' line sums, read within the
+    // same budget the unstaged side reads under: numstat reads every blob it
+    // is not told to skip, so only the folders whose files fit what is left
+    // are read, in listing order, and the rest are skipped and carry no lines
+    // (a 30,000-file folder is exactly the read the skip exists to avoid).
+    let staged_stats = staged_stats_with_folder_sums(wt, &mut staged);
 
     // git prints `-\t-` for a path the repository excludes from diffs in
     // .gitattributes exactly as it prints it for a real binary, so numstat
@@ -2687,6 +5504,7 @@ pub fn changed_files(worktree_path: &Path) -> Result<(Vec<ChangedFile>, Vec<Chan
         &mut unstaged,
         &tracked_stats,
         &excluded_unstaged,
+        UNTRACKED_STATS_MAX_FILES,
     );
 
     for file in &mut staged {
@@ -2703,30 +5521,90 @@ pub fn changed_files(worktree_path: &Path) -> Result<(Vec<ChangedFile>, Vec<Chan
 /// A git call that could not be run, or that exited non-zero, answers with an
 /// empty map rather than an error: it is one of two independent sources feeding
 /// the unstaged rows, and the other one still has something to say.
-fn unstaged_numstat(worktree: &std::ffi::OsStr) -> HashMap<String, DiffStat> {
-    changed_files_git_command()
-        .arg("-C")
-        .arg(worktree)
-        .args(["diff", "--numstat", "-z"])
-        .output()
+///
+/// `git diff` takes the index lock to write refreshed file times back, so a
+/// [`ListingLocks::LockFree`] read asks the plumbing `git diff-files` instead,
+/// which never does. Plumbing reads none of the configuration that changes
+/// what `git diff` counts, so the two settings that do (`diff.algorithm`,
+/// which can move lines between hunks, and `diff.renames`, which pairs a file
+/// added with intent-to-add with the one it replaced) are read and handed to it
+/// as flags, and both forms count the same.
+fn unstaged_numstat(worktree: &std::ffi::OsStr, locks: ListingLocks) -> HashMap<String, DiffStat> {
+    let mut command = changed_files_git_command();
+    command.arg("-C").arg(worktree);
+    if locks == ListingLocks::LockFree {
+        command.args(["diff-files", "--numstat", "-z"]);
+        command.args(porcelain_diff_flags(worktree));
+    } else {
+        command.args(["diff", "--numstat", "-z"]);
+    }
+    listing_child::output(&mut command, "git diff")
         .ok()
         .filter(|ns| ns.status.success())
-        .map(|ns| parse_numstat(&ns.stdout))
-        .unwrap_or_default()
+        .map_or_default(|ns| parse_numstat(&ns.stdout))
+}
+
+/// The flags that make a plumbing diff in `worktree` count what `git diff`
+/// counts there: the configured `diff.algorithm`, and rename detection as
+/// `diff.renames` sets it (on unless it says otherwise, as `git diff` has it).
+fn porcelain_diff_flags(worktree: &std::ffi::OsStr) -> Vec<String> {
+    let mut command = changed_files_git_command();
+    command.arg("-C").arg(worktree).args([
+        "config",
+        "-z",
+        "--get-regexp",
+        r"^diff\.(algorithm|renames)$",
+    ]);
+    let configured = listing_child::output(&mut command, "git config")
+        .ok()
+        .filter(|out| out.status.success())
+        .map_or_default(|out| out.stdout);
+    let mut algorithm = None;
+    let mut renames = "-M".to_string();
+    for record in configured.split(|byte| *byte == 0) {
+        let record = String::from_utf8_lossy(record);
+        let Some((key, value)) = record.split_once('\n') else {
+            continue;
+        };
+        match (key, value.trim().to_ascii_lowercase().as_str()) {
+            ("diff.algorithm", value) => algorithm = Some(format!("--diff-algorithm={value}")),
+            ("diff.renames", "false" | "no" | "off" | "0") => renames = "--no-renames".into(),
+            ("diff.renames", "copy" | "copies") => renames = "-C".into(),
+            ("diff.renames", _) => renames = "-M".into(),
+            _ => {}
+        }
+    }
+    algorithm
+        .into_iter()
+        .chain(std::iter::once(renames))
+        .collect()
 }
 
 /// Per-path line counts for the staged changes in `worktree`. Answers with an
 /// empty map on a failed call, for the same reason [`unstaged_numstat`] does.
-fn staged_numstat(worktree: &std::ffi::OsStr) -> HashMap<String, DiffStat> {
-    changed_files_git_command()
+///
+/// `skip` names the folders staged whole, whose rows carry a file count rather
+/// than line counts: their blobs are left unread, which on a 30,000-file folder
+/// is most of the time this call takes. Each is an `exclude` pathspec with the
+/// `literal` magic, so a folder named like a glob excludes only itself, and all
+/// of them follow `--`, so one named like an option is a name. Past a few
+/// hundred folders the command line would grow for little gain, so the
+/// exclusion is dropped and everything is counted, which costs time only.
+fn staged_numstat(worktree: &std::ffi::OsStr, skip: &[String]) -> HashMap<String, DiffStat> {
+    const MAX_SKIPPED_FOLDERS: usize = 256;
+    let mut command = changed_files_git_command();
+    command
         .arg("-C")
         .arg(worktree)
-        .args(["diff", "--cached", "--numstat", "-z"])
-        .output()
+        .args(["diff", "--cached", "--numstat", "-z"]);
+    if !skip.is_empty() && skip.len() <= MAX_SKIPPED_FOLDERS {
+        command.args(["--", "."]);
+        command.args(skip.iter().map(|dir| format!(":(exclude,literal){dir}")));
+    }
+    listing_child::output(&mut command, "git diff --cached")
         .ok()
         .filter(|ns| ns.status.success())
-        .map(|ns| parse_numstat(&ns.stdout))
-        .unwrap_or_default()
+        .map_or_default(|ns| parse_numstat(&ns.stdout))
 }
 
 /// Every path git answered `-\t-` for, across the numstat maps of one sweep.
@@ -2773,36 +5651,25 @@ fn paths_excluded_from_diffs(worktree: &std::ffi::OsStr, paths: &[String]) -> Ha
         return HashSet::new();
     }
 
-    let Ok(mut child) = changed_files_git_command()
-        .arg("-C")
-        .arg(worktree)
-        .args(["check-attr", "-z", "--stdin", "diff"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    else {
-        return HashSet::new();
-    };
-
-    let Some(mut stdin) = child.stdin.take() else {
-        return HashSet::new();
-    };
     let mut payload = Vec::new();
     for path in paths {
         payload.extend_from_slice(path.as_bytes());
         payload.push(0);
     }
 
-    // The writer runs on its own thread: check-attr answers three records per
-    // path, so a large batch can fill the output pipe while yaran is still
+    // The input is fed from its own thread: check-attr answers three records
+    // per path, so a large batch can fill the output pipe while yaran is still
     // feeding the input one, and a single-threaded write-then-read deadlocks.
-    let writer = std::thread::spawn(move || {
-        let _ = std::io::Write::write_all(&mut stdin, &payload);
-    });
-
-    let output = child.wait_with_output();
-    let _ = writer.join();
+    let output = listing_child::output_with_input(
+        changed_files_git_command().arg("-C").arg(worktree).args([
+            "check-attr",
+            "-z",
+            "--stdin",
+            "diff",
+        ]),
+        payload,
+        "git check-attr",
+    );
 
     match output {
         Ok(out) if out.status.success() => parse_check_attr_z(&out.stdout),
@@ -2883,7 +5750,7 @@ fn file_prefix_on_disk(path: &Path) -> Option<Vec<u8>> {
 
     let file = fs::File::open(path).ok()?;
     let mut prefix = Vec::new();
-    file.take(BINARY_SNIFF_BYTES as u64)
+    file.take(crate::numeric::usize_to_u64(BINARY_SNIFF_BYTES))
         .read_to_end(&mut prefix)
         .ok()?;
     Some(prefix)
@@ -2896,34 +5763,26 @@ fn file_prefix_on_disk(path: &Path) -> Option<Vec<u8>> {
 /// and the revision always starts with a colon, so a dash-leading path can
 /// never be read as an option.
 fn index_blob_prefix(worktree_path: &Path, rel_path: &str) -> Option<Vec<u8>> {
-    use std::io::Read as _;
-
-    let mut child = changed_files_git_command()
-        .arg("-C")
-        .arg(worktree_path)
-        .args(["cat-file", "-p", &format!(":{rel_path}")])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut prefix = Vec::new();
-    if let Some(stdout) = child.stdout.as_mut() {
-        stdout
-            .take(BINARY_SNIFF_BYTES as u64)
-            .read_to_end(&mut prefix)
-            .ok()?;
-    }
-    // Drop the pipe before waiting: a blob larger than the sniff gets EPIPE and
-    // exits instead of blocking on a reader that stopped.
-    drop(child.stdout.take());
-    let status = child.wait().ok()?;
+    // Only the sniff is read: the pipe is dropped after it, and a blob larger
+    // than the sniff gets EPIPE and exits instead of blocking on a reader that
+    // stopped. A listing child, so it is held to the listing's deadline.
+    let output = listing_child::output_prefix(
+        Command::new("git").arg("-C").arg(worktree_path).args([
+            "cat-file",
+            "-p",
+            &format!(":{rel_path}"),
+        ]),
+        crate::numeric::usize_to_u64(BINARY_SNIFF_BYTES),
+        "git cat-file",
+    )
+    .ok()?;
     // A blob that fit inside the sniff exits 0; a larger one is killed by
     // SIGPIPE, which is success as far as this read is concerned. Only an
     // absent path (a real non-zero exit with nothing read) answers None.
-    if !status.success() && prefix.is_empty() {
+    if !output.status.success() && output.stdout.is_empty() {
         return None;
     }
-    Some(prefix)
+    Some(output.stdout)
 }
 
 /// Put one numstat answer onto its row.
@@ -2963,12 +5822,12 @@ fn apply_unstaged_stats(
     unstaged: &mut [ChangedFile],
     tracked: &HashMap<String, DiffStat>,
     excluded: &HashSet<String>,
+    mut untracked_stats_budget: usize,
 ) {
-    let mut untracked_stats_budget = UNTRACKED_STATS_MAX_FILES;
     for file in unstaged.iter_mut() {
         if let Some(stat) = tracked.get(&file.path) {
             apply_stat(file, stat, excluded);
-        } else if file.status == "?" {
+        } else if file.status == "?" && !file.is_folder() {
             if untracked_stats_budget == 0 {
                 continue;
             }
@@ -3004,6 +5863,22 @@ fn apply_unstaged_stats(
 /// there is counted as text: the accepted cost of not asking git. The file is
 /// streamed rather than read whole.
 fn untracked_file_stat(path: &Path) -> DiffStat {
+    // Only a regular file is opened. A symlink is counted the way git counts
+    // one: its content is the target path, one line (git adds no newline), and
+    // the file it names is never read. Anything else (a FIFO, a socket, a
+    // device) has no lines to count, and opening a FIFO to read would block
+    // the listing until something wrote to it.
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return DiffStat::Text(0, 0);
+    };
+    if meta.file_type().is_symlink() {
+        let lines =
+            fs::read_link(path).map_or(0, |target| usize::from(!target.as_os_str().is_empty()));
+        return DiffStat::Text(lines, 0);
+    }
+    if !meta.is_file() {
+        return DiffStat::Text(0, 0);
+    }
     let Ok(file) = fs::File::open(path) else {
         // Unreadable, or a dangling symlink, or gone between the status sweep
         // and now. Nothing to count and nothing to claim about it.
@@ -3028,7 +5903,12 @@ fn untracked_file_stat(path: &Path) -> DiffStat {
                 return DiffStat::Binary;
             }
         }
-        lines += chunk.iter().filter(|byte| **byte == b'\n').count();
+        #[expect(
+            clippy::naive_bytecount,
+            reason = "counting the newlines of one read buffer needs no extra dependency"
+        )]
+        let newlines = chunk.iter().filter(|byte| **byte == b'\n').count();
+        lines += newlines;
         last_byte = chunk.last().copied();
         read_so_far = read_so_far.saturating_add(filled);
     }
@@ -3100,7 +5980,7 @@ fn parse_numstat_line(line: &str) -> Option<DiffStat> {
 /// can reuse the status vocabulary they already render (`FileStatusIcon` and
 /// `fileStatusMeta` on the web).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct FileStatusCodes {
+pub(crate) struct FileStatusCodes {
     pub staged: Option<String>,
     pub unstaged: Option<String>,
 }
@@ -3120,9 +6000,12 @@ pub struct FileStatusCodes {
 /// A failure is classified rather than assumed: a second, cheap `rev-parse`
 /// decides whether git failed because there is no repository (answer `None`)
 /// or for some other reason (a real error the caller surfaces).
-pub fn file_status(worktree: &Path, rel_path: &str) -> Result<Option<FileStatusCodes>> {
+pub(crate) fn file_status(worktree: &Path, rel_path: &str) -> Result<Option<FileStatusCodes>> {
     let wt = worktree.as_os_str();
+    // No index lock: one file's status, read outside the worktree's lane, must
+    // not refuse a commit somebody starts meanwhile.
     let output = Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C")
         .arg(wt)
         .args([
@@ -3206,7 +6089,8 @@ fn is_inside_work_tree(path: &Path) -> Result<bool> {
 /// Note what IS covered, so the gap is not mistaken for a wider one: a
 /// non-zero exit (the ordinary "no repository here" answer) is `Ok(None)` and
 /// is tested; only the failure to spawn git at all is not.
-pub fn repository_root(dir: &Path) -> Result<Option<PathBuf>> {
+pub(crate) fn repository_root(dir: &Path) -> Result<Option<PathBuf>> {
+    use std::os::unix::ffi::OsStrExt;
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -3215,11 +6099,13 @@ pub fn repository_root(dir: &Path) -> Result<Option<PathBuf>> {
     if !output.status.success() {
         return Ok(None);
     }
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // The path's own bytes, up to the one newline git ends the line with: a
+    // directory's name may end in a space, and need not be UTF-8.
+    let root = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
     if root.is_empty() {
         return Ok(None);
     }
-    Ok(Some(PathBuf::from(root)))
+    Ok(Some(PathBuf::from(std::ffi::OsStr::from_bytes(root))))
 }
 
 /// True when `rel_path` is ignored by `worktree`'s ignore rules.
@@ -3238,7 +6124,7 @@ pub fn repository_root(dir: &Path) -> Result<Option<PathBuf>> {
 ///
 /// `check-ignore` consults the index by default, which is what we want: a
 /// TRACKED file that also matches an ignore rule answers "not ignored".
-pub fn path_is_ignored(worktree: &Path, rel_path: &str) -> Result<bool> {
+pub(crate) fn path_is_ignored(worktree: &Path, rel_path: &str) -> Result<bool> {
     let wt = worktree.as_os_str();
     let output = Command::new("git")
         .arg("-C")
@@ -3265,8 +6151,8 @@ fn parse_status_porcelain_z(raw: &[u8]) -> Vec<StatusEntry> {
             continue;
         }
 
-        let index_status = record[0] as char;
-        let worktree_status = record[1] as char;
+        let index_status = char::from(record[0]);
+        let worktree_status = char::from(record[1]);
         // Renames consume an extra NUL-delimited "old path" record. Advance
         // past it unconditionally so the next record is not misparsed as a
         // top-level status, even when we end up dropping this entry below.
@@ -3279,7 +6165,7 @@ fn parse_status_porcelain_z(raw: &[u8]) -> Vec<StatusEntry> {
                 .next()
                 .and_then(|old| std::str::from_utf8(old).ok())
                 .filter(|old| !old.is_empty())
-                .map(|old| old.to_string())
+                .map(std::string::ToString::to_string)
         } else {
             None
         };
@@ -3350,19 +6236,295 @@ where
 ///
 /// An empty slice is refused: git reads "no pathspec" as "the whole index",
 /// which for [`unstage_files`] means unstaging everything and exiting 0.
+///
+/// # Errors
+///
+/// Fails when a path may not be staged (with the sentence that says why), the slice is empty, or
+/// `git add` fails.
 pub fn stage_files(worktree_path: &Path, file_paths: &[String]) -> Result<()> {
-    run_pathspec_batch(worktree_path, &["add"], file_paths, "git add")
+    stage_with_report(worktree_path, file_paths).map(|_| ())
+}
+
+/// What a stage left out of the index on purpose.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StageReport {
+    /// Repositories of their own inside a staged folder.
+    pub left_out_repositories: usize,
+    /// Worktrees of this repository inside a staged folder.
+    pub left_out_worktrees: usize,
+}
+
+impl StageReport {
+    /// True when something was left out, which a surface has to say.
+    pub fn left_anything_out(&self) -> bool {
+        self.left_out_repositories + self.left_out_worktrees > 0
+    }
+
+    /// What was left out, in words: "1 nested repository and 2 worktrees of
+    /// this repository".
+    pub fn left_out_words(&self) -> String {
+        let plural = |count: usize, one: &str, many: &str| {
+            let noun = if count == 1 { one } else { many };
+            format!("{} {noun}", crate::model::group_thousands(count))
+        };
+        let mut parts = Vec::new();
+        if self.left_out_repositories > 0 {
+            parts.push(plural(
+                self.left_out_repositories,
+                "nested repository",
+                "nested repositories",
+            ));
+        }
+        if self.left_out_worktrees > 0 {
+            parts.push(plural(
+                self.left_out_worktrees,
+                "worktree of this repository",
+                "worktrees of this repository",
+            ));
+        }
+        crate::model::join_words(&parts)
+    }
+}
+
+/// Stage `file_paths`, and say what was left out.
+///
+/// Staging a folder stages exactly what its count covers, its files: `git add`
+/// on a folder would otherwise record every repository inside it (a nested
+/// clone, a worktree of this repository) as a link, which is neither a file nor
+/// what the row promised. Those repositories are found live, from the same
+/// `ls-files --others` records the folder was counted from, and each is left
+/// out with an `exclude` pathspec. A path that is itself a repository keeps its
+/// old behavior (git records it as a link, and the surfaces say so), except a
+/// worktree of this repository, which is refused.
+///
+/// # Errors
+///
+/// Fails when a path may not be staged (with the sentence that says why), the slice is empty, or
+/// `git add` fails.
+pub fn stage_with_report(worktree_path: &Path, file_paths: &[String]) -> Result<StageReport> {
+    let plan = plan_stage(worktree_path, file_paths)?;
+    // One path is the whole request: a path that must not be staged refuses
+    // it before anything reaches the index.
+    if let Some((_, sentence)) = plan.refused.first() {
+        return Err(anyhow::Error::new(Refusal(sentence.clone())));
+    }
+    run_stage_plan(worktree_path, &plan)?;
+    Ok(plan.report)
+}
+
+/// What [`stage_partitioned`] did: the paths it staged, what it left out of
+/// them on purpose, and each path it refused with the sentence that says why.
+#[derive(Debug, Default)]
+pub struct StagePartition {
+    /// The paths staged.
+    pub staged: Vec<String>,
+    /// What staging left out of those paths on purpose.
+    pub report: StageReport,
+    /// Each refused path, with the sentence that says why.
+    pub refused: Vec<(String, String)>,
+}
+
+/// Stage every path that may be staged and refuse the rest one by one, for a
+/// batch: a folder holding nothing but repositories, or a worktree of this
+/// repository, is refused on its own with its sentence rather than failing
+/// the paths around it. Nothing is staged when every path is refused.
+///
+/// # Errors
+///
+/// Fails when the stage cannot be planned (git cannot be asked about the paths) or `git add` fails.
+pub fn stage_partitioned(worktree_path: &Path, file_paths: &[String]) -> Result<StagePartition> {
+    let plan = plan_stage(worktree_path, file_paths)?;
+    if !plan.staged.is_empty() {
+        run_stage_plan(worktree_path, &plan)?;
+    }
+    Ok(StagePartition {
+        staged: plan.staged,
+        report: plan.report,
+        refused: plan.refused,
+    })
+}
+
+/// A stage worked out before it runs: the paths to add, the repositories
+/// inside them to leave out, and the paths refused with their sentences.
+struct StagePlan {
+    staged: Vec<String>,
+    excludes: Vec<Vec<u8>>,
+    report: StageReport,
+    refused: Vec<(String, String)>,
+}
+
+fn plan_stage(worktree_path: &Path, file_paths: &[String]) -> Result<StagePlan> {
+    if file_paths.is_empty() {
+        return Err(anyhow!(
+            "git add was asked to act on no files; git would read that as the whole index"
+        ));
+    }
+    let mut plan = StagePlan {
+        staged: Vec::new(),
+        excludes: Vec::new(),
+        report: StageReport::default(),
+        refused: Vec::new(),
+    };
+    for path in file_paths {
+        refuse_unplain_path(path, "stage")?;
+        if let Some(sentence) = stage_refusal(worktree_path, path) {
+            plan.refused.push((path.clone(), sentence));
+            continue;
+        }
+        let is_dir = fs::symlink_metadata(worktree_path.join(path)).is_ok_and(|meta| meta.is_dir());
+        if !is_dir {
+            plan.staged.push(path.clone());
+            continue;
+        }
+        let inside = folding::folder_inside(worktree_path, path)?;
+        if inside.repositories.is_empty() {
+            plan.staged.push(path.clone());
+            continue;
+        }
+        let (repositories, worktrees) = inside.counts();
+        let own: Vec<Vec<u8>> = inside
+            .repositories
+            .into_iter()
+            .map(|(rel, _)| exclude_spec(&rel))
+            .collect();
+        // Nothing but repositories: the stage would add nothing, so saying it
+        // staged the folder would be the lie. A folder the index already holds
+        // files of is a stage that has already happened, and a tracked change
+        // inside still counts, which only git can answer with a dry run.
+        if !inside.has_file
+            && !index_holds_anything_in(worktree_path, path)?
+            && !stages_anything(worktree_path, path, &own)?
+        {
+            plan.refused.push((
+                path.clone(),
+                nothing_in_folder(path, repositories, worktrees, FolderAction::Stage),
+            ));
+            continue;
+        }
+        plan.report.left_out_repositories += repositories;
+        plan.report.left_out_worktrees += worktrees;
+        plan.excludes.extend(own);
+        plan.staged.push(path.clone());
+    }
+    Ok(plan)
+}
+
+fn run_stage_plan(worktree_path: &Path, plan: &StagePlan) -> Result<()> {
+    if plan.excludes.is_empty() {
+        return run_pathspecs(
+            worktree_path,
+            &["add"],
+            &plan.staged,
+            PathspecMagic::AllLiteral,
+            "git add",
+        );
+    }
+    // Magic pathspecs, so no global literal flag: each path is `literal` on
+    // its own, which keeps a name like a glob to itself all the same.
+    let specs: Vec<Vec<u8>> = plan
+        .staged
+        .iter()
+        .map(|path| format!(":(literal){path}").into_bytes())
+        .chain(plan.excludes.iter().cloned())
+        .collect();
+    run_pathspecs(
+        worktree_path,
+        &["add"],
+        &specs,
+        PathspecMagic::PerSpec,
+        "git add",
+    )
+}
+
+/// The pathspec that leaves `rel` out, in its own bytes: the pathspec file is
+/// NUL-delimited, so a name that is not UTF-8 is excluded as it is.
+fn exclude_spec(rel: &[u8]) -> Vec<u8> {
+    let mut spec = b":(exclude,literal)".to_vec();
+    spec.extend_from_slice(rel);
+    spec
+}
+
+/// True when the index holds any entry inside the folder `path`.
+fn index_holds_anything_in(worktree_path: &Path, path: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .arg("--literal-pathspecs")
+        .arg("-C")
+        .arg(worktree_path)
+        .args(["ls-files", "-z", "--"])
+        .arg(format!("{path}/"))
+        .output()?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(!output.stdout.is_empty())
+}
+
+/// True when adding `path` without `excludes` would stage anything.
+fn stages_anything(worktree_path: &Path, path: &str, excludes: &[Vec<u8>]) -> Result<bool> {
+    let specs: Vec<Vec<u8>> = std::iter::once(format!(":(literal){path}").into_bytes())
+        .chain(excludes.iter().cloned())
+        .collect();
+    // A dry run still takes the index lock, so it waits for another
+    // program's like the stage it decides about.
+    let lock = IndexLockWait::before_change(worktree_path);
+    let out = run_pathspecs_output(
+        worktree_path,
+        &["add", "--dry-run"],
+        &specs,
+        PathspecMagic::PerSpec,
+        "git add --dry-run",
+        Some(&lock),
+    )?;
+    Ok(out.iter().any(|byte| !byte.is_ascii_whitespace()))
 }
 
 /// Unstage every named path in one git call. See [`stage_files`] for why the
 /// paths travel on stdin and why an empty slice is refused.
+///
+/// # Errors
+///
+/// Fails when the slice is empty, git cannot be run, or `git reset` fails.
 pub fn unstage_files(worktree_path: &Path, file_paths: &[String]) -> Result<()> {
+    // No explicit `HEAD`: `git reset` defaults to it, and only that default
+    // copes with a repository that has no commit yet. Named, it is an unknown
+    // revision there and the batch fails (measured on git 2.53), although the
+    // single-path `reset HEAD -- <path>` is let through.
     run_pathspec_batch(
         worktree_path,
-        &["reset", "--quiet", "HEAD"],
+        &["reset", "--quiet"],
         file_paths,
         "git reset",
     )
+}
+
+/// Refuse a worktree-relative path that is not in its plain spelling before it
+/// reaches git or the filesystem. Every path the changed-files listing hands
+/// out is already plain, so this only ever stops a crafted one: `x/..` names
+/// the whole worktree to `git add`, `git reset`, `git checkout` and a delete.
+fn refuse_unplain_path(path: &str, what: &str) -> Result<()> {
+    if crate::model::is_lexically_normal_path(path) {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "refusing to {what} {path:?}: it is not a plain path inside the worktree"
+        ))
+    }
+}
+
+/// Why `path` must not be staged, or `None` when it may be. Today that is one
+/// case, a linked worktree of this same repository; a route asks this first so
+/// the refusal reaches the browser as a refusal rather than as a git failure.
+pub fn stage_refusal(worktree_path: &Path, path: &str) -> Option<String> {
+    let dir = worktree_path.join(path);
+    folding::is_linked_worktree_dir(worktree_path, &dir).then(|| {
+        format!(
+            "\"{path}/\" is a worktree of this same repository; staging it would record a link \
+             to it, not its files. Manage it from the worktree manager."
+        )
+    })
 }
 
 fn run_pathspec_batch(
@@ -3376,12 +6538,66 @@ fn run_pathspec_batch(
             "{what} was asked to act on no files; git would read that as the whole index"
         ));
     }
+    for path in file_paths {
+        refuse_unplain_path(path, "act on")?;
+    }
+    run_pathspecs(
+        worktree_path,
+        subcommand,
+        file_paths,
+        PathspecMagic::AllLiteral,
+        what,
+    )
+}
+
+/// How git reads the pathspecs a command is fed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathspecMagic {
+    /// The global `--literal-pathspecs`: every spec is a plain path.
+    AllLiteral,
+    /// Each spec carries its own magic.
+    PerSpec,
+}
+
+/// Run one git command that changes the index over pathspecs fed on stdin,
+/// read as `magic` says, once another program's index lock has had its wait
+/// (see [`IndexLockWait`]).
+fn run_pathspecs<P: AsRef<[u8]>>(
+    worktree_path: &Path,
+    subcommand: &[&str],
+    file_paths: &[P],
+    magic: PathspecMagic,
+    what: &str,
+) -> Result<()> {
+    let lock = IndexLockWait::before_change(worktree_path);
+    run_pathspecs_output(
+        worktree_path,
+        subcommand,
+        file_paths,
+        magic,
+        what,
+        Some(&lock),
+    )
+    .map(|_| ())
+}
+
+/// One git command over pathspecs fed on stdin, answering its standard
+/// output. `lock` is the wait a change to the index made, whose note a
+/// refusal carries.
+fn run_pathspecs_output<P: AsRef<[u8]>>(
+    worktree_path: &Path,
+    subcommand: &[&str],
+    file_paths: &[P],
+    magic: PathspecMagic,
+    what: &str,
+    lock: Option<&IndexLockWait>,
+) -> Result<Vec<u8>> {
     let wt = worktree_path.as_os_str();
-    let mut args: Vec<&std::ffi::OsStr> = vec![
-        std::ffi::OsStr::new("--literal-pathspecs"),
-        std::ffi::OsStr::new("-C"),
-        wt,
-    ];
+    let mut args: Vec<&std::ffi::OsStr> = Vec::new();
+    if magic == PathspecMagic::AllLiteral {
+        args.push(std::ffi::OsStr::new("--literal-pathspecs"));
+    }
+    args.extend([std::ffi::OsStr::new("-C"), wt]);
     args.extend(subcommand.iter().map(std::ffi::OsStr::new));
     args.extend(["--pathspec-from-file=-", "--pathspec-file-nul"].map(std::ffi::OsStr::new));
     let mut child = Command::new("git")
@@ -3396,40 +6612,43 @@ fn run_pathspec_batch(
         .ok_or_else(|| anyhow!("{what} failed: could not write the file list to git"))?;
     let mut payload = Vec::new();
     for path in file_paths {
-        payload.extend_from_slice(path.as_bytes());
+        payload.extend_from_slice(path.as_ref());
         payload.push(0);
     }
-    std::io::Write::write_all(&mut stdin, &payload)?;
-    drop(stdin);
+    // Written on a thread of its own: git may answer on stdout before it has
+    // read the whole list, or exit early (the worktree is gone), and a write
+    // ahead of the wait would then block on a full pipe or fail with a broken
+    // pipe, hiding git's own reason and leaving the child unreaped.
+    let writer = std::thread::spawn(move || std::io::Write::write_all(&mut stdin, &payload));
     let output = child.wait_with_output()?;
+    let written = writer
+        .join()
+        .unwrap_or_else(|_| Err(io::Error::other("the writer thread panicked")));
     if !output.status.success() {
-        return Err(anyhow!(
-            "{what} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        let error = anyhow!("{what} failed: {}", String::from_utf8_lossy(&output.stderr));
+        return Err(match lock {
+            Some(lock) => lock.explain(error, None),
+            None => error,
+        });
     }
-    Ok(())
+    written.map_err(|err| anyhow!("{what} failed: could not write the file list to git: {err}"))?;
+    Ok(output.stdout)
 }
 
-pub fn stage_file(worktree_path: &Path, file_path: &str) -> Result<()> {
-    let wt = worktree_path.as_os_str();
-    let output = Command::new("git")
-        .arg("--literal-pathspecs")
-        .arg("-C")
-        .arg(wt)
-        .args(["add", "--", file_path])
-        .output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git add failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(())
+#[cfg(test)]
+pub(crate) fn stage_file(worktree_path: &Path, file_path: &str) -> Result<()> {
+    stage_with_report(worktree_path, &[file_path.to_string()]).map(|_| ())
 }
 
+/// Unstages one file, keeping its working-tree changes.
+///
+/// # Errors
+///
+/// Fails when the path is not in its plain spelling, git cannot be run, or `git reset` fails.
 pub fn unstage_file(worktree_path: &Path, file_path: &str) -> Result<()> {
+    refuse_unplain_path(file_path, "unstage")?;
     let wt = worktree_path.as_os_str();
+    let lock = IndexLockWait::before_change(worktree_path);
     let output = Command::new("git")
         .arg("--literal-pathspecs")
         .arg("-C")
@@ -3437,46 +6656,494 @@ pub fn unstage_file(worktree_path: &Path, file_path: &str) -> Result<()> {
         .args(["reset", "HEAD", "--", file_path])
         .output()?;
     if !output.status.success() {
-        return Err(anyhow!(
-            "git reset failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+        return Err(lock.explain(
+            anyhow!(
+                "git reset failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            None,
         ));
     }
     Ok(())
 }
 
-pub fn discard_file(worktree_path: &Path, file_path: &str, is_untracked: bool) -> Result<()> {
-    if is_untracked {
-        let full = worktree_path.join(file_path);
-        // Defense-in-depth before a destructive remove: callers classify the
-        // path against live `git status` output (which never yields paths
-        // outside the worktree), but a filesystem delete should not rest on
-        // that invariant alone. `is_under` rejects any resolved path that
-        // escapes the worktree (e.g. via a symlinked parent component).
-        if !is_under(worktree_path, &full) {
-            return Err(anyhow!(
-                "refusing to delete \"{file_path}\": it resolves outside the worktree"
-            ));
-        }
-        if full.is_dir() {
-            fs::remove_dir_all(&full)?;
-        } else {
-            fs::remove_file(&full)?;
-        }
-        return Ok(());
+/// Refuse to delete a folder that holds nothing a delete would remove: its
+/// only contents are repositories of their own (which the delete keeps) or
+/// files the repository ignores. Reporting a deletion that did not happen is
+/// the lie this stops.
+fn refuse_empty_untracked_folder(worktree_path: &Path, dir: &str) -> Result<folding::FolderInside> {
+    let inside = folding::folder_inside(worktree_path, dir)?;
+    if inside.deletable_files().next().is_some() {
+        return Ok(inside);
     }
-    let wt = worktree_path.as_os_str();
+    // The bare repositories a delete keeps are repositories of their own too.
+    let (repositories, worktrees) = inside.counts();
+    Err(anyhow::Error::new(Refusal(nothing_in_folder(
+        dir,
+        repositories + inside.bare.len(),
+        worktrees,
+        FolderAction::Delete,
+    ))))
+}
+
+/// Delete exactly what an untracked folder's row counted: its untracked,
+/// not-ignored files, and the directories left empty by that.
+///
+/// `git clean -f -d` without `-x` keeps every ignored file (a local `.env`,
+/// a build cache), which the row never counted and the dialog never named, and
+/// without a second `-f` it does not enter a repository of its own inside the
+/// folder: both measured on git 2.53. A directory that still holds an ignored
+/// file stays, with that file in it. `--literal-pathspecs` and `--` keep a
+/// folder named like a glob or an option to itself.
+fn clean_untracked_folder(
+    worktree_path: &Path,
+    dir: &str,
+    inside: &folding::FolderInside,
+) -> Result<()> {
+    if !inside.bare.is_empty() {
+        return delete_counted_files(worktree_path, dir, inside);
+    }
     let output = Command::new("git")
         .arg("--literal-pathspecs")
         .arg("-C")
-        .arg(wt)
-        .args(["checkout", "--", file_path])
+        .arg(worktree_path)
+        .args(["clean", "-f", "-d", "-q", "--"])
+        .arg(format!("{dir}/"))
         .output()?;
     if !output.status.success() {
         return Err(anyhow!(
-            "git checkout failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "git clean failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
         ));
+    }
+    Ok(())
+}
+
+/// Delete exactly the files a folder holding a bare repository counted, and
+/// then the directories that leaves empty, deepest first.
+///
+/// `git clean -d` cannot do this: git lists a bare repository's insides as
+/// untracked files, and it removes an untracked directory whole whatever
+/// exclude pathspec it is given (measured on git 2.53). So the files are the
+/// ones `ls-files --others --exclude-standard` listed (what `git clean -f`
+/// without `-x` would remove), each removed as an entry and never followed
+/// through a symlink, and a directory goes only when nothing is left in it:
+/// an ignored file, a repository of its own or a bare repository keeps it.
+/// An empty directory that held no file to begin with is left alone, which is
+/// the one thing this does more carefully than `git clean -d`.
+fn delete_counted_files(
+    worktree_path: &Path,
+    dir: &str,
+    inside: &folding::FolderInside,
+) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut parents: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
+    for record in inside.deletable_files() {
+        let path = worktree_path.join(std::ffi::OsStr::from_bytes(record));
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(anyhow!("could not delete {}: {e}", path.display())),
+        }
+        // Every directory between the file and the folder, the folder included.
+        let mut end = record.len();
+        while let Some(slash) = record[..end].iter().rposition(|byte| *byte == b'/') {
+            let parent = &record[..slash];
+            if parent.len() < dir.len() {
+                break;
+            }
+            parents.insert(parent.to_vec());
+            end = slash;
+        }
+    }
+    let mut parents: Vec<Vec<u8>> = parents.into_iter().collect();
+    parents.sort_by_key(|parent| std::cmp::Reverse(parent.len()));
+    for parent in parents {
+        // Fails, harmlessly, on a directory something is still in.
+        let _ = fs::remove_dir(worktree_path.join(std::ffi::OsStr::from_bytes(&parent)));
+    }
+    Ok(())
+}
+
+/// What the user confirmed they were deleting, for a folder row: the dialog is
+/// worded from the row's kind when it opened, and the delete must not do
+/// something else if the folder changed kind before the confirm landed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmedEntry {
+    /// One file: deleted when untracked, restored from HEAD when tracked.
+    File,
+    /// An ordinary folder: its untracked files are cleaned, ignored files and
+    /// repositories inside it kept. `files` is how many files the user was
+    /// told would go: the delete refuses when more would go now, and takes
+    /// fewer without asking again.
+    Folder {
+        /// How many files the user was told would go.
+        files: usize,
+    },
+    /// A repository of its own: removed whole, history included.
+    Repository,
+}
+
+/// A git action refused on purpose, with the sentence that says why: a delete
+/// of an entry that is no longer what the user confirmed, or a folder action
+/// that would do nothing. A refusal rather than a failure, so a route can
+/// answer it as one (a 400 carrying the sentence).
+#[derive(Debug)]
+pub struct Refusal(pub String);
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refusal {}
+
+/// Whether git tracks a path being discarded: an untracked one is deleted, a
+/// tracked one restored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileTracking {
+    /// Not in git: discarding deletes it.
+    Untracked,
+    /// In git: discarding restores it.
+    Tracked,
+}
+
+/// [`discard_confirmed`] with nothing confirmed, cleared for any path: what
+/// the discard itself decides, for its own tests. Every real caller goes
+/// through a claim and a clearance.
+#[cfg(test)]
+pub(crate) fn discard_file(
+    worktree_path: &Path,
+    file_path: &str,
+    tracking: FileTracking,
+) -> Result<()> {
+    discard_confirmed(worktree_path, file_path, tracking, None, || {
+        Ok(crate::destructive::Cleared::any_for_tests())
+    })
+    .map(|_| ())
+}
+
+/// Discard `file_path`, refusing when a folder is no longer what the user
+/// confirmed.
+///
+/// The kind of an untracked folder is re-derived here, from git, at the moment
+/// of deleting, and compared with `confirmed`: a folder that became a
+/// repository (an agent ran `git init` in it) or a repository that became a
+/// folder is refused with a sentence asking the user to look again, because
+/// the dialog they agreed to described something else. A folder that now
+/// holds more files than the user was told is refused the same way; one that
+/// holds fewer is deleted. With nothing confirmed a plain file is discarded
+/// and any directory refused.
+///
+/// Answers how many files went: one for a file (deleted or restored), the
+/// files actually deleted for a folder, and none for a repository of its own,
+/// which goes whole and was never counted in files.
+///
+/// A folder or a repository is deleted only with a clearance for exactly that
+/// path (see [`crate::destructive`]): `clear` is asked for one once the entry
+/// has been confirmed to be what the user agreed to delete, right before
+/// anything goes, and a refusal comes back as a
+/// [`crate::destructive::Refused`] error.
+///
+/// # Errors
+///
+/// Fails when the path is not plain, resolves to the worktree or into `.git`, is not what the user
+/// confirmed, the clearance is refused, or the removal or checkout fails.
+pub fn discard_confirmed<'c>(
+    worktree_path: &Path,
+    file_path: &str,
+    tracking: FileTracking,
+    confirmed: Option<ConfirmedEntry>,
+    clear: impl FnOnce() -> std::result::Result<
+        crate::destructive::Cleared<'c>,
+        crate::destructive::Refused,
+    >,
+) -> Result<usize> {
+    refuse_unplain_path(file_path, "discard")?;
+    let (root, entry) = refuse_root_or_git(worktree_path, file_path)?;
+    if tracking == FileTracking::Untracked {
+        return discard_untracked(
+            worktree_path,
+            file_path,
+            root.as_deref(),
+            entry.as_deref(),
+            confirmed,
+            clear,
+        );
+    }
+    // A tracked path is one file restored from HEAD; a folder confirmation
+    // for it means the row the user saw is not what is there now.
+    if matches!(
+        confirmed,
+        Some(ConfirmedEntry::Folder { .. } | ConfirmedEntry::Repository)
+    ) {
+        return Err(anyhow::Error::new(Refusal(format!(
+            "\"{file_path}\" changed since you looked: it is now a tracked file. Nothing was \
+             discarded; refresh the changes and look again before discarding it."
+        ))));
+    }
+    refuse_ancestors_in_the_way(worktree_path, file_path)?;
+    let full = worktree_path.join(file_path);
+    match fs::symlink_metadata(&full) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            clear().map_err(anyhow::Error::new)?.require(&full)?;
+        }
+        Ok(meta) if meta.is_dir() => {
+            return Err(anyhow::Error::new(Refusal(format!(
+                "\"{file_path}\" is now a folder, so yaran did not restore the file over it; move \
+                 or delete the folder first if you mean to. Nothing was deleted."
+            ))));
+        }
+        _ => {}
+    }
+    let lock = IndexLockWait::before_change(worktree_path);
+    let output = tree_move(worktree_path, TreeMove::Checkout)
+        // The path is a path, never a glob or magic pathspec.
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .args(["--", file_path])
+        .output()?;
+    if !output.status.success() {
+        return Err(lock.explain(
+            anyhow!(
+                "git checkout failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            None,
+        ));
+    }
+    Ok(1)
+}
+
+/// The worktree `worktree_path` resolved and the location of the entry
+/// `file_path` names, refusing when that entry is the worktree itself or lies
+/// inside `.git`.
+///
+/// # Errors
+///
+/// Fails when the entry resolves to the worktree itself or into `.git`.
+fn refuse_root_or_git(
+    worktree_path: &Path,
+    file_path: &str,
+) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+    // Whatever the path's text says, a discard never lands on the worktree
+    // itself or on anything inside `.git`, the two targets whose loss takes
+    // every other file (or the whole history) with it.
+    //
+    // The entry itself is what gets deleted or restored, so its location is
+    // what is checked: the parent directory resolved (which is how a symlinked
+    // parent reaching into `.git` is caught) with the entry's own name put back.
+    // Canonicalizing the whole path would follow a link at the end, and an
+    // untracked `self -> .` or `hooks -> .git/hooks` would read as the worktree
+    // or `.git` although deleting it removes only the link.
+    let entry_location = |path: &Path| -> Option<PathBuf> {
+        let name = path.file_name()?;
+        let parent = path.parent()?.canonicalize().ok()?;
+        Some(parent.join(name))
+    };
+    let target = worktree_path.join(file_path);
+    let root = worktree_path.canonicalize().ok();
+    let entry = entry_location(&target);
+    let lands_on_root = matches!((&root, &entry), (Some(root), Some(entry)) if root == entry);
+    let lands_in_git = match (&root, &entry) {
+        (Some(root), Some(entry)) => entry.strip_prefix(root).is_ok_and(|rel| {
+            rel.components().any(|component| {
+                component
+                    .as_os_str()
+                    .to_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(".git"))
+            })
+        }),
+        _ => false,
+    };
+    if lands_on_root || lands_in_git {
+        return Err(anyhow!(
+            "refusing to discard {file_path:?}: it resolves to the worktree itself or into .git"
+        ));
+    }
+    Ok((root, entry))
+}
+
+/// [`discard_confirmed`] for an untracked `file_path`, whose entry resolves to
+/// `entry` in the worktree resolved as `root`: a file or a link is deleted, and
+/// a folder or a repository only as `confirmed` names it.
+///
+/// # Errors
+///
+/// Fails when the entry lies outside the worktree, is not what the user
+/// confirmed, the clearance is refused, or the removal fails.
+fn discard_untracked<'c>(
+    worktree_path: &Path,
+    file_path: &str,
+    root: Option<&Path>,
+    entry: Option<&Path>,
+    confirmed: Option<ConfirmedEntry>,
+    clear: impl FnOnce() -> std::result::Result<
+        crate::destructive::Cleared<'c>,
+        crate::destructive::Refused,
+    >,
+) -> Result<usize> {
+    let full = worktree_path.join(file_path);
+    // Defense-in-depth before a destructive remove: callers classify the
+    // path against live `git status` output (which never yields paths
+    // outside the worktree), but a filesystem delete should not rest on
+    // that invariant alone. The entry's own location (its parent resolved,
+    // so a symlinked parent component that escapes is caught) must lie in
+    // the worktree. A link at the end is not followed: deleting it removes
+    // the link, whatever it points at, even at nothing.
+    let inside = matches!((root, entry), (Some(root), Some(entry)) if entry.starts_with(root));
+    if !inside {
+        return Err(anyhow!(
+            "refusing to delete \"{file_path}\": it resolves outside the worktree"
+        ));
+    }
+    // `symlink_metadata`, so a link to a directory is removed as the link.
+    let meta = fs::symlink_metadata(&full)?;
+    let changed = |now: &str| {
+        anyhow::Error::new(Refusal(format!(
+            "\"{file_path}/\" changed since you looked: it is now {now}. Nothing was \
+             deleted; refresh the changes and look again before deleting it."
+        )))
+    };
+    if meta.is_dir() {
+        return delete_untracked_directory(worktree_path, file_path, confirmed, clear);
+    }
+    match confirmed {
+        // No confirmation is what an older client sends for a file,
+        // and deleting one file is what it always meant. A symbolic
+        // link is cleared first, judged at its own path: an agent's
+        // folder or a project's repository can be the link itself.
+        None | Some(ConfirmedEntry::File) => {
+            if meta.file_type().is_symlink() {
+                clear().map_err(anyhow::Error::new)?.require(&full)?;
+            }
+            fs::remove_file(&full)?;
+        }
+        Some(ConfirmedEntry::Folder { .. } | ConfirmedEntry::Repository) => {
+            return Err(changed("a file, not a folder"));
+        }
+    }
+    Ok(1)
+}
+
+/// [`discard_untracked`] for a directory: it goes only when `confirmed` names
+/// what it is, re-derived now from git, and a folder only when it holds no more
+/// files than the user was told.
+///
+/// # Errors
+///
+/// Fails when the directory is not what the user confirmed, is a linked
+/// worktree, the clearance is refused, or the removal fails.
+fn delete_untracked_directory<'c>(
+    worktree_path: &Path,
+    file_path: &str,
+    confirmed: Option<ConfirmedEntry>,
+    clear: impl FnOnce() -> std::result::Result<
+        crate::destructive::Cleared<'c>,
+        crate::destructive::Refused,
+    >,
+) -> Result<usize> {
+    let full = worktree_path.join(file_path);
+    let changed = |now: &str| {
+        anyhow::Error::new(Refusal(format!(
+            "\"{file_path}/\" changed since you looked: it is now {now}. Nothing was \
+             deleted; refresh the changes and look again before deleting it."
+        )))
+    };
+    // A directory goes only when the delete names what it is: a file
+    // row that a folder has since replaced, or a request that says
+    // nothing, must not clean a folder nobody was shown.
+    let (whole_repository, promised) = match confirmed {
+        Some(ConfirmedEntry::Folder { files }) => (false, files),
+        Some(ConfirmedEntry::Repository) => (true, 0),
+        Some(ConfirmedEntry::File) => return Err(changed("a folder, not one file")),
+        None => {
+            return Err(anyhow::Error::new(Refusal(format!(
+                "\"{file_path}/\" is a folder; a folder is deleted only when the \
+                 delete names it as one. Refresh the changes and delete it from its own \
+                 row."
+            ))));
+        }
+    };
+    // Re-derived now, from git, the way the listing decided it: a
+    // folder that only looks like a repository must be cleaned, not
+    // removed whole, or its ignored files go with it.
+    match untracked_directory_kind(worktree_path, file_path)? {
+        UntrackedDirectoryKind::LinkedWorktree => Err(anyhow!(
+            "\"{file_path}/\" is a worktree of this same repository, not a \
+                 repository of its own; remove it from the worktree manager so git \
+                 forgets it too"
+        )),
+        // A repository of its own is one row, and deleting it removes
+        // it whole, history included; both surfaces' dialogs say so.
+        UntrackedDirectoryKind::Repository => {
+            if !whole_repository {
+                return Err(changed("a repository of its own, with a history"));
+            }
+            clear().map_err(anyhow::Error::new)?.require(&full)?;
+            fs::remove_dir_all(&full)?;
+            Ok(0)
+        }
+        UntrackedDirectoryKind::Folder => {
+            if whole_repository {
+                return Err(changed("an ordinary folder, not a repository"));
+            }
+            let inside = refuse_empty_untracked_folder(worktree_path, file_path)?;
+            let going = inside.deletable_files().count();
+            if going > promised {
+                return Err(anyhow::Error::new(Refusal(format!(
+                    "\"{file_path}/\" changed since you looked: it now holds {}, more \
+                     than the {} you agreed to delete. Nothing was deleted; refresh the \
+                     changes and look again before deleting it.",
+                    crate::model::count_words(going, "file", "files"),
+                    promised
+                ))));
+            }
+            clear().map_err(anyhow::Error::new)?.require(&full)?;
+            clean_untracked_folder(worktree_path, file_path, &inside)?;
+            Ok(going)
+        }
+    }
+}
+
+/// Refuse a restore of `file_path` that would make git remove an ancestor that
+/// is now a file or a link to make room for the folder the file lives in.
+///
+/// # Errors
+///
+/// Fails, naming the ancestor, when one is a file or a link.
+fn refuse_ancestors_in_the_way(worktree_path: &Path, file_path: &str) -> Result<()> {
+    // Checked right before git runs, under the caller's hold. `git checkout
+    // -- <path>` makes room for the file by removing whatever stands in its
+    // way, and none of that was confirmed:
+    // - an ANCESTOR that is now a file or a link (git removes it to make the
+    //   folder the file lives in): refused, naming it;
+    // - the path itself as a FOLDER (git deletes it recursively: a standalone
+    //   agent's folder, a project's repository): refused;
+    // - the path itself as a LINK (git removes the link, which an agent's
+    //   folder can be): only with a clearance for the link, judged at the
+    //   link's own path, through the one destructive gate.
+    let mut ancestor = PathBuf::new();
+    let components: Vec<_> = Path::new(file_path).components().collect();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        ancestor.push(component);
+        let Ok(meta) = fs::symlink_metadata(worktree_path.join(&ancestor)) else {
+            // Missing: git makes the folder, removing nothing.
+            break;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            let what = if meta.file_type().is_symlink() {
+                "a link"
+            } else {
+                "a file"
+            };
+            return Err(anyhow::Error::new(Refusal(format!(
+                "\"{}\" is now {what}, so yaran did not restore \"{file_path}\" beneath it (git \
+                 would remove it to make room); move it first if you mean to. Nothing was \
+                 deleted.",
+                ancestor.display()
+            ))));
+        }
     }
     Ok(())
 }
@@ -3490,36 +7157,64 @@ pub fn discard_file(worktree_path: &Path, file_path: &str, is_untracked: bool) -
 /// to offer the discard and when the user confirms it. A file that is currently
 /// STAGED cannot be discarded (unstage it first), and a file with no working-tree
 /// change has nothing to discard; both are reported as an error.
+///
+/// # Errors
+///
+/// Fails when the path is not plain, git status cannot be read, the file is staged, or it has no
+/// working-tree change.
 pub fn discard_classify(worktree_path: &Path, path: &str) -> Result<bool> {
-    let (staged, unstaged) = changed_files(worktree_path)?;
+    refuse_unplain_path(path, "discard")?;
+    let (staged, unstaged) = changed_files_for_decisions(worktree_path)?;
+    // A path inside a folded folder is answered for by that folder's row: a
+    // file reached by expanding an untracked folder is untracked, and one
+    // inside a folder staged whole is staged. But only a path git itself lists
+    // there is a change: an ignored file, a missing one or one inside a
+    // repository of its own must not be reached through the folder, so a child
+    // path is confirmed with git before the folder's row may answer for it.
+    let asked = [path.to_string()];
+    let confirmed = |files: &[crate::model::ChangedFile], side| -> Result<bool> {
+        Ok(rows_answering(worktree_path, files, side, &asked)?.contains(path))
+    };
+    let staged_row = crate::model::listing_row_for(&staged, path);
+    let unstaged_row = crate::model::listing_row_for(&unstaged, path);
+    let under_a_folder = staged_row.is_some_and(|row| row.path != path)
+        || unstaged_row.is_some_and(|row| row.path != path);
+    let staged_row = match staged_row {
+        Some(row) if row.path != path && !confirmed(&staged, ChangesSide::Staged)? => None,
+        other => other,
+    };
+    let unstaged_row = match unstaged_row {
+        Some(row) if row.path != path && !confirmed(&unstaged, ChangesSide::Unstaged)? => None,
+        other => other,
+    };
+    // A file inside a repository's git directory (a bare repository in a
+    // folded folder) is one git lists as a plain file, and a folder delete
+    // keeps it: it is not discarded through the folder either.
+    if under_a_folder
+        && let Some(repository) =
+            folding::git_directory_above(worktree_path, path, &mut HashMap::new())
+    {
+        anyhow::bail!(
+            "\"{path}\" is inside \"{repository}/\", a repository's own git directory, which \
+             a delete keeps, so there is nothing to discard."
+        );
+    }
+    if under_a_folder && staged_row.is_none() && unstaged_row.is_none() {
+        anyhow::bail!(
+            "\"{path}\" is not a change git lists: it may be ignored, missing, or inside a \
+             repository of its own, so there is nothing to discard."
+        );
+    }
     // Reject when the file is staged (and has no separate unstaged change). The
     // TUI and web both surface "Unstage the file first to discard changes." for
     // this case.
-    if staged.iter().any(|f| f.path == path) && !unstaged.iter().any(|f| f.path == path) {
+    if staged_row.is_some() && unstaged_row.is_none() {
         anyhow::bail!("Unstage the file first to discard changes.");
     }
-    match unstaged.iter().find(|f| f.path == path) {
+    match unstaged_row {
         Some(file) => Ok(file.status == "?"),
         None => anyhow::bail!("No unstaged changes to discard for \"{path}\"."),
     }
-}
-
-/// Return the text of `git diff --cached` for the given worktree.
-/// Uses `-c color.diff=false` to strip ANSI escapes regardless of user config.
-pub fn staged_diff_text(worktree_path: &Path) -> Result<String> {
-    let wt = worktree_path.as_os_str();
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(wt)
-        .args(["-c", "color.diff=false", "diff", "--cached"])
-        .output()?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git diff --cached failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// The typed outcome of [`commit_preflight`]: the single decision both surfaces
@@ -3545,7 +7240,7 @@ pub fn commit_preflight(worktree_path: &Path, message: &str) -> CommitPreflight 
     if message.trim().is_empty() {
         return CommitPreflight::EmptyMessage;
     }
-    match changed_files(worktree_path) {
+    match changed_files_for_decisions(worktree_path) {
         Ok((staged, _unstaged)) if staged.is_empty() => CommitPreflight::NothingStaged,
         // A git-status error is not a preflight refusal: fall through to Ready and
         // let the actual `git commit` surface the underlying error. Treating a
@@ -3594,33 +7289,68 @@ pub fn commit_preflight(worktree_path: &Path, message: &str) -> CommitPreflight 
 /// path this rule exists to prevent. Inside a quoted run the quote is safe for
 /// the same reason it is safe to git, since the opening quote is what says a
 /// quoted path is being read at all.
+///
+/// The match must START a path too: it is preceded by the start of the text,
+/// whitespace, a quote, or punctuation that opens a path in prose (`(`, `[`,
+/// `<`, `=`, `:`). Found inside a longer path (`/var/x` in `/private/var/x/a`)
+/// it is a different path, and shortening it would read `/private./a`.
+///
+/// This strips only the path as given. git often prints the RESOLVED one, so a
+/// worktree reached through a symlink (`/var` on macOS) needs
+/// [`redact_resolved_worktree_path`] with its canonical form as well.
 pub fn redact_worktree_path(text: &str, worktree_path: &Path) -> String {
-    let wt = worktree_path.to_string_lossy();
-    let wt = wt.strip_suffix('/').unwrap_or(wt.as_ref());
-    if wt.is_empty() || wt == "/" {
-        return text.to_string();
-    }
+    redact_resolved_worktree_path(text, worktree_path, None)
+}
 
+/// [`redact_worktree_path`] that also strips `canonical`, the worktree's
+/// resolved path, so git's text reads `./` whether git printed the path it was
+/// given or the one it resolved. Resolving it is filesystem I/O, so the caller
+/// does that off the UI and engine threads (on the worker that ran git) and
+/// passes the answer, `None` when it could not be resolved.
+pub fn redact_resolved_worktree_path(
+    text: &str,
+    worktree_path: &Path,
+    canonical: Option<&Path>,
+) -> String {
+    let mut forms: Vec<String> = [Some(worktree_path), canonical]
+        .into_iter()
+        .flatten()
+        .map(|path| {
+            let path = path.to_string_lossy();
+            path.strip_suffix('/').unwrap_or(&path).to_string()
+        })
+        .filter(|form| !form.is_empty() && form != "/")
+        .collect();
+    // The longer form first, so neither is ever stripped out of the other.
+    forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
+    forms.dedup();
+    forms
+        .iter()
+        .fold(text.to_string(), |text, form| strip_path(&text, form))
+}
+
+/// One pass of [`redact_worktree_path`] for one spelling of the worktree.
+fn strip_path(text: &str, wt: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find(wt) {
         let after = &rest[at + wt.len()..];
+        let before = rest[..at].chars().next_back();
         // The quote that OPENED this path, if any, closes it too.
-        let opening_quote = rest[..at]
-            .chars()
-            .next_back()
-            .filter(|c| *c == '\'' || *c == '"');
+        let opening_quote = before.filter(|c| *c == '\'' || *c == '"');
+        let starts_a_path = before.is_none_or(|c| {
+            c.is_whitespace() || matches!(c, '\'' | '"' | '(' | '[' | '<' | '=' | ':')
+        });
         let next = after.chars().next();
         // A boundary is a separator, the closing quote, or the end of the text.
         // Anything else means this is a DIFFERENT path that merely starts with
         // the same characters, and shortening it would invent one that does not
         // exist.
         let at_boundary = match next {
-            None => true,
-            Some('/') => true,
+            None | Some('/') => true,
             Some(c) => Some(c) == opening_quote,
         };
-        if at_boundary {
+        if starts_a_path && at_boundary {
             out.push_str(&rest[..at]);
             out.push('.');
         } else {
@@ -3630,6 +7360,164 @@ pub fn redact_worktree_path(text: &str, worktree_path: &Path) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// How long a change to the index waits for another git program's
+/// `index.lock` to go before it runs anyway.
+const INDEX_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How often that wait looks again.
+const INDEX_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A lock older than this is more likely left over from a crash than held by
+/// a git program that is still running.
+const LEFTOVER_LOCK_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Where git takes `worktree`'s index lock, resolved by git itself so a linked
+/// worktree's lives in its own admin folder. `None` when git cannot say.
+///
+/// git answers with the resolved path, so a lock inside the worktree is
+/// re-rooted onto `worktree` as given: the sentences that name it then read
+/// `./` once the worktree's path is stripped, whether it was given through a
+/// symlink (`/var` on macOS) or not.
+fn index_lock_path(worktree: &Path) -> Option<PathBuf> {
+    let path = git_index_lock_path(worktree)?;
+    let inside = fs::canonicalize(worktree)
+        .ok()
+        .and_then(|canonical| path.strip_prefix(canonical).ok().map(Path::to_path_buf));
+    Some(inside.map_or(path, |inside| worktree.join(inside)))
+}
+
+/// The lock's path as `git rev-parse --git-path` resolves it.
+fn git_index_lock_path(worktree: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(worktree)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "index.lock",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = path_from_git_output(&output.stdout);
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+/// The wait a change to the index makes before it runs, and what its lock
+/// means if git refuses anyway.
+///
+/// yaran's own reads and changes take their turns in the worktree's lane, so a
+/// lock found here belongs to another program: the agent's own git, a
+/// terminal, an editor. The change waits up to [`INDEX_LOCK_WAIT`] for it to
+/// go and then runs git exactly once, whatever it found. It never runs git a
+/// second time after a refusal: a hook, a signing program or an fsmonitor
+/// may already have run, and running them again is not yaran's to decide.
+pub(crate) struct IndexLockWait {
+    lock: Option<PathBuf>,
+}
+
+impl IndexLockWait {
+    /// Wait for `worktree`'s index lock to go, up to [`INDEX_LOCK_WAIT`].
+    pub(crate) fn before_change(worktree: &Path) -> Self {
+        let lock = index_lock_path(worktree);
+        if let Some(path) = &lock
+            && path.exists()
+        {
+            let started = std::time::Instant::now();
+            while path.exists() && started.elapsed() < INDEX_LOCK_WAIT {
+                std::thread::sleep(INDEX_LOCK_POLL);
+            }
+            let outcome = if path.exists() {
+                "it was still there, so git runs anyway"
+            } else {
+                "it cleared"
+            };
+            logger::info(&format!(
+                "waited {}ms for {} before changing the index of {}: {outcome}",
+                started.elapsed().as_millis(),
+                path.display(),
+                worktree.display()
+            ));
+        }
+        Self { lock }
+    }
+
+    /// The lock's location, for a listing stopped at its deadline, which has
+    /// no wait of its own to make.
+    fn unwaited(worktree: &Path) -> Self {
+        Self {
+            lock: index_lock_path(worktree),
+        }
+    }
+
+    /// The sentence a change git refused adds when the lock is there right
+    /// after: another program is using the worktree, or, once the lock is over
+    /// a minute old, it may be left over from a crash.
+    fn refusal_note(&self) -> Option<String> {
+        let path = self.lock.as_ref()?;
+        let meta = fs::symlink_metadata(path).ok()?;
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > LEFTOVER_LOCK_AGE);
+        Some(if old {
+            leftover_lock_sentence(path)
+        } else {
+            "Another git program, such as the agent, a terminal or an editor, is using this \
+             worktree right now. Wait for it to finish, then try again."
+                .to_string()
+        })
+    }
+
+    /// The leftover-lock sentence, only for a lock over a minute old: after a
+    /// listing was stopped, a fresh lock may be the one its own git left, so
+    /// nothing is said about it.
+    fn leftover_note(&self) -> Option<String> {
+        let path = self.lock.as_ref()?;
+        let age = fs::symlink_metadata(path)
+            .ok()?
+            .modified()
+            .ok()?
+            .elapsed()
+            .ok()?;
+        (age > LEFTOVER_LOCK_AGE).then(|| leftover_lock_sentence(path))
+    }
+
+    /// `error` with the refusal note appended, when there is one. `redact`
+    /// is the worktree whose path git's own text had stripped, so the lock's
+    /// path reads the same way.
+    pub(crate) fn explain(&self, error: anyhow::Error, redact: Option<&Path>) -> anyhow::Error {
+        let Some(note) = self.refusal_note() else {
+            return error;
+        };
+        let note = match redact {
+            Some(worktree) => redact_resolved_worktree_path(
+                &note,
+                worktree,
+                fs::canonicalize(worktree).ok().as_deref(),
+            ),
+            None => note,
+        };
+        anyhow!("{error:#} {note}")
+    }
+}
+
+/// What to do about an index lock over a minute old, which may be left over
+/// from a crash. yaran never deletes it: whether a git program still runs is the
+/// user's to know.
+fn leftover_lock_sentence(path: &Path) -> String {
+    format!(
+        "The lock file has been there for over a minute, so it may be left over from a git \
+         program that crashed. If nothing is using git in this worktree, delete {} and try again.",
+        path.display()
+    )
 }
 
 /// Build the error for a failed git subprocess, carrying BOTH streams.
@@ -3666,41 +7554,60 @@ fn git_failure(what: &str, worktree_path: &Path, output: &std::process::Output) 
     }
     anyhow!(
         "{what} failed: {}",
-        redact_worktree_path(&detail, worktree_path)
+        redact_resolved_worktree_path(
+            &detail,
+            worktree_path,
+            fs::canonicalize(worktree_path).ok().as_deref()
+        )
     )
 }
 
+/// Commits the staged changes with `message`, returning git's report.
+///
+/// # Errors
+///
+/// Fails when git cannot be run or the commit fails, with git's own reason.
 pub fn commit(worktree_path: &Path, message: &str) -> Result<String> {
     let wt = worktree_path.as_os_str();
-    let output = Command::new("git")
+    let lock = IndexLockWait::before_change(worktree_path);
+    let output = git_without_auto_maintenance()
         .arg("-C")
         .arg(wt)
         .args(["commit", "-m", message])
         .output()?;
     if !output.status.success() {
-        return Err(git_failure("git commit", worktree_path, &output));
+        return Err(lock.explain(
+            git_failure("git commit", worktree_path, &output),
+            Some(worktree_path),
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub fn push(worktree_path: &Path) -> Result<String> {
-    let wt = worktree_path.as_os_str();
-    let branch = match current_branch_opt(worktree_path)? {
-        Some(b) => b,
-        None => {
-            return Err(anyhow!(
-                "HEAD is detached; check out a branch before pushing"
-            ));
-        }
+/// Pushes the checked-out branch to `origin`, setting it as the upstream, and returns git's report.
+///
+/// # Errors
+///
+/// Fails when HEAD is detached, git cannot be run, the push fails (with git's own reason), or it
+/// does not finish within `timeout` (`[git] network_timeout_seconds`; `None` is no limit).
+pub fn push(worktree_path: &Path, timeout: Option<std::time::Duration>) -> Result<String> {
+    let Some(branch) = current_branch_opt(worktree_path)? else {
+        return Err(anyhow!(
+            "HEAD is detached; check out a branch before pushing"
+        ));
     };
-    let output = Command::new("git")
-        // `--` so the branch is read as a REFSPEC and never as an option.
-        // Without it, a checkout whose HEAD points at a ref named `--all`
-        // pushes EVERY branch to the remote. Measured on git 2.55.
-        .arg("-C")
-        .arg(wt)
-        .args(["push", "-u", "origin", "--", &branch])
-        .output()?;
+    // `--` so the branch is read as a REFSPEC and never as an option. Without
+    // it, a checkout whose HEAD points at a ref named `--all` pushes EVERY
+    // branch to the remote. Measured on git 2.55. The fully qualified form,
+    // because a refspec's leading `+` means force and a branch may be called
+    // `+feature`: as a bare refspec that force-pushes `feature` instead.
+    let refspec = format!("refs/heads/{branch}");
+    let output = network_git(
+        worktree_path,
+        &["push", "-u", "origin", "--", &refspec],
+        "git push",
+        timeout,
+    )?;
     if !output.status.success() {
         return Err(git_failure("git push", worktree_path, &output));
     }
@@ -3776,7 +7683,7 @@ pub fn file_bytes_at_head(worktree_path: &Path, path: &str) -> Result<Option<Vec
 /// `cat-file -s` (which reads the object header WITHOUT inflating the whole
 /// blob), or `None` for new (untracked) files. Lets a caller cap a diff/read by
 /// size before buffering the full HEAD content into memory.
-pub fn blob_size_at_head(worktree_path: &Path, path: &str) -> Result<Option<u64>> {
+pub(crate) fn blob_size_at_head(worktree_path: &Path, path: &str) -> Result<Option<u64>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(worktree_path)
@@ -3804,7 +7711,7 @@ pub fn blob_size_at_head(worktree_path: &Path, path: &str) -> Result<Option<u64>
 /// path is absent at HEAD. Streams `cat-file -p` and stops reading at the
 /// limit, so a hundred-megabyte blob costs a few kilobytes of memory: the
 /// caller only wants enough of the head to classify the content.
-pub fn file_prefix_at_head(
+pub(crate) fn file_prefix_at_head(
     worktree_path: &Path,
     path: &str,
     limit: usize,
@@ -3825,16 +7732,21 @@ pub fn file_prefix_at_head(
         .stderr(Stdio::null())
         .spawn()?;
     let mut prefix = Vec::new();
-    if let Some(stdout) = child.stdout.as_mut() {
-        stdout.take(limit as u64).read_to_end(&mut prefix)?;
-    }
+    let read = child.stdout.as_mut().map_or(Ok(0), |stdout| {
+        stdout
+            .take(crate::numeric::usize_to_u64(limit))
+            .read_to_end(&mut prefix)
+    });
     // Drop the pipe so a blob larger than the limit gets EPIPE and exits
-    // instead of blocking forever on a reader that stopped.
+    // instead of blocking forever on a reader that stopped. The child is
+    // reaped before a failed read is answered.
     drop(child.stdout.take());
     let _ = child.wait();
+    read?;
     Ok(Some(prefix))
 }
 
+/// Whether `candidate` lies inside `base`, both canonicalized; `false` when either cannot be.
 pub fn is_under(base: &Path, candidate: &Path) -> bool {
     match (base.canonicalize(), candidate.canonicalize()) {
         (Ok(b), Ok(c)) => c.starts_with(b),
@@ -3867,6 +7779,10 @@ pub fn is_under(base: &Path, candidate: &Path) -> bool {
 /// Used by every surface that reads or writes a file from a client path (the
 /// diff engine, the web editor endpoints) so the escape check lives in one
 /// tested place and cannot drift between call sites.
+///
+/// # Errors
+///
+/// Fails when the path is malformed, escapes the worktree, or reaches into the git directory.
 pub fn resolve_worktree_path(worktree: &Path, rel_path: &str) -> anyhow::Result<PathBuf> {
     let rp = Path::new(rel_path);
     if rp.as_os_str().is_empty()
@@ -3988,64 +7904,14 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 /// parent dir is checked). Returns false if either path can't be canonicalized.
 pub(crate) fn resolves_into_git_dir(worktree: &Path, candidate: &Path) -> bool {
     match (worktree.canonicalize(), candidate.canonicalize()) {
-        (Ok(wt), Ok(c)) => c
-            .strip_prefix(&wt)
-            .map(|rel| {
-                rel.components().any(|comp| {
-                    comp.as_os_str()
-                        .to_str()
-                        .is_some_and(|s| s.eq_ignore_ascii_case(".git"))
-                })
+        (Ok(wt), Ok(c)) => c.strip_prefix(&wt).is_ok_and(|rel| {
+            rel.components().any(|comp| {
+                comp.as_os_str()
+                    .to_str()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(".git"))
             })
-            .unwrap_or(false),
+        }),
         _ => false,
-    }
-}
-
-pub fn ellipsize_middle(input: &str, max_width: usize) -> String {
-    if input.chars().count() <= max_width {
-        return input.to_string();
-    }
-    if max_width <= 3 {
-        return ".".repeat(max_width);
-    }
-    let left = (max_width - 3) / 2;
-    let right = max_width - 3 - left;
-    let start: String = input.chars().take(left).collect();
-    let end: String = input
-        .chars()
-        .rev()
-        .take(right)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!("{start}...{end}")
-}
-
-/// Truncate `input` to at most `max_width` chars, keeping the END and prefixing
-/// a single `…` when characters are dropped from the front. Used for paths,
-/// where the leaf (the tail) is the informative part and the leading directories
-/// can be elided. Measured in chars, matching [`ellipsize_middle`].
-pub fn ellipsize_start(input: &str, max_width: usize) -> String {
-    let len = input.chars().count();
-    if len <= max_width {
-        return input.to_string();
-    }
-    match max_width {
-        0 => String::new(),
-        1 => "…".to_string(),
-        _ => {
-            let tail: String = input
-                .chars()
-                .rev()
-                .take(max_width - 1)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            format!("…{tail}")
-        }
     }
 }
 
@@ -4102,7 +7968,7 @@ fn wait_child_or_kill(
             let _ = child.wait();
             return Err(anyhow!(
                 "{what} timed out after {}s and was terminated",
-                timeout.as_secs()
+                crate::duration_text::whole_seconds(timeout)
             ));
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -4112,6 +7978,11 @@ fn wait_child_or_kill(
 /// Rename a git branch inside a worktree. Runs `git branch -m <old> <new>`
 /// from within the worktree directory, bounded by [`RENAME_BRANCH_TIMEOUT`]
 /// so a wedged git invocation can't strand the rename worker forever.
+///
+/// # Errors
+///
+/// Fails when git cannot be started, does not finish within [`RENAME_BRANCH_TIMEOUT`], or `git
+/// branch -m` fails.
 pub fn rename_branch(worktree_path: &Path, old_name: &str, new_name: &str) -> Result<()> {
     let mut child = Command::new("git")
         .arg("-C")
@@ -4143,44 +8014,78 @@ pub fn rename_branch(worktree_path: &Path, old_name: &str, new_name: &str) -> Re
 }
 
 /// The display name a STANDALONE agent gets: the typed name when the user gave
-/// one, and otherwise a sanitized form of the folder's own name.
+/// one, and otherwise the folder's own name converted into a valid agent name.
 ///
 /// The invariant this exists to hold is that the result is NEVER EMPTY. Every
 /// row label in both surfaces falls back through the branch name when there is
 /// no title, and a standalone agent has no branch, so an empty title would
 /// render a nameless row.
 ///
-/// The typed name is used verbatim once trimmed: a standalone agent creates no
-/// branch, so [`is_valid_agent_name`] deliberately does NOT apply. Folder names
-/// legally contain spaces, dots and punctuation that a ref name cannot.
-///
-/// The sanitizer is gentle on purpose, because the result is a label and not a
-/// path or a ref: it only collapses whitespace and trims. When the folder's
-/// name has nothing usable left (the filesystem root, a name of only
-/// whitespace), it falls back to a fixed word rather than an empty string.
-///
-/// Char-based throughout: folder names are arbitrary UTF-8.
+/// A standalone agent creates no branch, but its name follows the same
+/// [`is_valid_agent_name`] rules as every other agent's. The typed name comes
+/// back trimmed and is NOT checked here: refusing it is the create's job, with
+/// the sentence every other create gives ([`invalid_agent_name_refusal`]).
 pub fn standalone_agent_title(typed: &str, folder: &Path) -> String {
     let typed = typed.trim();
     if !typed.is_empty() {
         return typed.to_string();
     }
-    let from_folder = folder
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_default();
-    // Collapse runs of whitespace so a name copied out of a file manager does
-    // not render with a ragged gap in the middle of a row.
-    let collapsed = from_folder.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.is_empty() {
-        // The filesystem root, or a folder whose name is only whitespace. A
-        // fixed word beats an empty label, and the row's second line names the
-        // actual folder anyway.
-        return "Standalone agent".to_string();
-    }
-    collapsed
+    standalone_agent_name_from_folder(folder)
 }
 
+/// A folder's own name converted into a valid agent name, for a standalone
+/// agent nobody named or whose name was cleared.
+///
+/// Folder names legally contain spaces, dots, punctuation and non-ASCII text
+/// an agent name cannot, so every run of such characters becomes one `-`, and
+/// separators are trimmed off both ends so the result starts with a letter or
+/// digit. When nothing usable is left (the filesystem root, a name of only
+/// punctuation or non-ASCII text) it falls back to a fixed name rather than an
+/// empty one. The web's `standaloneAgentDefaultName` is its twin, pinned by
+/// shared vectors, because the create dialog promises this name.
+pub(crate) fn standalone_agent_name_from_folder(folder: &Path) -> String {
+    let raw = folder
+        .file_name()
+        .map_or_default(|name| name.to_string_lossy().to_string());
+    let mut out = String::new();
+    // Inside a run of characters a name cannot hold, so a literal dash beside
+    // it joins that run's one separator instead of doubling it.
+    let mut in_separator = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+            in_separator = false;
+        } else if ch == '-' {
+            if !in_separator {
+                out.push('-');
+            }
+        } else {
+            if !out.ends_with('-') {
+                out.push('-');
+            }
+            in_separator = true;
+        }
+    }
+    let trimmed = out.trim_matches(|c: char| c == '-' || c == '_');
+    if trimmed.is_empty() {
+        return "standalone-agent".to_string();
+    }
+    trimmed.to_string()
+}
+
+/// What an agent name may be, said the same way in every refusal of one.
+pub(crate) const AGENT_NAME_RULE: &str = "An agent name must be a name git accepts as a branch, so \
+     no spaces, none of ~ ^ : ? * [ \\, no \"..\", and it cannot start with \"-\" or end \
+     with \"/\", \".\" or \".lock\".";
+
+/// The sentence a create refuses an invalid agent name with, the same for a
+/// managed agent and a standalone one.
+pub fn invalid_agent_name_refusal(name: &str) -> String {
+    format!("Invalid agent name \"{name}\". {AGENT_NAME_RULE}")
+}
+
+/// A random two-word name joined by a dash, as a new agent's default name;
+/// `agent-` plus a uuid on the (impossible in practice) day petname fails.
 pub fn docker_style_name() -> String {
     // Fork e393c1d1 (P1-M): petname returns None only when its RNG or word
     // lists fail, and a random agent name is not worth a panic in the create
@@ -4194,49 +8099,116 @@ fn fallback_agent_name() -> String {
     format!("agent-{}", uuid::Uuid::new_v4().simple())
 }
 
-/// Returns `true` if `name` contains only characters safe for git branch names:
-/// ASCII alphanumeric, dash (`-`), underscore (`_`), and slash (`/`).
-/// Also rejects names that start or end with `/`, contain consecutive slashes,
-/// or start with `-`, since git forbids these patterns in ref names.
+/// Whether git accepts `name` as a branch name: the rules of
+/// `git check-ref-format --branch`, checked without running git because
+/// every keystroke in a name field asks.
+///
+/// An agent's name becomes its branch, so a name is exactly as free as a
+/// branch name, which is what lets any pull request's head branch name its
+/// agent. Non-ASCII text is allowed because git allows it. The web's
+/// `isValidAgentName` is its twin; both read the shared
+/// `agent_name_cross_language.json` vectors, which a test also puts to git.
+///
+/// Two names git takes are refused on purpose: `@`, which git commands also
+/// read as `HEAD`, and any name carrying a bidirectional control, which would
+/// make the name draw as something it does not say ([`crate::bidi`]).
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "git refuses a ref component ending in exactly .lock, a case-sensitive rule"
+)]
 pub fn is_valid_agent_name(name: &str) -> bool {
-    if name.is_empty() {
+    // The branch form's own refusals, on top of the ref name rules below.
+    if name.is_empty() || name.starts_with('-') || name == "HEAD" || name == "@" {
         return false;
     }
-    if name.starts_with('-') || name.starts_with('/') || name.ends_with('/') {
+    if name.chars().any(never_in_an_agent_name) {
         return false;
     }
-    if name.contains("//") {
+    if name.contains("..") || name.contains("@{") || name.ends_with('.') {
         return false;
     }
-    name.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/')
+    // An empty component is a leading or trailing slash, or `//`.
+    name.split('/').all(|component| {
+        !component.is_empty() && !component.starts_with('.') && !component.ends_with(".lock")
+    })
 }
 
-/// Input mapper for agent name text fields. Maps characters for insertion,
-/// rejecting those that would make the name invalid per [`is_valid_agent_name`]
-/// rules. Spaces are transparently converted to dashes. Designed for use with
-/// [`TextInput::with_char_map`].
-pub fn agent_name_char_map(text: &str, cursor: usize, ch: char) -> Option<char> {
-    // Transparently convert spaces to dashes.
+/// A character no agent name may hold anywhere: what git refuses anywhere in
+/// a ref name (ASCII control characters and DEL, space, and `~ ^ : ? * [ \`),
+/// and the bidirectional controls.
+fn never_in_an_agent_name(ch: char) -> bool {
+    ch.is_ascii_control()
+        || matches!(ch, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        || crate::bidi::is_bidi_control(ch)
+}
+
+/// The folder a NEW agent's worktree is named from its name: every character
+/// other than a letter, a digit (in any script), `-` and `_` becomes `-`, so
+/// `dependabot/cargo/tray-icon-0.26.1` lands in
+/// `dependabot-cargo-tray-icon-0-26-1`. The branch keeps its real name.
+///
+/// A flat folder keeps a name's slashes from nesting one agent's folder inside
+/// another's, and keeps every other character a branch allows out of the path.
+/// Two names that flatten alike want the same folder, and the second create is
+/// refused because the folder is already there. An existing agent's folder is
+/// the one its record holds, never derived from its name again.
+///
+/// A name with any non-ASCII character always ends in `-` and a short hash of
+/// the WHOLE raw name: macOS treats canonically equivalent spellings of a
+/// name as one folder, and yaran has no normalizer to see that, so two
+/// different names must never even look alike. A folder name past
+/// [`AGENT_FOLDER_MAX_UNITS`] is cut, on a character boundary, and gets the
+/// same hash, so it fits the filesystem's limit on one name and two long names
+/// that share their start still get folders of their own.
+pub(crate) fn agent_folder_name(name: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let flat: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let units = |text: &str| -> usize {
+        text.chars()
+            .map(|ch| if ch.is_ascii() { 1 } else { 4 })
+            .sum()
+    };
+    if name.is_ascii() && flat.len() <= AGENT_FOLDER_MAX_UNITS {
+        return flat;
+    }
+    let digest = Sha256::digest(name.as_bytes());
+    let hash = crate::text::hex_lower(&digest[..8]);
+    let budget = AGENT_FOLDER_MAX_UNITS - hash.len() - 1;
+    let mut used = 0;
+    let kept: String = flat
+        .chars()
+        .take_while(|ch| {
+            used += units(ch.encode_utf8(&mut [0; 4]));
+            used <= budget
+        })
+        .collect();
+    format!("{kept}-{hash}")
+}
+
+/// The most a folder name from [`agent_folder_name`] may measure, counting an
+/// ASCII character as 1 and any other as 4. Linux allows 255 bytes in one
+/// file name and HFS+ 255 UTF-16 units of the DECOMPOSED name, where one
+/// character can grow to several; 4 covers both with room to spare.
+const AGENT_FOLDER_MAX_UNITS: usize = 200;
+
+/// Input mapper for agent name text fields, for
+/// [`TextInput::with_char_map`]. A space becomes a dash, and a character no
+/// agent name may hold anywhere is refused as it is typed. Everything else
+/// goes in, and [`is_valid_agent_name`] judges the whole name when it is
+/// submitted.
+pub fn agent_name_char_map(_text: &str, _cursor: usize, ch: char) -> Option<char> {
     let ch = if ch == ' ' { '-' } else { ch };
-    // Only allow ASCII alphanumeric, '-', '_', '/'
-    if !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '/') {
-        return None;
-    }
-    // First position must be alphanumeric (reject '-', '_', '/')
-    if cursor == 0 && !ch.is_ascii_alphanumeric() {
-        return None;
-    }
-    // Prevent '//' by checking the character before and after the cursor
-    if ch == '/' {
-        if cursor > 0 && text.as_bytes().get(cursor - 1) == Some(&b'/') {
-            return None;
-        }
-        if text.as_bytes().get(cursor) == Some(&b'/') {
-            return None;
-        }
-    }
-    Some(ch)
+    (!never_in_an_agent_name(ch)).then_some(ch)
 }
 
 #[cfg(test)]
@@ -4306,6 +8278,74 @@ pub(crate) mod test_support {
             .env_remove("GIT_CONFIG_PARAMETERS");
     }
 
+    fn run(args: &[&std::ffi::OsStr]) {
+        let out = git_command().args(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A bare repository at `dir/remote.git` to clone from, whose default
+    /// branch `main` has one commit and which also has a branch `feature`.
+    pub(crate) fn bare_remote_with_commit(dir: &std::path::Path) -> std::path::PathBuf {
+        let seed = dir.join("seed");
+        let remote = dir.join("remote.git");
+        run(&[
+            "init".as_ref(),
+            "-q".as_ref(),
+            "-b".as_ref(),
+            "main".as_ref(),
+            seed.as_os_str(),
+        ]);
+        let in_seed = |args: &[&str]| {
+            let mut all: Vec<&std::ffi::OsStr> = vec!["-C".as_ref(), seed.as_os_str()];
+            all.extend(args.iter().map(std::ffi::OsStr::new));
+            run(&all);
+        };
+        in_seed(&["config", "user.name", "test"]);
+        in_seed(&["config", "user.email", "t@t"]);
+        in_seed(&["commit", "-q", "--allow-empty", "-m", "init"]);
+        in_seed(&["branch", "feature"]);
+        run(&[
+            "clone".as_ref(),
+            "-q".as_ref(),
+            "--bare".as_ref(),
+            seed.as_os_str(),
+            remote.as_os_str(),
+        ]);
+        remote
+    }
+
+    /// A bare repository at `dir/empty.git` with no commits at all.
+    pub(crate) fn empty_bare_remote(dir: &std::path::Path) -> std::path::PathBuf {
+        let remote = dir.join("empty.git");
+        run(&[
+            "init".as_ref(),
+            "-q".as_ref(),
+            "--bare".as_ref(),
+            "-b".as_ref(),
+            "main".as_ref(),
+            remote.as_os_str(),
+        ]);
+        remote
+    }
+
+    /// [`bare_remote_with_commit`] whose `HEAD` names a branch that does not
+    /// exist, so a clone of it cannot check its default branch out.
+    pub(crate) fn bare_remote_with_missing_head(dir: &std::path::Path) -> std::path::PathBuf {
+        let remote = bare_remote_with_commit(dir);
+        run(&[
+            "--git-dir".as_ref(),
+            remote.as_os_str(),
+            "symbolic-ref".as_ref(),
+            "HEAD".as_ref(),
+            "refs/heads/missing".as_ref(),
+        ]);
+        remote
+    }
+
     /// Give a fixture repository an `origin` that PRODUCTION code reads back
     /// verbatim, and return the address it will read.
     ///
@@ -4354,10 +8394,24 @@ pub(crate) mod test_support {
     }
 }
 
+/// The GitHub repository a remote names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitHubRemote {
+    /// The GitHub host, such as `github.com`.
     pub host: String,
+    /// The repository as `owner/repo`.
     pub owner_repo: String,
+}
+
+impl GitHubRemote {
+    /// Whether a pull request on `host` in `owner_repo` lives in this
+    /// repository. Hosts and repository names are compared without case,
+    /// as GitHub does.
+    pub(crate) fn holds(&self, host: &str, owner_repo: &str) -> bool {
+        crate::gh::normalized_github_host(&self.host)
+            .eq_ignore_ascii_case(&crate::gh::normalized_github_host(host))
+            && self.owner_repo.eq_ignore_ascii_case(owner_repo)
+    }
 }
 
 /// What reading a worktree's `origin` concluded. THREE outcomes, not two,
@@ -4372,7 +8426,7 @@ pub struct GitHubRemote {
 /// agent's address does not name, and the eligibility gate after the choice
 /// could not recover because the live address was already gone by then.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RemoteResolution {
+pub(crate) enum RemoteResolution {
     /// git could not read an `origin`, or what it read is not an address yaran
     /// can parse into a host and an `owner/repo`.
     Unresolved,
@@ -4387,7 +8441,7 @@ pub enum RemoteResolution {
 impl RemoteResolution {
     /// The allowed remote, for callers whose only question is whether they have
     /// one they may use.
-    pub fn allowed(self) -> Option<GitHubRemote> {
+    pub(crate) fn allowed(self) -> Option<GitHubRemote> {
         match self {
             Self::Allowed(remote) => Some(remote),
             Self::Unresolved | Self::Denied => None,
@@ -4397,7 +8451,7 @@ impl RemoteResolution {
 
 /// Returns the GitHub host and `"owner/repo"` parsed from the `origin` remote
 /// URL, or `None` if the remote doesn't point to GitHub or the command fails.
-pub fn remote_github_repo(
+pub(crate) fn remote_github_repo(
     worktree_path: &Path,
     policy: &crate::gh::GithubHostPolicy,
 ) -> Option<GitHubRemote> {
@@ -4406,7 +8460,7 @@ pub fn remote_github_repo(
 
 /// [`remote_github_repo`] keeping the reason it has no answer. See
 /// [`RemoteResolution`].
-pub fn resolve_remote_github_repo(
+pub(crate) fn resolve_remote_github_repo(
     worktree_path: &Path,
     policy: &crate::gh::GithubHostPolicy,
 ) -> RemoteResolution {
@@ -4573,7 +8627,7 @@ fn parse_github_remote_with(
 /// caller has to be able to tell "this is not an address" from "this is an
 /// address on a host that is not allowed". Folding the policy in here made the
 /// two indistinguishable.
-fn parse_remote_address(url: &str) -> Option<GitHubRemote> {
+pub(crate) fn parse_remote_address(url: &str) -> Option<GitHubRemote> {
     // The input is consumed EXACTLY, with no trimming of any kind. Trimming
     // used to happen here and then again inside the literal check, which
     // MANUFACTURED matches out of values that are not GitHub remotes:
@@ -4599,7 +8653,7 @@ fn parse_remote_address(url: &str) -> Option<GitHubRemote> {
         // The scp-like spelling is ssh by definition, so GitHub's documented
         // port-443 ssh host is legitimate here.
         let written_host = strip_remote_userinfo(authority).to_ascii_lowercase();
-        let host = remote_api_host(&written_host, true);
+        let host = remote_api_host(&written_host, RemoteTransport::Ssh);
         // Git hands an scp-like path to ssh verbatim, so it is NOT
         // percent-decoded.
         return owner_repo_from_path(strip_boundary_slashes(path))
@@ -4688,7 +8742,14 @@ fn parse_remote_address(url: &str) -> Option<GitHubRemote> {
         // leaves the host's case alone, so lowercase it explicitly: hostnames
         // are case-insensitive and this value is handed to `gh`.
         let written_host = parsed.host_str()?.to_ascii_lowercase();
-        let host = remote_api_host(&written_host, SSH_TRANSPORT_SCHEMES.contains(&raw_scheme));
+        let host = remote_api_host(
+            &written_host,
+            if SSH_TRANSPORT_SCHEMES.contains(&raw_scheme) {
+                RemoteTransport::Ssh
+            } else {
+                RemoteTransport::NotSsh
+            },
+        );
         // An ssh or git port is the transport service's port and has nothing to
         // do with the host's API, so dropping it is right. An http(s) port is part
         // of the server endpoint, and `gh` cannot express one: it refuses a
@@ -4963,10 +9024,19 @@ fn owner_repo_from_path(path: &str) -> Option<String> {
 /// reached over a different port.
 const GITHUB_SSH_ALT_HOST: &str = "ssh.github.com";
 
+/// Whether a remote is reached over ssh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemoteTransport {
+    /// An ssh remote (scp-like or an ssh scheme).
+    Ssh,
+    /// Any other transport.
+    NotSsh,
+}
+
 /// The host to ASK ABOUT for a remote, which is not always the host written in
 /// the remote.
 ///
-/// `ssh_transport` says whether git would run this address over ssh, which
+/// `transport` says whether git would run this address over ssh, which
 /// matters for exactly one hostname and is passed rather than inferred so the
 /// two call sites have to state it.
 ///
@@ -4989,10 +9059,10 @@ const GITHUB_SSH_ALT_HOST: &str = "ssh.github.com";
 /// endpoint and inventing one would be guessing at an address on somebody
 /// else's network. And it applies only over ssh, the transport it is documented
 /// for: `https://ssh.github.com/...` is not an endpoint GitHub offers.
-fn remote_api_host(host: &str, ssh_transport: bool) -> String {
+fn remote_api_host(host: &str, transport: RemoteTransport) -> String {
     // `gh` has never heard of `ssh.github.com`, so the name that has to be
     // checked against the policy, and handed onwards, is `github.com`.
-    if ssh_transport && host == GITHUB_SSH_ALT_HOST {
+    if transport == RemoteTransport::Ssh && host == GITHUB_SSH_ALT_HOST {
         "github.com".to_string()
     } else {
         host.to_string()
@@ -5038,12 +9108,15 @@ fn sync_entry(source: &Path, destination: &Path) -> Result<()> {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
             // Destination is a regular file that survived the cleanup pass
-            // above. Truncate it in place and realign permissions.
+            // above. Truncate it in place and realign permissions, through
+            // the handle, so a symlink swapped in since is refused rather
+            // than followed.
             let file = OpenOptions::new()
                 .write(true)
                 .truncate(true)
+                .custom_flags(libc::O_NOFOLLOW)
                 .open(destination)?;
-            fs::set_permissions(destination, metadata.permissions())?;
+            file.set_permissions(metadata.permissions())?;
             file
         }
         Err(err) => return Err(err.into()),
@@ -5080,27 +9153,10 @@ fn remove_path(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ellipsizes_in_the_middle() {
-        assert_eq!(
-            ellipsize_middle("src/components/app.rs", 12),
-            "src/...pp.rs"
-        );
-    }
-
-    #[test]
-    fn ellipsize_start_keeps_the_tail() {
-        // Fits: unchanged.
-        assert_eq!(ellipsize_start("proj/app", 12), "proj/app");
-        // Too long: keep the tail, prefix a single ellipsis (result width == max).
-        let out = ellipsize_start("/home/patrick/code/proj", 10);
-        assert_eq!(out.chars().count(), 10);
-        assert!(out.starts_with('…'));
-        assert!(out.ends_with("proj"));
-        // Degenerate widths.
-        assert_eq!(ellipsize_start("abc", 0), "");
-        assert_eq!(ellipsize_start("abc", 1), "…");
-    }
+    /// The bound the network commands get in tests: long enough never to
+    /// matter, so a test that hangs still ends.
+    const TEST_NETWORK_TIMEOUT: Option<std::time::Duration> =
+        Some(std::time::Duration::from_secs(60));
 
     #[test]
     fn display_path_relative_strips_the_base_dir() {
@@ -5184,128 +9240,198 @@ mod tests {
         assert!(docker_style_name().contains('-'));
     }
 
-    #[test]
-    fn fallback_agent_name_is_a_valid_unique_branch_name() {
-        let a = fallback_agent_name();
-        let b = fallback_agent_name();
-        assert!(a.starts_with("agent-") && a.len() == "agent-".len() + 32);
-        assert_ne!(a, b);
-        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-    }
-
-    // ── Project worktree explorer link (fork 1d69de16, 18a13536, e80151ad) ──
-
-    #[test]
-    fn ensure_project_worktrees_link_creates_ignored_symlink() {
-        let repo = init_test_repo();
-        let worktrees_root = repo.path().join("yaran-state").join("worktrees");
-
-        let link =
-            ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project").unwrap();
-
-        let target = worktrees_root.join("Demo-Project").canonicalize().unwrap();
-        assert!(
-            fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(fs::read_link(&link).unwrap(), target);
-        assert!(target.is_dir());
-
-        let status = test_support::git_command()
-            .arg("-C")
-            .arg(repo.path())
-            .args(["status", "--porcelain=v1", "--untracked-files=all"])
-            .output()
-            .unwrap();
-        assert!(status.status.success());
-        let porcelain = String::from_utf8_lossy(&status.stdout);
-        assert!(
-            !porcelain.contains(PROJECT_WORKTREES_LINK_NAME),
-            "the link must be ignored by git status: {porcelain}"
-        );
-        let exclude =
-            fs::read_to_string(repo.path().join(".git").join("info").join("exclude")).unwrap();
-        assert!(exclude.contains(PROJECT_WORKTREES_EXCLUDE_PATTERN));
-
-        // Idempotent: a second call neither duplicates the exclude line nor
-        // replaces the link.
-        ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project").unwrap();
-        let again =
-            fs::read_to_string(repo.path().join(".git").join("info").join("exclude")).unwrap();
-        assert_eq!(again, exclude);
-    }
-
-    #[test]
-    fn ensure_project_worktrees_link_refuses_real_path() {
-        let repo = init_test_repo();
-        let worktrees_root = repo.path().join("yaran-state").join("worktrees");
-        let real = repo.path().join(PROJECT_WORKTREES_LINK_NAME);
-        fs::create_dir(&real).unwrap();
-        fs::write(real.join("mine.txt"), "user data").unwrap();
-
-        let result = ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project");
-
-        assert!(result.is_err());
-        let metadata = fs::symlink_metadata(&real).unwrap();
-        assert!(metadata.file_type().is_dir());
-        assert!(!metadata.file_type().is_symlink());
-        assert_eq!(
-            fs::read_to_string(real.join("mine.txt")).unwrap(),
-            "user data"
-        );
-    }
-
-    #[test]
-    fn ensure_project_worktrees_link_preserves_non_utf8_exclude_bytes() {
-        let repo = init_test_repo();
-        let worktrees_root = repo.path().join("yaran-state").join("worktrees");
-        let exclude = repo.path().join(".git").join("info").join("exclude");
-        let original = b"# user bytes\n\xff\xfe\n";
-        fs::write(&exclude, original).unwrap();
-        fs::set_permissions(&exclude, fs::Permissions::from_mode(0o640)).unwrap();
-
-        ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project").unwrap();
-
-        let updated = fs::read(&exclude).unwrap();
-        assert!(updated.starts_with(original));
-        assert!(updated.ends_with(b"# yaran local agent worktree explorer link\n/dux-worktrees\n"));
-        assert_eq!(
-            fs::metadata(&exclude).unwrap().permissions().mode() & 0o777,
-            0o640,
-            "the exclude file keeps its mode"
-        );
-    }
-
-    /// Fail closed: an exclude that cannot be read is left exactly as it was
-    /// and no link appears.
-    #[test]
-    fn ensure_project_worktrees_link_leaves_an_unreadable_exclude_untouched() {
-        if unsafe { libc::geteuid() } == 0 {
-            return; // root reads through a 0o000 mode
-        }
-        let repo = init_test_repo();
-        let worktrees_root = repo.path().join("yaran-state").join("worktrees");
-        let exclude = repo.path().join(".git").join("info").join("exclude");
-        fs::write(&exclude, b"keep me\n").unwrap();
-        fs::set_permissions(&exclude, fs::Permissions::from_mode(0o000)).unwrap();
-
-        let result = ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project");
-
-        fs::set_permissions(&exclude, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(result.is_err());
-        assert_eq!(fs::read(&exclude).unwrap(), b"keep me\n");
-        assert!(
-            fs::symlink_metadata(repo.path().join(PROJECT_WORKTREES_LINK_NAME)).is_err(),
-            "no link without its ignore line"
-        );
-    }
-
     // ── Helpers for git-backed tests ─────────────────────────────
 
     /// Create a temporary bare-ish git repo with an initial commit so
     /// worktrees and branches can be created from it.
+    /// A repository whose `.gitmodules` says `ignore = all` for `sub`, whose
+    /// config sets `diff.ignoreSubmodules = all` and
+    /// `status.showUntrackedFiles = no`, and whose checked-out submodule has an
+    /// edited file: a change every view yaran parses must still see. Measured on
+    /// git 2.55: plain `git status --porcelain=v1` prints nothing here, and
+    /// with `--ignore-submodules=none` it prints ` M sub`.
+    fn repo_with_an_ignored_submodule_change() -> tempfile::TempDir {
+        let repo = init_test_repo();
+        let p = repo.path();
+        let sub = p.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        run_git(&sub, &["init", "-q", "-b", "main"]);
+        std::fs::write(sub.join("f"), "one\n").unwrap();
+        run_git(&sub, &["add", "f"]);
+        run_git(
+            &sub,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "a",
+            ],
+        );
+        std::fs::write(
+            p.join(".gitmodules"),
+            "[submodule \"sub\"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n",
+        )
+        .unwrap();
+        run_git(p, &["add", ".gitmodules"]);
+        let id = head_commit(&sub).unwrap();
+        run_git(
+            p,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{id},sub"),
+            ],
+        );
+        run_git(p, &["commit", "-q", "-m", "a submodule"]);
+        run_git(p, &["config", "diff.ignoreSubmodules", "all"]);
+        run_git(p, &["config", "status.showUntrackedFiles", "no"]);
+        std::fs::write(sub.join("f"), "two\n").unwrap();
+        repo
+    }
+
+    /// The listing a decision reads (the discard classification, the commit
+    /// preflight, which paths a stage, unstage or discard may touch) sees
+    /// every submodule change, whatever the repository says to ignore.
+    #[test]
+    fn the_decision_listing_sees_a_submodule_the_repository_says_to_ignore() {
+        let repo = repo_with_an_ignored_submodule_change();
+        std::fs::write(repo.path().join("untracked.txt"), "new\n").unwrap();
+        let (_, unstaged) = changed_files_for_decisions(repo.path()).unwrap();
+        assert!(
+            unstaged.iter().any(|file| file.path == "sub"),
+            "the submodule change is listed: {unstaged:?}"
+        );
+        assert!(
+            unstaged.iter().any(|file| file.path == "untracked.txt"),
+            "and untracked files despite status.showUntrackedFiles=no: {unstaged:?}"
+        );
+    }
+
+    /// The listing the Changes views render honours the repository's own
+    /// `ignore = all`, as it did before the decision listing existed.
+    #[test]
+    fn the_display_listing_honours_a_submodule_the_repository_says_to_ignore() {
+        let repo = repo_with_an_ignored_submodule_change();
+        std::fs::write(repo.path().join("untracked.txt"), "new\n").unwrap();
+        let (staged, unstaged) = changed_files_for_display(repo.path()).unwrap();
+        assert!(
+            !staged
+                .iter()
+                .chain(&unstaged)
+                .any(|file| file.path == "sub"),
+            "the ignored submodule is not a row: {staged:?} {unstaged:?}"
+        );
+        assert!(
+            unstaged.iter().any(|file| file.path == "untracked.txt"),
+            "untracked files still show despite status.showUntrackedFiles=no: {unstaged:?}"
+        );
+    }
+
+    /// When the only staged change is an ignored submodule's new pointer, git
+    /// commits it, so the preflight lets the commit through rather than
+    /// saying nothing is staged.
+    #[test]
+    fn the_commit_preflight_allows_a_staged_ignored_submodule_pointer() {
+        let repo = repo_with_an_ignored_submodule_change();
+        let sub = repo.path().join("sub");
+        run_git(
+            &sub,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-am",
+                "b",
+            ],
+        );
+        let id = head_commit(&sub).unwrap();
+        run_git(
+            repo.path(),
+            &["update-index", "--cacheinfo", &format!("160000,{id},sub")],
+        );
+        assert!(matches!(
+            commit_preflight(repo.path(), "move the submodule"),
+            CommitPreflight::Ready
+        ));
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "move the submodule",
+            ],
+        );
+        let committed = test_support::git_command()
+            .args(["rev-parse", "HEAD:sub"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&committed.stdout).trim(),
+            id,
+            "git committed the pointer"
+        );
+    }
+
+    #[test]
+    fn a_submodule_the_repository_says_to_ignore_still_makes_a_worktree_dirty() {
+        let repo = repo_with_an_ignored_submodule_change();
+        assert!(worktree_is_dirty(repo.path()).unwrap());
+    }
+
+    /// The views that only show (line counts, the file-info panel's status)
+    /// keep honouring the repository's own `ignore = all`,
+    /// as they did before the move check existed.
+    #[test]
+    fn the_display_views_honour_a_submodule_the_repository_says_to_ignore() {
+        let repo = repo_with_an_ignored_submodule_change();
+        assert!(
+            !unstaged_numstat(repo.path().as_os_str(), ListingLocks::Refresh).contains_key("sub"),
+            "no line counts for the ignored submodule"
+        );
+        assert!(
+            file_status(repo.path(), "sub")
+                .unwrap()
+                .is_some_and(|codes| codes.staged.is_none() && codes.unstaged.is_none()),
+            "the info panel reads it as clean"
+        );
+        run_git(
+            &repo.path().join("sub"),
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-am",
+                "b",
+            ],
+        );
+        let id = head_commit(&repo.path().join("sub")).unwrap();
+        run_git(
+            repo.path(),
+            &["update-index", "--cacheinfo", &format!("160000,{id},sub")],
+        );
+        assert!(
+            !staged_numstat(repo.path().as_os_str(), &[]).contains_key("sub"),
+            "and the staged line counts leave it out"
+        );
+    }
+
     fn init_test_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path();
@@ -5351,7 +9477,7 @@ mod tests {
         let wt = repo.join(format!("wt-{branch}"));
         let out = test_support::git_command()
             .arg("-C")
-            .arg(repo)
+            .arg(&repo)
             .args([
                 "worktree",
                 "add",
@@ -5502,7 +9628,7 @@ mod tests {
         }
     }
 
-    /// list_dir is structurally immune to a huge sibling subtree: it does a
+    /// `list_dir` is structurally immune to a huge sibling subtree: it does a
     /// single `read_dir` on exactly the requested directory, never recurses,
     /// and never caps. A 1000-file sibling can't discriminate that property
     /// on its own (any number would pass); it just exercises the shape.
@@ -5583,6 +9709,43 @@ mod tests {
         assert!(list_dir(dir.path(), "/etc").is_err());
     }
 
+    /// A repository left out of a stage is named in the pathspec by its own
+    /// bytes, so a name that is not UTF-8 is excluded as it is.
+    #[test]
+    fn a_repository_whose_name_is_not_utf8_is_excluded_by_its_bytes() {
+        assert_eq!(
+            exclude_spec(b"vendor/caf\xe9"),
+            b":(exclude,literal)vendor/caf\xe9".to_vec()
+        );
+    }
+
+    /// The dedupe on its own, from names that are not UTF-8 built in memory,
+    /// so it runs where the file system refuses such names (macOS).
+    #[test]
+    fn two_non_utf8_names_that_read_alike_keep_one_row() {
+        use std::os::unix::ffi::OsStrExt;
+        let row = |raw: &[u8]| {
+            let name = std::ffi::OsStr::from_bytes(raw)
+                .to_string_lossy()
+                .into_owned();
+            DirEntryInfo {
+                path: name.clone(),
+                name,
+                is_dir: false,
+                is_symlink: false,
+                expandable: false,
+            }
+        };
+        let mut entries = vec![row(b"\xff"), row(b"\xfe"), row(b"plain")];
+        drop_lossy_duplicates(&mut entries);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["\u{fffd}", "plain"]);
+    }
+
+    // Linux only: APFS, the macOS file system, refuses a name that is not
+    // UTF-8 (EILSEQ), so this fixture cannot be built on a Mac. The dedupe
+    // runs there in `two_non_utf8_names_that_read_alike_keep_one_row`.
+    #[cfg(target_os = "linux")]
     #[test]
     fn list_dir_dedupes_names_that_collide_after_lossy_utf8_conversion() {
         use std::ffi::OsString;
@@ -5595,17 +9758,7 @@ mod tests {
         // keys rows by path) must never see duplicated.
         let name_a = OsString::from_vec(vec![0xFF]);
         let name_b = OsString::from_vec(vec![0xFE]);
-        // A filesystem that enforces UTF-8 names (APFS, HFS+) cannot hold
-        // either name, so the collision this test is about cannot be staged
-        // there at all. See `create_dir_with_non_utf8_name`.
-        match std::fs::write(dir.path().join(&name_a), "a") {
-            Ok(()) => {}
-            Err(e) if e.raw_os_error() == Some(libc::EILSEQ) => {
-                eprintln!("skipping: filesystem cannot hold a non-UTF8 filename ({e})");
-                return;
-            }
-            Err(e) => panic!("writing a non-UTF8 filename failed unexpectedly: {e}"),
-        }
+        std::fs::write(dir.path().join(&name_a), "a").unwrap();
         std::fs::write(dir.path().join(&name_b), "b").unwrap();
 
         let entries = list_dir(dir.path(), "").unwrap();
@@ -5762,7 +9915,7 @@ mod tests {
     fn parse_worktree_list_porcelain_z_handles_branches_detached_and_spaces() {
         let input = b"worktree /repo/main checkout\0HEAD 1111111111111111111111111111111111111111\0branch refs/heads/main\0\0worktree /repo/feature\0HEAD 2222222222222222222222222222222222222222\0branch refs/heads/feature/x\0\0worktree /repo/detached\0HEAD abcdef1234567890\0detached\0\0";
 
-        let entries = parse_worktree_list_porcelain_z(input).unwrap();
+        let entries = parse_worktree_list_porcelain_z(input);
 
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].path, PathBuf::from("/repo/main checkout"));
@@ -5772,6 +9925,27 @@ mod tests {
         assert_eq!(entries[2].branch_name, None);
         assert!(entries[2].detached);
         assert_eq!(entries[2].label(), "detached abcdef1");
+    }
+
+    #[test]
+    fn worktree_paths_and_a_repository_root_keep_their_exact_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9 ");
+        let entries = parse_worktree_list_porcelain_z(b"worktree /repo/caf\xe9 \0HEAD 1111\0\0");
+        assert_eq!(entries[0].path, Path::new("/repo").join(name));
+
+        // APFS refuses a name that is not UTF-8, so on macOS the folder keeps
+        // only the trailing space.
+        let folder = if cfg!(target_os = "macos") {
+            std::ffi::OsStr::new("cafe ")
+        } else {
+            name
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().canonicalize().unwrap().join(folder);
+        fs::create_dir(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        assert_eq!(repository_root(&repo).unwrap(), Some(repo));
     }
 
     fn run_git(cwd: &Path, args: &[&str]) {
@@ -5816,11 +9990,11 @@ mod tests {
         run_git(repo.path(), &["branch", "feature"]);
 
         assert!(
-            origin_has_branch(repo.path(), "main").unwrap(),
+            origin_has_branch(repo.path(), "main", TEST_NETWORK_TIMEOUT).unwrap(),
             "exit 0: origin has it, fetched or not"
         );
         assert!(
-            !origin_has_branch(repo.path(), "feature").unwrap(),
+            !origin_has_branch(repo.path(), "feature", TEST_NETWORK_TIMEOUT).unwrap(),
             "exit 2: origin answered and has no such branch"
         );
 
@@ -5834,7 +10008,7 @@ mod tests {
             ],
         );
         assert!(
-            origin_has_branch(repo.path(), "main").is_err(),
+            origin_has_branch(repo.path(), "main", TEST_NETWORK_TIMEOUT).is_err(),
             "an origin that cannot be asked is not a no"
         );
     }
@@ -5888,6 +10062,358 @@ mod tests {
         assert!(
             text.contains("trailing-whitespace....Failed"),
             "the hook's report must reach the user, got: {text}"
+        );
+    }
+
+    /// A repository with a staged file and a `pre-commit` hook that counts its
+    /// runs into `.git/hook-runs`.
+    fn repo_with_a_counting_hook() -> tempfile::TempDir {
+        let repo = init_test_repo();
+        let hook = repo.path().join(".git/hooks/pre-commit");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, "#!/bin/sh\necho run >> .git/hook-runs\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(repo.path().join("f.txt"), "x\n").unwrap();
+        run_git(repo.path(), &["add", "f.txt"]);
+        repo
+    }
+
+    fn hook_runs(repo: &Path) -> usize {
+        fs::read_to_string(repo.join(".git/hook-runs")).map_or(0, |runs| runs.lines().count())
+    }
+
+    /// Another program's index lock that goes within the wait is waited out:
+    /// the commit runs once, after it, and succeeds.
+    #[test]
+    fn a_commit_waits_for_another_programs_index_lock_to_go() {
+        let repo = repo_with_a_counting_hook();
+        let lock = repo.path().join(".git/index.lock");
+        fs::write(&lock, "").unwrap();
+        let held = lock.clone();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            fs::remove_file(held).unwrap();
+        });
+
+        commit(repo.path(), "after the lock").expect("the commit ran once the lock went");
+        release.join().unwrap();
+
+        assert_eq!(hook_runs(repo.path()), 1);
+    }
+
+    /// A lock still held past the wait: git runs once, refuses, and the
+    /// refusal says why in yaran's words after git's own. Nothing runs twice.
+    #[test]
+    fn a_commit_refused_by_a_held_index_lock_says_why_and_runs_once() {
+        let repo = repo_with_a_counting_hook();
+        fs::write(repo.path().join(".git/index.lock"), "").unwrap();
+
+        let err = commit(repo.path(), "under the lock").expect_err("the lock is held");
+
+        let text = format!("{err:#}");
+        assert!(text.contains("index.lock"), "git's own text: {text}");
+        assert!(
+            text.ends_with(
+                "Another git program, such as the agent, a terminal or an editor, is using this \
+                 worktree right now. Wait for it to finish, then try again."
+            ),
+            "{text}"
+        );
+        assert!(hook_runs(repo.path()) <= 1);
+    }
+
+    /// The same wait and the same refusal for a stage, which stages nothing
+    /// while the lock is held and the file once it has gone.
+    #[test]
+    fn a_stage_waits_for_another_programs_index_lock_and_says_why_when_it_stays() {
+        let repo = init_test_repo();
+        fs::write(repo.path().join("new.txt"), "x\n").unwrap();
+        let lock = repo.path().join(".git/index.lock");
+        fs::write(&lock, "").unwrap();
+
+        let err = stage_files(repo.path(), &["new.txt".to_string()]).expect_err("held");
+        assert!(
+            format!("{err:#}").contains("is using this worktree right now. Wait for it to finish"),
+            "{err:#}"
+        );
+        fs::remove_file(&lock).unwrap();
+        let (staged, _) = changed_files_for_display(repo.path()).unwrap();
+        assert!(staged.is_empty(), "nothing was staged under the lock");
+
+        fs::write(&lock, "").unwrap();
+        let held = lock.clone();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            fs::remove_file(held).unwrap();
+        });
+        stage_files(repo.path(), &["new.txt".to_string()]).expect("staged once it went");
+        release.join().unwrap();
+        let (staged, _) = changed_files_for_display(repo.path()).unwrap();
+        assert_eq!(staged.len(), 1);
+    }
+
+    /// A lock older than a minute is more likely a crash's leftover: the
+    /// refusal names the lock and says it may be removed by hand.
+    #[test]
+    fn a_refusal_by_an_old_index_lock_says_it_may_be_left_over() {
+        let repo = repo_with_a_counting_hook();
+        let lock = repo.path().join(".git/index.lock");
+        let file = fs::File::create(&lock).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))
+            .unwrap();
+
+        let err = commit(repo.path(), "under an old lock").expect_err("the lock is held");
+
+        let text = format!("{err:#}");
+        assert!(
+            text.contains(
+                "The lock file has been there for over a minute, so it may be left over from a git \
+                 program that crashed. If nothing is using git in this worktree, delete \
+                 ./.git/index.lock and try again."
+            ),
+            "{text}"
+        );
+    }
+
+    /// git names the lock by its resolved path, so a worktree reached through
+    /// a symlink must still read as `./` in the note.
+    #[test]
+    fn a_leftover_lock_reads_as_inside_a_worktree_reached_through_a_symlink() {
+        let repo = repo_with_a_counting_hook();
+        let links = tempfile::tempdir().unwrap();
+        let linked = links.path().join("linked");
+        symlink(repo.path(), &linked).unwrap();
+        let file = fs::File::create(repo.path().join(".git/index.lock")).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(120))
+            .unwrap();
+
+        let err = commit(&linked, "under an old lock").expect_err("the lock is held");
+
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("delete ./.git/index.lock and try again."),
+            "{text}"
+        );
+    }
+
+    /// git's own text names the lock by its resolved path too, so it must read
+    /// as `./` for a worktree reached through a symlink, with no trace of where
+    /// the symlink leads.
+    #[test]
+    fn gits_own_lock_text_reads_as_inside_a_worktree_reached_through_a_symlink() {
+        let repo = repo_with_a_counting_hook();
+        let links = tempfile::tempdir().unwrap();
+        let linked = links.path().join("linked");
+        symlink(repo.path(), &linked).unwrap();
+        fs::write(repo.path().join(".git/index.lock"), "").unwrap();
+
+        let err = commit(&linked, "under a held lock").expect_err("the lock is held");
+
+        let text = format!("{err:#}");
+        let resolved = fs::canonicalize(repo.path()).unwrap();
+        assert!(text.contains("'./.git/index.lock'"), "{text}");
+        assert!(!text.contains(&*resolved.to_string_lossy()), "{text}");
+    }
+
+    /// A tracked file whose time moved and whose content did not: `git status`
+    /// would write refreshed times back to the index, which is what takes the
+    /// lock.
+    fn repo_with_a_touched_file() -> tempfile::TempDir {
+        let repo = init_test_repo();
+        fs::write(repo.path().join("touched.txt"), "same\n").unwrap();
+        commit_all(repo.path(), "touched");
+        let file = fs::File::options()
+            .write(true)
+            .open(repo.path().join("touched.txt"))
+            .unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+            .unwrap();
+        repo
+    }
+
+    /// The poll's `git status` leaves the index as it found it, where the
+    /// status a turn-holding refresh runs writes it back.
+    #[test]
+    fn the_polls_status_leaves_the_index_alone() {
+        let repo = repo_with_a_touched_file();
+        let index = repo.path().join(".git/index");
+        let before = fs::read(&index).unwrap();
+
+        status_porcelain(repo.path(), Submodules::AsConfigured, ListingLocks::Poll).unwrap();
+        assert_eq!(
+            fs::read(&index).unwrap(),
+            before,
+            "the poll wrote the index"
+        );
+
+        status_porcelain(repo.path(), Submodules::AsConfigured, ListingLocks::Refresh).unwrap();
+        assert_ne!(
+            fs::read(&index).unwrap(),
+            before,
+            "a refresh writes the times back, which the poll must not"
+        );
+    }
+
+    /// The listing read without the lock counts exactly what the ordinary
+    /// listing counts, under configuration that changes what `git diff`
+    /// counts, and writes nothing to the index doing it.
+    #[test]
+    fn the_lock_free_listing_counts_what_the_ordinary_listing_counts() {
+        let repo = repo_with_a_touched_file();
+        let root = repo.path();
+        run_git(root, &["config", "diff.algorithm", "histogram"]);
+        run_git(root, &["config", "diff.renames", "copies"]);
+        // An edit myers and histogram count differently (2/2 against 3/3).
+        let before = "b\n{\na\n{\n}\nx\nx\nb\nx\n{\n{\n}\n";
+        let after = "x\nb\n{\n{\n}\nx\nx\nb\n{\n{\nx\n}\n";
+        fs::write(root.join("algo.txt"), before).unwrap();
+        fs::write(root.join("moved.txt"), "one\ntwo\nthree\n").unwrap();
+        fs::write(root.join("gone.txt"), "a\nb\nc\nd\n").unwrap();
+        commit_all(root, "base");
+        fs::write(root.join("algo.txt"), after).unwrap();
+        // An edited rename, staged.
+        run_git(root, &["mv", "moved.txt", "renamed.txt"]);
+        fs::write(root.join("renamed.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        // A file moved and added with intent-to-add, which rename detection pairs.
+        fs::rename(root.join("gone.txt"), root.join("came.txt")).unwrap();
+        run_git(root, &["add", "-N", "came.txt"]);
+        // A folder staged whole, and one left untracked.
+        fs::create_dir_all(root.join("staged/dir")).unwrap();
+        fs::write(root.join("staged/dir/a.txt"), "a\n").unwrap();
+        run_git(root, &["add", "staged"]);
+        fs::create_dir_all(root.join("loose")).unwrap();
+        fs::write(root.join("loose/b.txt"), "b\nb\n").unwrap();
+        let index = root.join(".git/index");
+        let index_before = fs::read(&index).unwrap();
+
+        let lock_free = changed_files_for_display_with(root, ListingLocks::LockFree).unwrap();
+        assert_eq!(
+            fs::read(&index).unwrap(),
+            index_before,
+            "the read wrote the index"
+        );
+        let ordinary = changed_files_for_display(root).unwrap();
+
+        let rows = |(staged, unstaged): &(Vec<ChangedFile>, Vec<ChangedFile>)| {
+            [staged, unstaged].map(|side| {
+                side.iter()
+                    .map(|f| (f.status.clone(), f.path.clone(), f.additions, f.deletions))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(rows(&lock_free), rows(&ordinary));
+        assert!(
+            rows(&ordinary)[1].contains(&("M".to_string(), "algo.txt".to_string(), 3, 3)),
+            "the configured algorithm counted: {:?}",
+            rows(&ordinary)
+        );
+    }
+
+    /// On a branch with no commit yet, too.
+    #[test]
+    fn the_lock_free_listing_reads_an_unborn_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git(dir.path(), &["init", "-q", "-b", "main"]);
+        fs::write(dir.path().join("first.txt"), "1\n2\n").unwrap();
+        run_git(dir.path(), &["add", "first.txt"]);
+        fs::write(dir.path().join("first.txt"), "1\n2\n3\n").unwrap();
+
+        let lock_free = changed_files_for_display_with(dir.path(), ListingLocks::LockFree).unwrap();
+        let ordinary = changed_files_for_display(dir.path()).unwrap();
+
+        let counts = |files: &[ChangedFile]| {
+            files
+                .iter()
+                .map(|f| (f.path.clone(), f.additions, f.deletions))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(counts(&lock_free.0), counts(&ordinary.0));
+        assert_eq!(counts(&lock_free.1), counts(&ordinary.1));
+        assert_eq!(counts(&ordinary.1), vec![("first.txt".to_string(), 1, 0)]);
+    }
+
+    /// A repository whose `git status` never finishes: its fsmonitor hook
+    /// takes the index lock, as an outside program would, and sleeps.
+    fn repo_whose_status_hangs() -> tempfile::TempDir {
+        let repo = init_test_repo();
+        let hook = repo.path().join(".git/fsmonitor-hang");
+        fs::write(
+            &hook,
+            "#!/bin/sh\ntrap '' TERM\ntouch \"$PWD/.git/index.lock\"\nsleep 30\n",
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        run_git(
+            repo.path(),
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+        );
+        repo
+    }
+
+    fn stopped_at_a_short_deadline<T: std::fmt::Debug>(read: impl FnOnce() -> Result<T>) -> String {
+        let started = std::time::Instant::now();
+        let err = listing_child::with_limits(
+            std::time::Duration::from_millis(200),
+            std::time::Duration::from_millis(200),
+            read,
+        )
+        .expect_err("the listing was stopped");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        format!("{err:#}")
+    }
+
+    /// A listing for the changes list whose `git status` never finishes is
+    /// stopped at its deadline and fails, saying the list was not updated. The
+    /// lock the hook left is under a minute old, which may be the stopped git's
+    /// own, so nothing is said about it.
+    #[test]
+    fn a_display_listing_past_its_deadline_says_the_list_was_not_updated() {
+        let repo = repo_whose_status_hangs();
+
+        let text = stopped_at_a_short_deadline(|| changed_files_for_display(repo.path()));
+
+        assert!(text.starts_with("git status ran for "), "{text}");
+        assert!(
+            text.ends_with(
+                " seconds without finishing, so yaran stopped it and the list of changed files \
+                 wasn't updated. yaran tries again on its next check."
+            ),
+            "{text}"
+        );
+    }
+
+    /// The listing a change runs before it acts says the change was not made.
+    #[test]
+    fn a_decision_listing_past_its_deadline_says_nothing_was_changed() {
+        let repo = repo_whose_status_hangs();
+
+        let text = stopped_at_a_short_deadline(|| changed_files_for_decisions(repo.path()));
+
+        assert!(text.starts_with("git status ran for "), "{text}");
+        assert!(
+            text.ends_with(
+                " seconds without finishing, so yaran stopped it before making the change, and \
+                 nothing was changed. Try again."
+            ),
+            "{text}"
+        );
+    }
+
+    /// A folder expansion says only that it was stopped, even when it lists the
+    /// whole worktree on a cold cache: nothing fetches the folder again by
+    /// itself, and no change was waiting on it.
+    #[test]
+    fn a_folder_expansion_past_its_deadline_says_only_that_it_was_stopped() {
+        let repo = repo_whose_status_hangs();
+
+        let text = stopped_at_a_short_deadline(|| {
+            as_folder_read(|| changed_files_for_display(repo.path()))
+        });
+
+        assert!(text.starts_with("git status ran for "), "{text}");
+        assert!(
+            text.ends_with(" seconds without finishing, so yaran stopped it."),
+            "{text}"
         );
     }
 
@@ -5979,6 +10505,15 @@ mod tests {
             redact_worktree_path("cannot change to /wt/agent's parent", wt),
             "cannot change to /wt/agent's parent"
         );
+    }
+
+    /// A match has to START a path as well as end one: the worktree's path
+    /// found inside a longer one is a different path, and shortening it from
+    /// the middle invents one that does not exist.
+    #[test]
+    fn redact_worktree_path_leaves_a_path_that_merely_ends_with_the_worktree_whole() {
+        let text = "error: '/private/var/x/a' is unmerged";
+        assert_eq!(redact_worktree_path(text, Path::new("/var/x")), text);
     }
 
     /// A trailing separator on the worktree path must not change the answer,
@@ -6101,7 +10636,7 @@ mod tests {
     }
 
     fn staged_paths(wt: &Path) -> Vec<String> {
-        let (staged, _) = changed_files(wt).unwrap();
+        let (staged, _) = changed_files_for_display(wt).unwrap();
         let mut paths: Vec<String> = staged.into_iter().map(|f| f.path).collect();
         paths.sort();
         paths
@@ -6112,7 +10647,7 @@ mod tests {
         let repo = init_test_repo();
         let wt = repo.path();
         let odd = write_option_looking_files(wt);
-        let paths: Vec<String> = odd.iter().map(|s| s.to_string()).collect();
+        let paths: Vec<String> = odd.iter().map(std::string::ToString::to_string).collect();
 
         stage_files(wt, &paths).unwrap();
         let mut want = paths.clone();
@@ -6153,13 +10688,63 @@ mod tests {
         );
     }
 
+    /// A folder that took a tracked file's place is never restored over:
+    /// `git checkout` would delete it recursively. The refusal says so and
+    /// nothing is deleted.
+    #[test]
+    fn a_restore_is_refused_when_a_folder_took_the_files_place() {
+        let repo = init_test_repo();
+        let wt = repo.path();
+        fs::write(wt.join("README.md"), "readme\n").unwrap();
+        let git = worktree_git(wt);
+        git(&["add", "README.md"]);
+        git(&["commit", "-q", "-m", "readme"]);
+        fs::remove_file(wt.join("README.md")).unwrap();
+        fs::create_dir_all(wt.join("README.md")).unwrap();
+        fs::write(wt.join("README.md").join("keep.txt"), "mine\n").unwrap();
+        let refused = discard_file(wt, "README.md", crate::git::FileTracking::Tracked).unwrap_err();
+        assert!(refused.downcast_ref::<Refusal>().is_some(), "{refused}");
+        assert!(refused.to_string().contains("is now a folder"), "{refused}");
+        assert!(
+            wt.join("README.md").join("keep.txt").exists(),
+            "nothing was deleted"
+        );
+    }
+
+    /// A link that took a tracked file's place is restored over as before:
+    /// git removes the link and leaves its target where it is.
+    #[test]
+    fn a_restore_over_a_link_removes_only_the_link() {
+        let repo = init_test_repo();
+        let wt = repo.path();
+        fs::write(wt.join("README.md"), "readme\n").unwrap();
+        let git = worktree_git(wt);
+        git(&["add", "README.md"]);
+        git(&["commit", "-q", "-m", "readme"]);
+        let elsewhere = tempfile::tempdir().unwrap();
+        fs::write(elsewhere.path().join("keep.txt"), "mine\n").unwrap();
+        fs::remove_file(wt.join("README.md")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), wt.join("README.md")).unwrap();
+        discard_file(wt, "README.md", crate::git::FileTracking::Tracked).unwrap();
+        assert!(
+            fs::symlink_metadata(wt.join("README.md"))
+                .unwrap()
+                .is_file(),
+            "the file is back"
+        );
+        assert!(
+            elsewhere.path().join("keep.txt").exists(),
+            "the link's target stays"
+        );
+    }
+
     #[test]
     fn discard_file_reads_an_option_looking_name_literally() {
         let repo = init_test_repo();
         let wt = repo.path();
         write_option_looking_files(wt);
 
-        discard_file(wt, "a*b.txt", false).unwrap();
+        discard_file(wt, "a*b.txt", crate::git::FileTracking::Tracked).unwrap();
 
         assert_eq!(
             fs::read_to_string(wt.join("a*b.txt")).unwrap(),
@@ -6260,7 +10845,7 @@ mod tests {
         );
         assert!(!destination.join("junk.log").exists());
         assert_eq!(summary.copied, 2);
-        assert!(summary.skipped_paths.is_empty());
+        assert_eq!(summary.skipped_paths, Vec::<String>::new());
     }
 
     /// Catches routing `?? dir/` through a bulk directory copy (which would
@@ -6710,6 +11295,76 @@ mod tests {
         assert!(has_origin_remote(repo.path()).unwrap());
     }
 
+    /// A branch counts as pushed when a remote-tracking ref carries its name or
+    /// it tracks one; a branch whose name is only a PREFIX of a pushed one, or
+    /// that tracks another local branch, does not.
+    #[test]
+    fn branch_is_pushed_reads_tracking_refs_and_upstreams() {
+        let repo = init_test_repo();
+        let git = worktree_git(repo.path());
+        git(&["branch", "feat"]);
+        git(&["branch", "local-only"]);
+        git(&["branch", "tracks-local", "--track", "main"]);
+        git(&["branch", "upstreamed"]);
+        assert!(!branch_is_pushed(repo.path(), "feat").unwrap());
+
+        // A pushed copy under another name, and one under a longer name.
+        git(&["update-ref", "refs/remotes/origin/feat/more", "HEAD"]);
+        git(&["update-ref", "refs/remotes/fork/feat", "HEAD"]);
+        git(&["update-ref", "refs/remotes/origin/elsewhere", "HEAD"]);
+        git(&["remote", "add", "origin", "/nowhere"]);
+        git(&["remote", "add", "fork", "/nowhere"]);
+        git(&["config", "branch.upstreamed.remote", "origin"]);
+        git(&["config", "branch.upstreamed.merge", "refs/heads/elsewhere"]);
+
+        assert!(branch_is_pushed(repo.path(), "feat").unwrap());
+        assert!(branch_is_pushed(repo.path(), "upstreamed").unwrap());
+        assert!(!branch_is_pushed(repo.path(), "local-only").unwrap());
+        assert!(!branch_is_pushed(repo.path(), "tracks-local").unwrap());
+        assert!(!branch_is_pushed(repo.path(), "fe").unwrap());
+    }
+
+    /// A remote's name may hold a slash, and so may a branch's, so a
+    /// remote-tracking ref is read against the remotes this clone has rather
+    /// than split at its first slash: `refs/remotes/team/a/feat` is `feat` on
+    /// `team/a`, not `a/feat` on a `team` nobody configured.
+    #[test]
+    fn branch_is_pushed_reads_remote_names_with_slashes() {
+        let repo = init_test_repo();
+        let git = worktree_git(repo.path());
+        git(&["branch", "feat"]);
+        git(&["branch", "a/feat"]);
+        git(&["remote", "add", "team/a", "/nowhere"]);
+        git(&["update-ref", "refs/remotes/team/a/feat", "HEAD"]);
+        assert!(branch_is_pushed(repo.path(), "feat").unwrap());
+        assert!(!branch_is_pushed(repo.path(), "a/feat").unwrap());
+
+        git(&["remote", "add", "origin", "/nowhere"]);
+        git(&["update-ref", "refs/remotes/origin/a/feat", "HEAD"]);
+        assert!(branch_is_pushed(repo.path(), "a/feat").unwrap());
+    }
+
+    #[test]
+    fn tracking_remote_finds_a_branch_on_a_remote_whose_name_holds_a_slash() {
+        let repo = init_test_repo();
+        let git = worktree_git(repo.path());
+        git(&["remote", "add", "team/a", "/nowhere"]);
+        git(&["update-ref", "refs/remotes/team/a/feat", "HEAD"]);
+        assert_eq!(tracking_remote(repo.path(), "feat").unwrap(), "team/a");
+        assert!(tracking_remote(repo.path(), "a/feat").is_err());
+    }
+
+    /// The probe asks git, which can stall on a wedged filesystem, so it is
+    /// bounded: past its wait it gives up with an error rather than hold the
+    /// thread that asked.
+    #[test]
+    fn branch_is_pushed_gives_up_at_its_wait() {
+        let repo = init_test_repo();
+        let err = branch_is_pushed_within(repo.path(), "main", std::time::Duration::ZERO)
+            .expect_err("no git answers in no time");
+        assert!(err.to_string().contains("did not answer"), "{err}");
+    }
+
     // ── rename_branch tests ──────────────────────────────────────
 
     #[test]
@@ -6837,7 +11492,7 @@ mod tests {
 
     /// The create-agent branch preflight (the single-source decision both
     /// surfaces consume): a name matching no existing branch is Fresh, and a
-    /// name matching a local branch is ExistingBranch (so the surface can ask
+    /// name matching a local branch is `ExistingBranch` (so the surface can ask
     /// for consent before attaching to that branch's history).
     #[test]
     fn create_agent_branch_preflight_reports_fresh_for_a_new_name() {
@@ -6937,7 +11592,7 @@ mod tests {
 
     /// The `-b` slot is positional too, so a dash-leading NEW branch name
     /// reaches `worktree add`'s internal `git branch` as a flag. Measured on
-    /// git 2.55: exit 255, "unknown switch `x'", and nothing left on disk. Loud
+    /// git 2.55: exit 255, ``unknown switch `x'``, and nothing left on disk. Loud
     /// rather than silent, so there is nothing to fix; pinned so a later git
     /// that starts obeying the flag is a failing test rather than a surprise.
     #[test]
@@ -6949,17 +11604,700 @@ mod tests {
         assert!(!worktree.exists(), "no worktree should have been created");
     }
 
+    /// A worktree prune landing inside `git worktree add` deletes the add's
+    /// admin folder; the add dies, git cleans up the checkout folder, and the
+    /// branch yaran created for it beforehand stays. The first add here really runs and
+    /// really loses its admin folder (a hook deletes it), so git leaves exactly
+    /// that. Only the stderr is swapped, because a hook can strike no earlier
+    /// than git's checkout step, after the `locked` write a prune races: it is
+    /// replaced with what git 2.53 prints when the folder vanishes before that
+    /// write under `git -C <repo> worktree add` (captured with fault injection),
+    /// which names the folder RELATIVE to the repository.
+    #[test]
+    fn worktree_add_that_loses_the_prune_race_is_retried_once() {
+        let repo = init_test_repo();
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let sibling = worktrees_root.path().join("proj").join("sibling");
+        add_worktree_new_branch_at(repo.path(), &sibling, "sibling", None).unwrap();
+        run_git(repo.path(), &["branch", "bystander"]);
+        let stdout = |cwd: &Path, args: &[&str]| {
+            let out = test_support::git_command()
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let refs = || {
+            stdout(
+                repo.path(),
+                &["for-each-ref", "--format=%(refname) %(objectname)"],
+            )
+        };
+        let refs_before = refs();
+        let head = head_commit(repo.path()).unwrap();
+
+        let hooks = tempfile::tempdir().unwrap();
+        let struck = hooks.path().join("struck");
+        let hook = hooks.path().join("reference-transaction");
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ncase \"$GIT_DIR\" in */worktrees/*) \
+                 printf %s \"$GIT_DIR\" > '{}'; rm -rf \"$GIT_DIR\" ;; esac\n",
+                struck.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let hooks_path = hooks.path().to_path_buf();
+        WORKTREE_ADD_FAULT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move |command: &mut Command| {
+                let output = command
+                    .env("GIT_CONFIG_COUNT", "1")
+                    .env("GIT_CONFIG_KEY_0", "core.hooksPath")
+                    .env("GIT_CONFIG_VALUE_0", &hooks_path)
+                    .output()?;
+                assert!(!output.status.success(), "the struck add should fail");
+                let admin = PathBuf::from(fs::read_to_string(&struck).unwrap());
+                let name = admin.file_name().unwrap().to_string_lossy().into_owned();
+                Ok(std::process::Output {
+                    stderr: format!(
+                        "Preparing worktree (checking out 'fresh')\n\
+                         fatal: could not open '.git/worktrees/{name}/locked' for writing: \
+                         No such file or directory\n"
+                    )
+                    .into_bytes(),
+                    ..output
+                })
+            }));
+        });
+
+        let (_, worktree) = create_worktree_from_start_point(
+            repo.path(),
+            worktrees_root.path(),
+            "proj",
+            None,
+            Some("fresh"),
+        )
+        .expect("the retry should land the worktree");
+        assert!(
+            WORKTREE_ADD_FAULT.with(|slot| slot.borrow().is_none()),
+            "the first add must have run through the injected fault"
+        );
+
+        assert_eq!(
+            current_branch_opt(&worktree).unwrap().as_deref(),
+            Some("fresh")
+        );
+        assert_eq!(head_commit(&worktree).unwrap(), head);
+        let mut expected_refs: Vec<String> = refs_before.lines().map(str::to_string).collect();
+        expected_refs.push(format!("refs/heads/fresh {head}"));
+        expected_refs.sort();
+        let mut refs_after: Vec<String> = refs().lines().map(str::to_string).collect();
+        refs_after.sort();
+        assert_eq!(refs_after, expected_refs, "only the new branch may appear");
+        let listed = stdout(repo.path(), &["worktree", "list", "--porcelain", "-z"]);
+        let mut registered: Vec<PathBuf> = parse_worktree_registrations(listed.as_bytes())
+            .into_iter()
+            .map(|entry| entry.path.canonicalize().unwrap())
+            .collect();
+        registered.sort();
+        let mut expected_registered = vec![
+            repo.path().canonicalize().unwrap(),
+            sibling.canonicalize().unwrap(),
+            worktree.canonicalize().unwrap(),
+        ];
+        expected_registered.sort();
+        assert_eq!(registered, expected_registered);
+        assert_eq!(
+            current_branch_opt(&sibling).unwrap().as_deref(),
+            Some("sibling"),
+            "the sibling worktree must still work"
+        );
+    }
+
+    /// Which adds the admin-folder strike hits.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Strikes {
+        /// Only the first add.
+        FirstAddOnly,
+        /// Every add.
+        EveryAdd,
+    }
+
+    /// A `post-checkout` hook in the fixture repository that deletes the new
+    /// worktree's admin folder, which is what another program's prune landing
+    /// after git's checkout step does: `worktree add` still exits 0, and the
+    /// copy's `.git` file points at nothing. `strikes` says whether only the
+    /// first add is struck.
+    fn strike_admin_folder_after_checkout(repo: &Path, strikes: Strikes) -> tempfile::TempDir {
+        let hooks = tempfile::tempdir().unwrap();
+        let marker = hooks.path().join("struck");
+        let guard = if strikes == Strikes::FirstAddOnly {
+            format!("[ -e '{0}' ] && exit 0; : > '{0}'\n", marker.display())
+        } else {
+            String::new()
+        };
+        let hook = hooks.path().join("post-checkout");
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\n{guard}admin=$(git rev-parse --absolute-git-dir)\n\
+                 case \"$admin\" in */worktrees/*) rm -rf \"$admin\" ;; esac\nexit 0\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        run_git(
+            repo,
+            &["config", "core.hooksPath", hooks.path().to_str().unwrap()],
+        );
+        hooks
+    }
+
+    /// git reports the add as done, but something removed the copy's admin
+    /// folder after the checkout: yaran sees git cannot read the copy, removes
+    /// the folder that add made, and adds it once more.
+    #[test]
+    fn a_worktree_git_cannot_read_after_a_successful_add_is_recreated_once() {
+        let repo = init_test_repo();
+        let head = head_commit(repo.path()).unwrap();
+        let _hooks = strike_admin_folder_after_checkout(repo.path(), Strikes::FirstAddOnly);
+        let worktrees_root = tempfile::tempdir().unwrap();
+
+        let (_, worktree) = create_worktree_from_start_point(
+            repo.path(),
+            worktrees_root.path(),
+            "proj",
+            None,
+            Some("fresh"),
+        )
+        .expect("the second add should land a working copy git can read");
+
+        assert_eq!(
+            current_branch_opt(&worktree).unwrap().as_deref(),
+            Some("fresh")
+        );
+        assert_eq!(head_commit(&worktree).unwrap(), head);
+        assert!(matches!(registration_at(repo.path(), &worktree), Ok(true)));
+
+        run_git(repo.path(), &["branch", "existing"]);
+        let existing = worktrees_root.path().join("proj").join("existing");
+        let _hooks = strike_admin_folder_after_checkout(repo.path(), Strikes::FirstAddOnly);
+        add_worktree_existing_branch_at(repo.path(), &existing, "existing")
+            .expect("the existing-branch path recreates it too");
+        assert_eq!(
+            current_branch_opt(&existing).unwrap().as_deref(),
+            Some("existing")
+        );
+    }
+
+    /// When every add comes out unreadable, yaran stops after the second one and
+    /// says so, removing only the folder and the branch it made itself. A
+    /// folder that was there before the add is never removed.
+    #[test]
+    fn a_worktree_that_stays_unreadable_fails_loudly_and_removes_only_what_yaran_made() {
+        let repo = init_test_repo();
+        let _hooks = strike_admin_folder_after_checkout(repo.path(), Strikes::EveryAdd);
+        let worktrees_root = tempfile::tempdir().unwrap();
+        let project = worktrees_root.path().join("proj");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("keep"), "user data").unwrap();
+        let branch_exists = |name: &str| {
+            test_support::git_command()
+                .args(["rev-parse", "--verify", "--quiet"])
+                .arg(format!("refs/heads/{name}"))
+                .current_dir(repo.path())
+                .status()
+                .unwrap()
+                .success()
+        };
+
+        let worktree = project.join("fresh");
+        let err = add_worktree_new_branch_at(repo.path(), &worktree, "fresh", None)
+            .expect_err("a copy that stays unreadable must fail the add");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains(&worktree.display().to_string()) && message.contains("try again"),
+            "the failure must name the folder and say what to do: {message}"
+        );
+        assert!(
+            fs::symlink_metadata(&worktree).is_err(),
+            "the folder yaran made is removed"
+        );
+        assert!(!branch_exists("fresh"), "the minted branch is removed");
+        assert_eq!(
+            fs::read_to_string(project.join("keep")).unwrap(),
+            "user data"
+        );
+
+        run_git(repo.path(), &["branch", "theirs"]);
+        let preexisting = project.join("theirs");
+        fs::create_dir(&preexisting).unwrap();
+        add_worktree_existing_branch_at(repo.path(), &preexisting, "theirs")
+            .expect_err("an unreadable copy in a folder that was already there fails");
+        assert!(
+            preexisting.is_dir(),
+            "a folder that pre-existed is left alone"
+        );
+        assert!(
+            branch_exists("theirs"),
+            "a branch yaran did not make is kept"
+        );
+    }
+
+    /// A folder name git prints exactly but that is not plain text (a trailing
+    /// space, or bytes that are not UTF-8) is still the copy git can read, so
+    /// the add succeeds on its first attempt.
+    #[test]
+    fn a_worktree_whose_path_is_not_plain_text_is_read_as_readable() {
+        let repo = init_test_repo();
+        let root = tempfile::tempdir().unwrap();
+        let spaced = root.path().join("ends in a space ");
+        add_worktree_new_branch_at(repo.path(), &spaced, "spaced", None)
+            .expect("a trailing space is part of the folder's name");
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let raw = root
+                .path()
+                .join(std::ffi::OsStr::from_bytes(b"not-utf8-\xff"));
+            add_worktree_new_branch_at(repo.path(), &raw, "raw", None)
+                .expect("a name that is not UTF-8 is still a folder git can read");
+        }
+    }
+
+    /// The cleanup removes the folder yaran made for the add and nothing that has
+    /// come to stand at its path since, even an older copy of this same
+    /// repository that git no longer has a record of.
+    #[test]
+    fn an_older_copy_swapped_in_after_the_add_is_never_removed() {
+        let repo = init_test_repo();
+        let _hooks = strike_admin_folder_after_checkout(repo.path(), Strikes::EveryAdd);
+        run_git(repo.path(), &["branch", "older"]);
+        run_git(repo.path(), &["branch", "swapped"]);
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().canonicalize().unwrap();
+        let older = parent.join("older");
+        add_worktree_retrying_a_pruned_admin_folder(repo.path(), &older, "older", &mut || Ok(()))
+            .unwrap();
+        fs::write(older.join("keep"), "older copy").unwrap();
+
+        let path = parent.join("swapped");
+        let owned = OwnedFolder::create(&parent, &path).unwrap();
+        add_worktree_retrying_a_pruned_admin_folder(repo.path(), &path, "swapped", &mut || Ok(()))
+            .unwrap();
+        fs::rename(&path, parent.join("moved-away")).unwrap();
+        fs::rename(&older, &path).unwrap();
+
+        owned
+            .confirm_checkout(repo.path())
+            .expect_err("the older copy is not the folder yaran made");
+        remove_unreadable_worktree(repo.path(), &owned)
+            .expect_err("the older copy must not be removed");
+        assert_eq!(fs::read_to_string(path.join("keep")).unwrap(), "older copy");
+    }
+
+    /// A failed attach removes the branch yaran minted for it, unless something
+    /// checked that branch out in the meantime: deleting it then would leave
+    /// that worktree on a branch that no longer exists.
+    #[test]
+    fn a_failed_worktree_add_keeps_its_minted_branch_only_while_it_is_checked_out() {
+        let repo = init_test_repo();
+        let head = head_commit(repo.path()).unwrap();
+        let branch_exists = |name: &str| {
+            test_support::git_command()
+                .args(["rev-parse", "--verify", "--quiet"])
+                .arg(format!("refs/heads/{name}"))
+                .current_dir(repo.path())
+                .status()
+                .unwrap()
+                .success()
+        };
+
+        // Something already sits at the path, so the add fails with the branch
+        // checked out nowhere.
+        let occupied = repo.path().join("occupied");
+        fs::create_dir(&occupied).unwrap();
+        fs::write(occupied.join("file"), "x").unwrap();
+        add_worktree_new_branch_at(repo.path(), &occupied, "orphan", None)
+            .expect_err("an occupied path fails the add");
+        assert!(
+            !branch_exists("orphan"),
+            "the minted branch must be removed"
+        );
+
+        // Another worktree checks the branch out between yaran creating it and
+        // attaching it, so yaran's own attach then fails for real.
+        let other = repo.path().join("other");
+        let other_for_fault = other.clone();
+        let repo_for_fault = repo.path().to_path_buf();
+        WORKTREE_ADD_FAULT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move |command: &mut Command| {
+                run_git(
+                    &repo_for_fault,
+                    &[
+                        "worktree",
+                        "add",
+                        other_for_fault.to_str().unwrap(),
+                        "--",
+                        "taken",
+                    ],
+                );
+                command.output()
+            }));
+        });
+        let ours = repo.path().join("ours");
+        add_worktree_new_branch_at(repo.path(), &ours, "taken", None)
+            .expect_err("a branch checked out elsewhere cannot be attached");
+        assert!(
+            WORKTREE_ADD_FAULT.with(|slot| slot.borrow().is_none()),
+            "the add must have run through the injected checkout"
+        );
+        assert!(!ours.exists(), "the failed add leaves nothing at its path");
+        assert!(branch_exists("taken"), "a checked-out branch must be kept");
+        assert_eq!(
+            run_git_capture(repo.path(), &["rev-parse", "refs/heads/taken"], "read").unwrap(),
+            head
+        );
+        assert_eq!(
+            current_branch_opt(&other).unwrap().as_deref(),
+            Some("taken"),
+            "the other worktree must still be on its branch"
+        );
+        assert_eq!(head_commit(&other).unwrap(), head);
+    }
+
     #[test]
     fn switch_branch_reads_an_option_looking_branch_as_a_ref() {
         let repo = init_test_repo();
         // Without `--`, `git switch --detach` detaches HEAD instead of failing.
-        let result = switch_branch(repo.path(), "--detach");
+        let result = switch_branch(
+            repo.path(),
+            "--detach",
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+        );
         assert!(result.is_err(), "expected a refused switch: {result:?}");
         assert_eq!(
             current_branch(repo.path()).unwrap(),
             "main",
             "HEAD must not have been detached"
         );
+    }
+
+    /// A clone of a non-bare `origin` on `main`, both of them scratch
+    /// repositories on this machine, so nothing here reaches a network.
+    fn clone_of_local_origin() -> (tempfile::TempDir, tempfile::TempDir) {
+        let origin = init_test_repo();
+        let repo = tempfile::tempdir().unwrap();
+        run_git(
+            origin.path(),
+            &[
+                "clone",
+                "-q",
+                origin.path().to_string_lossy().as_ref(),
+                repo.path().to_string_lossy().as_ref(),
+            ],
+        );
+        run_git(repo.path(), &["config", "user.name", "t"]);
+        run_git(repo.path(), &["config", "user.email", "t@t"]);
+        (origin, repo)
+    }
+
+    fn choice_names(choices: &[BranchChoice]) -> Vec<&str> {
+        choices.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    /// Every local branch, every branch only origin has, and nothing twice: a
+    /// branch on both sides is the local one. `origin/HEAD` is a pointer, not
+    /// a branch. A branch another worktree has checked out names that
+    /// worktree, because git will not check it out a second time, while the
+    /// branch the project's own folder is on is simply the current one.
+    #[test]
+    fn list_branches_lists_local_and_origin_only_branches_and_names_their_holders() {
+        let (origin, repo) = clone_of_local_origin();
+        run_git(origin.path(), &["branch", "develop"]);
+        run_git(repo.path(), &["fetch", "-q", "origin"]);
+        run_git(repo.path(), &["branch", "feature"]);
+        let held = add_worktree(repo.path(), "agent");
+
+        let choices = list_branches(repo.path()).unwrap();
+
+        assert_eq!(
+            choice_names(&choices),
+            ["agent", "feature", "main", "develop"]
+        );
+        let by_name = |name: &str| choices.iter().find(|c| c.name == name).unwrap();
+        assert_eq!(by_name("main").location, BranchLocation::Local);
+        assert_eq!(
+            by_name("main").held_by,
+            None,
+            "the project folder's own branch is the current one, not a held one"
+        );
+        assert_eq!(by_name("feature").held_by, None);
+        assert_eq!(by_name("develop").location, BranchLocation::Remote);
+        assert_eq!(
+            by_name("agent")
+                .held_by
+                .as_deref()
+                .map(|p| p.canonicalize().unwrap()),
+            Some(held.canonicalize().unwrap())
+        );
+    }
+
+    /// A name `git check-ref-format --branch` refuses is left out rather than
+    /// offered: a dash-leading one (which plumbing can create) would be read as
+    /// an option by the very switch it is offered for. A non-leading dash is a
+    /// real branch name and stays.
+    #[test]
+    fn list_branches_drops_names_git_refuses_as_branch_names() {
+        let (origin, repo) = clone_of_local_origin();
+        run_git(origin.path(), &["update-ref", "refs/heads/-x", "HEAD"]);
+        run_git(
+            origin.path(),
+            &["update-ref", "refs/heads/foo/-bar", "HEAD"],
+        );
+        run_git(repo.path(), &["fetch", "-q", "origin"]);
+        run_git(repo.path(), &["update-ref", "refs/heads/--force", "HEAD"]);
+        run_git(repo.path(), &["update-ref", "refs/heads/HEAD", "HEAD"]);
+
+        let choices = list_branches(repo.path()).unwrap();
+
+        assert_eq!(choice_names(&choices), ["main", "foo/-bar"]);
+    }
+
+    /// The local branch is created with an explicit tracking command, so it
+    /// does not depend on `checkout.guess`, which a user may have turned off.
+    #[test]
+    fn create_tracking_branch_tracks_origin_even_with_checkout_guess_off() {
+        let (origin, repo) = clone_of_local_origin();
+        run_git(origin.path(), &["branch", "develop"]);
+        run_git(repo.path(), &["fetch", "-q", "origin"]);
+        run_git(repo.path(), &["config", "checkout.guess", "false"]);
+
+        create_tracking_branch_from(repo.path(), "develop", "origin").unwrap();
+
+        assert!(local_branch_exists(repo.path(), "develop"));
+        let upstream = run_git_capture(
+            repo.path(),
+            &["rev-parse", "--abbrev-ref", "develop@{upstream}"],
+            "read the upstream",
+        )
+        .unwrap();
+        assert_eq!(upstream, "origin/develop");
+        assert_eq!(
+            current_branch(repo.path()).unwrap(),
+            "main",
+            "creating the branch does not switch to it"
+        );
+    }
+
+    /// Behind `--`, a dash-leading name is a branch name git refuses, never a
+    /// flag it obeys, and a non-leading dash is an ordinary branch.
+    #[test]
+    fn create_tracking_branch_reads_an_option_looking_name_as_a_branch() {
+        let (origin, repo) = clone_of_local_origin();
+        run_git(origin.path(), &["update-ref", "refs/heads/--force", "HEAD"]);
+        run_git(
+            origin.path(),
+            &["update-ref", "refs/heads/foo/-bar", "HEAD"],
+        );
+        run_git(repo.path(), &["fetch", "-q", "origin"]);
+
+        let refused = create_tracking_branch_from(repo.path(), "--force", "origin");
+        assert!(refused.is_err(), "expected a refusal: {refused:?}");
+        assert!(!local_branch_exists(repo.path(), "--force"));
+
+        create_tracking_branch_from(repo.path(), "foo/-bar", "origin").unwrap();
+        assert!(local_branch_exists(repo.path(), "foo/-bar"));
+    }
+
+    /// The fetch brings in what origin has now, option-looking names included,
+    /// each read as the ref it is.
+    #[test]
+    fn fetch_origin_bounded_fetches_origin_and_reads_option_looking_refs_literally() {
+        let (origin, repo) = clone_of_local_origin();
+        run_git(origin.path(), &["branch", "develop"]);
+        run_git(origin.path(), &["update-ref", "refs/heads/--prune", "HEAD"]);
+
+        fetch_origin_bounded(repo.path(), std::time::Duration::from_secs(30)).unwrap();
+
+        assert!(ref_exists(repo.path(), "refs/remotes/origin/develop"));
+        assert!(ref_exists(repo.path(), "refs/remotes/origin/--prune"));
+    }
+
+    /// An origin that cannot be reached is a reported failure, not a hang.
+    #[test]
+    fn fetch_origin_bounded_reports_an_unreachable_origin() {
+        let repo = init_test_repo();
+        let gone = repo.path().join("no-such-origin.git");
+        run_git(
+            repo.path(),
+            &["remote", "add", "origin", gone.to_string_lossy().as_ref()],
+        );
+
+        let error = fetch_origin_bounded(repo.path(), std::time::Duration::from_secs(30))
+            .expect_err("a missing origin cannot be fetched");
+        assert!(error.to_string().contains("git fetch origin"), "{error}");
+    }
+
+    /// A fetch that does not answer is stopped at the bound, its whole process
+    /// group with it. The stand-in `upload-pack` sleeps before serving, the way
+    /// a wedged remote does, and it is a local command, so no network is used.
+    #[test]
+    fn fetch_origin_bounded_stops_a_fetch_that_outlives_its_bound() {
+        let (_origin, repo) = clone_of_local_origin();
+        run_git(
+            repo.path(),
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                "sleep 20; git upload-pack",
+            ],
+        );
+
+        let started = std::time::Instant::now();
+        let error = fetch_origin_bounded(repo.path(), std::time::Duration::from_millis(300))
+            .expect_err("the fetch outlives its bound");
+        assert_eq!(
+            error.to_string(),
+            "git fetch origin timed out after 1s and was stopped",
+            "typed, and in whole seconds"
+        );
+        assert!(error.downcast_ref::<FetchTimedOut>().is_some(), "{error}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the bound must stop the fetch, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// git's own reason reaches the caller when it exits before reading a list
+    /// bigger than the pipe holds, not the broken pipe the write then hits.
+    #[test]
+    fn a_pathspec_command_that_exits_early_reports_gits_reason() {
+        let gone = tempfile::tempdir().unwrap().path().join("gone");
+        let paths: Vec<String> = (0..20_000)
+            .map(|i| format!("some/long/path/{i}.txt"))
+            .collect();
+
+        let error = run_pathspecs_output(
+            &gone,
+            &["add"],
+            &paths,
+            PathspecMagic::AllLiteral,
+            "git add",
+            None,
+        )
+        .expect_err("the worktree is gone");
+        let message = error.to_string();
+        assert!(message.contains("gone"), "{message}");
+        assert!(!message.contains("Broken pipe"), "{message}");
+    }
+
+    /// A push runs in a session of its own and is told never to ask, so its
+    /// transport has no terminal to prompt on. The stand-in `receive-pack`
+    /// records what it was handed and then serves the push.
+    #[test]
+    fn push_runs_detached_from_the_terminal_and_never_prompts() {
+        let (_origin, repo) = clone_of_local_origin();
+        run_git(repo.path(), &["switch", "-q", "-c", "feature"]);
+        let seen = repo.path().join(".git").join("seen");
+        run_git(
+            repo.path(),
+            &[
+                "config",
+                "remote.origin.receivepack",
+                &format!(
+                    "echo \"$GIT_TERMINAL_PROMPT $(ps -o sid= -p $$)\" > '{}'; git receive-pack",
+                    seen.display()
+                ),
+            ],
+        );
+
+        push(repo.path(), TEST_NETWORK_TIMEOUT).unwrap();
+
+        let seen = std::fs::read_to_string(&seen).unwrap();
+        let mut fields = seen.split_whitespace();
+        assert_eq!(fields.next(), Some("0"), "{seen}");
+        let own_session = rustix::process::getsid(None)
+            .unwrap()
+            .as_raw_nonzero()
+            .get();
+        assert_ne!(
+            fields.next().and_then(|sid| sid.parse::<i32>().ok()),
+            Some(own_session),
+            "the push shares yaran's session, so it can reach its terminal: {seen}"
+        );
+    }
+
+    /// A push whose remote does not answer is stopped at the bound.
+    #[test]
+    fn push_stops_a_push_that_outlives_its_bound() {
+        let (_origin, repo) = clone_of_local_origin();
+        run_git(repo.path(), &["switch", "-q", "-c", "feature"]);
+        run_git(
+            repo.path(),
+            &[
+                "config",
+                "remote.origin.receivepack",
+                "sleep 20; git receive-pack",
+            ],
+        );
+
+        let started = std::time::Instant::now();
+        let error = push(repo.path(), Some(std::time::Duration::from_millis(300)))
+            .expect_err("the push outlives its bound");
+        assert!(error.to_string().contains("timed out"), "{error}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the bound must stop the push, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// With no bound (`[git] network_timeout_seconds = 0`) a slow push is
+    /// waited out rather than stopped.
+    #[test]
+    fn push_with_no_bound_waits_for_a_slow_remote() {
+        let (_origin, repo) = clone_of_local_origin();
+        run_git(repo.path(), &["switch", "-q", "-c", "feature"]);
+        run_git(
+            repo.path(),
+            &[
+                "config",
+                "remote.origin.receivepack",
+                "sleep 1; git receive-pack",
+            ],
+        );
+
+        push(repo.path(), None).unwrap();
+
+        assert!(ref_exists(repo.path(), "refs/remotes/origin/feature"));
+    }
+
+    /// The pull request fetch is told never to ask either.
+    #[test]
+    fn a_pull_request_fetch_never_prompts() {
+        let (origin, repo) = clone_of_local_origin();
+        run_git(origin.path(), &["update-ref", "refs/pull/7/head", "HEAD"]);
+        let seen = repo.path().join(".git").join("seen");
+        run_git(
+            repo.path(),
+            &[
+                "config",
+                "remote.origin.uploadpack",
+                &format!(
+                    "echo \"$GIT_TERMINAL_PROMPT\" > '{}'; git upload-pack",
+                    seen.display()
+                ),
+            ],
+        );
+
+        fetch_pull_request_head(repo.path(), 7, "pr-7", TEST_NETWORK_TIMEOUT).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&seen).unwrap().trim(), "0");
     }
 
     /// The web worktree manager offers "Delete worktree", and the user asked to
@@ -6978,7 +12316,9 @@ mod tests {
 
         assert!(!wt.exists(), "the worktree directory must be gone");
         let listed = std::process::Command::new("git")
-            .args(["-C", repo.path().to_string_lossy().as_ref(), "branch"])
+            .arg("-C")
+            .arg(repo.path())
+            .args(["branch"])
             .output()
             .unwrap();
         assert!(
@@ -6987,98 +12327,321 @@ mod tests {
         );
     }
 
-    /// Fork f4f2257a: the guard refuses a target that is a registered project's
-    /// ancestor, one inside it (even one not on disk yet), and a symlink alias
-    /// of it, and lets an unrelated sibling through.
+    /// A removal git refuses while it still lists the worktree (a lock that a
+    /// single `--force` does not override) is tried once more and then
+    /// reported as git's own failure: nothing was deleted and the worktree is
+    /// still registered, so there is no leftover folder to describe.
     #[test]
-    fn whole_workspace_guard_rejects_project_ancestors_descendants_and_symlink_aliases() {
-        let temp = tempfile::tempdir().unwrap();
-        let managed = temp.path().join("managed");
-        let project = managed.join("nested/project");
-        fs::create_dir_all(&project).unwrap();
-        let projects = vec![project.clone()];
-
-        assert!(guard_whole_workspace_removal(&managed, &projects).is_err());
-        assert!(guard_whole_workspace_removal(&project.join("corrupt-child"), &projects).is_err());
-
-        let alias = temp.path().join("project-alias");
-        symlink(&project, &alias).unwrap();
-        assert!(guard_whole_workspace_removal(&alias, &projects).is_err());
-        assert!(
-            guard_whole_workspace_removal(&temp.path().join("safe-sibling"), &projects).is_ok()
-        );
-    }
-
-    /// A relative target or one with `..` cannot be resolved safely, so the
-    /// guard refuses it instead of guessing.
-    #[test]
-    fn whole_workspace_guard_rejects_relative_and_parent_traversal_targets() {
-        let temp = tempfile::tempdir().unwrap();
-        assert!(guard_whole_workspace_removal(Path::new("relative/wt"), &[]).is_err());
-        assert!(
-            guard_whole_workspace_removal(&temp.path().join("a/../b"), &[]).is_err(),
-            "a `..` component must be refused even with no projects registered"
-        );
-    }
-
-    /// Both removal entry points run the guard before git: the worktree and
-    /// its branch survive when the worktree contains, or is inside, a
-    /// registered project.
-    #[test]
-    fn remove_worktree_entry_point_applies_registered_project_guard() {
+    fn a_removal_git_refuses_while_registered_is_retried_once_then_reported() {
         let repo = init_test_repo();
-        for project_is_descendant in [true, false] {
-            let branch = format!("protected-delete-{project_is_descendant}");
-            let worktree = add_worktree(repo.path(), &branch);
-            let project = if project_is_descendant {
-                let nested = worktree.join("nested-project");
-                fs::create_dir_all(&nested).unwrap();
-                nested
-            } else {
-                repo.path().to_path_buf()
-            };
+        let wt = add_worktree(repo.path(), "locked");
+        let locked = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["worktree", "lock"])
+            .arg(&wt)
+            .output()
+            .unwrap();
+        assert!(locked.status.success());
 
-            let result = remove_worktree(
-                repo.path(),
-                &worktree,
-                &branch,
-                None,
-                std::slice::from_ref(&project),
-            );
-            assert!(result.is_err());
-            assert!(worktree.exists());
-            assert!(local_branch_exists(repo.path(), &branch));
-
-            let result = remove_worktree_keep_branch(repo.path(), &worktree, &[project]);
-            assert!(result.is_err());
-            assert!(worktree.exists());
-        }
+        let err = remove_worktree_keep_branch(repo.path(), &wt, &[])
+            .expect_err("a locked worktree is not removed");
+        assert!(err.downcast_ref::<LeftoverWorktreeFolder>().is_none());
+        assert!(
+            format!("{err:#}").starts_with("git worktree remove failed:"),
+            "{err:#}"
+        );
+        assert!(wt.exists());
+        assert!(worktree_is_registered(repo.path(), &wt));
     }
 
-    /// The guard is for whole-worktree removals only: discarding an untracked
-    /// directory inside a registered checkout stays possible.
     #[test]
-    fn untracked_directory_discard_inside_registered_project_remains_allowed() {
-        let temp = tempfile::tempdir().unwrap();
-        let project = temp.path().join("project");
-        let untracked = project.join("scratch/nested");
-        fs::create_dir_all(&untracked).unwrap();
-        fs::write(untracked.join("notes.txt"), "temporary").unwrap();
-
-        discard_file(&project, "scratch", true).unwrap();
-
-        assert!(!project.join("scratch").exists());
-        assert!(project.exists());
-    }
-
-    /// An unexpandable or relative project path fails the whole inventory, so
-    /// no caller can run the guard against a partial list.
-    #[test]
-    fn registered_project_paths_fails_closed_on_a_relative_project() {
-        assert!(registered_project_paths(["/abs/project", "relative/project"]).is_err());
+    fn a_leftover_folder_names_the_path_once_with_what_is_left_beside_it() {
+        let mut leftover = LeftoverWorktreeFolder {
+            path: std::path::PathBuf::from("/work/wt-feat"),
+            leftovers: vec![".astro/collections".to_string(), "dist".to_string()],
+            more: 3,
+            git_error: "error: failed to delete '/work/wt-feat': Directory not empty".to_string(),
+            kept_branches: vec![KeptBranch {
+                name: "feat".to_string(),
+                oid: Some("abc".to_string()),
+                provenance: None,
+            }],
+            gone_branches: Vec::new(),
+            unchecked_branches: Vec::new(),
+            in_manager: true,
+        };
         assert_eq!(
-            registered_project_paths(["/abs/project"]).unwrap(),
-            vec![PathBuf::from("/abs/project")]
+            leftover.to_string(),
+            "something kept writing into /work/wt-feat (.astro/collections, dist and 3 more), \
+             so the folder is still there. Stop it, then delete the folder from the project's \
+             worktree manager. Branch feat was kept because the folder is still on disk; the \
+             worktree manager can delete it with the folder."
+        );
+        leftover.leftovers.clear();
+        leftover.more = 0;
+        leftover.in_manager = false;
+        leftover.kept_branches.push(KeptBranch {
+            name: "feat-old".to_string(),
+            oid: Some("def".to_string()),
+            provenance: None,
+        });
+        leftover.gone_branches.push("gone".to_string());
+        assert_eq!(
+            leftover.to_string(),
+            "something kept writing into /work/wt-feat, so the folder is still there. \
+             Stop it, then delete the folder yourself. Branches feat and feat-old were kept \
+             because the folder is still on disk; delete them with git branch -D once the \
+             folder is gone. Branch gone was already gone."
+        );
+    }
+
+    /// A branch git could not be asked about is never reported as gone: it is
+    /// kept, with no commit, and the message says why and how to finish.
+    #[test]
+    fn a_branch_git_cannot_check_is_kept_rather_than_called_gone() {
+        let leftover = LeftoverWorktreeFolder {
+            path: std::path::PathBuf::from("/work/wt-feat"),
+            leftovers: Vec::new(),
+            more: 0,
+            git_error: String::new(),
+            kept_branches: vec![KeptBranch {
+                name: "feat".to_string(),
+                oid: None,
+                provenance: None,
+            }],
+            gone_branches: Vec::new(),
+            unchecked_branches: vec![("feat".to_string(), "fatal: bad object".to_string())],
+            in_manager: true,
+        };
+        assert_eq!(
+            leftover.to_string(),
+            "something kept writing into /work/wt-feat, so the folder is still there. Stop it, \
+             then delete the folder from the project's worktree manager. git could not check \
+             branch feat (fatal: bad object), so it was kept; delete it with git branch -D once \
+             the folder is gone."
+        );
+        let not_a_repo = tempfile::tempdir().unwrap();
+        assert!(resolve_branch_oid(not_a_repo.path(), "feat").is_err());
+    }
+
+    /// The real removal, with git unable to read the repository's refs once
+    /// it has let go of the worktree (a corrupt `packed-refs`): the branch is
+    /// kept with no commit and said to be unchecked, never "already gone".
+    #[test]
+    fn a_removal_git_cannot_check_the_branch_of_keeps_it_unchecked() {
+        let repo = init_test_repo();
+        let wt = add_worktree(repo.path(), "leftover");
+        run_git(
+            repo.path(),
+            &["worktree", "remove", "--force", wt.to_str().unwrap()],
+        );
+        std::fs::create_dir_all(wt.join(".astro")).unwrap();
+        run_git(repo.path(), &["pack-refs", "--all"]);
+        let packed = repo.path().join(".git/packed-refs");
+        let mut refs = std::fs::read_to_string(&packed).unwrap();
+        refs.push_str("not a ref line\n");
+        std::fs::write(&packed, refs).unwrap();
+
+        let err = remove_worktree(repo.path(), &wt, "leftover", None, &[])
+            .expect_err("the folder is left over");
+        let leftover = err
+            .downcast_ref::<LeftoverWorktreeFolder>()
+            .expect("the leftover error");
+        assert_eq!(leftover.gone_branches, Vec::<String>::new());
+        assert_eq!(
+            leftover.kept_branches,
+            [KeptBranch {
+                name: "leftover".to_string(),
+                oid: None,
+                provenance: None,
+            }]
+        );
+        assert_eq!(leftover.unchecked_branches.len(), 1);
+    }
+
+    /// A kept branch goes only while it still points where it did when its
+    /// folder was left behind; one that moved, vanished or is checked out
+    /// elsewhere is reported as that and kept. A dash-leading name is a ref.
+    #[test]
+    fn a_kept_branch_is_deleted_only_while_it_points_where_it_did() {
+        let repo = init_test_repo();
+        let head = head_commit(repo.path()).unwrap();
+        run_git(repo.path(), &["update-ref", "refs/heads/--force", &head]);
+        run_git(repo.path(), &["update-ref", "refs/heads/moved", &head]);
+        let kept = |name: &str| KeptBranch {
+            name: name.to_string(),
+            oid: Some(head.clone()),
+            provenance: None,
+        };
+        assert_eq!(
+            delete_kept_branch(repo.path(), &kept("--force")).unwrap(),
+            KeptBranchDeletion::Deleted
+        );
+        assert_eq!(resolve_branch_oid(repo.path(), "--force").unwrap(), None);
+        assert_eq!(
+            delete_kept_branch(repo.path(), &kept("--force")).unwrap(),
+            KeptBranchDeletion::AlreadyGone
+        );
+        std::fs::write(repo.path().join("next.txt"), "x").unwrap();
+        run_git(repo.path(), &["add", "next.txt"]);
+        run_git(repo.path(), &["commit", "-m", "next"]);
+        let next = head_commit(repo.path()).unwrap();
+        run_git(repo.path(), &["update-ref", "refs/heads/moved", &next]);
+        assert_eq!(
+            delete_kept_branch(repo.path(), &kept("moved")).unwrap(),
+            KeptBranchDeletion::Moved
+        );
+        assert_eq!(
+            resolve_branch_oid(repo.path(), "moved").unwrap(),
+            Some(next.clone())
+        );
+        let wt = add_worktree(repo.path(), "held");
+        let checked_out = KeptBranch {
+            name: "held".to_string(),
+            oid: Some(next),
+            provenance: None,
+        };
+        assert!(matches!(
+            delete_kept_branch(repo.path(), &checked_out).unwrap(),
+            KeptBranchDeletion::Refused { reason } if reason.contains("checked out")
+        ));
+        assert!(wt.exists());
+        assert!(resolve_branch_oid(repo.path(), "held").unwrap().is_some());
+    }
+
+    /// Once git has dropped the registration and only the folder is left, the
+    /// error is the leftover one, naming what is in it, and git lists nothing
+    /// for the path any more. yaran deletes none of it.
+    #[test]
+    fn a_folder_git_has_let_go_of_is_reported_as_a_leftover() {
+        let repo = init_test_repo();
+        let wt = add_worktree(repo.path(), "leftover");
+        // What a failed removal leaves: git's registration gone, the folder
+        // there with whatever was written into it during the removal.
+        let pruned = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["worktree", "remove", "--force"])
+            .arg(&wt)
+            .output()
+            .unwrap();
+        assert!(pruned.status.success());
+        std::fs::create_dir_all(wt.join(".astro/collections")).unwrap();
+
+        let err = remove_worktree(repo.path(), &wt, "leftover", None, &[])
+            .expect_err("git cannot remove a folder it no longer lists");
+        let leftover = err
+            .downcast_ref::<LeftoverWorktreeFolder>()
+            .expect("the leftover error");
+        assert_eq!(leftover.leftovers, vec![".astro/collections".to_string()]);
+        let names: Vec<&str> = leftover
+            .kept_branches
+            .iter()
+            .map(|kept| kept.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["leftover"],
+            "the folder still holds the branch's files, so the branch is kept"
+        );
+        assert_eq!(
+            leftover.kept_branches[0].oid,
+            resolve_branch_oid(repo.path(), "leftover").unwrap(),
+            "the kept branch is recorded at the commit it points at"
+        );
+        assert!(
+            wt.join(".astro/collections").exists(),
+            "yaran deleted nothing itself"
+        );
+        assert!(!worktree_is_registered(repo.path(), &wt));
+    }
+
+    /// Removing a worktree whose directory is already gone must forget THAT
+    /// registration only. A bare `git worktree prune` is repository-wide: a
+    /// sibling whose directory is briefly unreachable (a mount that is down, a
+    /// folder moved away for a moment) loses its registration too, and once
+    /// the folder is back `git status` in it says "not a git repository".
+    ///
+    /// The fallback runs when `git worktree remove` fails on a directory that
+    /// is not there: measured on git 2.53, a missing but registered worktree
+    /// is removed cleanly, while one git no longer knows ("is not a working
+    /// tree", the registration having gone with an earlier removal that
+    /// failed part-way) fails, and that failure used to prune everything.
+    #[test]
+    fn removing_a_vanished_worktree_leaves_an_unreachable_sibling_registered() {
+        let repo = init_test_repo();
+        let gone = repo.path().join("never-registered");
+        let sibling = add_worktree(repo.path(), "sibling");
+        let away = repo.path().join("sibling-away");
+        std::fs::rename(&sibling, &away).unwrap();
+
+        remove_worktree_keep_branch(repo.path(), &gone, &[]).unwrap();
+
+        std::fs::rename(&away, &sibling).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&sibling)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "the sibling worktree must still be a working copy: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+        let listed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["worktree", "list", "--porcelain", "-z"])
+            .output()
+            .unwrap();
+        let registrations = parse_worktree_registrations(&listed.stdout);
+        assert!(
+            !registrations
+                .iter()
+                .any(|r| same_worktree_path(&r.path, &gone)),
+            "the vanished worktree's own registration is forgotten"
+        );
+    }
+
+    /// The leftover-folder path (git let go of the worktree, something kept
+    /// writing into its folder) must not touch any other registration either:
+    /// it forgets nothing repository-wide, so a sibling whose folder is
+    /// briefly unreachable at that moment is still a working copy afterwards.
+    #[test]
+    fn a_leftover_folder_leaves_an_unreachable_sibling_registered() {
+        let repo = init_test_repo();
+        let wt = add_worktree(repo.path(), "leftover-sibling");
+        let sibling = add_worktree(repo.path(), "unreachable");
+        // What a half-finished removal leaves: no registration, a folder.
+        let removed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["worktree", "remove", "--force"])
+            .arg(&wt)
+            .output()
+            .unwrap();
+        assert!(removed.status.success());
+        std::fs::create_dir_all(wt.join(".astro/collections")).unwrap();
+        let away = repo.path().join("unreachable-away");
+        std::fs::rename(&sibling, &away).unwrap();
+
+        let err = remove_worktree_keep_branch(repo.path(), &wt, &[])
+            .expect_err("the folder is left over");
+        assert!(err.downcast_ref::<LeftoverWorktreeFolder>().is_some());
+
+        std::fs::rename(&away, &sibling).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&sibling)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "the sibling worktree must still be a working copy: {}",
+            String::from_utf8_lossy(&status.stderr)
         );
     }
 
@@ -7102,6 +12665,124 @@ mod tests {
         );
     }
 
+    /// Every kind of uncommitted file the delete dialog warns about counts
+    /// once (a rename too, though git prints two paths for it), and an ignored
+    /// file does not count, since it is not work anyone expects to keep.
+    #[test]
+    fn uncommitted_file_count_counts_each_uncommitted_file_once() {
+        let repo = init_test_repo();
+        let wt = add_worktree(repo.path(), "filecount");
+        let git = worktree_git(&wt);
+        for name in ["modified", "staged", "deleted", "moved"] {
+            std::fs::write(wt.join(name), name).unwrap();
+        }
+        std::fs::write(wt.join(".gitignore"), "*.log\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "files"]);
+        assert_eq!(uncommitted_file_count(&wt).unwrap(), 0, "a clean worktree");
+
+        std::fs::write(wt.join("modified"), "changed").unwrap();
+        std::fs::write(wt.join("staged"), "changed").unwrap();
+        git(&["add", "staged"]);
+        std::fs::remove_file(wt.join("deleted")).unwrap();
+        git(&["mv", "moved", "renamed"]);
+        std::fs::create_dir_all(wt.join("new/deep")).unwrap();
+        std::fs::write(wt.join("new/deep/untracked"), "x").unwrap();
+        std::fs::write(wt.join("new/other"), "x").unwrap();
+        std::fs::write(wt.join("debug.log"), "ignored").unwrap();
+        // modified, staged, deleted, renamed (once) and the two untracked
+        // files, each listed on its own rather than as their folder.
+        assert_eq!(uncommitted_file_count(&wt).unwrap(), 6);
+    }
+
+    /// Config that would change git status's records (renames off, untracked
+    /// files hidden) changes nothing about the count.
+    #[test]
+    fn uncommitted_file_count_ignores_status_config() {
+        let repo = init_test_repo();
+        let wt = add_worktree(repo.path(), "statusconfig");
+        let git = worktree_git(&wt);
+        std::fs::write(wt.join("moved"), "x").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "one"]);
+        git(&["mv", "moved", "renamed"]);
+        std::fs::create_dir_all(wt.join("dir")).unwrap();
+        std::fs::write(wt.join("dir/a"), "x").unwrap();
+        std::fs::write(wt.join("dir/b"), "x").unwrap();
+        git(&["config", "status.renames", "false"]);
+        git(&["config", "diff.renames", "false"]);
+        git(&["config", "status.showUntrackedFiles", "no"]);
+        assert_eq!(uncommitted_file_count(&wt).unwrap(), 3);
+    }
+
+    /// A worktree folder that is gone holds nothing a delete could lose.
+    #[test]
+    fn uncommitted_file_count_of_a_missing_worktree_is_zero() {
+        let repo = init_test_repo();
+        assert_eq!(
+            uncommitted_file_count(&repo.path().join("not-there")).unwrap(),
+            0
+        );
+    }
+
+    /// A `git status` that does not answer in time is stopped and reported
+    /// as "git timed out", the reason the dialogs and the command line print
+    /// as "yaran could not look", never waited on. The fsmonitor hook is what
+    /// `git status` runs first; one that sleeps stands in for a wedged
+    /// filesystem. The hook is git's own child: it must go down with git, or
+    /// it outlives the cap and holds git's stderr open past it.
+    #[test]
+    fn uncommitted_file_count_stops_a_git_that_does_not_answer() {
+        let repo = init_test_repo();
+        let wt = add_worktree(repo.path(), "wedged");
+        let hook = repo.path().join("slow-fsmonitor");
+        let hook_pid = repo.path().join("slow-fsmonitor.pid");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec sleep 30\n",
+                hook_pid.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        worktree_git(&wt)(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
+        let cap = std::time::Duration::from_millis(500);
+        let started = std::time::Instant::now();
+        let err = uncommitted_file_count_within(&wt, cap)
+            .expect_err("a git that does not answer is a failed count");
+        let took = started.elapsed();
+        assert_eq!(unpushed_count_failure_reason(&err), "git timed out");
+        // Well short of the cap plus the reader drain floor, which is what a
+        // surviving hook holding the pipe costs.
+        assert!(
+            took < cap + std::time::Duration::from_millis(1500),
+            "the count must return close to its cap, took {took:?}"
+        );
+        let pid: u32 = std::fs::read_to_string(&hook_pid)
+            .expect("git ran the fsmonitor hook")
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while crate::file_drop::process_can_answer(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fsmonitor hook outlived the stopped git"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// A folder that is no repository is a failure to check, never a clean
+    /// answer.
+    #[test]
+    fn uncommitted_file_count_fails_outside_a_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(uncommitted_file_count(dir.path()).is_err());
+    }
+
     /// Deleting an agent whose branch yaran created removes the LOCAL branch and
     /// nothing else. A PR agent's branch tracks a branch on origin, and the
     /// pull request itself lives there, so the remote-tracking ref (and the
@@ -7122,12 +12803,9 @@ mod tests {
         run_git(repo.path(), &["fetch", "origin"]);
         let head = String::from_utf8_lossy(
             &test_support::git_command()
-                .args([
-                    "-C",
-                    origin.path().to_string_lossy().as_ref(),
-                    "rev-parse",
-                    "HEAD",
-                ])
+                .arg("-C")
+                .arg(origin.path())
+                .args(["rev-parse", "HEAD"])
                 .output()
                 .unwrap()
                 .stdout,
@@ -7172,7 +12850,9 @@ mod tests {
             "the branch should have been deleted, not read as the --delete flag"
         );
         let listed = std::process::Command::new("git")
-            .args(["-C", repo.path().to_string_lossy().as_ref(), "branch"])
+            .arg("-C")
+            .arg(repo.path())
+            .args(["branch"])
             .output()
             .unwrap();
         assert!(
@@ -7182,6 +12862,23 @@ mod tests {
     }
 
     // ── unpushed_commit_count ────────────────────────────────
+
+    #[test]
+    fn a_count_failure_reason_prefers_gits_fatal_line() {
+        let reason = |text: &str| unpushed_count_failure_reason(&anyhow!("{text}"));
+        assert_eq!(
+            reason("git rev-list failed: hint: look here\nfatal: bad revision 'x'."),
+            "fatal: bad revision 'x'"
+        );
+        assert_eq!(
+            reason("git rev-list failed: error: object file is empty\nmore"),
+            "error: object file is empty"
+        );
+        assert_eq!(
+            reason("git could not be run: No such file or directory.\nsecond"),
+            "git could not be run: No such file or directory"
+        );
+    }
 
     /// Commit an empty change on `branch` (creating it from HEAD the first
     /// time), so a test can put a known number of commits on it.
@@ -7376,11 +13073,563 @@ mod tests {
         assert!(result.is_err(), "expected an error: {result:?}");
     }
 
+    // ── commits_missing_from ─────────────────────────────────
+
+    #[test]
+    fn commits_missing_from_counts_what_one_branch_has_and_the_other_lacks() {
+        let repo = init_test_repo();
+        run_git(repo.path(), &["branch", "--", "copy"]);
+        commit_on_branch(repo.path(), "busy", "one");
+        commit_on_branch(repo.path(), "busy", "two");
+        assert_eq!(
+            commits_missing_from(repo.path(), "busy", "copy").unwrap(),
+            2
+        );
+        assert_eq!(
+            commits_missing_from(repo.path(), "copy", "busy").unwrap(),
+            0,
+            "the copy has nothing the busy branch lacks"
+        );
+    }
+
+    #[test]
+    fn commits_missing_from_fails_for_a_branch_that_does_not_exist() {
+        let repo = init_test_repo();
+        let result = commits_missing_from(repo.path(), "nope", "main");
+        assert!(result.is_err(), "expected an error: {result:?}");
+    }
+
+    /// Without the fully-qualified `refs/heads/` form, `--all` in either slot
+    /// would be read as a flag and count (or exclude) every commit of every
+    /// ref. The count here must be the branch's own.
+    #[test]
+    fn commits_missing_from_reads_an_option_looking_branch_as_a_ref() {
+        let repo = init_test_repo();
+        run_git(repo.path(), &["branch", "--", "copy"]);
+        // A commit only `elsewhere` reaches, which `--all` read as a flag
+        // would count.
+        commit_on_branch(repo.path(), "elsewhere", "unrelated");
+        run_git(repo.path(), &["reset", "--hard", "refs/heads/copy"]);
+        commit_on_branch(repo.path(), "--all", "one");
+        assert_eq!(
+            commits_missing_from(repo.path(), "--all", "copy").unwrap(),
+            1
+        );
+        assert_eq!(
+            commits_missing_from(repo.path(), "copy", "--all").unwrap(),
+            0
+        );
+    }
+
+    // ── worktree_holding_branch ──────────────────────────────
+
+    /// A repository with a `feature` branch two commits past `main`, checked
+    /// out in a linked worktree. Returns the repo, the worktree's parent (kept
+    /// alive by the caller) and the worktree itself.
+    fn repo_with_feature_worktree() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+        let repo = init_test_repo();
+        let holder_root = tempfile::tempdir().unwrap();
+        // The real path, the one git lists the worktree by (macOS reaches the
+        // temp folder through a symlink).
+        let holder = holder_root.path().canonicalize().unwrap().join("holder");
+        run_git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                holder.to_string_lossy().as_ref(),
+            ],
+        );
+        for n in ["one", "two"] {
+            std::fs::write(holder.join(n), n).unwrap();
+            run_git(&holder, &["add", "--", n]);
+            run_git(&holder, &["commit", "-m", n]);
+        }
+        (repo, holder_root, holder)
+    }
+
+    /// Start a rebase in `worktree` that stops on its first step. The exec
+    /// runs through `sh`, and `exit 1` is a shell builtin, so nothing else is
+    /// spawned.
+    fn start_a_stopped_rebase(worktree: &Path) {
+        let out = test_support::git_command()
+            .args(["rebase", "--exec", "exit 1", "HEAD~1"])
+            .current_dir(worktree)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "the rebase must stop part-way");
+    }
+
+    /// Whether git itself refuses to check `branch` out in one more worktree,
+    /// which is the question the helper exists to answer before git does.
+    fn git_refuses_another_checkout(repo: &Path, branch: &str) -> bool {
+        let spare_root = tempfile::tempdir().unwrap();
+        let spare = spare_root.path().join("spare");
+        let out = test_support::git_command()
+            .args(["worktree", "add"])
+            .arg(&spare)
+            .args(["--", branch])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        if out.status.success() {
+            run_git(
+                repo,
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    spare.to_string_lossy().as_ref(),
+                ],
+            );
+            return false;
+        }
+        String::from_utf8_lossy(&out.stderr).contains("is already used by worktree")
+    }
+
+    #[test]
+    fn worktree_holding_branch_finds_a_linked_worktree_on_the_branch() {
+        let (repo, _root, holder) = repo_with_feature_worktree();
+        let found = worktree_holding_branch(repo.path(), "feature")
+            .unwrap()
+            .expect("the linked worktree has it checked out");
+        assert_eq!(found.worktree.path, holder);
+        assert!(!found.is_project_folder);
+    }
+
+    #[test]
+    fn worktree_holding_branch_finds_the_project_folder() {
+        let repo = init_test_repo();
+        let found = worktree_holding_branch(repo.path(), "main")
+            .unwrap()
+            .expect("the project folder has main checked out");
+        assert!(
+            found.is_project_folder,
+            "the repository's own folder is the project folder"
+        );
+    }
+
+    #[test]
+    fn worktree_holding_branch_finds_nothing_for_a_branch_checked_out_nowhere() {
+        let (repo, _root, _holder) = repo_with_feature_worktree();
+        run_git(repo.path(), &["branch", "--", "idle"]);
+        assert!(
+            worktree_holding_branch(repo.path(), "idle")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn worktree_holding_branch_finds_a_worktree_rebasing_the_branch() {
+        let (repo, _root, holder) = repo_with_feature_worktree();
+        start_a_stopped_rebase(&holder);
+        let listed = list_worktrees(repo.path()).unwrap();
+        let entry = listed.iter().find(|w| w.path == holder).unwrap();
+        assert!(
+            entry.detached && entry.branch_name.is_none(),
+            "a rebasing worktree lists no branch: {entry:?}"
+        );
+        assert!(
+            git_refuses_another_checkout(repo.path(), "feature"),
+            "git still reserves the branch mid-rebase"
+        );
+        let found = worktree_holding_branch(repo.path(), "feature")
+            .unwrap()
+            .expect("the rebasing worktree holds the branch");
+        assert_eq!(found.worktree.path, holder);
+    }
+
+    #[test]
+    fn worktree_holding_branch_finds_a_worktree_bisecting_from_the_branch() {
+        let (repo, _root, holder) = repo_with_feature_worktree();
+        run_git(&holder, &["bisect", "start", "HEAD", "HEAD~2"]);
+        let listed = list_worktrees(repo.path()).unwrap();
+        let entry = listed.iter().find(|w| w.path == holder).unwrap();
+        assert!(
+            entry.detached && entry.branch_name.is_none(),
+            "a bisecting worktree lists no branch: {entry:?}"
+        );
+        assert!(
+            git_refuses_another_checkout(repo.path(), "feature"),
+            "git still reserves the branch mid-bisect"
+        );
+        let found = worktree_holding_branch(repo.path(), "feature")
+            .unwrap()
+            .expect("the bisecting worktree holds the branch");
+        assert_eq!(found.worktree.path, holder);
+    }
+
+    #[test]
+    fn worktree_holding_branch_finds_a_worktree_whose_folder_is_gone() {
+        let (repo, _root, holder) = repo_with_feature_worktree();
+        std::fs::remove_dir_all(&holder).unwrap();
+        assert!(
+            git_refuses_another_checkout(repo.path(), "feature"),
+            "git reserves the branch until the worktree is pruned"
+        );
+        let found = worktree_holding_branch(repo.path(), "feature")
+            .unwrap()
+            .expect("the vanished worktree still holds the branch");
+        assert_eq!(found.worktree.path, holder);
+    }
+
+    /// A rebase in a worktree whose folder is gone is still recorded in the
+    /// repository's own administrative directory, so the reservation is read
+    /// from there rather than through the missing folder.
+    #[test]
+    fn worktree_holding_branch_finds_a_rebase_in_a_worktree_whose_folder_is_gone() {
+        let (repo, _root, holder) = repo_with_feature_worktree();
+        start_a_stopped_rebase(&holder);
+        std::fs::remove_dir_all(&holder).unwrap();
+        assert!(git_refuses_another_checkout(repo.path(), "feature"));
+        let found = worktree_holding_branch(repo.path(), "feature")
+            .unwrap()
+            .expect("the vanished rebasing worktree still holds the branch");
+        assert_eq!(found.worktree.path, holder);
+    }
+
+    #[test]
+    fn worktree_holding_branch_fails_outside_a_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(worktree_holding_branch(dir.path(), "main").is_err());
+    }
+
+    /// A rebase that stops in the repository's own folder leaves it detached
+    /// with the rebase recorded in the common git directory, and git still
+    /// reserves the branch there.
+    #[test]
+    fn worktree_holding_branch_finds_the_project_folder_rebasing_the_branch() {
+        let repo = init_test_repo();
+        run_git(repo.path(), &["checkout", "-b", "feature"]);
+        commit_on_branch(repo.path(), "feature", "one");
+        start_a_stopped_rebase(repo.path());
+        let listed = list_worktrees(repo.path()).unwrap();
+        assert!(
+            listed[0].detached && listed[0].branch_name.is_none(),
+            "a rebasing project folder lists no branch: {listed:?}"
+        );
+        assert!(
+            git_refuses_another_checkout(repo.path(), "feature"),
+            "git still reserves the branch mid-rebase"
+        );
+        let found = worktree_holding_branch(repo.path(), "feature")
+            .unwrap()
+            .expect("the rebasing project folder holds the branch");
+        assert_eq!(
+            found.worktree.path.canonicalize().unwrap(),
+            repo.path().canonicalize().unwrap()
+        );
+        assert!(found.is_project_folder);
+    }
+
+    /// The project folder is the path the caller asked about, not whichever
+    /// worktree git lists first: a project added from a LINKED worktree is
+    /// that worktree, and the repository's own folder is just another place a
+    /// branch can be checked out.
+    #[test]
+    fn worktree_holding_branch_names_a_linked_worktree_project_as_the_project_folder() {
+        let (repo, _root, holder) = repo_with_feature_worktree();
+        let in_main = worktree_holding_branch(&holder, "main")
+            .unwrap()
+            .expect("the repository's own folder has main checked out");
+        assert_eq!(
+            in_main.worktree.path.canonicalize().unwrap(),
+            repo.path().canonicalize().unwrap()
+        );
+        assert!(
+            !in_main.is_project_folder,
+            "the project is the linked worktree, so the repository's folder is not it"
+        );
+        let in_project = worktree_holding_branch(&holder, "feature")
+            .unwrap()
+            .expect("the linked worktree has feature checked out");
+        assert!(in_project.is_project_folder);
+    }
+
+    // ── branch_is_ancestor ───────────────────────────────────
+
+    #[test]
+    fn branch_is_ancestor_follows_history() {
+        let repo = init_test_repo();
+        run_git(repo.path(), &["branch", "--", "base"]);
+        commit_on_branch(repo.path(), "ahead", "one");
+        assert!(branch_is_ancestor(repo.path(), "base", "ahead").unwrap());
+        assert!(!branch_is_ancestor(repo.path(), "ahead", "base").unwrap());
+        assert!(
+            branch_is_ancestor(repo.path(), "base", "base").unwrap(),
+            "a branch is its own ancestor"
+        );
+    }
+
+    #[test]
+    fn branch_is_ancestor_is_false_for_diverged_branches() {
+        let repo = init_test_repo();
+        run_git(repo.path(), &["branch", "--", "base"]);
+        commit_on_branch(repo.path(), "left", "left");
+        run_git(repo.path(), &["reset", "--hard", "refs/heads/base"]);
+        commit_on_branch(repo.path(), "right", "right");
+        assert!(!branch_is_ancestor(repo.path(), "left", "right").unwrap());
+        assert!(!branch_is_ancestor(repo.path(), "right", "left").unwrap());
+    }
+
+    #[test]
+    fn branch_is_ancestor_fails_for_a_branch_that_does_not_exist() {
+        let repo = init_test_repo();
+        let result = branch_is_ancestor(repo.path(), "nope", "main");
+        assert!(result.is_err(), "expected an error: {result:?}");
+    }
+
+    /// `--all` in either slot, read as a flag, would make merge-base refuse or
+    /// answer about something else. Fully qualified, it is just a branch.
+    #[test]
+    fn branch_is_ancestor_reads_an_option_looking_branch_as_a_ref() {
+        let repo = init_test_repo();
+        run_git(repo.path(), &["branch", "--", "base"]);
+        commit_on_branch(repo.path(), "--all", "one");
+        assert!(branch_is_ancestor(repo.path(), "base", "--all").unwrap());
+        assert!(!branch_is_ancestor(repo.path(), "--all", "base").unwrap());
+    }
+
+    // ── moving a branch forward to a commit ──────────────────
+
+    /// A repository with `behind` one commit behind `ahead`, plus `elsewhere`
+    /// on a line of its own; returns the three tips and the commit that
+    /// `behind` could be moved to.
+    fn behind_ahead_and_elsewhere(repo: &Path) -> (String, String, String) {
+        commit_on_branch(repo, "behind", "base");
+        let base = rev_parse(repo, "refs/heads/behind");
+        commit_on_branch(repo, "ahead", "pull request work");
+        let ahead = rev_parse(repo, "refs/heads/ahead");
+        run_git(repo, &["reset", "--hard", &base]);
+        commit_on_branch(repo, "elsewhere", "other work");
+        let elsewhere = rev_parse(repo, "refs/heads/elsewhere");
+        (base, ahead, elsewhere)
+    }
+
+    #[test]
+    fn a_branch_is_behind_a_commit_only_when_its_tip_is_strictly_older_on_the_same_line() {
+        let repo = init_test_repo();
+        let (base, ahead, elsewhere) = behind_ahead_and_elsewhere(repo.path());
+        assert_eq!(
+            branch_behind_commit(repo.path(), "behind", &ahead).unwrap(),
+            Some(base.clone())
+        );
+        assert_eq!(
+            branch_behind_commit(repo.path(), "ahead", &ahead).unwrap(),
+            None,
+            "a branch at the commit has nothing to move forward over"
+        );
+        assert_eq!(
+            branch_behind_commit(repo.path(), "ahead", &base).unwrap(),
+            None,
+            "a branch with commits of its own is ahead, not behind"
+        );
+        assert_eq!(
+            branch_behind_commit(repo.path(), "elsewhere", &ahead).unwrap(),
+            None,
+            "a diverged branch ({elsewhere}) is never moved"
+        );
+    }
+
+    #[test]
+    fn fast_forward_branch_moves_the_branch_and_refuses_when_it_changed_meanwhile() {
+        let repo = init_test_repo();
+        let (base, ahead, elsewhere) = behind_ahead_and_elsewhere(repo.path());
+
+        // Someone moved the branch after the tip was read: the move is refused
+        // and the branch stays where they put it.
+        let refused = fast_forward_branch(repo.path(), "behind", &elsewhere, &ahead);
+        assert!(refused.is_err(), "a stale tip must be refused: {refused:?}");
+        assert_eq!(rev_parse(repo.path(), "refs/heads/behind"), base);
+
+        fast_forward_branch(repo.path(), "behind", &base, &ahead).unwrap();
+        assert_eq!(rev_parse(repo.path(), "refs/heads/behind"), ahead);
+    }
+
+    /// A dash-leading name is a ref, never an option, in both calls.
+    #[test]
+    fn moving_a_branch_forward_reads_an_option_looking_branch_as_a_ref() {
+        let repo = init_test_repo();
+        commit_on_branch(repo.path(), "--all", "base");
+        let base = rev_parse(repo.path(), "refs/heads/--all");
+        commit_on_branch(repo.path(), "work", "pull request work");
+        let ahead = rev_parse(repo.path(), "refs/heads/work");
+        assert_eq!(
+            branch_behind_commit(repo.path(), "--all", &ahead).unwrap(),
+            Some(base.clone())
+        );
+        fast_forward_branch(repo.path(), "--all", &base, &ahead).unwrap();
+        assert_eq!(rev_parse(repo.path(), "refs/heads/--all"), ahead);
+    }
+
+    #[test]
+    fn a_worktree_holding_a_branch_fast_forwards_and_rewinds_with_its_files() {
+        let repo = init_test_repo();
+        let (base, ahead, elsewhere) = behind_ahead_and_elsewhere(repo.path());
+        let root = tempfile::tempdir().unwrap();
+        let wt = root.path().canonicalize().unwrap().join("wt");
+        run_git(
+            repo.path(),
+            &["worktree", "add", wt.to_str().unwrap(), "behind"],
+        );
+        // A user's merge settings must not change what the move does.
+        run_git(
+            repo.path(),
+            &["config", "branch.behind.mergeOptions", "--squash"],
+        );
+        assert_eq!(head_commit(&wt).unwrap(), base);
+        assert!(!worktree_head_contains(&wt, &ahead).unwrap());
+        fast_forward_worktree(&wt, &ahead).unwrap();
+        assert_eq!(rev_parse(repo.path(), "refs/heads/behind"), ahead);
+        assert!(worktree_head_contains(&wt, &ahead).unwrap());
+
+        // Not a fast-forward: refused, and the branch stays.
+        assert!(fast_forward_worktree(&wt, &elsewhere).is_err());
+        assert_eq!(rev_parse(repo.path(), "refs/heads/behind"), ahead);
+
+        // Rewinding is refused once the worktree is not where it was put.
+        assert!(rewind_worktree(&wt, &base, &base).is_err());
+        rewind_worktree(&wt, &ahead, &base).unwrap();
+        assert_eq!(rev_parse(repo.path(), "refs/heads/behind"), base);
+    }
+
+    /// A file in the worktree named like the commit id does not make the
+    /// move ambiguous: the id is read as a revision.
+    #[test]
+    fn a_worktree_moves_to_a_commit_id_that_also_names_a_file_in_it() {
+        let repo = init_test_repo();
+        let (base, ahead, _) = behind_ahead_and_elsewhere(repo.path());
+        let root = tempfile::tempdir().unwrap();
+        let wt = root.path().canonicalize().unwrap().join("wt");
+        run_git(
+            repo.path(),
+            &["worktree", "add", wt.to_str().unwrap(), "behind"],
+        );
+        fs::create_dir(wt.join(&ahead)).unwrap();
+        fs::create_dir(wt.join(&base)).unwrap();
+        fast_forward_worktree(&wt, &ahead).unwrap();
+        assert_eq!(head_commit(&wt).unwrap(), ahead);
+        rewind_worktree(&wt, &ahead, &base).unwrap();
+        assert_eq!(head_commit(&wt).unwrap(), base);
+    }
+
+    // ── commit_is_in_branch_history ──────────────────────────
+
+    fn rev_parse(repo: &Path, rev: &str) -> String {
+        let out = test_support::git_command()
+            .args(["rev-parse", "--verify", rev])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn commit_is_in_branch_history_accepts_only_commits_the_branch_contains() {
+        let repo = init_test_repo();
+        commit_on_branch(repo.path(), "feature", "one");
+        let older = rev_parse(repo.path(), "refs/heads/feature");
+        commit_on_branch(repo.path(), "feature", "two");
+        let tip = rev_parse(repo.path(), "refs/heads/feature");
+        run_git(repo.path(), &["reset", "--hard", &older]);
+        commit_on_branch(repo.path(), "other", "elsewhere");
+        let elsewhere = rev_parse(repo.path(), "refs/heads/other");
+
+        assert!(commit_is_in_branch_history(repo.path(), &tip, "feature"));
+        assert!(commit_is_in_branch_history(repo.path(), &older, "feature"));
+        assert!(
+            !commit_is_in_branch_history(repo.path(), &elsewhere, "feature"),
+            "a commit on a diverged line is not the branch's"
+        );
+        assert!(
+            !commit_is_in_branch_history(
+                repo.path(),
+                "0123456789abcdef0123456789abcdef01234567",
+                "feature"
+            ),
+            "a commit this clone does not have is never accepted"
+        );
+        assert!(
+            !commit_is_in_branch_history(repo.path(), "HEAD", "feature"),
+            "only an object id is a head commit"
+        );
+        assert!(!commit_is_in_branch_history(repo.path(), &tip, "missing"));
+
+        assert!(branch_contains_commit(repo.path(), &tip, "feature").unwrap());
+        assert!(branch_contains_commit(repo.path(), &older, "feature").unwrap());
+        assert!(!branch_contains_commit(repo.path(), &elsewhere, "feature").unwrap());
+        assert!(
+            branch_contains_commit(repo.path(), &tip, "missing").is_err(),
+            "a branch that does not exist is a failed check, not a no"
+        );
+    }
+
+    #[test]
+    fn commit_is_in_branch_history_reads_an_option_looking_branch_as_a_ref() {
+        let repo = init_test_repo();
+        commit_on_branch(repo.path(), "--all", "one");
+        let tip = rev_parse(repo.path(), "refs/heads/--all");
+        assert!(commit_is_in_branch_history(repo.path(), &tip, "--all"));
+    }
+
+    // ── refs_exist_below ─────────────────────────────────────
+
+    #[test]
+    fn refs_exist_below_finds_a_local_branch_under_the_name() {
+        let repo = init_test_repo();
+        run_git(repo.path(), &["branch", "--", "pr-head-review/x"]);
+        assert!(refs_exist_below(repo.path(), "pr-head-review").unwrap());
+        assert!(!refs_exist_below(repo.path(), "pr-head-review-2").unwrap());
+        assert!(
+            !refs_exist_below(repo.path(), "pr-head").unwrap(),
+            "a sibling name that merely shares a prefix is not below it"
+        );
+    }
+
+    #[test]
+    fn refs_exist_below_finds_a_remote_tracking_branch_under_the_name() {
+        let repo = init_test_repo();
+        run_git(
+            repo.path(),
+            &["update-ref", "refs/remotes/origin/pr-head-review/x", "HEAD"],
+        );
+        assert!(refs_exist_below(repo.path(), "pr-head-review").unwrap());
+    }
+
+    #[test]
+    fn refs_exist_below_ignores_a_branch_with_the_name_itself() {
+        let repo = init_test_repo();
+        run_git(repo.path(), &["branch", "--", "pr-head-review"]);
+        assert!(
+            !refs_exist_below(repo.path(), "pr-head-review").unwrap(),
+            "the name itself is branch_exists's question, not this one's"
+        );
+    }
+
+    /// A dash-leading name must be read as a ref pattern, never as a flag.
+    #[test]
+    fn refs_exist_below_reads_an_option_looking_name_as_a_pattern() {
+        let repo = init_test_repo();
+        run_git(repo.path(), &["update-ref", "refs/heads/--all/x", "HEAD"]);
+        assert!(refs_exist_below(repo.path(), "--all").unwrap());
+        assert!(!refs_exist_below(repo.path(), "--sort").unwrap());
+    }
+
+    #[test]
+    fn refs_exist_below_fails_outside_a_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(refs_exist_below(dir.path(), "main").is_err());
+    }
+
     /// Every local branch of the repo, one per line, for the drift tests below.
     fn branch_list(repo_path: &Path) -> String {
         let listed = std::process::Command::new("git")
             .arg("-C")
-            .arg(repo_path)
+            .arg(&repo_path)
             .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
             .output()
             .unwrap();
@@ -7879,7 +14128,12 @@ mod tests {
             run_git(repo.path(), &["reset", "--mixed", "--quiet"]);
             assert_eq!(head_commit(repo.path()).unwrap(), first);
 
-            let result = pull_origin_branch(repo.path(), name);
+            let result = pull_origin_branch(
+                repo.path(),
+                name,
+                &crate::checkout_move::CheckoutMoveGuard::default(),
+                TEST_NETWORK_TIMEOUT,
+            );
 
             assert!(
                 !repo.path().join(".git").join("shallow").exists(),
@@ -7916,7 +14170,13 @@ mod tests {
         );
         run_git(repo.path(), &["reset", "--hard", "--quiet", &first]);
 
-        pull_origin_branch(repo.path(), "main").unwrap();
+        pull_origin_branch(
+            repo.path(),
+            "main",
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+            TEST_NETWORK_TIMEOUT,
+        )
+        .unwrap();
         assert_eq!(head_commit(repo.path()).unwrap(), ahead);
     }
 
@@ -7938,11 +14198,11 @@ mod tests {
         run_git(repo.path(), &["update-ref", "refs/heads/--all", "HEAD"]);
         run_git(repo.path(), &["symbolic-ref", "HEAD", "refs/heads/--all"]);
 
-        let _ = push(repo.path());
+        let _ = push(repo.path(), TEST_NETWORK_TIMEOUT);
 
         let heads = std::process::Command::new("git")
             .arg("-C")
-            .arg(remote)
+            .arg(&remote)
             .args(["for-each-ref", "--format=%(refname)", "refs/heads"])
             .output()
             .unwrap();
@@ -7950,6 +14210,67 @@ mod tests {
         assert!(
             !heads.contains("unrelated"),
             "push must not have fanned out to every branch: {heads}"
+        );
+    }
+
+    /// A leading `+` is a refspec's force marker, and git allows it in a
+    /// branch name, so pushing a branch called `+feature` must push that
+    /// branch rather than force-push `feature` over the remote's.
+    #[test]
+    fn push_reads_a_plus_leading_branch_as_a_ref_and_forces_nothing() {
+        let repo = init_test_repo();
+        let remote = repo.path().join("remote.git");
+        run_git(
+            repo.path(),
+            &["init", "--bare", remote.to_string_lossy().as_ref()],
+        );
+        run_git(
+            repo.path(),
+            &["remote", "add", "origin", remote.to_string_lossy().as_ref()],
+        );
+        run_git(repo.path(), &["commit", "--allow-empty", "-m", "theirs"]);
+        run_git(
+            repo.path(),
+            &["push", "-q", "origin", "HEAD:refs/heads/feature"],
+        );
+        let theirs = head_commit(repo.path()).unwrap();
+        run_git(repo.path(), &["reset", "--hard", "--quiet", "HEAD~1"]);
+        run_git(repo.path(), &["commit", "--allow-empty", "-m", "mine"]);
+        run_git(repo.path(), &["branch", "feature"]);
+        run_git(repo.path(), &["branch", "+feature"]);
+        run_git(
+            repo.path(),
+            &["symbolic-ref", "HEAD", "refs/heads/+feature"],
+        );
+        let mine = head_commit(repo.path()).unwrap();
+
+        push(repo.path(), TEST_NETWORK_TIMEOUT).unwrap();
+
+        let remote_tip = |name: &str| {
+            let out = test_support::git_command()
+                .arg("-C")
+                .arg(&remote)
+                .args(["rev-parse", "--verify"])
+                .arg(format!("refs/heads/{name}"))
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        assert_eq!(
+            remote_tip("feature"),
+            theirs,
+            "feature was force-pushed over"
+        );
+        assert_eq!(remote_tip("+feature"), mine);
+        let upstream = test_support::git_command()
+            .args(["-C", repo.path().to_string_lossy().as_ref()])
+            .args(["config", "branch.+feature.merge"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&upstream.stdout).trim(),
+            "refs/heads/+feature",
+            "the push still sets the upstream"
         );
     }
 
@@ -7965,7 +14286,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_files_expands_untracked_directories_into_files() {
+    fn changed_files_folds_an_untracked_directory_into_one_row() {
         let repo = init_test_repo();
         let wt = add_worktree(repo.path(), "changes-pane-folder");
 
@@ -7978,77 +14299,57 @@ mod tests {
         .unwrap();
         fs::write(nested.join("two.txt"), "nested line\n").unwrap();
 
-        let (_staged, unstaged) = changed_files(&wt).unwrap();
-        let mut actual: Vec<_> = unstaged
-            .into_iter()
-            .map(|file| {
-                (
-                    file.path,
-                    file.status,
-                    file.additions,
-                    file.deletions,
-                    file.binary,
-                )
-            })
-            .collect();
-        actual.sort();
+        let (_staged, unstaged) = changed_files_for_display(&wt).unwrap();
 
-        assert_eq!(
-            actual,
-            vec![
-                (
-                    "new-folder/nested/two.txt".to_string(),
-                    "?".to_string(),
-                    1,
-                    0,
-                    false,
-                ),
-                (
-                    "new-folder/one.txt".to_string(),
-                    "?".to_string(),
-                    2,
-                    0,
-                    false
-                ),
-            ]
-        );
+        assert_eq!(unstaged.len(), 1, "{unstaged:?}");
+        let row = &unstaged[0];
+        assert_eq!(row.path, "new-folder");
+        assert_eq!(row.status, "?");
+        assert!(row.is_expandable());
+        assert_eq!(row.file_count(), 2);
+        // Within the read budget a folder row carries its files' lines, so the
+        // recap still counts what was written into a new folder.
+        assert_eq!((row.additions, row.deletions, row.binary), (3, 0, false));
     }
 
+    /// An untracked symlink is counted the way git counts it once staged: the
+    /// link itself, its target path as one line, never the file it names.
     #[test]
-    fn staged_diff_text_returns_diff_for_staged_changes() {
+    fn a_symlink_counts_as_git_counts_it_once_staged() {
         let repo = init_test_repo();
-        let wt = add_worktree(repo.path(), "staged-diff");
-        fs::write(wt.join("hello.txt"), "hello world\n").unwrap();
-        let run = |args: &[&str]| {
-            let out = test_support::git_command()
-                .args(args)
-                .current_dir(&wt)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        };
-        run(&["add", "hello.txt"]);
-        let diff = staged_diff_text(&wt).unwrap();
-        assert!(diff.contains("hello.txt"), "diff should mention the file");
-        assert!(
-            diff.contains("+hello world"),
-            "diff should contain the added line"
-        );
+        let wt = add_worktree(repo.path(), "untracked-link");
+        fs::write(wt.join("target.txt"), "one\ntwo\nthree\n").unwrap();
+        symlink("target.txt", wt.join("link")).unwrap();
+
+        let ours = untracked_file_stat(&wt.join("link"));
+
+        // What the changes panel shows once the link is staged: git diffs the
+        // link itself (its target path as one line), never the file it names.
+        worktree_git(&wt)(&["add", "--", "link"]);
+        let staged = staged_numstat(wt.as_os_str(), &[]);
+        assert_eq!(Some(&ours), staged.get("link"));
+        assert_eq!(ours, DiffStat::Text(1, 0));
     }
 
+    /// A FIFO in a folder is not a file to count: opening one to read blocks
+    /// until a writer appears, which would stall the whole listing.
     #[test]
-    fn staged_diff_text_empty_when_nothing_staged() {
-        let repo = init_test_repo();
-        let wt = add_worktree(repo.path(), "no-staged");
-        let diff = staged_diff_text(&wt).unwrap();
-        assert!(
-            diff.is_empty(),
-            "diff should be empty when nothing is staged"
-        );
+    fn a_fifo_is_never_opened_for_counting() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(untracked_file_stat(&fifo));
+        });
+        let answer = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("counting a FIFO must not block");
+        assert_eq!(answer, DiffStat::Text(0, 0));
     }
 
     /// The in-process untracked counting has to answer exactly what the
@@ -8113,7 +14414,7 @@ mod tests {
             fs::write(wt.join(format!("f{index:06}.txt")), "one line\n").unwrap();
         }
 
-        let (_staged, unstaged) = changed_files(&wt).unwrap();
+        let (_staged, unstaged) = changed_files_for_display(&wt).unwrap();
 
         assert_eq!(unstaged.len(), total, "every change is listed");
         let counted = unstaged.iter().filter(|f| f.additions > 0).count();
@@ -8133,7 +14434,7 @@ mod tests {
 
         fs::write(wt.join("image.bin"), [0_u8, 159, 146, 150]).unwrap();
 
-        let (_staged, unstaged) = changed_files(&wt).unwrap();
+        let (_staged, unstaged) = changed_files_for_display(&wt).unwrap();
         assert_eq!(unstaged.len(), 1);
         let file = &unstaged[0];
         assert_eq!(file.path, "image.bin");
@@ -8183,7 +14484,7 @@ mod tests {
         fs::create_dir_all(repo.path().join("docs")).unwrap();
         run_git(repo.path(), &["mv", "src/old.txt", "docs/new.txt"]);
 
-        let (staged, _unstaged) = changed_files(repo.path()).unwrap();
+        let (staged, _unstaged) = changed_files_for_display(repo.path()).unwrap();
         let moved = staged
             .iter()
             .find(|f| f.path == "docs/new.txt")
@@ -8244,12 +14545,16 @@ mod tests {
         fs::write(wt.join("notes.txt"), "one\ntwo\n").unwrap();
         fs::write(wt.join("image.bin"), [0_u8, 159, 146, 150]).unwrap();
         let out = test_support::git_command()
-            .args(["-C", wt.to_string_lossy().as_ref(), "add", "-A"])
+            .arg("-C")
+            .arg(&wt)
+            .args(["add", "-A"])
             .output()
             .unwrap();
         assert!(out.status.success());
         let out = test_support::git_command()
-            .args(["-C", wt.to_string_lossy().as_ref(), "commit", "-m", "seed"])
+            .arg("-C")
+            .arg(&wt)
+            .args(["commit", "-m", "seed"])
             .output()
             .unwrap();
         assert!(out.status.success());
@@ -8257,7 +14562,7 @@ mod tests {
         fs::write(wt.join("notes.txt"), "one\ntwo\nthree\n").unwrap();
         fs::write(wt.join("image.bin"), [0_u8, 1, 2, 3, 4]).unwrap();
 
-        let (_staged, unstaged) = changed_files(&wt).unwrap();
+        let (_staged, unstaged) = changed_files_for_display(&wt).unwrap();
         let notes = unstaged
             .iter()
             .find(|f| f.path == "notes.txt")
@@ -8294,7 +14599,7 @@ mod tests {
         fs::write(wt.join("image.bin"), [0_u8, 7, 7]).unwrap();
         git(&["add", "-A"]);
 
-        let (staged, _unstaged) = changed_files(&wt).unwrap();
+        let (staged, _unstaged) = changed_files_for_display(&wt).unwrap();
         let notes = staged
             .iter()
             .find(|f| f.path == "notes.txt")
@@ -8326,7 +14631,7 @@ mod tests {
         git(&["commit", "-m", "seed"]);
         fs::write(wt.join("pic.png"), [b'P', b'N', b'G', 0, 1, b'b', b'c']).unwrap();
 
-        let (_staged, unstaged) = changed_files(&wt).unwrap();
+        let (_staged, unstaged) = changed_files_for_display(&wt).unwrap();
         let row = unstaged
             .iter()
             .find(|f| f.path == "pic.png")
@@ -8335,7 +14640,7 @@ mod tests {
         assert!(!row.diff_excluded);
 
         git(&["add", "-A"]);
-        let (staged, _unstaged) = changed_files(&wt).unwrap();
+        let (staged, _unstaged) = changed_files_for_display(&wt).unwrap();
         let row = staged
             .iter()
             .find(|f| f.path == "pic.png")
@@ -8360,7 +14665,7 @@ mod tests {
         git(&["commit", "-m", "seed"]);
         fs::write(wt.join("blob.dat"), [b'a', 0, b'b', b'c']).unwrap();
 
-        let (_staged, unstaged) = changed_files(&wt).unwrap();
+        let (_staged, unstaged) = changed_files_for_display(&wt).unwrap();
         let row = unstaged
             .iter()
             .find(|f| f.path == "blob.dat")
@@ -8369,7 +14674,7 @@ mod tests {
         assert!(!row.diff_excluded, "NUL bytes are NUL bytes");
 
         git(&["add", "-A"]);
-        let (staged, _unstaged) = changed_files(&wt).unwrap();
+        let (staged, _unstaged) = changed_files_for_display(&wt).unwrap();
         let row = staged
             .iter()
             .find(|f| f.path == "blob.dat")
@@ -8399,7 +14704,7 @@ mod tests {
         // ...and NUL-bearing on disk.
         fs::write(wt.join("notes.txt"), [b'o', 0, b'n', b'e']).unwrap();
 
-        let (staged, unstaged) = changed_files(&wt).unwrap();
+        let (staged, unstaged) = changed_files_for_display(&wt).unwrap();
         let staged_row = staged
             .iter()
             .find(|f| f.path == "notes.txt")
@@ -8429,7 +14734,7 @@ mod tests {
         git(&["commit", "-m", "seed"]);
         fs::remove_file(wt.join("notes.txt")).unwrap();
 
-        let (_staged, unstaged) = changed_files(&wt).unwrap();
+        let (_staged, unstaged) = changed_files_for_display(&wt).unwrap();
         let row = unstaged
             .iter()
             .find(|f| f.path == "notes.txt")
@@ -8453,12 +14758,12 @@ mod tests {
             countless_paths(&[&stats]),
             vec!["countless.bin".to_string()]
         );
-        assert!(
+        assert_eq!(
             countless_paths(&[&HashMap::from([(
                 "counted.txt".to_string(),
                 DiffStat::Text(3, 1),
-            )])])
-            .is_empty()
+            )])]),
+            Vec::<String>::new()
         );
     }
 
@@ -8528,7 +14833,7 @@ mod tests {
         git(&["commit", "-m", "seed"]);
         fs::write(wt.join(name), "one\ntwo\n").unwrap();
 
-        let (_staged, unstaged) = changed_files(&wt).unwrap();
+        let (_staged, unstaged) = changed_files_for_display(&wt).unwrap();
         let row = unstaged
             .iter()
             .find(|f| f.path == name)
@@ -8593,6 +14898,7 @@ mod tests {
                 binary: false,
                 diff_excluded: false,
                 renamed_from: None,
+                kind: crate::model::ChangedFileKind::File,
             },
             ChangedFile {
                 status: "M".to_string(),
@@ -8602,10 +14908,17 @@ mod tests {
                 binary: false,
                 diff_excluded: false,
                 renamed_from: None,
+                kind: crate::model::ChangedFileKind::File,
             },
         ];
 
-        apply_unstaged_stats(dir.path(), &mut unstaged, &HashMap::new(), &HashSet::new());
+        apply_unstaged_stats(
+            dir.path(),
+            &mut unstaged,
+            &HashMap::new(),
+            &HashSet::new(),
+            UNTRACKED_STATS_MAX_FILES,
+        );
 
         assert_eq!(
             (unstaged[0].additions, unstaged[0].deletions),
@@ -8635,6 +14948,7 @@ mod tests {
                 binary: false,
                 diff_excluded: false,
                 renamed_from: None,
+                kind: crate::model::ChangedFileKind::File,
             },
             ChangedFile {
                 status: "M".to_string(),
@@ -8644,11 +14958,18 @@ mod tests {
                 binary: false,
                 diff_excluded: false,
                 renamed_from: None,
+                kind: crate::model::ChangedFileKind::File,
             },
         ];
         let tracked = HashMap::from([("tracked.txt".to_string(), DiffStat::Text(7, 4))]);
 
-        apply_unstaged_stats(dir.path(), &mut unstaged, &tracked, &HashSet::new());
+        apply_unstaged_stats(
+            dir.path(),
+            &mut unstaged,
+            &tracked,
+            &HashSet::new(),
+            UNTRACKED_STATS_MAX_FILES,
+        );
 
         assert_eq!((unstaged[0].additions, unstaged[0].deletions), (2, 0));
         assert_eq!((unstaged[1].additions, unstaged[1].deletions), (7, 4));
@@ -8664,7 +14985,7 @@ mod tests {
         run_git(&wt, &["commit", "-m", "add file"]);
         run_git(&wt, &["mv", "old name.txt", "new name.txt"]);
 
-        let (staged, unstaged) = changed_files(&wt).unwrap();
+        let (staged, unstaged) = changed_files_for_display(&wt).unwrap();
 
         assert!(unstaged.is_empty());
         assert_eq!(staged.len(), 1);
@@ -8672,28 +14993,109 @@ mod tests {
         assert_eq!(staged[0].status, "R");
     }
 
+    #[derive(serde::Deserialize)]
+    struct AgentNameFixture {
+        cases: Vec<AgentNameCase>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct AgentNameCase {
+        name: String,
+        valid: bool,
+        git_accepts: Option<bool>,
+    }
+
+    /// Every shared vector is answered the same by the pure rule and by git
+    /// itself, apart from the cases the fixture records yaran refusing on
+    /// purpose. Git is asked inside a repository, as a branch create would be;
+    /// there `--branch` turns a shorthand like `@{-1}` into the branch it
+    /// stands for, so a name counts as accepted only when git prints it back
+    /// unchanged.
     #[test]
-    fn valid_agent_names() {
-        assert!(is_valid_agent_name("foo"));
-        assert!(is_valid_agent_name("foo-bar"));
-        assert!(is_valid_agent_name("foo_bar"));
-        assert!(is_valid_agent_name("foo/bar"));
-        assert!(is_valid_agent_name("ABC123"));
-        assert!(is_valid_agent_name("feature/my-branch_v2"));
+    fn agent_names_are_exactly_the_names_git_accepts_as_branches() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/agent_name_cross_language.json");
+        let fixture: AgentNameFixture =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        let repo = init_test_repo();
+        for case in fixture.cases {
+            let out = test_support::git_command()
+                .args(["check-ref-format", "--branch", &case.name])
+                .current_dir(repo.path())
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .unwrap();
+            let git_says = out.status.success()
+                && out.stdout.strip_suffix(b"\n") == Some(case.name.as_bytes());
+            assert_eq!(
+                git_says,
+                case.git_accepts.unwrap_or(case.valid),
+                "git and the fixture on {:?}",
+                case.name
+            );
+            assert_eq!(
+                is_valid_agent_name(&case.name),
+                case.valid,
+                "the rule on {:?}",
+                case.name
+            );
+        }
     }
 
     #[test]
-    fn invalid_agent_names() {
-        assert!(!is_valid_agent_name(""));
-        assert!(!is_valid_agent_name("foo bar"));
-        assert!(!is_valid_agent_name("foo@bar"));
-        assert!(!is_valid_agent_name("-foo"));
-        assert!(!is_valid_agent_name("foo/"));
-        assert!(!is_valid_agent_name("/foo"));
-        assert!(!is_valid_agent_name("foo//bar"));
-        assert!(!is_valid_agent_name("foo.bar"));
-        assert!(!is_valid_agent_name("foo..bar"));
-        assert!(!is_valid_agent_name("hello world!"));
+    fn a_new_agents_folder_is_its_name_flattened() {
+        let repo = init_test_repo();
+        let worktrees_root = repo.path().join("agents");
+        let name = "dependabot/cargo/tray-icon-0.26.1";
+        let (branch, path) = create_worktree_from_start_point(
+            repo.path(),
+            &worktrees_root,
+            "proj",
+            None,
+            Some(name),
+        )
+        .unwrap();
+        assert_eq!(branch, name);
+        assert_eq!(current_branch_opt(&path).unwrap().as_deref(), Some(name));
+        assert!(path.ends_with("proj/dependabot-cargo-tray-icon-0-26-1"));
+
+        // Letters outside English stay, and such a name always ends in a hash
+        // of the raw name, so spellings macOS treats as one folder (here a
+        // precomposed and a decomposed Hangul syllable) get different ones.
+        let folder = agent_folder_name("日本語/テスト");
+        assert!(folder.starts_with("日本語-テスト-"), "{folder}");
+        assert_ne!(agent_folder_name("日本語"), agent_folder_name("中文字"));
+        assert_ne!(
+            agent_folder_name("\u{ac01}-x"),
+            agent_folder_name("\u{1100}\u{1161}\u{11a8}/x")
+        );
+        // Each non-ASCII character counts as 4 toward the limit, because a
+        // macOS file name is measured decomposed: this one is 199 bytes but
+        // must still be cut.
+        let greek = format!("{}/{}", "\u{390}".repeat(50), "\u{390}".repeat(49));
+        let folder = agent_folder_name(&greek);
+        let units: usize = folder
+            .chars()
+            .map(|ch| if ch.is_ascii() { 1 } else { 4 })
+            .sum();
+        assert!(units <= 200, "{units}: {folder}");
+
+        // A long name is cut below the file-name limit and keeps a hash of the
+        // whole name, so two long names that share their start stay apart.
+        let long = |tail: &str| format!("{}{tail}", "deps/".repeat(80));
+        let (branch, path) = create_worktree_from_start_point(
+            repo.path(),
+            &worktrees_root,
+            "proj",
+            None,
+            Some(&long("a")),
+        )
+        .unwrap();
+        assert_eq!(branch, long("a"));
+        let folder = path.file_name().unwrap().len();
+        assert!(folder < 255, "{folder} bytes");
+        assert_ne!(agent_folder_name(&long("a")), agent_folder_name(&long("b")));
     }
 
     #[test]
@@ -8773,54 +15175,14 @@ mod tests {
     // ── agent_name_char_map tests ───────────────────────────────
 
     #[test]
-    fn agent_map_allows_valid_chars() {
-        assert_eq!(agent_name_char_map("a", 1, 'b'), Some('b'));
-        assert_eq!(agent_name_char_map("a", 1, '0'), Some('0'));
-        assert_eq!(agent_name_char_map("a", 1, '-'), Some('-'));
-        assert_eq!(agent_name_char_map("a", 1, '_'), Some('_'));
-        assert_eq!(agent_name_char_map("a", 1, '/'), Some('/'));
-    }
-
-    #[test]
-    fn agent_map_rejects_invalid_chars() {
-        assert_eq!(agent_name_char_map("a", 1, '@'), None);
-        assert_eq!(agent_name_char_map("a", 1, '.'), None);
-        assert_eq!(agent_name_char_map("a", 1, '!'), None);
-        assert_eq!(agent_name_char_map("a", 1, '#'), None);
-    }
-
-    #[test]
-    fn agent_map_converts_space_to_dash() {
+    fn the_name_field_turns_a_space_into_a_dash_and_refuses_what_git_never_takes() {
         assert_eq!(agent_name_char_map("a", 1, ' '), Some('-'));
-    }
-
-    #[test]
-    fn agent_map_rejects_space_at_position_zero() {
-        // Space maps to dash, but dash is rejected at position 0.
-        assert_eq!(agent_name_char_map("", 0, ' '), None);
-    }
-
-    #[test]
-    fn agent_map_first_char_must_be_alphanumeric() {
-        // Rejected at position 0
-        assert_eq!(agent_name_char_map("", 0, '-'), None);
-        assert_eq!(agent_name_char_map("", 0, '_'), None);
-        assert_eq!(agent_name_char_map("", 0, '/'), None);
-        // Accepted at position 0
-        assert_eq!(agent_name_char_map("", 0, 'a'), Some('a'));
-        assert_eq!(agent_name_char_map("", 0, '1'), Some('1'));
-        // Also rejected when inserting at position 0 in non-empty text
-        assert_eq!(agent_name_char_map("abc", 0, '-'), None);
-    }
-
-    #[test]
-    fn agent_map_prevents_double_slash() {
-        // Inserting '/' right after an existing '/'
-        assert_eq!(agent_name_char_map("a/", 2, '/'), None);
-        // Inserting '/' right before an existing '/'
-        assert_eq!(agent_name_char_map("a/b", 1, '/'), None);
-        // Inserting '/' where no adjacent slash exists
-        assert_eq!(agent_name_char_map("ab", 1, '/'), Some('/'));
+        for ch in ['~', '^', ':', '?', '*', '[', '\\', '\t', '\u{7f}'] {
+            assert_eq!(agent_name_char_map("a", 1, ch), None, "{ch:?}");
+        }
+        for ch in ['.', '@', '+', '/', 'é', '{'] {
+            assert_eq!(agent_name_char_map("a", 1, ch), Some(ch), "{ch:?}");
+        }
     }
 
     #[test]
@@ -10078,12 +16440,9 @@ mod tests {
         create_initial_commit(repo.path()).expect("initial commit should succeed");
 
         let out = test_support::git_command()
-            .args([
-                "-C",
-                repo.path().to_string_lossy().as_ref(),
-                "status",
-                "--porcelain",
-            ])
+            .arg("-C")
+            .arg(repo.path())
+            .args(["status", "--porcelain"])
             .output()
             .unwrap();
         let status = String::from_utf8_lossy(&out.stdout);
@@ -10101,13 +16460,9 @@ mod tests {
         let repo = init_test_repo(); // one empty commit on "main"
         assert!(repo_has_commits(repo.path()));
         let count_before = test_support::git_command()
-            .args([
-                "-C",
-                repo.path().to_string_lossy().as_ref(),
-                "rev-list",
-                "--count",
-                "HEAD",
-            ])
+            .arg("-C")
+            .arg(repo.path())
+            .args(["rev-list", "--count", "HEAD"])
             .output()
             .unwrap();
         let before = String::from_utf8_lossy(&count_before.stdout)
@@ -10119,13 +16474,9 @@ mod tests {
         assert_eq!(branch, "main", "returns the current branch");
 
         let count_after = test_support::git_command()
-            .args([
-                "-C",
-                repo.path().to_string_lossy().as_ref(),
-                "rev-list",
-                "--count",
-                "HEAD",
-            ])
+            .arg("-C")
+            .arg(repo.path())
+            .args(["rev-list", "--count", "HEAD"])
             .output()
             .unwrap();
         assert_eq!(
@@ -10145,14 +16496,9 @@ mod tests {
 
         // `git show --stat` on a truly empty commit lists no files.
         let out = test_support::git_command()
-            .args([
-                "-C",
-                repo.path().to_string_lossy().as_ref(),
-                "show",
-                "--stat",
-                "--format=",
-                "HEAD",
-            ])
+            .arg("-C")
+            .arg(repo.path())
+            .args(["show", "--stat", "--format=", "HEAD"])
             .output()
             .unwrap();
         let stat = String::from_utf8_lossy(&out.stdout);
@@ -10169,12 +16515,9 @@ mod tests {
         let repo = init_test_repo_no_commit();
         std::fs::write(repo.path().join("secret.env"), "TOKEN=abc").unwrap();
         let add = test_support::git_command()
-            .args([
-                "-C",
-                repo.path().to_string_lossy().as_ref(),
-                "add",
-                "secret.env",
-            ])
+            .arg("-C")
+            .arg(repo.path())
+            .args(["add", "secret.env"])
             .output()
             .unwrap();
         assert!(add.status.success());
@@ -10230,9 +16573,7 @@ mod tests {
         Command::new("id")
             .arg("-u")
             .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-            .unwrap_or(false)
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
     }
 
     #[test]
@@ -10317,13 +16658,9 @@ mod tests {
             "a detached HEAD has no branch name, got {branch:?}"
         );
         let out = test_support::git_command()
-            .args([
-                "-C",
-                repo.path().to_string_lossy().as_ref(),
-                "rev-list",
-                "--count",
-                "HEAD",
-            ])
+            .arg("-C")
+            .arg(repo.path())
+            .args(["rev-list", "--count", "HEAD"])
             .output()
             .unwrap();
         assert_eq!(
@@ -10345,7 +16682,7 @@ mod tests {
         let handles: Vec<_> = (0..2)
             .map(|_| {
                 let p = path.clone();
-                let b = barrier.clone();
+                let b = std::sync::Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     b.wait();
                     create_initial_commit(&p)
@@ -10355,13 +16692,13 @@ mod tests {
         let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         assert!(
-            results.iter().all(|r| r.is_ok()),
+            results.iter().all(std::result::Result::is_ok),
             "neither racer should hard-error, got: {results:?}"
         );
         // Exactly one commit exists (the CAS prevented a second).
         let out = test_support::git_command()
             .arg("-C")
-            .arg(path)
+            .arg(&path)
             .args(["rev-list", "--count", "HEAD"])
             .output()
             .unwrap();
@@ -10440,7 +16777,7 @@ mod tests {
 
         let author = test_support::git_command()
             .arg("-C")
-            .arg(repo)
+            .arg(&repo)
             .args(["log", "-1", "--format=%an <%ae>"])
             .output()
             .unwrap();
@@ -10670,36 +17007,41 @@ mod tests {
         assert_eq!(folder_repo_status(&link), FolderRepoStatus::WorkingRepo);
     }
 
-    // ── SHARED VECTORS with paths.test.ts `standaloneAgentDefaultName` ────────
+    // ── SHARED VECTORS with agentWorkspace.test.ts `standaloneAgentDefaultName`
     //
     // The web's create dialog PROMISES this name in its placeholder ("defaults
     // to ..."), so the browser has to derive the same string the server will
-    // actually store. These are the cases a plain trailing-segment read gets
-    // wrong.
+    // actually store.
     #[test]
-    fn the_default_standalone_name_collapses_whitespace_and_never_ends_up_empty() {
+    fn the_default_standalone_name_is_a_valid_agent_name_converted_from_the_folder() {
         for (folder, expected) in [
             ("/home/ada/notes", "notes"),
             ("/home/ada/notes/", "notes"),
-            // Runs of whitespace collapse and the ends are trimmed, so a name
-            // copied out of a file manager does not render with a ragged gap.
-            ("/home/ada/My   Notes ", "My Notes"),
-            // Nothing usable left: the root, a name of only whitespace, nothing
-            // at all.
-            ("/", "Standalone agent"),
-            ("/home/ada/   ", "Standalone agent"),
-            ("", "Standalone agent"),
+            // Every run of characters a name cannot hold becomes one dash, and
+            // the ends are trimmed.
+            ("/home/ada/My Notes! (2026)", "My-Notes-2026"),
+            // A dash beside such a run joins it rather than doubling it; one
+            // the folder already had in a row stays.
+            ("/home/ada/my_project - copy", "my_project-copy"),
+            ("/home/ada/a--b", "a--b"),
+            // Non-ASCII text is a character a name cannot hold.
+            ("/home/ada/Café notes", "Caf-notes"),
+            // A name must start with a letter or digit.
+            ("/home/ada/_draft_", "draft"),
+            // Nothing usable left.
+            ("/", "standalone-agent"),
+            ("/home/ada/   ", "standalone-agent"),
+            ("/home/ada/!!!", "standalone-agent"),
+            ("", "standalone-agent"),
         ] {
-            assert_eq!(
-                standalone_agent_title("", Path::new(folder)),
-                expected,
-                "for {folder:?}"
-            );
+            let name = standalone_agent_title("", Path::new(folder));
+            assert_eq!(name, expected, "for {folder:?}");
+            assert!(is_valid_agent_name(&name), "{name:?} for {folder:?}");
         }
-        // A typed name wins, trimmed and otherwise verbatim.
+        // A typed name wins, trimmed.
         assert_eq!(
-            standalone_agent_title("  Sort the downloads!  ", Path::new("/home/ada/notes")),
-            "Sort the downloads!"
+            standalone_agent_title("  sort-downloads  ", Path::new("/home/ada/notes")),
+            "sort-downloads"
         );
     }
 
@@ -10826,41 +17168,20 @@ mod tests {
         );
     }
 
-    /// Create a directory whose name is not valid UTF-8, or return `None` when
-    /// the filesystem refuses to hold one.
-    ///
-    /// A non-UTF8 filename is legal on Linux, where these tests do their work:
-    /// a byte sequence is just bytes, and yaran must decode `--show-toplevel`
-    /// from the raw bytes rather than lossily. It is NOT universally legal.
-    /// macOS's APFS and HFS+ enforce valid UTF-8 in filenames at the syscall
-    /// boundary and reject the name with `EILSEQ` ("illegal byte sequence"),
-    /// so the fixture cannot be BUILT there and the test used to die in setup,
-    /// before a line of product code ran.
-    ///
-    /// Skipping where the filesystem cannot express the premise is the honest
-    /// reading, and it is narrow on purpose: the check is what the filesystem
-    /// just DID with the name, not which operating system is running. A macOS
-    /// filesystem that does accept the bytes still runs the test, and a Linux
-    /// filesystem that refuses them (some network and FUSE mounts do) stops
-    /// reporting a failure that is not yaran's.
-    fn create_dir_with_non_utf8_name(parent: &Path, name: &[u8]) -> Option<std::path::PathBuf> {
+    /// The decode `repo_path_kind` reads git's path answers with keeps bytes
+    /// that are not UTF-8, so a repository under such a path still
+    /// canonicalizes. Built in memory, so it runs on macOS too.
+    #[test]
+    fn a_path_git_prints_keeps_bytes_that_are_not_utf8() {
         use std::os::unix::ffi::OsStrExt;
-        let path = parent.join(std::ffi::OsStr::from_bytes(name));
-        match std::fs::create_dir(&path) {
-            Ok(()) => Some(path),
-            // EILSEQ: the filesystem enforces UTF-8 names and will not hold
-            // this one. Nothing about yaran can be observed here.
-            Err(e) if e.raw_os_error() == Some(libc::EILSEQ) => {
-                eprintln!(
-                    "skipping: {} cannot hold a non-UTF8 filename ({e})",
-                    parent.display()
-                );
-                None
-            }
-            Err(e) => panic!("creating a non-UTF8 directory failed unexpectedly: {e}"),
-        }
+        let path = path_from_git_output(b"/base/rep\xffo\r\n");
+        assert_eq!(path.as_os_str().as_bytes(), b"/base/rep\xffo");
     }
 
+    // Linux only: APFS, the macOS file system, refuses a name that is not
+    // UTF-8 (EILSEQ), so this fixture cannot be built on a Mac. The byte
+    // decode runs there in `a_path_git_prints_keeps_bytes_that_are_not_utf8`.
+    #[cfg(target_os = "linux")]
     #[test]
     fn repo_path_kind_classifies_repos_under_non_utf8_paths() {
         // Catches the fail-open gate bypass: `--show-toplevel` output for a
@@ -10868,10 +17189,10 @@ mod tests {
         // raw bytes; a lossy decode rewrites the byte to U+FFFD, fails
         // canonicalization, and falls to Indeterminate, which the add gate
         // accepts.
+        use std::os::unix::ffi::OsStrExt;
         let base = tempfile::tempdir().unwrap();
-        let Some(repo) = create_dir_with_non_utf8_name(base.path(), b"rep\xFFo") else {
-            return;
-        };
+        let repo = base.path().join(std::ffi::OsStr::from_bytes(b"rep\xFFo"));
+        std::fs::create_dir(&repo).unwrap();
         let out = test_support::git_command()
             .arg("-C")
             .arg(&repo)
@@ -10973,7 +17294,12 @@ mod tests {
         run_git(repo.path(), &["branch", "feat"]);
         assert_eq!(current_branch(repo.path()).unwrap(), "main");
 
-        switch_branch(repo.path(), "feat").unwrap();
+        switch_branch(
+            repo.path(),
+            "feat",
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+        )
+        .unwrap();
 
         assert_eq!(current_branch(repo.path()).unwrap(), "feat");
     }
@@ -10981,10 +17307,15 @@ mod tests {
     #[test]
     fn switch_branch_errors_when_target_missing() {
         let repo = init_test_repo();
-        let err = switch_branch(repo.path(), "does-not-exist").unwrap_err();
+        let err = switch_branch(
+            repo.path(),
+            "does-not-exist",
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+        )
+        .unwrap_err();
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("git switch does-not-exist failed"),
+            msg.contains("no branch by that name"),
             "expected failure message, got: {msg}"
         );
     }
@@ -10995,7 +17326,12 @@ mod tests {
         run_git(repo.path(), &["branch", "feat"]);
         fs::write(repo.path().join("scratch.txt"), "unrelated\n").unwrap();
 
-        switch_branch(repo.path(), "feat").unwrap();
+        switch_branch(
+            repo.path(),
+            "feat",
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+        )
+        .unwrap();
 
         assert_eq!(current_branch(repo.path()).unwrap(), "feat");
         assert_eq!(
@@ -11023,7 +17359,12 @@ mod tests {
         fs::write(repo.path().join("a.txt"), "dirty\n").unwrap();
 
         // Switching to feat should refuse because it would overwrite.
-        let err = switch_branch(repo.path(), "feat").unwrap_err();
+        let err = switch_branch(
+            repo.path(),
+            "feat",
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+        )
+        .unwrap_err();
         let msg = format!("{err:#}").to_lowercase();
         assert!(
             msg.contains("overwritten") || msg.contains("would be"),
@@ -11033,12 +17374,51 @@ mod tests {
 
     // ── current_branch_opt tests ─────────────────────────────────
 
+    /// A tag with the branch's name makes `symbolic-ref --short` answer
+    /// `heads/develop`. Both helpers read the full ref instead, so they still
+    /// name the branch, and every caller agrees with every other.
+    #[test]
+    fn a_tag_named_like_the_branch_does_not_change_the_branch_name() {
+        let tmp = init_test_repo();
+        run_git(tmp.path(), &["switch", "-q", "-c", "develop"]);
+        run_git(tmp.path(), &["tag", "develop"]);
+
+        assert_eq!(current_branch(tmp.path()).unwrap(), "develop");
+        assert_eq!(
+            current_branch_opt(tmp.path()).unwrap(),
+            Some("develop".to_string())
+        );
+    }
+
+    #[test]
+    fn a_branch_name_is_the_full_ref_with_refs_heads_stripped() {
+        assert_eq!(branch_name_from_head_ref(b"refs/heads/feat/x\n"), "feat/x");
+        assert_eq!(
+            branch_name_from_head_ref(b"refs/heads/heads/x\n"),
+            "heads/x",
+            "only the leading refs/heads/ goes"
+        );
+        assert_eq!(
+            branch_name_from_head_ref(b"refs/remotes/origin/x\n"),
+            "refs/remotes/origin/x",
+            "a HEAD outside refs/heads never passes for a branch"
+        );
+    }
+
     #[test]
     fn current_branch_opt_returns_branch_on_normal_head() {
         let tmp = init_test_repo();
         assert_eq!(
             current_branch_opt(tmp.path()).unwrap(),
             Some("main".to_string())
+        );
+        // Git allows a branch name to end in Unicode whitespace, so only the
+        // newline git prints may come off.
+        let name = "release\u{a0}";
+        run_git(tmp.path(), &["switch", "-q", "-c", name]);
+        assert_eq!(
+            current_branch_opt(tmp.path()).unwrap(),
+            Some(name.to_string())
         );
     }
 
@@ -11054,87 +17434,6 @@ mod tests {
         assert_eq!(current_branch_opt(p).unwrap(), None);
     }
 
-    /// Fork name. Upstream has no `head_branch`; `current_branch_opt` is the
-    /// same contract (attached = Some, detached = None) and `current_branch`
-    /// is the strict variant that refuses a detached HEAD.
-    #[test]
-    fn head_branch_distinguishes_attached_and_detached_head() {
-        let repo = init_test_repo();
-        assert_eq!(
-            current_branch_opt(repo.path()).unwrap().as_deref(),
-            Some("main")
-        );
-        let head = head_commit(repo.path()).unwrap();
-        run_git(repo.path(), &["checkout", "--detach", &head]);
-
-        assert_eq!(current_branch_opt(repo.path()).unwrap(), None);
-        assert!(current_branch(repo.path()).is_err());
-    }
-
-    /// Fork name (24deeeee, audit03 P1-22): present, deleted-in-worktree, new,
-    /// and git-failure answers are four different things.
-    #[test]
-    fn file_bytes_at_head_distinguishes_new_deleted_binary_and_git_errors() {
-        let repo = init_test_repo();
-        let wt = add_worktree(repo.path(), "head-bytes-cases");
-        fs::write(wt.join("tracked.bin"), [0_u8, 1, 2, 255]).unwrap();
-        run_git(&wt, &["add", "tracked.bin"]);
-        run_git(&wt, &["commit", "-m", "binary"]);
-
-        assert_eq!(
-            file_bytes_at_head(&wt, "tracked.bin").unwrap(),
-            Some(vec![0, 1, 2, 255])
-        );
-        fs::remove_file(wt.join("tracked.bin")).unwrap();
-        assert_eq!(
-            file_bytes_at_head(&wt, "tracked.bin").unwrap(),
-            Some(vec![0, 1, 2, 255]),
-            "deleted working-tree files still have HEAD bytes"
-        );
-        fs::write(wt.join("new.txt"), "new").unwrap();
-        assert_eq!(file_bytes_at_head(&wt, "new.txt").unwrap(), None);
-
-        let non_repo = tempfile::tempdir().unwrap();
-        assert!(
-            file_bytes_at_head(non_repo.path(), "anything").is_err(),
-            "a git failure must not read as a new file"
-        );
-
-        // A repository with no commits yet: every file is new, not an error.
-        let unborn = init_test_repo_no_commit();
-        fs::write(unborn.path().join("first.txt"), "x").unwrap();
-        assert_eq!(
-            file_bytes_at_head(unborn.path(), "first.txt").unwrap(),
-            None
-        );
-    }
-
-    /// Fork name (P1-24). The Changes panel is polled, so the number of git
-    /// processes one `changed_files` sweep starts must not grow with the
-    /// number of untracked files.
-    #[test]
-    fn changed_files_git_process_count_is_bounded_with_untracked_growth() {
-        let repo = init_test_repo();
-        let wt = add_worktree(repo.path(), "bounded-untracked-processes");
-
-        fs::write(wt.join("one.txt"), "one\n").unwrap();
-        CHANGED_FILES_GIT_COMMANDS.with(|count| count.set(0));
-        changed_files(&wt).unwrap();
-        let one_file_count = CHANGED_FILES_GIT_COMMANDS.with(std::cell::Cell::get);
-
-        for index in 0..100 {
-            fs::write(wt.join(format!("many-{index:03}.txt")), "line\n").unwrap();
-        }
-        CHANGED_FILES_GIT_COMMANDS.with(|count| count.set(0));
-        let (_, files) = changed_files(&wt).unwrap();
-        let many_file_count = CHANGED_FILES_GIT_COMMANDS.with(std::cell::Cell::get);
-
-        assert_eq!(files.len(), 101);
-        // status + unstaged numstat + staged numstat.
-        assert_eq!(one_file_count, 3);
-        assert_eq!(many_file_count, one_file_count);
-    }
-
     #[test]
     fn current_branch_opt_errors_on_non_repo() {
         let tmp = tempfile::tempdir().unwrap(); // not a git repo
@@ -11147,7 +17446,12 @@ mod tests {
         let p = tmp.path().to_path_buf();
         run_git(&p, &["checkout", "--detach", "HEAD"]);
         // Must not error on detached HEAD; must end up on main.
-        switch_branch_if_needed(&p, "main").unwrap();
+        switch_branch_if_needed(
+            &p,
+            "main",
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+        )
+        .unwrap();
         assert_eq!(current_branch_opt(&p).unwrap(), Some("main".to_string()));
     }
 
@@ -11174,7 +17478,13 @@ mod tests {
         run_git(clone, &["switch", "feature"]);
         assert_eq!(current_branch(clone).unwrap(), "feature");
 
-        pull_branch(clone, "main").unwrap();
+        pull_branch(
+            clone,
+            "main",
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+            TEST_NETWORK_TIMEOUT,
+        )
+        .unwrap();
 
         assert_eq!(current_branch(clone).unwrap(), "main");
     }
@@ -11188,7 +17498,12 @@ mod tests {
         run_git(repo.path(), &["commit", "-m", "second commit"]);
         run_git(repo.path(), &["checkout", "--detach", "HEAD~1"]);
 
-        let err = pull_current_branch(repo.path()).unwrap_err();
+        let err = pull_current_branch(
+            repo.path(),
+            &crate::checkout_move::CheckoutMoveGuard::default(),
+            TEST_NETWORK_TIMEOUT,
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("detached"),
@@ -11209,7 +17524,7 @@ mod tests {
         run_git(repo.path(), &["commit", "-m", "second commit"]);
         run_git(repo.path(), &["checkout", "--detach", "HEAD~1"]);
 
-        let err = push(repo.path()).unwrap_err();
+        let err = push(repo.path(), TEST_NETWORK_TIMEOUT).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("detached"),
@@ -11538,5 +17853,350 @@ mod tests {
             let wt = tempfile::tempdir().unwrap();
             assert!(resolve_worktree_path(wt.path(), "brand-new.txt").is_ok());
         }
+    }
+
+    // -- Fork tests carried over the upstream merge --
+
+    #[test]
+    fn fallback_agent_name_is_a_valid_unique_branch_name() {
+        let a = fallback_agent_name();
+        let b = fallback_agent_name();
+        assert!(a.starts_with("agent-") && a.len() == "agent-".len() + 32);
+        assert_ne!(a, b);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+
+    #[test]
+    fn ensure_project_worktrees_link_creates_ignored_symlink() {
+        let repo = init_test_repo();
+        let worktrees_root = repo.path().join("yaran-state").join("worktrees");
+
+        let link =
+            ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project").unwrap();
+
+        let target = worktrees_root.join("Demo-Project").canonicalize().unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+        assert!(target.is_dir());
+
+        let status = test_support::git_command()
+            .arg("-C")
+            .arg(repo.path())
+            .args(["status", "--porcelain=v1", "--untracked-files=all"])
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        let porcelain = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            !porcelain.contains(PROJECT_WORKTREES_LINK_NAME),
+            "the link must be ignored by git status: {porcelain}"
+        );
+        let exclude =
+            fs::read_to_string(repo.path().join(".git").join("info").join("exclude")).unwrap();
+        assert!(exclude.contains(PROJECT_WORKTREES_EXCLUDE_PATTERN));
+
+        // Idempotent: a second call neither duplicates the exclude line nor
+        // replaces the link.
+        ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project").unwrap();
+        let again =
+            fs::read_to_string(repo.path().join(".git").join("info").join("exclude")).unwrap();
+        assert_eq!(again, exclude);
+    }
+
+    #[test]
+    fn ensure_project_worktrees_link_refuses_real_path() {
+        let repo = init_test_repo();
+        let worktrees_root = repo.path().join("yaran-state").join("worktrees");
+        let real = repo.path().join(PROJECT_WORKTREES_LINK_NAME);
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("mine.txt"), "user data").unwrap();
+
+        let result = ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project");
+
+        assert!(result.is_err());
+        let metadata = fs::symlink_metadata(&real).unwrap();
+        assert!(metadata.file_type().is_dir());
+        assert!(!metadata.file_type().is_symlink());
+        assert_eq!(
+            fs::read_to_string(real.join("mine.txt")).unwrap(),
+            "user data"
+        );
+    }
+
+    #[test]
+    fn ensure_project_worktrees_link_preserves_non_utf8_exclude_bytes() {
+        let repo = init_test_repo();
+        let worktrees_root = repo.path().join("yaran-state").join("worktrees");
+        let exclude = repo.path().join(".git").join("info").join("exclude");
+        let original = b"# user bytes\n\xff\xfe\n";
+        fs::write(&exclude, original).unwrap();
+        fs::set_permissions(&exclude, fs::Permissions::from_mode(0o640)).unwrap();
+
+        ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project").unwrap();
+
+        let updated = fs::read(&exclude).unwrap();
+        assert!(updated.starts_with(original));
+        assert!(updated.ends_with(b"# yaran local agent worktree explorer link\n/dux-worktrees\n"));
+        assert_eq!(
+            fs::metadata(&exclude).unwrap().permissions().mode() & 0o777,
+            0o640,
+            "the exclude file keeps its mode"
+        );
+    }
+
+    /// Fail closed: an exclude that cannot be read is left exactly as it was
+    /// and no link appears.
+    #[test]
+    fn ensure_project_worktrees_link_leaves_an_unreadable_exclude_untouched() {
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root reads through a 0o000 mode
+        }
+        let repo = init_test_repo();
+        let worktrees_root = repo.path().join("yaran-state").join("worktrees");
+        let exclude = repo.path().join(".git").join("info").join("exclude");
+        fs::write(&exclude, b"keep me\n").unwrap();
+        fs::set_permissions(&exclude, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = ensure_project_worktrees_link(repo.path(), &worktrees_root, "Demo-Project");
+
+        fs::set_permissions(&exclude, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read(&exclude).unwrap(), b"keep me\n");
+        assert!(
+            fs::symlink_metadata(repo.path().join(PROJECT_WORKTREES_LINK_NAME)).is_err(),
+            "no link without its ignore line"
+        );
+    }
+
+    /// Fork f4f2257a: the guard refuses a target that is a registered project's
+    /// ancestor, one inside it (even one not on disk yet), and a symlink alias
+    /// of it, and lets an unrelated sibling through.
+    #[test]
+    fn whole_workspace_guard_rejects_project_ancestors_descendants_and_symlink_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let managed = temp.path().join("managed");
+        let project = managed.join("nested/project");
+        fs::create_dir_all(&project).unwrap();
+        let projects = vec![project.clone()];
+
+        assert!(guard_whole_workspace_removal(&managed, &projects).is_err());
+        assert!(guard_whole_workspace_removal(&project.join("corrupt-child"), &projects).is_err());
+
+        let alias = temp.path().join("project-alias");
+        symlink(&project, &alias).unwrap();
+        assert!(guard_whole_workspace_removal(&alias, &projects).is_err());
+        assert!(
+            guard_whole_workspace_removal(&temp.path().join("safe-sibling"), &projects).is_ok()
+        );
+    }
+
+    /// A relative target or one with `..` cannot be resolved safely, so the
+    /// guard refuses it instead of guessing.
+    #[test]
+    fn whole_workspace_guard_rejects_relative_and_parent_traversal_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(guard_whole_workspace_removal(Path::new("relative/wt"), &[]).is_err());
+        assert!(
+            guard_whole_workspace_removal(&temp.path().join("a/../b"), &[]).is_err(),
+            "a `..` component must be refused even with no projects registered"
+        );
+    }
+
+    /// Both removal entry points run the guard before git: the worktree and
+    /// its branch survive when the worktree contains, or is inside, a
+    /// registered project.
+    #[test]
+    fn remove_worktree_entry_point_applies_registered_project_guard() {
+        let repo = init_test_repo();
+        for project_is_descendant in [true, false] {
+            let branch = format!("protected-delete-{project_is_descendant}");
+            let worktree = add_worktree(repo.path(), &branch);
+            let project = if project_is_descendant {
+                let nested = worktree.join("nested-project");
+                fs::create_dir_all(&nested).unwrap();
+                nested
+            } else {
+                repo.path().to_path_buf()
+            };
+
+            let result = remove_worktree(
+                repo.path(),
+                &worktree,
+                &branch,
+                None,
+                std::slice::from_ref(&project),
+            );
+            assert!(result.is_err());
+            assert!(worktree.exists());
+            assert!(local_branch_exists(repo.path(), &branch));
+
+            let result = remove_worktree_keep_branch(repo.path(), &worktree, &[project]);
+            assert!(result.is_err());
+            assert!(worktree.exists());
+        }
+    }
+
+    /// The guard is for whole-worktree removals only: discarding an untracked
+    /// directory inside a registered checkout stays possible.
+    #[test]
+    fn untracked_directory_discard_inside_registered_project_remains_allowed() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let untracked = project.join("scratch/nested");
+        fs::create_dir_all(&untracked).unwrap();
+        fs::write(untracked.join("notes.txt"), "temporary").unwrap();
+        // A folder goes only as the confirmed folder git still says it is.
+        let init = crate::git::test_support::git_command()
+            .arg("-C")
+            .arg(&project)
+            .args(["init", "-q", "-b", "main"])
+            .status()
+            .unwrap();
+        assert!(init.success());
+
+        discard_confirmed(
+            &project,
+            "scratch",
+            FileTracking::Untracked,
+            Some(ConfirmedEntry::Folder { files: 1 }),
+            || Ok(crate::destructive::Cleared::any_for_tests()),
+        )
+        .unwrap();
+
+        assert!(!project.join("scratch").exists());
+        assert!(project.exists());
+    }
+
+    /// An unexpandable or relative project path fails the whole inventory, so
+    /// no caller can run the guard against a partial list.
+    #[test]
+    fn registered_project_paths_fails_closed_on_a_relative_project() {
+        assert!(registered_project_paths(["/abs/project", "relative/project"]).is_err());
+        assert_eq!(
+            registered_project_paths(["/abs/project"]).unwrap(),
+            vec![PathBuf::from("/abs/project")]
+        );
+    }
+
+    /// Create a directory whose name is not valid UTF-8, or return `None` when
+    /// the filesystem refuses to hold one.
+    ///
+    /// A non-UTF8 filename is legal on Linux, where these tests do their work:
+    /// a byte sequence is just bytes, and yaran must decode `--show-toplevel`
+    /// from the raw bytes rather than lossily. It is NOT universally legal.
+    /// macOS's APFS and HFS+ enforce valid UTF-8 in filenames at the syscall
+    /// boundary and reject the name with `EILSEQ` ("illegal byte sequence"),
+    /// so the fixture cannot be BUILT there and the test used to die in setup,
+    /// before a line of product code ran.
+    ///
+    /// Skipping where the filesystem cannot express the premise is the honest
+    /// reading, and it is narrow on purpose: the check is what the filesystem
+    /// just DID with the name, not which operating system is running. A macOS
+    /// filesystem that does accept the bytes still runs the test, and a Linux
+    /// filesystem that refuses them (some network and FUSE mounts do) stops
+    /// reporting a failure that is not yaran's.
+    fn create_dir_with_non_utf8_name(parent: &Path, name: &[u8]) -> Option<std::path::PathBuf> {
+        use std::os::unix::ffi::OsStrExt;
+        let path = parent.join(std::ffi::OsStr::from_bytes(name));
+        match std::fs::create_dir(&path) {
+            Ok(()) => Some(path),
+            // EILSEQ: the filesystem enforces UTF-8 names and will not hold
+            // this one. Nothing about yaran can be observed here.
+            Err(e) if e.raw_os_error() == Some(libc::EILSEQ) => {
+                eprintln!(
+                    "skipping: {} cannot hold a non-UTF8 filename ({e})",
+                    parent.display()
+                );
+                None
+            }
+            Err(e) => panic!("creating a non-UTF8 directory failed unexpectedly: {e}"),
+        }
+    }
+
+    /// Fork name. Upstream has no `head_branch`; `current_branch_opt` is the
+    /// same contract (attached = Some, detached = None) and `current_branch`
+    /// is the strict variant that refuses a detached HEAD.
+    #[test]
+    fn head_branch_distinguishes_attached_and_detached_head() {
+        let repo = init_test_repo();
+        assert_eq!(
+            current_branch_opt(repo.path()).unwrap().as_deref(),
+            Some("main")
+        );
+        let head = head_commit(repo.path()).unwrap();
+        run_git(repo.path(), &["checkout", "--detach", &head]);
+
+        assert_eq!(current_branch_opt(repo.path()).unwrap(), None);
+        assert!(current_branch(repo.path()).is_err());
+    }
+
+    /// Fork name (24deeeee, audit03 P1-22): present, deleted-in-worktree, new,
+    /// and git-failure answers are four different things.
+    #[test]
+    fn file_bytes_at_head_distinguishes_new_deleted_binary_and_git_errors() {
+        let repo = init_test_repo();
+        let wt = add_worktree(repo.path(), "head-bytes-cases");
+        fs::write(wt.join("tracked.bin"), [0_u8, 1, 2, 255]).unwrap();
+        run_git(&wt, &["add", "tracked.bin"]);
+        run_git(&wt, &["commit", "-m", "binary"]);
+
+        assert_eq!(
+            file_bytes_at_head(&wt, "tracked.bin").unwrap(),
+            Some(vec![0, 1, 2, 255])
+        );
+        fs::remove_file(wt.join("tracked.bin")).unwrap();
+        assert_eq!(
+            file_bytes_at_head(&wt, "tracked.bin").unwrap(),
+            Some(vec![0, 1, 2, 255]),
+            "deleted working-tree files still have HEAD bytes"
+        );
+        fs::write(wt.join("new.txt"), "new").unwrap();
+        assert_eq!(file_bytes_at_head(&wt, "new.txt").unwrap(), None);
+
+        let non_repo = tempfile::tempdir().unwrap();
+        assert!(
+            file_bytes_at_head(non_repo.path(), "anything").is_err(),
+            "a git failure must not read as a new file"
+        );
+
+        // A repository with no commits yet: every file is new, not an error.
+        let unborn = init_test_repo_no_commit();
+        fs::write(unborn.path().join("first.txt"), "x").unwrap();
+        assert_eq!(
+            file_bytes_at_head(unborn.path(), "first.txt").unwrap(),
+            None
+        );
+    }
+
+    /// Fork name (P1-24). The Changes panel is polled, so the number of git
+    /// processes one `changed_files` sweep starts must not grow with the
+    /// number of untracked files.
+    #[test]
+    fn changed_files_git_process_count_is_bounded_with_untracked_growth() {
+        let repo = init_test_repo();
+        let wt = add_worktree(repo.path(), "bounded-untracked-processes");
+
+        fs::write(wt.join("one.txt"), "one\n").unwrap();
+        CHANGED_FILES_GIT_COMMANDS.with(|count| count.set(0));
+        changed_files_for_display(&wt).unwrap();
+        let one_file_count = CHANGED_FILES_GIT_COMMANDS.with(std::cell::Cell::get);
+
+        for index in 0..100 {
+            fs::write(wt.join(format!("many-{index:03}.txt")), "line\n").unwrap();
+        }
+        CHANGED_FILES_GIT_COMMANDS.with(|count| count.set(0));
+        let (_, files) = changed_files_for_display(&wt).unwrap();
+        let many_file_count = CHANGED_FILES_GIT_COMMANDS.with(std::cell::Cell::get);
+
+        assert_eq!(files.len(), 101);
+        // A fixed set of children (status and the numstats), whatever the
+        // number of untracked files: none is started per file.
+        assert!(one_file_count > 0);
+        assert_eq!(many_file_count, one_file_count);
     }
 }

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 import type { Bootstrap } from "./bootstrapApi"
 
 // Exercises the store's companion-terminal lifecycle wiring: createTerminal
@@ -48,6 +55,11 @@ let calls: [string, RequestInit | undefined][] = []
 // When set, the terminals reorder POST responds 400 so the overlay-clear-on-error
 // path can be exercised.
 let reorderFail = false
+// A terminal DELETE to this exact URL is refused because somebody else is
+// attached to it.
+let attachedUrl: string | null = null
+// When set, a terminal create waits for it before answering.
+let createGate: Promise<void> | null = null
 
 const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
   const u = String(url)
@@ -80,11 +92,34 @@ const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
   }
   if (u.endsWith("/terminals")) {
     // POST create.
+    if (createGate) await createGate
     return {
       ok: true,
       status: 201,
       json: async () => ({ terminal_id: "t9", label: "Terminal 2" }),
       text: async () => JSON.stringify({ terminal_id: "t9", label: "Terminal 2" }),
+      headers: { get: () => null },
+    } as unknown as Response
+  }
+  if (u === attachedUrl) {
+    const body = {
+      error: "attached",
+      blockers: [
+        {
+          surface: "browser",
+          device: null,
+          address: "10.0.0.7",
+          verified: false,
+          driving: false,
+          target: { kind: "terminal", id: "t1" },
+          key: "k1",
+        },
+      ],
+    }
+    return {
+      ok: false,
+      status: 409,
+      text: async () => JSON.stringify(body),
       headers: { get: () => null },
     } as unknown as Response
   }
@@ -148,7 +183,12 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -183,6 +223,35 @@ describe("store companion-terminal lifecycle", () => {
     )
     expect(post).toBeDefined()
     expect(mod.getSnapshot().selectedSessionId).toBe("s1")
+  })
+
+  it("does not open a new terminal the workspace saw end before the create answered", async () => {
+    const mod = await loadStore()
+    let release!: () => void
+    createGate = new Promise<void>((r) => {
+      release = r
+    })
+    const before = mod.getSnapshot().selectedTarget
+    try {
+      mod.createTerminal("s1")
+      // A workspace lands mid-create without the new terminal, and the server
+      // still does not list it when asked again: its shell has gone.
+      const fetchesBefore = calls.filter(([u]) => u.includes("/api/v1/workspace")).length
+      mod.eventsSocket.onEvent({ event: "sessions.changed" })
+      await vi.waitFor(() =>
+        expect(calls.filter(([u]) => u.includes("/api/v1/workspace")).length).toBe(fetchesBefore + 1),
+      )
+      await tick()
+      release()
+      await vi.waitFor(() =>
+        expect(calls.filter(([u]) => u.includes("/api/v1/workspace")).length).toBe(fetchesBefore + 2),
+      )
+      await tick()
+      await tick()
+      expect(mod.getSnapshot().selectedTarget).toEqual(before)
+    } finally {
+      createGate = null
+    }
   })
 
   it("deleteTerminal resolves the owning session and DELETEs the nested endpoint", async () => {
@@ -307,9 +376,12 @@ describe("store companion-terminal lifecycle", () => {
       ],
       sidebar: { groups: [] },
     }
+    // Somebody else is attached to the session's terminal: that one is
+    // refused and named, the project's goes.
+    attachedUrl = "/api/v1/sessions/s1/terminals/t1"
     const mod = await loadStore()
-    mod.stopAllRunning()
-    await tick()
+    const refused = await mod.stopAllRunning()
+    attachedUrl = null
     const sessionDel = find(
       (u, init) =>
         u === "/api/v1/sessions/s1/terminals/t1" && init?.method === "DELETE",
@@ -320,6 +392,18 @@ describe("store companion-terminal lifecycle", () => {
     )
     expect(sessionDel).toBeDefined()
     expect(projectDel).toBeDefined()
+    expect(refused?.agents).toEqual([])
+    expect(refused?.terminals).toEqual(["t1"])
+    expect(refused?.blockers.map((b) => b.key)).toEqual(["k1"])
+
+    // Going ahead stops only what was refused, over exactly who was shown.
+    calls = []
+    expect(await mod.stopAllRunning(refused, ["k1"])).toBeNull()
+    expect(
+      calls
+        .filter(([, init]) => init?.method === "DELETE" || init?.method === "POST")
+        .map(([u]) => u),
+    ).toEqual(["/api/v1/sessions/s1/terminals/t1?force_connected=k1"])
   })
 
   // The panic button is the ONE caller that skips the shutdown grace. A polite
@@ -447,6 +531,141 @@ describe("store terminal reorder overlay", () => {
     // The rejected POST clears the overlay so the UI snaps back to server order.
     await vi.waitFor(() => {
       expect(mod.getSnapshot().pendingTerminalOrder).toBeNull()
+    })
+  })
+})
+
+// An agent's stack: which layout it opens in when one of its terminals is
+// brought to the front, how focus moves between its parts, and how its dock
+// reorders.
+describe("store agent stack", () => {
+  function withSessionStatus(status: string, terminals: unknown[] = []) {
+    spineBody = {
+      projects: [{ id: "p1", name: "Repo" }],
+      sessions: [{ id: "s1", project_id: "p1", status }],
+      terminals,
+      sidebar: { groups: [] },
+    }
+  }
+  const companion = (id: string, sortOrder: number) => ({
+    id,
+    label: id,
+    owner: { kind: "session", session_id: "s1" },
+    sort_order: sortOrder,
+  })
+
+  it("opens a stopped agent's new terminal maximized, so nothing starts the agent", async () => {
+    withSessionStatus("detached")
+    const mod = await loadStore()
+    mod.createTerminal("s1")
+    await vi.waitFor(() => expect(mod.getSnapshot().stackLayouts.s1).toBe("terminal"))
+  })
+
+  it("opens at least the split when a terminal is brought to the front of a folded dock", async () => {
+    withSessionStatus("active", [companion("t1", 1)])
+    const mod = await loadStore()
+    mod.selectSession("s1")
+    mod.setStackLayout("s1", "agent")
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    expect(mod.getSnapshot().stackLayouts.s1).toBe("split")
+    expect(mod.getSnapshot().stackTerminals.s1).toBe("t1")
+  })
+
+  it("judges every arrival at an agent afresh", async () => {
+    withSessionStatus("active", [companion("t1", 1)])
+    const mod = await loadStore()
+    mod.selectSession("s1")
+    mod.setStackLayout("s1", "terminal")
+    mod.selectSession(null)
+    mod.selectSession("s1")
+    expect(mod.getSnapshot().stackLayouts.s1).toBeUndefined()
+  })
+
+  it("moves typing between the parts on screen without a new history entry", async () => {
+    withSessionStatus("active", [companion("t1", 1)])
+    const pushState = vi.fn()
+    const replaceState = vi.fn()
+    vi.stubGlobal("history", { go: () => {}, pushState, replaceState, state: null })
+    const mod = await loadStore()
+    mod.selectSession("s1")
+    const pushesBefore = pushState.mock.calls.length
+    mod.chooseStackPart("s1", "t1")
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "terminal",
+      terminalId: "t1",
+      owner: { kind: "session", sessionId: "s1" },
+    })
+    const slot = mod.getSnapshot().spine!.sessions[0].slot_tab_id
+    mod.chooseStackPart("s1", slot)
+    expect(mod.getSnapshot().selectedTarget).toEqual({
+      kind: "agent",
+      sessionId: "s1",
+      tabId: slot,
+    })
+    expect(pushState.mock.calls.length).toBe(pushesBefore)
+    expect(replaceState).toHaveBeenCalled()
+  })
+
+  it("pushes for a new terminal, which is a new position", async () => {
+    withSessionStatus("active", [companion("t1", 1)])
+    const pushState = vi.fn()
+    vi.stubGlobal("history", { go: () => {}, pushState, replaceState: vi.fn(), state: null })
+    const mod = await loadStore()
+    mod.selectSession("s1")
+    const before = pushState.mock.calls.length
+    mod.createTerminal("s1")
+    await vi.waitFor(() => expect(pushState.mock.calls.length).toBe(before + 1))
+  })
+
+  it("leaves the list's sort mode alone when the dock is reordered", async () => {
+    withSessionStatus("active", [companion("t1", 1), companion("t2", 2)])
+    const mod = await loadStore()
+    const sortBefore = mod.agentSortValue(mod.getSnapshot())
+    mod.reorderDock("s1", ["t2", "t1"])
+    await tick()
+    expect(mod.agentSortValue(mod.getSnapshot())).toBe(sortBefore)
+    expect(calls.some(([u]) => u.includes("/config"))).toBe(false)
+  })
+
+  it("puts a started agent back in the layout this device last chose, or the split", async () => {
+    withSessionStatus("detached", [companion("t1", 1)])
+    const mem = new Map<string, string>([["yaran:stack:s1", JSON.stringify({ layout: "agent" })]])
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => void mem.set(k, v),
+      removeItem: (k: string) => void mem.delete(k),
+    })
+    const mod = await loadStore()
+    mod.selectSession("s1")
+    mod.startStoppedAgent("s1", "s1")
+    expect(mod.getSnapshot().stackLayouts.s1).toBe("agent")
+    mem.clear()
+    mod.startStoppedAgent("s1", "s1")
+    expect(mod.getSnapshot().stackLayouts.s1).toBe("split")
+  })
+
+  it("keeps the tab shown while typing moves to the dock", async () => {
+    withSessionStatus("detached", [companion("t1", 1)])
+    const mod = await loadStore()
+    mod.selectSession("s1")
+    const slot = mod.getSnapshot().spine!.sessions[0].slot_tab_id
+    mod.chooseStackPart("s1", "t1")
+    mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
+    expect(mod.getSnapshot().stackTabs.s1).toBe(slot)
+  })
+
+  it("reorders one dock among the places its terminals hold, leaving every other terminal put", async () => {
+    withSessionStatus("active", [
+      companion("t1", 1),
+      { id: "p-term", label: "p", owner: { kind: "project", project_id: "p1" }, sort_order: 2 },
+      companion("t2", 3),
+    ])
+    const mod = await loadStore()
+    mod.reorderDock("s1", ["t2", "t1"])
+    await tick()
+    const post = find((u, init) => u === "/api/v1/terminals/reorder" && init?.method === "POST")
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual({
+      terminal_ids: ["t2", "p-term", "t1"],
     })
   })
 })

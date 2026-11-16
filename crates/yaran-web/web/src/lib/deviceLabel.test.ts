@@ -17,6 +17,7 @@ const fixture = JSON.parse(
 ) as { cases: { ua: string; label: string }[] }
 const byLabel = (label: string) => fixture.cases.find((c) => c.label === label)!.ua
 const UA = {
+  chromeMac: byLabel("Chrome on macOS"),
   chromeAndroid: byLabel("Chrome on Android"),
   safariIphone: byLabel("Safari on iOS"),
   unknownBrowserWindows: byLabel("Windows"),
@@ -66,5 +67,16 @@ describe("deviceLabel", () => {
     expect(deviceLabel(UA.chromeAndroid)).toContain("Android")
     // iPhone UA also contains "like Mac OS X".
     expect(deviceLabel(UA.safariIphone)).toContain("iOS")
+  })
+
+  // yaran-core strips the same characters before it matches, so a smuggled
+  // reordering mark cannot make the two surfaces name one device differently.
+  it("ignores bidi and control characters, as the terminal UI does", () => {
+    const smuggled = UA.chromeMac.replace("Chrome/", "Chr\u202Eome\u0007/")
+    expect(deviceLabel(smuggled)).toBe("Chrome on macOS")
+    expect(deviceLabel("\u2066the yaran TUI\u200F")).toBe("the yaran TUI")
+    expect(deviceLabel("\u202A\u061C\u0000")).toBeNull()
+    // Rust's trim leaves U+FEFF, so the label is no longer the exact match.
+    expect(deviceLabel("\uFEFFthe yaran TUI")).toBeNull()
   })
 })

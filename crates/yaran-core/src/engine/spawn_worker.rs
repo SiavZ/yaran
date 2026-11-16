@@ -20,25 +20,46 @@ pub struct CommandWorkerSpec {
     /// `Some` when the command guards re-entry through `in_flight`. The
     /// primitive marks the key before spawning; the worker's own
     /// completion-event handler must clear it.
-    pub in_flight_key: Option<InFlightKey>,
+    pub(crate) in_flight_key: Option<InFlightKey>,
     /// Status to enqueue on the worker channel before the worker thread starts.
     /// It travels through the same FIFO channel as the worker's completion
     /// event, so an out-of-order arrival cannot overwrite it.
-    pub busy_status: Option<StatusUpdate>,
+    pub(crate) busy_status: Option<StatusUpdate>,
     /// Reaction returned to the caller when `in_flight_key` is already in
     /// flight. `None` falls back to a generic warning naming the label.
-    pub already_running_status: Option<StatusUpdate>,
+    pub(crate) already_running_status: Option<StatusUpdate>,
     /// Builds the completion event posted when the worker thread panics. It must
     /// be one `process_worker_event` routes through this command's normal
     /// failure path, which is what clears the in-flight key. `None` logs the
     /// panic and synthesises nothing, so use it only where there is no
     /// in-flight key to clear.
-    pub panic_event: Option<Box<dyn FnOnce(String) -> WorkerEvent + Send>>,
+    pub(crate) panic_event: Option<Box<dyn FnOnce(String) -> WorkerEvent + Send>>,
+}
+
+impl std::fmt::Debug for CommandWorkerSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandWorkerSpec")
+            .field("label", &self.label)
+            .field("in_flight_key", &self.in_flight_key)
+            .field("busy_status", &self.busy_status)
+            .field("already_running_status", &self.already_running_status)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Whether a status op's completion has the surfaces read the changed-files
+/// listing again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChangedFiles {
+    /// The work changed files, so the listing is read again.
+    ReadAgain,
+    /// The listing stays as it is.
+    Unchanged,
 }
 
 /// Format a `Box<dyn Any + Send>` panic payload as a human-readable string,
 /// matching the `&str` and `String` cases the default panic hook surfaces.
-pub fn format_panic_payload(payload: Box<dyn std::any::Any + Send>) -> String {
+pub fn format_panic_payload(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&'static str>() {
         (*s).to_string()
     } else if let Some(s) = payload.downcast_ref::<String>() {
@@ -58,9 +79,15 @@ impl Engine {
     /// - `EventReaction::Nothing` on the happy path, since status flows through
     ///   `worker_tx`.
     /// - `EventReaction::Status(error)` when `thread::Builder::spawn`
-    ///   returns `Err` (rare; PID / RLIMIT exhaustion). The in-flight key is
-    ///   cleared in this case so a retry can proceed.
-    pub fn spawn_command_worker<F>(&mut self, spec: CommandWorkerSpec, job: F) -> EventReaction
+    ///   returns `Err` (rare; PID / RLIMIT exhaustion) and no busy was queued.
+    ///   With a keyed busy queued, the error follows it on `worker_tx` and the
+    ///   reaction is `Nothing`. The in-flight key is cleared in both cases so a
+    ///   retry can proceed.
+    pub(crate) fn spawn_command_worker<F>(
+        &mut self,
+        spec: CommandWorkerSpec,
+        job: F,
+    ) -> EventReaction
     where
         F: FnOnce(Sender<WorkerEvent>) + Send + 'static,
     {
@@ -79,7 +106,9 @@ impl Engine {
 
         // 2. Post the busy status before spawning so it is strictly ahead of any
         //    event the worker could send: mpsc is FIFO, so `process_worker_event`
-        //    sees busy then completion however fast the worker runs.
+        //    sees busy then completion however fast the worker runs. Only this
+        //    worker's own events are ordered behind it; another worker already
+        //    running on the shared channel can still post first.
         let worker_tx = self.worker_tx.clone();
         let mut busy_key = None;
         if let Some(mut busy) = spec.busy_status {
@@ -107,7 +136,14 @@ impl Engine {
         let label_for_thread = label.clone();
         let label_for_log = label.clone();
 
-        let spawn_result = thread::Builder::new()
+        #[cfg(any(test, feature = "test-support"))]
+        let injected = take_injected_spawn_failure();
+        #[cfg(not(any(test, feature = "test-support")))]
+        let injected = false;
+        let spawn_result = if injected {
+            Err(std::io::Error::other("injected test failure"))
+        } else {
+            thread::Builder::new()
             .name(format!("yaran-cmd-{label_for_thread}"))
             .spawn(move || {
                 // AssertUnwindSafe: the job's captured state is owned by this
@@ -118,7 +154,7 @@ impl Engine {
                     job(tx_for_job);
                 }));
                 if let Err(payload) = result {
-                    let reason = format_panic_payload(payload);
+                    let reason = format_panic_payload(&*payload);
                     crate::logger::error(&format!(
                         "spawn_command_worker[{label_for_log}] panicked: {reason}",
                     ));
@@ -130,10 +166,12 @@ impl Engine {
                         ));
                     }
                 }
-            });
+            })
+            .map(|_| ())
+        };
 
         match spawn_result {
-            Ok(_) => EventReaction::Nothing,
+            Ok(()) => EventReaction::Nothing,
             Err(err) => {
                 if let Some(key) = &spec.in_flight_key {
                     self.clear_in_flight(key);
@@ -146,9 +184,16 @@ impl Engine {
                 // The busy is already on the channel and no worker will answer
                 // it, so the error must land on its key and the op must be
                 // abandoned; otherwise liveness heartbeats that spinner for the
-                // life of the process.
+                // life of the process. The error rides the same channel, so it
+                // lands after that busy instead of being replaced by it.
                 self.abandon_status_op(&key);
-                EventReaction::Status(StatusUpdate::error(msg).with_key(key))
+                let error = StatusUpdate::error(msg)
+                    .with_key(key)
+                    .with_scope(self.current_origin.clone());
+                let _ = self
+                    .worker_tx
+                    .send(WorkerEvent::CommandWorkerStarted(error));
+                EventReaction::Nothing
             }
         }
     }
@@ -163,10 +208,11 @@ impl Engine {
     /// The sweep covers only the registries keyed by the status key; a key
     /// cannot address the ones keyed by session id, and missing them costs a
     /// leaked op struct rather than anything the user sees.
-    pub fn abandon_status_op(&mut self, key: &str) {
+    pub(crate) fn abandon_status_op(&mut self, key: &str) {
         self.retire_status_key(key);
         self.pending_create_ops.remove(key);
         self.pending_web_checkout_ops.remove(key);
+        self.pending_change_base_ops.remove(key);
         self.pending_web_add_project_ops.remove(key);
         self.pending_web_pr_lookup_ops.remove(key);
         self.pending_pr_attach_ops.remove(key);
@@ -188,6 +234,47 @@ impl Engine {
         E: Send + 'static,
         F: FnOnce() -> Result<T, E> + Send + 'static,
     {
+        self.spawn_status_op_with(op, work, ChangedFiles::Unchanged)
+    }
+
+    /// [`Self::spawn_status_op`] for work that changes `worktree`'s files:
+    /// it runs after every change to `worktree` asked for before it (see
+    /// [`crate::changes_lane`]), and its completion also has the surfaces read
+    /// the changed-files listing again, so the change shows the moment it is
+    /// done.
+    pub(crate) fn spawn_changes_op<T, E, F>(
+        &mut self,
+        worktree: &std::path::Path,
+        op: crate::engine::StatusOp<T, E>,
+        work: F,
+    ) -> EventReaction
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce() -> Result<T, E> + Send + 'static,
+    {
+        let ticket = crate::changes_lane::ticket(worktree);
+        self.spawn_status_op_with(
+            op,
+            move || {
+                let _turn = ticket.wait();
+                work()
+            },
+            ChangedFiles::ReadAgain,
+        )
+    }
+
+    fn spawn_status_op_with<T, E, F>(
+        &mut self,
+        op: crate::engine::StatusOp<T, E>,
+        work: F,
+        changed_files: ChangedFiles,
+    ) -> EventReaction
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce() -> Result<T, E> + Send + 'static,
+    {
         // Stamp the command origin onto the pending busy and capture it for the
         // deferred final: `current_origin` is reset by the time the worker
         // completes, so the scope must travel on the `ResolvedFinal`.
@@ -201,30 +288,42 @@ impl Engine {
         // registry of their own, so liveness cannot come from enumerating them.
         self.register_status_key(&key_for_spawn_fail);
 
-        let spawn_result = thread::Builder::new()
-            .name("yaran-status-op".into())
-            .spawn(move || {
-                let resolved = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    let result = work();
-                    op.resolve(&result)
-                })) {
-                    Ok(r) => r,
-                    Err(payload) => {
-                        let reason = format_panic_payload(payload);
-                        crate::logger::error(&format!("status-op worker panicked: {reason}"));
-                        crate::engine::ResolvedFinal::error(
-                            key_for_panic,
-                            format!("Worker panicked: {reason}"),
-                        )
+        #[cfg(any(test, feature = "test-support"))]
+        let injected = take_injected_spawn_failure();
+        #[cfg(not(any(test, feature = "test-support")))]
+        let injected = false;
+        let spawn_result = if injected {
+            Err(std::io::Error::other("injected test failure"))
+        } else {
+            thread::Builder::new()
+                .name("yaran-status-op".into())
+                .spawn(move || {
+                    let resolved = match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        let result = work();
+                        op.resolve(&result)
+                    })) {
+                        Ok(r) => r,
+                        Err(payload) => {
+                            let reason = format_panic_payload(&*payload);
+                            crate::logger::error(&format!("status-op worker panicked: {reason}"));
+                            crate::engine::ResolvedFinal::error(
+                                key_for_panic,
+                                format!("Worker panicked: {reason}"),
+                            )
+                        }
                     }
-                }
-                .with_scope(origin);
-                let _ = tx.send(WorkerEvent::StatusOpCompleted { resolved });
-            });
+                    .with_scope(origin);
+                    let _ = tx.send(WorkerEvent::StatusOpCompleted { resolved });
+                    if changed_files == ChangedFiles::ReadAgain {
+                        let _ = tx.send(WorkerEvent::WorktreeFilesChanged);
+                    }
+                })
+                .map(|_| ())
+        };
 
         match spawn_result {
             // Apply the pending Busy now; the worker will follow with its final.
-            Ok(_) => EventReaction::Status(pending),
+            Ok(()) => EventReaction::Status(pending),
             Err(err) => {
                 // Spawn failed and the Busy rides the returned reaction being
                 // replaced here, so a keyed error must go out in its place and
@@ -267,12 +366,21 @@ pub struct BackgroundWorkerSpec {
     pub label: String,
     /// Most background workers have no in-flight tracking. The option exists
     /// for the few that legitimately need single-instance semantics.
-    pub in_flight_key: Option<InFlightKey>,
+    pub(crate) in_flight_key: Option<InFlightKey>,
     /// Posted on `worker_tx` if the worker thread panics, so
     /// `process_worker_event` can clear the in-flight key through its existing
     /// failure handler. `None` logs the panic and synthesises nothing, for
     /// workers whose completion event has no failure variant, or none at all.
-    pub panic_event: Option<Box<dyn FnOnce(String) -> WorkerEvent + Send>>,
+    pub(crate) panic_event: Option<Box<dyn FnOnce(String) -> WorkerEvent + Send>>,
+}
+
+impl std::fmt::Debug for BackgroundWorkerSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackgroundWorkerSpec")
+            .field("label", &self.label)
+            .field("in_flight_key", &self.in_flight_key)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Engine {
@@ -284,7 +392,7 @@ impl Engine {
     /// [`BackgroundSpawn`] outcome lets a caller unwind optimistic state on a
     /// synchronous spawn failure, which is logged and clears the in-flight key
     /// so a retry can proceed.
-    pub fn spawn_background_worker<F>(
+    pub(crate) fn spawn_background_worker<F>(
         &mut self,
         spec: BackgroundWorkerSpec,
         job: F,
@@ -313,8 +421,17 @@ impl Engine {
         // without exhausting the machine's process table to provoke a real one.
         // No completion event fires, so callers recover from this path
         // themselves and it has to be reachable from a test.
-        #[cfg(test)]
-        if std::mem::take(&mut self.force_worker_spawn_failure) {
+        #[cfg(any(test, feature = "test-support"))]
+        let injected = {
+            #[cfg(test)]
+            let field = std::mem::take(&mut self.force_worker_spawn_failure);
+            #[cfg(not(test))]
+            let field = false;
+            field || take_injected_spawn_failure()
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let injected = false;
+        if injected {
             if let Some(key) = &spec.in_flight_key {
                 self.clear_in_flight(key);
             }
@@ -346,7 +463,7 @@ impl Engine {
                     job(tx_for_job);
                 }));
                 if let Err(payload) = result {
-                    let reason = format_panic_payload(payload);
+                    let reason = format_panic_payload(&*payload);
                     crate::logger::error(&format!(
                         "spawn_background_worker[{label_for_log}] panicked: {reason}",
                     ));
@@ -376,6 +493,7 @@ impl Engine {
 /// Specification for a single long-running loop-worker spawn. Used by
 /// `Engine::spawn_loop_worker`, which owns the outer loop and per-iteration
 /// panic recovery; the body runs once per tick and decides whether to continue.
+#[derive(Debug)]
 pub struct LoopWorkerSpec {
     /// Short human-readable label. Used as a thread-name suffix, as the log
     /// prefix on any per-iteration panic, and as the status key the worker's
@@ -394,8 +512,11 @@ pub struct LoopWorkerSpec {
 
 /// Per-iteration return value for a `spawn_loop_worker` body. `Continue` runs
 /// another iteration; `Break` exits the loop.
+#[derive(Debug)]
 pub enum LoopControl {
+    /// Run another iteration.
     Continue,
+    /// Stop the loop.
     Break,
 }
 
@@ -414,7 +535,7 @@ impl Engine {
     /// since a watcher that cannot start is logged and nothing more, but a
     /// caller holding a single-instance slot for the loop must release it, or
     /// the loop can never be started again.
-    pub fn spawn_loop_worker<F>(&self, spec: LoopWorkerSpec, mut body: F) -> bool
+    pub(crate) fn spawn_loop_worker<F>(&self, spec: LoopWorkerSpec, mut body: F) -> bool
     where
         F: FnMut(&Sender<WorkerEvent>) -> LoopControl + Send + 'static,
     {
@@ -429,11 +550,19 @@ impl Engine {
         // without exhausting the machine's process table to provoke a real one.
         // A caller holding a single-instance slot must release it on `false`,
         // so that recovery has to be reachable from a test.
-        #[cfg(test)]
-        if self
-            .force_loop_worker_spawn_failure
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
+        #[cfg(any(test, feature = "test-support"))]
+        let injected = {
+            #[cfg(test)]
+            let field = self
+                .force_loop_worker_spawn_failure
+                .swap(false, std::sync::atomic::Ordering::SeqCst);
+            #[cfg(not(test))]
+            let field = false;
+            field || take_injected_spawn_failure()
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let injected = false;
+        if injected {
             crate::logger::error(&format!(
                 "spawn_loop_worker[{label}] failed to spawn thread: injected test failure",
             ));
@@ -479,12 +608,11 @@ impl Engine {
                                     clean_iterations = 0;
                                 }
                             }
-                            continue;
                         }
                         Ok(LoopControl::Break) => break,
                         Err(payload) => {
                             clean_iterations = 0;
-                            let reason = format_panic_payload(payload);
+                            let reason = format_panic_payload(&*payload);
                             crate::logger::error(&format!(
                                 "spawn_loop_worker[{label}] iteration panicked, continuing: {reason}",
                             ));
@@ -515,5 +643,103 @@ impl Engine {
             return false;
         }
         true
+    }
+}
+
+/// Start a named engine-side thread whose caller has already registered
+/// bookkeeping for it (in-flight keys, holds, a live busy), returning the spawn
+/// error rather than panicking so the caller can answer it through the failure
+/// path the thread would have taken.
+pub(crate) fn spawn_engine_thread<F>(name: &str, f: F) -> std::io::Result<thread::JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    #[cfg(any(test, feature = "test-support"))]
+    if take_injected_spawn_failure() {
+        return Err(std::io::Error::other("injected test failure"));
+    }
+    thread::Builder::new().name(name.to_string()).spawn(f)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static FAIL_NEXT_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test builds only: make the next worker spawn on THIS thread (a background
+/// worker, a loop worker or a status-op worker) fail the way a real
+/// `thread::Builder::spawn` failure does, without exhausting the machine's
+/// process table to provoke one. Consumed by that spawn.
+#[cfg(any(test, feature = "test-support"))]
+pub fn fail_next_worker_spawn() {
+    FAIL_NEXT_SPAWN.with(|flag| flag.set(true));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn take_injected_spawn_failure() -> bool {
+    FAIL_NEXT_SPAWN.with(|flag| flag.replace(false))
+}
+
+#[cfg(test)]
+mod spawn_command_worker_tests {
+    use super::CommandWorkerSpec;
+    use crate::engine::StatusUpdate;
+    use crate::engine::events::EventReaction;
+    use crate::engine::test_support::test_engine;
+    use crate::statusline::StatusTone;
+
+    /// The busy is queued on the worker channel before the spawn, so a failed
+    /// spawn's error has to reach the surfaces after it rather than ahead.
+    #[test]
+    fn a_failed_spawn_leaves_its_error_after_the_queued_busy() {
+        let (mut engine, _tmp) = test_engine();
+        let busy = StatusUpdate::busy("Doing the thing").with_key("op-key");
+        crate::engine::fail_next_worker_spawn();
+        let reaction = engine.spawn_command_worker(
+            CommandWorkerSpec {
+                label: "thing".to_string(),
+                in_flight_key: None,
+                busy_status: Some(busy),
+                already_running_status: None,
+                panic_event: None,
+            },
+            |_tx| {},
+        );
+        let mut applied = Vec::new();
+        if let EventReaction::Status(status) = reaction {
+            applied.push(status);
+        }
+        while let Ok(event) = engine.worker_rx.try_recv() {
+            if let EventReaction::Status(status) = engine.process_worker_event(event) {
+                applied.push(status);
+            }
+        }
+        let last = applied
+            .iter()
+            .rev()
+            .find(|s| s.key.as_deref() == Some("op-key"))
+            .expect("a status on the key");
+        assert_eq!(last.tone, StatusTone::Error, "{applied:?}");
+        assert!(last.message.contains("injected test failure"), "{last:?}");
+        assert!(!engine.status_op_is_live("op-key"));
+    }
+}
+
+#[cfg(test)]
+mod format_panic_payload_tests {
+    use super::format_panic_payload;
+
+    fn payload_of(f: impl FnOnce() + std::panic::UnwindSafe) -> Box<dyn std::any::Any + Send> {
+        std::panic::catch_unwind(f).expect_err("the closure panics")
+    }
+
+    #[test]
+    fn a_panic_payload_reads_as_its_message_or_says_it_has_none() {
+        let literal = payload_of(|| panic!("a literal message"));
+        let formatted = payload_of(|| panic!("a {} message", "formatted"));
+        let other = payload_of(|| std::panic::panic_any(7_u8));
+        assert_eq!(format_panic_payload(&*literal), "a literal message");
+        assert_eq!(format_panic_payload(&*formatted), "a formatted message");
+        assert_eq!(format_panic_payload(&*other), "non-string panic payload");
     }
 }

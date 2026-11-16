@@ -10,6 +10,12 @@ import {
   SIDEBAR_RESIZING_NO_TRANSITION,
 } from "@/lib/paneDivider"
 import type { YaranState } from "@/lib/store"
+import {
+  fireAnimationIteration,
+  fireAnimationStart,
+  expectLookEasesIn,
+  stubGlyphEase,
+} from "@/test/animationEvents"
 import { stubMatchMedia, type MatchMediaStub } from "@/test/matchMedia"
 
 // Control exactly what the store hands the component: override only `useYaran`
@@ -22,6 +28,7 @@ import { stubMatchMedia, type MatchMediaStub } from "@/test/matchMedia"
 let mockState: YaranState
 const addTabMock = vi.fn()
 const selectSessionMock = vi.fn()
+const selectTerminalMock = vi.fn()
 const createProjectTerminalMock = vi.fn()
 // Counted, not replaced: the resize tests below assert what actually reaches
 // localStorage, so this has to keep doing the real thing while recording how
@@ -34,6 +41,7 @@ vi.mock("@/lib/store", async (importOriginal) => {
     useYaran: () => mockState,
     addTab: addTabMock,
     selectSession: selectSessionMock,
+    selectTerminal: selectTerminalMock,
     createProjectTerminal: createProjectTerminalMock,
     setSidebarWidth: (width: string, persist?: boolean) => {
       setSidebarWidthSpy(width, persist)
@@ -209,6 +217,7 @@ beforeEach(() => {
   installBootStubs()
   addTabMock.mockClear()
   selectSessionMock.mockClear()
+  selectTerminalMock.mockClear()
   createProjectTerminalMock.mockClear()
   setSidebarWidthSpy.mockClear()
 })
@@ -335,11 +344,10 @@ describe("AppSidebar agent ⋯ menu: Add tab", () => {
   })
 })
 
-describe("AppSidebar flat Terminals section", () => {
-  // A session that owns a companion terminal which is currently "typing": it must
-  // render in the flat Terminals section (not nested under the agent), under the
-  // "Terminals" header, showing the running command, the owner (agent) label, and
-  // the violet "Typing" state word.
+describe("AppSidebar agent's own terminals", () => {
+  // A session that owns a terminal which is currently "typing": an agent's own
+  // terminals live with the agent, so the list shows neither a row for it nor a
+  // Terminals section.
   function typingTerminalSpine(): YaranState["spine"] {
     return {
       projects: [
@@ -395,7 +403,7 @@ describe("AppSidebar flat Terminals section", () => {
     } as unknown as YaranState["spine"]
   }
 
-  it("renders a companion terminal in the flat Terminals section with owner label and Typing state", () => {
+  it("lists no row for an agent's own terminal, in the list or on the rail", () => {
     mockState = makeState({
       spine: typingTerminalSpine(),
       bootstrap: { title: "yaran", yaran_version: "v1" },
@@ -405,18 +413,9 @@ describe("AppSidebar flat Terminals section", () => {
         <AppSidebar />
       </SidebarProvider>,
     )
-    // The section header.
-    expect(screen.getByText("Terminals")).toBeTruthy()
-    // Row 1 primary label = the running foreground command.
-    expect(screen.getByText("vim")).toBeTruthy()
-    // Row 2: the owner label repeats the agent name (the agent row plus the
-    // terminal's ↳ owner tag, and the vitals tooltips), so it appears more than
-    // once, proving the terminal carries its owner label.
-    expect(screen.getAllByText("Login flow").length).toBeGreaterThan(1)
-    // The terminal's Typing word (the agent row shows Idle since the session
-    // itself is not typing), styled through the violet typing token.
-    const word = screen.getByText("Typing")
-    expect(word.className).toContain("text-yaran-typing")
+    expect(screen.queryByText("Terminals")).toBeNull()
+    expect(screen.queryByText("vim")).toBeNull()
+    expect(screen.queryByText("Typing")).toBeNull()
   })
 })
 
@@ -469,7 +468,9 @@ describe("AppSidebar project terminals", () => {
 
   it("offers a project-root terminal in the project ⋯ menu and calls createProjectTerminal", () => {
     // An agent-less project (only a project terminal) has no agent row, so its
-    // project actions live in the New-agent picker's per-project ⋯ menu.
+    // project actions live in the per-project ⋯ menu of the app menu's Projects
+    // list and of the New-agent picker, which share one row component
+    // (ProjectList); the picker stands in for both here.
     mockState = makeState({
       spine: projectTerminalSpine(),
       bootstrap: { title: "yaran", yaran_version: "v1" },
@@ -1504,77 +1505,26 @@ describe("AppSidebar auto-collapse on narrow drag", () => {
 })
 
 describe("AppSidebar launcher corner", () => {
-  // The corner is one verb plus one ⋯, so there is nothing left to stack: the
-  // footer's container-query scaffolding went with the second split button.
-  it("drops the container-query stacking scaffolding", () => {
+  // The collapsed rail is too narrow for the split button, so it carries one
+  // bare + that opens the New dialog, and nothing else.
+  it("gives the collapsed rail one + that names itself New…", () => {
     mockState = makeState()
     const { container } = render(
       <SidebarProvider>
         <AppSidebar />
       </SidebarProvider>,
     )
-
-    const footer = container.querySelector('[data-sidebar="footer"]')
-    expect(footer).toBeTruthy()
-    expect(footer!.className).not.toContain("@container")
-    expect(footer!.innerHTML).not.toContain("@[18rem]")
-  })
-
-  // No seam-joined group any more, so no base-ui focus-guard rounding hack
-  // either: both died with the split buttons.
-  it("renders the verb and the ⋯ as two gapped buttons, not a button group", () => {
-    mockState = makeState()
-    const { container } = render(
-      <SidebarProvider>
-        <AppSidebar />
-      </SidebarProvider>,
-    )
-
     const footer = container.querySelector(
       '[data-sidebar="footer"]',
     ) as HTMLElement
-    expect(footer.querySelector('[data-slot="button-group"]')).toBeNull()
-    expect(footer.innerHTML).not.toContain("rounded-r-lg")
-
-    // The corner's own two controls, at one height plus the touch floor. The
-    // verb is picked by its LABEL TEXT: the rail's icon button carries the same
-    // accessible name and no text of its own.
-    const verb = Array.from(footer.querySelectorAll("button")).find(
-      (b) => b.textContent?.trim() === "New agent",
-    ) as HTMLElement
-    expect(verb).toBeTruthy()
-    const overflow = footer.querySelector(
-      '[aria-label="More ways to create"]:not(.size-8)',
-    ) as HTMLElement
-    expect(overflow).toBeTruthy()
-    for (const control of [verb, overflow]) {
-      expect(control.className, control.textContent ?? "").toContain("h-7")
-      expect(control.className, control.textContent ?? "").toContain(
-        "max-md:min-h-11",
-      )
-    }
-  })
-
-  // The rail is icon-only: a bare verb icon and the SAME grouped ⋯ menu the
-  // corner above carries, so a collapsed sidebar is not a dead end for
-  // everything the ⋯ holds (Add project included).
-  it("gives the collapsed rail a New agent icon and its own ⋯", () => {
-    mockState = makeState()
-    const { container } = render(
-      <SidebarProvider>
-        <AppSidebar />
-      </SidebarProvider>,
+    const named = Array.from(footer.querySelectorAll("button")).map(
+      (b) => b.getAttribute("aria-label") ?? b.textContent,
     )
-    const railVerb = container.querySelector(
-      '[data-sidebar="footer"] [aria-label="New agent"].size-8',
-    )
-    expect(railVerb).toBeTruthy()
-    const railOverflow = container.querySelector(
-      '[data-sidebar="footer"] [aria-label="More ways to create"].size-8',
-    )
-    expect(railOverflow).toBeTruthy()
-    // The Add-project rail icon is gone; its action lives in that ⋯ now.
-    expect(screen.queryByLabelText("Add project")).toBeNull()
+    // The corner's two halves, then the rail's one button.
+    expect(named).toEqual(["New agent…", "More ways to start", "New…"])
+    expect(
+      footer.querySelector('[aria-label="New…"].size-8 svg.lucide-plus'),
+    ).toBeTruthy()
   })
 })
 
@@ -1621,6 +1571,16 @@ function makeTwoProjectSpine(): YaranState["spine"] {
       agentless_start: null,
     },
   } as unknown as YaranState["spine"]
+}
+
+// The two-project spine with its second agent running too, for the tests that
+// need two icons on the rail (the default spine parks s2 in the Inactive tail).
+function makeTwoActiveProjectSpine(): YaranState["spine"] {
+  const spine = makeTwoProjectSpine() as unknown as {
+    sessions: { status: string }[]
+  }
+  spine.sessions[1].status = "active"
+  return spine as unknown as YaranState["spine"]
 }
 
 describe("AppSidebar collapsed icon rail", () => {
@@ -1671,9 +1631,9 @@ describe("AppSidebar collapsed icon rail", () => {
     expect(firstTooltip.textContent).toContain("2 files")
   })
 
-  it("renders one agent icon per session across projects instead of project folders", () => {
+  it("renders one agent icon per active session across projects instead of project folders", () => {
     mockState = makeState({
-      spine: makeTwoProjectSpine(),
+      spine: makeTwoActiveProjectSpine(),
       bootstrap: {
         title: "yaran",
         yaran_version: "v1",
@@ -1744,37 +1704,51 @@ describe("AppSidebar collapsed icon rail", () => {
     const labels = [...rail.querySelectorAll("button")].map((b) =>
       b.getAttribute("aria-label"),
     )
-    expect(labels.length).toBe(3)
+    expect(labels.length).toBe(2)
     // Its label is just the agent's name: there is no project to put in
     // parentheses, and "My Notes ()" would be worse than nothing.
     expect(labels).toContain("My Notes")
   })
 
-  it("clicking an agent icon selects that agent", () => {
-    mockState = makeState({
-      spine: makeTwoProjectSpine(),
-      bootstrap: {
-        title: "yaran",
-        yaran_version: "v1",
-        available_providers: ["claude"],
-      },
-      createTabInFlight: [],
-    })
-    render(
-      <SidebarProvider defaultOpen={false}>
-        <AppSidebar />
-      </SidebarProvider>,
-    )
+  it("a tap on an agent icon selects that agent and floats no sidebar", () => {
+    vi.useFakeTimers()
+    try {
+      mockState = makeState({
+        spine: makeTwoActiveProjectSpine(),
+        bootstrap: {
+          title: "yaran",
+          yaran_version: "v1",
+          available_providers: ["claude"],
+        },
+        createTabInFlight: [],
+      })
+      const { container } = render(
+        <SidebarProvider defaultOpen={false}>
+          <AppSidebar />
+        </SidebarProvider>,
+      )
 
-    const rail = screen.getByTestId("collapsed-agent-rail")
-    const buttons = rail.querySelectorAll("button")
-    fireEvent.click(buttons[1])
-    expect(selectSessionMock).toHaveBeenCalledWith("s2")
+      const rail = screen.getByTestId("collapsed-agent-rail")
+      const buttons = rail.querySelectorAll("button")
+      // A tap's own pointer, and the mouse events the browser synthesizes after it.
+      fireEvent.pointerEnter(buttons[1], { pointerType: "touch" })
+      fireEvent.mouseEnter(buttons[1])
+      act(() => {
+        vi.advanceTimersByTime(1000)
+      })
+      const sidebar = container.querySelector('[data-slot="sidebar"]')!
+      expect(sidebar.getAttribute("data-collapsible")).toBe("icon")
+      fireEvent.click(buttons[1])
+      expect(selectSessionMock).toHaveBeenCalledWith("s2")
+      expect(sidebar.getAttribute("data-collapsible")).toBe("icon")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("shows the selected agent's icon in the active state", () => {
     mockState = makeState({
-      spine: makeTwoProjectSpine(),
+      spine: makeTwoActiveProjectSpine(),
       selectedTarget: { kind: "agent", sessionId: "s2" },
       bootstrap: {
         title: "yaran",
@@ -1795,6 +1769,56 @@ describe("AppSidebar collapsed icon rail", () => {
     expect(buttons[1].hasAttribute("data-active")).toBe(true)
   })
 
+  // The rail scrolls on its own, so an agent selected below its fold is
+  // brought into view there too. jsdom lays nothing out: every s2 row is
+  // stubbed below a 0-200 scroller and everything else sits in view.
+  it("scrolls a newly selected agent's icon into view", () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Element) {
+        const key = this.getAttribute("data-sidebar-row")
+        const [top, bottom] =
+          key === "agent:s2" ? [600, 640] : key === null ? [0, 200] : [0, 40]
+        return { top, bottom, left: 0, right: 40, width: 40, height: bottom - top } as DOMRect
+      },
+    )
+    try {
+      const base = {
+        spine: makeTwoActiveProjectSpine(),
+        bootstrap: { title: "yaran", yaran_version: "v1", available_providers: ["claude"] },
+        createTabInFlight: [],
+      } as Partial<YaranState>
+      mockState = makeState(base)
+      const view = render(
+        <SidebarProvider defaultOpen={false}>
+          <AppSidebar />
+        </SidebarProvider>,
+      )
+      expect(scrollIntoView).not.toHaveBeenCalled()
+
+      mockState = makeState({
+        ...base,
+        selectedTarget: { kind: "agent", sessionId: "s2", tabId: "s2" },
+      })
+      view.rerender(
+        <SidebarProvider defaultOpen={false}>
+          <AppSidebar />
+        </SidebarProvider>,
+      )
+      const rail = screen.getByTestId("collapsed-agent-rail")
+      const inRail = scrollIntoView.mock.contexts.filter((el) =>
+        rail.contains(el as Element),
+      )
+      expect(inRail).toHaveLength(1)
+      expect((inRail[0] as Element).getAttribute("data-sidebar-row")).toBe("agent:s2")
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" })
+    } finally {
+      vi.restoreAllMocks()
+      delete (Element.prototype as Partial<Element>).scrollIntoView
+    }
+  })
+
   it("carries the agent name, project name, and status in the tooltip", () => {
     mockState = makeState({
       spine: makeTwoProjectSpine(),
@@ -1813,15 +1837,13 @@ describe("AppSidebar collapsed icon rail", () => {
 
     const rail = screen.getByTestId("collapsed-agent-rail")
     const tooltips = rail.querySelectorAll('[data-testid="tooltip-content"]')
-    expect(tooltips.length).toBe(2)
+    expect(tooltips.length).toBe(1)
     expect(tooltips[0].textContent).toContain("Repo")
     expect(tooltips[0].textContent?.toLowerCase()).toContain("active")
-    expect(tooltips[1].textContent).toContain("Other")
-    expect(tooltips[1].textContent?.toLowerCase()).toContain("detached")
   })
 
   it("carries the working pulse and attention blink classes on the rail icon", () => {
-    const spine = makeTwoProjectSpine() as unknown as {
+    const spine = makeTwoActiveProjectSpine() as unknown as {
       sessions: { working: boolean; needs_attention: boolean }[]
     }
     spine.sessions[0].working = true
@@ -1843,10 +1865,13 @@ describe("AppSidebar collapsed icon rail", () => {
 
     const rail = screen.getByTestId("collapsed-agent-rail")
     const buttons = rail.querySelectorAll("button")
-    // s1 is active + working: its Bot icon pulses, the same cue the row wears.
+    // s1 is active + working: its Bot icon pulses and its frame bounces, the
+    // same cue the row wears.
+    const working = buttons[0].querySelector("svg")!
+    expect(working.getAttribute("class")).toContain("motion-safe:animate-working-pulse")
     expect(
-      buttons[0].querySelector("svg")?.getAttribute("class"),
-    ).toContain("motion-safe:animate-working-pulse")
+      working.closest("[data-slot='working-glyph']")?.getAttribute("class"),
+    ).toContain("motion-safe:animate-working-bounce")
     // s2 needs attention: its icon wrapper carries the cyan blink.
     expect(
       buttons[1].querySelector("[aria-label='Needs attention']"),
@@ -1879,12 +1904,14 @@ describe("AppSidebar collapsed icon rail", () => {
 
     const rail = screen.getByTestId("collapsed-agent-rail")
     const icon = rail.querySelectorAll("button")[0].querySelector("svg")
-    expect(icon?.getAttribute("class")).not.toContain(
-      "motion-safe:animate-working-pulse",
-    )
-    expect(icon?.parentElement?.getAttribute("class")).toContain(
-      "motion-safe:animate-attention-pulse",
-    )
+    expect(icon?.getAttribute("class")).not.toContain("animate-working")
+    expect(
+      icon?.closest("[data-slot='working-glyph']")?.getAttribute("class"),
+    ).not.toContain("animate-working")
+    expect(
+      icon?.closest("[data-slot='working-glyph']")?.getAttribute("class"),
+    ).toContain("motion-safe:animate-attention-pulse")
+    expect(icon?.closest("[aria-label='Needs attention']")).toBeTruthy()
   })
 
   it("scrolls internally in icon mode instead of relying on SidebarContent's clipped overflow", () => {
@@ -2006,7 +2033,7 @@ describe("AppSidebar expanded agent row vitals tooltip", () => {
     // rows are told apart by their tooltip's project name line ("Repo" for
     // s1/p1, "Other" for s2/p2) rather than the branch/worktree rows.
     mockState = makeState({
-      spine: makeTwoProjectSpine(),
+      spine: makeTwoActiveProjectSpine(),
       bootstrap: {
         title: "yaran",
         yaran_version: "v1",
@@ -2038,4 +2065,278 @@ describe("AppSidebar expanded agent row vitals tooltip", () => {
     expect(s1Tooltip?.textContent).toContain("2 files")
     expect(s2Tooltip?.textContent).not.toContain("Changes")
   })
+})
+
+describe("AppSidebar collapsed rail lists live work only", () => {
+  const boot = {
+    title: "yaran",
+    yaran_version: "v1",
+    available_providers: ["claude"],
+  }
+  const tree = () => (
+    <SidebarProvider defaultOpen={false}>
+      <AppSidebar />
+    </SidebarProvider>
+  )
+  const rail = () => screen.getByTestId("collapsed-agent-rail")
+  const labels = () =>
+    [...rail().querySelectorAll("button")].map((b) => b.getAttribute("aria-label"))
+
+  // An idle standalone terminal, a running project one and an agent's own: under
+  // the default "active first" sort the running one floats to the head of the
+  // list, and the agent's own is never on the rail.
+  function terminals(): unknown[] {
+    return [
+      {
+        id: "t-idle",
+        owner: { kind: "standalone", cwd_label: "~/work" },
+        label: "Terminal 1",
+        has_output: false,
+        working: false,
+        typing: false,
+        foreground_cmd: null,
+        sort_order: 0,
+      },
+      {
+        id: "t-busy",
+        owner: { kind: "project", project_id: "p1" },
+        label: "Terminal 2",
+        has_output: true,
+        working: true,
+        typing: false,
+        foreground_cmd: "vim",
+        sort_order: 1,
+      },
+      {
+        id: "t-own",
+        owner: { kind: "session", session_id: "s1" },
+        label: "Terminal 3",
+        has_output: true,
+        working: true,
+        typing: false,
+        foreground_cmd: "htop",
+        sort_order: 2,
+      },
+    ]
+  }
+  function stateWith(over: Partial<YaranState> = {}, withTerminals = true) {
+    const spine = makeTwoProjectSpine() as unknown as Record<string, unknown>
+    return makeState({
+      spine: {
+        ...spine,
+        terminals: withTerminals ? terminals() : [],
+      } as unknown as YaranState["spine"],
+      bootstrap: boot,
+      createTabInFlight: [],
+      ...over,
+    } as Partial<YaranState>)
+  }
+
+  it("leaves the Inactive agents off the rail and keeps the active ones", () => {
+    mockState = stateWith({}, false)
+    render(tree())
+    expect(labels()).toEqual(["main (Repo)"])
+  })
+
+  it("lists the terminals among the agents in the list's order", () => {
+    mockState = stateWith()
+    render(tree())
+    expect(labels()).toEqual(["vim (Repo)", "Terminal (~/work)", "main (Repo)"])
+  })
+
+  it("selects a terminal the way its expanded row does", () => {
+    mockState = stateWith()
+    render(tree())
+    fireEvent.click(rail().querySelectorAll("button")[1])
+    expect(selectTerminalMock).toHaveBeenCalledWith("t-idle", {
+      kind: "standalone",
+    })
+  })
+
+  it("highlights only the selected terminal", () => {
+    mockState = stateWith({
+      selectedTarget: {
+        kind: "terminal",
+        terminalId: "t-busy",
+        owner: { kind: "project", projectId: "p1" },
+      },
+    } as Partial<YaranState>)
+    render(tree())
+    const buttons = rail().querySelectorAll("button")
+    expect(buttons[0].hasAttribute("data-active")).toBe(true)
+    expect(buttons[1].hasAttribute("data-active")).toBe(false)
+    expect(buttons[2].hasAttribute("data-active")).toBe(false)
+  })
+
+  it("names a terminal and where it runs in its tooltip", () => {
+    mockState = stateWith()
+    render(tree())
+    const tips = rail().querySelectorAll('[data-testid="tooltip-content"]')
+    expect(tips[1].textContent).toContain("Terminal")
+    expect(tips[1].textContent).toContain("~/work")
+  })
+
+  it("does not show a selected agent that is inactive", () => {
+    mockState = stateWith({
+      selectedTarget: { kind: "agent", sessionId: "s2", tabId: "s2" },
+    } as Partial<YaranState>, false)
+    render(tree())
+    expect(rail().querySelectorAll("[data-active]").length).toBe(0)
+  })
+
+  it("renders no rail when there is no active agent and no terminal", () => {
+    const spine = makeTwoProjectSpine() as unknown as {
+      sessions: { status: string }[]
+    }
+    spine.sessions[0].status = "detached"
+    mockState = makeState({
+      spine: spine as unknown as YaranState["spine"],
+      bootstrap: boot,
+      createTabInFlight: [],
+    })
+    render(tree())
+    expect(screen.queryByTestId("collapsed-agent-rail")).toBeNull()
+  })
+
+  it("bounces a working terminal's icon and lets it finish at rest", () => {
+    mockState = stateWith()
+    const { rerender } = render(tree())
+    const glyph = () =>
+      rail().querySelectorAll("button")[0].querySelector("svg")!
+    const frame = () => glyph().closest("[data-slot='working-glyph']")!
+    expect(frame().getAttribute("class")).toContain(
+      "motion-safe:animate-working-bounce",
+    )
+    expect(glyph().getAttribute("class")).toContain(
+      "motion-safe:animate-working-pulse",
+    )
+    fireAnimationStart(frame(), "working-bounce")
+
+    const stopped = terminals() as { working: boolean }[]
+    stopped[1].working = false
+    const spine = makeTwoProjectSpine() as unknown as Record<string, unknown>
+    mockState = makeState({
+      spine: { ...spine, terminals: stopped } as unknown as YaranState["spine"],
+      bootstrap: boot,
+      createTabInFlight: [],
+    })
+    rerender(tree())
+    // The stop re-sorts the list ("active first"), so find the glyph again by
+    // its name.
+    const vim = () => rail().querySelector("[aria-label^='vim']")!.querySelector("svg")!
+    const vimFrame = () => vim().closest("[data-slot='working-glyph']")!
+    expect(vimFrame().getAttribute("class")).toContain(
+      "motion-safe:animate-working-bounce",
+    )
+    fireAnimationIteration(vimFrame(), "working-bounce")
+    expect(vimFrame().getAttribute("class")).not.toContain(
+      "motion-safe:animate-working-bounce",
+    )
+  })
+
+  it("renders the rail for terminals alone", () => {
+    const spine = makeTwoProjectSpine() as unknown as {
+      sessions: { status: string }[]
+    }
+    spine.sessions[0].status = "detached"
+    mockState = makeState({
+      // Without its own terminal, which would keep the stopped agent listed.
+      spine: {
+        ...spine,
+        terminals: terminals().slice(0, 2),
+      } as unknown as YaranState["spine"],
+      bootstrap: boot,
+      createTabInFlight: [],
+    })
+    render(tree())
+    expect(labels()).toEqual(["vim (Repo)", "Terminal (~/work)"])
+  })
+})
+
+// USER-LOCKED. The collapsed rail's working agent icon bounces with the pulse
+// and finishes its bounce at rest on every stop, a hand-over to a higher state
+// (needs-you, typing) included, like the sidebar list: it eases back to full
+// opacity, and the higher state's color and blink on the icon wait until it
+// has landed. This guard is named by CLAUDE.md's "Locked by the user" section.
+// Do not edit, weaken or delete it, or change what it pins, without the user's
+// explicit request.
+describe("USER-LOCKED: working glyph bounces with the pulse and settles at rest (collapsed rail)", () => {
+  const LOCKED =
+    'This is a user-locked decision recorded in CLAUDE.md "Locked by the user" ' +
+    "(the web working glyph bounces with the pulse, four per pulse, finishes its " +
+    "bounce at rest and eases back to full opacity on every stop, a hand-over to " +
+    "a higher state included, and takes that state's look only once it has " +
+    "landed). Do not change it without the user's explicit request."
+  const BOUNCE = "motion-safe:animate-working-bounce"
+  const PULSE = "motion-safe:animate-working-pulse"
+
+  function railState(
+    working: boolean,
+    over: { needs_attention?: boolean; typing?: boolean } = {},
+  ): YaranState {
+    const spine = makeTwoProjectSpine() as unknown as {
+      sessions: { working: boolean; needs_attention: boolean; typing: boolean }[]
+    }
+    spine.sessions[0].working = working
+    spine.sessions[0].needs_attention = over.needs_attention ?? false
+    spine.sessions[0].typing = over.typing ?? false
+    return makeState({
+      spine: spine as unknown as YaranState["spine"],
+      bootstrap: { title: "yaran", yaran_version: "v1", available_providers: ["claude"] },
+      createTabInFlight: [],
+    })
+  }
+
+  const tree = () => (
+    <SidebarProvider defaultOpen={false}>
+      <AppSidebar />
+    </SidebarProvider>
+  )
+  const button = () => screen.getByTestId("collapsed-agent-rail").querySelectorAll("button")[0]
+  const icon = () => button().querySelector("svg")!
+  const frame = () => icon().closest("[data-slot='working-glyph']")!
+
+  it("bounces the rail icon while working and lets it finish its bounce", () => {
+    mockState = railState(true)
+    const { rerender } = render(tree())
+    expect(frame().getAttribute("class"), LOCKED).toContain(BOUNCE)
+    expect(icon().getAttribute("class"), LOCKED).toContain(PULSE)
+    fireAnimationStart(frame(), "working-bounce")
+
+    mockState = railState(false)
+    rerender(tree())
+    expect(frame().getAttribute("class"), LOCKED).toContain(BOUNCE)
+    fireAnimationIteration(frame(), "working-bounce")
+    expect(frame().getAttribute("class"), LOCKED).not.toContain(BOUNCE)
+  })
+
+  // A higher state's label is there at once and the pulse is gone at once, but
+  // the bounce in flight still finishes at rest, the icon eases back to full
+  // opacity, and only then does the state's own look (its blink, its tint)
+  // ease in.
+  for (const [name, over, label, look] of [
+    ["needs-you", { needs_attention: true }, "Needs attention", "animate-attention-pulse"],
+    ["typing", { typing: true }, "Typing", "text-yaran-typing"],
+  ] as const) {
+    it(`lands the rail icon before ${name}'s look takes it over`, async () => {
+      mockState = railState(true)
+      const { rerender } = render(tree())
+      const ease = stubGlyphEase(icon())
+      fireAnimationStart(frame(), "working-bounce")
+
+      mockState = railState(true, over)
+      rerender(tree())
+      const withLook = () => icon().closest(`[class*='${look}']`)
+      expect(button().querySelector(`[aria-label='${label}']`), LOCKED).toBeTruthy()
+      expect(icon().getAttribute("class"), LOCKED).not.toContain(PULSE)
+      expect(ease.animate, LOCKED).toHaveBeenCalledTimes(1)
+      expect(withLook(), LOCKED).toBeNull()
+      expect(frame().getAttribute("class"), LOCKED).toContain(BOUNCE)
+      fireAnimationIteration(frame(), "working-bounce")
+      expect(frame().getAttribute("class"), LOCKED).not.toContain(BOUNCE)
+      expect(withLook(), LOCKED).toBeNull()
+      await ease.eased()
+      expectLookEasesIn(withLook()?.getAttribute("class") ?? "", LOCKED)
+    })
+  }
 })

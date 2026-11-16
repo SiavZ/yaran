@@ -65,12 +65,19 @@ struct BrowseReply {
 async fn browse(State(state): State<AppState>, Query(query): Query<BrowseQuery>) -> Response {
     // Absent or empty means the configured default, read from the live engine
     // config so a reload is reflected; `$HOME` then `/` if the engine is gone.
-    let dir = match query.path.filter(|p| !p.is_empty()) {
-        Some(p) => p,
-        None => match state.engine.browse_start_dir().await {
+    let dir = if let Some(p) = query.path.filter(|p| !p.is_empty()) {
+        p
+    } else {
+        let dir = match state.engine.browse_start_dir().await {
             Some(dir) => dir,
             None => std::env::var("HOME").unwrap_or_else(|_| "/".to_string()),
-        },
+        };
+        // A configured start folder may be relative; the answer is the
+        // folder it means, so a client can join onto it.
+        std::path::absolute(&dir)
+            .map(|abs| yaran_core::project_browser::canonical_or_original(&abs))
+            .map(|abs| abs.to_string_lossy().into_owned())
+            .unwrap_or(dir)
     };
 
     if dir.chars().count() > MAX_PATH_LEN {
@@ -245,9 +252,12 @@ mod tests {
         for b in s.bytes() {
             match b {
                 b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                    out.push(b as char)
+                    out.push(char::from(b));
                 }
-                _ => out.push_str(&format!("%{b:02X}")),
+                _ => {
+                    use std::fmt::Write as _;
+                    write!(out, "%{b:02X}").expect("writing to a String cannot fail");
+                }
             }
         }
         out
@@ -302,19 +312,15 @@ mod tests {
     /// With `path` omitted, the picker must open at the configured
     /// `defaults.start_directory` (resolved through the live engine), not `$HOME`.
     /// This is the web side of the start-directory wiring (the TUI already honored
-    /// it). Boots a real engine from a config.toml that points start_directory at a
+    /// it). Boots a real engine from a config.toml that points `start_directory` at a
     /// temp dir and asserts the no-path browse echoes that dir.
-    #[tokio::test]
-    async fn browse_without_a_path_opens_the_configured_start_directory() {
+    /// The no-path browse of an engine whose `defaults.start_directory` is `start`.
+    async fn browse_with_start_directory(start: &str) -> serde_json::Value {
         let cfg_root = tempfile::tempdir().unwrap();
-        let start = tempfile::tempdir().unwrap();
-        std::fs::create_dir(start.path().join("alpha")).unwrap();
-        let start_path = start.path().to_string_lossy().to_string();
-
         // Minimal config: only set the one key under test; everything else defaults.
         std::fs::write(
             cfg_root.path().join("config.toml"),
-            format!("[defaults]\nstart_directory = \"{start_path}\"\n"),
+            format!("[defaults]\nstart_directory = \"{start}\"\n"),
         )
         .unwrap();
 
@@ -323,7 +329,8 @@ mod tests {
             config_path: cfg_root.path().join("config.toml"),
             sessions_db_path: cfg_root.path().join("sessions.sqlite3"),
             worktrees_root: cfg_root.path().join("worktrees"),
-            lock_path: cfg_root.path().join("yaran.lock"),
+            lock_path: cfg_root.path().join("dux.lock"),
+            socket_path: cfg_root.path().join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         let engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
@@ -341,8 +348,31 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["path"], start_path);
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// With `path` omitted, the picker must open at the configured
+    /// `defaults.start_directory` (resolved through the live engine), not `$HOME`.
+    /// This is the web side of the start-directory wiring (the TUI already honored
+    /// it). A relative setting is answered as the absolute folder it means, because
+    /// clients join a folder name onto this answer and the server wants absolute
+    /// destinations.
+    #[tokio::test]
+    async fn browse_without_a_path_opens_the_configured_start_directory() {
+        let start = tempfile::tempdir().unwrap();
+        std::fs::create_dir(start.path().join("alpha")).unwrap();
+        let start_path = start.path().to_string_lossy().to_string();
+
+        let value = browse_with_start_directory(&start_path).await;
+        assert_eq!(
+            value["path"],
+            start
+                .path()
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
         let labels: Vec<&str> = value["entries"]
             .as_array()
             .unwrap()
@@ -350,6 +380,10 @@ mod tests {
             .map(|e| e["label"].as_str().unwrap())
             .collect();
         assert!(labels.contains(&"alpha/"));
+
+        let value = browse_with_start_directory(".").await;
+        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(value["path"], here.to_string_lossy().as_ref());
     }
 
     #[tokio::test]
@@ -430,14 +464,8 @@ mod tests {
     /// Create a real directory whose absolute path is exactly `target_len`
     /// characters, nesting components that each stay well inside the 255-byte
     /// name limit.
-    ///
-    /// `None` when the OPERATING SYSTEM will not hold a path that long.
-    /// [`MAX_PATH_LEN`] is 4096, which is Linux's `PATH_MAX`; macOS caps a path
-    /// at 1024 bytes and refuses anything longer with `ENAMETOOLONG`, so a
-    /// fixture asking for a near-4096 path dies in setup there rather than
-    /// reaching the behaviour under test. Measured: the nesting fails at a
-    /// total length just over 1024 on this platform.
-    fn deep_dir(base: &std::path::Path, target_len: usize) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    fn deep_dir(base: &std::path::Path, target_len: usize) -> std::path::PathBuf {
         let mut remaining = target_len - base.to_string_lossy().chars().count();
         // Every component costs one separator plus its own length, so pick a
         // final component that leaves a whole number of 100-char ones.
@@ -474,28 +502,43 @@ mod tests {
     async fn mkdir_rejects_a_join_that_overruns_the_path_cap() {
         // Catches the gap between the two bounded strings: a parent inside the
         // cap plus a name inside its own limit can still join into a path the
-        // inspect route would refuse to look at.
-        let dir = tempfile::tempdir().unwrap();
-        let Some(deep) = deep_dir(dir.path(), MAX_PATH_LEN - 6) else {
-            return;
-        };
-        let parent = deep.to_string_lossy().to_string();
+        // inspect route would refuse to look at. The route checks the strings
+        // before it touches the filesystem, so the parent need not exist,
+        // which keeps this on every platform (macOS cannot make a folder this
+        // long: its PATH_MAX is 1024).
+        let parent = format!("/{}", "p".repeat(MAX_PATH_LEN - 7));
+        assert_eq!(parent.chars().count(), MAX_PATH_LEN - 6);
 
-        let long_name = "n".repeat(32);
         let (_tmp, app) = router_no_auth();
-        let resp = post_mkdir(app, &parent, &long_name).await;
+        let resp = post_mkdir(app, &parent, &"n".repeat(32)).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         assert_eq!(
             String::from_utf8(bytes.to_vec()).unwrap(),
             "the folder's full path is too long"
         );
+    }
+
+    // Linux only: the fixture is a real folder just under the 4096-character
+    // cap, and macOS refuses any path longer than its PATH_MAX of 1024, so the
+    // folder cannot be made there. The cap's refusal runs on macOS in
+    // `mkdir_rejects_a_join_that_overruns_the_path_cap`, and an ordinary
+    // create in `mkdir_creates_a_folder_and_returns_its_path`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn mkdir_under_a_parent_near_the_path_cap_creates_a_name_the_join_can_carry() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = deep_dir(dir.path(), MAX_PATH_LEN - 6);
+        let parent = deep.to_string_lossy().to_string();
+
+        let (_tmp, app) = router_no_auth();
+        let resp = post_mkdir(app, &parent, &"n".repeat(32)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert!(
-            !deep.join(&long_name).exists(),
+            !deep.join("n".repeat(32)).exists(),
             "a refused join must create nothing"
         );
 
-        // The same parent still works for a name the join can carry.
         let (_tmp, app) = router_no_auth();
         let resp = post_mkdir(app, &parent, "ok").await;
         assert_eq!(resp.status(), StatusCode::OK);

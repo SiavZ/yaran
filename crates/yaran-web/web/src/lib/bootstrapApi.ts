@@ -7,6 +7,8 @@
 // <module-headers:begin>
 // Uses:
 // src/lib/bootstrapApi.ts
+// ├── src/lib/apiFetch.ts
+// ├── src/lib/cloneDirName.ts
 // ├── src/lib/cloudApi.ts
 // ├── src/lib/fileDrop.ts
 // ├── src/lib/flatList.ts
@@ -19,8 +21,10 @@
 // ├── src/components/AgentTabsStrip.tsx
 // ├── src/components/ConfirmDetachAgentDialog.test.tsx
 // ├── src/components/CustomizeWebappDialog.test.tsx
+// ├── src/components/CustomizeWebappPassword.test.tsx
 // ├── src/components/FirstLoadDialog.test.tsx
 // ├── src/components/FirstLoadDialog.tsx
+// ├── src/components/StackNewDialog.tsx
 // ├── src/components/TerminalArea.tsx
 // ├── src/components/terminalAreaModel.ts
 // ├── src/lib/bootstrapApi.test.ts
@@ -42,12 +46,15 @@
 // ├── src/lib/storeMacros.test.ts
 // ├── src/lib/storeMobileBars.test.ts
 // ├── src/lib/storeOffline.test.ts
+// ├── src/lib/storeSortAgents.test.ts
 // ├── src/lib/storeStartupLogs.test.ts
 // ├── src/lib/storeTabs.test.ts
 // ├── src/lib/storeTerminals.test.ts
 // └── yaran-website:src/figure/workspace.ts
 // <module-headers:end>
 
+import { apiFetch, rethrowAuthInterruption } from "./apiFetch";
+import { type GithubHosts, normalizeGithubHosts } from "./cloneDirName";
 import type { CloudLegView } from "./cloudApi";
 import type { DropPasteProfile } from "./fileDrop";
 import type { FlatSortKey } from "./flatList";
@@ -68,6 +75,9 @@ export interface Bootstrap {
   provider_drop_paste?: Record<string, DropPasteProfile>;
   /** Text macros from `[macros]` in config order (the macro popover/editor). */
   macros: MacroView[];
+  /** The version of `macros`, sent back on the macro editor's whole-list save
+   * so a list that changed since is refused instead of overwritten. */
+  macros_version?: string;
   /** The rotating welcome tips shown on the empty-state screen. */
   welcome_tips: string[];
   /** The binary's display version ('vX.Y.Z' or 'development'); shown in the sidebar. */
@@ -82,6 +92,11 @@ export interface Bootstrap {
   /** Raw `config.ui.github_integration` flag, distinct from the `gh_available`
    * composite: false means integration is off, not merely that `gh` is unreachable. */
   github_integration: boolean;
+  /** The hosts an address typed into the clone dialog is read as GitHub's on,
+   * the same ones the server's clone reads it with, so the suggested folder is
+   * the one the clone uses. Older servers omit it; consumers fall back to
+   * github.com alone. */
+  github_hosts?: GithubHosts;
   /** Mirrors `config.ui.copy_on_select`: whether selecting text in the web
    * terminal auto-copies it to the clipboard (default true). */
   copy_on_select: boolean;
@@ -99,8 +114,8 @@ export interface Bootstrap {
    * "never"; an absent or unrecognized value reads as "auto" via `composeBarMode`. */
   compose_bar?: string;
   /** Mirrors `config.ui.mobile_accessory_bar`: whether the touch terminal screens
-   * show the accessory key bar. A pure render gate, restored from the input menu or
-   * Preferences; falls back to true. */
+   * show the accessory key bar. A pure render gate, restored from the top menu, the phone's action
+   * cluster or Preferences; falls back to true. */
   mobile_accessory_bar?: boolean;
   /** Mirrors `config.ui.upload_write_gitignore`: whether the agent upload directory
    * keeps a `.gitignore` of `*`, so a dropped file stays invisible to git. Falls
@@ -159,8 +174,20 @@ export interface Bootstrap {
    * pane sends Tab and Shift-Tab to the agent instead of cycling panes. Nothing in
    * the web UI acts on it; Preferences shows and changes it. Falls back to false. */
   tab_reaches_agent?: boolean;
+  /** Mirrors `config.ui.nerd_font_icons`: when true the terminal UI draws its
+   * icons from a Nerd Font. Nothing in the web UI acts on it (the web draws its
+   * own icons); Preferences shows and changes it. Falls back to false. */
+  nerd_font_icons?: boolean;
+  /** Mirrors `config.ui.extended_keys` as its canonical name: "auto" | "on" |
+   * "off". Whether the terminal UI asks its host terminal for extended keys.
+   * Nothing in the web UI acts on it; Preferences shows and changes it. An
+   * older server omits it, so the row falls back to "auto". */
+  extended_keys?: string;
   /** Global environment variables applied to every spawned agent/terminal. */
   global_env: Record<string, string>;
+  /** The version of `global_env`, sent back on its dialog's save for the same
+   * reason as `macros_version`. */
+  global_env_version?: string;
   /** Mirrors `config.ui.status_clear_seconds`: the base window every tone is scaled
    * off in `lib/notify.ts`, not info/success alone. 0 never auto-clears a final
    * state; absent is 6. */
@@ -228,6 +255,9 @@ export interface Bootstrap {
   /** Mirrors `config.server.reconnect_attempt_timeout_seconds`: how long one
    * attempt may sit unopened before it is abandoned and counted as failed. */
   reconnect_attempt_timeout_seconds?: number;
+  /** Mirrors `config.server.changes_request_timeout_seconds`: how long the
+   * Changes pane waits for one changed-files request before giving it up. */
+  changes_request_timeout_seconds?: number;
   /** Mirrors `config.server.heartbeat_seconds`: how often a visible page checks
    * its terminal connection is really alive. */
   heartbeat_seconds?: number;
@@ -297,8 +327,9 @@ export class BootstrapFetchError extends Error {
 export async function fetchBootstrap(): Promise<Bootstrap> {
   let resp: Response;
   try {
-    resp = await fetch("/api/v1/bootstrap", { credentials: "same-origin" });
-  } catch {
+    resp = await apiFetch("/api/v1/bootstrap", { credentials: "same-origin" });
+  } catch (e) {
+    rethrowAuthInterruption(e);
     // The request never reached the server (offline, DNS, CORS).
     throw new BootstrapFetchError("Could not reach the server.", 0);
   }
@@ -309,5 +340,10 @@ export async function fetchBootstrap(): Promise<Bootstrap> {
       resp.status,
     );
   }
-  return (await resp.json()) as Bootstrap;
+  const bootstrap = (await resp.json()) as Bootstrap;
+  // Degraded once, here, so nothing downstream meets a kind it cannot read.
+  if (bootstrap.github_hosts !== undefined) {
+    bootstrap.github_hosts = normalizeGithubHosts(bootstrap.github_hosts);
+  }
+  return bootstrap;
 }

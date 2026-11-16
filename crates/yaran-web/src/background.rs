@@ -20,23 +20,32 @@
 //! background.rs
 //! ├── cloud_mode
 //! ├── console
+//! ├── control_socket
 //! ├── crate
 //! ├── engine_actor
 //! ├── ownership_publish
 //! ├── serve_legs
+//! ├── server
 //! ├── test_support
+//! ├── yaran-core
 //! ├── yaran-core::background_serve
+//! ├── yaran-core::client::connect
 //! ├── yaran-core::cloud::leg_identity
 //! ├── yaran-core::config
 //! ├── yaran-core::engine
 //! ├── yaran-core::logger
+//! ├── yaran-core::operations
+//! ├── yaran-core::serve_log
+//! ├── yaran-core::statusline
+//! ├── yaran-core::wire
 //! └── yaran-core::worker
-//! External: anyhow, std, tempfile
+//! External: anyhow, chrono, std, tempfile
 //!
 //! Used by:
 //! background.rs
 //! ├── crate
 //! ├── yaran-web[test background_serve_claims]
+//! ├── yaran-web[test serve_with_engine]
 //! └── yaran[bin yaran]::companion
 //! <module-headers:end>
 
@@ -44,7 +53,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use anyhow::Result;
-use yaran_core::background_serve::ServiceOutcome;
+use yaran_core::background_serve::{ServeClaims, ServiceOutcome};
 use yaran_core::engine::{Engine, EventReaction};
 
 use crate::console::Console;
@@ -63,18 +72,45 @@ pub struct BackgroundServer {
     /// The engine's total apply count as of the last iteration, so a change can
     /// be spotted without every terminal UI apply site announcing itself.
     last_command_applies: u64,
-    /// This serve's PTY-ownership registry and the terminal UI's seat in it, taken
-    /// at start. Both die with the serve, which is what releases everything on stop.
-    ownership: yaran_core::background_serve::TuiOwnership,
+    /// This serve's PTY-ownership registry and the terminal UI's seat in it; both die
+    /// with the serve, which releases everything on stop. `None` on a control-only core.
+    ownership: Option<yaran_core::background_serve::TuiOwnership>,
     /// The two buses this serve announces the terminal UI's ownership changes on,
     /// filled by `build_app`. Empty is survivable: nothing is announced and
     /// browsers fall back to the fingerprint backstop and the handshake.
     publisher: Arc<std::sync::OnceLock<crate::ownership_publish::OwnershipPublisher>>,
-    /// How many browser tabs are connected, kept up to date by the router's
+    /// How many browsers are connected, kept up to date by the router's
     /// connection registry. An atomic because the terminal UI reads it once per
     /// rendered frame from the thread that also services this serve.
-    connections: Arc<AtomicUsize>,
+    browsers: Arc<AtomicUsize>,
+    /// The file this serve's console writes, which a reload of `[server]
+    /// log_path` does not move for as long as this serve runs.
+    log_path: Option<std::path::PathBuf>,
 }
+
+impl std::fmt::Debug for BackgroundServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackgroundServer")
+            .field("urls", &self.urls)
+            .field("log_path", &self.log_path)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a hand-over left behind.
+#[derive(Debug)]
+pub struct HandedOver {
+    /// What the turns that finished the accepted requests did: a change one of
+    /// them made and the statuses it raised are still owed to the terminal UI,
+    /// whose next turn is the one that reports them.
+    pub drained: ServiceOutcome,
+    /// The first listener failure, if one was recorded.
+    pub error: Option<anyhow::Error>,
+}
+
+/// How long a hand-over waits for the control socket's accepted requests to be
+/// answered before the core stops anyway.
+const HAND_OVER_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Choose between the live address list and the one captured at start.
 ///
@@ -88,20 +124,53 @@ impl BackgroundServer {
     /// Start serving `engine` on `listeners`, which the caller already bound: a
     /// bind failure is then a status line message, not a half-torn-down process.
     ///
-    /// With `claim_before_serving`, every running pty nobody drives is claimed
-    /// for the terminal UI before any listener accepts a connection, and the
-    /// claims are announced once the serve is up. See
+    /// With [`ServeClaims::UndrivenPtys`], every running pty nobody drives is
+    /// claimed for the terminal UI before any listener accepts a connection, and
+    /// the claims are announced once the serve is up. See
     /// [`yaran_core::background_serve::BackgroundServeCompanion::start`].
+    ///
+    /// # Errors
+    ///
+    /// When the serve's runtime cannot be built or a listener cannot be adopted
+    /// into it; nothing is left serving then.
     pub fn start(
         engine: &mut Engine,
         listeners: Vec<std::net::TcpListener>,
         urls: Vec<String>,
-        claim_before_serving: bool,
+        claims: ServeClaims,
+        startup: &yaran_core::serve_log::StartupNotes,
     ) -> Result<Self> {
         crate::warn_if_ui_not_built();
-        // Writes nowhere: the terminal UI owns this terminal, and nothing on this
-        // path reads a captured activity ring.
-        let console = Console::noop();
+        // Prints nothing over the terminal UI's frame, but writes `server.log`
+        // as `yaran server` would.
+        let server_log = crate::open_server_log(&engine.config, &engine.paths);
+        let log_path = server_log.as_ref().map(|log| log.path().to_path_buf());
+        let console = match server_log {
+            Some(log) => Console::server_log_only(log),
+            None => Console::noop(),
+        };
+        // What `yaran server` opens its log with: the warnings raised before
+        // binding, then the banner with the version and what actually bound.
+        for warning in &startup.warnings {
+            console.warn(warning);
+        }
+        let legs: Vec<(std::net::SocketAddr, bool)> = listeners
+            .iter()
+            .filter_map(|listener| listener.local_addr().ok())
+            .map(|addr| (addr, addr.ip().is_loopback()))
+            .collect();
+        console.banner(&crate::serve_banner(
+            yaran_core::display_version(),
+            &legs,
+            &startup.bind_warnings,
+            engine.config.server.tailscale_mode(),
+            if startup.tailscale_detected {
+                crate::TailscaleDetection::Found
+            } else {
+                crate::TailscaleDetection::NotFound
+            },
+            &engine.config.server.auth,
+        ));
 
         // The terminal UI's `App::run` already spawned the global background
         // workers and is still running; spawning them here would double them.
@@ -126,27 +195,28 @@ impl BackgroundServer {
         // so no browser tab that is already reconnecting can win a plain-attach
         // claim first, and every handshake reads the terminal UI as the owner.
         // Announced once the serve is up and its publisher exists.
-        let seeded_claims = if claim_before_serving {
-            ownership.claim_every_running_pty(engine)
-        } else {
-            Vec::new()
+        let seeded_claims = match claims {
+            ServeClaims::UndrivenPtys => ownership.claim_every_running_pty(engine),
+            ServeClaims::Nothing => Vec::new(),
         };
         let publisher = Arc::new(std::sync::OnceLock::new());
-        let connections = Arc::new(AtomicUsize::new(0));
+        let browsers = Arc::new(AtomicUsize::new(0));
         let service = EngineService::new(engine, ends, ShutdownEcho::Silent);
         let core = ServeCore::start(
             handle,
-            listeners,
+            crate::ServeListeners {
+                web: listeners,
+                control: crate::control_socket::listener_of(engine),
+            },
             &engine.config,
-            &engine.paths.root,
-            console,
-            // The access log would print to a console that writes nowhere, and it
-            // is never wanted over a terminal UI's frame regardless.
-            false,
+            &console,
+            // Gated by the console too: with no `server.log` to write, the console
+            // records nothing and a request line costs nothing.
+            crate::server::AccessLog::of(&engine.config.server),
             SignalPolicy::Inherited,
             crate::BackgroundHooks {
                 ownership_publisher: Some(Arc::clone(&publisher)),
-                connections_gauge: Some(Arc::clone(&connections)),
+                connections_gauge: Some(Arc::clone(&browsers)),
             },
         )?;
         let mut server = Self {
@@ -155,18 +225,77 @@ impl BackgroundServer {
             shutdown_flag,
             urls,
             last_command_applies: engine.command_applies,
-            ownership,
+            ownership: Some(ownership),
             publisher,
-            connections,
+            browsers,
+            log_path,
         };
         server.publish_ownership_events(&seeded_claims);
         Ok(server)
     }
 
-    /// How many browser tabs are connected to this serve right now. Connections,
-    /// not devices: two tabs of one browser count as two.
-    pub fn connections(&self) -> usize {
-        self.connections.load(std::sync::atomic::Ordering::Relaxed)
+    /// Serve only the control socket `engine`'s lock holds, `None` when yaran runs
+    /// without one. Claims no terminal and serves nothing a browser could open.
+    ///
+    /// # Errors
+    ///
+    /// When the serve's runtime cannot be built.
+    pub fn start_control_only(engine: &mut Engine) -> Result<Option<Self>> {
+        let Some(control) = crate::control_socket::listener_of(engine) else {
+            return Ok(None);
+        };
+        let (handle, ends) = build_actor_channels(engine);
+        let shutdown_flag = handle.shutdown_flag();
+        let service = EngineService::new(engine, ends, ShutdownEcho::Silent);
+        let core = ServeCore::start_control_only(handle, control, &engine.config)?;
+        Ok(Some(Self {
+            core,
+            service,
+            shutdown_flag,
+            urls: Vec::new(),
+            last_command_applies: engine.command_applies,
+            ownership: None,
+            publisher: Arc::new(std::sync::OnceLock::new()),
+            browsers: Arc::new(AtomicUsize::new(0)),
+            log_path: None,
+        }))
+    }
+
+    /// Whether this serves the web UI, rather than only the control socket.
+    pub fn serves_web(&self) -> bool {
+        self.ownership.is_some()
+    }
+
+    /// Stop serving, first letting the control socket finish the requests it
+    /// already accepted, servicing `engine` meanwhile; later connections wait for the next core.
+    ///
+    /// An operation wait answers at once; any other request still open after
+    /// [`HAND_OVER_BOUND`] is cut.
+    pub fn hand_over(mut self, engine: &mut Engine) -> HandedOver {
+        self.core.stop_control_socket();
+        let deadline = std::time::Instant::now() + HAND_OVER_BOUND;
+        let mut drained = ServiceOutcome::default();
+        while !self.core.control_socket_drained() && std::time::Instant::now() < deadline {
+            drained.absorb(self.service(engine));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // This core is stopping on purpose, so its loop ending is no news.
+        drained.stopped = false;
+        HandedOver {
+            drained,
+            error: self.stop(),
+        }
+    }
+
+    /// The log file this serve opened, `None` when it could not open one.
+    pub fn server_log_path(&self) -> Option<std::path::PathBuf> {
+        self.log_path.clone()
+    }
+
+    /// How many browsers are connected to this serve right now: every tab of one
+    /// browser profile counted once.
+    pub fn browsers(&self) -> usize {
+        self.browsers.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The addresses this serve is reachable on right now.
@@ -265,8 +394,21 @@ impl BackgroundServer {
         self.service.service_engine_once(engine)
     }
 
-    /// The terminal UI's seat in this serve's PTY-ownership registry.
-    pub fn ownership(&self) -> yaran_core::background_serve::TuiOwnership {
+    /// How many requests the control socket has begun handling.
+    #[cfg(test)]
+    pub(crate) fn control_requests_started(&self) -> usize {
+        self.core.control_requests_started()
+    }
+
+    /// This serve's live Tailscale-mode handle, for a test that moves its leg.
+    #[cfg(test)]
+    pub(crate) fn tailscale_mode_control(&self) -> crate::serve_legs::TailscaleModeControl {
+        self.core.tailscale_mode()
+    }
+
+    /// The terminal UI's seat in this serve's PTY-ownership registry, or
+    /// `None` for a core that serves only the control socket.
+    pub fn ownership(&self) -> Option<yaran_core::background_serve::TuiOwnership> {
         self.ownership.clone()
     }
 
@@ -292,8 +434,8 @@ impl BackgroundServer {
 
     /// Adopt the `[server]` section the terminal UI just swapped in, so the limits
     /// the routes read per request stop answering on the old config.
-    pub fn note_config_applied(&mut self, server: &yaran_core::config::ServerConfig) {
-        self.service.note_config_applied(server);
+    pub fn note_config_applied(&mut self, config: &yaran_core::config::Config) {
+        self.service.note_config_applied(config);
     }
 
     /// Open the spine-change gate when the terminal UI applied anything since the
@@ -322,7 +464,8 @@ mod tests {
             config_path: tmp.path().join("config.toml"),
             sessions_db_path: tmp.path().join("sessions.sqlite3"),
             worktrees_root: tmp.path().join("worktrees"),
-            lock_path: tmp.path().join("yaran.lock"),
+            lock_path: tmp.path().join("dux.lock"),
+            socket_path: tmp.path().join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees dir");
         let engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
@@ -348,6 +491,11 @@ mod tests {
     /// the two the workspace has are an async one and one this crate does not
     /// depend on, and a bare GET with no body is not worth either.
     fn healthz(addr: std::net::SocketAddr) -> Result<String, String> {
+        get(addr, "/healthz")
+    }
+
+    /// The status line of a bare GET of `path`.
+    fn get(addr: std::net::SocketAddr, path: &str) -> Result<String, String> {
         use std::io::{Read, Write};
 
         let timeout = std::time::Duration::from_secs(3);
@@ -358,7 +506,7 @@ mod tests {
             .map_err(|e| e.to_string())?;
         write!(
             stream,
-            "GET /healthz HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+            "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
         )
         .map_err(|e| format!("write failed: {e}"))?;
         let mut response = String::new();
@@ -368,8 +516,229 @@ mod tests {
         response
             .lines()
             .next()
-            .map(|line| line.to_string())
+            .map(std::string::ToString::to_string)
             .ok_or_else(|| "the server closed without answering".to_string())
+    }
+
+    /// Send `GET <uri>` over the control socket at `path` on its own thread,
+    /// so it can be sent before anything serves the socket.
+    fn request_over_socket(
+        path: &std::path::Path,
+        uri: &str,
+    ) -> std::thread::JoinHandle<Result<String, String>> {
+        request_over_socket_as(path, "GET", uri)
+    }
+
+    /// [`request_over_socket`] with the method `method`.
+    fn request_over_socket_as(
+        path: &std::path::Path,
+        method: &str,
+        uri: &str,
+    ) -> std::thread::JoinHandle<Result<String, String>> {
+        use std::io::{Read, Write};
+        let path = path.to_path_buf();
+        let uri = uri.to_string();
+        let method = method.to_string();
+        std::thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(&path)
+                .map_err(|e| format!("connect failed: {e}"))?;
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(15)))
+                .map_err(|e| e.to_string())?;
+            write!(
+                stream,
+                "{method} {uri} HTTP/1.1\r\nHost: yaran\r\nConnection: close\r\n\r\n"
+            )
+            .map_err(|e| format!("write failed: {e}"))?;
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .map_err(|e| format!("read failed: {e}"))?;
+            Ok(response)
+        })
+    }
+
+    /// Service `server` the way the terminal UI's loop does until `request`
+    /// has its answer.
+    fn serviced_until_answered(
+        server: &mut BackgroundServer,
+        engine: &mut yaran_core::engine::Engine,
+        request: std::thread::JoinHandle<Result<String, String>>,
+    ) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !request.is_finished() && std::time::Instant::now() < deadline {
+            server.service(engine);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        request
+            .join()
+            .expect("the request thread")
+            .expect("the request was answered")
+    }
+
+    /// [`serviced_until_answered`], answering also every status the turns
+    /// handed the terminal UI.
+    fn serviced_collecting_statuses(
+        server: &mut BackgroundServer,
+        engine: &mut yaran_core::engine::Engine,
+        request: std::thread::JoinHandle<Result<String, String>>,
+    ) -> (String, Vec<yaran_core::wire::WireStatus>) {
+        let mut statuses = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !request.is_finished() && std::time::Instant::now() < deadline {
+            statuses.extend(server.service(engine).statuses);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        statuses.extend(server.service(engine).statuses);
+        let answer = request
+            .join()
+            .expect("the request thread")
+            .expect("the request was answered");
+        (answer, statuses)
+    }
+
+    /// Open a running operation record and start a long wait on it over the
+    /// socket, the way the command line polls a change it made, then let the
+    /// wait reach the core that serves it.
+    fn waiting_on_an_operation(
+        engine: &yaran_core::engine::Engine,
+        socket: &std::path::Path,
+        id: &str,
+    ) -> std::thread::JoinHandle<Result<String, String>> {
+        engine.operations.open(
+            id,
+            yaran_core::operations::OperationKind::TabClose,
+            yaran_core::operations::OperationPolicy {
+                unknown_after: std::time::Duration::from_secs(600),
+                retention: std::time::Duration::from_secs(600),
+            },
+            std::time::Instant::now(),
+        );
+        let wait = request_over_socket(socket, &format!("/api/v1/operations/{id}?wait_seconds=25"));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        wait
+    }
+
+    /// Hand `core` over, and say how long that took and what the operation
+    /// wait in flight on it answered.
+    fn handed_over_with_a_wait_in_flight(
+        core: BackgroundServer,
+        engine: &mut yaran_core::engine::Engine,
+        wait: std::thread::JoinHandle<Result<String, String>>,
+    ) -> (std::time::Duration, String) {
+        let started = std::time::Instant::now();
+        assert!(core.hand_over(engine).error.is_none());
+        let took = started.elapsed();
+        let answer = wait
+            .join()
+            .expect("the wait thread")
+            .expect("the wait was answered");
+        (took, answer)
+    }
+
+    /// `POST <uri>` with a JSON body over the control socket, on its own thread.
+    fn post_over_socket(
+        path: &std::path::Path,
+        uri: &str,
+        body: &str,
+    ) -> std::thread::JoinHandle<Result<String, String>> {
+        use std::io::{Read, Write};
+        let (path, uri, body) = (path.to_path_buf(), uri.to_string(), body.to_string());
+        std::thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(&path)
+                .map_err(|e| format!("connect failed: {e}"))?;
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(15)))
+                .map_err(|e| e.to_string())?;
+            write!(
+                stream,
+                "POST {uri} HTTP/1.1\r\nHost: yaran\r\nConnection: close\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .map_err(|e| format!("write failed: {e}"))?;
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .map_err(|e| format!("read failed: {e}"))?;
+            Ok(response)
+        })
+    }
+
+    /// The reload a reaction carries, however it is wrapped.
+    fn reloaded_config(
+        reaction: yaran_core::engine::EventReaction,
+    ) -> Option<Box<yaran_core::config::Config>> {
+        match reaction {
+            yaran_core::engine::EventReaction::ApplyReloadedConfig(config) => Some(config),
+            yaran_core::engine::EventReaction::Multi(all) => {
+                all.into_iter().find_map(reloaded_config)
+            }
+            _ => None,
+        }
+    }
+
+    /// A password set from the browser makes yaran reload its own config. With the
+    /// terminal UI as the engine's servicer, the reload reaches the terminal
+    /// UI's drain as the reloaded config to adopt: no signal is raised (none is
+    /// installed here), the reload rides the engine's request channel. The
+    /// terminal UI's own handling of that reaction is covered in `yaran-tui`.
+    #[test]
+    fn a_password_set_in_the_browser_reaches_the_terminal_uis_reload_owner_without_a_signal() {
+        let (mut engine, _tmp) = engine_in_tempdir();
+        engine.config.server.tailscale = "no".to_string();
+        std::fs::set_permissions(
+            &engine.paths.root,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
+        let socket = engine.paths.root.join("yaran.sock");
+        assert_eq!(
+            yaran_core::control_socket::open(&mut engine.single_instance_lock, &socket),
+            None
+        );
+        let (listener, addr) = loopback_listener();
+        let mut server = BackgroundServer::start(
+            &mut engine,
+            vec![listener],
+            vec![format!("http://{addr}")],
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes::default(),
+        )
+        .expect("the serve starts");
+        assert!(!engine.config.server.auth.has_password());
+
+        let request = post_over_socket(
+            &socket,
+            "/api/v1/auth/password",
+            r#"{"new":"orbit velvet quarry lantern cobalt"}"#,
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut adopted = false;
+        while !adopted && std::time::Instant::now() < deadline {
+            server.service(&mut engine);
+            while let Ok(event) = engine.worker_rx.try_recv() {
+                let reaction = engine.process_worker_event(event);
+                server.on_reaction(&mut engine, &reaction);
+                if let Some(config) = reloaded_config(reaction) {
+                    engine.apply_reloaded_config(*config).expect("adopted");
+                    adopted = true;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(adopted, "the reload reached the terminal UI's owner");
+        assert!(
+            engine.config.server.auth.has_password(),
+            "the owner adopted the new password"
+        );
+        let answer = request.join().expect("thread").expect("answered");
+        assert!(answer.starts_with("HTTP/1.1 2"), "{answer}");
+    }
+
+    fn socket_inode(path: &std::path::Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(path).expect("the socket").ino()
     }
 
     /// The address list the terminal UI shows has to follow the legs, not the
@@ -384,7 +753,8 @@ mod tests {
             &mut engine,
             vec![listener],
             vec!["http://stale.example:1".to_string()],
-            false,
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes::default(),
         )
         .expect("the serve starts");
 
@@ -403,36 +773,263 @@ mod tests {
     /// The runtime is the reaper for everything `build_app` spawns, so this is
     /// also what stops a toggle cycle from leaving a second changed-files poller
     /// or a second event-bus forwarder running beside the first.
+    ///
+    /// The control socket rides through it: the plain terminal UI's core serves
+    /// it alone, each serve takes it over, and a request sent while nothing
+    /// serves it is answered by whichever core comes next, on the same socket.
     #[test]
     fn a_toggle_cycle_stops_serving_and_starts_a_fresh_app() {
-        let (mut engine, _tmp) = engine_in_tempdir();
+        let (mut engine, tmp) = engine_in_tempdir();
+        // Not a test about Tailscale: on any other mode every request waits on
+        // the first Funnel check, which would consult this machine's real CLI.
+        engine.config.server.tailscale = "no".to_string();
+        // The config folder is owner-only, and the control socket goes nowhere else.
+        std::fs::set_permissions(
+            &engine.paths.root,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
+        let socket = engine.paths.root.join("yaran.sock");
+        assert_eq!(
+            yaran_core::control_socket::open(&mut engine.single_instance_lock, &socket),
+            None
+        );
+        let bound = socket_inode(&socket);
+
+        let plain = the_socket_core_answers_and_raises_statuses(&mut engine, &socket);
+        // The command line's own wait rides the hand-over: its read is answered
+        // with the record still running, it reads again by the same id, and
+        // the next core answers that read with the outcome.
+        let cli_wait = {
+            let lock_path = engine.paths.lock_path.clone();
+            engine.operations.open(
+                "op-cli",
+                yaran_core::operations::OperationKind::TabClose,
+                yaran_core::operations::OperationPolicy {
+                    unknown_after: std::time::Duration::from_secs(600),
+                    retention: std::time::Duration::from_secs(600),
+                },
+                std::time::Instant::now(),
+            );
+            let wait = std::thread::spawn(move || {
+                let client = yaran_core::client::connect::connect(
+                    &yaran_core::client::connect::Target::Local,
+                    &lock_path,
+                )?;
+                let record = client.operation("op-cli")?;
+                client.wait(record, std::time::Duration::from_secs(30))
+            });
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            wait
+        };
+        // A command-line wait on an operation answers the record as it stands
+        // the moment its core hands over, and the hand-over does not wait it out.
+        let wait = waiting_on_an_operation(&engine, &socket, "op-to-background");
+        let (took, answer) = handed_over_with_a_wait_in_flight(plain, &mut engine, wait);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(answer.contains("\"running\""), "{answer}");
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+        let waiting = request_over_socket(&socket, "/api/v1/workspace");
+        engine.config.server.access_log = true;
 
         let (listener, first_addr) = loopback_listener();
-        let server = BackgroundServer::start(
+        let mut server = BackgroundServer::start(
             &mut engine,
             vec![listener],
             vec![format!("http://{first_addr}")],
-            false,
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes {
+                warnings: vec!["Tailscale not detected (test).".to_string()],
+                ..Default::default()
+            },
         )
         .expect("the first serve starts");
+        let answer = serviced_until_answered(&mut server, &mut engine, waiting);
+        assert!(
+            answer.starts_with("HTTP/1.1 200"),
+            "a request sent between cores is answered by the next: {answer}"
+        );
+        engine.operations.finish(
+            "op-cli",
+            yaran_core::statusline::StatusTone::Info,
+            "Closed the tab.",
+            None,
+            std::time::Instant::now(),
+        );
+        let finished = cli_wait
+            .join()
+            .expect("the command line's wait thread")
+            .expect("the wait ends with the outcome");
+        assert_eq!(
+            finished.state,
+            yaran_core::client::wait::RecordState::Succeeded
+        );
+        assert_eq!(finished.message, "Closed the tab.");
+        the_first_serve_answers(&server, first_addr, &socket, bound, tmp.path());
+        let wait = waiting_on_an_operation(&engine, &socket, "op-to-plain");
+        let (took, answer) = handed_over_with_a_wait_in_flight(server, &mut engine, wait);
+        assert!(answer.contains("\"running\""), "{answer}");
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+        assert!(
+            healthz(first_addr).is_err(),
+            "the stopped serve must not still be accepting on {first_addr}"
+        );
+        let plain = the_socket_core_comes_back(&mut engine, &socket, bound);
+        // The terminal UI's run ending hands its core over the same way.
+        let wait = waiting_on_an_operation(&engine, &socket, "op-at-the-end");
+        let (took, answer) = handed_over_with_a_wait_in_flight(plain, &mut engine, wait);
+        assert!(answer.contains("\"running\""), "{answer}");
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+
+        toggling_back_on_serves_a_fresh_app(&mut engine);
+
+        the_log_keeps_the_access_logged_serve(tmp.path(), first_addr);
+    }
+
+    /// A command-line change the hand-over finishes still owes the terminal UI
+    /// its status and its refresh: the core is gone by the next turn, so the
+    /// hand-over is what carries them.
+    #[test]
+    fn a_change_the_hand_over_finishes_still_reports_its_status() {
+        let (mut engine, _tmp) = engine_in_tempdir();
+        engine.config.server.tailscale = "no".to_string();
+        std::fs::set_permissions(
+            &engine.paths.root,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
+        let socket = engine.paths.root.join("yaran.sock");
+        assert_eq!(
+            yaran_core::control_socket::open(&mut engine.single_instance_lock, &socket),
+            None
+        );
+        let core = BackgroundServer::start_control_only(&mut engine)
+            .expect("the socket core starts")
+            .expect("yaran holds a control socket");
+        engine
+            .sessions
+            .push(crate::test_support::sample_agent("s-cli"));
+        let delete = request_over_socket_as(&socket, "DELETE", "/api/v1/sessions/s-cli");
+        // Begun by the router, so the hand-over finishes it rather than closing
+        // it unread; nothing else talks to this socket. No turn has run yet, so
+        // only the hand-over's own turns can have served it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while core.control_requests_started() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the delete never reached the router"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let handed = core.hand_over(&mut engine);
+        let answer = delete
+            .join()
+            .expect("the request thread")
+            .expect("the request was answered");
+        assert!(answer.starts_with("HTTP/1.1 204"), "{answer}");
+        assert!(handed.drained.mutated, "the delete changed the workspace");
+        assert!(
+            handed
+                .drained
+                .statuses
+                .iter()
+                .any(|status| status.message.contains("Deleted")),
+            "{:?}",
+            handed.drained.statuses
+        );
+        assert!(!handed.drained.stopped);
+    }
+
+    /// The plain terminal UI's core serves the control socket alone, and a change
+    /// the command line makes there raises its status on the terminal UI too.
+    fn the_socket_core_answers_and_raises_statuses(
+        engine: &mut yaran_core::engine::Engine,
+        socket: &std::path::Path,
+    ) -> BackgroundServer {
+        let mut plain = BackgroundServer::start_control_only(engine)
+            .expect("the socket core starts")
+            .expect("yaran holds a control socket");
+        assert!(!plain.serves_web());
+        assert!(plain.ownership().is_none(), "the socket core claims no pty");
+        let answer = serviced_until_answered(
+            &mut plain,
+            engine,
+            request_over_socket(socket, "/api/v1/workspace"),
+        );
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(answer.contains("\"projects\""), "{answer}");
+        // A change the command line makes raises its status on the terminal UI
+        // too: the turn that answered it hands the final over.
+        engine
+            .sessions
+            .push(crate::test_support::sample_agent("s-cli"));
+        let (answer, statuses) = serviced_collecting_statuses(
+            &mut plain,
+            engine,
+            request_over_socket_as(socket, "DELETE", "/api/v1/sessions/s-cli"),
+        );
+        assert!(answer.starts_with("HTTP/1.1 204"), "{answer}");
+        assert!(
+            statuses
+                .iter()
+                .any(|status| status.message.contains("Deleted")),
+            "{statuses:?}"
+        );
+        plain
+    }
+
+    /// The first background serve answers on its own address, over the same bound
+    /// control socket, and says which log file it opened.
+    fn the_first_serve_answers(
+        server: &BackgroundServer,
+        first_addr: std::net::SocketAddr,
+        socket: &std::path::Path,
+        bound: u64,
+        root: &std::path::Path,
+    ) {
+        assert_eq!(socket_inode(socket), bound, "the same bound socket");
         let status = healthz(first_addr).expect("the first serve answers");
         assert!(
             status.contains("200"),
             "a started background server must answer on its own address, got {status:?}"
         );
-        assert!(server.stop().is_none(), "a clean stop records no failure");
-        assert!(
-            healthz(first_addr).is_err(),
-            "the stopped serve must not still be accepting on {first_addr}"
+        get(first_addr, "/api/v1/build").expect("the first serve answers a page request");
+        assert_eq!(
+            server.server_log_path(),
+            Some(root.join("server.log")),
+            "the serve says which file it opened"
         );
+    }
 
+    /// A request sent while nothing serves the socket is answered by the plain
+    /// core that starts next, on the same bound socket.
+    fn the_socket_core_comes_back(
+        engine: &mut yaran_core::engine::Engine,
+        socket: &std::path::Path,
+        bound: u64,
+    ) -> BackgroundServer {
+        let waiting = request_over_socket(socket, "/api/v1/workspace");
+        let mut plain = BackgroundServer::start_control_only(engine)
+            .expect("the socket core starts again")
+            .expect("yaran still holds its control socket");
+        let answer = serviced_until_answered(&mut plain, engine, waiting);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert_eq!(socket_inode(socket), bound, "the same bound socket");
+        plain
+    }
+
+    /// Toggling the background serve back on builds a fresh app rather than
+    /// reviving the old one.
+    fn toggling_back_on_serves_a_fresh_app(engine: &mut yaran_core::engine::Engine) {
         // Toggling back on builds a fresh app rather than reviving the old one.
+        engine.config.server.access_log = false;
         let (listener, second_addr) = loopback_listener();
         let server = BackgroundServer::start(
-            &mut engine,
+            engine,
             vec![listener],
             vec![format!("http://{second_addr}")],
-            false,
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes::default(),
         )
         .expect("the second serve starts");
         let status = healthz(second_addr).expect("the second serve answers");
@@ -440,7 +1037,53 @@ mod tests {
             status.contains("200"),
             "toggling back on must serve again, got {status:?}"
         );
+        get(second_addr, "/api/v1/build").expect("the second serve answers a page request");
         assert!(server.stop().is_none());
+    }
+
+    /// The background serves' `server.log`: the request lines of the serve that had
+    /// `access_log` on and none of the other's, never the health probe's, and the
+    /// opening `yaran server` writes.
+    fn the_log_keeps_the_access_logged_serve(
+        root: &std::path::Path,
+        first_addr: std::net::SocketAddr,
+    ) {
+        // Serving in the background prints nothing over the terminal UI, but the
+        // file keeps the request lines of the serve that had `access_log` on, and
+        // none of the one that had it off, and never the health probe's.
+        let log = std::fs::read_to_string(root.join("server.log")).expect("server.log");
+        let page_requests: Vec<&str> = log
+            .lines()
+            .filter(|line| {
+                let (stamp, rest) = line.split_once(' ').expect("a dated line");
+                chrono::DateTime::parse_from_rfc3339(stamp).expect("an RFC 3339 date");
+                rest.len() > 9 && rest[9..].starts_with("GET /api/v1/build 200 ")
+            })
+            .collect();
+        assert_eq!(page_requests.len(), 1, "{log}");
+        assert!(!log.contains("/healthz"), "{log}");
+        // Starting writes what `yaran server` opens its log with: the warnings
+        // raised before binding, then the banner with the version and addresses.
+        let lines: Vec<&str> = log
+            .lines()
+            .map(|line| line.split_once(' ').expect("a dated line").1)
+            .collect();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.len() > 9 && l[9..] == *"warn Tailscale not detected (test)."),
+            "{log}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("yaran ") && l.ends_with("  plain HTTP")),
+            "{log}"
+        );
+        assert!(
+            lines.contains(&format!("  -> Local (loopback): http://{first_addr}").as_str()),
+            "{log}"
+        );
     }
 
     /// The teardown flag must be set before anything waits on the runtime.
@@ -457,7 +1100,8 @@ mod tests {
             &mut engine,
             vec![listener],
             vec![format!("http://{addr}")],
-            false,
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes::default(),
         )
         .expect("serve starts");
         let flag = std::sync::Arc::clone(&server.shutdown_flag);
@@ -483,7 +1127,8 @@ mod tests {
             &mut engine,
             vec![listener],
             vec![format!("http://{addr}")],
-            false,
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes::default(),
         )
         .expect("serve starts");
         assert!(
@@ -509,7 +1154,8 @@ mod tests {
             &mut engine,
             vec![listener],
             vec![format!("http://{addr}")],
-            false,
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes::default(),
         )
         .expect("serve starts");
         assert!(
@@ -531,7 +1177,8 @@ mod tests {
             &mut engine,
             vec![listener],
             vec![format!("http://{addr}")],
-            false,
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes::default(),
         )
         .expect("first serve");
         let first = crate::pty_owners::PtySizeOwners::default().next_conn_id();
@@ -542,7 +1189,8 @@ mod tests {
             &mut engine,
             vec![listener],
             vec![format!("http://{addr}")],
-            false,
+            yaran_core::background_serve::ServeClaims::Nothing,
+            &yaran_core::serve_log::StartupNotes::default(),
         )
         .expect("second serve");
         let second = crate::pty_owners::PtySizeOwners::default().next_conn_id();
@@ -560,7 +1208,10 @@ mod tests {
     #[test]
     fn no_legs_left_shows_no_addresses_rather_than_the_ones_bound_at_start() {
         let captured = vec!["http://127.0.0.1:8080".to_string()];
-        assert!(super::urls_to_show(Some(Vec::new()), &captured).is_empty());
+        assert_eq!(
+            super::urls_to_show(Some(Vec::new()), &captured),
+            Vec::<String>::new()
+        );
         assert_eq!(
             super::urls_to_show(Some(vec!["http://100.64.0.5:8080".to_string()]), &captured),
             vec!["http://100.64.0.5:8080".to_string()],
@@ -580,7 +1231,8 @@ mod tests {
     /// `None`, an empty registry answers an empty list.
     #[test]
     fn a_poisoned_leg_registry_answers_that_it_could_not_read() {
-        let shutdown = crate::serve_legs::ServeShutdown::for_watched(false);
+        let shutdown =
+            crate::serve_legs::ServeShutdown::for_watched(crate::serve_legs::LegWatch::Unwatched);
         assert_eq!(
             shutdown.leg_addrs(),
             Some(Vec::new()),

@@ -66,7 +66,7 @@ impl fmt::Display for SigningError {
         match self {
             Self::Path(p) => write!(
                 f,
-                "`{p}` is not a signable machine path (expected /v1/machine/<lowercase letters>)"
+                "\"{p}\" is not a signable machine path (expected /v1/machine/<lowercase letters>)"
             ),
             Self::Random => write!(
                 f,

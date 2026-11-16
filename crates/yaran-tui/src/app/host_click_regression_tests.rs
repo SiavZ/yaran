@@ -126,7 +126,7 @@ impl ClickFixture {
         terminal.draw(|frame| app.render(frame)).unwrap();
         let area = app
             .mouse_layout
-            .agent_term
+            .focused_term
             .expect("rendered terminal target");
         assert!(area.width > 4 && area.height > 3, "{area:?}");
         assert!(!app.scroll_mode_active());
@@ -148,7 +148,7 @@ impl ClickFixture {
         if self.fullscreen {
             let final_byte = if down { 'M' } else { 'm' };
             let raw = format!("\x1b[<0;{};{}{final_byte}", column + 1, row + 1);
-            self.app.process_raw_input_bytes(raw.as_bytes()).unwrap();
+            self.app.process_raw_input_bytes(raw.as_bytes());
         } else {
             self.app.handle_mouse(MouseEvent {
                 kind: if down {
@@ -172,7 +172,9 @@ impl ClickFixture {
                 assert!(
                     !self
                         .app
-                        .snapshot_buf
+                        .part_snapshots
+                        .main
+                        .buf
                         .cursor
                         .is_some_and(|cursor| { cursor.row == 1 && cursor.col == 1 }),
                     "cursor fixture already at commanded destination"
@@ -189,12 +191,16 @@ impl ClickFixture {
                     let effect_arrived = match command {
                         "CURSOR" => self
                             .app
-                            .snapshot_buf
+                            .part_snapshots
+                            .main
+                            .buf
                             .cursor
                             .is_some_and(|cursor| cursor.row == 1 && cursor.col == 1),
                         "OUTPUT" => self
                             .app
-                            .snapshot_buf
+                            .part_snapshots
+                            .main
+                            .buf
                             .cells
                             .iter()
                             .map(|cell| cell.symbol.as_str())
@@ -215,7 +221,7 @@ impl ClickFixture {
         let (column, row) = self.point;
         if self.fullscreen {
             let raw = format!("\x1b[<32;{};{}M", column + column_delta + 1, row + 1);
-            self.app.process_raw_input_bytes(raw.as_bytes()).unwrap();
+            self.app.process_raw_input_bytes(raw.as_bytes());
         } else {
             self.app.handle_mouse(MouseEvent {
                 kind: MouseEventKind::Drag(MouseButton::Left),
@@ -243,7 +249,7 @@ impl ClickFixture {
             "unexpected click wire: fullscreen={}, origin={:?}, generation={}, selection={:?}",
             self.fullscreen,
             self.app.snapshot_selection_origin(),
-            self.app.grid_generation,
+            self.app.part_snapshots.main.generation,
             self.app.terminal_selection
         );
     }
@@ -400,7 +406,7 @@ fn viewport_resize_retires_pending_stationary_click() {
         let area = fixture
             .app
             .mouse_layout
-            .agent_term
+            .focused_term
             .expect("resized terminal target");
         let expected = (area.height, area.width);
         assert_ne!(

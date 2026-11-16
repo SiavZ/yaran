@@ -26,8 +26,11 @@
 //! └── app
 //! <module-headers:end>
 
-use super::*;
+use super::{App, CenterMode, CenterPart, FullscreenOverlay, PromptState, attention_blink_phase};
 use crate::app::pty_ownership::PtyTakeoverCard;
+use crate::numeric::u128_to_usize_wrapping;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// A full redraw at least this often whatever the gate thinks, so a mutation
 /// point that forgot to mark dirty costs a one-second lag, not a stuck screen.
@@ -49,6 +52,8 @@ pub(crate) struct AnimationPhase {
     attention_on: Option<bool>,
     /// The modal refusal cue's own phase, false whenever the cue is not running.
     refusal_on: bool,
+    /// The status line's countdown, in the whole seconds it shows.
+    status_countdown: Option<u64>,
 }
 
 /// The per-row live state the sidebar reflects. Packed into one byte so a tick
@@ -61,7 +66,7 @@ const ROW_ATTENTION: u8 = 1 << 3;
 
 #[derive(Default)]
 pub(crate) struct RedrawGate {
-    dirty: bool,
+    pub(crate) dirty: bool,
     last_frame: Option<Instant>,
     phase: Option<AnimationPhase>,
     status_line: Option<(yaran_core::statusline::StatusTone, String)>,
@@ -71,11 +76,18 @@ pub(crate) struct RedrawGate {
     /// The header's cloud crumb: the leg moves on the serve's threads, so it is
     /// compared rather than marked, like the takeover card.
     cloud_crumb: Option<(String, bool)>,
+    /// Every agent's pull-request revision summed. A revision only ever
+    /// counts up, so the sum moves whenever any of them does, including when
+    /// a browser changes one while this process serves.
+    pr_revisions: u64,
     rows: HashMap<String, u8>,
     /// Frames actually drawn. Tests assert cadence against it.
     pub(crate) renders: u64,
     /// Iterations whose passthrough half ran, drawn or not.
     pub(crate) forwards: u64,
+    /// The last draw failed, so the failure has already been reported and a
+    /// draw that keeps failing does not report it again every iteration.
+    draw_failing: bool,
 }
 
 impl App {
@@ -84,29 +96,47 @@ impl App {
         self.redraw.dirty = true;
     }
 
-    /// The one PTY whose output is on screen, if any. Output on every other PTY
-    /// changes the sidebar's row state or nothing at all.
-    pub(crate) fn visible_pty_id(&self) -> Option<String> {
+    /// The center parts this frame draws, the focused one first. Computed from
+    /// the same state the render pass walks, so output on a part that is drawn
+    /// always marks the frame and output on one that is not never does.
+    pub(crate) fn drawn_parts(&self) -> Vec<CenterPart> {
         match self.fullscreen_overlay {
-            FullscreenOverlay::StartupLog => None,
-            FullscreenOverlay::Agent | FullscreenOverlay::Terminal => {
-                self.selected_terminal_surface_id()
-            }
+            FullscreenOverlay::StartupLog => Vec::new(),
+            FullscreenOverlay::Agent | FullscreenOverlay::Terminal => vec![self.focused_part()],
             FullscreenOverlay::None => match self.center_mode {
-                CenterMode::Agent => self.selected_terminal_surface_id(),
-                CenterMode::Diff { .. } => None,
+                CenterMode::Agent => self.layout_parts(),
+                CenterMode::Diff { .. } => Vec::new(),
             },
         }
     }
 
-    /// Whether the pane on screen holds grid changes the next snapshot would
-    /// pick up. A non-consuming read: `refresh_snapshot_buf` is the consumer,
-    /// and it runs inside the draw this answer decides.
+    /// The PTYs whose output is on screen. Output on every other PTY changes the
+    /// sidebar's row state or nothing at all.
+    #[cfg(test)]
+    pub(crate) fn visible_pty_ids(&self) -> Vec<String> {
+        self.drawn_parts()
+            .into_iter()
+            .filter_map(|part| self.part_pty_id(part))
+            .collect()
+    }
+
+    /// Whether a pane on screen holds grid changes the next snapshot would pick
+    /// up. A non-consuming read: the snapshot refresh is the consumer, and it
+    /// runs inside the draw this answer decides.
     fn visible_pty_has_pending_output(&self) -> bool {
-        self.visible_pty_id().is_some()
-            && self
-                .selected_terminal_surface_client()
+        self.drawn_parts().into_iter().any(|part| {
+            self.part_client(part)
                 .is_some_and(|client| client.has_output() && client.has_pending_output())
+        })
+    }
+
+    /// The card over the drawn stack, if any. Every part of the center belongs
+    /// to one row and a row has one driver, so the first drawn part answers for
+    /// all of them.
+    fn drawn_takeover_card(&self) -> Option<PtyTakeoverCard> {
+        self.drawn_parts()
+            .into_iter()
+            .find_map(|part| self.part_takeover_card(part))
     }
 
     /// Poll every PTY for activity (the consuming read the row indicators need)
@@ -208,10 +238,10 @@ impl App {
         ) {
             return true;
         }
-        self.visible_pty_id().is_some()
-            && self
-                .selected_terminal_surface_client()
+        self.drawn_parts().into_iter().any(|part| {
+            self.part_client(part)
                 .is_some_and(|client| !client.has_output())
+        })
     }
 
     /// Whether an attention glyph is actually painted somewhere. Without this
@@ -228,21 +258,23 @@ impl App {
         let elapsed = now.saturating_duration_since(self.start_time).as_millis();
         let phase = AnimationPhase {
             spinner: self.spinner_cue_visible().then(|| {
-                ((elapsed / crate::theme::SPINNER_FRAME_MS) as usize)
+                u128_to_usize_wrapping(elapsed / crate::theme::SPINNER_FRAME_MS)
                     % crate::theme::SPINNER_FRAMES.len()
             }),
-            cue: self
-                .any_row_working()
-                .then_some((elapsed / yaran_core::working_cue::ELLIPSIS_STEP_MS as u128) as usize),
+            cue: self.any_row_working().then_some(u128_to_usize_wrapping(
+                elapsed / u128::from(yaran_core::working_cue::ELLIPSIS_STEP_MS),
+            )),
             attention_on: self
                 .attention_cue_visible()
                 .then(|| attention_blink_phase(elapsed)),
             refusal_on: self.refusal_blink_highlight(),
+            status_countdown: self.status.showing_seconds_left(now),
         };
         let resting = phase.spinner.is_none()
             && phase.cue.is_none()
             && phase.attention_on.is_none()
-            && !phase.refusal_on;
+            && !phase.refusal_on
+            && phase.status_countdown.is_none();
         (!resting).then_some(phase)
     }
 
@@ -255,10 +287,16 @@ impl App {
         let status_line = self.status.most_recent_tui();
         // Compared rather than marked: a browser claims or releases a pty on the
         // socket thread, so no path on this surface runs at all.
-        let takeover_card = self.focused_pty_takeover_card();
+        let takeover_card = self.drawn_takeover_card();
         let cloud_crumb = self.cloud_crumb();
+        let pr_revisions = self
+            .engine
+            .pr_revision
+            .values()
+            .fold(0u64, |sum, revision| sum.wrapping_add(*revision));
         let needed = self.redraw.dirty
             || cloud_crumb != self.redraw.cloud_crumb
+            || pr_revisions != self.redraw.pr_revisions
             || self.redraw.last_frame.is_none()
             || phase != self.redraw.phase
             || status_line != self.redraw.status_line
@@ -273,25 +311,36 @@ impl App {
             self.redraw.status_line = status_line;
             self.redraw.takeover_card = takeover_card;
             self.redraw.cloud_crumb = cloud_crumb;
+            self.redraw.pr_revisions = pr_revisions;
             self.redraw.last_frame = Some(now);
         }
         needed
     }
 
-    /// The draw half of one run-loop iteration: EXACTLY ONE gate decision, and a
-    /// skipped draw is not a skipped iteration, so the passthrough still runs.
-    /// Returns whether the iteration may carry on to its input half.
-    pub(crate) fn draw_and_forward(
-        &mut self,
-        now: Instant,
-        draw: impl FnOnce(&mut Self) -> bool,
-    ) -> bool {
-        if self.frame_needed(now) && !draw(self) {
-            return false;
+    /// The draw half of one run-loop iteration: EXACTLY ONE gate decision, and
+    /// neither a skipped draw nor a failed one is a skipped iteration, so the
+    /// passthrough runs and the input half follows. A draw that keeps failing
+    /// must not starve the keys that would quit.
+    pub(crate) fn draw_and_forward(&mut self, now: Instant, draw: impl FnOnce(&mut Self)) {
+        if self.frame_needed(now) {
+            draw(self);
         }
         self.redraw.forwards = self.redraw.forwards.wrapping_add(1);
         self.forward_host_passthrough();
-        true
+    }
+
+    /// Record a failed draw: the frame is owed again, and the failure is
+    /// reported only when it starts a run of failures. Returns whether to
+    /// report it.
+    pub(crate) fn note_draw_failed(&mut self) -> bool {
+        // The gate consumed the mark for a frame that never landed.
+        self.mark_frame_dirty();
+        !std::mem::replace(&mut self.redraw.draw_failing, true)
+    }
+
+    /// Record a draw that landed. Returns whether it ended a run of failures.
+    pub(crate) fn note_draw_succeeded(&mut self) -> bool {
+        std::mem::replace(&mut self.redraw.draw_failing, false)
     }
 }
 
@@ -355,6 +404,9 @@ impl<W: std::io::Write> Drop for FrameGuard<W> {
 mod tests {
     use super::*;
     use crate::app::test_support::{default_bindings, test_app};
+    use crate::app::text_input::TextInput;
+    use crate::model::SessionSurface;
+    use crossterm::event::Event;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -409,6 +461,25 @@ mod tests {
 
         tick(&mut app, &mut terminal, start + Duration::from_millis(99));
         assert_eq!(app.redraw.renders, 2, "and the tick after it does not");
+    }
+
+    /// An agent's pull requests can change with no path on this surface
+    /// running at all (a browser hides one while this process serves), so the
+    /// gate watches their revision rather than waiting for a mark.
+    #[test]
+    fn a_pull_request_change_draws_the_next_frame() {
+        let (mut app, mut terminal, start) = app_at_rest();
+        *app.engine
+            .pr_revision
+            .entry("session-1".to_string())
+            .or_default() += 1;
+        tick(&mut app, &mut terminal, start + Duration::from_millis(33));
+        assert_eq!(
+            app.redraw.renders, 2,
+            "the pull requests moved, so it draws"
+        );
+        tick(&mut app, &mut terminal, start + Duration::from_millis(66));
+        assert_eq!(app.redraw.renders, 2, "and only once");
     }
 
     #[test]
@@ -472,7 +543,9 @@ mod tests {
         };
 
         let drawn = frames_per_simulated_second(&mut app, &mut terminal);
-        let spinner_rate = 1_000 / crate::theme::SPINNER_FRAME_MS as u64;
+        let spinner_rate = 1_000
+            / u64::try_from(crate::theme::SPINNER_FRAME_MS)
+                .expect("a frame period in milliseconds fits in a u64");
         assert!(
             drawn.abs_diff(spinner_rate) <= 2,
             "a second of spinner must cost about {spinner_rate} frames, not 30; drew {drawn}"
@@ -497,7 +570,9 @@ mod tests {
         make_the_row_work(&mut app);
 
         let drawn = frames_per_simulated_second(&mut app, &mut terminal);
-        let spinner_rate = 1_000 / crate::theme::SPINNER_FRAME_MS as u64;
+        let spinner_rate = 1_000
+            / u64::try_from(crate::theme::SPINNER_FRAME_MS)
+                .expect("a frame period in milliseconds fits in a u64");
         assert!(
             drawn.abs_diff(spinner_rate) <= 2,
             "a working row must draw at the spinner's cadence of about \
@@ -551,7 +626,7 @@ mod tests {
         app.session_surface = SessionSurface::Terminal;
         app.active_terminal_id = Some(terminal_id.clone());
         assert_eq!(
-            app.visible_pty_id().as_deref(),
+            app.visible_pty_ids().first().map(String::as_str),
             Some(terminal_id.as_str()),
             "the selected terminal is the pane on screen"
         );
@@ -582,7 +657,7 @@ mod tests {
 
         // The same PTY with nothing of it on screen: its output is not a redraw.
         app.fullscreen_overlay = FullscreenOverlay::StartupLog;
-        assert_eq!(app.visible_pty_id(), None);
+        assert_eq!(app.visible_pty_ids(), Vec::<String>::new());
         app.redraw.dirty = false;
         app.engine
             .companion_terminals
@@ -638,6 +713,26 @@ mod tests {
         assert_eq!(app.redraw.renders, 2, "a new status takes the line");
         tick(&mut app, &mut terminal, start + Duration::from_millis(66));
         assert_eq!(app.redraw.renders, 2);
+    }
+
+    #[test]
+    fn a_countdown_draws_when_its_second_changes_and_not_between() {
+        let (mut app, mut terminal, start) = app_at_rest();
+        app.status.set_clear_after(Duration::from_secs(6));
+        app.status.set(
+            start,
+            None,
+            yaran_core::statusline::StatusTone::Info,
+            "counting down",
+        );
+        tick(&mut app, &mut terminal, start + Duration::from_millis(33));
+        assert_eq!(app.redraw.renders, 2, "the message takes the line");
+        tick(&mut app, &mut terminal, start + Duration::from_millis(600));
+        assert_eq!(app.redraw.renders, 2, "still 6s");
+        tick(&mut app, &mut terminal, start + Duration::from_millis(1000));
+        assert_eq!(app.redraw.renders, 3, "5s");
+        tick(&mut app, &mut terminal, start + Duration::from_millis(1500));
+        assert_eq!(app.redraw.renders, 3, "still 5s");
     }
 
     #[test]
@@ -765,12 +860,10 @@ mod tests {
         let forwards = app.redraw.forwards;
 
         let mut drew = false;
-        let carried_on = app.draw_and_forward(start + Duration::from_millis(33), |app| {
+        app.draw_and_forward(start + Duration::from_millis(33), |app| {
             drew = true;
             terminal.draw(|frame| app.render(frame)).expect("draw");
-            true
         });
-        assert!(carried_on, "the iteration carries on to its input half");
         assert!(!drew, "nothing changed, so the frame is skipped");
         assert_eq!(
             app.redraw.forwards,
@@ -779,12 +872,10 @@ mod tests {
         );
 
         app.mark_frame_dirty();
-        let carried_on = app.draw_and_forward(start + Duration::from_millis(66), |app| {
+        app.draw_and_forward(start + Duration::from_millis(66), |app| {
             drew = true;
             terminal.draw(|frame| app.render(frame)).expect("draw");
-            true
         });
-        assert!(carried_on);
         assert!(drew, "a marked frame draws");
         assert_eq!(app.redraw.forwards, forwards + 2);
 
@@ -914,5 +1005,30 @@ mod tests {
             1,
             "shown exactly once"
         );
+    }
+
+    /// A draw that fails is still an iteration: the passthrough runs, the frame
+    /// is owed again, and a run of failures is reported once rather than once
+    /// per iteration.
+    #[test]
+    fn a_failed_draw_still_carries_the_iteration_and_reports_once() {
+        let (mut app, _terminal, start) = app_at_rest();
+        let forwards = app.redraw.forwards;
+        let mut reported = Vec::new();
+        for tick in 1..=3 {
+            app.mark_frame_dirty();
+            app.draw_and_forward(start + Duration::from_millis(33 * tick), |app| {
+                reported.push(app.note_draw_failed());
+            });
+        }
+        assert_eq!(reported, [true, false, false]);
+        assert_eq!(app.redraw.forwards, forwards + 3);
+        assert!(
+            app.frame_needed(start + Duration::from_millis(200)),
+            "the frame that never landed is drawn again"
+        );
+        assert!(app.note_draw_succeeded(), "the run of failures ended");
+        assert!(!app.note_draw_succeeded());
+        assert!(app.note_draw_failed(), "a new run is reported again");
     }
 }

@@ -1,25 +1,39 @@
+//! Finds the code editors installed on this machine (Cursor, VS Code, Zed and
+//! the rest), picks the one the config names, and opens a worktree in it.
+
 use std::collections::HashSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 
+/// An editor yaran knows how to detect and launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditorKind {
+    /// Cursor.
     Cursor,
+    /// Visual Studio Code.
     VsCode,
+    /// Zed.
     Zed,
+    /// The open-source build of Visual Studio Code, `VSCodium`.
     VsCodium,
+    /// Sublime Text.
     SublimeText,
 }
 
+/// An editor found on PATH, with the command that launches it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DetectedEditor {
+    /// Which editor it is.
     pub kind: EditorKind,
+    /// Its display name.
     pub label: &'static str,
+    /// The name `[editor] default` uses for it.
     pub config_key: &'static str,
+    /// The command found on PATH.
     pub command: String,
 }
 
@@ -126,6 +140,7 @@ pub fn detect_editors_on_path(path: &OsStr) -> Vec<DetectedEditor> {
     detect_editors_from_names(executable_names.iter().map(String::as_str))
 }
 
+/// The detected editor `configured` names, else the first one detected, else `None`.
 pub fn preferred_editor(detected: &[DetectedEditor], configured: &str) -> Option<DetectedEditor> {
     let configured = normalize_editor_name(configured);
     if !configured.is_empty()
@@ -138,6 +153,8 @@ pub fn preferred_editor(detected: &[DetectedEditor], configured: &str) -> Option
     detected.first().cloned()
 }
 
+/// Whether `configured` names `editor`, by its config key, an alias or one of its commands,
+/// ignoring case and reading spaces and underscores as dashes.
 pub fn matches_configured_editor(editor: &DetectedEditor, configured: &str) -> bool {
     let configured = normalize_editor_name(configured);
     if configured.is_empty() {
@@ -160,6 +177,26 @@ pub fn editor_label(name: &str) -> Option<&'static str> {
         .map(|spec| spec.label)
 }
 
+/// The config key of the editor `name` names, by its config key, an alias or
+/// one of its commands, whether or not it is installed; `None` for an empty or
+/// unrecognized value. What [`crate::config_effective::effective_editor_default`]
+/// reads `[editor] default` with.
+pub(crate) fn configured_editor_key(name: &str) -> Option<&'static str> {
+    let normalized = normalize_editor_name(name);
+    if normalized.is_empty() {
+        return None;
+    }
+    EDITOR_SPECS
+        .iter()
+        .find(|spec| spec_matches(spec, &normalized))
+        .map(|spec| spec.config_key)
+}
+
+/// Every supported editor's config key, in the order yaran prefers them.
+pub(crate) fn editor_config_keys() -> Vec<&'static str> {
+    EDITOR_SPECS.iter().map(|spec| spec.config_key).collect()
+}
+
 /// Whether a normalized editor name matches a spec by its config key, an alias,
 /// or one of its commands. `configured` must already be normalized.
 fn spec_matches(spec: &EditorSpec, configured: &str) -> bool {
@@ -168,6 +205,11 @@ fn spec_matches(spec: &EditorSpec, configured: &str) -> bool {
         || spec.commands.contains(&configured)
 }
 
+/// Opens `path` in `editor`, detached from yaran.
+///
+/// # Errors
+///
+/// Fails when `path` does not exist or the editor's command cannot be started.
 pub fn launch_editor(editor: &DetectedEditor, path: &Path) -> Result<()> {
     if !path.exists() {
         return Err(anyhow!("Path does not exist: {}", path.display()));
@@ -178,13 +220,11 @@ pub fn launch_editor(editor: &DetectedEditor, path: &Path) -> Result<()> {
     #[cfg(any(test, feature = "test-support"))]
     crate::test_provider::refuse_unlisted_launch("editor", &editor.command)?;
 
-    Command::new(&editor.command)
-        .args(editor_launch_args(editor, path, path.is_dir()))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("failed to launch {} via {}", editor.label, editor.command))?;
+    crate::browser::spawn_reaped(
+        Command::new(&editor.command).args(editor_launch_args(editor, path, path.is_dir())),
+        editor.label,
+    )
+    .with_context(|| format!("failed to launch {} via {}", editor.label, editor.command))?;
 
     Ok(())
 }
@@ -337,7 +377,10 @@ mod tests {
             vec![("VS Code", "code".to_string()), ("Zed", "zed".to_string())]
         );
         let empty = tempfile::tempdir().unwrap();
-        assert!(detect_editors_on_path(empty.path().as_os_str()).is_empty());
+        assert_eq!(
+            detect_editors_on_path(empty.path().as_os_str()),
+            Vec::<DetectedEditor>::new()
+        );
     }
 
     #[test]

@@ -1,21 +1,28 @@
 ---
-title: Hosting yaran behind a login
-description: A reverse proxy plus oauth2-proxy plus yaran in one Docker Compose file, with GitHub sign-in restricted to an org, a team, or named accounts, and what breaks when a piece is missing.
+title: Hosting yaran on the public internet
+description: TLS in front, then either yaran's own password or oauth2-proxy with GitHub sign-in restricted to an org, a team, or named accounts, in one Docker Compose file, and what breaks when a piece is missing.
 group: Web UI
 order: 66
 ---
 
-> [!CAUTION]
-> **There is no authentication layer in yaran at all.** No password, no token, no
-> accounts, and nothing that can be turned on in config. Anyone who can open the URL
-> gets the whole workspace: every agent, every terminal, a shell on the machine through
-> those terminals, git, and the server's filesystem through the project picker. This is
-> [the trust model](/docs/server-mode#the-trust-model-stated-plainly), and everything
-> below exists to compensate for it.
+Put yaran on a box with a real uplink and reach it from anywhere. That is safe with the right
+config, and this page is that config: a TLS terminator in front, a gate that asks who you
+are, and yaran on a private network where nothing but the proxy can see it.
 
-So the login has to live in front of yaran. This page is one way to build that: a TLS
-terminator, `oauth2-proxy` doing GitHub sign-in restricted to your org or to accounts you
-name, and yaran on a private network where nothing but the proxy can see it.
+> [!CAUTION]
+> **Whoever gets past the gate gets the whole workspace**: every agent, every terminal, a
+> shell on the machine through those terminals, git, and the server's filesystem through
+> the project picker. yaran has one password for one owner and no accounts. See
+> [Who can get in](/docs/server-mode#who-can-get-in).
+
+There are two gates to choose from, and you can stack them:
+
+- **yaran's own password.** One password, set with `yaran config set server.auth.password`,
+  asked of everyone with `require = "everywhere"`. Nothing extra to run. See
+  [The web password](/docs/web-login).
+- **`oauth2-proxy` with GitHub sign-in**, restricted to your org, a team, or accounts you
+  name. Each person signs in as themselves, with whatever second factor GitHub asks them
+  for, and the proxy's log says who did what.
 
 > [!TIP]
 > If you do not actually need the public internet, you do not need any of this.
@@ -25,20 +32,101 @@ name, and yaran on a private network where nothing but the proxy can see it.
 > [!TIP]
 > If your organization uses Cloudflare, [Cloud Connect](/docs/cloud-connect) is this
 > page packaged: your org's single sign-on through Cloudflare Access in front of one
-> address per machine, set up by code, plus the yaran phone app. yaran has no login of
-> its own; with Cloud Connect, Cloudflare Access is the login for that address, and
-> yaran double-checks it. The cost is that Cloudflare decrypts the traffic at its edge.
+> address per machine, set up by code, plus the yaran phone app. On that address,
+> Cloudflare Access is the login and yaran double-checks it, so the yaran password is not
+> asked for a second time there. The cost is that Cloudflare decrypts the traffic at its
+> edge.
 
-> [!IMPORTANT]
-> Nothing about the Host allowlist or the same-origin check is access control. They
-> stop a hostile web page tricking *your* browser into driving your server, which is a
-> real attack and worth defending, and they do nothing at all about a person who simply
-> visits the URL. If you read "yaran has two automatic defenses" and relaxed, unrelax.
+## The simple version: Caddy and the yaran password
+
+Two containers, and only Caddy publishes a port:
+
+```yaml
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  yaran:
+    build: ./yaran                      # see "Building the yaran image" below
+    restart: unless-stopped
+    command: ["yaran", "server", "--bind", "0.0.0.0:3890", "--no-tailscale"]
+    volumes:
+      - yaran_config:/root/.config/yaran
+      - ./code:/root/code
+
+volumes:
+  caddy_data:
+  caddy_config:
+  yaran_config:
+```
+
+```caddyfile
+yaran.example.com {
+	reverse_proxy yaran:3890
+}
+```
+
+Then the yaran side, in the container's `config.toml`:
+
+```toml
+[server]
+allowed_hosts = ["yaran.example.com"]
+
+[server.auth]
+require       = "everywhere"   # Caddy is a proxy; say so rather than relying on how it connects
+cookie_secure = "always"       # the browser speaks HTTPS to Caddy; yaran cannot see that
+max_failed_logins = 0          # every visitor arrives from Caddy's address; see below
+```
+
+Settings under `[server.auth]` and `allowed_hosts` apply on **Reload config**; no restart.
+Then the password, set inside the container where nothing echoes it:
+
+```bash
+docker compose exec yaran yaran config set server.auth.password
+```
+
+> [!WARNING]
+> **Every visitor looks like Caddy to yaran.** Caddy reaches yaran over the Compose network,
+> so yaran sees one address for everybody, and the failed-sign-in slow-down and the block
+> treat all your visitors as one person.
+>
+> - Left at its default, five wrong guesses by anyone would block Caddy itself, and with
+>   it everyone.
+> - `max_failed_logins = 0` turns the automatic block off. The slow-down still applies to
+>   everyone together, so a long, generated password is what actually stops guessing.
+>
+> If you would rather have per-person limits and an audit trail, put `oauth2-proxy` in
+> front as below.
+
+## The GitHub version: oauth2-proxy in front
+
+The rest of this page builds the second gate: a TLS terminator, `oauth2-proxy` doing GitHub
+sign-in restricted to your org or to accounts you name, and yaran behind it.
+
+A yaran password behind the proxy is not free:
+
+- **Everyone signs in twice**, once to GitHub and once to yaran.
+- **yaran sees one address for every visitor**, the proxy's, so five wrong guesses by anyone
+  block the proxy and with it everybody.
+- **The cookie is not marked Secure.** yaran cannot see the HTTPS in front, so under the
+  default `cookie_secure = "auto"` it leaves the flag off.
+
+You can still set one as the gate for anyone who reaches yaran around the proxy. If you do,
+use the simple version's settings (`require = "everywhere"`, `cookie_secure = "always"`,
+`max_failed_logins = 0`).
 
 ## The shape of it
 
-Three containers on one private Compose network, and exactly one of them has a
-published port.
+The GitHub version runs three containers on one private Compose network, and exactly one
+of them has a published port.
 
 ```dot Only Caddy publishes a port. yaran publishes none, so the proxy container is the only thing on the machine that can reach it.
 digraph topology {
@@ -173,8 +261,8 @@ services:
     restart: unless-stopped
     # Binds every interface INSIDE the container. That is not an exposure:
     # with no published port, the container's only neighbours are the other two
-    # services. yaran prints a warning about the non-loopback bind on startup and
-    # in this topology that warning is expected.
+    # services. With no yaran password set, yaran prints a red warning about the
+    # non-loopback bind on startup, and in this topology that warning is expected.
     command: ["yaran", "server", "--bind", "0.0.0.0:3890", "--no-tailscale"]
     volumes:
       # Your config, your session database and your log. Keep it on a named
@@ -211,14 +299,15 @@ yaran.example.com {
 }
 ```
 
-That is the whole configuration because Caddy already does the two things yaran needs with
-no directives: it passes incoming headers through unchanged, `Host` included, adding only
-`X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`, and it tunnels WebSockets.
+That is the whole configuration, because Caddy already does the two things yaran needs with
+no directives: it passes incoming headers through unchanged, `Host` included, and it
+tunnels WebSockets.
 
-One exception if you copy this into a different topology: since Caddy v2.11.0 an upstream
-written as `https://` gets its `Host` overwritten to `{upstream_hostport}`. The upstream
-here is plain `http://`, so it does not apply, but a variant that re-encrypts the hop has
-to put the original back with `header_up Host {host}`.
+> [!TIP]
+> If you copy this into a topology that re-encrypts the hop, note that since Caddy v2.11.0
+> an upstream written as `https://` gets its `Host` overwritten to `{upstream_hostport}`.
+> Put the original back with `header_up Host {host}`. The plain `http://` upstream here is
+> not affected.
 
 And `.env`:
 
@@ -239,13 +328,19 @@ name out loud once:
 allowed_hosts = ["yaran.example.com"]
 ```
 
-Hostnames only, no scheme and no port; the port is ignored when matching, matching is
-case-insensitive, and a trailing dot is stripped. There is no wildcard, so `"*"` is a
-literal hostname that matches nothing.
+The rules for each entry:
 
-> [!IMPORTANT]
-> Binding `0.0.0.0` does **not** get you out of this. An unspecified bind relaxes the
-> allowlist for anything that parses as an IP address, and a hostname still is not one.
+- **Hostnames only**, with no scheme and no port.
+- **The port is ignored** when matching, matching is case-insensitive, and a trailing dot
+  is stripped.
+- **No wildcard.** `"*"` is a literal hostname that matches nothing.
+- **Binding `0.0.0.0` does not get you out of this.** An unspecified bind relaxes the
+  allowlist for anything that parses as an IP address, and a hostname still is not one.
+
+> [!WARNING]
+> **The Host allowlist and the same-origin check are *not* access control.** They stop a
+> hostile web page tricking **your** browser into driving your server, which is a real
+> attack worth defending. They do nothing at all about a person who simply visits the URL.
 
 ### Building the yaran image
 
@@ -273,7 +368,8 @@ RUN curl -sSfL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*
 
 # Then your agent CLIs, installed the way each project documents. Claude Code,
-# Codex, OpenCode and Copilot ship as npm packages today.
+# Codex, OpenCode and Copilot ship as npm packages today; Grok installs with its
+# own curl script (https://x.ai/cli/install.sh).
 
 WORKDIR /root/code
 ```
@@ -288,22 +384,25 @@ once.
 > survive a restart. This is the part that takes an afternoon, and it has nothing to do
 > with yaran.
 
-If containerising your dev environment is not appealing, run `yaran server` on the host and
-delete the `yaran` service. One gotcha: the proxy container cannot reach a host-loopback
-bind, so yaran has to bind an address the container can route to, and the "no published port"
-protection goes with it. Firewall that port, and remember the firewall is then the only
-thing between the internet and a workspace with no login.
+> [!TIP]
+> If containerising your dev environment is not appealing, run `yaran server` on the host and
+> delete the `yaran` service. There is one catch:
+>
+> - The proxy container cannot reach a host-loopback bind, so yaran has to bind an address
+>   the container can route to, and the "no published port" protection goes with it.
+> - **Firewall that port**, and set a yaran password. Without one, the firewall is the only
+>   thing between the internet and your workspace.
 
 ## What each piece is doing
 
 **Caddy** terminates TLS. Without it you get the sign-in redirect loop below, and the
-browser refuses yaran a few APIs off a secure context: right-click paste, `OSC 52` clipboard
-writes from an agent, desktop notifications, and PWA install.
-[The Tailscale page lists the exact set](/docs/tailscale#plain-http-costs-you-a-few-browser-features),
+browser switches off a few APIs because the page is not a secure context: right-click
+paste, desktop notifications, PWA install, and an agent's direct clipboard writes outside a
+recent click. [The Tailscale page lists the exact set](/docs/tailscale#plain-http-costs-you-a-few-browser-features),
 and it is the same set here.
 
 **`oauth2-proxy`** is the login. Without it, or reachable around it, you have published a
-shell to the internet.
+shell to the internet, unless a yaran password is set behind it.
 
 **The GitHub restriction flags** are what make the login mean something, since
 `--provider=github` on its own authenticates *any* GitHub account. Set at least one:
@@ -318,8 +417,10 @@ shell to the internet.
 > [!CAUTION]
 > **The absent `ports:` entry on the `yaran` service** is doing more work than any flag here.
 > It makes "you cannot get to yaran without passing the proxy" a property of the network
-> rather than a promise. Add a published port for a quick test and you have removed the
-> login for as long as it is there.
+> rather than a promise.
+>
+> Add a published port for a quick test and you have removed the GitHub sign-in for as
+> long as it is there. The yaran password, if you set one, is then the only gate.
 
 ## What this does not give you
 
@@ -332,10 +433,10 @@ shell to the internet.
 > So restrict the gate to people you would hand a terminal on that machine. An org-wide
 > `--github-org` on a company with a thousand engineers is a thousand people with a shell.
 
-**yaran reads no `X-Forwarded-*` headers at all**, even though Caddy sets three and
-`oauth2-proxy` adds `X-Forwarded-User` and `X-Forwarded-Email` on top. So yaran's access log
-carries no client identity: it records only the timestamp, method, path, status and
-latency. Your audit trail lives in the proxy's logs, not in yaran's.
+**yaran keeps no record of who someone is.** It ignores the `X-Forwarded-User` and
+`X-Forwarded-Email` headers `oauth2-proxy` adds, and its access log carries no client
+identity: it records only the timestamp, method, path, status and latency. Your audit
+trail lives in the proxy's logs, not in yaran's.
 
 The one exception is a [Cloud Connect](/docs/cloud-connect) machine address. There,
 yaran reads the person's identity from the Cloudflare Access sign-in to check that it is
@@ -343,11 +444,11 @@ the machine's owner. It still reads no `X-Forwarded-*` header, and the setup on 
 is unaffected.
 
 > [!CAUTION]
-> Do not use Tailscale Funnel, `ngrok`, `cloudflared` in its no-authentication mode, or
-> anything else that publishes the port to the anonymous internet, as a shortcut around
-> this page. The point of every paragraph above is that something has to ask who you are
-> before yaran answers. A tunnel that skips that step has not made this easier, it has
-> made it public.
+> A tunnel that publishes the port to the anonymous internet (Tailscale Funnel, `ngrok`,
+> `cloudflared` in its no-authentication mode) is only as safe as the gate behind it.
+> Without a yaran password, a tunnel has not made this easier, it has made your shell public.
+> What a Funnel does with and without a password is in
+> [The web password](/docs/web-login#tailscale-serve-and-funnel).
 >
 > The authenticated way to use `cloudflared` is [Cloud Connect](/docs/cloud-connect),
 > which puts a Cloudflare Access application in front of the tunnel before the address
@@ -374,10 +475,18 @@ proxy_set_header Connection "upgrade";
 proxy_read_timeout 1h;      # or an idle agent's socket is closed under you
 ```
 
+> [!WARNING]
+> nginx's `proxy_pass` adds no `X-Forwarded-For` by default, so on the same machine as yaran
+> every visitor looks like that machine and the default `require` lets them in with no
+> password. Add `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` and set
+> `require = "everywhere"` either way. Why:
+> [Behind a reverse proxy](/docs/web-login#behind-a-reverse-proxy).
+
 ### `403 this yaran server does not serve the requested host`
 
 The Host allowlist. The proxy is forwarding a `Host` that yaran does not accept, almost
-always your public hostname before you added it to `allowed_hosts`. Add it and restart yaran: the host allowlist is built when the listener starts, so a config reload alone will not pick it up.
+always your public hostname before you added it to `allowed_hosts`. Add it and run
+**Reload config**: the running server answers by the new list with no restart.
 
 ### `403 cross-origin WebSocket upgrade rejected`, or `cross-origin request rejected` on a write
 
@@ -407,16 +516,23 @@ digraph headers {
 }
 ```
 
-The symptom is worse than a straight failure: the page loads, reads fine, and every single
-action fails. The fix is to forward the original `Host`; adding the rewritten one to
-`allowed_hosts` only silences the first check. Both hops above forward it unchanged out of
-the box (`oauth2-proxy`'s `--pass-host-header` defaults to `true`); the two known ways to
-lose it are nginx's `proxy_pass`, which rewrites `Host` to the upstream name unless you add
-`proxy_set_header Host $host;`, and Caddy with an `https://` upstream.
+The symptom is worse than a straight failure: **the page loads, reads fine, and every
+single action fails.**
 
-The comparison is authority-only, so `http` versus `https` on the same host is not a
-mismatch. A request with **no** `Origin` header passes deliberately, which keeps `curl` and
-scripts working; `Origin: null` is treated as a mismatch and rejected.
+The fix is to forward the original `Host`. Adding the rewritten one to `allowed_hosts` only
+silences the first check. Both hops above forward it unchanged out of the box
+(`oauth2-proxy`'s `--pass-host-header` defaults to `true`). The two known ways to lose it:
+
+- **nginx's `proxy_pass`** rewrites `Host` to the upstream name unless you add
+  `proxy_set_header Host $host;`.
+- **Caddy with an `https://` upstream** does the same (see the TIP above).
+
+Two more details of the check:
+
+- The comparison is authority-only, so `http` versus `https` on the same host is not a
+  mismatch.
+- A request with **no** `Origin` header passes deliberately, which keeps `curl` and scripts
+  working. `Origin: null` is treated as a mismatch and rejected.
 
 ### An endless redirect loop at sign-in
 
@@ -435,13 +551,16 @@ so check the `oauth2-proxy` logs, which name the org it wanted and the orgs it s
 ### The console shows one client IP for everybody
 
 yaran's per-request access log records no IP at all. Its connect and disconnect lines do
-print a peer address, and since yaran reads no forwarded headers that address is the proxy's
-for every client. Use the proxy's logs to know who did something.
+print a peer address, and since the proxy connects to yaran over the network, that address
+is the proxy's for every client. A yaran password's slow-down and blocks see the same single
+address, as [the simple version](#the-simple-version-caddy-and-the-yaran-password) warns.
+Use the proxy's logs to know who did something.
 
 ## Where to go next
 
-- [Server mode overview](/docs/server-mode): the trust model in full, every `[server]`
-  key with its default, the startup banner, and graceful shutdown.
+- [Server mode overview](/docs/server-mode): who can get in, every `[server]` key with
+  its default, the startup banner, and graceful shutdown.
+- [The web password](/docs/web-login): `require`, bans, the cookie, and the honest limits.
 - [Reaching yaran over Tailscale](/docs/tailscale): the private-network answer, which
   needs none of this page and is what the maintainer actually uses.
 - [Cloud Connect](/docs/cloud-connect): the packaged answer on Cloudflare, with your

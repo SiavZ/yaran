@@ -33,7 +33,7 @@ use crate::logger;
 pub(crate) const OWNER_MARKER: &str = ".dux-amq-source";
 
 /// What a reconciliation pass changed in the shared registry.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AmqSyncReport {
     pub root: Option<PathBuf>,
     pub configured_agents_added: usize,

@@ -71,12 +71,25 @@ use crate::storage::SessionStore;
 /// engine's workers may still be writing into it when the test ends.
 pub(crate) fn test_engine() -> (Engine, ScratchDir) {
     let tmp = ScratchDir::new();
-    let root = tmp.path().to_path_buf();
+    let engine = test_engine_at(tmp.path());
+    (engine, tmp)
+}
+
+/// An engine over the state under `root`, as [`test_engine`] builds one: a
+/// second call on the same root, once the first engine is dropped, is the
+/// next start of yaran on the same config directory.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one field initializer per Engine field, the test twin of the production constructor"
+)]
+pub(crate) fn test_engine_at(root: &std::path::Path) -> Engine {
+    let root = root.to_path_buf();
     let paths = YaranPaths {
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
         lock_path: root.join("yaran.lock"),
+        socket_path: root.join("yaran.sock"),
         root: root.clone(),
     };
     std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees dir");
@@ -87,6 +100,7 @@ pub(crate) fn test_engine() -> (Engine, ScratchDir) {
     let config_writer = crate::config_queue::ConfigWriteQueue::with_status_lane(
         paths.config_path.clone(),
         worker_tx.clone(),
+        &crate::config::Config::default(),
     );
     let engine = Engine {
         // Stock provider names, harmless commands: a test that launches an agent
@@ -104,11 +118,12 @@ pub(crate) fn test_engine() -> (Engine, ScratchDir) {
         sessions: Vec::new(),
         staged_files: Vec::new(),
         unstaged_files: Vec::new(),
+        changed_files_revision: 0,
         terminal_counter: 0,
         github_integration_enabled: false,
         single_instance_lock,
         surface_kind: crate::term_identity::SurfaceKind::Tui,
-        resource_collector: Default::default(),
+        resource_collector: Arc::default(),
         host_env: crate::term_identity::HostEnvProbe::default(),
         worker_tx,
         worker_rx,
@@ -119,6 +134,8 @@ pub(crate) fn test_engine() -> (Engine, ScratchDir) {
         command_applies: 0,
         deferred_commands: Vec::new(),
         reload_guard: None,
+        reload_origin: crate::engine::ReloadOrigin::default(),
+        reloaded_projects: None,
         providers: HashMap::new(),
         running_provider_pins: HashMap::new(),
         launched_drop_paste: HashMap::new(),
@@ -130,40 +147,58 @@ pub(crate) fn test_engine() -> (Engine, ScratchDir) {
         },
         companion_terminals: HashMap::new(),
         agent_tabs: HashMap::new(),
+        slot_tab_positions: HashMap::new(),
+        slot_tab_created_ms: HashMap::new(),
         terminating_ptys: Vec::new(),
+        process_registry: crate::process_sessions::AgentProcessRegistry::default(),
+        removal_workers: Vec::new(),
         pending_group_removals: Vec::new(),
         pending_detachments: Vec::new(),
+        pending_tab_restarts: Vec::new(),
+        unsaved_branch_drifts: std::collections::HashMap::new(),
         gh_status: GhStatus::Unknown,
         force_worker_spawn_failure: false,
         force_loop_worker_spawn_failure: AtomicBool::new(false),
-        gh_probe: Default::default(),
-        pr_statuses: HashMap::new(),
-        pr_overrides: HashMap::new(),
-        pr_suppressions: HashSet::new(),
+        // Reloading the default config turns the GitHub integration on and
+        // launches the host probe; a test that wants an answer from `gh`
+        // points this at a stand-in, and none ever runs the developer's own.
+        gh_probe: crate::engine::GhProbeState {
+            program: root.join("gh-is-not-installed").into_os_string(),
+            ..Default::default()
+        },
+        agent_prs: std::collections::HashMap::new(),
+        pr_prefs: std::collections::HashMap::new(),
+        pr_prefs_retry_at: None,
+        pr_unsaved: std::collections::HashSet::new(),
+        branch_histories: std::collections::HashMap::new(),
+        pr_revision: std::collections::HashMap::new(),
         branch_sync_sessions: Arc::new(Mutex::new(Vec::new())),
         pr_sync_sessions: Arc::new(Mutex::new(Vec::new())),
-        pr_sync: Arc::new(Default::default()),
+        pr_sync: Arc::new(crate::engine::PrSyncControl::default()),
         pr_poll_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         pr_poll_inactive_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        pr_inactive_sessions: Default::default(),
-        pr_inactive_sweep_at: Default::default(),
-        pr_return_checks_owed: Default::default(),
+        pr_inactive_sessions: HashSet::default(),
+        pr_inactive_sweep_at: Arc::default(),
+        pr_return_checks_owed: HashSet::default(),
+        pr_branch_asks: HashMap::default(),
+        pr_own_repos: HashMap::default(),
+        pr_branch_checks_owed: HashSet::default(),
         branch_sync_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        branch_sync_wait: Arc::new(Default::default()),
+        branch_sync_wait: Arc::new(crate::engine::BranchSyncWait::default()),
         pr_backoff: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        refs_watcher: None,
-        refs_watch_paths: HashMap::new(),
         resume_fallback_candidates: HashMap::new(),
         resumed_tab_runs: HashSet::new(),
         pending_deletions: HashSet::new(),
         folder_repo_statuses: HashMap::new(),
-        changed_files_failures: Default::default(),
+        no_branch_checked_out: std::collections::HashSet::new(),
+        changed_files_failures: crate::changes_status::ChangedFilesFailures::default(),
         closing_sessions: HashSet::new(),
         deletion_busy_messages: HashMap::new(),
         watched_worktree: Arc::new(Mutex::new(None::<PathBuf>)),
-        changed_files_refresh: Default::default(),
+        changed_files_refresh: Arc::default(),
         watched_session_id: None,
         has_active_processes: Arc::new(AtomicBool::new(false)),
+        serve_memory: Arc::default(),
         current_origin: crate::statusline::StatusScope::All,
         in_flight: HashSet::new(),
         rename_expected: std::collections::HashMap::new(),
@@ -171,8 +206,10 @@ pub(crate) fn test_engine() -> (Engine, ScratchDir) {
         changed_files_poller_started: AtomicBool::new(false),
         branch_sync_worker_started: AtomicBool::new(false),
         pty_activity: HashMap::new(),
+        terminal_activity_at: HashMap::new(),
         pty_input: HashMap::new(),
         pty_pointer: HashMap::new(),
+        pty_used: HashSet::new(),
         needs_attention: HashSet::new(),
         failed_tab_runs: HashMap::new(),
         pty_progress: HashMap::new(),
@@ -181,20 +218,40 @@ pub(crate) fn test_engine() -> (Engine, ScratchDir) {
         limits: Default::default(),
         amq: Default::default(),
         pending_web_checkout_ops: HashMap::new(),
+        pending_web_project_saves: std::collections::HashSet::new(),
+        pending_change_base_ops: HashMap::new(),
         pending_web_add_project_ops: HashMap::new(),
         pending_web_pr_lookup_ops: HashMap::new(),
+        clones: crate::clone_project::Clones::default(),
         pending_pr_attach_ops: HashMap::new(),
         pending_recreate_ops: HashMap::new(),
         pending_delete_ops_web: HashMap::new(),
         pending_delete_reports_web: HashMap::new(),
         pending_create_ops: HashMap::new(),
         pending_web_launch_ops: HashMap::new(),
-        live_status_keys: Default::default(),
+        live_status_keys: crate::statusline::LiveStatusKeys::default(),
         last_created_op_id: None,
+        operations: crate::operations::Operations::default(),
+        operation_in_dispatch: None,
+        attachments: crate::attachments::Attachments::default(),
+        dispatch_policy: None,
+        deferred_operations: Vec::new(),
+        deferred_policies: Vec::new(),
         created_session_by_op: HashMap::new(),
         startup_launches: Default::default(),
+        removal_coordination: crate::engine::RemovalCoordination::default(),
     };
-    (engine, tmp)
+    // As the real start does: the process registry saved in this database.
+    // Its prune is waited for, so a test registering sessions nothing runs in
+    // (made-up sids) never has them dropped by a prune that read the process
+    // table after they were registered.
+    if let Some(prune) = engine
+        .process_registry
+        .attach_store(&engine.paths.sessions_db_path)
+    {
+        let _ = prune.join();
+    }
+    engine
 }
 
 /// A Support-tab record (`agent_tabs` entry) owned by `session_id`.
@@ -371,4 +428,86 @@ pub(crate) fn seed_signaling_provider(engine: &mut Engine, tab: &str) -> tempfil
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     panic!("timed out waiting for a progress report on {tab}");
+}
+
+/// What [`delete_through_pipeline`] reports: what happened to the worktree and
+/// its branches, and the record the delete vanished.
+pub(crate) struct PipelineDelete {
+    pub removal: crate::engine::WorktreeRemoval,
+    pub finish: crate::engine::FinishDeleteSessionOutcome,
+}
+
+/// Delete an agent the way both surfaces do, through the one pipeline:
+/// `begin_delete_session`, the record vanished at once, and for a
+/// worktree-removing delete the reaper and the removal worker driven until it
+/// reports. `Ok(None)` for an unknown agent; a refusal or a removal failure
+/// is an `Err` carrying the sentence the surfaces would show.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test helper: the Err is the refusal or removal failure under test, while a vanished agent or a removal that never reports fails the test by panicking"
+)]
+pub(crate) fn delete_through_pipeline(
+    engine: &mut Engine,
+    session_id: &str,
+    worktree: crate::engine::WorktreeOnDelete,
+    delete_branch: Option<bool>,
+) -> anyhow::Result<Option<PipelineDelete>> {
+    use crate::engine::BeginDeleteSessionOutcome;
+    match engine.begin_delete_session(session_id, worktree, delete_branch) {
+        BeginDeleteSessionOutcome::NotFound => Ok(None),
+        BeginDeleteSessionOutcome::AlreadyInFlight => {
+            anyhow::bail!("a delete of this agent is already in progress")
+        }
+        BeginDeleteSessionOutcome::TabLaunching => {
+            anyhow::bail!("a tab of this agent is still launching")
+        }
+        BeginDeleteSessionOutcome::Refused { message } => anyhow::bail!("{message}"),
+        BeginDeleteSessionOutcome::Inline { removal } => {
+            let finish = engine
+                .finish_delete_session(session_id)?
+                .expect("the agent was there");
+            Ok(Some(PipelineDelete { removal, finish }))
+        }
+        BeginDeleteSessionOutcome::AsyncStarted { .. } => {
+            let finish = engine
+                .finish_delete_session(session_id)?
+                .expect("the agent was there");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                for removal in engine.reap_terminating_ptys().removals {
+                    let _ = engine.dispatch_deferred_worktree_removal(removal);
+                }
+                match engine
+                    .worker_rx
+                    .recv_timeout(std::time::Duration::from_millis(50))
+                {
+                    Ok(crate::worker::WorkerEvent::WorktreeRemoveCompleted {
+                        session_id: done,
+                        result,
+                    }) if done == session_id => {
+                        engine.process_worker_event(
+                            crate::worker::WorkerEvent::WorktreeRemoveCompleted {
+                                session_id: done,
+                                result: result.clone(),
+                            },
+                        );
+                        return match result {
+                            Ok(branches) => Ok(Some(PipelineDelete {
+                                removal: crate::engine::WorktreeRemoval::Performed { branches },
+                                finish,
+                            })),
+                            Err(message) => Err(anyhow::anyhow!(message)),
+                        };
+                    }
+                    Ok(event) => {
+                        let _ = engine.process_worker_event(event);
+                    }
+                    Err(_) => assert!(
+                        std::time::Instant::now() < deadline,
+                        "the removal never reported"
+                    ),
+                }
+            }
+        }
+    }
 }

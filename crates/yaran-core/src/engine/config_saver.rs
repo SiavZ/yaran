@@ -16,7 +16,7 @@
 use std::sync::mpsc::Sender;
 
 use crate::config::{Config, YaranPaths};
-use crate::worker::WorkerEvent;
+use crate::worker::{ReloadedConfig, WorkerEvent};
 
 /// Guarantees a reload worker posts exactly one
 /// `WorkerEvent::ConfigReloadReady`, even on an early return or a panic.
@@ -27,6 +27,7 @@ use crate::worker::WorkerEvent;
 /// [`ConfigSurface::reload`] implementation must drive its completion through
 /// this guard: call [`ReloadCompletionGuard::complete`] with the real result on
 /// the success and error paths; `Drop` posts an `Err` if it was never reached.
+#[derive(Debug)]
 pub struct ReloadCompletionGuard {
     worker_tx: Sender<WorkerEvent>,
     sent: bool,
@@ -44,11 +45,20 @@ impl ReloadCompletionGuard {
 
     /// Post the real reload result and mark the guard satisfied so `Drop` does
     /// not also post an `Err`. Call this exactly once, on the normal path.
-    pub fn complete(mut self, result: Result<Config, String>) {
+    pub fn complete(self, result: Result<Config, String>) {
+        self.complete_with_projects(result.map(|config| ReloadedConfig {
+            config,
+            projects: None,
+        }));
+    }
+
+    /// [`Self::complete`] for a worker that also built the runtime project
+    /// list, so the apply adopts it rather than building it again.
+    pub fn complete_with_projects(mut self, result: Result<ReloadedConfig, String>) {
         self.send(result);
     }
 
-    fn send(&mut self, result: Result<Config, String>) {
+    fn send(&mut self, result: Result<ReloadedConfig, String>) {
         if !self.sent {
             self.sent = true;
             let _ = self
@@ -81,15 +91,25 @@ pub trait ConfigSurface: Send + Sync {
     /// Engine's `RecoverConfig` handler writes them over a corrupt on-disk
     /// config through `config_write::write_config_secure`.
     fn recover_render(&self, config: &Config) -> String;
+
+    /// Which surface's start checks [`ConfigSurface::reload`] refuses a file
+    /// by, so a caller that wrote the file can say whether this run will apply
+    /// it (a password is in force only when the reload will take it).
+    fn start_surface(&self) -> crate::config::Surface;
 }
 
 /// A no-op implementation for tests constructing an `Engine` with no front end.
 /// `reload` posts a success `WorkerEvent` immediately so a caller draining the
 /// worker channel still observes completion; `recover_render` serializes plainly.
 #[doc(hidden)]
+#[derive(Debug)]
 pub struct NoopConfigSurface;
 
 impl ConfigSurface for NoopConfigSurface {
+    fn start_surface(&self) -> crate::config::Surface {
+        crate::config::Surface::YaranServer
+    }
+
     fn reload(&self, _paths: YaranPaths, worker_tx: Sender<WorkerEvent>) {
         ReloadCompletionGuard::new(worker_tx).complete(Ok(Config::default()));
     }

@@ -11,7 +11,9 @@ and switching between them is instant.
 
 First you need a project: the Add-project button in the browser, or the `add-project`
 command in the terminal UI's palette. Either opens a project browser over the same
-filesystem.
+filesystem. Repository not on the machine yet? Skip the shell trip:
+[Cloning a repository](#cloning-a-repository) clones it, adds it as a project and starts
+its first agent in one go.
 
 One path skips all of that. A **standalone agent** has no branch and no worktree and runs
 in a folder you point it at, with no project at all. See
@@ -31,8 +33,18 @@ Creating an agent does three things:
 
 Worktrees live under a `worktrees/` subdirectory of yaran's data directory:
 
-- **Linux:** `~/.config/yaran/worktrees/<project-name>/<branch-name>/`
-- **macOS:** `~/.yaran/worktrees/<project-name>/<branch-name>/`
+- **Linux:** `~/.config/yaran/worktrees/<project-name>/<folder>/`
+- **macOS:** `~/.yaran/worktrees/<project-name>/<folder>/`
+
+The folder is the agent's name flattened into one plain folder name: every character other
+than letters, digits (in any language), `-` and `_` becomes `-`. An agent named
+`dependabot/cargo/tray-icon-0.26.1` gets the folder `dependabot-cargo-tray-icon-0-26-1`,
+while its branch keeps the real name. A name with letters outside English gets a short code
+made from the full name on the end of its folder, so two names that look alike never share
+one. A very long name gets a shortened folder name ending in the same kind of code, so it
+fits on disk and two long names still get folders of their own. Two names that flatten to the same folder can't both
+have one, so the second create is refused and the first agent's folder is left alone.
+Agents created before yaran flattened folder names keep the folders they already have.
 
 Because each agent owns a real git worktree, your project's `.gitignore`, git hooks, and
 local config behave exactly as they do in the main checkout.
@@ -40,8 +52,15 @@ local config behave exactly as they do in the main checkout.
 ## Naming an agent
 
 Every creation path that makes a branch ends at a naming prompt, and there the name IS
-the branch name. It becomes a git ref, so only ASCII letters, digits, `-`, `_`, and `/`
-are accepted, and spaces become dashes.
+the branch name. Any name git accepts for a branch works, so a pull request's head branch
+can always name its agent, whatever it is called:
+
+- **Refused as you type:** spaces become dashes, and the characters git never allows in a
+  branch name (`~ ^ : ? * [ \` and control characters) don't go in at all.
+- **Checked when you confirm:** no `..` or `@{`, it can't be `@` or `HEAD`, it can't
+  start with `-`, start or end with `/`, contain `//` or end with `.`, and no part
+  between slashes may start with `.` or end with `.lock`.
+- **Anything else is fine:** dots, `@`, `+`, slashes and letters outside English all work.
 
 Tick the pet-name checkbox in the naming prompt and yaran generates a two-word pet name
 such as `brave-morse`, for both the agent and the branch. The checkbox starts unticked;
@@ -52,41 +71,69 @@ to make pet names the default for every new agent, turn it on permanently:
 enable_randomized_pet_name_by_default = true
 ```
 
-A standalone agent has no branch, so its name is a plain label taken exactly as you type
-it, punctuation included. Leave it empty (at creation, or when renaming later) and yaran
-names it after the folder rather than
-inventing a pet name.
+A standalone agent has no branch, but its name follows these same rules, and an empty
+name falls back to the folder's name
+([details below](#naming-a-standalone-agent)).
 
 This is the naming prompt in the terminal UI, with the pet-name checkbox ticked and the
 generated name filled in:
 
 ![The terminal UI naming prompt for a new agent, with a generated pet name in the field, a ticked pet-name checkbox, and a ticked checkbox for copying uncommitted changes.](/screens/tui-name-new-agent.png)
 
+### Renaming an agent
+
+Rename an agent from its `⋯` menu in the browser, or with `rename-agent` in the terminal
+UI. Both open the same dialog and follow the same rules.
+
+- **The name is what the agent shows.** The field holds the custom name you gave it, empty
+  when there is none, with the name it falls back to shown faintly behind it. It follows
+  the same rules as a branch name, a standalone agent's included.
+- **Leave it empty to go back.** An agent with a branch shows its branch name again; a
+  standalone agent shows its folder's name.
+- **Also rename the git branch** is a checkbox under the field, unticked by default, for
+  agents that have a branch. Tick it and yaran renames the branch to the new name as well.
+
+  - The name can't be empty then, because a branch can't be renamed to nothing.
+  - Once the branch carries the new name the agent simply shows its branch name, so a
+    later branch rename carries the label along too.
+
+> [!WARNING]
+> Renaming the branch only renames it on this machine. When the branch has an open pull
+> request, or a copy pushed to a remote, both stay on the old name, and the checkbox says
+> so before you tick it. Push the renamed branch and update the pull request yourself.
+
+A standalone agent has no branch, so its dialog has no checkbox.
+
 ## Creating a new agent from scratch
 
 In the browser, open a project's `⋯` menu and pick **New agent…**. In the terminal UI,
 run `new-agent` and pick a project from the chooser (every project is listed, including
-ones with no agents yet). Either way yaran checks that project's
-current branch, then opens the naming prompt.
+ones with no agents yet). Either way yaran checks that project's current branch, then opens
+the naming prompt.
 
 On both surfaces the project list is ordered by what you touched most recently, so a
-project you just added, or one that just received an agent, sits at the top, and in the
-terminal UI every project chooser shares that order, the ones for managing projects,
-browsing worktrees and opening a project terminal included.
+project you just added, or one that just received an agent, sits at the top. In the
+terminal UI every project chooser shares that order, the ones for
+[managing projects](#managing-a-project), browsing worktrees and opening a project
+terminal included.
 
-The terminal UI's chooser lists every project, how many agents each one has, and where it
-lives, and its footer carries the way out to a standalone agent:
+The terminal UI's chooser lists every project, how many agents each one has, the base
+branch new agents start from, and where it lives, and its footer carries the way out to a
+standalone agent:
 
 ![The terminal UI project chooser for a new agent, listing two projects with their agent counts and paths, and a footer key for creating a standalone agent instead.](/screens/tui-new-agent-chooser.png)
 
 On confirmation yaran creates a worktree on a new branch, branched from the project's
-leading branch. That is settled when you add the project: if the repository was on some
-other branch than its default, the add dialog asks whether to check the default out first.
-Say yes and the default branch leads; say no and the branch it was on leads instead.
-Checking out the project's default branch later makes the default lead from then on. If
-yaran cannot save that change, the checkout still happens but the old leading branch stays
-in charge, and yaran tells you so in an error that stays up until you close it; run the
-checkout again once the problem is fixed.
+**leading branch**. Where that comes from:
+
+- **When you add the project:** if the repository was on some other branch than its
+  default, the add dialog asks whether to check the default out first. Say yes and the
+  default branch leads; say no and the branch it was on leads instead.
+- **Later:** checking out the project's default branch makes the default lead from then
+  on.
+- **If yaran cannot save that change,** the checkout still happens but the old leading
+  branch stays in charge, and yaran tells you so in an error that stays up until you close
+  it. Run the checkout again once the problem is fixed.
 
 If the name matches an existing local branch, yaran asks whether to attach to that branch
 instead, which is what you want when continuing work that already started.
@@ -96,7 +143,93 @@ instead, which is what you want when continuing work that already started.
 > existed first, so the delete dialog's "also delete the branch" box starts **unticked**
 > for it, with a line saying the branch predates the agent and how many of its commits
 > are pushed nowhere. Tick it and the branch goes anyway; leave it and the worktree goes
-> alone.
+> alone. A second box covers the other branches the agent's worktree has been on. The [delete section of Web agents](/docs/web-agents#kill-versus-delete) has the full rules.
+
+### Changing the base branch
+
+Cloned on the wrong branch, or want new agents to start from `develop`? Change the
+project's base branch, the one new agents branch from. In the browser it is **Change base
+branch…** in the project's `⋯` menu; in the terminal UI it is the
+`change-project-base-branch` palette command, or the same row in a project's action list
+(see [Managing a project](#managing-a-project)).
+
+#### How the list works
+
+yaran fetches `origin` first, then lists every local branch and every branch that only
+exists on `origin`.
+
+- **The fetch** is tried once more if it fails and there is time left, and yaran gives up
+  after 15 seconds in all. When it does, the list shows origin's branches as last fetched
+  and says why.
+- **The current base** is marked, and the list is searchable.
+- **A branch another worktree has checked out,** usually an agent's own branch, is listed
+  but cannot be picked, and the row names who holds it: git will not check out one branch
+  in two places.
+
+#### Freeing a branch an agent holds
+
+1. Delete that agent with its worktree, and untick the box that also deletes the branch.
+2. For a worktree no agent holds any more, remove it from the project's worktree manager,
+   again with that box unticked.
+3. For a worktree whose folder is gone, run `git worktree remove` with its path in the
+   project folder. It makes git forget the worktree and leaves the branch alone. (Git
+   still counts such a worktree as holding its branch until then.)
+
+The error yaran shows names the way out that applies.
+
+> [!CAUTION]
+> The agent delete dialog ticks "also delete the branch" by default for a branch yaran
+> created, and the worktree manager ticks it by default for every branch. Leave it ticked
+> and the branch you wanted as the base is deleted along with the worktree.
+
+#### What happens when you pick one
+
+Pick a branch and yaran asks first, because the project folder switches to that branch.
+Confirm and yaran checks it out in the project folder (creating the local branch from
+`origin`'s first when only `origin` has it), then makes it the base. If git refuses the
+switch, for example because uncommitted changes in the folder would be overwritten, yaran
+says so in an error that stays up, and the base stays where it was.
+
+> [!NOTE]
+> Uncommitted changes that do not conflict with the new branch travel with the switch and
+> stay in the project folder, the same as with a checkout in your own terminal.
+
+### Switching and pulling safely
+
+These rules apply to every time yaran switches the project folder to a branch or pulls into
+it: changing the base branch, checking out the default branch, creating an agent, an
+agent's **Pull** and **Pull project**.
+
+**A branch that only exists on a remote.** yaran creates the local branch from `origin`
+when `origin` has it, otherwise from the one remote that has it. Your
+`checkout.defaultRemote` setting is not consulted. When several remotes have the branch
+and none of them is `origin`, yaran refuses the switch and asks you to create the local
+branch from the remote you want first.
+
+> [!CAUTION]
+> When the branch you switch to (or pull in) tracks a path where an ignored folder or file
+> stands, git deletes or overwrites it to make room: it treats ignored files as
+> disposable.
+>
+> yaran refuses the switch or pull, and changes nothing, when that folder holds, or that
+> file sits inside, something it knows about:
+>
+> - an agent's worktree,
+> - a standalone agent's folder,
+> - a project's repository, or
+> - a terminal working there.
+>
+> Any other ignored folder or file git still replaces, as it would in your own terminal,
+> so move it aside first if it matters.
+>
+> The same goes when the incoming commit deletes every file in a folder (git removes the
+> folder too) or deletes or replaces a link, even one the branch tracks: yaran refuses when
+> one of those lives or works there.
+
+> [!NOTE]
+> yaran's own pulls and branch switches never update submodules, even when your git config
+> sets `submodule.recurse`: the submodule pointer moves, the submodule's files stay where
+> they are. Run `git submodule update` yourself when you want them to follow.
 
 ### Pulling before create
 
@@ -110,7 +243,8 @@ pull_before_creating_agent_by_default = true
 
 The pull is best-effort. It is fast-forward only, never a merge or rebase, it is skipped
 for repos with no `origin` remote, and a failed pull does not block creation: the agent
-starts from the local branch state and the status message says so.
+starts from the local branch state and the status message says so. That includes a pull
+yaran refused because it would have deleted a folder it knows about (see [Switching and pulling safely](#switching-and-pulling-safely)).
 
 ### Copying uncommitted changes
 
@@ -125,13 +259,151 @@ copy_uncommitted_changes_by_default = true
 
 Changes are copied only when the project checkout and the new worktree are on the same
 commit. When they are not, creation still proceeds and the status message notes that
-nothing was copied. Files matched by `.gitignore`, submodule and embedded-repository
-contents, and empty directories never travel.
+nothing was copied.
+
+Never copied: files matched by `.gitignore`, submodule and embedded-repository contents,
+and empty directories.
+
+## Cloning a repository
+
+The repository you want to work on lives on a remote and not on this machine? One action
+clones it, adds it as a project and starts its first agent there. In the browser it is
+**Clone a repository…**, beside **Add project…** under **Projects** in the menu the
+launcher's **▾** opens, and in the app menu's **Add project** submenu. In the terminal UI it is the
+`clone-project` palette command.
+
+Both open the same short form:
+
+- **The address.** Anything `git clone` takes, plus the spellings you would copy from a
+  browser or type from memory:
+  - **`owner/repo`** is a repository on GitHub, like `example/application`. A pull
+    request number after it (`example/application#123`) is ignored.
+  - **`host/owner/repo`** works on any host whose name has a dot in it and no port, like
+    `github.com/example/application` or `gitlab.example.com/team/app`.
+  - **A page pasted from GitHub**, like `https://github.com/example/application/issues`,
+    `…/tree/main`, `…/pull/7`, `…/security/dependabot` or `…?tab=readme-ov-file`, clones
+    the repository the page belongs to: everything after `owner/repo` comes off. A full
+    address keeps the `https://` or `http://` and the port you pasted
+    (`https://github.com/example/application.git` here); without the `https://`
+    (`github.com/example/application/tree/main`) it is read like `host/owner/repo`. That
+    goes for `github.com` always, and while the GitHub integration is on, for every host
+    your `gh` is signed in to (and, with older `gh` versions, hosts whose name starts with
+    `github.`). To work on a pull request itself, use
+    [New agent from PR](#creating-an-agent-from-a-github-pr).
+  - **Nothing is cut anywhere else.** `owner/repo/tree/main` with no host, and
+    `host/owner/repo` with more after it on a host that is not GitHub's, go to `git clone`
+    exactly as typed, which reads them as folders on disk. On those hosts a longer path can
+    be the repository itself, so for one in a GitLab subgroup paste its full address,
+    `https://gitlab.com/group/subgroup/repo.git` or `git@gitlab.com:group/subgroup/repo.git`.
+  - **Everything else goes to `git clone` exactly as typed:** a full address with nothing
+    after `owner/repo`, `ssh://…`, `git@host:owner/repo.git`, a `file://` address, a path
+    on disk (one that starts with `/`, `./`, `../` or `~`), and a page address carrying a
+    user name, a token or a `%` escape.
+
+  `owner/repo` and `host/owner/repo`, and a GitHub page written without `https://`, become
+  `git@host:owner/repo.git` when the GitHub integration is on and sees that your `gh`
+  uses SSH for that host, and `https://host/owner/repo.git` otherwise, which is also what
+  you get while the GitHub integration is off. To clone a local folder whose path looks
+  like one of these (say `owner/repo` under your current folder), start it with `./`.
+- **The destination folder.** It fills itself in as your project browser's start
+  directory plus the repository's name, and keeps following the address until you edit
+  it. A leading `~` works; otherwise give a full path.
+- **The first agent's name**, with the same pet-name checkbox as every other naming
+  prompt. Leave the name empty and yaran picks a pet name for you.
+
+Then yaran runs a full clone, checks out the remote's default branch, adds the folder as a
+project with that branch as its base branch, and starts the agent on a fresh branch under
+the provider every new project gets by default. One progress message covers the lot and
+ends with one outcome: the agent is running, or what stopped it and how far it got.
+
+- **In the browser** the dialog closes as soon as the clone starts, and yaran selects the
+  new agent when it appears, however long that takes.
+- **In the terminal UI** the status line carries the progress and the outcome.
+- **A problem yaran spots straight away** keeps the form open with the reason. In the
+  terminal UI, a refusal or a failed clone that arrives after the form has closed hands
+  your typed values back the next time you open it, so a typo in the address costs you one
+  fix rather than the whole form.
+
+> [!IMPORTANT]
+> **yaran never asks for anything while it clones.** It uses your own git setup, and nothing
+> that would ask is ever waited on, a password pop-up included: it fails straight away with
+> git's or ssh's own message instead.
+>
+> - **Works as in your shell:** your ssh agent and keys, URL rewrites, and credential
+>   helpers that answer without asking (a stored token, a keychain).
+> - **Do first, once:** connect to a host you have never used from a shell (or clone
+>   anything from it) so it is trusted, and load an ssh key with a passphrase into your
+>   agent.
+
+A few more things worth knowing:
+
+- **The machine that clones is the one yaran runs on.** A path or `file://` address is read
+  from that machine's disk, not from the device your browser is on, and the destination
+  is on that machine too.
+- **The destination must be new or an empty folder**, its parent folder must already
+  exist, and it cannot already be a project. yaran will not clone into a symbolic link, and
+  will not start a second clone into a folder it is already cloning into.
+- **A user name and token in the address work, and yaran keeps them out of sight.** Every
+  message and log line yaran writes shows the address without them. git itself still saves
+  the address as you typed it in the clone's own `.git/config`, which is your call.
+- **Submodules are not initialized**, the same as everywhere else in yaran.
+- **The `yaran` command line has no clone command.** Clone from the browser or the terminal
+  UI.
+
+### How long a clone runs
+
+There is no time limit, only a silence limit. A big repository is slow, not stuck.
+
+- **Quiet for too long:** a clone that goes quiet for
+  [`[git] clone_stall_seconds`](/docs/configuration#how-long-a-clone-may-go-quiet-git)
+  (5 minutes by default) is stopped, and the message says so.
+- **Still going after 30 minutes:** its spinner turns into a warning while git carries on,
+  and the outcome still arrives when it ends.
+- **No cancel button:** quitting yaran stops a running clone.
+
+### When a clone stops partway
+
+yaran never deletes anything you put there. The one folder it ever removes is a destination
+it created itself for this clone, and only while that folder is still empty. Everything
+else stays, so what is left depends on where it stopped. The message always says which of
+these happened and what to do next.
+
+| What stopped it | What you have afterwards |
+|---|---|
+| A check before git ran (bad name, folder not empty, and so on) | Nothing changed. |
+| git failed (wrong address, no access, the host refused) | Nothing added. git clears out what it wrote. |
+| The clone went quiet for too long, or yaran quit mid-clone | Nothing added. The destination may hold part of a clone, and yaran leaves it there (see below). |
+| The remote has no commits yet | The clone stays, no project is added. |
+| The remote's default branch could not be checked out | The clone stays, no project is added. |
+| Adding the project failed | The clone stays, no agent is created, and the message gives the reason. |
+| A branch named like the agent already exists in the clone | The project is added, no agent is created. Use New agent with another name. |
+| The agent could not start | The project is added, and the message says why the agent is missing. |
+
+What to do next, for the cases that need more than the table says:
+
+- **git failed:** if yaran created the destination folder, it goes too. An empty folder you
+  made yourself stays.
+- **Quiet too long, or yaran quit:** remove the leftover destination before trying again.
+  yaran refuses a folder that is not empty, and says an earlier clone may have been
+  interrupted there.
+- **No commits yet:** use Add project on the folder, which offers to make a first commit.
+- **Default branch not checked out:** check a branch out in the folder, then use Add
+  project.
+- **A branch named like the agent exists** (the default branch included): pick another name
+  with New agent, which also offers to attach to that branch.
 
 ## Creating an agent from a GitHub PR
 
-In the browser, **New agent from PR…** in the launcher's `⋯` menu at the bottom of the
-sidebar, under **Agents**, or in a project's own `⋯` menu to start from that project. In
+> [!NOTE]
+> Pull request features work through the `gh` CLI, so they cover github.com and any GitHub
+> Enterprise host `gh` is signed in to. A GitLab merge request, a Bitbucket pull request or
+> any other forge's address is refused with a sentence naming the host. Plain git does not
+> care: cloning a project and everything an agent does in its worktree works with any host
+> git can reach.
+
+In the browser, **New agent from PR…** in the menu the **▾** beside **New agent…** at the
+bottom of the sidebar opens, under **Agents**, or in a project's own `⋯` menu to start from that
+project. In
 the terminal UI, the `new-agent-from-pr` palette command.
 
 This path needs the `gh` CLI installed, authenticated with `gh auth login`, and
@@ -150,7 +422,7 @@ keeps the GitHub features on.
 
 **A failed check is never final.** While GitHub features are unavailable, yaran quietly
 asks `gh` again every few minutes and turns them back on the moment it works, so a
-GitHub rate limit or a short outage while yaran was starting no longer means restarting it.
+GitHub rate limit or a short outage while yaran was starting does not mean restarting it.
 The interval is yours:
 
 ```toml
@@ -164,16 +436,21 @@ warning once when it clamps one, so a mistyped `1` cannot have it launching `gh`
 second.
 
 You can also ask right away: **Re-check GitHub** in the browser's settings menu under
-**Configuration**, or the `recheck-github` palette command in the terminal UI. Either
-way yaran tells you what it found, including why it still cannot use `gh`.
+**Configuration** (shown while GitHub integration is on), or the `recheck-github` palette
+command in the terminal UI. Either way yaran tells you what it found, including why it
+still cannot use `gh`.
 
 **GitHub Enterprise works, on any hostname `gh` is logged in to.** A company server at
 `git.company.example` is treated exactly like `github.com` once
 `gh auth login --hostname git.company.example` succeeds, for the PR banner and for this
-path. An older `gh` that cannot report its hosts falls back to a single yes-or-no login
-check, which is stricter (any host in trouble switches the GitHub features off), and to
-recognising `github.com` and `github.*` only; if your enterprise host is spelled anything
-else, upgrade `gh`.
+path.
+
+An older `gh` that cannot report its hosts gets two stricter fallbacks:
+
+- **A single yes-or-no login check:** any host in trouble switches the GitHub features
+  off.
+- **Host recognition:** `github.com` and `github.*` only. If your enterprise host is
+  spelled anything else, upgrade `gh`.
 
 ### The reference comes first, and yaran works out the project
 
@@ -184,12 +461,28 @@ every project you have.
 - **One project is a checkout of that repository.** yaran goes straight on to resolve the
   pull request and name the agent.
 - **Two or more are.** yaran shows you just those and asks which one this agent belongs in.
-- **None is.** yaran names the repository it could not place and offers the project picker.
+- **None is.** When the reference names a repository and a pull request number on a host
+  `gh` is signed in to, yaran looks the pull request up and offers to set it up:
+
+  - The terminal UI and the browser show the pull request's title and branch and ask
+    before they clone the repository, or, when the folder it would clone into already
+    holds a checkout of it, before adding that folder as a project.
+  - The agent then starts on the pull request's code. The folder and the agent's name are
+    editable, and **Choose an existing project** keeps the project picker one stop away.
+  - When yaran can tell beforehand that the agent would need a
+    [review copy](#naming-and-fetching), the offer says so and asks first: the same
+    warning and unticked **Create a review copy** box as below, and yaran won't clone or add
+    until you tick it. A name you type that is spelled like a review copy of the pull
+    request's branch gets the same question.
+  - A reference with no number, or a pull request yaran could not look up, gets the project
+    picker instead, with the lookup's own sentence when that is what failed.
 
 > [!IMPORTANT]
-> **yaran will not clone a repository it does not have.** Every way of adding a project
-> takes a directory that already exists. If the repository is not on this machine yet,
-> clone it yourself and add it as a project first.
+> The clone is the same one [Cloning a repository](#cloning-a-repository) does. It uses
+> `gh`'s git protocol setting for that host and never prompts for anything. Over SSH,
+> connect once in a terminal first with `ssh -T git@<host>`, so the host is known; over
+> HTTPS, a private repository needs git credentials set up outside yaran, for example with
+> `gh auth setup-git`.
 
 Some projects cannot be compared at all: the directory is gone, git cannot read an
 `origin`, or the address is on a host `gh` is not signed in to. yaran reports those as
@@ -245,28 +538,120 @@ Each project's `origin` is read fresh every time, so editing a remote, changing 
 
 Once the pull request resolves, yaran asks you to confirm or edit the branch name,
 pre-filled with the PR's head branch. In the terminal UI that is a second prompt; in the
-browser the reference and the name are two fields in one dialog. The name you confirm is
-what the fetch targets: yaran fetches the PR's head ref into that local branch, then
-creates a worktree on it.
+browser the reference and the name are two fields in one dialog.
 
-If the branch already exists locally, from a previous fetch say, yaran attaches to it
-without fetching again, and the delete dialog later offers that branch unticked, the way
-it does for any branch you had first. Otherwise the local branch is yaran's own, whether
-yaran fetched the pull request head or checked out a copy your project had already fetched
-from the remote, and the box is ticked by default. Nothing yaran does to it reaches the
-remote: the branch on GitHub, and the pull request itself, are untouched either way.
+The name you confirm is
+what the fetch targets: yaran fetches the PR's head ref into that local branch, then
+creates a worktree on it. If yaran cannot fetch the pull request, nothing is created and
+the message says why.
+
+#### If a local branch of that name already exists
+
+From a previous fetch, say. yaran first fetches the pull request's head and checks that your
+branch contains it.
+
+- **It contains the pull request:** yaran attaches to it, and the delete dialog later offers
+  that branch unticked, the way it does for any branch you had first.
+- **It is simply behind,** with no commits of its own and not checked out anywhere: yaran
+  moves it forward to the pull request's latest commit and attaches to it, and the
+  confirmation says it did.
+- **It has gone its own way:** yaran leaves your branch alone and offers a
+  [review copy](#review-copies) instead.
+
+With no local branch of that name, yaran fetches the pull request head into a new local
+branch, even when your project already has a branch of that name on the remote, because a
+pull request from a fork often shares its branch name with an unrelated branch there.
+That local branch is yaran's own, and the delete box is ticked by default.
+
+Nothing yaran does
+to it reaches the remote: the branch on GitHub, and the pull request itself, are
+untouched either way.
+
+#### If another agent already has the code
+
+yaran creates nothing, whatever name you typed. An agent has it when its branch is the pull
+request's own branch (or a review copy of it) and contains the pull request's latest
+commit, or when its branch sits exactly on that commit. An agent working on a pull request
+stacked on top of this one does not count.
+
+yaran tells you which agent has it and where, and suggests opening a new tab in that agent,
+which works in the same folder on the same code. An agent on that branch that does not
+have the pull request's code yet gets the fresh copy below.
+
+#### Review copies
+
+If the pull request's branch is already checked out somewhere (by your project folder, or
+by a worktree in the middle of a rebase or a bisect), git will not check it out a second
+time. A branch that has gone its own way from the pull request is not the pull request's
+code either. In both cases yaran can make a **review copy** instead:
+
+- **What it is:** the pull request fetched into a new branch named after it, in a clean
+  worktree. That is handy when you want a second agent to review the work with none of the
+  first one's leftovers.
+- **Its name:** `feat-x-review` for a branch called `feat-x`, then `feat-x-review-2` and so
+  on, up to `-review-20`.
+- **Its content:** the pull request as GitHub shows it. The message that confirms it says
+  where the original branch is checked out.
+- **Its link:** the new agent is linked to the pull request, so its status pill follows
+  it. If the link cannot be made, the confirmation says so as a warning, and you can attach
+  the pull request to the agent yourself.
+- **Its pushes:** a push from it goes to its own branch, never to the pull request's.
+
+yaran never makes the copy on its own. It stops first, creates nothing, and tells you why
+the branch cannot be used and what name the copy would get. Because a push from the new
+agent lands on that copy's branch and not on the pull request, you have to agree to that:
+
+- **In the browser,** the New agent dialog reopens with your reference and name still
+  filled in, a warning, and an unticked **Create a review copy** box. **Create** stays
+  disabled until you tick it.
+- **In the terminal UI,** the name prompt reopens the same way.
+- **On the command line,** the same refusal is printed, and running the command again with
+  `--review-copy` agrees to it.
+
+If the branch changes between the warning and your answer so that the copy would be needed
+for a different reason or under a different name, yaran asks again instead of going ahead.
+
+> [!IMPORTANT]
+> A review copy is a branch of its own. Pushing from the agent never updates the pull
+> request, so if you meant to add commits to the pull request, free its branch and create
+> the agent again instead.
+
+> [!WARNING]
+> Commits you have not pushed yet are not in the copy.
+>
+> - **The copy is simply behind the busy branch:** the confirmation leads with how many
+>   commits it lacks, as a warning. Push first if the reviewer should see them.
+> - **The two have gone separate ways** (a pull request that was rebased or force-pushed,
+>   or one from a fork whose branch happens to share a name with yours, such as `main`):
+>   there is no count and no warning, because the copy is not an older version of the busy
+>   branch and nothing in it is simply missing.
+
+#### Names you type yourself
+
+- **Spelled like a review copy** of the pull request's branch, such as `feat-x-review`:
+  that makes a review copy all the same, so yaran asks about it the same way.
+- **Any other new name** needs no question.
+- **Checked out elsewhere, and not the pull request's branch:** refused, with the place it
+  is checked out, so you can pick another.
+- **Already a local branch without the pull request's code:** refused too.
 
 ### How PR status stays fresh
 
-With `github_integration` on, yaran shows a PR status pill on each agent branch. Updates
-are event-driven: pushing to a branch refreshes that agent's PR, and bringing an agent to
-the foreground refreshes it too. A slow background poll is the fallback, for changes made
-on GitHub itself:
+With `github_integration` on, yaran shows a PR status pill on each agent. These refresh it
+right away:
+
+- bringing the agent to the foreground,
+- creating the agent,
+- renaming its branch, and
+- the agent exiting.
+
+A background poll notices the rest, a push included, along with changes made on GitHub
+itself:
 
 ```toml
 [ui]
-# Seconds between blind PR-status safety polls. Most updates come from events,
-# so this is just the backstop. Set to 0 to rely on events alone.
+# Seconds between PR-status polls. This is what notices a push or a change made
+# on GitHub. Set to 0 to rely on the events above alone.
 pr_poll_interval_seconds = 180
 
 # Seconds between those polls for agents under "Inactive" in the agent list:
@@ -276,37 +661,86 @@ pr_poll_interval_seconds = 180
 pr_poll_inactive_interval_seconds = 43200
 ```
 
-The slow clock rides the cycles of the poll above rather than running a timer of its
-own, so its real period rounds up to the next of those cycles, and a value below
-`pr_poll_interval_seconds` behaves as that interval. Setting `pr_poll_interval_seconds`
-to `0` therefore turns the inactive poll off as well: with no cycles, there is nothing
-for it to ride.
+How the two settings behave:
 
-An agent that comes back from Inactive, because you reconnected to it or started it
-again, is checked right away rather than waiting out that slow clock, and the
-event-driven refreshes above ignore which section an agent is in.
+- **Ranges:** any non-zero `pr_poll_interval_seconds` is held to 30 to 21600 seconds, and
+  any non-zero `pr_poll_inactive_interval_seconds` to 30 to 604800 seconds (7 days).
+- **Inactive rounding:** the inactive period rounds up to the next active poll, and a value
+  below `pr_poll_interval_seconds` behaves as that interval.
+- **Turning the active poll off** (`0`) turns the inactive poll off as well.
+- **Coming back from Inactive,** because you reconnected to it or started it again, checks
+  the agent right away rather than waiting out the slow clock. The event-driven refreshes
+  above ignore which section an agent is in.
 
-When a branch name is reused, yaran follows the most recent pull request on it, preferring
-one that is open.
+Every branch the agent's worktree has been on is tracked, not only the current one, and a
+pull request yaran finds on any of them stays with the agent. The earlier branches take turns
+on the poll; [How much yaran asks GitHub about earlier branches](/docs/configuration#how-much-yaran-asks-github-about-earlier-branches-ui)
+has the two settings for that. A pull request that is already merged is not asked about
+again, and every other one is refreshed wherever it lives, an attached one from another
+repository included.
+
+When a branch name is reused, yaran keeps the pull requests opened after the branch was born
+and leaves older ones alone. When it cannot tell when the branch was born, it takes the most
+recent pull request on it, preferring one that is open.
+
+A pull request that was merged, and its branch deleted, before yaran ever saw it is still
+found by the branch's name. Because branch names get reused, yaran takes such a match only
+when:
+
+- the pull request came from the agent's own repository rather than a fork,
+- its last commit is the branch's: in the agent's local branch, or the last commit yaran saw
+  on the branch, or behind it, and
+- it was opened after the branch was born, when yaran knows when that was.
+
+Anything else is left alone, and you can attach the pull request by hand.
 
 If your GitHub API quota runs low, or GitHub starts erroring, yaran pauses PR checks until
 it recovers and tells you: a status line in the terminal UI, a toast in the browser.
 
-Above or below the agent's terminal, a one-line banner carries the pull request's number,
-its state and its title, on both surfaces. Clicking the banner opens that pull request in
-your browser, wherever you click it. In the terminal UI the `open-current-pr` command does
-the same from the keyboard, and it is the way in while an agent pane is maximized, since
-the maximized surface covers the banner (it also steps aside while you are typing into the
-pane, where the same command is the way in). Which side of the terminal the banner sits
-on is the `pr_banner_position` setting under `[ui]`.
+#### The PR banner
+
+> [!NOTE]
+> Status tracking and the banner go through `gh`, so they follow pull requests on GitHub and
+> GitHub Enterprise only. On a GitLab or Bitbucket project the agent works as usual and
+> simply has no pill.
+
+Above or below the agent's terminal, a one-line banner carries a pull request's number,
+its state and its title, on both surfaces. An agent with several pull requests shows one at
+a time, the first in its order, with a count of how many it has.
+
+- **Click it:** clicking the banner opens the pull request it shows in your browser. In the
+  browser the counter, the arrows and the list at its right end are separate controls; see
+  [The PR banner](/docs/web-git#the-pr-banner).
+- **Step through them:** the arrows in the browser, and Ctrl-n in the terminal UI while the
+  agent pane is not taking your typing (while it is, Ctrl-n reaches the agent).
+- **From the keyboard:** in the terminal UI the `open-current-pr` command opens the one the
+  banner shows. It is the way in while an agent pane is maximized, since the maximized
+  surface covers the banner (the banner also steps aside while you are typing into the
+  pane).
+- **All of them:** the `pull-requests` palette command in the terminal UI, and **Pull
+  requests…** in the agent's ⋯ menu in the browser, list every one with ways to attach, hide,
+  detach and reorder them.
+- **Which side:** `pr_banner_position` under `[ui]` is `"top"` or `"bottom"`, and the
+  default is `"bottom"`. Anything else falls back to the default.
+
+```toml
+[ui]
+pr_banner_position = "bottom"
+```
+
+The terminal UI's `toggle-pr-banner-position` palette command and the web's Preferences
+flip it too.
 
 ## Creating an agent from an existing worktree
 
-In the browser, **Worktrees…** in a project's `⋯` menu, or **New agent from existing
-worktree…** in the app menu, which asks for the project first and offers **Back** to
-return to that list. In the terminal UI, the
-`new-agent-from-worktree` palette command. Either opens a picker of every git worktree
-for that project's repository, in two groups:
+Either surface opens a picker of every git worktree for the project's repository:
+
+- **In the browser:** **Worktrees…** in a project's `⋯` menu, or **New agent from existing
+  worktree…** in the app menu, which asks for the project first and offers **Back** to
+  return to that list.
+- **In the terminal UI:** the `new-agent-from-worktree` palette command.
+
+The picker has two groups:
 
 - **Managed worktrees**, already under yaran's `worktrees/` directory. One with no agent
   yet gets a new session attached without touching the branch or files. An adopted
@@ -318,8 +752,9 @@ for that project's repository, in two groups:
   `HEAD`, with dirty and untracked files copied across. Gitignored files do not travel.
 
 The main checkout is never selectable; yaran keeps that for you. Worktrees that already
-have an agent are shown but disabled, with a tooltip explaining why; in the terminal UI,
-selecting one reports "That worktree already has an agent."
+have an agent are shown but disabled, with a tooltip explaining why (in the browser they
+sit under **Already has an agent**); in the terminal UI, selecting one reports "That
+worktree already has an agent."
 
 ### Deleting a worktree, and its branch
 
@@ -328,8 +763,9 @@ offers **Delete worktree…**. The terminal UI has the same manager as the
 `manage-worktrees` palette command. The project picker in front of it labels each project
 with how many worktrees it has.
 
-This is the terminal UI's manager: free worktrees on top, the ones a live agent is holding
-below them, each row naming its branch and saying whether there is uncommitted work in it.
+This is the terminal UI's manager: free worktrees on top, the ones an agent or something
+else is holding below them, each row naming its branch and saying whether there is
+uncommitted work in it.
 
 ![The terminal UI worktree manager listing one removable worktree and two held by an agent, each with its branch and an uncommitted-changes note.](/screens/tui-worktree-manager.png)
 
@@ -342,13 +778,91 @@ below them, each row naming its branch and saying whether there is uncommitted w
 
 ![The terminal UI confirmation for deleting a worktree, naming the path, warning about the uncommitted changes, and offering a ticked checkbox that also deletes the branch.](/screens/tui-worktree-delete-confirm.png)
 
-Worktrees a live agent is holding are listed but unselectable: removing one from under a
-running session leaves it broken. Delete the agent instead.
+Worktrees that cannot be removed are listed but unselectable, because removing one from
+under a session leaves it broken. The groups differ a little per surface.
+
+In the terminal UI:
+
+- **Held By An Agent:** a worktree an agent holds. Delete the agent instead. The row reads
+  **held by an agent**, and adds `in use:` and what is using it only when something
+  besides that agent is using the folder as well, such as a terminal open in it.
+- **Also in that group:** a worktree something else is still using (an agent being created
+  in it, a terminal open in it, the CLI of an agent you just deleted still stopping, a
+  standalone agent working inside it). Its row says `in use:` and what is using it.
+- **Being Removed:** a worktree whose agent was just deleted, until it is gone. It cannot
+  be removed a second time.
+- **Left Over After A Delete:** a folder git let go of when its worktree was deleted, but
+  that could not be deleted because something kept writing into it. The row names the
+  branches kept because of it. Pick it for **Copy path** and **Delete folder…**.
+
+In the browser the same cases are three groups: **Already has an agent**, **In use** (each
+row says what is using it) and **Being removed**, plus **Left over after a delete**.
+
+> [!IMPORTANT]
+> When a delete leaves its folder behind, yaran keeps the branches it was going to delete,
+> because the folder still holds their files. **Delete folder…** confirms first and offers
+> the kept branches too; a branch that has moved since is kept. The rules are in
+> [When something keeps writing into the worktree](/docs/web-agents#when-something-keeps-writing-into-the-worktree).
 
 Either manager is how you remove a branch belonging to a worktree that has no agent. For a
 worktree that does have one, the agent's own delete dialog is the place: it names the
 branch, says whether it predates the agent, and offers to remove it there and then. Once
 the worktree is gone neither surface can reach the branch, and `git branch -D` is the way.
+
+## Managing a project
+
+Everything you can do to a project lives in one list per project. In the terminal UI, run
+`manage-projects`: it lists every project with its agent count, its base branch and its
+folder (a missing folder gets a warning sign), plus any **orphaned group**, agents whose
+project record is gone, shown by a short id. Pick one and its actions open, headed by the
+project's name, its folder, its base branch and the branch the folder is on right now:
+
+- **New agent…**, **New agent from PR…** (only with GitHub integration on),
+  **Worktrees…** and **New terminal at the project root**
+- **Pull project**, **Check out default branch…** and **Change base branch…**
+- **Project info…**, a read-only page of the project's settings and counts
+- **Default provider…**, the auto-reopen toggle, **Startup command…** and
+  **Environment…**
+- **Startup command logs for all agents…**
+- **Delete project…** and **Remove project…**
+
+**Delete project…** and **Remove project…** differ in what happens to the worktrees:
+
+- **Delete project…** removes the project and every agent's record at once, then each
+  agent's worktree in the background, the same way deleting one agent with its worktree
+  does: each one waits for its agent to stop and for anything still running in it. One
+  status follows the whole delete and, when it ends, names any worktree that could not be
+  removed and why. Before you confirm, its dialog says, for each agent's worktree that
+  holds uncommitted files, how many there are, in the same words the agent delete dialog
+  uses ("3 files in … aren't committed and will be deleted"). Each line reads "Looking for
+  uncommitted files in …" while git is being asked, and says so when git could not look; a
+  worktree with every file committed gets no line. You can confirm without waiting for
+  the counts.
+- **Remove project…** forgets the project and its agents and leaves every worktree on
+  disk.
+
+If an agent is still being created in the project when you confirm a delete, it waits for
+the creation to finish (up to the top-level `removal_wait_seconds`, 120 seconds by
+default) and takes the new agent along. No new agent can be created in a project while it
+is being deleted.
+
+Moving around the list:
+
+- **Coming back:** anything you open from the list comes back to it when it closes,
+  whether you cancel it, close it or save it: the questions, Project info, the settings
+  editors, the worktree manager and the startup command logs.
+- **Escape** on the list goes back to the project list, and a second Escape closes it.
+- **An orphaned group** offers **Remove project…** and nothing else, which clears those
+  agents' records and leaves their worktrees on disk.
+- **A missing project folder:** the rows that need it (a new agent, the project terminal
+  and changing the base branch) are shown as unavailable and say why.
+
+The browser has the same actions in each project's `⋯` menu.
+
+Every project palette command still works on its own. With an agent selected it acts on
+that agent's project; with no agent selected it opens the project list first and acts on
+the one you pick. `copy-path` does the same: the selected agent's folder, or the picked
+project's.
 
 ## Forking an existing agent
 
@@ -379,25 +893,34 @@ agent would name, and the changes panel says why it has nothing to show.
 
 ![The terminal UI with a standalone agent selected: its row carries a star over the folder path, and the changes panel says the folder has no git repository.](/screens/tui-standalone-star.png)
 
-In the browser, the launcher's `⋯` menu and **New standalone agent…**. In the terminal
-UI there are three ways in: a key anywhere in the agents pane, a key inside the "New
-agent in project" chooser too (so you can change your mind once you are already there and
-no project fits), and the `new-standalone-agent` palette command. The `?` help overlay
-names the keys, and you can rebind them under `[keys]` in `config.toml`. Every way in
-opens the same folder browser. Any folder is accepted: it does not have to be a git
-repository, and yaran initializes nothing in it.
+Every way in opens the same folder browser. Any folder is accepted: it does not have to
+be a git repository, and yaran initializes nothing in it.
 
-Both surfaces then ask what to call the agent. The name is optional: leave it empty and
-the agent is named after the folder, or type one and it is used as you typed it, interior
-spaces and punctuation included; surrounding whitespace is trimmed, and a blank name means
-the folder's name. Backing out of that question creates nothing and leaves the folder
-untouched.
+- **In the browser:** **New standalone agent…** from the launcher's **▾** menu or
+  the app menu's New submenu, and **Add standalone agent…** at the bottom of the New agent
+  project list, for when you went looking for a project and none fits.
+- **In the terminal UI:** a key anywhere in the agents pane, a key inside the "New agent in
+  project" chooser too (so you can change your mind once you are already there and no
+  project fits), and the `new-standalone-agent` palette command. The `?` help overlay names
+  the keys, and you can rebind them under `[keys]` in `config.toml`.
 
 > [!NOTE]
 > Once you start filtering inside the chooser, the key that still works is a modifier
 > chord, because plain letters go into the search box. GNU Screen's flow control can
 > swallow that chord before yaran ever sees it; the palette command still works there, and
 > so does rebinding the key to something your terminal passes through.
+
+### Naming a standalone agent
+
+Both surfaces then ask what to call the agent. The name is optional, and backing out of
+that question creates nothing and leaves the folder untouched.
+
+- **Empty:** the agent is named after the folder, turned into a valid agent name (`My
+  Notes! (2026)` becomes `My-Notes-2026`). A folder with nothing usable in its name gives
+  `standalone-agent`. The same happens when you clear the name later when renaming.
+- **Typed:** it follows the same rules as any agent's name, even though no branch is
+  created: any name git accepts for a branch, with spaces becoming dashes as you type.
+  See [Naming an agent](#naming-an-agent).
 
 What a standalone agent does NOT have:
 
@@ -417,9 +940,11 @@ in-browser editor, file drops, renaming, the resource monitor and auto-reopen.
 
 > [!IMPORTANT]
 > The folder's existence and location are yours alone. yaran does not create it, move it or
-> remove it, ever. Deleting the agent removes yaran's own record and nothing else, and the
-> delete dialog says so: there is no "also remove the worktree" checkbox, because there
-> is no worktree. A factory reset skips it too.
+> remove it, ever.
+>
+> - Deleting the agent removes yaran's own record and nothing else. The delete dialog says
+>   so: there is no "also remove the worktree" checkbox, because there is no worktree.
+> - A factory reset skips the folder too.
 
 Things do get written *inside* it: the agent works in it, a dropped file lands in it, a
 commit writes to its repository.
@@ -440,6 +965,13 @@ When the folder is not a repository the panel is quiet, and it says which quiet 
 - The folder has no git repository at all.
 - The folder sits **inside** a repository rooted somewhere else.
 - yaran could not consult git. Nothing is guessed and no change is written.
+
+A quiet panel keeps its header and its `⋯` menu, so you can still hide it or open the
+folder in the editor. Its git items stay in that menu greyed out with the reason, because
+they are the folder's own and come back once it is a repository. Pushing and pulling are
+not among them: they stay absent, as above.
+
+![The Changes pane of a standalone agent whose folder has no git repository, its menu open: Commit and Refresh changes greyed out under a line saying the folder has no git repository, and Hide Changes pane still available.](/screens/changes-quiet-menu.png)
 
 > [!WARNING]
 > The middle case is quiet on purpose. Git answers questions by walking up parent

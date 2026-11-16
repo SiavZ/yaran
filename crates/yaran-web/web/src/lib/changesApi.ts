@@ -4,6 +4,8 @@
 //
 // A non-2xx is thrown as a `ChangesFetchError` carrying the HTTP status.
 
+import { apiFetch, rethrowAuthInterruption } from "./apiFetch"
+import { changesRequestTimeoutMs } from "./connectionTiming"
 import type { ChangedFileView } from "./types"
 
 // The changed-files payload, and the one source the store trusts.
@@ -36,27 +38,116 @@ function parseRetryAfter(raw: string | null): number | null {
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null
 }
 
+// The caller gave the request up (a reset superseded it). Nothing to show: the
+// fetch that replaced it answers for the pane.
+export class ChangesFetchAborted extends Error {
+  constructor() {
+    super("The changed-files request was superseded.")
+    this.name = "ChangesFetchAborted"
+  }
+}
+
+// `signal` lets the caller abandon the request; it rejects with
+// `ChangesFetchAborted`. The request's own deadline, `[server]
+// changes_request_timeout_seconds` read when the request starts, rejects with a
+// `ChangesFetchError` (status 0) that says what happened. A half-open
+// connection never settles, and without the deadline the pane would sit loading
+// forever.
 export async function fetchChanges(
   sessionId: string,
+  signal?: AbortSignal,
 ): Promise<SessionChangesResponse> {
-  let resp: Response
+  return fetchJsonWithDeadline<SessionChangesResponse>(
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/changes`,
+    signal,
+    (seconds) =>
+      `The server did not send this session's changed files within ${seconds} seconds. The connection may have stalled; Refresh to try again.`,
+    "Could not read the changed files.",
+  )
+}
+
+// One level of a folded folder, as the server lists it.
+export interface FolderChildrenResponse {
+  dir: string
+  side: "staged" | "unstaged"
+  children: ChangedFileView[]
+}
+
+// The contents of the folded folder `dir` on `side`, one level deep, held to
+// the same deadline and abort rules as `fetchChanges`. A refusal (a folder the
+// listing no longer shows) arrives as a `ChangesFetchError` carrying the
+// server's sentence.
+export async function fetchFolderChildren(
+  sessionId: string,
+  dir: string,
+  side: "staged" | "unstaged",
+  signal?: AbortSignal,
+): Promise<FolderChildrenResponse> {
+  const query = new URLSearchParams({ dir, side })
+  return fetchJsonWithDeadline<FolderChildrenResponse>(
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/changes/children?${query}`,
+    signal,
+    (seconds) =>
+      `The server did not list what is inside ${dir}/ within ${seconds} seconds. The connection may have stalled; Retry to try again.`,
+    "Could not read the folder's contents.",
+  )
+}
+
+// A same-origin GET answered as JSON, abandoned on `signal` (rejecting with
+// `ChangesFetchAborted`) or on the changes deadline (rejecting with a
+// `ChangesFetchError` whose words `timeoutMessage` writes).
+async function fetchJsonWithDeadline<T>(
+  url: string,
+  signal: AbortSignal | undefined,
+  timeoutMessage: (seconds: number) => string,
+  unreadable: string,
+): Promise<T> {
+  const controller = new AbortController()
+  const deadlineMs = changesRequestTimeoutMs()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, deadlineMs)
+  const forward = () => controller.abort()
+  if (signal?.aborted) controller.abort()
+  else signal?.addEventListener("abort", forward)
+  // Whatever stopped the request, say which: the caller's abort is silent, the
+  // deadline is an error with words for the pane.
+  const stopped = (fallback: ChangesFetchError): Error => {
+    if (timedOut) return new ChangesFetchError(timeoutMessage(deadlineMs / 1000), 0)
+    if (controller.signal.aborted) return new ChangesFetchAborted()
+    return fallback
+  }
   try {
-    resp = await fetch(
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/changes`,
-      { credentials: "same-origin" },
-    )
-  } catch {
-    // The request never reached the server (offline, DNS, CORS). Status 0 so the
-    // caller treats it as retryable, not a 404 "session gone".
-    throw new ChangesFetchError("Could not reach the server.", 0)
+    let resp: Response
+    try {
+      resp = await apiFetch(url, { credentials: "same-origin", signal: controller.signal })
+    } catch (e) {
+      rethrowAuthInterruption(e)
+      // The request never reached the server (offline, DNS, CORS). Status 0 so
+      // the caller treats it as retryable, not a 404 "session gone".
+      throw stopped(new ChangesFetchError("Could not reach the server.", 0))
+    }
+    if (!resp.ok) {
+      const detail = (await resp.text().catch(() => "")).trim()
+      throw stopped(
+        new ChangesFetchError(
+          detail || `request failed (${resp.status})`,
+          resp.status,
+          parseRetryAfter(resp.headers.get("retry-after")),
+        ),
+      )
+    }
+    try {
+      return (await resp.json()) as T
+    } catch (error) {
+      throw stopped(
+        new ChangesFetchError(error instanceof Error ? error.message : unreadable, 0),
+      )
+    }
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener("abort", forward)
   }
-  if (!resp.ok) {
-    const detail = (await resp.text().catch(() => "")).trim()
-    throw new ChangesFetchError(
-      detail || `request failed (${resp.status})`,
-      resp.status,
-      parseRetryAfter(resp.headers.get("retry-after")),
-    )
-  }
-  return (await resp.json()) as SessionChangesResponse
 }

@@ -20,7 +20,7 @@
 //! that wakes to an absent cache re-elects an owner rather than reporting an error.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -60,7 +60,7 @@ const EVICT_GRACE: Duration = Duration::from_secs(30);
 /// the next compute re-establishes, so recovering the inner guard beats
 /// propagating one panic across every interested session.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// One cached changed-files result for a session.
@@ -77,43 +77,62 @@ enum Cached {
     },
     /// A failed compute, served as `409 + Retry-After` until [`ERROR_TTL`] elapses.
     Err {
-        #[allow(dead_code)]
         rev: u64,
         /// The invalidation generation observed when this compute started (mirrors
         /// `Ok::generation` so the waiter freshness check is uniform across variants).
         generation: u64,
         at: Instant,
-        message: String,
+        /// The listing from before a change, kept when the read the change asked
+        /// for failed: served in place of the 409, as stale and never as
+        /// current, until a read succeeds. Its own `rev`, so a client that
+        /// already holds it applies nothing.
+        previous: Option<(u64, Lists)>,
     },
+}
+
+/// A sorted (staged, unstaged) pair of wire rows.
+type Lists = (Vec<ChangedFileView>, Vec<ChangedFileView>);
+
+/// How a compute takes its place in the worktree's lane (see
+/// [`yaran_core::changes_lane`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Read {
+    /// The poll tick: reads only when the lane is idle, and otherwise stores
+    /// nothing and counts as nothing.
+    Poll,
+    /// A read somebody waits on (a GET, the refresh after a change): it waits
+    /// a bounded time for its turn and then reads without the lock.
+    Request,
 }
 
 impl Cached {
     /// The invalidation generation this entry's compute observed at start.
     fn generation(&self) -> u64 {
         match self {
-            Cached::Ok { generation, .. } => *generation,
-            Cached::Err { generation, .. } => *generation,
+            Cached::Ok { generation, .. } | Cached::Err { generation, .. } => *generation,
         }
     }
 }
 
 /// The result of [`ChangesService::get`] before HTTP projection.
-pub struct ChangesResponse {
-    pub rev: u64,
-    pub staged: Vec<ChangedFileView>,
-    pub unstaged: Vec<ChangedFileView>,
+pub(crate) struct ChangesResponse {
+    pub(crate) rev: u64,
+    pub(crate) staged: Vec<ChangedFileView>,
+    pub(crate) unstaged: Vec<ChangedFileView>,
 }
 
 /// Why a changed-files read could not be served.
-pub enum GitError {
+pub(crate) enum GitError {
     /// The session id is unknown (no worktree). The handler maps this to 404.
     SessionNotFound,
     /// A git lock/rebase or other git failure. The handler maps this to
-    /// `409 + Retry-After`.
-    Git(String),
+    /// `409 + Retry-After`. The failure's text is logged where it happens.
+    Git,
 }
 
-pub struct ChangesService {
+/// The per-session changed-files cache, its single-flight compute and the
+/// poller that pushes a `session.changes` signal when a listing moves.
+pub(crate) struct ChangesService {
     engine: EngineHandle,
     bus: Arc<EventBus>,
     cache: Mutex<HashMap<String, Cached>>,
@@ -122,28 +141,59 @@ pub struct ChangesService {
     inflight: Mutex<HashMap<String, watch::Receiver<bool>>>,
     /// First time each cache entry was seen with zero interest, for grace eviction.
     uninterested_since: Mutex<HashMap<String, Instant>>,
-    /// Monotonic invalidation generation, bumped by [`Self::invalidate`] after a git
-    /// mutation. A compute stamps its entry with the value it observed when it began
-    /// reading the filesystem, so a waiter that wakes to an older stamp re-elects as
-    /// owner and recomputes: the post-mutation state always wins.
-    invalidation_gen: AtomicU64,
+    /// Each session's monotonic invalidation generation, bumped by
+    /// [`Self::invalidate`] after a change to that session's files. A compute
+    /// stamps its entry with its session's value observed when it began reading
+    /// the filesystem, so an entry stamped older than its session's value is not
+    /// served as current, and a waiter that wakes to one re-elects as owner and
+    /// recomputes: the post-mutation state always wins. Per session, so a change
+    /// in one session leaves every other session's entry current.
+    invalidations: Mutex<HashMap<String, u64>>,
+    /// How long a [`Read::Request`] waits for its turn: always
+    /// [`yaran_core::changes_lane::REQUEST_TURN_WAIT`] outside tests.
+    request_turn_wait: Mutex<Duration>,
     /// Total git computes run. Test instrumentation for the single-flight test.
     compute_count: AtomicUsize,
+    /// Full listings read outside the cache to validate a folder-children
+    /// request (a cold cache). Test instrumentation: expanding folders must
+    /// not multiply full statuses. Absent outside tests.
+    #[cfg(test)]
+    fresh_validation_reads: AtomicUsize,
+    /// Callers that joined a compute already in flight as waiters. Test
+    /// instrumentation: the point a test knows a waiter is parked. Absent
+    /// outside tests.
+    #[cfg(test)]
+    waiters_joined: AtomicUsize,
+}
+
+/// What kind of failure a cached error records, which decides whether it may
+/// replace a cached success.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Failure {
+    /// Git genuinely failed: a now-stale success yields to the error.
+    Real,
+    /// A poll tick gave up waiting: it never replaces a concurrent success.
+    Timeout,
 }
 
 impl ChangesService {
     /// Build the service and spawn the supervised poll loop. MUST be called from
     /// within a tokio runtime context (the serve paths call it inside their
     /// runtime; the flip wraps its `build_app` in `runtime.enter()`).
-    pub fn new(engine: EngineHandle, bus: Arc<EventBus>) -> Arc<Self> {
+    pub(crate) fn new(engine: EngineHandle, bus: Arc<EventBus>) -> Arc<Self> {
         let svc = Arc::new(Self {
             engine,
             bus,
             cache: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
             uninterested_since: Mutex::new(HashMap::new()),
-            invalidation_gen: AtomicU64::new(0),
+            invalidations: Mutex::new(HashMap::new()),
+            request_turn_wait: Mutex::new(yaran_core::changes_lane::REQUEST_TURN_WAIT),
             compute_count: AtomicUsize::new(0),
+            #[cfg(test)]
+            fresh_validation_reads: AtomicUsize::new(0),
+            #[cfg(test)]
+            waiters_joined: AtomicUsize::new(0),
         });
         Self::spawn_poller(Arc::downgrade(&svc));
         svc
@@ -154,11 +204,9 @@ impl ChangesService {
     fn spawn_poller(weak: Weak<Self>) {
         tokio::spawn(async move {
             loop {
-                let weak_inner = weak.clone();
+                let weak_inner = Weak::clone(&weak);
                 let handle = tokio::spawn(async move { Self::poll_loop(weak_inner).await });
                 match handle.await {
-                    // Clean exit: the service was dropped, so stop supervising.
-                    Ok(()) => break,
                     Err(join_err) if join_err.is_panic() => {
                         yaran_core::logger::error(&format!(
                             "changed-files poller panicked; restarting after backoff: {join_err}"
@@ -178,8 +226,9 @@ impl ChangesService {
                         ));
                         tokio::time::sleep(POLL_RESTART_BACKOFF).await;
                     }
-                    // Cancelled (runtime shutdown): nothing to restart.
-                    Err(_) => break,
+                    // A clean exit (the service was dropped, so stop supervising)
+                    // or a cancel (runtime shutdown): nothing to restart.
+                    Ok(()) | Err(_) => break,
                 }
             }
         });
@@ -220,9 +269,12 @@ impl ChangesService {
                         let svc = Arc::clone(&svc);
                         async move {
                             let id_for_err = id.clone();
-                            if tokio::time::timeout(PER_SESSION_TIMEOUT, svc.compute_cached(id))
-                                .await
-                                .is_err()
+                            if tokio::time::timeout(
+                                PER_SESSION_TIMEOUT,
+                                svc.compute_cached(id, Read::Poll),
+                            )
+                            .await
+                            .is_err()
                             {
                                 // A shutdown that began mid-compute leaves the engine
                                 // unable to answer, so this timeout is expected and
@@ -241,18 +293,16 @@ impl ChangesService {
                                      after {PER_SESSION_TIMEOUT:?}; recording an error"
                                 ));
                                 let rev = svc.engine.next_changes_rev(id_for_err.clone()).await;
-                                let generation = svc.invalidation_gen.load(Ordering::SeqCst);
-                                // `clobber_ok = false`: this timeout races a freshly
+                                let generation = svc.invalidation_of(&id_for_err);
+                                // `Failure::Timeout`: this timeout races a freshly
                                 // elected owner whose good `Cached::Ok` carries a lower
                                 // rev, which the plain `rev >= existing` guard would let
                                 // this error overwrite into a spurious 409.
-                                svc.store_err(
-                                    &id_for_err,
-                                    rev,
-                                    generation,
-                                    "changed-files computation timed out".to_string(),
-                                    false,
-                                );
+                                yaran_core::logger::error(&format!(
+                                    "changed-files computation for session {id_for_err} \
+                                     timed out"
+                                ));
+                                svc.store_err(&id_for_err, rev, generation, Failure::Timeout);
                             }
                         }
                     })
@@ -291,11 +341,15 @@ impl ChangesService {
     /// A compute stores nothing for a vanished session, so an absent entry after one
     /// means either an unknown session ([`GitError::SessionNotFound`]) or an eviction
     /// racing this call, which is retried exactly once rather than returning a 409.
-    pub async fn get(self: &Arc<Self>, session_id: &str) -> Result<ChangesResponse, GitError> {
+    pub(crate) async fn get(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> Result<ChangesResponse, GitError> {
         if let Some(result) = self.read_fresh(session_id) {
             return result;
         }
-        self.compute_cached(session_id.to_string()).await;
+        self.compute_cached(session_id.to_string(), Read::Request)
+            .await;
         if let Some(result) = self.read_cached(session_id) {
             return result;
         }
@@ -312,7 +366,8 @@ impl ChangesService {
         }
         // Known session whose entry was evicted between the compute and the read:
         // recompute once and serve that.
-        self.compute_cached(session_id.to_string()).await;
+        self.compute_cached(session_id.to_string(), Read::Request)
+            .await;
         match self.read_cached(session_id) {
             Some(result) => result,
             // Still nothing: it vanished during the retry (or raced again), so treat
@@ -321,82 +376,140 @@ impl ChangesService {
         }
     }
 
-    /// Read the current cache entry (regardless of error TTL), projecting it to the
-    /// HTTP result. `None` means there is no entry at all.
+    /// Read the current cache entry (regardless of error TTL or freshness),
+    /// projecting it to the HTTP result. `None` means there is no entry at all.
     fn read_cached(&self, session_id: &str) -> Option<Result<ChangesResponse, GitError>> {
         let cache = lock(&self.cache);
-        match cache.get(session_id) {
-            Some(Cached::Ok { rev, prev, .. }) => Some(Ok(ChangesResponse {
-                rev: *rev,
-                staged: prev.0.clone(),
-                unstaged: prev.1.clone(),
-            })),
-            Some(Cached::Err { message, .. }) => Some(Err(GitError::Git(message.clone()))),
-            None => None,
-        }
+        cache.get(session_id).map(project)
     }
 
-    /// Return a cached result if it is fresh (an `Ok` entry, or an `Err` within
-    /// [`ERROR_TTL`]); `None` means a compute is needed.
+    /// Return a cached result if it is fresh: stamped at its session's current
+    /// invalidation generation or newer, and, for an `Err`, within
+    /// [`ERROR_TTL`]. `None` means a compute is needed.
     fn read_fresh(&self, session_id: &str) -> Option<Result<ChangesResponse, GitError>> {
+        let current = self.invalidation_of(session_id);
         let cache = lock(&self.cache);
         match cache.get(session_id) {
-            Some(Cached::Ok { rev, prev, .. }) => Some(Ok(ChangesResponse {
-                rev: *rev,
-                staged: prev.0.clone(),
-                unstaged: prev.1.clone(),
-            })),
-            Some(Cached::Err { at, message, .. }) if at.elapsed() < ERROR_TTL => {
-                Some(Err(GitError::Git(message.clone())))
+            Some(entry @ Cached::Ok { generation, .. }) if *generation >= current => {
+                Some(project(entry))
+            }
+            Some(entry @ Cached::Err { generation, at, .. })
+                if *generation >= current && at.elapsed() < ERROR_TTL =>
+            {
+                Some(project(entry))
             }
             _ => None,
         }
     }
 
-    /// Drop a session's cached lists and trigger a fresh compute and emit, so the
-    /// pane refreshes right after a git or file mutation rather than at the next
-    /// poll. With no `prev`, the next compute always detects a change.
-    pub fn invalidate(self: &Arc<Self>, session_id: String) {
-        // Bumped before the entry is cleared: an in-flight compute that already read
-        // the pre-mutation filesystem still stores its stale snapshot, and requiring
-        // this newer stamp is what makes the recompute below re-elect as owner
-        // instead of waiting on it and serving pre-mutation files.
-        self.invalidation_gen.fetch_add(1, Ordering::SeqCst);
-        {
-            let mut cache = lock(&self.cache);
-            cache.remove(&session_id);
+    /// Session `session_id`'s current invalidation generation.
+    fn invalidation_of(&self, session_id: &str) -> u64 {
+        lock(&self.invalidations)
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The session's cached listing as model rows, or `None` when nothing
+    /// successful is cached. It is what the pane is showing, so a folder the
+    /// pane can expand is validated against it without another full status.
+    pub(crate) fn cached_listing(
+        &self,
+        session_id: &str,
+    ) -> Option<(Vec<ChangedFile>, Vec<ChangedFile>)> {
+        let current = self.invalidation_of(session_id);
+        let cache = lock(&self.cache);
+        match cache.get(session_id) {
+            Some(Cached::Ok {
+                prev, generation, ..
+            }) if *generation >= current => Some((
+                prev.0.iter().map(model_from_view).collect(),
+                prev.1.iter().map(model_from_view).collect(),
+            )),
+            _ => None,
         }
+    }
+
+    /// Record a full listing read outside the cache (see
+    /// `fresh_validation_reads`).
+    /// Nothing outside tests.
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "the counter this bumps exists only in test builds"
+        )
+    )]
+    pub(crate) fn note_fresh_validation_read(&self) {
+        #[cfg(test)]
+        self.fresh_validation_reads.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// How many full listings were read outside the cache to validate a folder
+    /// request. Read by tests only.
+    #[cfg(test)]
+    pub(crate) fn fresh_validation_reads(&self) -> usize {
+        self.fresh_validation_reads.load(Ordering::SeqCst)
+    }
+
+    /// Mark a session's cached lists stale and trigger a fresh compute and emit,
+    /// so the pane refreshes right after a git or file mutation rather than at
+    /// the next poll.
+    ///
+    /// The entry stays: a stale entry is never served as current (a GET runs or
+    /// joins the compute this starts), but it is what the compute compares its
+    /// rows with, so a change that left the rows as they were bumps no `rev`, and
+    /// it is what a GET serves, marked stale, if that compute fails.
+    pub(crate) fn invalidate(self: &Arc<Self>, session_id: String) {
+        // Bumped first: an in-flight compute that already read the pre-mutation
+        // filesystem still stores its snapshot under the older stamp, and
+        // requiring this newer one is what makes the recompute below re-elect as
+        // owner instead of waiting on it and serving pre-mutation files.
+        *lock(&self.invalidations)
+            .entry(session_id.clone())
+            .or_insert(0) += 1;
         let svc = Arc::clone(self);
         tokio::spawn(async move {
-            svc.compute_cached(session_id).await;
+            svc.compute_cached(session_id, Read::Request).await;
         });
     }
 
     /// The cached `rev` for a session, used to stamp the synthetic `session.changes`
     /// frame the `/ws/events` catch-ups send. `None` for a cold cache, which the
     /// caller serialises as an absent `rev` and the client reads as a force-refetch.
-    pub fn peek_rev(&self, session_id: &str) -> Option<u64> {
+    pub(crate) fn peek_rev(&self, session_id: &str) -> Option<u64> {
         let cache = lock(&self.cache);
         match cache.get(session_id) {
-            Some(Cached::Ok { rev, .. }) => Some(*rev),
-            Some(Cached::Err { rev, .. }) => Some(*rev),
+            Some(Cached::Ok { rev, .. } | Cached::Err { rev, .. }) => Some(*rev),
             None => None,
         }
     }
 
-    /// The current invalidation generation. Test-only: a route that must drop the
-    /// cache has no other observable proof it did, since the invalidate also
-    /// spawns a recompute that repopulates the entry.
+    /// Session `session_id`'s current invalidation generation. Test-only: a
+    /// route that must invalidate the cache has no other observable proof it
+    /// did, since the invalidate also spawns a recompute that refreshes the
+    /// entry.
     #[cfg(test)]
-    pub(crate) fn invalidation_generation(&self) -> u64 {
-        self.invalidation_gen.load(Ordering::SeqCst)
+    pub(crate) fn invalidation_generation(&self, session_id: &str) -> u64 {
+        self.invalidation_of(session_id)
+    }
+
+    /// Shorten how long a request read waits for its turn. Test-only.
+    #[cfg(test)]
+    pub(crate) fn set_request_turn_wait(&self, wait: Duration) {
+        *lock(&self.request_turn_wait) = wait;
+    }
+
+    /// How long a [`Read::Request`] waits for its turn.
+    fn request_turn_wait(&self) -> Duration {
+        *lock(&self.request_turn_wait)
     }
 
     /// Seed the cache with a known `rev` for `session_id`. Test-only: lets
     /// server-level unit tests assert subscribe catch-up behaviour without
     /// spinning up a git repo or a real poller compute.
     #[cfg(test)]
-    pub fn seed_rev_for_test(&self, session_id: &str, rev: u64) {
+    pub(crate) fn seed_rev_for_test(&self, session_id: &str, rev: u64) {
         let mut cache = lock(&self.cache);
         cache.insert(
             session_id.to_string(),
@@ -411,12 +524,12 @@ impl ChangesService {
     /// Single-flight wrapper around [`Self::compute`]. Exactly one compute runs per
     /// session at a time; late callers wait for the owner and re-read the cache,
     /// re-electing a new owner if the previous owner was cancelled before storing.
-    async fn compute_cached(self: &Arc<Self>, session_id: String) {
+    async fn compute_cached(self: &Arc<Self>, session_id: String, read: Read) {
         // The minimum invalidation generation this call must see reflected in the
         // cache before accepting another compute's result. Captured once at entry:
         // a recompute spawned by `invalidate()` runs AFTER the bump, so it requires
         // the post-mutation generation and will not accept a stale owner's snapshot.
-        let required_gen = self.invalidation_gen.load(Ordering::SeqCst);
+        let required_gen = self.invalidation_of(&session_id);
         loop {
             enum Role {
                 Owner(watch::Sender<bool>),
@@ -424,18 +537,19 @@ impl ChangesService {
             }
             let role = {
                 let mut inflight = lock(&self.inflight);
-                match inflight.get(&session_id) {
-                    Some(rx) => Role::Waiter(rx.clone()),
-                    None => {
-                        let (tx, rx) = watch::channel(false);
-                        inflight.insert(session_id.clone(), rx);
-                        Role::Owner(tx)
-                    }
+                if let Some(rx) = inflight.get(&session_id) {
+                    #[cfg(test)]
+                    self.waiters_joined.fetch_add(1, Ordering::SeqCst);
+                    Role::Waiter(rx.clone())
+                } else {
+                    let (tx, rx) = watch::channel(false);
+                    inflight.insert(session_id.clone(), rx);
+                    Role::Owner(tx)
                 }
             };
             match role {
                 Role::Owner(tx) => {
-                    self.run_owned_compute(&session_id, tx).await;
+                    self.run_owned_compute(&session_id, tx, read).await;
                     return;
                 }
                 Role::Waiter(mut rx) => {
@@ -455,9 +569,9 @@ impl ChangesService {
                     if fresh_enough {
                         return;
                     }
-                    // The owner was cancelled before storing, or stored a snapshot
-                    // older than our required generation, so re-elect a new owner.
-                    continue;
+                    // The owner was cancelled before storing, skipped a busy lane,
+                    // or stored a snapshot older than our required generation, so
+                    // the loop goes round again and re-elects a new owner.
                 }
             }
         }
@@ -466,7 +580,12 @@ impl ChangesService {
     /// Run the compute as the single-flight owner. A drop guard clears the inflight
     /// slot and wakes waiters on EVERY exit path (success, error, or future
     /// cancellation at an `.await`).
-    async fn run_owned_compute(self: &Arc<Self>, session_id: &str, tx: watch::Sender<bool>) {
+    async fn run_owned_compute(
+        self: &Arc<Self>,
+        session_id: &str,
+        tx: watch::Sender<bool>,
+        read: Read,
+    ) {
         struct InflightGuard<'a> {
             inflight: &'a Mutex<HashMap<String, watch::Receiver<bool>>>,
             id: String,
@@ -476,7 +595,7 @@ impl ChangesService {
             fn drop(&mut self) {
                 self.inflight
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&self.id);
                 // Wake any waiters (they re-check the cache).
                 let _ = self.tx.send(true);
@@ -488,19 +607,19 @@ impl ChangesService {
             tx,
         };
 
-        self.compute(session_id).await;
+        self.compute(session_id, read).await;
     }
 
     /// The two-stage compute: resolve the worktree on the async thread, then run
     /// `git status` in `spawn_blocking`. Stores the result and, on a detected
     /// change (or recovery from an error), bumps `rev` and emits `session.changes`.
-    async fn compute(self: &Arc<Self>, session_id: &str) {
+    async fn compute(self: &Arc<Self>, session_id: &str, read: Read) {
         self.compute_count.fetch_add(1, Ordering::SeqCst);
 
         // Stamp this compute with the invalidation generation observed at its START
         // (before any filesystem read), so a result based on the pre-mutation tree
         // is recognizably older than a generation a waiting `invalidate()` requires.
-        let generation = self.invalidation_gen.load(Ordering::SeqCst);
+        let generation = self.invalidation_of(session_id);
 
         // Stage 1: resolve the worktree. An unknown session is NOT a git error:
         // storing one would recreate a phantom SQLite rev row every poll tick and
@@ -518,41 +637,58 @@ impl ChangesService {
             None => return,
         };
 
-        // Stage 2: git, off the reactor. The verdict above predates the probe it
-        // spawned, so git failing in a directory deleted since is quiet, not a 409.
+        // Stage 2: the git work, off the reactor, in the worktree's lane. A poll
+        // that finds the lane busy reads nothing and stores nothing: no failure,
+        // no warning streak, and the waiters it wakes re-elect an owner. A
+        // failure carries the worktree's resolved path, resolved here, so its
+        // text can be redacted of both forms git may print. The verdict above
+        // predates the probe it spawned, so git failing in a directory deleted
+        // since is quiet (an empty success), not a 409.
         let wt = worktree.clone();
+        let request_wait = self.request_turn_wait();
         let computed = tokio::task::spawn_blocking(move || {
-            use yaran_core::git::{DirectoryPresence, changed_files, directory_presence};
-            changed_files(&wt).or_else(|e| match directory_presence(&wt) {
-                DirectoryPresence::Missing => Ok(Default::default()),
-                _ => Err(e),
+            use yaran_core::git::{DirectoryPresence, directory_presence};
+            let read = match read {
+                Read::Poll => yaran_core::changes_lane::poll_changed_files(&wt),
+                Read::Request => Some(yaran_core::changes_lane::request_changed_files_within(
+                    &wt,
+                    request_wait,
+                )),
+            };
+            read.map(|listed| {
+                listed.or_else(|e| match directory_presence(&wt) {
+                    DirectoryPresence::Missing => Ok(Default::default()),
+                    _ => Err(e),
+                })
             })
         })
         .await;
 
         match computed {
-            Ok(Ok((staged_raw, unstaged_raw))) => {
+            Ok(None) => {}
+            Ok(Some(Ok((staged_raw, unstaged_raw)))) => {
                 let staged = sorted_views(&staged_raw);
                 let unstaged = sorted_views(&unstaged_raw);
                 self.store_ok_and_maybe_emit(session_id, generation, staged, unstaged)
                     .await;
             }
-            Ok(Err(e)) => {
+            Ok(Some(Err(e))) => {
                 let rev = self.engine.next_changes_rev(session_id.to_string()).await;
                 let message = format!("{e:#}");
                 yaran_core::logger::error(&format!(
                     "changed-files compute failed for session {session_id}: {message}"
                 ));
+                // The warning both surfaces show carries no git text; the
+                // whole chain went to yaran.log just above.
                 // A genuine git failure must replace a now-stale success (`clobber_ok`).
-                let _ = self.store_err(session_id, rev, generation, message, true);
+                let _ = self.store_err(session_id, rev, generation, Failure::Real);
             }
             Err(join_err) => {
                 let rev = self.engine.next_changes_rev(session_id.to_string()).await;
-                let message = format!("changed-files git task failed: {join_err}");
                 yaran_core::logger::error(&format!(
                     "changed-files compute task failed for session {session_id}: {join_err}"
                 ));
-                let _ = self.store_err(session_id, rev, generation, message, true);
+                let _ = self.store_err(session_id, rev, generation, Failure::Real);
             }
         }
     }
@@ -575,16 +711,27 @@ impl ChangesService {
             match cache.get(session_id) {
                 Some(Cached::Ok { prev, .. }) => prev != &next,
                 // Recovering from a cached error always counts as a change.
-                Some(Cached::Err { .. }) => true,
-                None => true,
+                Some(Cached::Err { .. }) | None => true,
             }
         };
 
         // A clean success resets the error streak and (only if a warning was shown)
-        // emits the keyed recovery info.
+        // withdraws it, quietly.
         self.reset_error_streak(session_id);
 
         if !changed {
+            // The rows are as they were, so no `rev` and no emit, but the entry is
+            // now known current as of this compute's stamp: a waiter requiring it
+            // is satisfied without a rerun. Only ever raised, so a slower, older
+            // completion never makes the entry look newer than a later
+            // invalidation.
+            let mut cache = lock(&self.cache);
+            if let Some(Cached::Ok {
+                generation: stored, ..
+            }) = cache.get_mut(session_id)
+            {
+                *stored = (*stored).max(generation);
+            }
             return;
         }
 
@@ -603,8 +750,9 @@ impl ChangesService {
         let stored = {
             let mut cache = lock(&self.cache);
             let should_store = match cache.get(session_id) {
-                Some(Cached::Ok { rev: existing, .. }) => rev >= *existing,
-                Some(Cached::Err { rev: existing, .. }) => rev >= *existing,
+                Some(Cached::Ok { rev: existing, .. } | Cached::Err { rev: existing, .. }) => {
+                    rev >= *existing
+                }
                 None => true,
             };
             if should_store {
@@ -634,10 +782,11 @@ impl ChangesService {
 
     /// Store a cached error and escalate to a keyed `Warning` after a streak.
     ///
-    /// `clobber_ok` controls whether this error may overwrite an existing
-    /// `Cached::Ok`. The real-failure paths in [`Self::compute`] pass `true`: git
-    /// genuinely failed, so a now-stale success must yield to the error. The
-    /// poll-tick timeout path passes `false`: it runs after its compute was
+    /// `failure` decides whether this error may overwrite an existing
+    /// `Cached::Ok`. The real-failure paths in [`Self::compute`] pass
+    /// [`Failure::Real`]: git genuinely failed, so a now-stale success must yield
+    /// to the error. The poll-tick timeout path passes [`Failure::Timeout`]: it
+    /// runs after its compute was
     /// cancelled and races a freshly-elected owner whose successful `Cached::Ok`
     /// (stored with a LOWER rev than this later-minted timeout rev) must not be
     /// clobbered by a giving-up timeout, which would surface a spurious 409. A
@@ -650,9 +799,10 @@ impl ChangesService {
         session_id: &str,
         rev: u64,
         generation: u64,
-        message: String,
-        clobber_ok: bool,
+        failure: Failure,
     ) -> bool {
+        let clobber_ok = failure == Failure::Real;
+        let current = self.invalidation_of(session_id);
         let stored = {
             let mut cache = lock(&self.cache);
             // Keep the higher rev (a stale error must not clobber a newer entry),
@@ -663,13 +813,34 @@ impl ChangesService {
                 None => true,
             };
             if should_store {
+                // A listing a change made stale, whose fresh read failed, is
+                // still what the pane is owed in place of a 409; it travels on
+                // the error, marked stale, and a success replaces both.
+                let previous = match cache.remove(session_id) {
+                    Some(Cached::Ok {
+                        rev: kept,
+                        generation: stamped,
+                        prev,
+                    }) if stamped < current => {
+                        // Said once, when the stale listing first stands in;
+                        // the failures after it carry it on quietly.
+                        yaran_core::logger::warn(&format!(
+                            "changed-files read for session {session_id} failed after a \
+                             change; serving the listing from before the change, marked \
+                             stale, until a read succeeds"
+                        ));
+                        Some((kept, prev))
+                    }
+                    Some(Cached::Err { previous, .. }) => previous,
+                    _ => None,
+                };
                 cache.insert(
                     session_id.to_string(),
                     Cached::Err {
                         rev,
                         generation,
                         at: Instant::now(),
-                        message: message.clone(),
+                        previous,
                     },
                 );
             }
@@ -691,28 +862,53 @@ impl ChangesService {
         let session_id = session_id.to_string();
         tokio::spawn(async move {
             engine
-                .note_changed_files_outcome(session_id, Some(message))
+                .note_changed_files_outcome(
+                    session_id,
+                    yaran_core::changes_status::ReadOutcome::Failed,
+                )
                 .await;
         });
         true
     }
 
-    /// Reset a session's error streak; emit the keyed recovery info ONLY when a
-    /// keyed warning was actually emitted for this session (the streak had reached
-    /// the threshold). A 1-2 error blip that never showed a warning therefore does
-    /// not leave an orphaned recovery toast.
+    /// Reset a session's error streak; withdraw the keyed warning ONLY when one
+    /// was actually emitted for this session (the streak had reached the
+    /// threshold). A 1-2 error blip that never showed a warning has nothing to
+    /// take down.
     fn reset_error_streak(self: &Arc<Self>, session_id: &str) {
         let engine = self.engine.clone();
         let session_id = session_id.to_string();
         tokio::spawn(async move {
-            engine.note_changed_files_outcome(session_id, None).await;
+            engine
+                .note_changed_files_outcome(
+                    session_id,
+                    yaran_core::changes_status::ReadOutcome::Succeeded,
+                )
+                .await;
         });
     }
 
     /// Total git computes run (test instrumentation for the single-flight test).
     #[cfg(test)]
-    pub fn compute_count(&self) -> usize {
+    pub(crate) fn compute_count(&self) -> usize {
         self.compute_count.load(Ordering::SeqCst)
+    }
+}
+
+/// A cache entry as the HTTP result: an error with a listing kept from before
+/// a change serves that listing, stale.
+fn project(entry: &Cached) -> Result<ChangesResponse, GitError> {
+    match entry {
+        Cached::Ok { rev, prev, .. }
+        | Cached::Err {
+            previous: Some((rev, prev)),
+            ..
+        } => Ok(ChangesResponse {
+            rev: *rev,
+            staged: prev.0.clone(),
+            unstaged: prev.1.clone(),
+        }),
+        Cached::Err { previous: None, .. } => Err(GitError::Git),
     }
 }
 
@@ -727,12 +923,58 @@ fn view_from(f: &ChangedFile) -> ChangedFileView {
         binary: f.binary,
         diff_excluded: f.diff_excluded,
         renamed_from: f.renamed_from.clone(),
+        folder: yaran_core::viewmodel::FolderView::from_kind(&f.kind),
     }
 }
 
 /// Project and sort a changed-files list by `(path, status)` so change detection
 /// is stable regardless of git's output order.
-fn sorted_views(files: &[ChangedFile]) -> Vec<ChangedFileView> {
+/// A wire row back as a model row, with what validating a path needs: its
+/// path, status and kind, a folder's counts and the repositories inside it.
+fn model_from_view(view: &ChangedFileView) -> ChangedFile {
+    use yaran_core::model::{ChangedFileKind, FolderContents};
+    use yaran_core::viewmodel::FolderView;
+    let kind = match &view.folder {
+        None => ChangedFileKind::File,
+        Some(FolderView::NestedRepository) => ChangedFileKind::NestedRepository,
+        Some(FolderView::LinkedWorktree) => ChangedFileKind::LinkedWorktree,
+        Some(FolderView::Directory {
+            file_count,
+            nested_repositories,
+            linked_worktrees,
+            fingerprint,
+            nested_repositories_not_staged,
+            linked_worktrees_not_staged,
+            bare_repositories,
+            files_in_bare_repositories,
+            repositories_inside,
+        }) => ChangedFileKind::Directory(FolderContents {
+            file_count: *file_count,
+            nested_repositories: *nested_repositories,
+            linked_worktrees: *linked_worktrees,
+            fingerprint: fingerprint
+                .as_deref()
+                .and_then(|hex| u64::from_str_radix(hex, 16).ok()),
+            repositories_not_staged: *nested_repositories_not_staged,
+            worktrees_not_staged: *linked_worktrees_not_staged,
+            bare_repositories: bare_repositories.clone(),
+            files_in_bare_repositories: *files_in_bare_repositories,
+            repositories_inside: repositories_inside.clone(),
+        }),
+    };
+    ChangedFile {
+        status: view.status.clone(),
+        path: view.path.clone(),
+        additions: view.additions,
+        deletions: view.deletions,
+        binary: view.binary,
+        diff_excluded: view.diff_excluded,
+        renamed_from: view.renamed_from.clone(),
+        kind,
+    }
+}
+
+pub(crate) fn sorted_views(files: &[ChangedFile]) -> Vec<ChangedFileView> {
     let mut views: Vec<ChangedFileView> = files.iter().map(view_from).collect();
     views.sort_by(|a, b| {
         (a.path.as_str(), a.status.as_str()).cmp(&(b.path.as_str(), b.status.as_str()))
@@ -759,6 +1001,7 @@ mod tests {
             binary: false,
             diff_excluded: false,
             renamed_from: renamed_from.map(str::to_string),
+            kind: yaran_core::model::ChangedFileKind::File,
         }
     }
 
@@ -795,6 +1038,70 @@ mod tests {
 
         let json = serde_json::to_string(&views[0]).unwrap();
         assert!(!json.contains("renamed_from"), "{json}");
+        // Nor any folder fields: a client that predates folding reads a file
+        // row exactly as it always did.
+        assert!(!json.contains("kind"), "{json}");
+        assert!(!json.contains("file_count"), "{json}");
+    }
+
+    /// A folded folder travels as its bare path plus what it stands for, so a
+    /// browser can draw the trailing slash and the count.
+    #[test]
+    fn a_folder_row_travels_with_its_kind_and_file_count() {
+        let mut folder = changed("node_modules", "?", None);
+        folder.kind = yaran_core::model::ChangedFileKind::directory(28_747);
+        let mut nested = changed("vendor/lib", "?", None);
+        nested.kind = yaran_core::model::ChangedFileKind::NestedRepository;
+
+        let views = sorted_views(&[folder, nested]);
+
+        let json = serde_json::to_value(&views).unwrap();
+        assert_eq!(json[0]["path"], "node_modules");
+        assert_eq!(json[0]["kind"], "directory");
+        assert_eq!(json[0]["file_count"], 28_747);
+        assert_eq!(json[1]["path"], "vendor/lib");
+        assert_eq!(json[1]["kind"], "nested_repository");
+        assert!(json[1].get("file_count").is_none(), "{json}");
+        // Nothing to say is said by leaving the field out.
+        assert!(json[0].get("nested_repositories").is_none(), "{json}");
+        assert!(json[0].get("fingerprint").is_none(), "{json}");
+    }
+
+    /// The nested repositories inside a folder and its fingerprint travel too,
+    /// the fingerprint as hex text because a JavaScript number cannot hold it.
+    #[test]
+    fn a_folder_row_carries_its_nested_repositories_and_fingerprint() {
+        let mut folder = changed("vendor", "?", None);
+        folder.kind =
+            yaran_core::model::ChangedFileKind::Directory(yaran_core::model::FolderContents {
+                file_count: 3,
+                nested_repositories: 1,
+                linked_worktrees: 2,
+                fingerprint: Some(u64::MAX - 1),
+                repositories_not_staged: 4,
+                worktrees_not_staged: 5,
+                bare_repositories: vec!["vendor/fixture.git".to_string()],
+                files_in_bare_repositories: 2,
+                repositories_inside: vec!["vendor/lib".to_string()],
+            });
+
+        let json = serde_json::to_value(sorted_views(&[folder])).unwrap();
+
+        assert_eq!(json[0]["file_count"], 3);
+        assert_eq!(json[0]["nested_repositories"], 1);
+        assert_eq!(json[0]["nested_repositories_not_staged"], 4);
+        assert_eq!(json[0]["linked_worktrees_not_staged"], 5);
+        assert_eq!(
+            json[0]["bare_repositories"],
+            serde_json::json!(["vendor/fixture.git"])
+        );
+        assert_eq!(json[0]["files_in_bare_repositories"], 2);
+        assert_eq!(
+            json[0]["repositories_inside"],
+            serde_json::json!(["vendor/lib"])
+        );
+        assert_eq!(json[0]["linked_worktrees"], 2);
+        assert_eq!(json[0]["fingerprint"], "fffffffffffffffe");
     }
 
     fn sample_session(id: &str, worktree: &str) -> yaran_core::model::AgentSession {
@@ -843,10 +1150,10 @@ mod tests {
     fn boot() -> (
         EngineHandle,
         Arc<EventBus>,
-        tempfile::TempDir,
+        yaran_core::test_scratch::ScratchDir,
         std::path::PathBuf,
     ) {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
         let root = tmp.path().to_path_buf();
         // The git repo lives in its OWN subdir, separate from the yaran runtime files
         // (sessions.sqlite3 + WAL, config.toml, yaran.lock) at `root`, so those never
@@ -873,7 +1180,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         {
@@ -887,7 +1195,7 @@ mod tests {
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::new(),
                     workspace_mode: None,
                 })
                 .unwrap();
@@ -906,6 +1214,150 @@ mod tests {
         engine.config.limits.disk_warn_pct = 0;
         let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
         (handle, Arc::new(EventBus::new()), tmp, wt)
+    }
+
+    /// An engine whose session `s1` points at an EXISTING worktree, for the
+    /// measurement below: the repository is built once outside the test so the
+    /// before and after numbers are taken against the very same files.
+    fn boot_session_at(
+        worktree: &std::path::Path,
+    ) -> (
+        EngineHandle,
+        Arc<EventBus>,
+        yaran_core::test_scratch::ScratchDir,
+    ) {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let root = tmp.path().to_path_buf();
+        let paths = YaranPaths {
+            root: root.clone(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        };
+        std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+        {
+            let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+            store
+                .upsert_project(&ProjectConfig {
+                    id: "p1".to_string(),
+                    path: root.to_string_lossy().into_owned(),
+                    name: Some("p1".to_string()),
+                    default_provider: None,
+                    leading_branch: None,
+                    auto_reopen_agents: None,
+                    startup_command: None,
+                    env: std::collections::BTreeMap::new(),
+                    workspace_mode: None,
+                })
+                .unwrap();
+            store
+                .create_session(&sample_session("s1", worktree.to_string_lossy().as_ref()))
+                .unwrap();
+        }
+        let engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        (handle, Arc::new(EventBus::new()), tmp)
+    }
+
+    /// Measurement, not a check: run with `YARAN_FOLD_BENCH_REPO` naming a
+    /// prepared repository and `--ignored --nocapture`. Prints the wall time of
+    /// the core listing and of a cold endpoint read, and the size of the JSON
+    /// the endpoint would answer with, once per run.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "measurement; needs YARAN_FOLD_BENCH_REPO"]
+    async fn measure_changes_listing_against_a_prepared_repository() {
+        let Ok(repo) = std::env::var("YARAN_FOLD_BENCH_REPO") else {
+            eprintln!("YARAN_FOLD_BENCH_REPO is not set; nothing measured");
+            return;
+        };
+        let repo = std::path::PathBuf::from(repo);
+        let (engine, bus, _tmp) = boot_session_at(&repo);
+        for run in 1..=5 {
+            let started = Instant::now();
+            let (staged, unstaged) = yaran_core::git::changed_files_for_display(&repo).unwrap();
+            let core_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            let svc = ChangesService::new(engine.clone(), Arc::clone(&bus));
+            let started = Instant::now();
+            let resp = svc
+                .get("s1")
+                .await
+                .unwrap_or_else(|_| panic!("expected Ok"));
+            let body = serde_json::to_vec(&serde_json::json!({
+                "rev": resp.rev,
+                "staged": resp.staged,
+                "unstaged": resp.unstaged,
+            }))
+            .unwrap();
+            let endpoint_ms = started.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "run {run}: core listing {core_ms:.1} ms ({} staged + {} unstaged rows); \
+                 endpoint {endpoint_ms:.1} ms, {} bytes of JSON",
+                staged.len(),
+                unstaged.len(),
+                body.len()
+            );
+
+            // The folder count: the exact `ls-files` the listing runs for it,
+            // and the record count over its answer.
+            let started = Instant::now();
+            let out = std::process::Command::new("git")
+                .args([
+                    "--literal-pathspecs",
+                    "-C",
+                    repo.to_string_lossy().as_ref(),
+                    "ls-files",
+                    "--others",
+                    "--exclude-standard",
+                    "--full-name",
+                    "-z",
+                ])
+                .output()
+                .unwrap();
+            let counted = out
+                .stdout
+                .split(|b| *b == 0)
+                .filter(|r| !r.is_empty())
+                .count();
+            let count_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            // What fingerprinting every file would cost, which the listing does
+            // not pay past its stat budget: one stat per untracked file.
+            let started = Instant::now();
+            for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+                let name = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(record);
+                let _ = std::fs::symlink_metadata(repo.join(name));
+            }
+            let stat_all_ms = started.elapsed().as_secs_f64() * 1000.0;
+            eprintln!("run {run}: stat of every untracked file {stat_all_ms:.1} ms");
+
+            // Expanding the folder: its first level, then one package inside.
+            let started = Instant::now();
+            let children = yaran_core::git::changed_dir_children(
+                &repo,
+                "node_modules",
+                yaran_core::git::ChangesSide::Unstaged,
+            )
+            .unwrap();
+            let expand_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let started = Instant::now();
+            let grandchildren = yaran_core::git::changed_dir_children(
+                &repo,
+                "node_modules/pkg0",
+                yaran_core::git::ChangesSide::Unstaged,
+            )
+            .unwrap();
+            let expand_deeper_ms = started.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "run {run}: folder count {count_ms:.1} ms ({counted} records); expand \
+                 node_modules {expand_ms:.1} ms ({} rows), node_modules/pkg0 \
+                 {expand_deeper_ms:.1} ms ({} rows)",
+                children.len(),
+                grandchildren.len()
+            );
+        }
     }
 
     #[tokio::test]
@@ -935,16 +1387,65 @@ mod tests {
         assert_eq!(again.rev, resp.rev, "rev must not advance without a change");
     }
 
-    /// The recovery line retires a standing warning, so it has to say what it
-    /// recovered from rather than only that things work now.
+    /// One untracked dependency directory used to become one wire row PER
+    /// FILE: the user's `node_modules` was ~29k rows (3.9 MB of JSON in the
+    /// preview repro, 19.7 MB at 150k). The sweep now folds a wholly untracked
+    /// folder into one row that carries its file count, the way `git status`
+    /// itself reports it.
     #[tokio::test]
-    async fn the_recovery_line_names_the_failure_it_ended() {
+    async fn huge_changes_repro_untracked_directory_rows_are_bounded() {
+        let (engine, bus, _tmp, wt) = boot();
+        let file_count = 5_000;
+        for index in 0..file_count {
+            let dir = wt.join("node_modules").join(format!("pkg{}", index / 50));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("f{index}.js")), "x\n").unwrap();
+        }
+        let svc = ChangesService::new(engine, bus);
+        let resp = svc
+            .get("s1")
+            .await
+            .unwrap_or_else(|_| panic!("expected Ok"));
+        let rows = resp.staged.len() + resp.unstaged.len();
+        let bytes = serde_json::to_vec(&resp.unstaged).unwrap().len();
+        assert!(
+            rows <= 1_000,
+            "{file_count} files under one untracked directory became {rows} wire rows \
+             ({bytes} bytes of JSON)"
+        );
+        let folder = resp
+            .unstaged
+            .iter()
+            .find(|row| row.path == "node_modules")
+            .expect("the folder is one row");
+        assert_eq!(
+            folder.folder,
+            Some(yaran_core::viewmodel::FolderView::Directory {
+                file_count,
+                nested_repositories: 0,
+                linked_worktrees: 0,
+                fingerprint: None,
+                nested_repositories_not_staged: 0,
+                linked_worktrees_not_staged: 0,
+                bare_repositories: Vec::new(),
+                files_in_bare_repositories: 0,
+                repositories_inside: Vec::new(),
+            }),
+            "the row says how many files it stands for"
+        );
+    }
+
+    /// A read that works again takes the standing warning down on its own key,
+    /// and says nothing in its place: the list filling in is the news.
+    #[tokio::test]
+    async fn a_read_that_works_again_withdraws_the_warning_quietly() {
         let (engine, bus, _tmp, _root) = boot();
         let svc = ChangesService::new(engine, bus);
         let mut statuses = svc.engine.subscribe_status();
+        let mut clears = svc.engine.subscribe_status_clears();
 
         for rev in 1..=u64::from(yaran_core::changes_status::ERROR_WARN_THRESHOLD) {
-            let _ = svc.store_err("s1", rev, 0, "git busy".to_string(), true);
+            let _ = svc.store_err("s1", rev, 0, Failure::Real);
         }
         let warning = loop {
             let status = statuses.recv().await.expect("a status");
@@ -952,24 +1453,66 @@ mod tests {
                 break status;
             }
         };
-        assert!(warning.message.contains("temporarily unavailable"));
+        assert!(warning.message.contains("yaran.log"));
+        assert!(
+            !warning.message.contains("git busy"),
+            "git's text stays out of the toast: {}",
+            warning.message
+        );
 
         svc.reset_error_streak("s1");
 
-        let recovery = loop {
+        let key = yaran_core::changes_status::warn_key("s1");
+        loop {
+            if clears.recv().await.expect("a clear").as_deref() == Some(key.as_str()) {
+                break;
+            }
+        }
+        while let Ok(status) = statuses.try_recv() {
+            assert_ne!(
+                status.key.as_deref(),
+                Some(key.as_str()),
+                "nothing is said in the warning's place: {}",
+                status.message
+            );
+        }
+    }
+
+    /// git resolves a relative gitdir from the directory it changed into, so a
+    /// worktree reached through a symlink fails with its RESOLVED path in the
+    /// text. The warning the failures raise names neither form of it.
+    #[tokio::test]
+    async fn the_failure_warning_names_neither_form_of_the_worktree_path() {
+        let outer = yaran_core::test_scratch::ScratchDir::new();
+        let real = outer.path().join("real");
+        std::fs::create_dir_all(real.join("wt")).unwrap();
+        let link = outer.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let worktree = link.join("wt");
+        std::fs::write(worktree.join(".git"), "gitdir: no-such-gitdir\n").unwrap();
+        let resolved = std::fs::canonicalize(&worktree).unwrap();
+        assert_ne!(worktree, resolved);
+
+        let (engine, bus, _tmp) = boot_session_at(&worktree);
+        let svc = ChangesService::new(engine, bus);
+        let mut statuses = svc.engine.subscribe_status();
+        for _ in 0..yaran_core::changes_status::ERROR_WARN_THRESHOLD {
+            svc.compute_cached("s1".to_string(), Read::Request).await;
+        }
+        let message = loop {
             let status = statuses.recv().await.expect("a status");
-            if status.tone == "info" {
-                break status;
+            if status.tone == "warning" {
+                break status.message;
             }
         };
-        assert_eq!(
-            recovery.message,
-            "Changed files are back: git had been failing for this worktree and the latest \
-             check succeeded."
+        assert!(
+            message.contains("yaran.log") && !message.contains("git status failed"),
+            "the reason goes to yaran.log, not the toast: {message}"
         );
-        assert_eq!(
-            recovery.key.as_deref(),
-            Some(yaran_core::changes_status::warn_key("s1").as_str())
+        assert!(
+            !message.contains(resolved.to_string_lossy().as_ref())
+                && !message.contains(worktree.to_string_lossy().as_ref()),
+            "the warning must not carry the server's worktree path: {message}"
         );
     }
 
@@ -992,7 +1535,7 @@ mod tests {
         // A real session whose worktree is not a git repo yields a git error (409),
         // distinct from the unknown-session 404 above.
         match svc.get("s_err").await {
-            Err(GitError::Git(_)) => {}
+            Err(GitError::Git) => {}
             _ => panic!("expected a git error for a non-repo worktree"),
         }
     }
@@ -1033,7 +1576,7 @@ mod tests {
         // Add a line: same path, same `M` status, different additions stat. The
         // compare includes additions/deletions, so a recompute (keeping prev) emits.
         std::fs::write(root.join("f.txt"), "line1\nCHANGED\nEXTRA\n").unwrap();
-        svc.compute_cached("s1".to_string()).await;
+        svc.compute_cached("s1".to_string(), Read::Request).await;
 
         let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
             .await
@@ -1057,7 +1600,7 @@ mod tests {
         let first = svc.get("s1").await.unwrap_or_else(|_| panic!("ok"));
         // Subscribe after priming so the priming emit is not mistaken for a recompute.
         let mut events = bus.subscribe();
-        svc.compute_cached("s1".to_string()).await;
+        svc.compute_cached("s1".to_string(), Read::Request).await;
         let again = svc.get("s1").await.unwrap_or_else(|_| panic!("ok"));
         assert_eq!(again.rev, first.rev, "rev must not advance with no change");
         assert!(
@@ -1088,7 +1631,7 @@ mod tests {
         // A poll-tick timeout error mints a HIGHER rev (it ran later) but must NOT
         // overwrite the concurrent success: `clobber_ok = false`. Otherwise a GET
         // would see a spurious 409 over a perfectly good result.
-        let escalated = svc.store_err("s1", 6, 0, "timed out".to_string(), false);
+        let escalated = svc.store_err("s1", 6, 0, Failure::Timeout);
         match lock(&svc.cache).get("s1") {
             Some(Cached::Ok { rev, .. }) => assert_eq!(*rev, 5, "the fresh Ok must survive"),
             _ => panic!("a timeout error clobbered a concurrent success"),
@@ -1099,7 +1642,7 @@ mod tests {
 
         // A GENUINE git error (`clobber_ok = true`) with a higher rev DOES replace
         // the stale success, so a real failure still surfaces as 409.
-        let _ = svc.store_err("s1", 7, 0, "git failed".to_string(), true);
+        let _ = svc.store_err("s1", 7, 0, Failure::Real);
         match lock(&svc.cache).get("s1") {
             Some(Cached::Err { rev, .. }) => assert_eq!(*rev, 7, "a real error must win"),
             _ => panic!("a real git error should replace the stale Ok"),
@@ -1119,10 +1662,15 @@ mod tests {
         }
         // A git mutation bumped the invalidation generation: a compute entering now
         // requires an entry stamped at the new generation.
-        svc.invalidation_gen.fetch_add(1, Ordering::SeqCst);
+        *lock(&svc.invalidations)
+            .entry("s1".to_string())
+            .or_insert(0) += 1;
 
         let svc_w = Arc::clone(&svc);
-        let waiter = tokio::spawn(async move { svc_w.compute_cached("s1".to_string()).await });
+        let waiter =
+            tokio::spawn(
+                async move { svc_w.compute_cached("s1".to_string(), Read::Request).await },
+            );
         // Let the waiter reach `wait_for` on the inflight receiver.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -1152,7 +1700,7 @@ mod tests {
             "a stale-generation entry must trigger exactly one recompute"
         );
         assert_eq!(
-            lock(&svc.cache).get("s1").map(|c| c.generation()),
+            lock(&svc.cache).get("s1").map(super::Cached::generation),
             Some(1),
             "the recompute must stamp the entry at the required generation"
         );
@@ -1169,7 +1717,10 @@ mod tests {
         }
         // No invalidation: the waiter requires generation 0.
         let svc_w = Arc::clone(&svc);
-        let waiter = tokio::spawn(async move { svc_w.compute_cached("s1".to_string()).await });
+        let waiter =
+            tokio::spawn(
+                async move { svc_w.compute_cached("s1".to_string(), Read::Request).await },
+            );
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // The owner stores an entry at generation 0 (== required) and wakes the
@@ -1192,6 +1743,116 @@ mod tests {
             svc.compute_count(),
             0,
             "a fresh-enough entry must NOT trigger a recompute"
+        );
+    }
+
+    fn unstaged_paths(response: &ChangesResponse) -> Vec<String> {
+        response.unstaged.iter().map(|f| f.path.clone()).collect()
+    }
+
+    /// A poll that finds the worktree's lane busy reads nothing and stores
+    /// nothing: no entry, so no error, and nothing for the warning streak.
+    #[tokio::test]
+    async fn a_poll_with_a_busy_lane_stores_nothing() {
+        let (engine, bus, _tmp, root) = boot();
+        let svc = ChangesService::new(engine, bus);
+        let running = yaran_core::changes_lane::ticket(&root).wait();
+
+        svc.compute_cached("s1".to_string(), Read::Poll).await;
+
+        assert!(lock(&svc.cache).get("s1").is_none());
+        drop(running);
+        assert!(svc.get("s1").await.is_ok());
+    }
+
+    /// After a change, a GET behind a lane held past the request wait answers
+    /// with the tree as it is now, read without the lock, never the list from
+    /// before the change.
+    #[tokio::test]
+    async fn after_a_change_a_get_behind_a_held_lane_reads_the_tree_as_it_is() {
+        let (engine, bus, _tmp, root) = boot();
+        let svc = ChangesService::new(engine, bus);
+        let before = svc.get("s1").await.unwrap_or_else(|_| panic!("ok"));
+        assert_eq!(unstaged_paths(&before), ["f.txt"]);
+        svc.set_request_turn_wait(Duration::from_millis(100));
+        let running = yaran_core::changes_lane::ticket(&root).wait();
+
+        std::fs::write(root.join("new.txt"), "new\n").unwrap();
+        svc.invalidate("s1".to_string());
+        let after = svc.get("s1").await.unwrap_or_else(|_| panic!("ok"));
+
+        assert_eq!(unstaged_paths(&after), ["f.txt", "new.txt"]);
+        drop(running);
+    }
+
+    /// A refresh whose rows came back unchanged still answers the waiters that
+    /// needed a read after the change, without a second read.
+    #[tokio::test]
+    async fn an_unchanged_refresh_satisfies_its_waiters_without_a_rerun() {
+        let (engine, bus, _tmp, root) = boot();
+        let svc = ChangesService::new(engine, bus);
+        let _ = svc.get("s1").await;
+        assert_eq!(svc.compute_count(), 1);
+        *lock(&svc.invalidations)
+            .entry("s1".to_string())
+            .or_insert(0) += 1;
+        let running = yaran_core::changes_lane::ticket(&root).wait();
+
+        let owner = tokio::spawn({
+            let svc = Arc::clone(&svc);
+            async move { svc.compute_cached("s1".to_string(), Read::Request).await }
+        });
+        while !lock(&svc.inflight).contains_key("s1") {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let waiter = tokio::spawn({
+            let svc = Arc::clone(&svc);
+            async move { svc.compute_cached("s1".to_string(), Read::Request).await }
+        });
+        while svc.waiters_joined.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        drop(running);
+        owner.await.unwrap();
+        waiter.await.unwrap();
+
+        assert_eq!(svc.compute_count(), 2, "the waiter read again");
+        assert!(svc.read_fresh("s1").is_some(), "the entry is current");
+    }
+
+    /// A change in one session leaves every other session's listing current.
+    #[tokio::test]
+    async fn a_change_in_one_session_leaves_anothers_listing_current() {
+        let (engine, bus, _tmp, _root) = boot();
+        let svc = ChangesService::new(engine, bus);
+        svc.seed_rev_for_test("s1", 3);
+        svc.seed_rev_for_test("other", 4);
+
+        svc.invalidate("s1".to_string());
+
+        assert!(svc.read_fresh("other").is_some());
+        assert!(svc.cached_listing("other").is_some());
+        assert_eq!(svc.invalidation_generation("other"), 0);
+        assert_eq!(svc.invalidation_generation("s1"), 1);
+    }
+
+    /// When the read a change asked for fails, a GET serves the listing from
+    /// before the change, stale, in place of the error.
+    #[tokio::test]
+    async fn a_failed_read_after_a_change_serves_the_listing_from_before_it() {
+        let (engine, bus, _tmp, root) = boot();
+        let svc = ChangesService::new(engine, bus);
+        let before = svc.get("s1").await.unwrap_or_else(|_| panic!("ok"));
+        std::fs::rename(root.join(".git"), root.join("git-away")).unwrap();
+
+        svc.invalidate("s1".to_string());
+        let after = svc.get("s1").await.unwrap_or_else(|_| panic!("ok"));
+
+        assert_eq!(after.rev, before.rev);
+        assert_eq!(unstaged_paths(&after), unstaged_paths(&before));
+        assert!(
+            svc.read_fresh("s1").is_some(),
+            "served within the error window"
         );
     }
 

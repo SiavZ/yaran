@@ -10,6 +10,7 @@
 //! <module-headers:begin>
 //! Uses:
 //! bootstrap_routes.rs
+//! ├── serve_legs
 //! └── server
 //! External: axum
 //!
@@ -44,7 +45,8 @@ async fn get_bootstrap(State(state): State<AppState>) -> Response {
             // `--no-tailscale` belongs to the process that parsed the command
             // line, not to the engine's config, so it is injected here for the
             // same reason the first-load screen is.
-            view.tailscale_forced_no = state.tailscale_forced_no;
+            view.tailscale_forced_no =
+                state.tailscale_forced_no == crate::serve_legs::NoTailscaleFlag::Given;
             // The live cloud leg belongs to the serve, not the engine.
             if let Some(cloud) = state.cloud.as_ref() {
                 view.cloud = Some(cloud.view());

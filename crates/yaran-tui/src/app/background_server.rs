@@ -41,8 +41,38 @@
 //! <module-headers:end>
 
 use yaran_core::engine::EventReaction;
+use yaran_core::status_text::StatusText;
 
-use super::*;
+use super::{
+    App, BackgroundBindSettings, BackgroundServerOutcome, FocusPane, FullscreenOverlay,
+    InputTarget, PendingBackgroundServerStart, PromptState, SetTailscaleModeOption,
+    SetTailscaleModePrompt, TailscaleAnswerFrom, preflight_server_listeners,
+};
+use crate::keybindings::Action;
+use crate::model::SessionSurface;
+use crate::statusline::StatusTone;
+use anyhow::Result;
+use crossterm::event::{KeyEvent, MouseEvent, MouseEventKind};
+use std::time::Instant;
+use yaran_core::worker::WorkerEvent;
+
+/// Whether `[server] serve_while_tui` asks for the background server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServeWanted {
+    /// It asks for it.
+    On,
+    /// It does not.
+    Off,
+}
+
+/// Whether the web UI has a password set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebPassword {
+    /// Browsers sign in.
+    Set,
+    /// Anyone who can reach it drives the agents.
+    Unset,
+}
 
 impl App {
     /// Whether a listener is up right now.
@@ -52,9 +82,105 @@ impl App {
             .is_some_and(|companion| companion.is_serving())
     }
 
+    /// Whether a core is up, the control socket's alone included: the one
+    /// question that decides whether the engine is lent each iteration.
+    fn companion_has_core(&self) -> bool {
+        self.companion
+            .as_ref()
+            .is_some_and(|companion| companion.has_core())
+    }
+
+    /// Serve the control socket so a command-line client reaches this terminal
+    /// UI while nothing serves the web; called before `serve_while_tui` is honoured.
+    pub(crate) fn start_control_socket(&mut self) {
+        if let Some(companion) = self.companion.as_mut() {
+            companion.start_control_socket(&mut self.engine);
+        }
+    }
+
+    /// Stop every core as the run loop ends, the control socket's included:
+    /// a quit ends the process, and the flip's own core serves the socket next.
+    pub(crate) fn release_companion(&mut self) {
+        if let Some(companion) = self.companion.as_mut() {
+            companion.release(&mut self.engine);
+        }
+    }
+
+    /// Palette action: open the server log full-screen. It follows the file the
+    /// background server writes, so it opens only while that server is up.
+    pub(crate) fn open_server_log_viewer(&mut self) {
+        if !self.background_server_is_serving() {
+            let path = yaran_core::logger::resolve_server_log_path(
+                &self.engine.config.server,
+                &self.engine.paths,
+            );
+            self.set_warning(format!(
+                "The server log viewer follows the log of the web UI served in the background, \
+                 and nothing is serving right now. Use start-background-server to serve, or read \
+                 {} directly.",
+                path.display()
+            ));
+            return;
+        }
+        // The file the serve itself opened, which a reload of `log_path` since
+        // then has not moved.
+        let Some(path) = self
+            .companion
+            .as_ref()
+            .and_then(|companion| companion.server_log_path())
+        else {
+            self.set_warning(
+                "The background web server is not writing a server log (it could not open one; \
+                 yaran.log says why), so there is nothing to follow."
+                    .to_string(),
+            );
+            return;
+        };
+        self.server_log_viewer = Some(crate::server_screen::ServerLogViewer::open(
+            path,
+            self.engine.config.server.log_viewer_lines,
+        ));
+        self.sync_server_log_viewer();
+        self.mark_frame_dirty();
+    }
+
+    /// Bring the open viewer up to date with what its reader has read, marking
+    /// the frame when a line arrived.
+    pub(crate) fn sync_server_log_viewer(&mut self) {
+        let Some(viewer) = self.server_log_viewer.as_mut() else {
+            return;
+        };
+        if viewer.sync(&self.theme) {
+            self.mark_frame_dirty();
+        }
+    }
+
+    /// A key while the server log viewer is open: it owns every key.
+    pub(crate) fn handle_server_log_key(&mut self, key: KeyEvent) {
+        let Some(viewer) = self.server_log_viewer.as_mut() else {
+            return;
+        };
+        if viewer.handle_key(key, &self.bindings) == crate::server_screen::ServerLogKey::Close {
+            self.server_log_viewer = None;
+        }
+    }
+
+    /// The wheel scrolls the open viewer; every other mouse event is ignored, so
+    /// nothing behind it can be clicked.
+    pub(crate) fn handle_server_log_mouse(&mut self, mouse: MouseEvent) {
+        let Some(viewer) = self.server_log_viewer.as_mut() else {
+            return;
+        };
+        match mouse.kind {
+            MouseEventKind::ScrollUp => viewer.scroll_by(Action::ScrollLineUp),
+            MouseEventKind::ScrollDown => viewer.scroll_by(Action::ScrollLineDown),
+            _ => {}
+        }
+    }
+
     /// The header chip that says a listener is up, or `None` when none is.
     ///
-    /// Present whenever serving, connections or not: the chip's first job is to be
+    /// Present whenever serving, browsers or not: the chip's first job is to be
     /// the standing "you are running a listener" signal, and a chip that only
     /// appeared once somebody connected would hide exactly the state worth knowing
     /// about. The count is the second job.
@@ -64,35 +190,27 @@ impl App {
             return None;
         }
         Some(serving_chip_label(
+            self.glyphs().serving,
             serving_port_label(&companion.urls()).as_deref(),
-            companion.connections(),
+            companion.browsers(),
         ))
     }
 
-    /// Lend the engine to the companion for ONE reaction, before this surface
-    /// applies it.
-    ///
-    /// Pre-consume because `apply_reaction` takes the reaction by value, and
-    /// per-reaction rather than per-batch so the companion sees them in the order
-    /// they were drained. A no-op when nothing is serving.
+    /// Lend the engine to the companion for one reaction, before this surface
+    /// consumes it, so the companion sees reactions in the order they were drained.
     pub(crate) fn notify_companion(&mut self, reaction: &EventReaction) {
         if let Some(companion) = self.companion.as_mut()
-            && companion.is_serving()
+            && companion.has_core()
         {
             companion.on_reaction(&mut self.engine, reaction);
         }
     }
 
-    /// Snapshot the ownership verdict source for reactions about to be drained.
-    ///
-    /// Taken BEFORE `notify_companion` lends anything to the web layer, because
-    /// the web layer's own follow-ups REMOVE the pending-op entries the verdict is
-    /// read from: ask afterwards and a browser's PR create or project add answers
-    /// "the drainer owns this", and this surface runs its arm too. Empty when
-    /// nothing is serving, which routes every reaction here.
+    /// Must be taken before [`Self::notify_companion`]: the web layer's follow-ups
+    /// remove the pending-op entries the verdict reads. No core up routes everything here.
     pub(crate) fn companion_routing(&self) -> CompanionRouting {
-        if self.background_server_is_serving() {
-            CompanionRouting::Serving(self.engine.web_followup_ops())
+        if self.companion_has_core() {
+            CompanionRouting::Serving(Box::new(self.engine.web_followup_ops()))
         } else {
             CompanionRouting::NotServing
         }
@@ -115,16 +233,14 @@ impl App {
         maintenance: &yaran_core::background_serve::DrainedMaintenance,
     ) {
         if let Some(companion) = self.companion.as_mut()
-            && companion.is_serving()
+            && companion.has_core()
         {
             companion.note_maintenance(maintenance);
         }
     }
 
-    /// Lend the engine to the companion for its per-iteration work, and do this
+    /// Lend the engine to the companion once per run-loop iteration, then do this
     /// surface's own follow-up when the companion changed shared state.
-    ///
-    /// Called once per run-loop iteration. A no-op when nothing is serving.
     pub(crate) fn service_companion(&mut self) {
         let applies = self.engine.command_applies;
         // A web-owned follow-up ran during this iteration's drain, which can have
@@ -132,26 +248,55 @@ impl App {
         // from inside the fanout). This surface skipped its own arm for it, so
         // nothing here has rebuilt: fold it in and clear it whether or not
         // anything is serving, so the flag never survives into a later iteration.
-        let followup_ran = std::mem::take(&mut self.companion_followup_ran);
+        let followup_ran = std::mem::take(&mut self.notes.companion_followup_ran);
+        // This iteration's drain has run, so an answer a retired serve sent
+        // before it went has had its chance to win.
+        if std::mem::replace(&mut self.tailscale_answer_from, TailscaleAnswerFrom::Serve)
+            == TailscaleAnswerFrom::RetiredServesLane
+        {
+            self.answer_tailscale_mode_request_nobody_will_carry();
+        }
         let outcome = match self.companion.as_mut() {
-            Some(companion) if companion.is_serving() => {
+            Some(companion) if companion.has_core() => {
                 // Tell it what this surface did BEFORE it services, so a keystroke
                 // here reaches a browser on the same iteration rather than waiting
                 // for the fingerprint backstop.
                 companion.note_engine_activity(applies);
                 companion.service(&mut self.engine)
             }
-            _ => return,
+            // No core to lend the engine to, but the one a stop handed over may
+            // still have finished a change this surface has to show.
+            Some(companion) => {
+                let handed_over = companion.take_handed_over();
+                if handed_over == yaran_core::background_serve::ServiceOutcome::default() {
+                    return;
+                }
+                handed_over
+            }
+            None => return,
         };
         if outcome.mutated || followup_ran {
             // A browser's action changed state this surface also shows.
             self.mark_frame_dirty();
             self.refresh_after_companion_mutation();
         }
-        // The serve retired itself (a required listener died, or its request
-        // channel closed). Say so where the user is looking: the last thing the
-        // status line told them was the address it was serving on.
+        // Statuses a command-line change raised through the serve: no browser
+        // stands in for this line.
+        for status in outcome.statuses {
+            let mut update = yaran_core::engine::StatusUpdate::info(status.message);
+            update.tone = StatusTone::from_wire(&status.tone);
+            update.key = status.key;
+            update.sticky = status.sticky;
+            self.apply_reaction(yaran_core::engine::EventReaction::Status(update));
+        }
+        // The serve retired itself: the status line last showed the address it
+        // was serving on.
         if let Some(message) = outcome.retirement {
+            // Nothing serves any more, the same state a stop leaves.
+            self.serving.background_wanted = false;
+            if self.pending_tailscale_mode_op.is_some() {
+                self.tailscale_answer_from = TailscaleAnswerFrom::RetiredServesLane;
+            }
             self.status.set(
                 Instant::now(),
                 Some(BACKGROUND_SERVER_STATUS_KEY.to_string()),
@@ -170,11 +315,8 @@ impl App {
     /// through this surface's own event stream.
     fn refresh_after_companion_mutation(&mut self) {
         self.sync_view_state_from_config();
+        // The rebuild keeps both cursors on what they were on, by id.
         self.rebuild_left_items();
-        if self.selected_left >= self.left_items_cache.len() {
-            self.selected_left = self.left_items_cache.len().saturating_sub(1);
-        }
-        self.clamp_terminal_cursor();
         self.clamp_files_cursor();
         // The entity under the cursor may be gone. Leaving interactive input
         // pointed at a vanished agent swallows every escape key until the next
@@ -191,7 +333,7 @@ impl App {
         }
         if self.selected_session().is_none()
             && matches!(self.input_target, InputTarget::Agent)
-            && self.session_surface == SessionSurface::Agent
+            && self.focused_surface() == SessionSurface::Agent
         {
             self.input_target = InputTarget::None;
             self.fullscreen_overlay = FullscreenOverlay::None;
@@ -238,44 +380,66 @@ impl App {
     /// anything starts keeps a port collision to a status line with the TUI
     /// untouched.
     pub(crate) fn start_background_server(&mut self, trigger: BackgroundServerStart) {
+        if let Err(refusal) = self.try_start_background_server(trigger) {
+            self.say_start_refusal(refusal);
+        }
+    }
+
+    fn say_start_refusal(&mut self, refusal: StartRefusal) {
+        match refusal.tone {
+            RefusalTone::Error => self.set_error(refusal.message),
+            RefusalTone::Warning => self.set_warning(refusal.message),
+        }
+    }
+
+    /// [`Self::start_background_server`], answering why it did not start
+    /// instead of saying it, for a caller that has to report it elsewhere too.
+    pub(crate) fn try_start_background_server(
+        &mut self,
+        trigger: BackgroundServerStart,
+    ) -> Result<(), StartRefusal> {
         if self.companion.is_none() {
-            self.set_error(
+            return Err(StartRefusal::error(
                 "This build of yaran cannot serve the web UI in the background. Run yaran server \
                  for the web UI, or the start-web-server command to hand this terminal over to \
                  it."
                 .to_string(),
-            );
-            return;
+            ));
         }
         if self.background_server_is_serving() {
             let urls = self
                 .companion
                 .as_ref()
-                .map(|companion| companion.urls())
-                .unwrap_or_default();
-            self.set_warning(format!(
+                .map_or_default(|companion| companion.urls());
+            return Err(StartRefusal::warning(format!(
                 "The web UI is already serving in the background on {}. Use \
                  stop-background-server to stop it.",
                 join_urls(&urls)
-            ));
-            return;
+            )));
         }
-        if self.background_server_preflight_pending {
-            self.set_warning(
-                "The background web server is already starting. Wait for it to report back."
-                    .to_string(),
-            );
-            return;
+        if self.serving.background_preflight_pending {
+            if self.serving.background_wanted {
+                return Err(StartRefusal::warning(
+                    "The background web server is already starting. Wait for it to report back."
+                        .to_string(),
+                ));
+            }
+            self.want_cancelled_start_again(trigger);
+            return Ok(());
         }
-        if self.server_flip_preflight_pending || self.pending_server_flip.is_some() {
-            self.set_warning(
+        if self.serving.flip_preflight_pending || self.pending_server_flip.is_some() {
+            return Err(StartRefusal::warning(
                 "yaran is already handing this terminal over to the web server. Wait for that to \
                  finish, or come back to the TUI and try again."
                     .to_string(),
-            );
-            return;
+            ));
         }
 
+        let trust = trust_sentence(if self.engine.config.server.auth.has_password() {
+            WebPassword::Set
+        } else {
+            WebPassword::Unset
+        });
         let op = yaran_core::engine::status_op(
             "Starting the web server in the background; the TUI stays right here.".to_string(),
         )
@@ -291,15 +455,17 @@ impl App {
                     // never sees.
                     BackgroundServerStart::ConfigAtStartup => {
                         let trust = match warning {
-                            Some(warning) => warning.clone(),
-                            None => {
-                                "There is no login, so keep it on a network you trust.".to_string()
-                            }
+                            Some(warning) => StatusText::from(warning),
+                            None => trust.clone(),
                         };
-                        yaran_core::engine::Final::warning(format!(
-                            "The background web server was already on and is listening on \
-                             {where_at}. {trust} Use stop-background-server to stop it."
-                        ))
+                        yaran_core::engine::Final::warning(yaran_core::status_text![
+                            format!(
+                                "The background web server was already on and is listening on \
+                                 {where_at}. "
+                            ),
+                            trust,
+                            " Use stop-background-server to stop it."
+                        ])
                     }
                     BackgroundServerStart::UserRequest => match warning {
                         Some(warning) => yaran_core::engine::Final::warning(format!(
@@ -307,11 +473,14 @@ impl App {
                              agents keep running here. {warning} Use stop-background-server to \
                              stop serving."
                         )),
-                        None => yaran_core::engine::Final::info(format!(
-                            "The web UI is serving in the background on {where_at}, and your \
-                             agents keep running here. There is no login, so keep it on a \
-                             network you trust. Use stop-background-server to stop serving."
-                        )),
+                        None => yaran_core::engine::Final::info(yaran_core::status_text![
+                            format!(
+                                "The web UI is serving in the background on {where_at}, and \
+                                 your agents keep running here. "
+                            ),
+                            &trust,
+                            " Use stop-background-server to stop serving."
+                        ]),
                     },
                 }
             }
@@ -327,10 +496,26 @@ impl App {
         });
         let pending = self.engine.begin_status_op(&op);
         self.apply_reaction(EventReaction::Status(pending));
-        self.pending_background_server_start = Some(PendingBackgroundServerStart { op, trigger });
-        self.background_server_preflight_pending = true;
-        self.background_server_wanted = true;
-        self.spawn_background_server_preflight();
+        let bound_with = self.spawn_background_server_preflight();
+        self.pending_background_server_start = Some(PendingBackgroundServerStart {
+            op,
+            trigger,
+            bound_with,
+        });
+        self.serving.background_wanted = true;
+        Ok(())
+    }
+
+    /// A cancelled start whose bind is still on its worker thread, asked for
+    /// again: it is wanted back, so the pre-flight that lands serves after all,
+    /// and its busy (written over by the cancel's line) shows again.
+    fn want_cancelled_start_again(&mut self, trigger: BackgroundServerStart) {
+        self.serving.background_wanted = true;
+        if let Some(pending) = self.pending_background_server_start.as_mut() {
+            pending.trigger = trigger;
+            let status = self.engine.begin_status_op(&pending.op);
+            self.apply_reaction(EventReaction::Status(status));
+        }
     }
 
     /// Run the bind pre-flight on a worker thread, reporting back through
@@ -340,9 +525,10 @@ impl App {
     /// same LOCAL MODE addresses (loopback plus the machine's Tailscale address),
     /// and neither ever reads the configurable `[server] host`, so neither can
     /// open a public listener.
-    pub(crate) fn spawn_background_server_preflight(&mut self) {
-        let port = self.engine.config.server.port;
-        let tailscale = self.engine.config.server.tailscale_mode();
+    pub(crate) fn spawn_background_server_preflight(&mut self) -> BackgroundBindSettings {
+        let bound_with = self.background_bind_settings();
+        let BackgroundBindSettings { port, tailscale } = bound_with;
+        self.serving.background_preflight_pending = true;
         let tx = self.engine.worker_tx.clone();
         std::thread::spawn(move || {
             let (tailscale_ip, detect_warning) = if tailscale.wants_tailscale() {
@@ -351,7 +537,7 @@ impl App {
                     Err(reason) => (
                         None,
                         Some(yaran_core::tailscale::undetected_warning(
-                            tailscale, reason, "loopback",
+                            tailscale, &reason, "loopback",
                         )),
                     ),
                 }
@@ -360,12 +546,18 @@ impl App {
             };
             let event = match preflight_server_listeners(port, tailscale_ip) {
                 Ok((listeners, urls, bind_warnings)) => {
+                    let startup = yaran_core::serve_log::StartupNotes {
+                        warnings: detect_warning.iter().cloned().collect(),
+                        bind_warnings: bind_warnings.clone(),
+                        tailscale_detected: tailscale_ip.is_some(),
+                    };
                     WorkerEvent::BackgroundServerPreflightReady {
                         result: Ok((listeners, urls)),
                         warning: super::sessions::combine_flip_warnings(
                             detect_warning,
                             bind_warnings,
                         ),
+                        startup,
                     }
                 }
                 // A required (loopback) bind failed: surface the error. The
@@ -373,10 +565,20 @@ impl App {
                 Err(err) => WorkerEvent::BackgroundServerPreflightReady {
                     result: Err(format!("{err:#}")),
                     warning: detect_warning,
+                    startup: yaran_core::serve_log::StartupNotes::default(),
                 },
             };
             let _ = tx.send(event);
         });
+        bound_with
+    }
+
+    /// The settings a bind pre-flight spawned now would read.
+    fn background_bind_settings(&self) -> BackgroundBindSettings {
+        BackgroundBindSettings {
+            port: self.engine.config.server.port,
+            tailscale: self.engine.config.server.tailscale_mode(),
+        }
     }
 
     /// Adopt the pre-flight's listeners and hand them to the companion. For a
@@ -386,15 +588,17 @@ impl App {
         &mut self,
         result: Result<(Vec<std::net::TcpListener>, Vec<String>), String>,
         warning: Option<String>,
+        startup: yaran_core::serve_log::StartupNotes,
     ) {
-        self.background_server_preflight_pending = false;
+        self.serving.background_preflight_pending = false;
         // The user changed their mind while the bind was on its worker thread: a
         // stop command, or a reload that turned the setting off. Starting now
         // would serve a listener nobody wants and, worse, PERSIST
         // `serve_while_tui = true` over the value they just chose. Drop the bound
         // listeners (which releases the addresses), say so, and write nothing.
-        if !self.background_server_wanted {
+        if !self.serving.background_wanted {
             drop(result);
+            self.note_reload_serve_change_done(None);
             if let Some(PendingBackgroundServerStart { op, .. }) =
                 self.pending_background_server_start.take()
             {
@@ -402,6 +606,23 @@ impl App {
                     op.resolve(&BackgroundServerOutcome::Cancelled)
                         .into_reaction(),
                 );
+            }
+            return;
+        }
+        // The config moved past the settings this bind was made with (a reload
+        // that wanted the listener again having also changed the port or the
+        // Tailscale mode): serving it would ignore what the user just chose, so
+        // its listeners are let go and the bind runs again on what is current.
+        let current = self.background_bind_settings();
+        if self
+            .pending_background_server_start
+            .as_ref()
+            .is_some_and(|pending| pending.bound_with != current)
+        {
+            drop(result);
+            let bound_with = self.spawn_background_server_preflight();
+            if let Some(pending) = self.pending_background_server_start.as_mut() {
+                pending.bound_with = bound_with;
             }
             return;
         }
@@ -415,7 +636,12 @@ impl App {
                         &mut self.engine,
                         listeners,
                         urls.clone(),
-                        claim_before_serving,
+                        if claim_before_serving {
+                            yaran_core::background_serve::ServeClaims::UndrivenPtys
+                        } else {
+                            yaran_core::background_serve::ServeClaims::Nothing
+                        },
+                        startup,
                     ) {
                         Ok(urls) => {
                             // The serve claimed every running pty for this surface
@@ -424,7 +650,7 @@ impl App {
                             // launch's claim does: a child something else
                             // re-gridded would otherwise keep that grid.
                             if claim_before_serving {
-                                self.last_pty_resize_target = None;
+                                self.forget_sent_pty_sizes();
                             }
                             // Persist the choice, so a restart comes up the way the
                             // user left it. Lazy rather than eager: nothing is
@@ -448,10 +674,18 @@ impl App {
         };
         // A start that failed leaves nothing wanted, so a later stop does not
         // report on a listener that never came up.
-        self.background_server_wanted = self.background_server_is_serving();
+        self.serving.background_wanted = self.background_server_is_serving();
+        let problem = match &outcome {
+            BackgroundServerOutcome::Failed(message) => Some(format!(
+                "The background web server could not be started: {}",
+                sentence(message)
+            )),
+            _ => None,
+        };
         if let Some(PendingBackgroundServerStart { op, .. }) = pending {
             self.apply_reaction(op.resolve(&outcome).into_reaction());
         }
+        self.note_reload_serve_change_done(problem);
     }
 
     /// Palette action: stop the background web server, leaving every agent
@@ -462,8 +696,8 @@ impl App {
         // wanted flag is what the pre-flight's apply consults when it lands, and
         // config is deliberately left alone, because the start never got as far as
         // writing it.
-        if !self.background_server_is_serving() && self.background_server_preflight_pending {
-            self.background_server_wanted = false;
+        if !self.background_server_is_serving() && self.serving.background_preflight_pending {
+            self.serving.background_wanted = false;
             self.set_info(
                 "Cancelling the background web server start that is still binding its addresses. \
                  Nothing will serve and config.toml is untouched."
@@ -494,37 +728,58 @@ impl App {
         );
     }
 
-    /// Stop serving without saying anything and without touching config. The
-    /// shared half of the palette command, the config-reload transition and the
-    /// quit path.
-    pub(crate) fn stop_background_server_quietly(&mut self) {
-        // Runtime intent, not the saved setting: quitting stops the listener
-        // without deciding anything about next time, and that distinction lives in
-        // config, which this deliberately does not touch.
-        self.background_server_wanted = false;
-        // A mode request queued on the runtime this stop tears down has nobody
-        // left to answer it, so answer it here rather than leaving its busy for
-        // the leak guard to expire.
+    /// A mode request queued on a serve runtime that is gone (stopped here, or
+    /// retired on its own) has nobody left to answer it, so answer it as not
+    /// serving rather than leaving its busy for the leak guard to expire and
+    /// the reload that made it holding every later one.
+    fn answer_tailscale_mode_request_nobody_will_carry(&mut self) {
         if let Some(pending) = self.pending_tailscale_mode_op.take() {
             self.apply_reaction(
                 pending
                     .resolve(&yaran_core::config::TailscaleModeOutcome::NotServing)
                     .into_reaction(),
             );
+            let mode = self.engine.config.server.tailscale_mode();
+            self.note_reload_tailscale_change_done(
+                mode,
+                yaran_core::config::TailscaleModeOutcome::NotServing,
+            );
         }
-        // Let go of every pty this surface is driving FIRST, while the serve's
-        // buses are still up to carry the news. After the stop there is nothing
-        // left to announce on, and every browser watching one of those ptys would
-        // keep showing a take-over card naming a terminal that stopped serving.
-        //
-        // This is also the flip's release and the quit's release: both leave the
-        // run loop, and both exits call through here.
-        self.release_owned_ptys();
+    }
+
+    /// Stop serving without saying anything and without touching config. The
+    /// shared half of the palette command, the config-reload transition and the
+    /// quit path.
+    pub(crate) fn stop_background_server_quietly(&mut self) {
+        self.let_go_of_serving();
         if let Some(companion) = self.companion.as_mut()
             && companion.is_serving()
         {
             companion.stop(&mut self.engine);
         }
+    }
+
+    /// Leaving the run loop (a quit or the flip): let go of serving as
+    /// [`Self::stop_background_server_quietly`] does, then release every core
+    /// at once. Stopping the serve first would start a control-socket core
+    /// only for the release to stop it again.
+    pub(crate) fn release_serving_on_exit(&mut self) {
+        self.let_go_of_serving();
+        self.release_companion();
+    }
+
+    /// What every stop of the serve does before the listener goes.
+    fn let_go_of_serving(&mut self) {
+        // Runtime intent, not the saved setting: quitting stops the listener
+        // without deciding anything about next time, and that distinction lives in
+        // config, which this deliberately does not touch.
+        self.serving.background_wanted = false;
+        self.answer_tailscale_mode_request_nobody_will_carry();
+        // Let go of every pty this surface is driving FIRST, while the serve's
+        // buses are still up to carry the news. After the stop there is nothing
+        // left to announce on, and every browser watching one of those ptys would
+        // keep showing a take-over card naming a terminal that stopped serving.
+        self.release_owned_ptys();
     }
 
     /// Palette action: open the `[server] tailscale` picker.
@@ -625,6 +880,8 @@ impl App {
         // A request already in flight is superseded by this one, and the serve
         // loop answers it as such. Resolve the op it is holding now rather than
         // dropping it, or its busy would sit open until the leak guard expires it.
+        // That also settles a request a retired serve still owed an answer for.
+        self.tailscale_answer_from = TailscaleAnswerFrom::Serve;
         if let Some(previous) = self.pending_tailscale_mode_op.take() {
             self.apply_reaction(
                 previous
@@ -647,6 +904,15 @@ impl App {
         let pending = self.engine.begin_status_op(&op);
         self.apply_reaction(EventReaction::Status(pending));
         self.pending_tailscale_mode_op = Some(op);
+        // With nothing serving there is no serve to answer, so the answer is
+        // given here rather than leaving the busy for the leak guard.
+        if !self.background_server_is_serving() {
+            self.apply_tailscale_mode_outcome(
+                mode,
+                yaran_core::config::TailscaleModeOutcome::NotServing,
+            );
+            return;
+        }
         if let Some(companion) = self.companion.as_mut() {
             companion.set_tailscale_mode(&self.engine, mode);
         }
@@ -658,8 +924,10 @@ impl App {
         mode: yaran_core::config::TailscaleMode,
         outcome: yaran_core::config::TailscaleModeOutcome,
     ) {
-        match self.pending_tailscale_mode_op.take() {
-            Some(op) => self.apply_reaction(op.resolve(&outcome).into_reaction()),
+        self.note_reload_tailscale_change_done(mode, outcome);
+        if let Some(op) = self.pending_tailscale_mode_op.take() {
+            self.apply_reaction(op.resolve(&outcome).into_reaction());
+        } else {
             // No op waiting: the serve answered a request this surface no longer
             // remembers (a stop and start across it, say). Say it anyway rather
             // than swallowing a listener change nobody asked about, and say it on
@@ -667,21 +935,68 @@ impl App {
             // fact about the process rather than an answer owed to this screen,
             // and a browser reaching yaran over the tailnet is as affected as the
             // terminal in front of it.
-            None => {
-                let report = outcome.report(mode);
-                let tone = if report.warning {
-                    yaran_core::statusline::StatusTone::Warning
-                } else {
-                    yaran_core::statusline::StatusTone::Info
-                };
-                self.engine
-                    .post_status(yaran_core::engine::StatusUpdate::keyed(
-                        yaran_core::tailscale::MODE_CHANGE_STATUS_KEY,
-                        tone,
-                        report.message,
-                    ));
-            }
+            let report = outcome.report(mode);
+            let tone = if report.warning {
+                yaran_core::statusline::StatusTone::Warning
+            } else {
+                yaran_core::statusline::StatusTone::Info
+            };
+            self.engine
+                .post_status(yaran_core::engine::StatusUpdate::keyed(
+                    yaran_core::tailscale::MODE_CHANGE_STATUS_KEY,
+                    tone,
+                    report.message,
+                ));
         }
+    }
+
+    /// A reload started (or cancelled) a background-server bind that ends when
+    /// its pre-flight lands. Counted once however many reloads ask.
+    fn note_reload_serve_change_started(&mut self) {
+        if !self.reload_listener_changes.serve {
+            self.reload_listener_changes.serve = true;
+            self.engine.operations.listener_change_started();
+        }
+    }
+
+    /// The bind a reload set off ended, with `problem` saying how when it did
+    /// not work. Nothing if no reload set one off.
+    fn note_reload_serve_change_done(&mut self, problem: Option<String>) {
+        if std::mem::take(&mut self.reload_listener_changes.serve) {
+            self.engine
+                .operations
+                .listener_change_done(problem, std::time::Instant::now());
+        }
+    }
+
+    /// The serve answered (or can no longer answer) the Tailscale mode request
+    /// a reload made. Nothing if no reload made one.
+    fn note_reload_tailscale_change_done(
+        &mut self,
+        mode: yaran_core::config::TailscaleMode,
+        outcome: yaran_core::config::TailscaleModeOutcome,
+    ) {
+        if std::mem::take(&mut self.reload_listener_changes.tailscale) {
+            let problem = outcome
+                .failed()
+                .then(|| String::from(outcome.report(mode).message));
+            self.engine
+                .operations
+                .listener_change_done(problem, std::time::Instant::now());
+        }
+    }
+
+    /// [`Self::ask_companion_for_tailscale_mode`] for a reload that changed
+    /// the mode: the reload is not over until the serve has answered.
+    pub(crate) fn ask_companion_for_tailscale_mode_for_reload(
+        &mut self,
+        mode: yaran_core::config::TailscaleMode,
+    ) {
+        if !self.reload_listener_changes.tailscale {
+            self.reload_listener_changes.tailscale = true;
+            self.engine.operations.listener_change_started();
+        }
+        self.ask_companion_for_tailscale_mode(mode);
     }
 
     /// Honor an `[server] serve_while_tui` change that arrived through a config
@@ -690,22 +1005,86 @@ impl App {
     /// The setting is the startup default AND a live switch, so a reload that
     /// flips it has to act rather than wait for the next start: a user who edits
     /// the file to turn the listener off has asked for the listener to go away.
-    pub(crate) fn apply_serve_while_tui_setting(&mut self, wanted: bool) {
-        // A start still in its bind pre-flight counts as on: otherwise a reload
+    pub(crate) fn apply_serve_while_tui_setting(&mut self, wanted: ServeWanted) {
+        // A wanted start still in its bind pre-flight counts as on: otherwise a reload
         // that turns the setting off looks like it has nothing to do, and the
         // pre-flight lands afterwards and starts serving anyway.
-        let on = self.background_server_is_serving() || self.background_server_preflight_pending;
-        match (on, wanted) {
-            // A reload that turned it on is a live act the user just took, so it
-            // reports like the palette command rather than like the startup
-            // autostart.
-            (false, true) => self.start_background_server(BackgroundServerStart::UserRequest),
-            (true, false) => self.stop_background_server(),
+        // A cancelled one, still binding, counts as off, so turning the setting
+        // back on wants it again.
+        let on = self.background_server_is_serving()
+            || (self.serving.background_preflight_pending && self.serving.background_wanted);
+        match (on, (wanted == ServeWanted::On)) {
+            // A user request, not the startup autostart: a reload turning it on
+            // is a live act and reports like the palette command.
+            (false, true) => {
+                match self.try_start_background_server(BackgroundServerStart::UserRequest) {
+                    Ok(()) => self.note_reload_serve_change_started(),
+                    Err(refusal) => {
+                        self.engine.operations.listener_change_failed(format!(
+                            "The background web server was not started: {}",
+                            sentence(&refusal.message)
+                        ));
+                        self.say_start_refusal(refusal);
+                    }
+                }
+            }
+            (true, false) => {
+                // A start still binding is cancelled, not stopped: it ends when
+                // the bind lands and finds nobody wants it.
+                if !self.background_server_is_serving() {
+                    self.note_reload_serve_change_started();
+                }
+                self.stop_background_server();
+            }
             // Already where the config asks for. Nothing to say: a reload that
             // did not change this should not report on it.
             (true, true) | (false, false) => {}
         }
     }
+}
+
+/// Why the background server was not started, and how loudly to say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StartRefusal {
+    pub(crate) message: String,
+    pub(crate) tone: RefusalTone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusalTone {
+    Error,
+    Warning,
+}
+
+impl StartRefusal {
+    fn error(message: String) -> Self {
+        Self {
+            message,
+            tone: RefusalTone::Error,
+        }
+    }
+
+    fn warning(message: String) -> Self {
+        Self {
+            message,
+            tone: RefusalTone::Warning,
+        }
+    }
+}
+
+/// The listener changes a config reload set off that have not ended yet; the
+/// reload is not finished until they have.
+#[derive(Debug, Default)]
+pub(crate) struct ReloadListenerChanges {
+    /// A background-server start (or the cancelling of one) is binding.
+    serve: bool,
+    /// A Tailscale mode change is waiting on the serve's answer.
+    tailscale: bool,
+}
+
+/// A sentence ending in exactly one full stop.
+fn sentence(text: &str) -> String {
+    format!("{}.", text.trim().trim_end_matches('.'))
 }
 
 /// What asked for the background server to start.
@@ -753,7 +1132,7 @@ pub(crate) enum CompanionRouting {
     NotServing,
     /// Serving: route against the ids that were in flight when the batch was
     /// drained.
-    Serving(yaran_core::engine::WebFollowupOps),
+    Serving(Box<yaran_core::engine::WebFollowupOps>),
 }
 
 impl CompanionRouting {
@@ -809,19 +1188,22 @@ fn serving_port_label(urls: &[String]) -> Option<String> {
 
 /// The serving chip's text: where it is serving, and how many browsers are on it.
 ///
-/// "Connected", not "devices": one browser with two tabs open counts twice, and
-/// nothing here can honestly tell that they are the same laptop. Zero says only
-/// that a listener exists, because "0 connected" is a number nobody needs and the
-/// chip is already carrying that fact by being there at all.
-fn serving_chip_label(port: Option<&str>, connections: usize) -> String {
+/// Browsers, not tabs: every tab of one browser profile counts once, and a private
+/// window or a second browser counts again. Zero says only that a listener exists,
+/// because "0 browsers" is a number nobody needs and the chip is already carrying
+/// that fact by being there at all.
+fn serving_chip_label(glyph: &str, port: Option<&str>, browsers: usize) -> String {
     let where_at = match port {
         Some(port) => format!("serving {port}"),
         None => "serving".to_string(),
     };
-    if connections == 0 {
-        format!("● {where_at}")
+    if browsers == 0 {
+        format!("{glyph} {where_at}")
     } else {
-        format!("● {where_at} · {connections} connected")
+        format!(
+            "{glyph} {where_at} · {}",
+            yaran_core::text::count_of(browsers, "browser")
+        )
     }
 }
 
@@ -868,8 +1250,46 @@ impl App {
     }
 }
 
+/// What a background serve's start says about who gets in: the password when
+/// one is set, the risk when none is.
+fn trust_sentence(password: WebPassword) -> StatusText {
+    if password == WebPassword::Set {
+        "Browsers sign in with the web password ([server.auth] require decides who is asked)."
+            .into()
+    } else {
+        yaran_core::status_text![
+            "No password is set, so anyone who can reach it drives your agents; set one with ",
+            q(yaran_core::config_auth::SET_PASSWORD_COMMAND),
+            ", or keep it on a network you trust."
+        ]
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
+
+    #[test]
+    fn the_trust_sentence_names_the_password_or_its_absence() {
+        assert!(super::trust_sentence(WebPassword::Set).contains("sign in with the web password"));
+        let open = super::trust_sentence(WebPassword::Unset);
+        assert!(open.contains("No password is set"), "{open}");
+        // The command is quoted on the status line and a chip on the web,
+        // never between backticks, which neither renders.
+        assert!(!open.contains('`'), "{open}");
+        assert!(
+            open.contains("\"yaran config set server.auth.password\""),
+            "{open}"
+        );
+        assert!(
+            open.segments().expect("built from parts").contains(
+                &yaran_core::prose::ProseSegment::Name {
+                    name: "yaran config set server.auth.password".to_string(),
+                    quoted: true,
+                }
+            ),
+            "{open:?}"
+        );
+    }
     use std::sync::{Arc, Mutex};
 
     use yaran_core::background_serve::{
@@ -880,6 +1300,11 @@ pub(crate) mod tests {
 
     use super::super::test_support::{default_bindings, test_app};
     use super::*;
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+    use yaran_core::engine::Engine;
+    use yaran_core::ids::{TabId, TabIdRef};
+    use yaran_core::worker::ReviewCopyConsent;
 
     /// What a [`FakeCompanion`] saw and what it was told to do, shared with the
     /// test because the App owns the companion behind a trait object.
@@ -893,15 +1318,24 @@ pub(crate) mod tests {
         mutated_next: bool,
         /// How many times `service` was called.
         serviced: usize,
-        /// A session to remove from the engine the next time `service` runs, so a
-        /// test can stand in for a browser deleting an agent.
-        remove_session: Option<String>,
+        /// A change to make to the engine the next time `service` runs, so a
+        /// test can stand in for a browser deleting or reordering an agent.
+        change_in_service: Option<EngineChange>,
+        /// The same, made the next time a reaction is handed over, standing in
+        /// for a follow-up the fanout runs (a browser's delete finishing).
+        change_in_fanout: Option<EngineChange>,
         /// Turn `ui.show_changes_pane` off in the engine's config the next time
         /// `service` runs, standing in for a browser saving that preference.
         hide_changes_pane: bool,
         /// What the next `service` call reports as a self-retirement, standing in
         /// for a required listener dying.
         retirement_next: Option<String>,
+        /// What the next `service` call hands over as statuses raised for every
+        /// surface, standing in for a command-line change it served.
+        statuses_next: Vec<yaran_core::wire::WireStatus>,
+        /// What the companion's last hand-over left to report, standing in for
+        /// a command-line change the stopped core finished.
+        handed_over: ServiceOutcome,
         /// One entry per maintenance hand-off the seam made.
         maintenance: Vec<DrainedMaintenance>,
         /// Stand in for the REAL fanout's side effects: its `drive_*` follow-ups
@@ -910,6 +1344,11 @@ pub(crate) mod tests {
         /// happen BEFORE this surface applies the reaction, which is exactly the
         /// window the ownership snapshot exists to survive.
         fanout_consumes_ops: bool,
+        /// The clones the fanout's clone follow-up finished, by op id.
+        clones_driven: Vec<String>,
+        /// The clone keys it dismissed, one per clone it handed to an agent
+        /// create.
+        clone_handed_off: Vec<String>,
         /// Every ownership fact the seam published, in order, standing in for the
         /// `pty.owner` and grid broadcasts a real serve would have emitted.
         pub(crate) published: Vec<PtyOwnershipEvent>,
@@ -918,17 +1357,29 @@ pub(crate) mod tests {
         pub(crate) cloud_modes: Vec<yaran_core::cloud::leg_identity::CloudMode>,
         pub(crate) cloud_view: yaran_core::cloud::view::CloudLegView,
         /// How many browser tabs the serve says are connected, standing in for the
+        /// How many browsers the serve says are connected, standing in for the
         /// connection registry's own count.
-        pub(crate) connections: usize,
+        pub(crate) browsers: usize,
         /// One entry per `[server]` section the seam was handed after an applied
         /// reload, standing in for the live limits a real serve would store.
         pub(crate) config_applied: Vec<yaran_core::config::ServerConfig>,
+        /// The startup notes each start was handed.
+        pub(crate) started_with: Vec<yaran_core::serve_log::StartupNotes>,
+        /// The log file the serve says it opened, standing in for the one the
+        /// real serve holds.
+        pub(crate) server_log_path: Option<std::path::PathBuf>,
     }
+
+    /// A change another surface makes to the shared engine.
+    pub(crate) type EngineChange = Box<dyn FnOnce(&mut Engine) + Send>;
 
     /// A companion that records instead of serving. Serving is a real socket and a
     /// real runtime; none of that is what these tests are about.
     pub(crate) struct FakeCompanion {
         serving: bool,
+        /// A core that serves only the control socket, with nothing served on
+        /// the web: the plain terminal UI's.
+        control_core: bool,
         recorded: Arc<Mutex<Recorded>>,
         /// A REAL ownership registry, because the gate's whole job is to obey one
         /// and a fake verdict would test nothing. Shared with the test so it can
@@ -954,6 +1405,7 @@ pub(crate) mod tests {
             (
                 Box::new(Self {
                     serving: true,
+                    control_core: false,
                     recorded: Arc::clone(&recorded),
                     ownership: ownership.clone(),
                 }),
@@ -967,8 +1419,23 @@ pub(crate) mod tests {
         fn on_reaction(&mut self, engine: &mut Engine, reaction: &EventReaction) {
             let mut recorded = self.recorded.lock().expect("not poisoned");
             recorded.reactions.push(reaction_kind(reaction).to_string());
+            if let Some(change) = recorded.change_in_fanout.take() {
+                change(engine);
+            }
             if !recorded.fanout_consumes_ops {
                 return;
+            }
+            // The clone follow-up is the real one, run where the real fanout
+            // runs it: only for a clone the routing gives the web.
+            if matches!(
+                engine.followup_owner(reaction),
+                yaran_core::engine::FollowupOwner::Web
+            ) {
+                if let EventReaction::AddProjectAfterClone(done) = reaction {
+                    recorded.clones_driven.extend(done.status_op_id.clone());
+                }
+                let followup = engine.drive_clone_followup(reaction);
+                recorded.clone_handed_off.extend(followup.clear_keys);
             }
             // What the real `drive_pr_lookup_followup` / `finish_web_project_add`
             // do: resolve their keyed op, which means REMOVING it from the map the
@@ -991,8 +1458,8 @@ pub(crate) mod tests {
         fn service(&mut self, engine: &mut Engine) -> ServiceOutcome {
             let mut recorded = self.recorded.lock().expect("not poisoned");
             recorded.serviced += 1;
-            if let Some(id) = recorded.remove_session.take() {
-                engine.sessions.retain(|s| s.id != id);
+            if let Some(change) = recorded.change_in_service.take() {
+                change(engine);
             }
             if std::mem::take(&mut recorded.hide_changes_pane) {
                 engine.config.ui.show_changes_pane = false;
@@ -1001,7 +1468,12 @@ pub(crate) mod tests {
                 mutated: recorded.mutated_next,
                 stopped: false,
                 retirement: recorded.retirement_next.take(),
+                statuses: std::mem::take(&mut recorded.statuses_next),
             }
+        }
+
+        fn take_handed_over(&mut self) -> ServiceOutcome {
+            std::mem::take(&mut self.recorded.lock().expect("not poisoned").handed_over)
         }
 
         fn note_maintenance(&mut self, maintenance: &DrainedMaintenance) {
@@ -1020,27 +1492,51 @@ pub(crate) mod tests {
                 .push(command_applies);
         }
 
-        fn note_config_applied(&mut self, server: &yaran_core::config::ServerConfig) {
+        fn note_config_applied(&mut self, config: &yaran_core::config::Config) {
             self.recorded
                 .lock()
                 .expect("not poisoned")
                 .config_applied
-                .push(server.clone());
+                .push(config.server.clone());
         }
 
         fn is_serving(&self) -> bool {
             self.serving
         }
 
+        fn has_core(&self) -> bool {
+            self.serving || self.control_core
+        }
+
+        fn start_control_socket(&mut self, _engine: &mut Engine) {
+            self.control_core = true;
+        }
+
+        fn release(&mut self, _engine: &mut Engine) {
+            self.serving = false;
+            self.control_core = false;
+        }
+
         fn urls(&self) -> Vec<String> {
             vec!["http://127.0.0.1:8080".to_string()]
         }
 
-        fn connections(&self) -> usize {
+        fn browsers(&self) -> usize {
             if !self.serving {
                 return 0;
             }
-            self.recorded.lock().expect("not poisoned").connections
+            self.recorded.lock().expect("not poisoned").browsers
+        }
+
+        fn server_log_path(&self) -> Option<std::path::PathBuf> {
+            if !self.serving {
+                return None;
+            }
+            self.recorded
+                .lock()
+                .expect("not poisoned")
+                .server_log_path
+                .clone()
         }
 
         fn start(
@@ -1048,11 +1544,17 @@ pub(crate) mod tests {
             engine: &mut Engine,
             _listeners: Vec<std::net::TcpListener>,
             _urls: Vec<String>,
-            claim_before_serving: bool,
+            claims: yaran_core::background_serve::ServeClaims,
+            startup: yaran_core::serve_log::StartupNotes,
         ) -> Result<Vec<String>, String> {
+            self.recorded
+                .lock()
+                .expect("not poisoned")
+                .started_with
+                .push(startup);
             // What the real serve does: seed the claims before it is serving,
             // then announce them once it is.
-            let seeded = if claim_before_serving {
+            let seeded = if claims == yaran_core::background_serve::ServeClaims::UndrivenPtys {
                 self.ownership.claim_every_running_pty(engine)
             } else {
                 Vec::new()
@@ -1092,6 +1594,7 @@ pub(crate) mod tests {
 
         fn stop(&mut self, _engine: &mut Engine) {
             self.serving = false;
+            self.control_core = true;
         }
 
         fn ownership(&self) -> Option<TuiOwnership> {
@@ -1116,6 +1619,7 @@ pub(crate) mod tests {
             EventReaction::OpenNewAgentPromptForPr { .. } => "OpenNewAgentPromptForPr",
             EventReaction::Nothing => "Nothing",
             EventReaction::Status(_) => "Status",
+            EventReaction::GithubFactsChanged => "GithubFactsChanged",
             _ => "other",
         }
     }
@@ -1130,7 +1634,7 @@ pub(crate) mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: crate::model::ProjectBranchStatus::Leading,
             path_missing: false,
@@ -1148,6 +1652,9 @@ pub(crate) mod tests {
             state: "OPEN".to_string(),
             head_ref_name: "feature/pr-42".to_string(),
             custom_name: None,
+            review_copy: ReviewCopyConsent::default(),
+            ask_id: None,
+            project_remote: None,
         }
     }
 
@@ -1155,6 +1662,50 @@ pub(crate) mod tests {
         EventReaction::OpenNewAgentPromptForPr {
             pr: Box::new(resolved_pr()),
             status_op_id,
+        }
+    }
+
+    /// A clone's op waiting for its worker, as a browser or this
+    /// surface (`asked_by`) would have left it.
+    fn a_clone_op(app: &mut App, asked_by: yaran_core::engine::CloneAskedBy) -> String {
+        let op = yaran_core::engine::status_op("Cloning…".to_string()).resolve_in_handler(
+            |outcome: &yaran_core::clone_project::CloneOutcome| outcome.final_status(),
+        );
+        let id = op.id().to_string();
+        app.engine.clones.pending.insert(
+            id.clone(),
+            yaran_core::clone_project::PendingClone {
+                op,
+                from_web: asked_by == yaran_core::engine::CloneAskedBy::Browser,
+                repository_key: None,
+                mode: yaran_core::clone_project::CloneMode::Clone,
+                destination: std::path::PathBuf::new(),
+                review_copy: ReviewCopyConsent::default(),
+            },
+        );
+        id
+    }
+
+    /// A clone of `path` ready to add, its worker's event for op `id`.
+    fn a_finished_clone(
+        id: String,
+        path: std::path::PathBuf,
+        agent: &str,
+    ) -> yaran_core::worker::WorkerEvent {
+        yaran_core::worker::WorkerEvent::RepositoryCloned {
+            status_op_id: Some(id),
+            path,
+            agent_name: agent.to_string(),
+            mode: yaran_core::clone_project::CloneMode::Clone,
+            repository_key: None,
+            result: Ok(yaran_core::clone_project::ClonedRepository {
+                address: "/srv/remote.git".to_string(),
+                branch: "main".to_string(),
+                leading_branch: "main".to_string(),
+                leading_branch_guess: None,
+                name_taken: false,
+                pull_request: None,
+            }),
         }
     }
 
@@ -1197,8 +1748,10 @@ pub(crate) mod tests {
         );
     }
 
+    /// A reload whose apply fails still adopts the new config, so the routes
+    /// answer on the caps that are actually in force: the new ones.
     #[test]
-    fn a_reload_whose_apply_fails_hands_the_seam_nothing() {
+    fn a_reload_whose_apply_fails_hands_the_seam_the_adopted_config() {
         let mut app = test_app(default_bindings());
         let (companion, recorded) = FakeCompanion::serving();
         app.engine.config.server.serve_while_tui = true;
@@ -1226,14 +1779,17 @@ pub(crate) mod tests {
             crate::app::StatusTone::Error,
             "the apply must be what failed, not something upstream: {message}"
         );
-        assert!(
-            recorded
-                .lock()
-                .expect("not poisoned")
-                .config_applied
-                .is_empty(),
-            "a failed apply leaves the routes on the caps still in force"
+        let applied = recorded
+            .lock()
+            .expect("not poisoned")
+            .config_applied
+            .clone();
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        assert_eq!(
+            applied[0].search_index_max_files, 17,
+            "the routes take the caps of the config in force"
         );
+        assert_eq!(app.engine.config.server.search_index_max_files, 17);
     }
 
     /// A PR lookup a BROWSER started must not pop a name prompt in the terminal.
@@ -1356,7 +1912,7 @@ pub(crate) mod tests {
         app.engine
             .worker_tx
             .send(yaran_core::worker::WorkerEvent::PullRequestResolved {
-                result: Err("Failed to resolve PR #48 from o/r: no such pull request.".to_string()),
+                result: Err("Failed to resolve PR #48 from o/r: no such pull request.".into()),
                 purpose: yaran_core::worker::PrLookupPurpose::Attach {
                     session_id: "s1".to_string(),
                 },
@@ -1403,49 +1959,293 @@ pub(crate) mod tests {
         );
     }
 
-    /// A rename made in a browser has to rebuild this surface's sidebar. Nothing
-    /// on this surface has any other reason to: the change did not arrive through
-    /// its own event stream.
+    /// Turning the GitHub integration off here starts no probe, so nothing
+    /// else would tell a browser on this serve that the switch, whether GitHub
+    /// features work and the clone dialog's GitHub hosts all moved.
     #[test]
-    fn a_mutating_service_iteration_rebuilds_the_sidebar() {
+    fn switching_the_github_integration_here_tells_the_browsers() {
         let mut app = test_app(default_bindings());
         let (companion, recorded) = FakeCompanion::serving();
         app.companion = Some(companion);
-        let session_id = app
-            .engine
-            .sessions
-            .first()
-            .map(|s| s.id.clone())
-            .expect("the test app has a session");
-        app.rebuild_left_items();
-        let before = app.left_items_cache.len();
-        app.selected_left = before.saturating_sub(1);
-        {
-            let mut recorded = recorded.lock().expect("not poisoned");
-            recorded.mutated_next = true;
-            recorded.remove_session = Some(session_id.clone());
+        app.engine.github_integration_enabled = true;
+        app.engine.config.ui.github_integration = true;
+
+        app.toggle_github_integration();
+
+        assert!(!app.engine.github_integration_enabled);
+        assert!(
+            recorded
+                .lock()
+                .expect("not poisoned")
+                .reactions
+                .contains(&"GithubFactsChanged".to_string()),
+            "the browsers must be told to refetch their bootstrap document"
+        );
+    }
+
+    /// An open clone form's untouched destination follows the GitHub hosts as
+    /// they move, and an edited one stays the user's.
+    #[test]
+    fn an_open_clone_form_follows_the_github_hosts_until_its_destination_is_edited() {
+        let mut app = test_app(default_bindings());
+        app.open_clone_project_prompt();
+        let page = "https://ghe.corp.example/owner/repo/issues";
+        let destination = |app: &App| match &app.prompt {
+            PromptState::CloneProject { destination, .. } => destination.text.clone(),
+            _ => panic!("the clone form is open"),
+        };
+        if let PromptState::CloneProject { address, .. } = &mut app.prompt {
+            address.set_text(page.to_string());
         }
+        app.refresh_clone_destination_suggestion();
+        assert!(
+            destination(&app).ends_with("/issues"),
+            "{}",
+            destination(&app)
+        );
 
-        app.service_companion();
+        app.engine.github_integration_enabled = true;
+        app.engine
+            .set_github_host_policy(yaran_core::gh::GithubHostPolicy::Hosts(
+                ["ghe.corp.example".to_string()].into(),
+            ));
+        app.apply_reaction(EventReaction::GithubFactsChanged);
+        assert!(
+            destination(&app).ends_with("/repo"),
+            "{}",
+            destination(&app)
+        );
 
-        assert!(
-            !app.engine.sessions.iter().any(|s| s.id == session_id),
-            "the fake stands in for a browser deleting the agent"
+        if let PromptState::CloneProject {
+            destination,
+            destination_edited,
+            ..
+        } = &mut app.prompt
+        {
+            destination.set_text("/srv/mine".to_string());
+            *destination_edited = true;
+        }
+        app.engine.github_integration_enabled = false;
+        app.apply_reaction(EventReaction::GithubFactsChanged);
+        assert_eq!(destination(&app), "/srv/mine");
+    }
+
+    /// A change made in a browser has to rebuild this surface's sidebar. Nothing
+    /// on this surface has any other reason to: the change did not arrive through
+    /// its own event stream. The rebuilt list keeps the cursor on the agent it
+    /// was on, found by id, so a delete, a reorder or a terminal row leaving
+    /// above it does not slide this surface onto another agent and draw that one. When
+    /// its own agent is the one deleted, the cursor rests on no row rather than
+    /// on a neighbour it was never on.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario walked in order on one app, each step asserting on the state the previous step left"
+    )]
+    fn a_change_made_elsewhere_rebuilds_the_sidebar_and_the_cursor_keeps_its_agent() {
+        type Case = (
+            &'static str,
+            Lend,
+            EngineChange,
+            Option<&'static str>,
+            &'static [&'static str],
         );
-        assert!(
-            app.left_items_cache.len() < before,
-            "the sidebar must rebuild without the deleted agent ({before} rows before, {} after)",
-            app.left_items_cache.len()
-        );
-        assert!(
-            app.selected_left < app.left_items_cache.len().max(1),
-            "the cursor must be clamped back inside the shorter list"
-        );
-        assert_eq!(
-            recorded.lock().expect("not poisoned").serviced,
-            1,
-            "the seam is serviced once per iteration"
-        );
+        enum Lend {
+            Service,
+            Fanout,
+            /// A terminal's process ends, which the drain prunes before the
+            /// companion is serviced.
+            Drain,
+        }
+        let delete = |id: &'static str| -> EngineChange {
+            Box::new(move |engine: &mut Engine| engine.sessions.retain(|s| s.id != id))
+        };
+        let cases: Vec<Case> = vec![
+            (
+                "a delete above",
+                Lend::Service,
+                delete("agent-a"),
+                Some("agent-c"),
+                &["agent-c-slot"],
+            ),
+            (
+                "a reorder",
+                Lend::Service,
+                Box::new(|engine: &mut Engine| engine.sessions.rotate_right(1)),
+                Some("agent-c"),
+                &["agent-c-slot"],
+            ),
+            (
+                "a sort change",
+                Lend::Service,
+                Box::new(|engine: &mut Engine| {
+                    engine.config.ui.agent_sort = "name_desc".to_string();
+                }),
+                Some("agent-c"),
+                &["agent-c-slot"],
+            ),
+            (
+                "a delete the fanout finishes",
+                Lend::Fanout,
+                delete("agent-a"),
+                Some("agent-c"),
+                &["agent-c-slot"],
+            ),
+            (
+                "a terminal closed above",
+                Lend::Service,
+                Box::new(|engine: &mut Engine| {
+                    let first = engine
+                        .companion_terminals
+                        .iter()
+                        .min_by_key(|(_, terminal)| terminal.sort_order)
+                        .map(|(id, _)| id.clone())
+                        .expect("a terminal");
+                    engine.companion_terminals.remove(&first);
+                }),
+                Some("agent-c"),
+                &["agent-c-slot"],
+            ),
+            (
+                "a terminal above exited from a browser",
+                Lend::Drain,
+                Box::new(|engine: &mut Engine| {
+                    let first = engine
+                        .companion_terminals
+                        .values()
+                        .min_by_key(|terminal| terminal.sort_order)
+                        .expect("a terminal");
+                    first.client.write_bytes(b"\x04").expect("end its input");
+                }),
+                Some("agent-c"),
+                &["agent-c-slot"],
+            ),
+            (
+                "its own agent stopped into the collapsed tail",
+                Lend::Service,
+                Box::new(|engine: &mut Engine| {
+                    engine
+                        .providers
+                        .remove(TabIdRef::new("agent-c-slot"))
+                        .expect("agent-c was running");
+                    engine.mark_session_status("agent-c", crate::model::SessionStatus::Detached);
+                }),
+                None,
+                &[],
+            ),
+            (
+                "its own agent deleted",
+                Lend::Service,
+                delete("agent-c"),
+                None,
+                &[],
+            ),
+        ];
+        for (name, lend, change, selected, drawn) in cases {
+            let mut app = test_app(default_bindings());
+            let (companion, recorded) = FakeCompanion::serving();
+            app.companion = Some(companion);
+            app.engine.config.ui.agent_sort = "manual".to_string();
+            app.engine.config.terminal.command = "cat".to_string();
+            app.engine.config.terminal.args = vec![];
+            let base = app.engine.sessions[0].clone();
+            app.engine.sessions.clear();
+            for id in ["agent-a", "agent-c", "agent-b"] {
+                let mut session = base.clone();
+                session.id = id.to_string();
+                session.slot_tab_id = format!("{id}-slot");
+                session.title = Some(id.to_string());
+                session.status = crate::model::SessionStatus::Active;
+                app.engine.sessions.push(session);
+            }
+            for _ in 0..3 {
+                app.engine
+                    .create_standalone_terminal(24, 80)
+                    .expect("standalone terminal");
+            }
+            let client = crate::pty::PtyClient::spawn(
+                "/bin/sh",
+                &["-c".to_string(), "sleep 30".to_string()],
+                std::path::Path::new("."),
+                24,
+                80,
+                1_000,
+            )
+            .expect("spawn pty");
+            app.engine
+                .providers
+                .insert(TabId::new("agent-c-slot".to_string()), client);
+            app.rebuild_left_items();
+            app.reselect_left_session("agent-c");
+            let first_terminal = app
+                .engine
+                .companion_terminals
+                .iter()
+                .min_by_key(|(_, terminal)| terminal.sort_order)
+                .map(|(id, _)| id.clone())
+                .expect("a terminal");
+            let before = app.left_items_cache.len();
+            recorded.lock().expect("not poisoned").mutated_next = true;
+            match lend {
+                Lend::Service => {
+                    recorded.lock().expect("not poisoned").change_in_service = Some(change);
+                }
+                Lend::Fanout => {
+                    recorded.lock().expect("not poisoned").change_in_fanout = Some(change);
+                }
+                Lend::Drain => {
+                    change(&mut app.engine);
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+                    while !app
+                        .engine
+                        .companion_terminals
+                        .get_mut(&first_terminal)
+                        .is_some_and(|t| t.client.is_exited() && t.client.try_wait().is_some())
+                    {
+                        assert!(std::time::Instant::now() < deadline, "{name}: never exited");
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    app.drain_events();
+                }
+            }
+
+            if matches!(lend, Lend::Fanout) {
+                let routing = app.companion_routing();
+                app.notify_companion(&EventReaction::RebuildLeftItems);
+                app.apply_routed_reaction(EventReaction::RebuildLeftItems, &routing);
+            }
+            app.service_companion();
+            let mut screen = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30))
+                .expect("terminal");
+            screen.draw(|frame| app.render(frame)).expect("render");
+
+            assert!(
+                app.left_items_cache.len() <= before,
+                "{name}: the sidebar rebuilt"
+            );
+            assert_eq!(
+                app.selected_session().map(|s| s.id.as_str()),
+                selected,
+                "{name}: the cursor's agent"
+            );
+            let attached: Vec<String> = app
+                .engine
+                .attachments
+                .connections(std::time::Instant::now())
+                .into_iter()
+                .filter(|connection| {
+                    connection.surface == yaran_core::attachments::Surface::TerminalUi
+                })
+                .flat_map(|connection| connection.attachments)
+                .map(|attachment| attachment.target.id)
+                .collect();
+            assert_eq!(attached, drawn, "{name}: what this surface draws");
+            assert_eq!(
+                recorded.lock().expect("not poisoned").serviced,
+                1,
+                "{name}: the seam is serviced once per iteration"
+            );
+        }
     }
 
     /// Under one engine, a browser's Preferences save writes `engine.config`
@@ -1457,7 +2257,7 @@ pub(crate) mod tests {
         let (companion, recorded) = FakeCompanion::serving();
         app.companion = Some(companion);
         app.engine.config.ui.show_changes_pane = true;
-        app.right_hidden = false;
+        app.panes.right_hidden = false;
         app.focus = FocusPane::Files;
         {
             let mut recorded = recorded.lock().expect("not poisoned");
@@ -1468,7 +2268,7 @@ pub(crate) mod tests {
         app.service_companion();
 
         assert!(
-            app.right_hidden,
+            app.panes.right_hidden,
             "the changes pane follows the preference the browser saved"
         );
         assert_ne!(
@@ -1499,28 +2299,47 @@ pub(crate) mod tests {
         );
     }
 
-    /// Nothing serving means nothing is lent the engine, and no cost is paid.
+    /// No core at all means nothing is lent the engine, and no cost is paid. A
+    /// core that serves only the control socket is lent it like a serving one,
+    /// because a command-line client's request waits on it.
     #[test]
-    fn a_companion_that_is_not_serving_is_never_lent_the_engine() {
+    fn a_companion_with_no_core_is_never_lent_the_engine_and_a_socket_core_is() {
         let mut app = test_app(default_bindings());
+        let companion = |control_core: bool, recorded: &Arc<Mutex<Recorded>>| {
+            let owners = Arc::new(yaran_core::pty_owners::PtySizeOwners::default());
+            Box::new(FakeCompanion {
+                serving: false,
+                control_core,
+                recorded: Arc::clone(recorded),
+                ownership: TuiOwnership {
+                    conn_id: owners.next_conn_id(),
+                    owners,
+                },
+            })
+        };
         let recorded = Arc::new(Mutex::new(Recorded::default()));
-        let owners = Arc::new(yaran_core::pty_owners::PtySizeOwners::default());
-        app.companion = Some(Box::new(FakeCompanion {
-            serving: false,
-            recorded: Arc::clone(&recorded),
-            ownership: TuiOwnership {
-                conn_id: owners.next_conn_id(),
-                owners,
-            },
-        }));
+        app.companion = Some(companion(false, &recorded));
 
         app.notify_companion(&EventReaction::Nothing);
         app.service_companion();
 
-        let recorded = recorded.lock().expect("not poisoned");
-        assert!(recorded.reactions.is_empty());
-        assert_eq!(recorded.serviced, 0);
-        assert!(recorded.activity.is_empty());
+        {
+            let recorded = recorded.lock().expect("not poisoned");
+            assert_eq!(recorded.reactions, Vec::<String>::new());
+            assert_eq!(recorded.serviced, 0);
+            assert_eq!(recorded.activity, Vec::<u64>::new());
+        }
+
+        let socket_core = Arc::new(Mutex::new(Recorded::default()));
+        app.companion = Some(companion(true, &socket_core));
+
+        app.notify_companion(&EventReaction::Nothing);
+        app.service_companion();
+
+        let recorded = socket_core.lock().expect("not poisoned");
+        assert_eq!(recorded.reactions, vec!["Nothing".to_string()]);
+        assert_eq!(recorded.serviced, 1);
+        assert_eq!(recorded.activity.len(), 1);
     }
 
     /// The poll interval IS a browser's request latency while serving, so it is
@@ -1532,6 +2351,22 @@ pub(crate) mod tests {
             app.max_poll_ms(),
             u64::MAX,
             "not serving, nothing constrains the poll"
+        );
+
+        // The plain terminal UI's core serves the control socket and nothing a
+        // browser opens: no crumb, no count, no seat, and the lazy poll stands.
+        let (companion, recorded) = FakeCompanion::serving();
+        app.companion = Some(companion);
+        app.stop_background_server_quietly();
+        recorded.lock().expect("not poisoned").browsers = 3;
+        assert!(app.companion.as_ref().is_some_and(|c| c.has_core()));
+        assert_eq!(app.max_poll_ms(), u64::MAX);
+        assert_eq!(app.serving_chip(), None);
+        assert_eq!(app.companion.as_ref().map(|c| c.browsers()), Some(0));
+        assert!(
+            app.companion
+                .as_ref()
+                .is_some_and(|c| c.ownership().is_none())
         );
 
         let (companion, _recorded) = FakeCompanion::serving();
@@ -1563,8 +2398,7 @@ pub(crate) mod tests {
         let message = app
             .status
             .most_recent_tui()
-            .map(|(_, message)| message)
-            .unwrap_or_default();
+            .map_or_default(|(_, message)| message);
         assert!(
             message.contains("already serving in the background"),
             "the refusal must be on the line first: {message}"
@@ -1603,8 +2437,7 @@ pub(crate) mod tests {
         let message = app
             .status
             .most_recent_tui()
-            .map(|(_, message)| message)
-            .unwrap_or_default();
+            .map_or_default(|(_, message)| message);
         assert!(
             message.contains("already serving in the background"),
             "the refusal must say why: {message}"
@@ -1614,7 +2447,7 @@ pub(crate) mod tests {
             "and how to get the flip instead: {message}"
         );
         assert!(
-            !app.server_flip_preflight_pending,
+            !app.serving.flip_preflight_pending,
             "no pre-flight may be dispatched"
         );
     }
@@ -1628,21 +2461,20 @@ pub(crate) mod tests {
         let (companion, _recorded) = FakeCompanion::serving();
         app.companion = Some(companion);
         app.stop_background_server_quietly();
-        app.background_server_preflight_pending = true;
+        app.serving.background_preflight_pending = true;
 
         app.start_web_server();
 
         let message = app
             .status
             .most_recent_tui()
-            .map(|(_, message)| message)
-            .unwrap_or_default();
+            .map_or_default(|(_, message)| message);
         assert!(
             message.contains("already starting the web server in the background"),
             "the refusal must name the start that is in flight: {message}"
         );
         assert!(
-            !app.server_flip_preflight_pending,
+            !app.serving.flip_preflight_pending,
             "no competing pre-flight may be dispatched"
         );
     }
@@ -1660,14 +2492,13 @@ pub(crate) mod tests {
         let message = app
             .status
             .most_recent_tui()
-            .map(|(_, message)| message)
-            .unwrap_or_default();
+            .map_or_default(|(_, message)| message);
         assert!(
             message.contains("127.0.0.1:8080"),
             "the message must name the address: {message}"
         );
         assert!(
-            !app.background_server_preflight_pending,
+            !app.serving.background_preflight_pending,
             "no second pre-flight may be dispatched"
         );
     }
@@ -1676,11 +2507,46 @@ pub(crate) mod tests {
     /// real: the fake companion ignores the listeners it is handed and reports its
     /// own address back.
     pub(crate) fn finish_a_start(app: &mut App, warning: Option<String>) {
+        finish_a_start_with(app, warning, yaran_core::serve_log::StartupNotes::default());
+    }
+
+    fn finish_a_start_with(
+        app: &mut App,
+        warning: Option<String>,
+        startup: yaran_core::serve_log::StartupNotes,
+    ) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral bind");
         app.apply_background_server_preflight(
             Ok((vec![listener], vec!["http://127.0.0.1:8080".to_string()])),
             warning,
+            startup,
         );
+    }
+
+    /// A client asked for a reload, and the reload's barrier has closed.
+    fn ask_for_a_reload(app: &mut App, id: &str) {
+        app.engine
+            .open_operation(id, yaran_core::operations::OperationKind::ConfigReload);
+        app.engine
+            .operations
+            .await_reload(id, yaran_core::engine::ReloadSlot::Now);
+        app.engine.operations.reload_closed();
+    }
+
+    fn record_state(app: &App, id: &str) -> yaran_core::operations::OperationState {
+        app.engine
+            .operations
+            .peek(id, std::time::Instant::now())
+            .expect("the record is kept")
+            .state
+    }
+
+    fn record_message(app: &App, id: &str) -> String {
+        app.engine
+            .operations
+            .peek(id, std::time::Instant::now())
+            .expect("the record is kept")
+            .message
     }
 
     fn status_now(app: &App) -> (StatusTone, String) {
@@ -1694,13 +2560,23 @@ pub(crate) mod tests {
     #[test]
     fn the_config_autostart_path_reports_as_a_start_the_config_made() {
         let mut app = test_app(default_bindings());
-        let (companion, _recorded) = FakeCompanion::serving();
+        let (companion, recorded) = FakeCompanion::serving();
         app.companion = Some(companion);
         app.stop_background_server_quietly();
         app.engine.config.server.serve_while_tui = true;
 
         app.start_background_server_from_config();
-        finish_a_start(&mut app, None);
+        let startup = yaran_core::serve_log::StartupNotes {
+            warnings: vec!["Tailscale not detected (test).".to_string()],
+            bind_warnings: vec!["could not bind the Tailscale address".to_string()],
+            tailscale_detected: true,
+        };
+        finish_a_start_with(&mut app, None, startup.clone());
+        assert_eq!(
+            recorded.lock().expect("not poisoned").started_with,
+            vec![startup],
+            "the serve is told what the pre-flight learned, for its log"
+        );
 
         let (tone, message) = status_now(&app);
         assert_eq!(tone, StatusTone::Warning, "{message}");
@@ -1721,7 +2597,7 @@ pub(crate) mod tests {
 
         app.start_background_server_from_config();
 
-        assert!(!app.background_server_preflight_pending);
+        assert!(!app.serving.background_preflight_pending);
         assert!(app.status.most_recent_tui().is_none());
     }
 
@@ -1749,8 +2625,9 @@ pub(crate) mod tests {
         assert_eq!(
             message,
             "The background web server was already on and is listening on \
-             http://127.0.0.1:8080. There is no login, so keep it on a network you trust. Use \
-             stop-background-server to stop it.",
+             http://127.0.0.1:8080. No password is set, so anyone who can reach it drives your agents; set one \
+             with \"yaran config set server.auth.password\", or keep it on a network you trust. \
+             Use stop-background-server to stop it.",
         );
 
         // And it really does outlast the plain info window, which is the whole
@@ -1809,7 +2686,9 @@ pub(crate) mod tests {
         assert_eq!(
             message,
             "The web UI is serving in the background on http://127.0.0.1:8080, and your agents \
-             keep running here. There is no login, so keep it on a network you trust. Use \
+             keep running here. No password is set, so anyone who can reach it drives your agents; set one \
+             with \"yaran config set server.auth.password\", or keep it on a network you trust. \
+             Use \
              stop-background-server to stop serving.",
         );
 
@@ -1840,9 +2719,22 @@ pub(crate) mod tests {
         app.companion = Some(companion);
         app.stop_background_server_quietly();
 
-        app.apply_serve_while_tui_setting(true);
-        assert!(app.background_server_preflight_pending);
+        ask_for_a_reload(&mut app, "bind-ok");
+        app.apply_serve_while_tui_setting(ServeWanted::On);
+        assert!(app.serving.background_preflight_pending);
+        app.engine.finish_config_reload_operations(
+            &yaran_core::config_reload_status::ConfigReloadOutcome::Applied { notes: Vec::new() },
+        );
+        assert_eq!(
+            record_state(&app, "bind-ok"),
+            yaran_core::operations::OperationState::Running,
+            "the reload is not over while the listener it started is binding"
+        );
         finish_a_start(&mut app, None);
+        assert_eq!(
+            record_state(&app, "bind-ok"),
+            yaran_core::operations::OperationState::Succeeded
+        );
 
         let (tone, message) = status_now(&app);
         assert_eq!(
@@ -1853,7 +2745,9 @@ pub(crate) mod tests {
         assert_eq!(
             message,
             "The web UI is serving in the background on http://127.0.0.1:8080, and your agents \
-             keep running here. There is no login, so keep it on a network you trust. Use \
+             keep running here. No password is set, so anyone who can reach it drives your agents; set one \
+             with \"yaran config set server.auth.password\", or keep it on a network you trust. \
+             Use \
              stop-background-server to stop serving.",
         );
     }
@@ -1877,8 +2771,7 @@ pub(crate) mod tests {
         let message = app
             .status
             .most_recent_tui()
-            .map(|(_, message)| message)
-            .unwrap_or_default();
+            .map_or_default(|(_, message)| message);
         assert!(
             message.contains("agents"),
             "the message must say the agents are unaffected: {message}"
@@ -1924,7 +2817,7 @@ pub(crate) mod tests {
         let (companion, _recorded) = FakeCompanion::serving();
         app.companion = Some(companion);
 
-        app.apply_serve_while_tui_setting(false);
+        app.apply_serve_while_tui_setting(ServeWanted::Off);
         assert!(
             !app.background_server_is_serving(),
             "a reload that turned it off must stop the listener"
@@ -1932,10 +2825,66 @@ pub(crate) mod tests {
 
         // And back on: the fake's `start` needs no listeners, so this exercises
         // the transition rather than a real bind.
-        app.apply_serve_while_tui_setting(true);
+        app.apply_serve_while_tui_setting(ServeWanted::On);
         assert!(
-            app.background_server_preflight_pending,
+            app.serving.background_preflight_pending,
             "a reload that turned it on must dispatch the bind pre-flight"
+        );
+
+        // A start the reload set off that then fails to bind, and one the
+        // terminal UI refuses outright, each make the reload partial and say
+        // why.
+        finish_a_start(&mut app, None);
+        app.stop_background_server_quietly();
+        let applied =
+            yaran_core::config_reload_status::ConfigReloadOutcome::Applied { notes: Vec::new() };
+        ask_for_a_reload(&mut app, "bind-fails");
+        app.apply_serve_while_tui_setting(ServeWanted::On);
+        app.engine.finish_config_reload_operations(&applied);
+        app.apply_background_server_preflight(
+            Err("Port 8080 is in use.".to_string()),
+            None,
+            yaran_core::serve_log::StartupNotes::default(),
+        );
+        assert_eq!(
+            record_state(&app, "bind-fails"),
+            yaran_core::operations::OperationState::Partial
+        );
+        assert!(
+            record_message(&app, "bind-fails").contains("Port 8080 is in use."),
+            "{}",
+            record_message(&app, "bind-fails")
+        );
+
+        ask_for_a_reload(&mut app, "start-refused");
+        app.serving.flip_preflight_pending = true;
+        app.apply_serve_while_tui_setting(ServeWanted::On);
+        app.engine.finish_config_reload_operations(&applied);
+        assert_eq!(
+            record_state(&app, "start-refused"),
+            yaran_core::operations::OperationState::Partial
+        );
+        assert!(
+            record_message(&app, "start-refused").contains("handing this terminal over"),
+            "{}",
+            record_message(&app, "start-refused")
+        );
+
+        // A reload that turns off a start still binding is over once that
+        // start has been cancelled.
+        app.serving.flip_preflight_pending = false;
+        app.apply_serve_while_tui_setting(ServeWanted::On);
+        ask_for_a_reload(&mut app, "cancels");
+        app.apply_serve_while_tui_setting(ServeWanted::Off);
+        app.engine.finish_config_reload_operations(&applied);
+        assert_eq!(
+            record_state(&app, "cancels"),
+            yaran_core::operations::OperationState::Running
+        );
+        finish_a_start(&mut app, None);
+        assert_eq!(
+            record_state(&app, "cancels"),
+            yaran_core::operations::OperationState::Succeeded
         );
     }
 
@@ -1948,8 +2897,12 @@ pub(crate) mod tests {
     /// `drive_pr_lookup_followup` does, and the whole thing goes through the real
     /// `drain_events` on a real worker event, so "the verdict is taken before the
     /// fanout" is what is being asserted rather than "the helper works".
+    ///
+    /// A browser's clone is the same shape: its follow-up adds a project and
+    /// dispatches an agent, so it runs once, in the web layer, while a clone this
+    /// surface started is this surface's to finish, serving or not.
     #[test]
-    fn a_web_pr_create_pops_no_prompt_even_after_the_fanout_consumed_its_op() {
+    fn a_web_create_runs_once_even_after_the_fanout_consumed_its_op() {
         let mut app = test_app(default_bindings());
         let (companion, recorded) = FakeCompanion::serving();
         app.companion = Some(companion);
@@ -1974,6 +2927,64 @@ pub(crate) mod tests {
             matches!(app.prompt, PromptState::None),
             "a browser's PR create must not open the terminal's name prompt; the verdict has \
              to be taken before the fanout can empty the map it is read from"
+        );
+
+        let folder = tempfile::tempdir().unwrap();
+        let web_clone = a_clone_op(&mut app, yaran_core::engine::CloneAskedBy::Browser);
+        app.engine
+            .worker_tx
+            .send(a_finished_clone(
+                web_clone.clone(),
+                folder.path().join("web"),
+                "web-agent",
+            ))
+            .expect("the engine's worker channel is open");
+        app.drain_events();
+        let added = |app: &App, name: &str| {
+            app.engine
+                .projects
+                .iter()
+                .filter(|p| p.path.ends_with(name))
+                .count()
+        };
+        let driven = |recorded: &Arc<Mutex<Recorded>>| {
+            recorded.lock().expect("not poisoned").clones_driven.clone()
+        };
+        assert_eq!(added(&app, "web"), 1, "the browser's clone is added once");
+        assert_eq!(
+            recorded.lock().expect("not poisoned").clone_handed_off,
+            vec![web_clone.clone()],
+            "the browser's clone dispatches one create, from the web layer"
+        );
+        assert!(
+            !app.notes.create_agent_started_here,
+            "the browser's agent was taken for this surface's"
+        );
+
+        // The browser's create is over, so this surface's can start.
+        app.engine
+            .clear_in_flight(&yaran_core::engine::InFlightKey::CreateAgent);
+        // One event the way the drain handles it, and no further: the create
+        // this dispatches fails at once on a folder that is no repository, and
+        // draining its failure would spend the flag this part checks.
+        let own_clone = a_clone_op(&mut app, yaran_core::engine::CloneAskedBy::OtherSurface);
+        let reaction = app.engine.process_worker_event(a_finished_clone(
+            own_clone,
+            folder.path().join("own"),
+            "own-agent",
+        ));
+        let routing = app.companion_routing();
+        app.notify_companion(&reaction);
+        app.apply_routed_reaction(reaction, &routing);
+        assert_eq!(added(&app, "own"), 1, "this surface's clone is added here");
+        assert_eq!(
+            driven(&recorded),
+            vec![web_clone],
+            "the web layer drove a clone this surface started"
+        );
+        assert!(
+            app.notes.create_agent_started_here,
+            "the agent this surface's clone starts is this surface's"
         );
     }
 
@@ -2036,6 +3047,69 @@ pub(crate) mod tests {
         );
     }
 
+    fn startup_command_saved(status_op_id: &str) -> EventReaction {
+        EventReaction::ProjectPersistenceOutcome(Box::new(
+            yaran_core::engine::ProjectPersistenceOutcome {
+                action: yaran_core::worker::ProjectPersistenceAction::UpdateStartupCommand {
+                    project_id: "p1".to_string(),
+                    project_name: "p1-name".to_string(),
+                    startup_command: Some("make setup".to_string()),
+                },
+                view: yaran_core::engine::ProjectPersistenceView::StartupCommandUpdated {
+                    project_name: "p1-name".to_string(),
+                    startup_command: Some("make setup".to_string()),
+                },
+                status_op_id: Some(status_op_id.to_string()),
+            },
+        ))
+    }
+
+    /// A project setting a browser saved is the web layer's to mirror into
+    /// config.toml and report: this surface neither writes the file a second
+    /// time nor puts the browser's outcome on its status line, and it still
+    /// refreshes its view of the project. Its own save it reports as before.
+    #[test]
+    fn a_browsers_project_save_is_not_written_or_reported_here() {
+        let mut app = test_app(default_bindings());
+        let (companion, _recorded) = FakeCompanion::serving();
+        app.companion = Some(companion);
+        let config_path = app.engine.paths.config_path.clone();
+        let config_before = std::fs::read(&config_path).ok();
+        app.engine
+            .pending_web_project_saves
+            .insert("a-web-save".to_string());
+        app.rebuild_left_items();
+        app.selected_left = 99;
+
+        let reaction = startup_command_saved("a-web-save");
+        let routing = app.companion_routing();
+        app.notify_companion(&reaction);
+        app.apply_routed_reaction(reaction, &routing);
+        app.service_companion();
+
+        assert_eq!(
+            app.status.message(),
+            "",
+            "a browser's save is not news here"
+        );
+        assert_eq!(
+            std::fs::read(&config_path).ok(),
+            config_before,
+            "config.toml is the web layer's to write for a browser's save"
+        );
+        assert!(
+            app.selected_left < app.left_items_cache.len().max(1),
+            "the project list is still refreshed"
+        );
+
+        app.apply_reaction(startup_command_saved("a-tui-op"));
+        assert!(
+            app.status.message().contains("make setup"),
+            "this surface's own save is reported here: {}",
+            app.status.message()
+        );
+    }
+
     /// An agent that exits while this surface is the sweeper still reaches the
     /// companion, which is the only way a browser learns about it.
     ///
@@ -2085,7 +3159,7 @@ pub(crate) mod tests {
         app.stop_background_server_quietly();
         app.engine.config.server.serve_while_tui = false;
         app.start_background_server(BackgroundServerStart::UserRequest);
-        assert!(app.background_server_preflight_pending);
+        assert!(app.serving.background_preflight_pending);
 
         app.stop_background_server();
 
@@ -2094,6 +3168,7 @@ pub(crate) mod tests {
         app.apply_background_server_preflight(
             Ok((vec![listener], vec!["http://127.0.0.1:0".to_string()])),
             None,
+            yaran_core::serve_log::StartupNotes::default(),
         );
 
         assert!(
@@ -2107,8 +3182,7 @@ pub(crate) mod tests {
         let message = app
             .status
             .most_recent_tui()
-            .map(|(_, message)| message)
-            .unwrap_or_default();
+            .map_or_default(|(_, message)| message);
         assert!(
             message.contains("Cancelled"),
             "the keyed busy must resolve to an honest final: {message}"
@@ -2126,14 +3200,15 @@ pub(crate) mod tests {
         app.stop_background_server_quietly();
         app.engine.config.server.serve_while_tui = false;
         app.start_background_server(BackgroundServerStart::UserRequest);
-        assert!(app.background_server_preflight_pending);
+        assert!(app.serving.background_preflight_pending);
 
-        app.apply_serve_while_tui_setting(false);
+        app.apply_serve_while_tui_setting(ServeWanted::Off);
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral bind");
         app.apply_background_server_preflight(
             Ok((vec![listener], vec!["http://127.0.0.1:0".to_string()])),
             None,
+            yaran_core::serve_log::StartupNotes::default(),
         );
 
         assert!(
@@ -2144,6 +3219,169 @@ pub(crate) mod tests {
             !app.engine.config.server.serve_while_tui,
             "and it must not write the setting back on"
         );
+    }
+
+    /// Asking for the listener again while a cancelled start is still binding
+    /// wants it back: the landing pre-flight serves, by reload or by palette.
+    #[test]
+    fn wanting_it_again_during_a_cancelled_pre_flight_serves_after_all() {
+        for by_reload in [true, false] {
+            let mut app = test_app(default_bindings());
+            let (companion, _recorded) = FakeCompanion::serving();
+            app.companion = Some(companion);
+            app.stop_background_server_quietly();
+            app.engine.config.server.serve_while_tui = false;
+            app.start_background_server(BackgroundServerStart::UserRequest);
+            if by_reload {
+                app.apply_serve_while_tui_setting(ServeWanted::Off);
+                app.apply_serve_while_tui_setting(ServeWanted::On);
+            } else {
+                app.stop_background_server();
+                app.start_background_server(BackgroundServerStart::UserRequest);
+            }
+
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral bind");
+            app.apply_background_server_preflight(
+                Ok((vec![listener], vec!["http://127.0.0.1:0".to_string()])),
+                None,
+                yaran_core::serve_log::StartupNotes::default(),
+            );
+
+            assert!(app.background_server_is_serving(), "by_reload={by_reload}");
+            assert!(
+                app.engine.config.server.serve_while_tui,
+                "by_reload={by_reload}"
+            );
+        }
+    }
+
+    /// A bind that lands after the settings it was made with changed (a
+    /// reload that turned the listener off, changed the Tailscale mode, and
+    /// turned it back on) is not what anyone now wants: it is dropped and the
+    /// bind runs again with the current settings, and that one serves.
+    #[test]
+    fn a_bind_made_with_settings_since_changed_binds_again() {
+        let mut app = test_app(default_bindings());
+        let (companion, _recorded) = FakeCompanion::serving();
+        app.companion = Some(companion);
+        app.stop_background_server_quietly();
+        app.engine.config.server.serve_while_tui = false;
+        app.engine.config.server.port = 0;
+        app.engine.config.server.tailscale = "auto".to_string();
+        app.start_background_server(BackgroundServerStart::UserRequest);
+        app.apply_serve_while_tui_setting(ServeWanted::Off);
+        app.engine.config.server.tailscale = "no".to_string();
+        app.apply_serve_while_tui_setting(ServeWanted::On);
+
+        finish_a_start(&mut app, None);
+        assert!(
+            !app.background_server_is_serving(),
+            "the stale bind must not serve"
+        );
+        assert!(
+            app.serving.background_preflight_pending,
+            "the bind runs again"
+        );
+
+        finish_a_start(&mut app, None);
+        assert!(app.background_server_is_serving());
+    }
+
+    fn render_text(app: &mut App) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("render");
+        let buffer = terminal.backend().buffer().clone();
+        let width = usize::from(buffer.area.width);
+        buffer
+            .content()
+            .chunks(width)
+            .map(|row| {
+                row.iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The server log, full-screen over the terminal UI: the last lines of
+    /// `server.log` as the background server wrote them, then what it writes
+    /// next, with Esc going back.
+    #[test]
+    fn view_server_log_shows_the_background_servers_lines_and_esc_returns() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app(default_bindings());
+        app.engine.config.server.log_viewer_lines = 3;
+        let (companion, recorded) = FakeCompanion::serving();
+        app.companion = Some(companion);
+        // The serve opened this file, whatever the reloaded config now says.
+        let log = app.engine.paths.root.join("opened-at-start.log");
+        recorded.lock().expect("not poisoned").server_log_path = Some(log.clone());
+        app.engine.config.server.log_path = "server.log".to_string();
+        std::fs::write(
+            &log,
+            "10:00:00 info client connected from 10.0.0.1\n\
+             10:00:01 GET /api/v1/build 200 2ms\n\
+             10:00:02 info client connected from 10.0.0.2\n\
+             10:00:03 GET /api/v1/workspace 200 4ms\n",
+        )
+        .unwrap();
+
+        app.execute_command("view-server-log").unwrap();
+        assert!(app.server_log_viewer.is_some());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut screen = String::new();
+        while Instant::now() < deadline {
+            app.sync_server_log_viewer();
+            screen = render_text(&mut app);
+            if screen.contains("GET /api/v1/workspace 200 4ms") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            screen.contains("10:00:01 GET /api/v1/build 200 2ms"),
+            "the last three lines open the viewer:\n{screen}"
+        );
+        assert!(
+            !screen.contains("10.0.0.1"),
+            "only the last three lines, not the whole file:\n{screen}"
+        );
+
+        // A line the server writes later arrives without reopening.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        std::io::Write::write_all(&mut file, b"10:00:09 warn listener lost\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !screen.contains("listener lost") {
+            app.sync_server_log_viewer();
+            screen = render_text(&mut app);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(screen.contains("10:00:09 warn listener lost"), "{screen}");
+
+        app.handle_terminal_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(app.server_log_viewer.is_none(), "Esc returns");
+    }
+
+    /// With nothing serving there is no background log to follow: say so, and
+    /// say where the file is.
+    #[test]
+    fn view_server_log_with_nothing_serving_says_so_and_opens_nothing() {
+        let mut app = test_app(default_bindings());
+        app.execute_command("view-server-log").unwrap();
+        assert!(app.server_log_viewer.is_none());
+        let (_, message) = app.status.most_recent_tui().expect("a status");
+        assert!(message.contains("start-background-server"), "{message}");
+        assert!(message.contains("server.log"), "{message}");
+
+        // Serving, but with no log open: nothing to follow, and it says why.
+        let (companion, _recorded) = FakeCompanion::serving();
+        app.companion = Some(companion);
+        app.execute_command("view-server-log").unwrap();
+        assert!(app.server_log_viewer.is_none());
+        let (_, message) = app.status.most_recent_tui().expect("a status");
+        assert!(message.contains("not writing"), "{message}");
     }
 
     /// The chip is the standing "there is a listener" signal first and a counter
@@ -2166,15 +3404,15 @@ pub(crate) mod tests {
             "serving with nobody on it still has to say a listener exists"
         );
 
-        recorded.lock().expect("not poisoned").connections = 1;
+        recorded.lock().expect("not poisoned").browsers = 1;
         assert_eq!(
             app.serving_chip().as_deref(),
-            Some("● serving :8080 · 1 connected")
+            Some("● serving :8080 · 1 browser")
         );
-        recorded.lock().expect("not poisoned").connections = 3;
+        recorded.lock().expect("not poisoned").browsers = 3;
         assert_eq!(
             app.serving_chip().as_deref(),
-            Some("● serving :8080 · 3 connected")
+            Some("● serving :8080 · 3 browsers")
         );
 
         app.stop_background_server_quietly();
@@ -2211,8 +3449,8 @@ pub(crate) mod tests {
             "an address with no port must not report the host as one"
         );
         assert_eq!(
-            serving_chip_label(None, 2),
-            "● serving · 2 connected",
+            serving_chip_label(crate::theme::DOT_GLYPH, None, 2),
+            "● serving · 2 browsers",
             "an unreadable port drops the address, never the count"
         );
     }
@@ -2225,8 +3463,7 @@ pub(crate) mod tests {
     fn tailscale_status(app: &App) -> String {
         app.status
             .most_recent_tui()
-            .map(|(_, message)| message)
-            .unwrap_or_default()
+            .map_or_default(|(_, message)| message)
     }
 
     #[test]
@@ -2433,6 +3670,44 @@ pub(crate) mod tests {
                 mode,
                 "the config value saves even when the listener refuses it"
             );
+
+            // The same answer to a reload's own request leaves the reload
+            // partial, with the refusal named, once it has come.
+            let applied = yaran_core::config_reload_status::ConfigReloadOutcome::Applied {
+                notes: Vec::new(),
+            };
+            ask_for_a_reload(&mut app, "ts-refused");
+            app.ask_companion_for_tailscale_mode_for_reload(mode);
+            app.engine.finish_config_reload_operations(&applied);
+            assert_eq!(
+                record_state(&app, "ts-refused"),
+                yaran_core::operations::OperationState::Running,
+                "{outcome:?}: the listener has not answered"
+            );
+            app.apply_tailscale_mode_outcome(mode, outcome);
+            assert_eq!(
+                record_state(&app, "ts-refused"),
+                yaran_core::operations::OperationState::Partial,
+                "{outcome:?}"
+            );
+            assert!(
+                record_message(&app, "ts-refused").contains(needle),
+                "{}",
+                record_message(&app, "ts-refused")
+            );
+
+            // And one that worked leaves it as it was.
+            ask_for_a_reload(&mut app, "ts-ok");
+            app.ask_companion_for_tailscale_mode_for_reload(mode);
+            app.engine.finish_config_reload_operations(&applied);
+            app.apply_tailscale_mode_outcome(
+                mode,
+                yaran_core::config::TailscaleModeOutcome::Applied { bound: None },
+            );
+            assert_eq!(
+                record_state(&app, "ts-ok"),
+                yaran_core::operations::OperationState::Succeeded
+            );
         }
     }
 
@@ -2448,7 +3723,7 @@ pub(crate) mod tests {
             let mut app = test_app(default_bindings());
             let (companion, _recorded) = FakeCompanion::serving();
             app.companion = Some(companion);
-            app.background_server_wanted = true;
+            app.serving.background_wanted = true;
             app.engine.config.server.serve_while_tui = true;
             app.save_and_apply_tailscale_mode(yaran_core::config::TailscaleMode::Yes);
             assert!(
@@ -2459,7 +3734,7 @@ pub(crate) mod tests {
             if stop == "the palette's stop" {
                 app.stop_background_server();
             } else {
-                app.apply_serve_while_tui_setting(false);
+                app.apply_serve_while_tui_setting(ServeWanted::Off);
             }
 
             assert!(
@@ -2506,7 +3781,7 @@ pub(crate) mod tests {
         let mut app = test_app(default_bindings());
         let (companion, recorded) = FakeCompanion::serving();
         app.companion = Some(companion);
-        app.background_server_wanted = true;
+        app.serving.background_wanted = true;
         app.engine.config.server.tailscale = "auto".to_string();
         app.engine.config.server.serve_while_tui = true;
 
@@ -2526,7 +3801,7 @@ pub(crate) mod tests {
         let mut app = test_app(default_bindings());
         let (companion, recorded) = FakeCompanion::serving();
         app.companion = Some(companion);
-        app.background_server_wanted = true;
+        app.serving.background_wanted = true;
         app.engine.config.server.tailscale = "auto".to_string();
         app.engine.config.server.serve_while_tui = true;
 
@@ -2539,6 +3814,82 @@ pub(crate) mod tests {
         assert!(
             recorded.lock().unwrap().tailscale_modes.is_empty(),
             "the same mode written differently is not a change"
+        );
+    }
+
+    /// A serve that retires while a reload's mode request is queued on it can
+    /// answer it no more. An answer it already sent wins; with none, the
+    /// request is answered as not serving once the queue has been drained, and
+    /// either way the reload ends rather than holding every later one.
+    #[test]
+    fn a_serve_that_retires_answers_a_queued_tailscale_mode_request() {
+        for answered_first in [true, false] {
+            let mut app = test_app(default_bindings());
+            let (companion, recorded) = FakeCompanion::serving();
+            app.companion = Some(companion);
+            let applied = yaran_core::config_reload_status::ConfigReloadOutcome::Applied {
+                notes: Vec::new(),
+            };
+            ask_for_a_reload(&mut app, "ts-retired");
+            app.ask_companion_for_tailscale_mode_for_reload(yaran_core::config::TailscaleMode::Yes);
+            app.engine.finish_config_reload_operations(&applied);
+            if answered_first {
+                app.engine
+                    .worker_tx
+                    .send(WorkerEvent::TailscaleModeApplied {
+                        mode: yaran_core::config::TailscaleMode::Yes,
+                        outcome: yaran_core::config::TailscaleModeOutcome::Applied {
+                            bound: Some("100.64.0.5:8080".parse().unwrap()),
+                        },
+                    })
+                    .expect("channel send");
+            }
+            recorded.lock().expect("not poisoned").retirement_next =
+                Some("The web UI stopped serving in the background.".to_string());
+
+            app.service_companion();
+            assert!(
+                app.pending_tailscale_mode_op.is_some(),
+                "answered_first={answered_first}: an answer may still be queued, so the \
+                 retirement waits for the queue before answering for the serve"
+            );
+            app.drain_events();
+            app.service_companion();
+
+            assert!(app.pending_tailscale_mode_op.is_none(), "{answered_first}");
+            assert_ne!(
+                record_state(&app, "ts-retired"),
+                yaran_core::operations::OperationState::Running,
+                "answered_first={answered_first}: the reload is over"
+            );
+        }
+    }
+
+    /// Asking for a mode with nothing serving has no serve to answer it, so
+    /// the request is answered as not serving at once and leaves no busy open,
+    /// for a reload's request as much as a direct one.
+    #[test]
+    fn a_mode_request_with_nothing_serving_is_answered_at_once() {
+        let mut app = test_app(default_bindings());
+        assert!(!app.background_server_is_serving());
+        let applied =
+            yaran_core::config_reload_status::ConfigReloadOutcome::Applied { notes: Vec::new() };
+        ask_for_a_reload(&mut app, "ts-idle");
+        app.ask_companion_for_tailscale_mode_for_reload(yaran_core::config::TailscaleMode::Yes);
+        app.engine.finish_config_reload_operations(&applied);
+
+        assert!(app.pending_tailscale_mode_op.is_none());
+        assert!(
+            !app.status
+                .snapshot()
+                .iter()
+                .any(|s| s.tone == yaran_core::statusline::StatusTone::Busy.as_wire()),
+            "no busy is left open"
+        );
+        assert_ne!(
+            record_state(&app, "ts-idle"),
+            yaran_core::operations::OperationState::Running,
+            "the reload is over"
         );
     }
 
@@ -2567,6 +3918,56 @@ pub(crate) mod tests {
         assert!(
             message.contains("start-background-server"),
             "and name the way back: {message}"
+        );
+
+        // A change a client with no connection here made through the serve (the
+        // command line) raises its status on this line too.
+        recorded.lock().expect("not poisoned").statuses_next =
+            vec![yaran_core::wire::WireStatus::new(
+                "info",
+                "Deleted agent \"feat\" from the command line.",
+            )];
+        app.service_companion();
+        assert!(
+            app.status
+                .snapshot()
+                .iter()
+                .any(|status| status.message.contains("from the command line")),
+            "the change's status reaches the line"
+        );
+    }
+
+    /// A stop whose hand-over finished a command-line change and left no core
+    /// behind still shows that change's status and refreshes this surface.
+    #[test]
+    fn a_handed_over_change_reaches_the_line_with_no_core_left() {
+        let mut app = test_app(default_bindings());
+        let (mut companion, recorded) = FakeCompanion::serving();
+        companion.release(&mut app.engine);
+        app.companion = Some(companion);
+        assert!(!app.companion.as_ref().expect("installed").has_core());
+        recorded.lock().expect("not poisoned").handed_over = ServiceOutcome {
+            mutated: true,
+            statuses: vec![yaran_core::wire::WireStatus::new(
+                "info",
+                "Deleted agent \"feat\" from the command line.",
+            )],
+            ..ServiceOutcome::default()
+        };
+
+        app.service_companion();
+
+        assert!(
+            app.status
+                .snapshot()
+                .iter()
+                .any(|status| status.message.contains("from the command line")),
+            "the change's status reaches the line"
+        );
+        assert_eq!(
+            recorded.lock().expect("not poisoned").serviced,
+            0,
+            "with no core, nothing is lent the engine"
         );
     }
 }

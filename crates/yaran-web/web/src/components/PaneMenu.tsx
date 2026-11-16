@@ -11,12 +11,15 @@ import { Button } from "@yaran/ui-kit/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@yaran/ui-kit/dropdown-menu"
+import { MENU_GROUP_LABELS } from "@/lib/menuGroupLabels"
 import { useYaran } from "@/lib/store"
 import type { SelectedTarget, TerminalOwnerRef } from "@/lib/store"
 import type { SessionView } from "@/lib/types"
@@ -25,10 +28,6 @@ import type { SessionView } from "@/lib/types"
 /// rows so no anchor calls one menu something different.
 export const PANE_MENU_AGENT_LABEL = "Session actions"
 export const PANE_MENU_TERMINAL_LABEL = "Terminal actions"
-
-/// What the terminal-scoped group is called inside an agent's menu, when the
-/// pane on screen is one of that agent's companion terminals.
-export const PANE_MENU_TERMINAL_GROUP_LABEL = "Terminal"
 
 /// The pty ids the INPUT group is read under. A surface over a pane asks for that
 /// pane's pty; a sidebar row falls back to every pty its subject could be mounted as.
@@ -154,7 +153,6 @@ export function PaneMenuBody({
         <TerminalActionsMenu
           terminalId={pane.terminalId}
           owner={pane.owner}
-          label={PANE_MENU_TERMINAL_GROUP_LABEL}
         />
       </>
     ) : null
@@ -171,7 +169,10 @@ export function PaneMenuBody({
         <>
           <DropdownMenuSeparator />
           {/* The way back, from the surface the mode leaves on screen. */}
-          <InputMenuItems theaterExit />
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>{MENU_GROUP_LABELS.theater}</DropdownMenuLabel>
+            <InputMenuItems theaterExit />
+          </DropdownMenuGroup>
         </>
       ) : null}
       {settingsDrill ? (
@@ -185,15 +186,18 @@ export function PaneMenuBody({
               top-right corner, the phone hub's own header) this is the same
               body offered twice, so the anchor says no. See
               `PaneMenuSettingsDrill`. */}
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <Settings />
-              Settings
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent side="left">
-              <AppMenuBody />
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>{MENU_GROUP_LABELS.app}</DropdownMenuLabel>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <Settings />
+                Settings
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent side="left">
+                <AppMenuBody />
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          </DropdownMenuGroup>
         </>
       ) : null}
     </>

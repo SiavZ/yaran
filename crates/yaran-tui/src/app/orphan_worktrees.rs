@@ -13,7 +13,14 @@ use std::sync::mpsc;
 
 use yaran_core::orphan_worktrees::OrphanWorktreeCandidate;
 
+use super::components::PickerList;
 use super::*;
+#[allow(unused_imports)]
+use ratatui::prelude::*;
+#[allow(unused_imports)]
+use ratatui::symbols::border;
+#[allow(unused_imports)]
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 /// Where the cleaner modal is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -383,16 +390,20 @@ impl App {
                 ]))
             })
             .collect::<Vec<_>>();
-        let mut state = ListState::default()
-            .with_selected((!prompt.candidates.is_empty()).then_some(prompt.selected));
-        StatefulWidget::render(
-            List::new(items)
-                .highlight_symbol("› ")
-                .highlight_style(self.theme.selection_style()),
-            list_area,
-            frame.buffer_mut(),
-            &mut state,
-        );
+        let empty_text = if matches!(prompt.stage, OrphanWorktreesStage::Loading) {
+            "Listing worktrees…"
+        } else {
+            "No orphan worktrees: every worktree under yaran's root belongs to an agent."
+        };
+        let list = PickerList::new(items, Some(prompt.selected), empty_text)
+            // The dialog's own right border carries the scroll indicator.
+            .indicator_frame(area)
+            .render(frame, list_area, &self.theme);
+        self.overlay_layout.active = OverlayMouseLayout::OrphanWorktrees {
+            list: list.list,
+            items: list.items,
+            offset: list.offset,
+        };
 
         let confirm_key = self.bindings.label_for(Action::Confirm);
         let close_key = self.bindings.label_for(Action::CloseOverlay);
@@ -647,7 +658,7 @@ mod tests {
     fn the_palette_command_runs_the_inventory_off_thread() {
         let mut app = test_app(default_bindings());
         yaran_core::storage::load_or_create_store_id(&app.engine.paths.root).unwrap();
-        app.execute_command("prune-orphan-worktrees".to_string())
+        app.execute_command("prune-orphan-worktrees")
             .expect("command");
         assert!(matches!(app.prompt, PromptState::OrphanWorktrees(_)));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

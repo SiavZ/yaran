@@ -18,12 +18,26 @@ looking.
   reads as "needs you," not just "busy."
 - **In the web UI**, the agent's icon turns cyan with the same rhythm, in the sidebar
   and in the mobile list, plus a small dot on the specific tab's pill when you are
-  running several tabs. Everything holds still if you have reduced-motion turned on.
-- **The browser tab title** gains a count in front of your configured instance name:
-  `(2) yaran` when two agents are waiting. A backgrounded tab updates the count without
+  running several tabs. With an agent's terminal maximized and its strips hidden, the
+  floating layout pill carries a dot that does the same: cyan and blinking when the agent
+  needs you, green and pulsing while it works. On a phone, while one of an agent's
+  terminals is on screen, the agent icon on the switch in the action flap does the same,
+  with no dot, so an agent waiting on you is never hidden behind its terminal. A docked
+  terminal's pill pulses and bounces while something runs in it, like a tab pill.
+  Everything holds still if you have reduced-motion turned on.
+- **The browser tab title** gains a count at its very front: `(2) fix-login — yaran` when
+  two agents are waiting. A backgrounded tab updates the count without
   you visiting it.
 - **The favicon** gets a small cyan dot in the corner of the duck while the count is
-  above zero.
+  above zero, so it catches your eye from the tab strip, even while you are in another tab.
+  - The dot blinks with the same double pulse as the sidebar's, and each blink takes it away
+    entirely rather than fading it.
+  - In the rare browser that cannot keep that pace for a background tab, it falls back to a
+    plain, slower on-off blink there.
+  - It holds still if you have reduced-motion turned on.
+
+Turning `attention_indicator` off (below) takes the tab-title count and the favicon dot
+away at once, in every open browser tab, even for an agent that was already waiting.
 
 This is the web sidebar.
 
@@ -35,14 +49,14 @@ And this is the same moment in the terminal UI, where the accent dot and the wor
 
 The flag clears the moment you look. Selecting the agent and focusing its terminal in
 the terminal UI, opening its live view on the web, or typing into it all put the flag
-down. An agent you are already watching never nags you.
+down. An agent you are already watching never nags you. On the web, an agent kept out
+of sight behind its own terminal (a phone showing the terminal, or a computer with the
+terminal maximized) is not being looked at, so its flag stays up until it comes back on
+screen.
 
-> [!NOTE]
-> When you step away entirely, yaran stops treating the focused agent as watched, so a
-> fresh request still lights up. Coming back holds the indicators for a few seconds
-> instead of clearing them instantly, so you get a look at who wanted you. That grace
-> window is `ui.attention_grace_seconds`, below, and it only applies right after you
-> return: while you stay put, watching an agent still clears its flag at once.
+When you step away entirely, yaran stops treating the focused agent as watched, so a fresh
+request still lights up. Coming back holds the indicators for a short grace window; see
+[the grace window](#the-grace-window) below.
 
 ## How yaran detects it
 
@@ -69,10 +83,11 @@ Some agents need a one-line setting before they emit anything yaran can see:
   the bell it rings on a permission prompt or a finished turn.
 - **Codex**: set `tui.notification_method` in its config. Any value works. yaran captures
   both the bell and the richer notification form.
-- **Copilot**: it emits progress by default (its `terminalProgress` setting, on since
-  v1.0.55), which yaran reads with no setup. Its turn-completion bell went quiet by
-  default in v1.0.60, so turn the terminal bell back on in Copilot's config if you want
+- **Copilot**: it emits progress by default (its `terminalProgress` setting), which yaran
+  reads with no setup. Its turn-completion bell went quiet by default in v1.0.55, so turn the terminal bell back on in Copilot's config if you want
   a finished turn flagged.
+- **Grok**: whether it emits a signal yaran can read has not been verified, so its rows may
+  not light up on their own.
 - **OpenCode**: no capturable signal out of the box today, because its notifications go
   through plugins. Its rows do not light up on their own. If a future version rings a
   bell or emits a notification, yaran picks it up with no change on your side.
@@ -117,32 +132,44 @@ Turn `attention_on_bell` off if a chatty tool inside the session, a test runner 
 completion, rings the bell for reasons that are not about you. Turn
 `attention_indicator` off to silence the whole feature.
 
-> [!WARNING]
-> The grace window needs a terminal that reports focus (DEC focus reporting, which
-> kitty, ghostty, WezTerm, iTerm2, foot, alacritty and xterm all speak). Inside tmux,
-> add `set -g focus-events on` to your `~/.tmux.conf`; note that tmux reports focus per
-> pane, so switching tmux panes away from yaran reads as unfocused. On a terminal that
-> never reports focus the grace never applies and the focused agent's flag clears right
-> away.
-
 By default this feature stays inside yaran: bells rung inside an agent's session are
 consumed by yaran and not passed on to the terminal you run yaran in. Forwarding an agent's
 real desktop notifications to your host terminal, or to your browser, is a separate
 feature covered in [Terminal capabilities](/docs/terminal-capabilities). Only the
 browser side needs an explicit permission grant.
 
+### The grace window
+
+`attention_grace_seconds` only applies right after you return to yaran (the browser tab on the
+web, the terminal window in the terminal UI). While you stay put, watching an agent still
+clears its flag at once. Through the Preferences dialog it accepts up to 300 seconds, and `0`
+clears immediately.
+
+> [!WARNING]
+> The grace window needs a terminal that reports focus (DEC focus reporting, which kitty,
+> ghostty, WezTerm, iTerm2, foot, alacritty and xterm all speak). On a terminal that never
+> reports focus the grace never applies and the focused agent's flag clears right away.
+>
+> Inside tmux, add this to your `~/.tmux.conf`. tmux reports focus per pane, so switching
+> tmux panes away from yaran reads as unfocused.
+>
+> ```tmux
+> set -g focus-events on
+> ```
+
 ## When nothing lights up
 
 Work down this list before concluding it is broken:
 
 1. **Check what terminal the agent thinks it is in.** This is the number one cause of
-   silence. Open a companion terminal, which gets the same identity as the agent, and
-   run `echo $TERM_PROGRAM`. Seeing your real terminal, or `ghostty` on the web, means
-   identity is doing its job. An empty value is not proof of a problem: kitty,
-   alacritty, foot and xterm never set it, and yaran's forced `kitty` identity
-   deliberately does not either. Check `[capabilities] terminal_identity` in your
-   config, and under kitty look for `KITTY_WINDOW_ID` and `TERM` instead. Full story in
-   [Terminal capabilities](/docs/terminal-capabilities).
+   silence. Open a companion terminal, which gets the same identity as the agent, and run
+   `echo $TERM_PROGRAM`.
+   - Seeing your real terminal, or `ghostty` on the web, means identity is doing its job.
+   - An empty value is not proof of a problem: kitty, alacritty, foot and xterm never set
+     it, and yaran's forced `kitty` identity deliberately does not either. Under kitty look
+     for `KITTY_WINDOW_ID` and `TERM` instead.
+   - Check `[capabilities] terminal_identity` in your config. Full story in
+     [Terminal capabilities](/docs/terminal-capabilities).
 2. **Give it a few seconds.** Some agents wait for a beat of true idleness before
    notifying; Claude Code holds off for about six seconds after a question appears. yaran
    also holds fire briefly after you have just been typing at the agent, so a question
@@ -154,14 +181,16 @@ Work down this list before concluding it is broken:
    the indicator lights up, yaran works end to end and the silence is the agent's
    configuration. If even that does nothing, check that `attention_indicator` is still
    `true`.
-5. **Know which silences are expected.** OpenCode has no capturable signal, and
-   Copilot's turn-completion bell ships disabled.
+5. **Know which silences are expected.** OpenCode has no capturable signal,
+   Copilot's turn-completion bell ships disabled, and Grok's needs-you signal is not
+   verified yet.
 
 > [!CAUTION]
-> These signals are only bytes in the agent's output, so anything the agent displays
-> that contains the same escape codes can forge or mask one. A printed notification code
-> can flash a false "needs you," and a printed progress code can briefly claim "idle"
-> when the opposite is true. This is inherent to terminal escape codes: a normal
-> terminal pops the very same desktop notification for the very same bytes. A forged
-> progress report only holds for a few seconds, and
+> These signals are only bytes in the agent's output, so anything the agent displays that
+> contains the same escape codes can forge or mask one:
+>
+> - a printed notification code can flash a false "needs you";
+> - a printed progress code can briefly claim "idle" when the opposite is true. A forged
+>   progress report only holds for a few seconds.
+>
 > `attention_on_bell = false` or `attention_indicator = false` narrows or closes it.

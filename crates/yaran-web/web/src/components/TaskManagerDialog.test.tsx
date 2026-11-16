@@ -35,7 +35,7 @@ vi.mock("@/lib/store", async (importOriginal) => {
     openDeleteTerminal: (t: string) => openDeleteTerminal(t),
     openStopAll: () => openStopAll(),
     closeStopAll: () => closeStopAll(),
-    stopAllRunning: () => stopAllRunning(),
+    stopAllRunning: (...args: unknown[]) => stopAllRunning(...args),
     closeTaskManager: () => closeTaskManager(),
   }
 })
@@ -384,9 +384,39 @@ describe("TaskManagerDialog", () => {
       stopAllOpen: true,
       spine: { sessions: [session({ id: "s1" })] },
     } as Partial<YaranState>)
+    // Refused for what somebody else is attached to: the confirmation stays,
+    // names them, and going ahead retries only what was refused, over exactly
+    // who it showed.
+    const refusal = {
+      agents: ["s1"],
+      terminals: [],
+      blockers: [
+        {
+          surface: "browser",
+          device: "Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0",
+          address: "10.0.0.7",
+          verified: false,
+          driving: true,
+          target: { kind: "tab", id: "s1-slot", agent: "s1" },
+          key: "k1",
+        },
+      ],
+    }
+    stopAllRunning.mockResolvedValueOnce(refusal)
     rerender(<TaskManagerDialog />)
     fireEvent.click(await screen.findByText("Force stop everything"))
     expect(stopAllRunning).toHaveBeenCalledOnce()
+    expect(stopAllRunning).toHaveBeenLastCalledWith(null, null)
+    const override = await screen.findByRole("button", {
+      name: "Force stop everything anyway",
+    })
+    expect(screen.getByText("Firefox on Linux").tagName).toBe("CODE")
+    expect(closeStopAll).not.toHaveBeenCalled()
+
+    stopAllRunning.mockResolvedValueOnce(null)
+    fireEvent.click(override)
+    expect(stopAllRunning).toHaveBeenLastCalledWith(refusal, ["k1"])
+    await vi.waitFor(() => expect(closeStopAll).toHaveBeenCalled())
   })
 
   it("auto_closes_when_last_runtime_stops", async () => {
@@ -816,5 +846,26 @@ describe("TaskManagerDialog", () => {
     const childRow = await screen.findByTestId("child-row-4242")
     const cells = within(childRow).getAllByRole("cell")
     expect(cells[2].textContent).not.toContain("4242")
+  })
+
+  // The scrollbar must keep clear of the right-hand Force stop buttons and
+  // dashes: the vertical scroller reserves a stable gutter and pads its own
+  // right edge. The header and the rows sit in the one table inside it, so the
+  // padding moves them together and the columns stay aligned.
+  it("scroll_container_keeps_a_gutter_between_the_scrollbar_and_the_stop_column", async () => {
+    seed({ spine: { sessions: [session({ id: "s1" })] } } as Partial<YaranState>)
+    render(<TaskManagerDialog />)
+
+    const stop = await screen.findByLabelText(/^Force stop/)
+    const scroller = screen.getByTestId("task-manager-scroll")
+    expect(scroller.className).toContain("overflow-y-auto")
+    expect(scroller.className).toContain("[scrollbar-gutter:stable]")
+    expect(scroller.className).toMatch(/(^|\s)pr-\d/)
+
+    const header = screen.getByRole("columnheader", { name: "Memory" })
+    const table = header.closest("table")
+    expect(table).not.toBeNull()
+    expect(scroller.contains(table)).toBe(true)
+    expect(table!.contains(stop)).toBe(true)
   })
 })

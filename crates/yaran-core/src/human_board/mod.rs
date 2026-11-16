@@ -629,7 +629,7 @@ impl Board {
         if open >= MAX_OPEN_CARDS {
             bail!(
                 "the board already has {open} open cards, its limit; resolve some \
-                 (`yaran board resolve`) before posting more"
+                 (\"yaran board resolve\") before posting more"
             );
         }
         let id = self.next_card_id();

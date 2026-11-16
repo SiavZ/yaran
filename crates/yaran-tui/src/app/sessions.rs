@@ -1,69 +1,99 @@
-//! Project and session CRUD for the terminal UI: create, delete, reconnect, refresh, project browser.
-//! Terminal UI project and agent-session CRUD: create, delete, reconnect, refresh.
-//!
-//! The `impl App` block for session lifecycle; blocking git and provider work is handed
-//! to background workers.
-//! Project and agent-session CRUD for the TUI: create, delete, reconnect, refresh, and
-//! the project browser.
-//! - An `impl App` block; blocking git and provider work goes to background workers.
-//!
-//! <module-headers:begin>
-//! Uses:
-//! app/sessions.rs
-//! ├── app
-//! ├── app::pty_ownership
-//! ├── app::render
-//! ├── app::test_support
-//! ├── app::workers
-//! ├── config
-//! ├── crate
-//! ├── diff
-//! ├── keybindings
-//! ├── raw_input
-//! ├── theme
-//! ├── yaran-core::add_project_plan
-//! ├── yaran-core::agent_tabs
-//! ├── yaran-core::config
-//! ├── yaran-core::config_queue
-//! ├── yaran-core::engine
-//! ├── yaran-core::engine::status_op
-//! ├── yaran-core::gh
-//! ├── yaran-core::git
-//! ├── yaran-core::home_path
-//! ├── yaran-core::ids
-//! ├── yaran-core::logger
-//! ├── yaran-core::model
-//! ├── yaran-core::pr_reference
-//! ├── yaran-core::project_browser
-//! ├── yaran-core::project_order
-//! ├── yaran-core::reload_policy
-//! ├── yaran-core::sanitize
-//! ├── yaran-core::sidebar
-//! ├── yaran-core::status_text
-//! ├── yaran-core::statusline
-//! ├── yaran-core::tailscale
-//! ├── yaran-core::term_identity
-//! ├── yaran-core::terminal_title
-//! ├── yaran-core::test_git
-//! ├── yaran-core::test_provider
-//! ├── yaran-core::wire
-//! ├── yaran-core::worker
-//! └── yaran-core::working_copy
-//! External: chrono, crossterm, ratatui, std, tempfile
-//!
-//! Used by:
-//! app/sessions.rs
-//! ├── app
-//! └── app::background_server
-//! <module-headers:end>
+//! Project and agent-session CRUD for the terminal UI: create, delete, reconnect, refresh, and
+//! the project browser. Blocking git and provider work goes to background workers.
 
-use super::*;
+use super::text_input::TextInput;
+use super::{
+    App, BranchOfferAnswer, BrowsePurpose, CenterMode, ChangeAgentProviderMode,
+    ChangeAgentProviderOption, ChangeAgentProviderPrompt, ChangeDefaultProviderOption,
+    ChangeDefaultProviderPrompt, ChangeProjectDefaultProviderOption,
+    ChangeProjectDefaultProviderPrompt, ChangeThemePrompt, CloneDraft, CloneProjectFocus,
+    ConfigureFieldFocus, ConfirmFocus, ConfirmKillRunningPrompt, ConfirmNonDefaultBranchFocus,
+    DIFF_STATUS_KEY, DeleteAgentFocus, DeleteReport, DockLayout, FocusPane, FullscreenOverlay,
+    InputTarget, KillRunningAction, KillRunningFocus, KillRunningPrompt, KillableRuntime,
+    KillableRuntimeKind, LaunchView, LeftItem, NameNewAgentFocus, PendingDiff, PersistFinalOutcome,
+    PickProjectWorktreePrompt, PrLookupFinalOutcome, ProjectAction, ProjectActionsPrompt,
+    ProjectActionsTarget, ProjectChooserEntry, ProjectChooserIntent, PromptState,
+    PullRequestInputFocus, RecreateWorkingCopyFocus, ReviewCopyQuestion, RuntimeTargetId,
+    SLOW_DIFF_READ, SearchableList, StartupCommandLogPrompt, StartupLogViewer,
+    TuiCheckoutInspectOutcome, TuiDeleteOutcome, TuiServerFlipOutcome, WorktreesFinalOutcome,
+    diff_read_busy, kill_running_matches, pick_project_matches, preflight_server_listeners,
+};
+use crate::app::ui_jobs::RequestKind;
+use crate::config::provider_config;
 use crate::editor;
+use crate::keybindings::Action;
+use crate::model::{AgentSession, Project, ProjectBranchStatus, ProviderKind, SessionSurface};
+use crate::statusline::StatusTone;
+use crate::{git, logger};
+use anyhow::Result;
+use std::collections::HashSet;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, mpsc};
+use std::thread;
+use std::time::Instant;
+use uuid::Uuid;
+use yaran_core::clone_project::UpfrontReviewCopy;
+use yaran_core::engine::status_op::PendingStatusOp;
 use yaran_core::engine::{Command, EventReaction, FinishDeleteSessionOutcome, WorktreeRemoval};
+use yaran_core::ids::{SessionIdRef, TabId, TabIdRef};
+use yaran_core::model::CompanionTerminal;
+use yaran_core::model::TerminalOwner;
+use yaran_core::project_browser::{AddPathProbe, RepositoryProbe, leading_branch_for_project};
+use yaran_core::worker::ReviewCopyConsent;
+use yaran_core::worker::{
+    AgentLaunchKind, AgentLaunchRequest, BranchWarningKind, CreateAgentBranchInspection,
+    CreateAgentRequest, NonDefaultBranchAction, ProjectPersistenceAction, PullTarget, WorkerEvent,
+};
+
+/// Where a clone of `address` goes by default: the repository's folder name
+/// inside `start_folder`, or the start folder itself (with its trailing
+/// separator) while the address names no repository yet. `hosts` are the
+/// engine's [`yaran_core::engine::Engine::clone_github_hosts`], the ones the
+/// clone itself reads the address with.
+pub(crate) fn clone_destination_for(
+    start_folder: &Path,
+    address: &str,
+    hosts: &yaran_core::gh::GithubHosts,
+) -> String {
+    let name = yaran_core::clone_project::clone_dir_name(address, hosts).unwrap_or_default();
+    // A start folder spelled relative to the working directory would be read
+    // against the server's directory by the clone, not this one.
+    let start_folder = if start_folder.is_relative() {
+        start_folder
+            .canonicalize()
+            .or_else(|_| std::path::absolute(start_folder))
+            .unwrap_or_else(|_| start_folder.to_path_buf())
+    } else {
+        start_folder.to_path_buf()
+    };
+    start_folder.join(name).display().to_string()
+}
 
 impl App {
-    pub(crate) fn open_project_browser(&mut self) -> Result<()> {
-        self.open_folder_browser(BrowsePurpose::AddProject)
+    /// Re-derive an open clone form's suggested destination from the GitHub
+    /// hosts as they are now, unless the user has edited it: the hosts can
+    /// move under the form (a `gh` probe, the integration switched), and the
+    /// suggestion must stay the folder the clone will use.
+    pub(crate) fn refresh_clone_destination_suggestion(&mut self) {
+        let hosts = self.engine.clone_github_hosts();
+        if let PromptState::CloneProject {
+            address,
+            destination,
+            destination_edited: false,
+            start_folder,
+            pull_request: None,
+            ..
+        } = &mut self.prompt
+        {
+            destination.set_text(clone_destination_for(start_folder, &address.text, &hosts));
+        }
+    }
+
+    pub(crate) fn open_project_browser(&mut self) {
+        {
+            self.open_folder_browser(BrowsePurpose::AddProject);
+        }
     }
 
     /// Palette command (`new-standalone-agent`): pick a folder you already
@@ -72,8 +102,10 @@ impl App {
     /// Reuses the add-project folder browser with the purpose switched: picking
     /// a folder here goes nowhere near the add-project validator, which rejects
     /// exactly the plain folder that is the ordinary case.
-    pub(crate) fn open_standalone_agent_browser(&mut self) -> Result<()> {
-        self.open_folder_browser(BrowsePurpose::StandaloneAgent)
+    pub(crate) fn open_standalone_agent_browser(&mut self) {
+        {
+            self.open_folder_browser(BrowsePurpose::StandaloneAgent);
+        }
     }
 
     /// Ask what to call the standalone agent about to run in the folder the
@@ -89,7 +121,7 @@ impl App {
     pub(crate) fn open_standalone_agent_name_prompt(&mut self, path: String) {
         self.prompt = PromptState::NameStandaloneAgent {
             folder: path,
-            input: TextInput::new(),
+            input: TextInput::new().with_char_map(crate::git::agent_name_char_map),
         };
     }
 
@@ -105,19 +137,32 @@ impl App {
         let PromptState::NameStandaloneAgent { folder, input } = &self.prompt else {
             return None;
         };
-        // The typed name travels verbatim: no branch is created here, so the
-        // ref-name rules deliberately do not apply, and an empty field means
-        // the folder's own name. The provider is the global default,
-        // retargetable afterwards.
+        // No branch is created here, but the name follows the agent-name rules
+        // the engine enforces, and an empty field means the folder's own name
+        // converted into one. The provider is the global default, retargetable
+        // afterwards.
         Some(self.engine.plan_standalone_agent(folder, &input.text, None))
     }
 
     /// Confirm on the standalone name field: create the agent and close.
     ///
-    /// The prompt closes either way, refusal included, mirroring the web
-    /// dialog, which closes on Create and reports the server's refusal as a
-    /// toast rather than holding the folder hostage behind an open form.
+    /// A name the agent-name rules refuse (the char map lets a trailing `/`
+    /// through, mid-typing) keeps the prompt open with the refusal, as the
+    /// New agent prompt does and as the web's disabled Create button does, so
+    /// it is checked here before the engine is asked anything. Every refusal
+    /// the engine gives closes it, mirroring the web dialog, which closes on
+    /// Create and reports the server's refusal as a toast rather than holding
+    /// the folder hostage behind an open form.
     pub(crate) fn confirm_standalone_agent_name(&mut self) {
+        let PromptState::NameStandaloneAgent { input, .. } = &self.prompt else {
+            return;
+        };
+        let typed = input.text.trim();
+        if !typed.is_empty() && !crate::git::is_valid_agent_name(typed) {
+            let refusal = crate::git::invalid_agent_name_refusal(typed);
+            self.set_error(refusal);
+            return;
+        }
         let Some(planned) = self.planned_standalone_agent_create() else {
             return;
         };
@@ -132,7 +177,11 @@ impl App {
         }
     }
 
-    fn open_folder_browser(&mut self, purpose: BrowsePurpose) -> Result<()> {
+    fn open_folder_browser(&mut self, purpose: BrowsePurpose) {
+        // A new browser: whatever an earlier one had out is not its answer.
+        self.browser_add.instance += 1;
+        self.browser_add.checking = None;
+        self.path_completion.ask = None;
         let start_dir = yaran_core::project_browser::resolve_start_dir(&self.engine.config);
         self.prompt = PromptState::BrowseProjects {
             purpose,
@@ -161,40 +210,75 @@ impl App {
                 "Folder browser: {open} opens folders, {add} {what}, {search} to search, {goto} to go to a path.",
             ));
         }
-        Ok(())
     }
 
-    pub(crate) fn add_project(&mut self, raw_path: String, name: String) -> Result<()> {
-        let path = match self.engine.validate_project_add_path(&raw_path) {
-            Ok(path) => path,
-            Err(message) => {
-                self.set_error(message);
-                return Ok(());
+    /// Add the repository at `raw_path` as a project. What git says about it
+    /// is read on a worker; the dialog it needs, or the add itself, follows
+    /// when the answer lands. The project browser's own entry is
+    /// `add_project_from_browser_path`; this one is the dialogs' test door.
+    #[cfg(test)]
+    pub(crate) fn add_project(&mut self, raw_path: &str, name: String) {
+        self.spawn_add_path_probe(raw_path, move |app: &mut App, probe| match probe {
+            None => {}
+            Some(AddPathProbe::Repository(repository)) => {
+                if let Err(error) = app.add_probed_project(repository, name) {
+                    app.set_error(format!("{error:#}"));
+                }
             }
-        };
+            Some(AddPathProbe::Initable { add_refusal, .. }) => app.set_error(add_refusal),
+            Some(AddPathProbe::Refused(message)) => app.set_error(message),
+        });
+    }
+
+    /// Read what the add-project flows need to know about `raw_path` on a
+    /// worker, against the projects registered now, then run `then` with it.
+    pub(crate) fn spawn_add_path_probe(
+        &mut self,
+        raw_path: &str,
+        then: impl FnOnce(&mut App, Option<AddPathProbe>) + Send + 'static,
+    ) {
+        let raw = raw_path.to_string();
+        let shown = raw_path.trim().to_string();
+        let registered = self.engine.project_paths();
+        self.spawn_ui_job(
+            crate::app::ui_jobs::UiJob {
+                busy: yaran_core::status_text![
+                    "Checking ",
+                    n(shown.clone()),
+                    " before adding it as a project\u{2026}"
+                ],
+                stopped: format!(
+                    "yaran could not finish checking \"{shown}\", so it was not added; yaran.log has \
+                     the details."
+                ),
+            },
+            move || yaran_core::project_browser::probe_add_path(&raw, &registered),
+            then,
+        );
+    }
+
+    /// The add once git has answered for a repository root: the dialog its
+    /// state needs, or the add itself.
+    pub(crate) fn add_probed_project(
+        &mut self,
+        repository: RepositoryProbe,
+        name: String,
+    ) -> Result<()> {
+        use yaran_core::add_project_plan::{AddProjectAction, AddProjectWarning};
+        let RepositoryProbe {
+            path,
+            branch,
+            inspection,
+            stay_base,
+        } = repository;
         logger::info(&format!("attempting to add project {}", path.display()));
 
-        // Run the git probes, then let the core-owned `add_project_plan` decide
-        // the action and warning, which the web's inspect endpoint consumes too;
-        // the TUI renders its own dialog copy from the returned typed codes.
-        // `validate_project_add_path` above already rejected blocked and non-repo
-        // paths, so only the unborn-commit and branch-warning rungs get here.
-        let branch = git::current_branch_opt(&path)?.unwrap_or_default();
-        let branch_warning = (!branch.is_empty())
-            .then(|| git::branch_warning_kind(&path, &branch))
-            .flatten();
-        let inspection = yaran_core::add_project_plan::AddProjectInspection {
-            path_kind: git::repo_path_kind(&path),
-            current_branch: (!branch.is_empty()).then(|| branch.clone()),
-            branch_warning,
-            // Only a confirmed unborn HEAD takes the initial-commit path; an
-            // indeterminate git result fails open, so a transient failure never
-            // hijacks a normal add with the commit dialog.
-            has_commits: git::repo_commit_state(&path) != git::CommitState::Unborn,
-        };
+        // The core-owned `add_project_plan` decides the action and warning,
+        // which the web's inspect endpoint consumes too; the TUI renders its
+        // own dialog copy from the returned typed codes. The probe already
+        // rejected blocked and non-repo paths, so only the unborn-commit and
+        // branch-warning rungs get here.
         let plan = yaran_core::add_project_plan::add_project_plan(&inspection);
-
-        use yaran_core::add_project_plan::{AddProjectAction, AddProjectWarning};
         if matches!(plan.action, AddProjectAction::NeedsInitialCommit) {
             self.prompt = PromptState::ConfirmCreateInitialCommit {
                 path: path.to_string_lossy().to_string(),
@@ -246,14 +330,8 @@ impl App {
 
         // No dialog, no checkout: new worktrees branch from where the folder is
         // (the default, or the fallback on a detached HEAD).
-        let leading_branch = yaran_core::project_browser::project_base_for_add(
-            &path,
-            (!branch.is_empty()).then_some(branch.as_str()),
-            false,
-        )
-        .into_branch();
         let path_str = path.to_string_lossy().to_string();
-        self.finish_add_project(path_str, name, branch, leading_branch)
+        self.finish_add_project(&path_str, &name, branch, stay_base)
     }
 
     /// Saves the project to SQLite and config.toml inline, with no background
@@ -262,8 +340,8 @@ impl App {
     /// final status by the time this returns.
     pub(crate) fn finish_add_project(
         &mut self,
-        path: String,
-        name: String,
+        path: &str,
+        name: &str,
         branch: String,
         leading_branch: String,
     ) -> Result<()> {
@@ -283,8 +361,8 @@ impl App {
 
     pub(crate) fn finish_add_project_with_status(
         &mut self,
-        path: String,
-        name: String,
+        path: &str,
+        name: &str,
         branch: String,
         leading_branch: String,
         status_message: String,
@@ -303,7 +381,7 @@ impl App {
         let project = Project {
             id: project_id,
             name: display_name.clone(),
-            path: path.clone(),
+            path: path.to_string(),
             explicit_default_provider: None,
             default_provider: self.engine.config.default_provider(),
             leading_branch: Some(leading_branch),
@@ -335,19 +413,25 @@ impl App {
     /// `new-agent` / `n`: open the project chooser to pick which project the new
     /// agent belongs to. The flat agent list has no project header to select, so
     /// every project (agent-less included) is reachable only through the chooser.
-    pub(crate) fn create_agent_for_selected_project(&mut self) -> Result<()> {
-        self.open_project_chooser(ProjectChooserIntent::NewAgent)
+    pub(crate) fn create_agent_for_selected_project(&mut self) {
+        {
+            self.open_project_chooser(ProjectChooserIntent::NewAgent);
+        }
     }
 
     /// Per-project body for `NewAgent`: kicks off branch inspection, which then
     /// opens the name prompt. Shared by the chooser and any direct selection
     /// path so the creation logic lives in exactly one place.
-    pub(crate) fn begin_new_agent_for_project(&mut self, project: Project) -> Result<()> {
+    pub(crate) fn begin_new_agent_for_project(&mut self, project: Project) {
         // Close the chooser (or any prior prompt) before dispatching; the name
         // prompt is opened later by the branch-inspection completion handler.
         self.prompt = PromptState::None;
         if project.path_missing {
-            return Ok(());
+            self.set_warning(format!(
+                "Cannot create an agent in project \"{}\": its folder is missing at {}.",
+                project.name, project.path
+            ));
+            return;
         }
         // Shared main-workspace mode: the agent runs in the checkout itself,
         // so there is no leading branch to inspect and no worktree to name.
@@ -359,7 +443,6 @@ impl App {
             });
         }
         self.dispatch_create_agent_branch_inspection(project);
-        Ok(())
     }
 
     /// Build one chooser row per project from the live engine state, counting the
@@ -374,30 +457,51 @@ impl App {
         order
             .into_iter()
             .filter_map(|index| self.engine.projects.get(index))
-            .map(|project| {
-                let agent_count = self
-                    .engine
-                    .sessions
-                    .iter()
-                    .filter(|session| session.project_id() == Some(project.id.as_str()))
-                    .count();
-                ProjectChooserEntry {
-                    id: project.id.clone(),
-                    name: project.name.clone(),
-                    path: project.path.clone(),
-                    agent_count,
-                    path_missing: project.path_missing,
-                }
+            .map(|project| ProjectChooserEntry {
+                id: project.id.clone(),
+                name: project.name.clone(),
+                path: project.path.clone(),
+                agent_count: self.project_agent_count(&project.id),
+                path_missing: project.path_missing,
+                base_branch: project.leading_branch.clone(),
+                orphaned: false,
             })
             .collect()
+    }
+
+    /// One row per orphaned group (agents whose project record is gone), from
+    /// the same core grouping the sidebar and the browser read, appended after
+    /// the projects. Its name is the short id both surfaces show for one.
+    pub(crate) fn build_orphaned_group_entries(&self) -> Vec<ProjectChooserEntry> {
+        yaran_core::sidebar::build_sidebar(
+            &self.engine.projects,
+            &self.engine.sessions,
+            &HashSet::new(),
+            0,
+        )
+        .groups
+        .into_iter()
+        .filter(|group| group.orphaned)
+        .map(|group| ProjectChooserEntry {
+            agent_count: group.session_ids.len(),
+            id: group.project_id,
+            name: group.name,
+            path: String::new(),
+            path_missing: false,
+            base_branch: None,
+            orphaned: true,
+        })
+        .collect()
     }
 
     /// Open the project chooser for the given intent. With zero projects there is
     /// nothing to pick, so this sets a helpful error instead of showing an empty
     /// modal. The gh availability gate for the PR intent is enforced by the
     /// caller (`open_new_agent_from_pr_prompt`) before we get here.
-    pub(crate) fn open_project_chooser(&mut self, intent: ProjectChooserIntent) -> Result<()> {
-        self.open_project_chooser_over(intent, None)
+    pub(crate) fn open_project_chooser(&mut self, intent: ProjectChooserIntent) {
+        {
+            self.open_project_chooser_over(intent, None);
+        }
     }
 
     /// [`Self::open_project_chooser`] optionally narrowed to a set of project
@@ -408,14 +512,17 @@ impl App {
         &mut self,
         intent: ProjectChooserIntent,
         only: Option<&[String]>,
-    ) -> Result<()> {
+    ) {
         let mut entries = self.build_project_chooser_entries();
+        if intent.lists_orphans() {
+            entries.extend(self.build_orphaned_group_entries());
+        }
         if let Some(only) = only {
             entries.retain(|entry| only.iter().any(|id| id == &entry.id));
         }
         if entries.is_empty() {
             self.set_error("No projects yet. Add one first.");
-            return Ok(());
+            return;
         }
         self.input_target = InputTarget::None;
         self.fullscreen_overlay = FullscreenOverlay::None;
@@ -424,14 +531,14 @@ impl App {
             entries,
             list: SearchableList::new(),
         };
-        Ok(())
     }
 
     /// Confirm the highlighted project in the chooser and dispatch by intent. An
     /// empty list is a no-op; a vanished project surfaces an error. `Manage`
-    /// stores the pick as the project-action context and closes the modal.
+    /// opens the pick's action list, and `Action` runs the command the list was
+    /// opened for on the pick.
     pub(crate) fn confirm_project_chooser_selection(&mut self) -> Result<()> {
-        let (intent, project_id) = match &self.prompt {
+        let (intent, entry, list) = match &self.prompt {
             PromptState::PickProject {
                 intent,
                 entries,
@@ -440,17 +547,23 @@ impl App {
                 // `list.selected` indexes the visible list; resolve to an entry.
                 let visible = list.visible_indices(entries, pick_project_matches);
                 match visible.get(list.selected).and_then(|i| entries.get(*i)) {
-                    Some(entry) => (*intent, entry.id.clone()),
+                    Some(entry) => (*intent, entry.clone(), list.clone()),
                     None => return Ok(()),
                 }
             }
             _ => return Ok(()),
         };
+        if entry.orphaned {
+            return {
+                self.confirm_orphaned_group_pick(intent, entry, list);
+                Ok(())
+            };
+        }
         let Some(project) = self
             .engine
             .projects
             .iter()
-            .find(|p| p.id == project_id)
+            .find(|p| p.id == entry.id)
             .cloned()
         else {
             self.prompt = PromptState::None;
@@ -458,41 +571,86 @@ impl App {
             return Ok(());
         };
         match intent {
-            ProjectChooserIntent::NewAgent => self.begin_new_agent_for_project(project),
+            ProjectChooserIntent::NewAgent => {
+                self.begin_new_agent_for_project(project);
+                Ok(())
+            }
             ProjectChooserIntent::FromPr => {
                 // Whatever the user had typed before stepping out to choose a
                 // project travels back into the field, so the round trip never
                 // costs them their reference.
                 let seed = self.pending_pr_reference.take().unwrap_or_default();
-                self.begin_pr_agent_for_project_with(project, seed)
+                {
+                    self.begin_pr_agent_for_project_with(project, seed);
+                    Ok(())
+                }
             }
             ProjectChooserIntent::FromPrReference => {
                 // The reference is already typed, so this pick completes it
                 // rather than reopening an empty field. If it somehow went
                 // missing, fall back to the project-first field instead of
                 // silently doing nothing.
-                match self.pending_pr_reference.take() {
-                    Some(raw_input) => self.dispatch_pull_request_lookup(project, raw_input),
-                    None => self.begin_pr_agent_for_project(project),
+                if let Some(raw_input) = self.pending_pr_reference.take() {
+                    self.dispatch_pull_request_lookup(project, raw_input);
+                } else {
+                    self.begin_pr_agent_for_project(project);
                 }
+                Ok(())
             }
-            ProjectChooserIntent::FromWorktree => self.begin_worktree_agent_for_project(project),
+            ProjectChooserIntent::FromWorktree => {
+                self.begin_worktree_agent_for_project(project);
+                Ok(())
+            }
             ProjectChooserIntent::ManageWorktrees => {
-                self.begin_manage_worktrees_for_project(project)
+                self.begin_manage_worktrees_for_project(project, None);
+                Ok(())
             }
             ProjectChooserIntent::Manage => {
-                self.project_chooser_context = Some(project.id.clone());
-                self.prompt = PromptState::None;
-                self.set_info(format!(
-                    "Project \"{}\" is now the target for project actions.",
-                    project.name
-                ));
+                self.open_project_actions(
+                    ProjectActionsTarget::Project { id: project.id },
+                    Some(list),
+                );
                 Ok(())
+            }
+            ProjectChooserIntent::Action(action) => {
+                self.prompt = PromptState::None;
+                self.run_project_action(&project, action, None)
             }
             ProjectChooserIntent::ProjectTerminal => {
                 self.prompt = PromptState::None;
-                self.show_project_terminal(&project)
+                {
+                    self.show_project_terminal(&project);
+                    Ok(())
+                }
             }
+        }
+    }
+
+    /// An orphaned group was picked. Only the intents that list one can get
+    /// here: managing it opens its action list (Remove project… alone), and
+    /// removing it asks the removal question for the group.
+    fn confirm_orphaned_group_pick(
+        &mut self,
+        intent: ProjectChooserIntent,
+        entry: ProjectChooserEntry,
+        list: SearchableList,
+    ) {
+        if self.project_agent_count(&entry.id) == 0 {
+            self.prompt = PromptState::None;
+            self.set_error("That project is no longer available.");
+            return;
+        }
+        if intent == ProjectChooserIntent::Manage {
+            self.open_project_actions(
+                ProjectActionsTarget::Orphaned {
+                    project_id: entry.id,
+                    name: entry.name,
+                },
+                Some(list),
+            );
+        } else {
+            self.prompt = PromptState::None;
+            self.confirm_remove_orphaned_group(entry.id, entry.name, None);
         }
     }
 
@@ -500,7 +658,7 @@ impl App {
         &mut self,
         mut project: Project,
         inspection: CreateAgentBranchInspection,
-    ) -> Result<()> {
+    ) {
         project.current_branch = inspection.current_branch;
         project.leading_branch = Some(inspection.leading_branch);
         project.branch_status =
@@ -509,36 +667,41 @@ impl App {
             } else {
                 ProjectBranchStatus::NotLeading
             };
-        self.open_name_new_agent_prompt(CreateAgentRequest::NewProject {
-            project,
-            custom_name: None,
-            use_existing_branch: false,
-            pull_before_create: self
-                .engine
-                .config
-                .defaults
-                .pull_before_creating_agent_by_default,
-            copy_uncommitted_changes: self
-                .engine
-                .config
-                .defaults
-                .copy_uncommitted_changes_by_default,
-        })
+        {
+            self.open_name_new_agent_prompt(CreateAgentRequest::NewProject {
+                project,
+                custom_name: None,
+                use_existing_branch: false,
+                pull_before_create: self
+                    .engine
+                    .config
+                    .defaults
+                    .pull_before_creating_agent_by_default,
+                copy_uncommitted_changes: self
+                    .engine
+                    .config
+                    .defaults
+                    .copy_uncommitted_changes_by_default,
+                cloned: None,
+            });
+        }
     }
 
     /// `new-agent-from-worktree`: open the project chooser, then (per project)
     /// load that project's worktrees into `PickProjectWorktree`.
-    pub(crate) fn create_agent_from_existing_worktree(&mut self) -> Result<()> {
-        self.open_project_chooser(ProjectChooserIntent::FromWorktree)
+    pub(crate) fn create_agent_from_existing_worktree(&mut self) {
+        {
+            self.open_project_chooser(ProjectChooserIntent::FromWorktree);
+        }
     }
 
     /// Per-project body for `FromWorktree`: opens the worktree picker and spawns
     /// the worktrees loader. Shared by the chooser and any direct selection path.
-    pub(crate) fn begin_worktree_agent_for_project(&mut self, project: Project) -> Result<()> {
+    pub(crate) fn begin_worktree_agent_for_project(&mut self, project: Project) {
         if project.path_missing {
             self.prompt = PromptState::None;
             self.set_warning(format!("Project path not found: {}", project.path));
-            return Ok(());
+            return;
         }
 
         self.input_target = InputTarget::None;
@@ -570,13 +733,12 @@ impl App {
         self.engine
             .spawn_project_worktrees_worker(project, Some(op_id));
         self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
-        Ok(())
     }
 
-    pub(crate) fn fork_selected_session(&mut self) -> Result<()> {
+    pub(crate) fn fork_selected_session(&mut self) {
         let Some(source_session) = self.selected_session().cloned() else {
             self.set_error("Select an agent session first to fork.");
-            return Ok(());
+            return;
         };
         // Forking copies a branch into a new worktree, which is the half a
         // standalone agent does not have. The same gate the HTTP route uses, so a
@@ -587,12 +749,10 @@ impl App {
             yaran_core::engine::STANDALONE_ADD_AS_PROJECT_REMEDY,
         ) {
             self.set_error(err.to_string());
-            return Ok(());
+            return;
         }
         // Fork is agent-scoped: the new worktree belongs to the SAME project as
-        // the agent being forked. Derive it from the source session, not from
-        // `selected_project()`, which can resolve to a `manage-projects` target
-        // pointing at a different project.
+        // the agent being forked. Derive it from the source session itself.
         let Some(project) = self
             .engine
             .projects
@@ -601,28 +761,30 @@ impl App {
             .cloned()
         else {
             self.set_error("Select an agent session first to fork.");
-            return Ok(());
+            return;
         };
-        let source_label = self.session_label(&source_session);
+        let source_label = source_session.display_label();
 
-        self.open_name_new_agent_prompt(CreateAgentRequest::ForkSession {
-            project,
-            source_session: Box::new(source_session),
-            source_label,
-            custom_name: None,
-        })
+        {
+            self.open_name_new_agent_prompt(CreateAgentRequest::ForkSession {
+                project,
+                source_session: Box::new(source_session),
+                source_label,
+                custom_name: None,
+            });
+        }
     }
 
     /// `new-agent-from-pr`: fail fast if gh integration is unavailable, then open
     /// the reference field with NO project chosen and none asked for. yaran works
     /// out which project the reference belongs to; the secondary action inside
     /// the modal is the way back to today's project-first flow.
-    pub(crate) fn open_new_agent_from_pr_prompt(&mut self) -> Result<()> {
+    pub(crate) fn open_new_agent_from_pr_prompt(&mut self) {
         if !self.github_pr_agent_command_available() {
             self.set_error(
                 "GitHub PR agent creation requires GitHub integration and an authenticated gh CLI.",
             );
-            return Ok(());
+            return;
         }
         self.invalidate_pull_request_resolution();
         self.input_target = InputTarget::None;
@@ -636,32 +798,29 @@ impl App {
         self.set_info(
             "Paste a pull request link, or type owner/repo#123. yaran finds the project it belongs to.",
         );
-        Ok(())
     }
 
     /// Per-project body for `FromPr`: opens the PR-number/URL input for a
     /// project that has ALREADY been chosen, which is the project-first flow
     /// unchanged. Reached from the project chooser and from the secondary
     /// action inside the reference-first modal.
-    pub(crate) fn begin_pr_agent_for_project(&mut self, project: Project) -> Result<()> {
-        self.begin_pr_agent_for_project_with(project, String::new())
+    pub(crate) fn begin_pr_agent_for_project(&mut self, project: Project) {
+        {
+            self.begin_pr_agent_for_project_with(project, String::new());
+        }
     }
 
     /// [`Self::begin_pr_agent_for_project`] seeding the field with text the user
     /// has already typed, so stepping out to the project picker and back never
     /// throws their reference away.
-    pub(crate) fn begin_pr_agent_for_project_with(
-        &mut self,
-        project: Project,
-        seed: String,
-    ) -> Result<()> {
+    pub(crate) fn begin_pr_agent_for_project_with(&mut self, project: Project, seed: String) {
         if project.path_missing {
             self.prompt = PromptState::None;
             self.set_warning(format!(
                 "Cannot create an agent from a PR: path not found for \"{}\"",
                 project.name
             ));
-            return Ok(());
+            return;
         }
         // Retargeting the modal at a project supersedes any resolution still
         // out: its answer is about a question this screen is no longer asking.
@@ -678,7 +837,6 @@ impl App {
             focus: PullRequestInputFocus::Input,
         };
         self.set_info("Paste a GitHub PR URL or enter a PR number for the chosen project.");
-        Ok(())
     }
 
     /// Confirm on the reference field with NO project chosen: parse what was
@@ -689,12 +847,12 @@ impl App {
     /// secondary action rather than sent to a worker that could only come back
     /// empty-handed. Only a reference that names a repository is worth a git call
     /// per project, and that goes on a worker.
-    pub(crate) fn dispatch_pull_request_reference(&mut self, raw_input: String) -> Result<()> {
+    pub(crate) fn dispatch_pull_request_reference(&mut self, raw_input: String) {
         let reference = match yaran_core::pr_reference::parse_typed_reference(&raw_input) {
             Ok(reference) => reference,
             Err(message) => {
                 self.set_error(message);
-                return Ok(());
+                return;
             }
         };
         if reference.owner_repo.is_none() {
@@ -702,7 +860,7 @@ impl App {
                 "A pull request number on its own does not say which repository it is in. \
                  Paste a link, type owner/repo#123, or choose an existing project first.",
             );
-            return Ok(());
+            return;
         }
         let policy = self.engine.github_host_policy();
         // The typed host is gated before any per-project git work, exactly as the
@@ -712,16 +870,12 @@ impl App {
         if let Some(host) = reference.host.as_deref()
             && !policy.allows(host)
         {
-            self.set_error(format!(
-                "yaran cannot look up pull requests on {host}. Sign in to that host with \
-                 `gh auth login --hostname {host}`, or paste a reference from a host you \
-                 are already signed in to."
-            ));
-            return Ok(());
+            self.set_error(yaran_core::gh::host_not_signed_in(host));
+            return;
         }
         let Some(repository) = reference.repository_label() else {
             self.set_error("That reference does not name a repository.");
-            return Ok(());
+            return;
         };
 
         // A resubmit supersedes whatever was already out: an earlier reply must
@@ -746,6 +900,8 @@ impl App {
 
         let worker_tx = self.engine.worker_tx.clone();
         let projects = self.engine.projects.clone();
+        let protocols = self.engine.github_git_protocols();
+        let gh_program = self.engine.gh_probe.program.clone();
         thread::spawn(move || {
             use std::panic::AssertUnwindSafe;
             let tx_panic = worker_tx.clone();
@@ -754,15 +910,17 @@ impl App {
             let raw_panic = raw_input.clone();
             if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 yaran_core::pr_reference::run_reference_resolution_job(
-                    reference,
+                    &reference,
                     raw_input,
-                    projects,
-                    policy,
-                    worker_tx,
+                    &projects,
+                    &policy,
+                    &protocols,
+                    &gh_program,
+                    &worker_tx,
                     Some(op_id),
                 );
             })) {
-                let reason = yaran_core::engine::format_panic_payload(payload);
+                let reason = yaran_core::engine::format_panic_payload(&*payload);
                 yaran_core::logger::error(&format!(
                     "pull-request-reference resolution worker panicked: {reason}"
                 ));
@@ -774,11 +932,12 @@ impl App {
                     raw_input: raw_panic,
                     repository: repository_panic,
                     result: Err(reason),
+                    offer: None,
+                    clone_unavailable: None,
                     status_op_id: Some(op_id_panic),
                 });
             }
         });
-        Ok(())
     }
 
     /// Forget the resolution this screen was waiting for, so its reply lands on
@@ -802,9 +961,11 @@ impl App {
     pub(crate) fn apply_pull_request_reference_resolution(
         &mut self,
         raw_input: String,
-        repository: String,
+        repository: &str,
         result: Result<yaran_core::pr_reference::ReferenceResolution, String>,
-    ) -> Result<()> {
+        offer: Option<yaran_core::pr_reference::PullRequestCloneFacts>,
+        clone_unavailable: Option<String>,
+    ) {
         let resolution = match result {
             Ok(resolution) => resolution,
             Err(reason) => {
@@ -812,32 +973,53 @@ impl App {
                     "yaran could not work out which project {repository} is open in: {reason}. \
                      Try again, or choose an existing project."
                 ));
-                return Ok(());
+                return;
             }
         };
         let matches = &resolution.matches;
         match matches.len() {
             1 => {
                 let project = matches[0].clone();
-                self.dispatch_pull_request_lookup(project, raw_input)
+                {
+                    self.dispatch_pull_request_lookup(project, raw_input);
+                }
             }
             0 => {
+                // The pull request is there and a clone can be offered: the
+                // form says which pull request the user is agreeing to, and
+                // keeps the way to an existing project one stop away.
+                if let Some(offer) = offer {
+                    self.open_pull_request_clone_form(
+                        raw_input,
+                        resolution.uninspected_summary(),
+                        offer,
+                    );
+                    return;
+                }
                 self.pending_pr_reference = Some(raw_input);
                 // With a project it could not inspect, "no project is a checkout
-                // of this" is a certainty yaran does not have. yaran does not clone,
-                // and neither wording may imply it might.
-                match resolution.uninspected_summary() {
-                    None => self.set_warning(format!(
+                // of this" is a certainty yaran does not have.
+                let mut sentence = match resolution.uninspected_summary() {
+                    None => format!(
                         "No project in yaran is a checkout of {repository}. Choose a project that \
                          already has it, or add one from a directory on disk."
-                    )),
-                    Some(summary) => self.set_warning(format!(
+                    ),
+                    Some(summary) => format!(
                         "No project yaran could check is a checkout of {repository}, and yaran \
                          could not check every project ({summary}). Choose a project that \
                          already has it, or add one from a directory on disk."
-                    )),
+                    ),
+                };
+                if let Some(unavailable) = clone_unavailable {
+                    let _ = write!(
+                        sentence,
+                        " yaran could not look the pull request up to offer a clone: {unavailable}"
+                    );
                 }
-                self.open_project_chooser_over(ProjectChooserIntent::FromPrReference, None)
+                self.set_warning(sentence);
+                {
+                    self.open_project_chooser_over(ProjectChooserIntent::FromPrReference, None);
+                }
             }
             _ => {
                 let ids: Vec<String> = matches.iter().map(|p| p.id.clone()).collect();
@@ -847,16 +1029,17 @@ impl App {
                     "{count} projects are checkouts of {repository}. Choose which one this \
                      agent belongs in."
                 ));
-                self.open_project_chooser_over(ProjectChooserIntent::FromPrReference, Some(&ids))
+                {
+                    self.open_project_chooser_over(
+                        ProjectChooserIntent::FromPrReference,
+                        Some(&ids),
+                    );
+                }
             }
         }
     }
 
-    pub(crate) fn dispatch_pull_request_lookup(
-        &mut self,
-        project: Project,
-        raw_input: String,
-    ) -> Result<()> {
+    pub(crate) fn dispatch_pull_request_lookup(&mut self, project: Project, raw_input: String) {
         #[cfg(test)]
         self.dispatched_pr_lookups
             .push((project.id.clone(), raw_input.clone()));
@@ -893,28 +1076,29 @@ impl App {
             if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 yaran_core::gh::run_pull_request_lookup_job(
                     project,
-                    raw_input,
+                    &raw_input,
                     None,
-                    worker_tx,
+                    ReviewCopyConsent::default(),
+                    None,
+                    &worker_tx,
                     Some(op_id),
-                    policy,
+                    &policy,
                 );
             })) {
-                let reason = yaran_core::engine::format_panic_payload(payload);
+                let reason = yaran_core::engine::format_panic_payload(&*payload);
                 yaran_core::logger::error(&format!(
                     "pull-request-lookup worker panicked: {reason}"
                 ));
                 let _ = tx_panic.send(WorkerEvent::PullRequestResolved {
-                    result: Err(format!("Worker panicked: {reason}")),
+                    result: Err(format!("Worker panicked: {reason}").into()),
                     purpose: yaran_core::worker::PrLookupPurpose::CreateAgent,
                     status_op_id: Some(op_id_panic),
                 });
             }
         });
-        Ok(())
     }
 
-    pub(crate) fn open_name_new_agent_prompt(&mut self, request: CreateAgentRequest) -> Result<()> {
+    pub(crate) fn open_name_new_agent_prompt(&mut self, request: CreateAgentRequest) {
         let initial_name = match &request {
             CreateAgentRequest::NewProject { custom_name, .. }
             | CreateAgentRequest::ForkSession { custom_name, .. }
@@ -939,7 +1123,7 @@ impl App {
                     .map(str::to_string)
             }),
         };
-        let randomize_name = initial_name.is_none()
+        let wants_random_name = initial_name.is_none()
             && self
                 .engine
                 .config
@@ -949,7 +1133,7 @@ impl App {
         let mut randomized_name = None;
         if let Some(name) = initial_name {
             input.set_text(name);
-        } else if randomize_name {
+        } else if wants_random_name {
             let name = crate::git::docker_style_name();
             input.set_text(name.clone());
             randomized_name = Some(name);
@@ -961,24 +1145,185 @@ impl App {
         self.prompt = PromptState::NameNewAgent {
             request,
             input,
-            randomize_name,
+            randomize_name: wants_random_name,
             randomized_name,
             copy_changes: self
                 .engine
                 .config
                 .defaults
                 .copy_uncommitted_changes_by_default,
+            review_copy: None,
             focus: NameNewAgentFocus::Input,
             extras,
         };
-        Ok(())
     }
 
-    pub(crate) fn open_name_new_agent_prompt_for_request(
+    /// Reopen the name prompt on a pull-request create the engine refused for
+    /// want of agreement to a review copy: the same request and typed name,
+    /// the warning above an unticked box, and the box focused. The agreement
+    /// it held before is dropped, because the situation it answered is not the
+    /// one being asked about now.
+    pub(crate) fn reopen_name_prompt_for_review_copy(
         &mut self,
-        request: CreateAgentRequest,
-    ) -> Result<()> {
-        self.open_name_new_agent_prompt(request)
+        mut request: CreateAgentRequest,
+        warned: String,
+        warning: Vec<yaran_core::prose::ProseSegment>,
+    ) {
+        if let CreateAgentRequest::PullRequest { review_copy, .. } = &mut request {
+            *review_copy = yaran_core::worker::ReviewCopyConsent::Withheld;
+        }
+        self.open_name_new_agent_prompt(request);
+        if let PromptState::NameNewAgent {
+            review_copy, focus, ..
+        } = &mut self.prompt
+        {
+            *review_copy = Some(ReviewCopyQuestion {
+                warned,
+                warning: yaran_core::prose::Prose::from_segments(warning),
+                agreed: false,
+            });
+            *focus = NameNewAgentFocus::ReviewCopyCheckbox;
+        }
+    }
+
+    /// Open the clone form: the destination starts at the add-project browser's
+    /// start folder and follows the address until the user edits it, and the
+    /// agent's name starts as the New agent dialog's does. After a clone this
+    /// form started was refused or failed, it opens on what that clone was
+    /// given instead.
+    pub(crate) fn open_clone_project_prompt(&mut self) {
+        self.input_target = InputTarget::None;
+        self.fullscreen_overlay = FullscreenOverlay::None;
+        let mut agent_name = TextInput::new().with_char_map(crate::git::agent_name_char_map);
+        // A pull request's draft is restored by the pull request's own opener,
+        // and stays in place until then.
+        if let Some(draft) = self
+            .clone_draft
+            .as_ref()
+            .filter(|draft| draft.restorable && draft.pull_request.is_none())
+        {
+            agent_name.set_text(draft.agent_name.clone());
+            self.prompt = PromptState::CloneProject {
+                address: TextInput::with_text(draft.address.clone()),
+                destination: TextInput::with_text(draft.destination.clone()),
+                destination_edited: draft.destination_edited,
+                start_folder: draft.start_folder.clone(),
+                agent_name,
+                randomize_name: draft.randomize_name,
+                randomized_name: draft.randomized_name.clone(),
+                focus: CloneProjectFocus::Address,
+                pull_request: None,
+            };
+            return;
+        }
+        let start_folder = yaran_core::project_browser::resolve_start_dir(&self.engine.config);
+        let wants_random_name = self
+            .engine
+            .config
+            .defaults
+            .enable_randomized_pet_name_by_default;
+        let mut randomized_name = None;
+        if wants_random_name {
+            let name = crate::git::docker_style_name();
+            agent_name.set_text(name.clone());
+            randomized_name = Some(name);
+        }
+        self.prompt = PromptState::CloneProject {
+            address: TextInput::new(),
+            destination: TextInput::with_text(clone_destination_for(
+                &start_folder,
+                "",
+                &self.engine.clone_github_hosts(),
+            )),
+            destination_edited: false,
+            start_folder,
+            agent_name,
+            randomize_name: wants_random_name,
+            randomized_name,
+            focus: CloneProjectFocus::Address,
+            pull_request: None,
+        };
+    }
+
+    /// Submit the clone form: dispatch `Command::CloneProject` and close it, or,
+    /// when the engine refuses the request up front, keep it open so the
+    /// refusal on the status line can be acted on without retyping. A clone
+    /// that starts keeps what was typed as its draft, for the form to restore
+    /// should its worker refuse it or git fail.
+    pub(crate) fn confirm_clone_project(&mut self) {
+        if matches!(
+            self.prompt,
+            PromptState::CloneProject {
+                pull_request: Some(_),
+                ..
+            }
+        ) {
+            self.confirm_pull_request_clone();
+            return;
+        }
+        let PromptState::CloneProject {
+            address,
+            destination,
+            destination_edited,
+            start_folder,
+            agent_name,
+            randomize_name,
+            randomized_name,
+            ..
+        } = &self.prompt
+        else {
+            return;
+        };
+        let draft = CloneDraft {
+            op_id: String::new(),
+            restorable: false,
+            address: address.text.clone(),
+            destination: destination.text.clone(),
+            destination_edited: *destination_edited,
+            start_folder: start_folder.clone(),
+            agent_name: agent_name.text.clone(),
+            randomize_name: *randomize_name,
+            randomized_name: randomized_name.clone(),
+            pull_request: None,
+        };
+        let name = agent_name.text.trim();
+        let command = Command::CloneProject {
+            url: address.text.trim().to_string(),
+            path: destination.text.trim().to_string(),
+            agent_name: (!name.is_empty()).then(|| name.to_string()),
+            random_name: *randomize_name,
+            pull_request: None,
+            add_existing: false,
+            review_copy: UpfrontReviewCopy::default(),
+        };
+        match self.engine.apply(command) {
+            Ok(reaction) => {
+                let refused = matches!(
+                    &reaction,
+                    EventReaction::Status(update) if update.tone == StatusTone::Error
+                );
+                if !refused {
+                    self.prompt = PromptState::None;
+                    // The clone's busy carries its op id, which its worker's
+                    // answer names; a fresh submit replaces any earlier draft.
+                    self.clone_draft = match &reaction {
+                        EventReaction::Status(update) => update
+                            .key
+                            .clone()
+                            .map(|op_id| CloneDraft { op_id, ..draft }),
+                        _ => None,
+                    };
+                }
+                self.apply_reaction(reaction);
+            }
+            Err(err) => self.set_error(format!("Could not start the clone: {err:#}")),
+        }
+    }
+
+    pub(crate) fn open_name_new_agent_prompt_for_request(&mut self, request: CreateAgentRequest) {
+        {
+            self.open_name_new_agent_prompt(request);
+        }
     }
 
     /// Spawns a background worker that runs `git switch <target_branch>` in
@@ -994,38 +1339,42 @@ impl App {
         &mut self,
         action: NonDefaultBranchAction,
         target_branch: String,
-        reason: String,
+        reason: &str,
         carried_op_id: Option<String>,
     ) {
         let path = action.repo_path().to_string();
-        let status_op_id = match carried_op_id {
-            Some(id) => id,
-            None => {
-                // The keyed busy is dismissed by the op's `Final::Clear` when the
-                // worker reports back; the visible final (the engine's unkeyed
-                // success/error `Status`, or the TUI's add-project view handler)
-                // is authored elsewhere, byte-for-byte unchanged.
-                let op = yaran_core::engine::status_op(format!(
-                    "Checking out \"{target_branch}\" in {path} {reason}..."
-                ))
-                .resolve_in_handler(|o: &TuiCheckoutInspectOutcome| match o {
-                    TuiCheckoutInspectOutcome::Done => yaran_core::engine::Final::clear(),
-                });
-                let pending = self.engine.begin_status_op(&op);
-                let id = op.id().to_string();
-                self.pending_checkout_inspect_ops.insert(id.clone(), op);
-                self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
-                id
-            }
+        let status_op_id = if let Some(id) = carried_op_id {
+            id
+        } else {
+            // The keyed busy is dismissed by the op's `Final::Clear` when the
+            // worker reports back; the visible final (the engine's unkeyed
+            // success/error `Status`, or the TUI's add-project view handler)
+            // is authored elsewhere, byte-for-byte unchanged.
+            let op = yaran_core::engine::status_op(format!(
+                "Checking out \"{target_branch}\" in {path} {reason}..."
+            ))
+            .resolve_in_handler(|o: &TuiCheckoutInspectOutcome| match o {
+                TuiCheckoutInspectOutcome::Done => yaran_core::engine::Final::clear(),
+            });
+            let pending = self.engine.begin_status_op(&op);
+            let id = op.id().to_string();
+            self.pending_checkout_inspect_ops.insert(id.clone(), op);
+            self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
+            id
         };
         let worker_tx = self.engine.worker_tx.clone();
+        let guard = self.engine.checkout_move_guard();
         thread::spawn(move || {
             yaran_core::project_browser::run_checkout_job_reporting_panics(
                 action,
                 target_branch,
                 worker_tx,
                 Some(status_op_id),
-                yaran_core::project_browser::run_add_project_checkout_job,
+                |action, branch, tx, id| {
+                    yaran_core::project_browser::run_add_project_checkout_job(
+                        action, branch, &tx, id, &guard,
+                    );
+                },
             );
         });
     }
@@ -1034,32 +1383,76 @@ impl App {
     /// to a background worker, since the commit can hit slow filesystem or lock
     /// work. Serialized per repo path through `InFlightKey::InitialCommit` so a
     /// repeat confirm cannot double-commit.
-    pub(crate) fn dispatch_create_initial_commit(&mut self, path: String, name: String) {
+    pub(crate) fn dispatch_create_initial_commit(&mut self, path: &str, name: String) {
         // Real branch the commit will land on. A git error propagates rather than
         // silently defaulting the branch, which would mis-tag the project and
         // break the next agent creation. The non-default-branch heuristic warning
         // is deliberately skipped: for a repo the user just created, "this does
-        // not look like main" is noise.
-        let branch = match git::current_branch_opt(Path::new(&path)) {
-            Ok(b) => b.unwrap_or_default(),
-            Err(e) => {
-                self.set_error(format!(
-                    "Couldn't read the current branch of \"{path}\": {e:#}"
-                ));
-                return;
-            }
-        };
-        let leading_branch = leading_branch_for_project(
-            Path::new(&path),
-            (!branch.is_empty()).then_some(branch.as_str()),
+        // not look like main" is noise. These questions ask git, so they are
+        // asked on a worker and the commit follows the answer.
+        let repo = path.to_string();
+        let owned = path.to_string();
+        self.spawn_ui_job(
+            crate::app::ui_jobs::UiJob {
+                busy: yaran_core::status_text![
+                    "Checking ",
+                    n(path.to_string()),
+                    " before creating an initial commit\u{2026}"
+                ],
+                stopped: format!(
+                    "yaran could not finish checking \"{path}\", so no initial commit was created; \
+                     yaran.log has the details."
+                ),
+            },
+            move || {
+                let repo_path = Path::new(&repo);
+                git::current_branch_opt(repo_path)
+                    .map(|branch| {
+                        let branch = branch.unwrap_or_default();
+                        let leading_branch = leading_branch_for_project(
+                            repo_path,
+                            (!branch.is_empty()).then_some(branch.as_str()),
+                        );
+                        (branch, leading_branch, git::repo_commit_state(repo_path))
+                    })
+                    .map_err(|e| format!("{e:#}"))
+            },
+            move |app: &mut App,
+                  probed: Option<Result<(String, String, git::CommitState), String>>| {
+                match probed {
+                    None => {}
+                    Some(Ok((branch, leading_branch, state))) => app
+                        .continue_create_initial_commit(
+                            &owned,
+                            name,
+                            branch,
+                            leading_branch,
+                            state,
+                        ),
+                    Some(Err(e)) => app.set_error(format!(
+                        "Couldn't read the current branch of \"{owned}\": {e}"
+                    )),
+                }
+            },
         );
+    }
+
+    /// The initial-commit flow once git has answered for `path`.
+    fn continue_create_initial_commit(
+        &mut self,
+        path: &str,
+        name: String,
+        branch: String,
+        leading_branch: String,
+        state: git::CommitState,
+    ) {
         // Fail-closed commit state, mirroring the web handler: only a confirmed
         // unborn repo goes through the bootstrap worker. If a commit raced in
         // since the dialog opened, register it directly; if git can't say, stop.
-        match git::repo_commit_state(Path::new(&path)) {
+        match state {
             git::CommitState::Unborn => {}
             git::CommitState::Born => {
-                if let Err(e) = self.finish_add_project(path, name, branch, leading_branch) {
+                if let Err(e) = self.finish_add_project(path, &name, branch, leading_branch) {
                     self.set_error(format!("{e:#}"));
                 }
                 return;
@@ -1073,7 +1466,9 @@ impl App {
         }
         if !self
             .engine
-            .mark_in_flight(yaran_core::engine::InFlightKey::InitialCommit(path.clone()))
+            .mark_in_flight(yaran_core::engine::InFlightKey::InitialCommit(
+                path.to_string(),
+            ))
         {
             self.set_warning(format!(
                 "An initial commit is already being created for \"{path}\". Please wait for it to finish."
@@ -1081,7 +1476,7 @@ impl App {
             return;
         }
         let add = yaran_core::worker::InitialCommitAdd {
-            path: path.clone(),
+            path: path.to_string(),
             name,
             branch,
             leading_branch,
@@ -1112,11 +1507,11 @@ impl App {
             if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 yaran_core::project_browser::run_create_initial_commit_job(
                     add,
-                    worker_tx,
+                    &worker_tx,
                     Some(status_op_id),
                 );
             })) {
-                let reason = yaran_core::engine::format_panic_payload(payload);
+                let reason = yaran_core::engine::format_panic_payload(&*payload);
                 yaran_core::logger::error(&format!("initial-commit worker panicked: {reason}"));
                 let _ = tx_panic.send(WorkerEvent::InitialCommitCreated {
                     add: add_panic,
@@ -1131,10 +1526,12 @@ impl App {
     /// initial commit, then add the project) to a background worker. Shares
     /// `InFlightKey::InitialCommit` so init-and-commit and commit-only on the
     /// same path are mutually exclusive.
-    pub(crate) fn dispatch_init_repo(&mut self, path: String, name: String) {
+    pub(crate) fn dispatch_init_repo(&mut self, path: &str, name: String) {
         if !self
             .engine
-            .mark_in_flight(yaran_core::engine::InFlightKey::InitialCommit(path.clone()))
+            .mark_in_flight(yaran_core::engine::InFlightKey::InitialCommit(
+                path.to_string(),
+            ))
         {
             self.set_warning(format!(
                 "A repository is already being initialized in \"{path}\". Please wait for it to finish."
@@ -1142,7 +1539,7 @@ impl App {
             return;
         }
         let add = yaran_core::worker::InitialCommitAdd {
-            path: path.clone(),
+            path: path.to_string(),
             name,
             // The worker resolves the real branch after the commit lands;
             // these placeholders are rewritten by `init_repo_and_commit`.
@@ -1173,9 +1570,9 @@ impl App {
             let add_panic = add.clone();
             let op_id_panic = status_op_id.clone();
             if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                yaran_core::project_browser::run_init_repo_job(add, worker_tx, Some(status_op_id));
+                yaran_core::project_browser::run_init_repo_job(add, &worker_tx, Some(status_op_id));
             })) {
-                let reason = yaran_core::engine::format_panic_payload(payload);
+                let reason = yaran_core::engine::format_panic_payload(&*payload);
                 yaran_core::logger::error(&format!(
                     "repository-initialization worker panicked: {reason}"
                 ));
@@ -1214,11 +1611,11 @@ impl App {
             if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 super::workers::run_create_agent_branch_inspection_job(
                     project,
-                    worker_tx,
+                    &worker_tx,
                     Some(status_op_id),
                 );
             })) {
-                let reason = yaran_core::engine::format_panic_payload(payload);
+                let reason = yaran_core::engine::format_panic_payload(&*payload);
                 yaran_core::logger::error(&format!(
                     "create-agent-branch-inspection worker panicked for project \"{}\": {reason}",
                     project_panic.name
@@ -1232,18 +1629,26 @@ impl App {
         });
     }
 
+    /// `checkout-project-default-branch`: ask about the selected agent's
+    /// project, or pick one from the project list first.
     pub(crate) fn checkout_selected_project_default_branch(&mut self) -> Result<()> {
-        let Some(project) = self.take_selected_project() else {
-            self.set_error("Select a project first.");
-            return Ok(());
-        };
+        self.run_project_command(ProjectAction::CheckoutDefaultBranch)
+    }
 
+    /// Ask the "check out the default branch?" question about `project`.
+    /// `return_to` is the action list it was asked from, which a cancel steps
+    /// back to.
+    pub(crate) fn ask_checkout_project_default_branch(
+        &mut self,
+        project: &Project,
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    ) {
         if project.path_missing {
             self.set_warning(format!(
                 "Cannot check out default branch: path not found for \"{}\"",
                 project.name
             ));
-            return Ok(());
+            return;
         }
 
         // Ask first, the same question the browser asks: the checkout moves
@@ -1253,8 +1658,8 @@ impl App {
             project_name: project.name.clone(),
             stored_base: project.leading_branch.clone(),
             focus: ConfirmFocus::Cancel, // Cancel is the safe default
+            return_to,
         };
-        Ok(())
     }
 
     /// Run the confirmed "check out the default branch": inspect, then check
@@ -1262,7 +1667,11 @@ impl App {
     pub(crate) fn dispatch_checkout_project_default_branch(&mut self, project: Project) {
         // One at a time per repository, whichever surface asked first; the
         // engine releases it at every ending of the chain.
-        if let Err(refusal) = self.engine.begin_default_branch_checkout(&project) {
+        if let Err(refusal) = self.engine.begin_project_folder_action(
+            &project.path,
+            &project.name,
+            yaran_core::engine::ProjectFolderAction::CheckoutDefaultBranch,
+        ) {
             self.apply_reaction(yaran_core::engine::EventReaction::Status(refusal));
             return;
         }
@@ -1291,11 +1700,11 @@ impl App {
             if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 yaran_core::project_browser::run_checkout_project_default_branch_inspection_job(
                     project,
-                    worker_tx,
+                    &worker_tx,
                     Some(status_op_id),
                 );
             })) {
-                let reason = yaran_core::engine::format_panic_payload(payload);
+                let reason = yaran_core::engine::format_panic_payload(&*payload);
                 yaran_core::logger::error(&format!(
                     "checkout-default-branch-inspection worker panicked for project \"{}\": \
                      {reason}",
@@ -1351,9 +1760,9 @@ impl App {
             } => self.start_create_agent_request(*request, busy_message),
             crate::app::SharedWriterAction::Reconnect {
                 session_id,
-                force,
-                seek_fullscreen,
-            } => self.dispatch_reconnect_plan_confirmed(&session_id, force, seek_fullscreen),
+                mode,
+                view,
+            } => self.dispatch_reconnect_plan_confirmed(&session_id, mode, view),
         };
         if let Err(err) = result {
             self.set_error(format!("{err:#}"));
@@ -1368,6 +1777,8 @@ impl App {
     ) -> Result<()> {
         self.arm_new_agent_settings(&request);
         let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+        let pull_request =
+            matches!(request, CreateAgentRequest::PullRequest { .. }).then(|| request.clone());
         // Armed only once the dispatch is known accepted, and taking the
         // in-flight key is what says so. The engine allows one create at a time
         // and refuses a second with an ordinary status rather than an error, so
@@ -1386,17 +1797,19 @@ impl App {
                 .engine
                 .is_in_flight(&yaran_core::engine::InFlightKey::CreateAgent)
         {
-            self.create_agent_started_here = true;
+            self.notes.create_agent_started_here = true;
+            // Armed only now that the create is accepted, under the key its
+            // answer will carry.
+            self.pull_request_create = self.engine.last_created_op_id.clone().zip(pull_request);
         }
         self.apply_reaction(reaction);
         Ok(())
     }
 
     pub(crate) fn pty_size_for_launch(&self) -> (u16, u16) {
-        if self.last_pty_size != (0, 0) {
-            self.last_pty_size
-        } else {
-            (24, 80)
+        match self.focused_pty_size() {
+            (0, 0) => (24, 80),
+            sent => sent,
         }
     }
 
@@ -1405,6 +1818,14 @@ impl App {
     /// picker's single-provider skip and its Apply branch, so the status copy and
     /// focus behavior cannot drift between them.
     fn spawn_tab_with_provider(&mut self, session_id: &str, provider: ProviderKind) {
+        let owner = TerminalOwner::Session(session_id.to_string());
+        if let Err(in_the_way) = self
+            .engine
+            .check_admission(&self.engine.inside_admission(&owner))
+        {
+            self.set_error(in_the_way.to_string());
+            return;
+        }
         let pty_size = self.pty_size_for_launch();
         match self.engine.create_tab(session_id, provider, pty_size) {
             Ok(tab_id) => {
@@ -1474,7 +1895,7 @@ impl App {
         self.prompt = PromptState::ChangeAgentProvider(ChangeAgentProviderPrompt {
             session_id: session.id.clone(),
             tab_id: session.id.clone(),
-            session_label: self.session_label(&session),
+            session_label: session.display_label(),
             worktree_path: session.directory().to_string(),
             options,
             selected,
@@ -1494,26 +1915,26 @@ impl App {
         &mut self,
         _session_id: &str,
         tab_id: &str,
-        seek_fullscreen: bool,
-    ) -> Result<()> {
+        view: LaunchView,
+    ) {
         // Resolution, per-provider resume decision, message wording and the
         // request build are the single-source `Engine::dormant_tab_launch_request`
         // shared with the web, so the two surfaces cannot drift. `None` (unknown
         // tab or gone session) is a silent no-op.
         let pty_size = self.pty_size_for_launch();
         if let Some(mut request) = self.engine.dormant_tab_launch_request(tab_id, pty_size) {
-            request.wants_fullscreen = self.launch_seeks_fullscreen(seek_fullscreen);
+            request.wants_fullscreen = self.launch_seeks_fullscreen(view);
             self.dispatch_agent_launch(request);
         }
-        Ok(())
     }
 
     /// Whether a launch dispatched right now should land fullscreen on
-    /// completion. `seek_fullscreen` is the caller's explicit intent; on top of
+    /// completion. `view` is the caller's explicit intent; on top of
     /// that, a launch started while the fullscreen relaunch screen is up keeps
     /// the user fullscreen rather than dropping them to the 3-pane layout.
-    pub(crate) fn launch_seeks_fullscreen(&self, seek_fullscreen: bool) -> bool {
-        seek_fullscreen || !matches!(self.fullscreen_overlay, FullscreenOverlay::None)
+    pub(crate) fn launch_seeks_fullscreen(&self, view: LaunchView) -> bool {
+        view == LaunchView::Fullscreen
+            || !matches!(self.fullscreen_overlay, FullscreenOverlay::None)
     }
 
     /// Close-tab entry point. Every tab opens the confirmation dialog, the tab in
@@ -1558,11 +1979,45 @@ impl App {
             .tab_prose_label(SessionIdRef::new(&session_id), TabIdRef::new(&tab_id))
             .unwrap_or_else(|| Self::title_case_word(session.provider.as_str()));
         self.prompt = PromptState::ConfirmCloseTab {
+            attached: Vec::new(),
             session_id,
             tab_id,
             provider_label,
             promoted_label,
             focus: ConfirmFocus::Cancel,
+        };
+    }
+
+    /// Stop the selected agent's focused tab: one with nothing running gets only
+    /// a line saying so, a running one is confirmed first.
+    pub(crate) fn stop_focused_tab_prompt(&mut self) {
+        let Some(session) = self.selected_session() else {
+            return;
+        };
+        let session_id = session.id.clone();
+        let tab_id = self.focused_tab_id(&session_id);
+        let provider_label = self
+            .engine
+            .tab_prose_label(SessionIdRef::new(&session_id), TabIdRef::new(&tab_id))
+            .unwrap_or_else(|| Self::title_case_word(session.provider.as_str()));
+        if !self.engine.providers.contains_key(TabIdRef::new(&tab_id)) {
+            self.set_info(format!(
+                "The {provider_label} tab is not running, so there is nothing to stop."
+            ));
+            return;
+        }
+        let last_running = self
+            .engine
+            .live_tab_ids(&session_id)
+            .iter()
+            .all(|live| live.as_str() == tab_id);
+        self.prompt = PromptState::ConfirmStopTab {
+            session_id,
+            tab_id,
+            provider_label,
+            last_running,
+            focus: ConfirmFocus::Cancel,
+            attached: Vec::new(),
         };
     }
 
@@ -1572,18 +2027,17 @@ impl App {
     pub(crate) fn agent_launch_request(
         &self,
         session: AgentSession,
-        resume: bool,
+        start: yaran_core::model::ConversationStart,
         kind: AgentLaunchKind,
     ) -> AgentLaunchRequest {
         self.engine
-            .build_agent_launch_request(session, resume, self.pty_size_for_launch(), kind)
+            .build_agent_launch_request(session, start, self.pty_size_for_launch(), kind)
     }
 
     /// Build the keyed status op for a reconnect or fresh-restart launch. The
     /// resolver reads the terminal message straight off the launch reaction's
     /// [`yaran_core::engine::LaunchOutcome`], so it captures no dispatch-time state.
     pub(super) fn build_reconnect_status_op(
-        &self,
         busy_message: String,
     ) -> yaran_core::engine::HandlerStatusOp<yaran_core::engine::LaunchOutcome> {
         yaran_core::engine::status_op(busy_message).resolve_in_handler(
@@ -1599,6 +2053,21 @@ impl App {
         // either. See `launch_claims_its_pty`.
         let tab_id = super::pty_ownership::launch_claims_its_pty(&request.kind)
             .then(|| request.tab_id.clone());
+        // Only a start of an existing tab is admission-checked: the startup sweep
+        // and a create's own launch start nothing another change could hold.
+        if matches!(
+            request.kind,
+            AgentLaunchKind::Reconnect { .. }
+                | AgentLaunchKind::ForceReconnect { .. }
+                | AgentLaunchKind::Tab { .. }
+        ) && let Err(in_the_way) = self.engine.check_admission(
+            &self
+                .engine
+                .tab_admission(&request.session.id, request.tab_id.clone()),
+        ) {
+            self.set_error(in_the_way.to_string());
+            return false;
+        }
         let reaction = match self.engine.apply(Command::DispatchAgentLaunch {
             request: Box::new(request),
         }) {
@@ -1632,8 +2101,8 @@ impl App {
     /// `wants_fullscreen` bit was stamped at dispatch; every other launch lands
     /// focused but minimized so the center pane is immediately typeable. Callers
     /// run `show_agent_surface` first.
-    pub(crate) fn land_completed_launch(&mut self, wants_fullscreen: bool) {
-        if wants_fullscreen {
+    pub(crate) fn land_completed_launch(&mut self, view: LaunchView) {
+        if view == LaunchView::Fullscreen {
             self.input_target = InputTarget::Agent;
             self.fullscreen_overlay = FullscreenOverlay::Agent;
         } else {
@@ -1648,11 +2117,11 @@ impl App {
     /// fullscreen is appended here with the key resolved through the bindings.
     pub(crate) fn launch_completion_message(
         &self,
-        engine_message: String,
-        wants_fullscreen: bool,
+        engine_message: &str,
+        view: LaunchView,
     ) -> String {
         let key = self.bindings.label_for(Action::ToggleFullscreen);
-        if wants_fullscreen {
+        if view == LaunchView::Fullscreen {
             format!("{engine_message} The pane is fullscreen; press {key} to minimize.")
         } else {
             format!(
@@ -1661,34 +2130,75 @@ impl App {
         }
     }
 
-    pub(crate) fn show_companion_terminal_surface(&mut self) {
+    /// Show `terminal_id` in the center pane with focus on it: an agent's
+    /// terminal in that agent's dock, at least in the split, and a project or
+    /// standalone terminal for its own row of the list.
+    pub(crate) fn show_terminal_in_center(&mut self, terminal_id: &str) {
+        let owner = match self.engine.companion_terminals.get(terminal_id) {
+            Some(terminal) => terminal.owner.clone(),
+            None => return,
+        };
+        match owner {
+            TerminalOwner::Session(session_id) => {
+                if self.selected_session().map(|s| s.id.as_str()) != Some(session_id.as_str()) {
+                    self.reselect_left_session(&session_id);
+                    self.close_diff_view();
+                    self.reload_changed_files();
+                }
+                self.dock_active
+                    .insert(session_id.clone(), terminal_id.to_string());
+                if self
+                    .dock_layouts
+                    .get(&session_id)
+                    .is_none_or(|layout| *layout == DockLayout::Agent)
+                {
+                    self.dock_layouts.insert(session_id, DockLayout::Split);
+                }
+            }
+            TerminalOwner::Project(_) | TerminalOwner::Standalone => {
+                self.rebuild_left_items();
+                self.reselect_left_terminal(terminal_id);
+                self.close_diff_view();
+            }
+        }
+        self.active_terminal_id = Some(terminal_id.to_string());
         self.session_surface = SessionSurface::Terminal;
-        self.fullscreen_overlay = FullscreenOverlay::Terminal;
+        self.center_mode = CenterMode::Agent;
+        self.focus = FocusPane::Center;
+        self.fullscreen_overlay = FullscreenOverlay::None;
+        self.reconcile_center_target();
     }
 
-    /// Claim and focus a terminal whose PTY was just created synchronously.
-    /// Keep this ordering aligned with ownership presentation: claiming before
-    /// opening the surface prevents the newly launched terminal from briefly
-    /// appearing behind the takeover card.
-    fn activate_new_terminal(&mut self, terminal_id: String) {
-        self.claim_launched_pty(&terminal_id);
-        self.active_terminal_id = Some(terminal_id);
-        self.terminal_return_to_list = true;
-        self.show_companion_terminal_surface();
-        self.input_target = InputTarget::Terminal;
+    /// Claim and focus a terminal whose PTY was just created synchronously,
+    /// landing focused but windowed, so typing reaches it the way it reaches a
+    /// freshly launched agent. Keep this ordering aligned with ownership
+    /// presentation: claiming before opening the surface prevents the newly
+    /// launched terminal from briefly appearing behind the takeover card.
+    fn activate_new_terminal(&mut self, terminal_id: &str) {
+        self.claim_launched_pty(terminal_id);
+        self.show_terminal_in_center(terminal_id);
+        self.input_target = InputTarget::None;
     }
 
     /// Always spawns a new companion terminal for the selected session.
-    pub(crate) fn show_companion_terminal(&mut self) -> Result<()> {
+    pub(crate) fn show_companion_terminal(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             self.set_error("Select an agent session first.");
-            return Ok(());
+            return;
         };
 
         // Route through the shared core creator so the id mint, the "Terminal N"
         // identity label, and the monotonic `sort_order` stamp are single-sourced
         // with the web. A hand-rolled insert misses the identity label and makes
         // the default drag order nondeterministic (HashMap iteration order).
+        if let Err(in_the_way) = self.engine.check_admission(
+            &self
+                .engine
+                .inside_admission(&TerminalOwner::Session(session.id.clone())),
+        ) {
+            self.set_error(in_the_way.to_string());
+            return;
+        }
         let (rows, cols) = self.pty_size_for_launch();
         let terminal_id = match self
             .engine
@@ -1696,38 +2206,48 @@ impl App {
         {
             Ok((id, _label)) => id,
             Err(e) => {
-                self.set_error(format!("Could not launch terminal: {e:#}"));
-                return Ok(());
+                self.set_error(terminal_launch_failure("Could not launch terminal", &e));
+                return;
             }
         };
         // No confirmation: the centre pane launches the shell and streams its
         // prompt, which is the big and unmistakable change the tenet exempts.
-        self.activate_new_terminal(terminal_id);
-        Ok(())
+        self.activate_new_terminal(&terminal_id);
     }
 
     /// Always spawns a new project terminal at the given project's repo root.
     /// A project terminal is a plain shell with no agent attached; it does NOT
     /// run the project's `startup_command`.
-    pub(crate) fn show_project_terminal(&mut self, project: &Project) -> Result<()> {
+    pub(crate) fn show_project_terminal(&mut self, project: &Project) {
         if project.path_missing {
             self.set_warning(format!(
                 "Cannot open a project terminal: path not found for \"{}\".",
                 project.name
             ));
-            return Ok(());
+            return;
         }
         // Shared core creator (see `show_companion_terminal`): single-sources the
         // id, the "Terminal N" label, and the deterministic `sort_order`.
+        if let Err(in_the_way) = self.engine.check_admission(
+            &self
+                .engine
+                .inside_admission(&TerminalOwner::Project(project.id.clone())),
+        ) {
+            self.set_error(in_the_way.to_string());
+            return;
+        }
         let (rows, cols) = self.pty_size_for_launch();
         let terminal_id = match self.engine.create_project_terminal(&project.id, rows, cols) {
             Ok((id, _label)) => id,
             Err(e) => {
-                self.set_error(format!("Could not launch project terminal: {e:#}"));
-                return Ok(());
+                self.set_error(terminal_launch_failure(
+                    "Could not launch project terminal",
+                    &e,
+                ));
+                return;
             }
         };
-        self.activate_new_terminal(terminal_id);
+        self.activate_new_terminal(&terminal_id);
         // A project terminal keeps its project above the "no agents" separator,
         // so the sidebar grouping may have changed.
         self.rebuild_left_items();
@@ -1735,7 +2255,6 @@ impl App {
             "Launched project terminal at the repo root of \"{}\".",
             project.name
         ));
-        Ok(())
     }
 
     /// Palette command (`new-standalone-terminal`): always spawns a new
@@ -1744,75 +2263,78 @@ impl App {
     /// A standalone terminal belongs to nothing, so it needs nothing selected and
     /// nothing to exist: no agent, no project. It runs no `startup_command`, for
     /// the same reason a project terminal does not.
-    pub(crate) fn show_standalone_terminal(&mut self) -> Result<()> {
+    pub(crate) fn show_standalone_terminal(&mut self) {
         // Shared core creator (see `show_companion_terminal`): single-sources the
         // id, the "Terminal N" label, and the deterministic `sort_order`.
         let (rows, cols) = self.pty_size_for_launch();
         let terminal_id = match self.engine.create_standalone_terminal(rows, cols) {
             Ok((id, _label)) => id,
             Err(e) => {
-                self.set_error(format!("Could not launch standalone terminal: {e:#}"));
-                return Ok(());
+                self.set_error(terminal_launch_failure(
+                    "Could not launch standalone terminal",
+                    &e,
+                ));
+                return;
             }
         };
         let where_it_is =
             yaran_core::home_path::shorten_home(&yaran_core::home_path::standalone_terminal_dir());
-        self.activate_new_terminal(terminal_id);
+        self.activate_new_terminal(&terminal_id);
         // yaran's own shutdown closes every terminal. What is special about this
         // kind is that no other event does: removing a project or deleting an
         // agent closes their terminals and leaves this one alone.
         self.set_info(format!(
             "Launched a standalone terminal in {where_it_is}. It belongs to no project and no agent, so it keeps running until it exits, you close it, or yaran shuts down."
         ));
-        Ok(())
     }
 
     /// Opens the first existing companion terminal for the SELECTED AGENT, or
     /// spawns a new one if none exists. Agent-scoped only: project terminals are
     /// reached through the explicit `new-terminal-for-project` command (via the
     /// project chooser), never by guessing from what is selected.
-    pub(crate) fn show_or_open_first_terminal(&mut self) -> Result<()> {
+    pub(crate) fn show_or_open_first_terminal(&mut self) {
         let Some(session) = self.selected_session() else {
             self.set_warning(
                 "Select an agent first, or use new-terminal-for-project for a project terminal.",
             );
-            return Ok(());
+            return;
         };
         let owner = TerminalOwner::Session(session.id.clone());
 
         let first = self
-            .engine
-            .companion_terminals
-            .iter()
-            .filter(|(_, t)| t.owner == owner)
-            .min_by_key(|(id, _)| {
-                id.strip_prefix("term-")
-                    .and_then(|n| n.parse::<u64>().ok())
-                    .unwrap_or(u64::MAX)
+            .dock_active
+            .get(&session.id)
+            .filter(|id| {
+                self.engine
+                    .companion_terminals
+                    .get(id.as_str())
+                    .is_some_and(|t| t.owner == owner)
             })
-            .map(|(id, _)| id.clone());
+            .cloned()
+            .or_else(|| self.dock_terminal_ids(&session.id).into_iter().next());
 
         if let Some(terminal_id) = first {
-            self.active_terminal_id = Some(terminal_id);
-            self.terminal_return_to_list = false;
-            self.show_companion_terminal_surface();
-            self.input_target = InputTarget::Terminal;
-            // No confirmation: the whole centre pane becomes that terminal.
-            return Ok(());
+            self.show_terminal_in_center(&terminal_id);
+            self.input_target = InputTarget::None;
+            // No confirmation: the dock opens on that terminal.
+            return;
         }
-        self.show_companion_terminal()
+        {
+            self.show_companion_terminal();
+        }
     }
 
-    /// Spawns a new companion terminal for the owner (agent session or
-    /// project) of the currently selected terminal in the terminals list.
-    pub(crate) fn spawn_terminal_for_selected_terminal(&mut self) -> Result<()> {
-        let items = self.terminal_items();
-        let Some(&(_, terminal)) = items.get(self.selected_terminal_index) else {
+    /// Spawns a new terminal for the owner (project, or none) of the terminal
+    /// whose row is selected in the agents list.
+    pub(crate) fn spawn_terminal_for_selected_terminal(&mut self) {
+        let Some(owner) = self
+            .selected_terminal_row()
+            .and_then(|id| self.engine.companion_terminals.get(&id))
+            .map(|terminal| terminal.owner.clone())
+        else {
             self.set_warning("No terminal selected.");
-            return Ok(());
+            return;
         };
-        let owner = terminal.owner.clone();
-        drop(items);
 
         let session_id = match owner {
             TerminalOwner::Session(session_id) => session_id,
@@ -1826,13 +2348,19 @@ impl App {
                     .cloned()
                 else {
                     self.set_warning("The parent project no longer exists.");
-                    return Ok(());
+                    return;
                 };
-                return self.show_project_terminal(&project);
+                return {
+                    self.show_project_terminal(&project);
+                };
             }
             // A standalone terminal's sibling is another standalone terminal.
             // There is no owner to resolve first, and none to have gone missing.
-            TerminalOwner::Standalone => return self.show_standalone_terminal(),
+            TerminalOwner::Standalone => {
+                return {
+                    self.show_standalone_terminal();
+                };
+            }
         };
 
         let Some(session) = self
@@ -1843,10 +2371,18 @@ impl App {
             .cloned()
         else {
             self.set_warning("The parent agent session no longer exists.");
-            return Ok(());
+            return;
         };
 
         // Shared core creator (see `show_companion_terminal`).
+        if let Err(in_the_way) = self.engine.check_admission(
+            &self
+                .engine
+                .inside_admission(&TerminalOwner::Session(session.id.clone())),
+        ) {
+            self.set_error(in_the_way.to_string());
+            return;
+        }
         let (rows, cols) = self.pty_size_for_launch();
         let terminal_id = match self
             .engine
@@ -1854,68 +2390,50 @@ impl App {
         {
             Ok((id, _label)) => id,
             Err(e) => {
-                self.set_error(format!("Could not launch terminal: {e:#}"));
-                return Ok(());
+                self.set_error(terminal_launch_failure("Could not launch terminal", &e));
+                return;
             }
         };
         // No confirmation, for the same reason as the first terminal: the pane
         // launches and streams.
-        self.activate_new_terminal(terminal_id);
-        Ok(())
+        self.activate_new_terminal(&terminal_id);
     }
 
     /// Palette command (`new-terminal-for-agent`): spawns a new companion
     /// terminal for the selected agent only, warning when none is selected.
     /// Project terminals have their own command (`new-terminal-for-project`), so
     /// this never guesses at a project.
-    pub(crate) fn new_companion_terminal(&mut self) -> Result<()> {
+    pub(crate) fn new_companion_terminal(&mut self) {
         if self.selected_session().is_some() {
-            return self.show_companion_terminal();
+            return {
+                self.show_companion_terminal();
+            };
         }
         self.set_warning(
             "Select an agent first, or use new-terminal-for-project for a project terminal.",
         );
-        Ok(())
     }
 
-    /// Opens the terminal overlay for the terminal selected in the terminals list.
-    pub(crate) fn open_terminal_from_terminal_list(&mut self) -> Result<()> {
-        let items = self.terminal_items();
-        let Some(&(terminal_id, terminal)) = items.get(self.selected_terminal_index) else {
-            return Ok(());
+    /// Focus the terminal whose row is selected in the agents list, windowed
+    /// and typeable, the way activating an agent row focuses the agent.
+    pub(crate) fn open_selected_terminal_row(&mut self) {
+        let Some(terminal_id) = self.selected_terminal_row() else {
+            return;
         };
-        let terminal_id = terminal_id.clone();
-        let owner = terminal.owner.clone();
-        drop(items);
-
-        // Select this terminal's owner (session or project) in the left pane.
-        let pos = match &owner {
-            TerminalOwner::Session(session_id) => self.left_items().iter().position(
-                |item| matches!(item, LeftItem::Session(idx) if self.engine.sessions.get(*idx).map(|s| s.id.as_str()) == Some(session_id.as_str())),
-            ),
-            // The flat agent list has no project rows, so a project terminal has no
-            // left-pane row to move the cursor onto. A standalone terminal has no
-            // owner at all, so it has none either.
-            TerminalOwner::Project(_) | TerminalOwner::Standalone => None,
-        };
-        if let Some(pos) = pos {
-            self.selected_left = pos;
-        }
-        self.reload_changed_files();
-
-        self.active_terminal_id = Some(terminal_id);
-        self.terminal_return_to_list = false;
-        self.show_companion_terminal_surface();
-        self.input_target = InputTarget::Terminal;
-        // No confirmation: the whole centre pane becomes that terminal.
-        Ok(())
+        self.show_terminal_in_center(&terminal_id);
+        self.input_target = InputTarget::None;
     }
 
+    /// `pull-project`: pull the selected agent's project, or pick one from the
+    /// project list first.
     pub(crate) fn refresh_selected_project(&mut self) -> Result<()> {
-        let Some(project) = self.take_selected_project() else {
-            self.set_error("Select a project first.");
-            return Ok(());
-        };
+        self.run_project_command(ProjectAction::Pull)
+    }
+
+    /// Pull `project` from its remote (after switching its folder back to its
+    /// base, the engine's rule for a project pull).
+    pub(crate) fn pull_project(&mut self, project: &Project) -> Result<()> {
+        let project = project.clone();
         if project.path_missing {
             self.set_warning(format!(
                 "Cannot refresh: path not found for \"{}\"",
@@ -1948,10 +2466,10 @@ impl App {
     /// unchanged screen, and with a dormant agent the row already looks exactly
     /// as it would after a successful detach, so silence in either case is
     /// indistinguishable from a failure.
-    pub(crate) fn confirm_detach_selected_session(&mut self) -> Result<()> {
+    pub(crate) fn confirm_detach_selected_session(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             self.set_error("Select an agent first, then run detach-agent on it.");
-            return Ok(());
+            return;
         };
         let label = session.display_label();
         // The engine's own oracle, not `any_tab_active`, which is in-flight
@@ -1961,9 +2479,10 @@ impl App {
         // the three from disagreeing about the same agent.
         if !self.engine.is_detachable(&session.id) {
             self.set_warning(yaran_core::engine::detach_not_running_message(&label));
-            return Ok(());
+            return;
         }
         self.prompt = PromptState::ConfirmDetachAgent {
+            attached: Vec::new(),
             session_id: session.id.clone(),
             label,
             grace_seconds: yaran_core::config::shutdown_grace(
@@ -1973,7 +2492,6 @@ impl App {
             live_tabs: self.engine.live_tab_count(&session.id),
             focus: ConfirmFocus::Cancel, // Cancel is the safe default
         };
-        Ok(())
     }
 
     /// The palette's `recreate-working-copy`: raise the confirmation for the
@@ -1981,10 +2499,10 @@ impl App {
     ///
     /// The refusal is loud, for the same reason the detach's is: the palette
     /// closed onto an unchanged screen either way.
-    pub(crate) fn confirm_recreate_selected_working_copy(&mut self) -> Result<()> {
+    pub(crate) fn confirm_recreate_selected_working_copy(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             self.set_error("Select an agent first, then run recreate-working-copy on it.");
-            return Ok(());
+            return;
         };
         let Some(inputs) = self.engine.recreate_working_copy_inputs(&session.id) else {
             self.set_warning(format!(
@@ -1992,7 +2510,7 @@ impl App {
                  manages, and only when its directory is gone.",
                 session.display_label()
             ));
-            return Ok(());
+            return;
         };
         self.prompt = PromptState::ConfirmRecreateWorkingCopy {
             session_id: inputs.session_id,
@@ -2000,23 +2518,29 @@ impl App {
             branch_name: inputs.branch_name,
             source_branch: inputs.source_branch,
             conversation_resumes: inputs.conversation_resumes,
-            running_providers: inputs.running_providers,
-            focus: ConfirmFocus::Cancel, // Cancel is the safe default
+            running_tabs: inputs.running_tabs,
+            // Ticked whenever it is offered: a tab that cannot follow the
+            // folder is stuck until it is restarted.
+            restart_tabs: !inputs.restart_offer.is_empty(),
+            restart_offer: inputs.restart_offer,
+            focus: RecreateWorkingCopyFocus::Cancel, // Cancel is the safe default
+            attached: Vec::new(),
         };
-        Ok(())
     }
 
-    pub(crate) fn confirm_delete_selected_session(&mut self) -> Result<()> {
+    pub(crate) fn confirm_delete_selected_session(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             self.set_error("Select a session first.");
-            return Ok(());
+            return;
         };
         let target = match &session.workspace {
             yaran_core::model::AgentWorkspace::Managed(managed) => {
+                // Agents SHARING this worktree (identity, not occupancy): the
+                // dialog then offers no removal. Anything living inside it is
+                // found by the occupancy rule when the removal runs.
                 // A shared-workspace agent runs in the project checkout, which
-                // yaran never removes, so its dialog offers no worktree box and
-                // says the directory is preserved, exactly like a worktree
-                // another agent is using.
+                // yaran never removes, so its dialog offers no worktree box
+                // either.
                 let worktree_shared = session.shared_workspace()
                     || self.engine.sessions.iter().any(|s| {
                         s.id != session.id
@@ -2027,8 +2551,6 @@ impl App {
                     });
                 crate::app::DeleteAgentTarget::Managed {
                     branch_name: managed.branch_name.clone(),
-                    initial_branch: managed.initial_branch.clone(),
-                    branch_provenance: managed.branch_provenance,
                     worktree_shared,
                 }
             }
@@ -2040,61 +2562,48 @@ impl App {
                 }
             }
         };
-        // The branch box starts in the provenance default: ticked for a branch
-        // yaran made, unticked for one that predates the agent. Both are
-        // overridable, which is the whole point of it being a control.
-        let delete_branch = session
-            .branch_provenance()
-            .is_some_and(|provenance| provenance.yaran_may_delete_branch());
+        let offers_branches = target.offers_worktree_checkbox();
         self.prompt = PromptState::ConfirmDeleteAgent {
+            attached: Vec::new(),
             session_id: session.id.clone(),
             agent_label: session.display_label(),
             target,
             focus: DeleteAgentFocus::Cancel, // Cancel is the safe default
             delete_worktree: false,          // Opt-in destructive action
-            delete_branch,
-            unpushed_commits: None,
+            delete_branch: None,
+            delete_other_branches: None,
+            offer: crate::app::DeleteBranchOffer::Pending,
         };
-        // Asked only where the warning could use it: a branch that predates the
-        // agent, or an agent that drifted so the tick takes a second branch with
-        // it. A branch yaran created for an agent still on it warns about nothing,
-        // so counting its commits would buy a git call to say nothing new.
-        let drifted = matches!(
-            &self.prompt,
-            PromptState::ConfirmDeleteAgent { target, .. } if target.warned_branches().len() > 1
-        );
-        if !delete_branch || drifted {
-            self.spawn_unpushed_commit_count(&session.id);
+        if offers_branches {
+            self.spawn_branch_offer(&session.id);
         }
-        Ok(())
     }
 
-    /// Count the commits on the branches the delete would remove that no
-    /// remote-tracking ref reaches, off the UI thread, and hand the answer back
-    /// through a one-shot channel that `drain_unpushed_count` reads.
-    ///
-    /// Every branch at once, because a drifted delete removes two and a number
-    /// covering one of them understates what the tick costs. One-shot rather than
-    /// a stored fact: the number goes stale the moment the user commits or
-    /// pushes, and it is rendered only by the dialog that asked for it.
-    fn spawn_unpushed_commit_count(&mut self, session_id: &str) {
+    /// Ask git, off the UI thread, what the delete dialog's branch boxes offer:
+    /// every branch the agent's worktree has been on, each pinned to the commit
+    /// a tick would delete, who made it, and how much work each box holds that
+    /// exists on no remote. The answer comes back through a one-shot channel
+    /// that `drain_unpushed_count` reads; until then both boxes are disabled.
+    fn spawn_branch_offer(&mut self, session_id: &str) {
         let Some(inputs) = self.engine.branch_delete_inputs(session_id) else {
+            if let PromptState::ConfirmDeleteAgent { offer, .. } = &mut self.prompt {
+                *offer = crate::app::DeleteBranchOffer::Failed(
+                    "the agent's project is gone".to_string(),
+                );
+            }
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
         self.unpushed_count_rx = Some(rx);
         let session_id = session_id.to_string();
         std::thread::spawn(move || {
-            let count = yaran_core::git::unpushed_commit_count(
-                std::path::Path::new(&inputs.project_path),
-                &inputs.warned_branches(),
-            )
-            .ok();
-            let _ = tx.send(UnpushedCountAnswer { session_id, count });
+            let offer = yaran_core::branch_history::delete_branch_offer(&inputs);
+            let _ = tx.send(BranchOfferAnswer { session_id, offer });
         });
     }
 
-    /// Fold a landed unpushed-commit count into the dialog that asked for it.
+    /// Fold a landed branch offer into the dialog that asked for it, and record
+    /// the branches it found that the agent's list did not have yet.
     ///
     /// Tagged with the session id and dropped when it does not match: the user
     /// can close this dialog and open another while the git call is still
@@ -2104,44 +2613,61 @@ impl App {
         let Some(rx) = self.unpushed_count_rx.as_ref() else {
             return;
         };
-        let Ok(answer) = rx.try_recv() else {
-            return;
+        let answer = match rx.try_recv() {
+            Ok(answer) => answer,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.unpushed_count_rx = None;
+                if let PromptState::ConfirmDeleteAgent { offer, .. } = &mut self.prompt {
+                    *offer = crate::app::DeleteBranchOffer::Failed(
+                        "the branch check stopped unexpectedly".to_string(),
+                    );
+                }
+                self.mark_frame_dirty();
+                return;
+            }
         };
         self.unpushed_count_rx = None;
         self.mark_frame_dirty();
+        self.engine
+            .record_offered_branches(&answer.session_id, &answer.offer.newly_seen);
         if let PromptState::ConfirmDeleteAgent {
-            session_id,
-            unpushed_commits,
-            ..
+            session_id, offer, ..
         } = &mut self.prompt
             && *session_id == answer.session_id
         {
-            *unpushed_commits = answer.count;
+            *offer = crate::app::DeleteBranchOffer::answered(answer.offer);
         }
     }
 
-    /// Delete the agent session identified by `session_id`, blocking the calling
-    /// thread for any git work. A synchronous test entry point for the
-    /// `Command::DoDeleteSession` behavior; production deletes go through
-    /// [`begin_delete_session`] so git work runs off the UI thread.
-    ///
-    /// When `delete_worktree` is true and no other sessions share the worktree,
-    /// the git worktree and branch are removed first; a failed git removal
-    /// preserves the session record so the caller can retry. When it is false,
-    /// the worktree and branch are always preserved.
+    /// Delete an agent through the one real pipeline, as a test drives it:
+    /// `begin_delete_session`, then the reaper and the worker events until the
+    /// delete's removal (if any) has reported. A failure the status line
+    /// reports as an error comes back as `Err` with that sentence.
     #[cfg(test)]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a test helper: a delete that never finishes must fail the test, not read as the delete's own error"
+    )]
     pub(crate) fn do_delete_session(
         &mut self,
         session_id: &str,
-        delete_worktree: bool,
+        worktree: yaran_core::engine::WorktreeOnDelete,
         delete_branch: Option<bool>,
     ) -> Result<()> {
-        let reaction = self.engine.apply(Command::DoDeleteSession {
-            session_id: session_id.to_string(),
-            delete_worktree,
-            delete_branch,
-        })?;
-        self.apply_reaction(reaction);
+        self.begin_delete_session_asking(session_id, worktree, delete_branch, None);
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        while self.pending_delete_ops.contains_key(session_id)
+            || self.engine.pending_deletions.contains(session_id)
+        {
+            assert!(Instant::now() < deadline, "the delete never finished");
+            self.apply_reaped_terminations();
+            self.drain_events();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if self.status.tone() == crate::statusline::StatusTone::Error {
+            anyhow::bail!("{}", self.status.text());
+        }
         Ok(())
     }
 
@@ -2162,14 +2688,13 @@ impl App {
             .sessions
             .iter()
             .find(|s| s.id == session_id)
-            .map(|session| {
+            .map_or_default(|session| {
                 let project_name = session
                     .project_id()
                     .and_then(|project_id| self.engine.projects.iter().find(|p| p.id == project_id))
                     .map(|p| p.name.clone());
                 yaran_core::wire::DeleteReportFacts::from_session(session, project_name)
-            })
-            .unwrap_or_default();
+            });
         yaran_core::engine::status_op(busy_message).resolve_in_handler(
             move |o: &TuiDeleteOutcome| {
                 match o {
@@ -2211,20 +2736,39 @@ impl App {
         )
     }
 
+    /// Start deleting an agent. A refusal naming who is attached is returned for
+    /// the dialog; any other failure goes on the status line.
     pub(crate) fn begin_delete_session(
         &mut self,
         session_id: &str,
-        delete_worktree: bool,
+        worktree: yaran_core::engine::WorktreeOnDelete,
+        branches: Option<yaran_core::branch_history::BranchAnswersWire>,
+    ) -> Option<yaran_core::engine::Attached> {
+        self.begin_delete_session_asking(session_id, worktree, None, branches)
+    }
+
+    /// [`Self::begin_delete_session`] with the older single branch answer too,
+    /// which only a test still sends.
+    fn begin_delete_session_asking(
+        &mut self,
+        session_id: &str,
+        worktree: yaran_core::engine::WorktreeOnDelete,
         delete_branch: Option<bool>,
-    ) {
+        branches: Option<yaran_core::branch_history::BranchAnswersWire>,
+    ) -> Option<yaran_core::engine::Attached> {
         match self.engine.apply(Command::BeginDeleteSession {
             session_id: session_id.to_string(),
-            delete_worktree,
+            delete_worktree: worktree == yaran_core::engine::WorktreeOnDelete::Remove,
             delete_branch,
+            branches,
         }) {
             Ok(reaction) => self.apply_reaction(reaction),
-            Err(e) => self.set_error(format!("{e:#}")),
+            Err(e) => match super::attachment_presence::attached_refusal(e) {
+                Ok(refused) => return Some(refused),
+                Err(e) => self.set_error(format!("{e:#}")),
+            },
         }
+        None
     }
 
     /// Remove all local bookkeeping for a session whose git side has already been
@@ -2233,19 +2777,19 @@ impl App {
     /// may have deleted the project before the worker replies.
     ///
     /// `removal` records what happened to the worktree and drives the success
-    /// message variant. `update_status` says whether to write that message at
-    /// all: the async worker handler passes `false` when an unrelated operation
+    /// message variant. `report` says whether to write that message at
+    /// all: the async worker handler passes [`DeleteReport::Quiet`] when an unrelated operation
     /// has already overwritten the status line.
     pub(crate) fn finish_delete_session(
         &mut self,
         session_id: &str,
         removal: WorktreeRemoval,
-        update_status: bool,
+        report: DeleteReport,
     ) -> Result<()> {
         let reaction = self.engine.apply(Command::FinishDeleteSession {
             session_id: session_id.to_string(),
             removal,
-            update_status,
+            update_status: report == DeleteReport::Announce,
         })?;
         self.apply_reaction(reaction);
         Ok(())
@@ -2255,8 +2799,8 @@ impl App {
         &mut self,
         session_id: &str,
         outcome: FinishDeleteSessionOutcome,
-        removal: WorktreeRemoval,
-        update_status: bool,
+        removal: &WorktreeRemoval,
+        report: DeleteReport,
     ) {
         let FinishDeleteSessionOutcome {
             session,
@@ -2275,20 +2819,18 @@ impl App {
         self.clear_companion_terminals_for_session(session_id);
         self.clear_focused_tab_for_session(session_id);
 
-        // The deleted session is already gone from `engine.sessions`, so the row
-        // that slid into the freed slot sits at the same display index: keep the
-        // cursor where it is and let `rebuild_left_items` re-clamp it to a
-        // selectable row.
+        // The deleted session is already gone from `engine.sessions`, so a
+        // cursor on it rests on no row and the centre shows the tips screen:
+        // the row that slid into its place is an agent nobody picked.
         self.rebuild_left_items();
-        self.ensure_selectable_left_item();
         self.reload_changed_files();
 
-        if update_status {
+        if report == DeleteReport::Announce {
             let facts = yaran_core::wire::DeleteReportFacts::from_session(
                 &session,
                 project.as_ref().map(|p| p.name.clone()),
             );
-            let message = yaran_core::wire::delete_session_status_message(&facts, &removal);
+            let message = yaran_core::wire::delete_session_status_message(&facts, removal);
             // A branch git refused to delete is still on disk and only the user
             // can clear it, so the line is a warning. The web makes the same one
             // sticky; this surface answers with warning retention instead.
@@ -2300,32 +2842,45 @@ impl App {
         }
     }
 
-    pub(crate) fn confirm_delete_selected_terminal(&mut self) -> Result<()> {
-        let items = self.terminal_items();
-        let Some((terminal_id, terminal)) = items.get(self.selected_terminal_index) else {
+    /// Open the close confirm for the terminal the close binding means: the
+    /// selected terminal row's, or the dock's active one while it has focus.
+    pub(crate) fn confirm_close_focused_terminal(&mut self) {
+        let Some((terminal_id, terminal)) = self
+            .focused_terminal_to_close()
+            .and_then(|id| self.engine.companion_terminals.get_key_value(&id))
+        else {
             self.set_error("Select a terminal first.");
-            return Ok(());
+            return;
         };
         self.prompt = PromptState::ConfirmDeleteTerminal {
-            terminal_id: (*terminal_id).clone(),
+            attached: Vec::new(),
+            terminal_id: terminal_id.clone(),
             terminal_label: terminal.label.clone(),
             foreground_cmd: terminal.foreground_cmd.clone(),
             focus: ConfirmFocus::Cancel, // Cancel is default
         };
-        Ok(())
     }
 
-    pub(crate) fn do_delete_terminal(&mut self, terminal_id: &str) {
+    /// Close a terminal. A refusal naming who is attached is returned for the
+    /// dialog; any other failure goes on the status line.
+    pub(crate) fn do_delete_terminal(
+        &mut self,
+        terminal_id: &str,
+    ) -> Option<yaran_core::engine::Attached> {
         let reaction = match self.engine.apply(Command::DeleteTerminal {
             terminal_id: terminal_id.to_string(),
         }) {
             Ok(r) => r,
             Err(e) => {
-                self.set_error(format!("{e:#}"));
-                return;
+                match super::attachment_presence::attached_refusal(e) {
+                    Ok(refused) => return Some(refused),
+                    Err(e) => self.set_error(format!("{e:#}")),
+                }
+                return None;
             }
         };
         self.apply_reaction(reaction);
+        None
     }
 
     fn change_agent_provider_options(
@@ -2352,14 +2907,14 @@ impl App {
             .collect()
     }
 
-    pub(crate) fn open_change_agent_provider_prompt(&mut self) -> Result<()> {
+    pub(crate) fn open_change_agent_provider_prompt(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             self.set_error("Select an agent session first.");
-            return Ok(());
+            return;
         };
         if self.engine.config.providers.commands.is_empty() {
             self.set_error("No providers are configured.");
-            return Ok(());
+            return;
         }
         self.input_target = InputTarget::None;
         self.fullscreen_overlay = FullscreenOverlay::None;
@@ -2367,7 +2922,7 @@ impl App {
         self.prompt = PromptState::ChangeAgentProvider(ChangeAgentProviderPrompt {
             session_id: session.id.clone(),
             tab_id,
-            session_label: self.session_label(&session),
+            session_label: session.display_label(),
             worktree_path: session.directory().to_string(),
             options: self.change_agent_provider_options(&session),
             selected: 0,
@@ -2376,7 +2931,6 @@ impl App {
         self.set_prompt_hint(
             "Choose a provider for this worktree. The change takes effect on the next launch; yaran resumes each provider's prior session on this worktree when available.",
         );
-        Ok(())
     }
 
     pub(crate) fn apply_change_agent_provider(&mut self) -> Result<()> {
@@ -2425,11 +2979,9 @@ impl App {
 
         let session_id = self.engine.sessions[session_index].id.clone();
         // Retarget the focused tab (Main delegates to the session-level change).
-        let outcome = self.engine.change_tab_provider(
-            &session_id,
-            &prompt.tab_id,
-            selected.provider.clone(),
-        )?;
+        let outcome =
+            self.engine
+                .change_tab_provider(&session_id, &prompt.tab_id, &selected.provider)?;
         self.rebuild_left_items();
 
         let reconnect_key = self.bindings.label_for(Action::ReconnectAgent);
@@ -2510,10 +3062,10 @@ impl App {
         options
     }
 
-    pub(crate) fn open_change_default_provider_prompt(&mut self) -> Result<()> {
+    pub(crate) fn open_change_default_provider_prompt(&mut self) {
         if self.engine.config.providers.commands.is_empty() {
             self.set_error("No providers are configured.");
-            return Ok(());
+            return;
         }
         let options = self.change_default_provider_options();
         let selected = options
@@ -2531,18 +3083,25 @@ impl App {
         self.set_prompt_hint(
             "Choose the global default provider for newly created agent sessions. Projects with an explicit project provider keep their override, and existing agents keep their current provider.",
         );
-        Ok(())
     }
 
+    /// `change-project-default-provider`: for the selected agent's project, or
+    /// for one picked from the project list first.
     pub(crate) fn open_change_project_default_provider_prompt(&mut self) -> Result<()> {
+        self.run_project_command(ProjectAction::DefaultProvider)
+    }
+
+    /// Open the default-provider picker for `project`.
+    pub(crate) fn open_change_project_default_provider_for(
+        &mut self,
+        project: &Project,
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    ) {
         if self.engine.config.providers.commands.is_empty() {
             self.set_error("No providers are configured.");
-            return Ok(());
+            return;
         }
-        let Some(project) = self.take_selected_project() else {
-            self.set_error("Select a project first.");
-            return Ok(());
-        };
+        let project = project.clone();
         let options = self.change_project_default_provider_options(&project.id);
         let selected = options
             .iter()
@@ -2556,6 +3115,7 @@ impl App {
         self.fullscreen_overlay = FullscreenOverlay::None;
         self.prompt =
             PromptState::ChangeProjectDefaultProvider(ChangeProjectDefaultProviderPrompt {
+                return_to,
                 project_id: project.id,
                 project_name: project.name,
                 current: project.default_provider,
@@ -2567,19 +3127,18 @@ impl App {
         self.set_prompt_hint(
             "Choose the selected project's default provider for future agents. Choose \"inherit global default\" to remove a project-specific override. Existing agents keep their current provider.",
         );
-        Ok(())
     }
 
-    pub(crate) fn apply_change_default_provider(&mut self) -> Result<()> {
+    pub(crate) fn apply_change_default_provider(&mut self) {
         let prompt = match &self.prompt {
             PromptState::ChangeDefaultProvider(prompt) => prompt.clone(),
-            _ => return Ok(()),
+            _ => return,
         };
         self.clear_prompt_hint();
         let Some(selected) = prompt.options.get(prompt.selected).cloned() else {
             self.prompt = PromptState::None;
             self.set_error("Select a provider first.");
-            return Ok(());
+            return;
         };
         self.prompt = PromptState::None;
         if selected.is_current {
@@ -2587,7 +3146,7 @@ impl App {
                 "{} is already the global default provider. Pick a different one to change it.",
                 selected.provider.as_str(),
             ));
-            return Ok(());
+            return;
         }
         let previous = self.engine.config.defaults.provider.clone();
         self.engine.config.defaults.provider = selected.provider.as_str().to_string();
@@ -2600,7 +3159,7 @@ impl App {
             self.set_error(format!(
                 "Couldn't persist the global default provider change: {err}"
             ));
-            return Ok(());
+            return;
         }
         self.engine.refresh_project_defaults();
         self.rebuild_left_items();
@@ -2608,10 +3167,23 @@ impl App {
             "Global default provider changed to {}. New agents in projects without a project-specific override will use it; existing agents keep their current provider. Use \"change-project-default-provider\" to override one project or \"change-agent-provider\" to switch an existing worktree.",
             selected.provider.as_str(),
         ));
-        Ok(())
     }
 
+    /// Apply the project default-provider picker, then step back to the action
+    /// list it was opened from once it has closed (after its own status).
     pub(crate) fn apply_change_project_default_provider(&mut self) -> Result<()> {
+        let return_to = match &mut self.prompt {
+            PromptState::ChangeProjectDefaultProvider(prompt) => prompt.return_to.take(),
+            _ => None,
+        };
+        let result = self.apply_change_project_default_provider_now();
+        if matches!(self.prompt, PromptState::None) {
+            self.return_to_project_actions(return_to);
+        }
+        result
+    }
+
+    fn apply_change_project_default_provider_now(&mut self) -> Result<()> {
         let prompt = match &self.prompt {
             PromptState::ChangeProjectDefaultProvider(prompt) => prompt.clone(),
             _ => return Ok(()),
@@ -2703,11 +3275,18 @@ impl App {
         Ok(())
     }
 
+    /// `toggle-project-auto-reopen-agents`: for the selected agent's project,
+    /// or for one picked from the project list first.
     pub(crate) fn toggle_project_auto_reopen_agents(&mut self) -> Result<()> {
-        let Some(project) = self.take_selected_project() else {
-            self.set_error("Select a project first.");
-            return Ok(());
-        };
+        self.run_project_command(ProjectAction::AutoReopen)
+    }
+
+    /// Flip whether `project`'s agents reopen at startup.
+    pub(crate) fn toggle_project_auto_reopen_agents_for(
+        &mut self,
+        project: &Project,
+    ) -> Result<()> {
+        let project = project.clone();
         let enabled = self.engine.project_allows_auto_reopen(&project.id);
         let auto_reopen_agents = if enabled { Some(false) } else { None };
         let project_name = project.name.clone();
@@ -2764,14 +3343,23 @@ impl App {
         Ok(())
     }
 
+    /// `configure-startup-command`: for the selected agent's project, or for
+    /// one picked from the project list first.
     pub(crate) fn open_configure_startup_command(&mut self) -> Result<()> {
-        let Some(project) = self.take_selected_project() else {
-            self.set_error("Select a project first.");
-            return Ok(());
-        };
+        self.run_project_command(ProjectAction::StartupCommand)
+    }
+
+    /// Open the startup-command editor for `project`.
+    pub(crate) fn open_configure_startup_command_for(
+        &mut self,
+        project: &Project,
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    ) {
+        let project = project.clone();
         self.input_target = InputTarget::None;
         self.fullscreen_overlay = FullscreenOverlay::None;
         self.prompt = PromptState::ConfigureStartupCommand {
+            return_to,
             project_id: project.id,
             project_name: project.name.clone(),
             input: TextInput::with_text(project.startup_command.unwrap_or_default())
@@ -2781,13 +3369,31 @@ impl App {
         };
         self.input_target = InputTarget::None;
         self.set_info("Enter a startup command for this project. Empty clears it.");
-        Ok(())
     }
 
+    /// Save, then step back to the action list the editor was opened from
+    /// once it has closed (after its own status). An invalid entry keeps the
+    /// editor open, so nothing steps back.
     pub(crate) fn apply_configure_startup_command(&mut self) -> Result<()> {
         if self.configure_save_op.is_some() {
             return Ok(());
         }
+        let return_to = super::project_actions::configure_return_to(&mut self.prompt);
+        let result = self.apply_configure_startup_command_now();
+        match &mut self.prompt {
+            PromptState::None => self.return_to_project_actions(return_to),
+            PromptState::ConfigureStartupCommand {
+                return_to: slot, ..
+            }
+            | PromptState::ConfigureProjectEnv {
+                return_to: slot, ..
+            } => *slot = return_to,
+            _ => {}
+        }
+        result
+    }
+
+    fn apply_configure_startup_command_now(&mut self) -> Result<()> {
         let (project_id, project_name, command) = match &self.prompt {
             PromptState::ConfigureStartupCommand {
                 project_id,
@@ -2852,14 +3458,23 @@ impl App {
         Ok(())
     }
 
+    /// `configure-project-env`: for the selected agent's project, or for one
+    /// picked from the project list first.
     pub(crate) fn open_configure_project_env(&mut self) -> Result<()> {
-        let Some(project) = self.take_selected_project() else {
-            self.set_error("Select a project first.");
-            return Ok(());
-        };
+        self.run_project_command(ProjectAction::Environment)
+    }
+
+    /// Open the environment editor for `project`.
+    pub(crate) fn open_configure_project_env_for(
+        &mut self,
+        project: &Project,
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    ) {
+        let project = project.clone();
         self.input_target = InputTarget::None;
         self.fullscreen_overlay = FullscreenOverlay::None;
         self.prompt = PromptState::ConfigureProjectEnv {
+            return_to,
             project_id: project.id,
             project_name: project.name.clone(),
             input: TextInput::with_text(crate::config::project_env_to_lines(&project.env))
@@ -2868,10 +3483,9 @@ impl App {
             focus: ConfigureFieldFocus::default(),
         };
         self.set_info("Enter one environment variable per line as KEY=value. Empty clears them.");
-        Ok(())
     }
 
-    pub(crate) fn open_configure_global_env(&mut self) -> Result<()> {
+    pub(crate) fn open_configure_global_env(&mut self) {
         self.input_target = InputTarget::None;
         self.fullscreen_overlay = FullscreenOverlay::None;
         self.prompt = PromptState::ConfigureGlobalEnv {
@@ -2884,7 +3498,6 @@ impl App {
             focus: ConfigureFieldFocus::default(),
         };
         self.set_info("Enter global environment variables as KEY=value. Empty clears them.");
-        Ok(())
     }
 
     pub(crate) fn apply_configure_global_env(&mut self) -> Result<()> {
@@ -2919,10 +3532,29 @@ impl App {
         Ok(())
     }
 
+    /// Save, then step back to the action list the editor was opened from
+    /// once it has closed (after its own status). An invalid entry keeps the
+    /// editor open, so nothing steps back.
     pub(crate) fn apply_configure_project_env(&mut self) -> Result<()> {
         if self.configure_save_op.is_some() {
             return Ok(());
         }
+        let return_to = super::project_actions::configure_return_to(&mut self.prompt);
+        let result = self.apply_configure_project_env_now();
+        match &mut self.prompt {
+            PromptState::None => self.return_to_project_actions(return_to),
+            PromptState::ConfigureStartupCommand {
+                return_to: slot, ..
+            }
+            | PromptState::ConfigureProjectEnv {
+                return_to: slot, ..
+            } => *slot = return_to,
+            _ => {}
+        }
+        result
+    }
+
+    fn apply_configure_project_env_now(&mut self) -> Result<()> {
         let (project_id, project_name, env) = match &self.prompt {
             PromptState::ConfigureProjectEnv {
                 project_id,
@@ -2988,10 +3620,80 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn rerun_startup_command_on_agent(&mut self) -> Result<()> {
+    /// The project a startup-command rerun runs for, its command, and the
+    /// environment it runs with, or the sentence that refuses the rerun.
+    /// Resolved before anything is claimed, so a refusal leaves nothing held.
+    fn startup_rerun_inputs(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::app::StartupRerunInputs, String> {
+        let project = self
+            .engine
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .cloned()
+            .ok_or_else(|| "Could not find the selected agent's project.".to_string())?;
+        let command = project
+            .startup_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!(
+                    "Project \"{}\" does not have a startup command.",
+                    project.name
+                )
+            })?;
+        let env = yaran_core::engine::resolve_env_or_refuse(
+            &self.engine.config.env,
+            yaran_core::engine::EnvOverlay::Project {
+                name: &project.name,
+                env: &project.env,
+            },
+            "rerun the startup command",
+        )
+        .map_err(|refusal| refusal.to_string())?;
+        Ok(crate::app::StartupRerunInputs {
+            project,
+            command,
+            env,
+        })
+    }
+
+    /// The rerun's status op: its busy, and the final for each outcome.
+    fn startup_rerun_op(
+        &self,
+        branch: &str,
+        project_name: &str,
+    ) -> yaran_core::engine::StatusOp<(), String> {
+        // Declare the loading→final states together. The success message needs
+        // the palette keybinding label (render context only the main thread has);
+        // resolve it HERE and bake it into the op's outcomes. The status rides a
+        // separate StatusOpCompleted event from the worker.
+        let palette_key = self.bindings.label_for(Action::OpenPalette);
+        let success_name = project_name.to_string();
+        let failure_name = project_name.to_string();
+        yaran_core::engine::status_op(format!(
+            "Rerunning startup command for agent \"{branch}\"..."
+        ))
+        .on_success(move |(): &()| {
+            yaran_core::engine::Final::info(format!(
+                "Startup command completed for project \"{success_name}\". Press {palette_key} and run read-startup-command-logs to view the latest log.",
+            ))
+        })
+        .on_failure(move |err: &String| {
+            yaran_core::engine::Final::error(format!(
+                "Startup command failed for project \"{failure_name}\": {err}. Run read-startup-command-logs for details.",
+            ))
+        })
+    }
+
+    pub(crate) fn rerun_startup_command_on_agent(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             self.set_error("Select an agent first.");
-            return Ok(());
+            return;
         };
         // A startup command provisions a worktree for a project, so a
         // standalone agent has neither one to run nor a place to run it. The
@@ -3005,76 +3707,71 @@ impl App {
             Ok(managed) => managed.clone(),
             Err(err) => {
                 self.set_error(err.to_string());
-                return Ok(());
+                return;
             }
         };
-        let Some(project) = self
-            .engine
-            .projects
-            .iter()
-            .find(|project| project.id == managed.project_id)
-            .cloned()
-        else {
-            self.set_error("Could not find the selected agent's project.");
-            return Ok(());
+        let crate::app::StartupRerunInputs {
+            project,
+            command,
+            env,
+        } = match self.startup_rerun_inputs(&managed.project_id) {
+            Ok(inputs) => inputs,
+            Err(refusal) => {
+                self.set_error(refusal);
+                return;
+            }
         };
-        let Some(command) = project
-            .startup_command
-            .as_deref()
-            .map(str::trim)
-            .filter(|command| !command.is_empty())
-            .map(str::to_string)
-        else {
-            self.set_error(format!(
-                "Project \"{}\" does not have a startup command.",
-                project.name
-            ));
-            return Ok(());
+        // One run per agent at a time, and a hold on the worktree so a removal
+        // waits for it; one sentence when either is refused.
+        let claim = match self.engine.claim_startup_rerun(
+            &session.id,
+            &session.display_label(),
+            &managed.worktree_path,
+        ) {
+            Ok(claim) => claim,
+            Err(refusal) => {
+                self.set_error(refusal.to_string());
+                return;
+            }
         };
         let paths = self.engine.paths.clone();
         let tx = self.engine.worker_tx.clone();
-        let branch = managed.branch_name.clone();
         let terminal = self.engine.config.startup_command_terminal.clone();
-        let env = crate::config::resolve_agent_env(&self.engine.config.env, &project.env)
-            .unwrap_or_default();
-        // Declare the loading→final states together. The success message needs
-        // the palette keybinding label (render context only the main thread has);
-        // resolve it HERE and bake it into the op's outcomes. The status rides a
-        // separate StatusOpCompleted event from the worker.
-        let palette_key = self.bindings.label_for(Action::OpenPalette);
-        let success_name = project.name.clone();
-        let failure_name = project.name.clone();
-        let op = yaran_core::engine::status_op(format!(
-            "Rerunning startup command for agent \"{branch}\"..."
-        ))
-        .on_success(move |_: &()| {
-            yaran_core::engine::Final::info(format!(
-                "Startup command completed for project \"{success_name}\". Press {palette_key} and run read-startup-command-logs to view the latest log.",
-            ))
-        })
-        .on_failure(move |err: &String| {
-            yaran_core::engine::Final::error(format!(
-                "Startup command failed for project \"{failure_name}\": {err}. Run read-startup-command-logs for details.",
-            ))
-        });
+        let op = self.startup_rerun_op(&managed.branch_name, &project.name);
         let pending = self.engine.begin_status_op(&op);
-        std::thread::spawn(move || {
-            let result = crate::startup::run_startup_command(
-                &paths,
-                crate::startup::StartupCommandRun {
-                    project,
-                    session,
-                    managed,
-                    command,
-                    terminal,
-                    env,
-                },
-            );
-            let resolved = op.resolve(&result.status);
-            let _ = tx.send(WorkerEvent::StatusOpCompleted { resolved });
-        });
+        let panic_final = status_op_panic_final(
+            PendingStatusOp::status_key(&op),
+            "rerun the startup command",
+        );
+        let panic_tx = tx.clone();
+        spawn_guarded(
+            "startup command rerun",
+            move || {
+                let yaran_core::engine::StartupRerunClaim {
+                    run: run_claim,
+                    hold,
+                } = claim;
+                let _hold = hold;
+                let result = crate::startup::run_claimed_startup_command(
+                    &paths,
+                    crate::startup::StartupCommandRun {
+                        project,
+                        session,
+                        managed,
+                        command,
+                        terminal,
+                        env,
+                    },
+                    run_claim,
+                );
+                let resolved = op.resolve(&result.status);
+                let _ = tx.send(WorkerEvent::StatusOpCompleted { resolved });
+            },
+            move |reason| {
+                let _ = panic_tx.send(panic_final(reason));
+            },
+        );
         self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
-        Ok(())
     }
 
     pub(crate) fn open_startup_command_logs(&mut self) -> Result<()> {
@@ -3101,20 +3798,24 @@ impl App {
                     session_id: session.id,
                 },
             )
-        } else if let Some(project) = self.selected_project().cloned() {
-            (
-                format!("project \"{}\"", project.name),
-                crate::startup::StartupCommandLogScope::Project {
-                    project_id: project.id,
-                },
-            )
         } else {
-            self.set_error("Select an agent or project first.");
-            return Ok(());
+            // No agent selected: the logs of every agent in a project, picked
+            // from the project list.
+            return self.run_project_command(ProjectAction::StartupLogs);
         };
 
         self.spawn_startup_command_log_load(scope_label, scope);
         Ok(())
+    }
+
+    /// Load the startup-command logs of every agent in `project`.
+    pub(crate) fn open_project_startup_command_logs(&mut self, project: &Project) {
+        self.spawn_startup_command_log_load(
+            format!("project \"{}\"", project.name),
+            crate::startup::StartupCommandLogScope::Project {
+                project_id: project.id.clone(),
+            },
+        );
     }
 
     /// Move the picker's selection onto `selected` and load that run's output.
@@ -3148,7 +3849,7 @@ impl App {
             prompt.scroll_offset = 0;
         }
         self.startup_log_selection = None;
-        self.spawn_startup_command_log_content_load(path, display_name);
+        self.spawn_startup_command_log_content_load(path, &display_name);
     }
 
     /// Apply a run body that finished reading off-thread.
@@ -3337,24 +4038,35 @@ impl App {
             ))
         });
         let pending = self.engine.begin_status_op(&op);
-        std::thread::spawn(move || {
-            let result = crate::startup::load_logs_for_scope(&paths, scope)
-                .map_err(|err| format!("{err:#}"));
-            let resolved = op.resolve(&result);
-            let _ = tx.send(WorkerEvent::StatusOpCompleted { resolved });
-            // Domain work exists only when there is something to open. The
-            // failure AND the nothing-recorded outcomes are fully carried by
-            // the StatusOpCompleted above.
-            match result {
-                Ok(listing) if !listing.entries.is_empty() => {
-                    let _ = tx.send(WorkerEvent::StartupCommandLogsLoaded {
-                        scope_label,
-                        result: Ok(listing),
-                    });
+        let panic_final = status_op_panic_final(
+            PendingStatusOp::status_key(&op),
+            "read the startup command logs",
+        );
+        let panic_tx = tx.clone();
+        spawn_guarded(
+            "startup command logs",
+            move || {
+                let result = crate::startup::load_logs_for_scope(&paths, scope)
+                    .map_err(|err| format!("{err:#}"));
+                let resolved = op.resolve(&result);
+                let _ = tx.send(WorkerEvent::StatusOpCompleted { resolved });
+                // Domain work exists only when there is something to open. The
+                // failure AND the nothing-recorded outcomes are fully carried by
+                // the StatusOpCompleted above.
+                match result {
+                    Ok(listing) if !listing.entries.is_empty() => {
+                        let _ = tx.send(WorkerEvent::StartupCommandLogsLoaded {
+                            scope_label,
+                            result: Ok(listing),
+                        });
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-        });
+            },
+            move |reason| {
+                let _ = panic_tx.send(panic_final(reason));
+            },
+        );
         self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
     }
 
@@ -3363,9 +4075,9 @@ impl App {
     /// The final is [`Final::clear`]: the output appearing in the pane IS the
     /// confirmation, and a success line per arrow-key press would be noise on a
     /// status surface that is most-recent-wins. A failure still speaks up.
-    fn spawn_startup_command_log_content_load(&mut self, path: PathBuf, display_name: String) {
+    fn spawn_startup_command_log_content_load(&mut self, path: PathBuf, display_name: &str) {
         let tx = self.engine.worker_tx.clone();
-        let failure_name = display_name.clone();
+        let failure_name = display_name.to_string();
         let op =
             yaran_core::engine::status_op(format!("Reading startup command log {display_name}..."))
                 .on_success(|_: &String| yaran_core::engine::Final::clear())
@@ -3376,26 +4088,87 @@ impl App {
                 });
         let pending = self.engine.begin_status_op(&op);
         let read_path = path.clone();
-        std::thread::spawn(move || {
-            let result = crate::startup::read_log(&read_path).map_err(|err| format!("{err:#}"));
-            let resolved = op.resolve(&result);
-            let _ = tx.send(WorkerEvent::StatusOpCompleted { resolved });
-            let _ = tx.send(WorkerEvent::StartupCommandLogContentLoaded { path, result });
-        });
+        let panic_path = path.clone();
+        let panic_final = status_op_panic_final(
+            PendingStatusOp::status_key(&op),
+            "read the startup command log",
+        );
+        let panic_tx = tx.clone();
+        spawn_guarded(
+            "startup command log",
+            move || {
+                let result = crate::startup::read_log(&read_path).map_err(|err| format!("{err:#}"));
+                let resolved = op.resolve(&result);
+                let _ = tx.send(WorkerEvent::StatusOpCompleted { resolved });
+                let _ = tx.send(WorkerEvent::StartupCommandLogContentLoaded { path, result });
+            },
+            move |reason| {
+                let _ = panic_tx.send(panic_final(reason.clone()));
+                let _ = panic_tx.send(WorkerEvent::StartupCommandLogContentLoaded {
+                    path: panic_path,
+                    result: Err(format!("the reader stopped unexpectedly: {reason}")),
+                });
+            },
+        );
         self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
     }
 
-    pub(crate) fn open_change_theme_prompt(&mut self) -> Result<()> {
-        let options = crate::theme::discover_available(&self.engine.paths);
+    /// Open the theme picker. The themes are listed and read on a worker,
+    /// so the preview on every cursor move reads nothing; the picker opens when
+    /// they are in.
+    pub(crate) fn open_change_theme_prompt(&mut self) {
+        let paths = self.engine.paths.clone();
+        self.spawn_ui_job(
+            crate::app::ui_jobs::UiJob {
+                busy: "Reading the themes\u{2026}".into(),
+                stopped: "yaran could not finish reading the themes; yaran.log has the details."
+                    .to_string(),
+            },
+            move || {
+                let options = crate::theme::discover_available(&paths);
+                let loaded = options
+                    .iter()
+                    .map(|option| {
+                        let theme = crate::theme::load(&option.id, &paths)
+                            .map_err(|err| format!("{err:#}"));
+                        (option.id.clone(), theme)
+                    })
+                    .collect::<std::collections::HashMap<_, _>>();
+                (options, loaded)
+            },
+            |app: &mut App, read| {
+                if let Some((options, loaded)) = read {
+                    app.show_change_theme_prompt(options, loaded);
+                }
+            },
+        );
+    }
+
+    fn show_change_theme_prompt(
+        &mut self,
+        options: Vec<crate::theme::ThemeListing>,
+        loaded: std::collections::HashMap<String, Result<crate::theme::Theme, String>>,
+    ) {
         if options.is_empty() {
             self.set_error("No themes available.");
-            return Ok(());
+            return;
+        }
+        if let Some(blocker) = self.job_dialog_blocker() {
+            self.set_info(format!(
+                "The theme picker was not opened because {blocker}. Open it again when you are \
+                 ready."
+            ));
+            return;
         }
         let current = self.engine.config.ui.theme.clone();
         let selected = options
             .iter()
             .position(|opt| opt.id == current)
             .unwrap_or(0);
+        self.theme_previews = Some(crate::app::ThemePreviews {
+            loaded,
+            original: self.theme,
+        });
         self.input_target = InputTarget::None;
         self.fullscreen_overlay = FullscreenOverlay::None;
         self.prompt = PromptState::ChangeTheme(ChangeThemePrompt {
@@ -3406,13 +4179,13 @@ impl App {
         self.set_info(
             "Themes preview live as you move. Enter saves the choice; Esc reverts to the previous theme.",
         );
-        Ok(())
     }
 
     /// Live-preview the theme at the prompt's current selection, on every cursor
     /// move in the picker, so the whole UI repaints without committing. Failures
     /// are swallowed: a theme that will not load leaves the previous preview in
-    /// place and the picker stays open.
+    /// place and the picker stays open. The themes were read when the picker
+    /// opened, so this reads nothing.
     pub(crate) fn preview_change_theme_selection(&mut self) {
         let id = match &self.prompt {
             PromptState::ChangeTheme(prompt) => prompt
@@ -3422,56 +4195,66 @@ impl App {
             _ => None,
         };
         let Some(id) = id else { return };
-        if let Ok(theme) = crate::theme::load(&id, &self.engine.paths) {
-            self.theme = theme;
-        }
-    }
-
-    /// Cancel the theme picker. Reloads the theme that was active when the
-    /// picker opened so any live previews are reverted.
-    pub(crate) fn cancel_change_theme(&mut self) {
-        let original = match &self.prompt {
-            PromptState::ChangeTheme(prompt) => Some(prompt.current.clone()),
-            _ => None,
-        };
-        self.prompt = PromptState::None;
-        if let Some(original) = original
-            && let Ok(theme) = crate::theme::load(&original, &self.engine.paths)
+        if let Some(Ok(theme)) = self
+            .theme_previews
+            .as_ref()
+            .and_then(|previews| previews.loaded.get(&id))
         {
-            self.theme = theme;
+            self.theme = *theme;
         }
     }
 
-    pub(crate) fn apply_change_theme(&mut self) -> Result<()> {
+    /// Cancel the theme picker, putting back the theme that was active when it
+    /// opened so any live previews are reverted.
+    pub(crate) fn cancel_change_theme(&mut self) {
+        self.prompt = PromptState::None;
+        if let Some(previews) = self.theme_previews.take() {
+            self.theme = previews.original;
+        }
+    }
+
+    pub(crate) fn apply_change_theme(&mut self) {
         let prompt = match &self.prompt {
             PromptState::ChangeTheme(prompt) => prompt.clone(),
-            _ => return Ok(()),
+            _ => return,
         };
         let Some(selected) = prompt.options.get(prompt.selected).cloned() else {
             self.prompt = PromptState::None;
             self.set_error("Select a theme first.");
-            return Ok(());
+            return;
         };
         self.prompt = PromptState::None;
+        let previews = self.theme_previews.take();
         if selected.id == prompt.current {
             self.set_info(format!(
                 "Theme \"{}\" is already active. Pick a different one to change it.",
                 selected.display_name,
             ));
-            return Ok(());
+            return;
         }
-        let theme = match crate::theme::load(&selected.id, &self.engine.paths) {
-            Ok(theme) => theme,
-            Err(err) => {
+        let theme = match previews
+            .as_ref()
+            .and_then(|previews| previews.loaded.get(&selected.id))
+        {
+            Some(Ok(theme)) => *theme,
+            Some(Err(err)) => {
                 self.set_error(format!(
-                    "Couldn't load theme \"{}\": {err:#}",
+                    "Couldn't load theme \"{}\": {err}",
                     selected.display_name
                 ));
-                return Ok(());
+                return;
+            }
+            None => {
+                self.set_error(format!(
+                    "Couldn't load theme \"{}\": the theme picker had not read it. Open the \
+                     picker again.",
+                    selected.display_name
+                ));
+                return;
             }
         };
         let previous = self.engine.config.ui.theme.clone();
-        self.engine.config.ui.theme = selected.id.clone();
+        self.engine.config.ui.theme.clone_from(&selected.id);
         if let Err(err) = self
             .engine
             .config_writer
@@ -3485,49 +4268,76 @@ impl App {
             // for it and we'd rather flash a wrong-color UI than silently
             // ignore the request.
             self.theme = theme;
-            return Ok(());
+            return;
         }
         // No confirmation: every colour on screen changes, which is the biggest
         // visible change yaran makes.
         self.theme = theme;
-        Ok(())
     }
 
     /// `remove-project`: ask first, the same question the browser's Remove
-    /// project dialog asks. A real project that still holds agents is refused
-    /// before anything is asked (removing it would orphan them; `delete-project`
-    /// takes the agents too). With no real project selected, an orphaned
-    /// agent's group (its project record is gone) is the target instead.
-    pub(crate) fn remove_selected_project(&mut self) -> Result<()> {
-        if let Some(project) = self.take_selected_project() {
-            if self.project_agent_count(&project.id) > 0 {
-                self.set_error("Delete all agents in this project first.");
-                return Ok(());
-            }
-            self.prompt = PromptState::ConfirmRemoveProject {
-                project_id: project.id.clone(),
-                project_name: project.name.clone(),
-                agent_count: 0,
-                orphaned: false,
-                focus: ConfirmFocus::Cancel, // Cancel is the safe default
-            };
-            return Ok(());
+    /// project dialog asks. The selected agent's project is the target; with
+    /// no real project behind the selection, an orphaned agent's group (its
+    /// project record is gone) is the target instead; with no agent selected,
+    /// the project list is opened and the pick is the target.
+    pub(crate) fn remove_selected_project(&mut self) {
+        if let Some(project) = self.selected_project().cloned() {
+            self.confirm_remove_project(&project, None);
+            return;
         }
         // A standalone agent is not an orphan and has no ghost group to clear.
         if let Some(session) = self.selected_session().cloned()
             && let Some(project_id) = session.project_id().map(str::to_string)
         {
-            self.prompt = PromptState::ConfirmRemoveProject {
-                project_name: yaran_core::sidebar::short_project_id(&project_id),
-                agent_count: self.project_agent_count(&project_id),
-                project_id,
-                orphaned: true,
-                focus: ConfirmFocus::Cancel, // Cancel is the safe default
-            };
-            return Ok(());
+            let name = yaran_core::sidebar::short_project_id(&project_id);
+            self.confirm_remove_orphaned_group(project_id, name, None);
+            return;
         }
-        self.set_error("Select a project first.");
-        Ok(())
+        {
+            self.open_project_chooser(ProjectChooserIntent::Action(ProjectAction::Remove));
+        }
+    }
+
+    /// Ask the "remove project?" question about a real project. One that still
+    /// holds agents is refused before anything is asked: removing it would
+    /// orphan them, and `delete-project` takes the agents too.
+    pub(crate) fn confirm_remove_project(
+        &mut self,
+        project: &Project,
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    ) {
+        if self.project_agent_count(&project.id) > 0 {
+            self.set_error("Delete all agents in this project first.");
+            return;
+        }
+        self.prompt = PromptState::ConfirmRemoveProject {
+            attached: Vec::new(),
+            project_id: project.id.clone(),
+            project_name: project.name.clone(),
+            agent_count: 0,
+            orphaned: false,
+            focus: ConfirmFocus::Cancel, // Cancel is the safe default
+            return_to,
+        };
+    }
+
+    /// Ask the "remove project?" question about an orphaned group: confirming
+    /// clears its agents' records and keeps their worktrees on disk.
+    pub(crate) fn confirm_remove_orphaned_group(
+        &mut self,
+        project_id: String,
+        name: String,
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    ) {
+        self.prompt = PromptState::ConfirmRemoveProject {
+            attached: Vec::new(),
+            agent_count: self.project_agent_count(&project_id),
+            project_name: name,
+            project_id,
+            orphaned: true,
+            focus: ConfirmFocus::Cancel, // Cancel is the safe default
+            return_to,
+        };
     }
 
     /// `delete-project`: ask first, the same question the browser's Delete
@@ -3535,17 +4345,185 @@ impl App {
     /// project and removes their worktrees from disk. Nothing runs until the
     /// dialog is confirmed (`resolve_confirm_delete_project`).
     pub(crate) fn delete_selected_project(&mut self) -> Result<()> {
-        let Some(project) = self.take_selected_project() else {
-            self.set_error("Select a project first.");
-            return Ok(());
-        };
+        self.run_project_command(ProjectAction::Delete)
+    }
+
+    /// Ask the "delete project?" question about `project`.
+    pub(crate) fn confirm_delete_project(
+        &mut self,
+        project: &Project,
+        return_to: Option<Box<ProjectActionsPrompt>>,
+    ) {
+        // A counter left by an earlier dialog stops before this one asks.
+        self.project_worktree_files = None;
         self.prompt = PromptState::ConfirmDeleteProject {
+            attached: Vec::new(),
             agent_count: self.project_agent_count(&project.id),
-            project_id: project.id,
-            project_name: project.name,
+            project_id: project.id.clone(),
+            project_name: project.name.clone(),
             focus: ConfirmFocus::Cancel, // Cancel is the safe default
+            return_to,
+            worktree_files: Vec::new(),
         };
-        Ok(())
+        self.follow_project_worktrees();
+    }
+
+    /// Every agent worktree a delete of `project_id` removes, as `projects rm
+    /// --delete-worktrees` counts them: the project's managed agents, each as
+    /// its session id, label and path.
+    fn project_worktrees(&self, project_id: &str) -> Vec<(String, String, String)> {
+        self.engine
+            .sessions
+            .iter()
+            .filter(|s| s.project_id() == Some(project_id))
+            .filter_map(|s| {
+                s.managed_worktree()
+                    .map(|path| (s.id.clone(), s.display_label(), path.to_string()))
+            })
+            .collect()
+    }
+
+    /// Keep the open Delete Project dialog's worktree lines in step with the
+    /// project's agents, as the browser's dialog does: an agent that joins
+    /// while it is open gets a line and a count of its own (Delete would remove
+    /// its worktree too), one that leaves loses its line, and every answer
+    /// already in is kept. Cheap when nothing changed, because it runs on every
+    /// drain while the dialog is open.
+    fn follow_project_worktrees(&mut self) {
+        let PromptState::ConfirmDeleteProject {
+            project_id,
+            worktree_files,
+            ..
+        } = &self.prompt
+        else {
+            return;
+        };
+        let current = self
+            .engine
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.project_id() == Some(project_id.as_str()) && s.managed_worktree().is_some()
+            })
+            .map(|s| s.id.as_str());
+        let unchanged = worktree_files
+            .iter()
+            .map(|entry| entry.session_id.as_str())
+            .eq(current);
+        if unchanged {
+            return;
+        }
+        let project_id = project_id.clone();
+        let worktrees = self.project_worktrees(&project_id);
+        let PromptState::ConfirmDeleteProject { worktree_files, .. } = &mut self.prompt else {
+            return;
+        };
+        let mut previous = std::mem::take(worktree_files);
+        let mut to_count = Vec::new();
+        for (session_id, agent_label, path) in worktrees {
+            let answer = previous
+                .iter_mut()
+                .find(|entry| entry.session_id == session_id)
+                .map(|entry| entry.answer.take());
+            let answer = answer.unwrap_or_else(|| {
+                to_count.push((session_id.clone(), path));
+                None
+            });
+            worktree_files.push(crate::app::ProjectWorktreeFiles {
+                session_id,
+                agent_label,
+                answer,
+            });
+        }
+        self.mark_frame_dirty();
+        for job in to_count {
+            self.queue_project_worktree_count(&project_id, job);
+        }
+    }
+
+    /// Hand one worktree to the Delete Project dialog's counter, starting it
+    /// when this dialog has none running yet. A send fails only when the
+    /// worker has died, and then the counter is kept so the drain sees it
+    /// stopped and says so on every line still waiting, this one included.
+    fn queue_project_worktree_count(&mut self, project_id: &str, job: (String, String)) {
+        let counter = match self.project_worktree_files.take() {
+            Some(counter) if counter.project_id == project_id => counter,
+            _ => spawn_project_worktree_counter(
+                project_id,
+                yaran_core::branch_history::worktree_uncommitted_files,
+            ),
+        };
+        let _ = counter.queue.send(job);
+        self.project_worktree_files = Some(counter);
+    }
+
+    /// Fold every landed uncommitted-file count into the Delete Project dialog
+    /// that asked for it, and stop the counter the moment that dialog is no
+    /// longer on screen, so a cancelled dialog runs no further `git status`.
+    /// Answers are tagged with the project and the agent, and dropped when the
+    /// dialog on screen is not the one that asked. A worker that stopped before
+    /// answering every worktree leaves the rest saying so rather than still
+    /// looking.
+    pub(crate) fn drain_project_worktree_files(&mut self) {
+        let open_project = match &self.prompt {
+            PromptState::ConfirmDeleteProject { project_id, .. } => Some(project_id.as_str()),
+            _ => None,
+        };
+        if self
+            .project_worktree_files
+            .as_ref()
+            .is_some_and(|counter| open_project != Some(counter.project_id.as_str()))
+        {
+            self.project_worktree_files = None;
+        }
+        if open_project.is_none() {
+            return;
+        }
+        self.follow_project_worktrees();
+        let Some(counter) = self.project_worktree_files.as_ref() else {
+            return;
+        };
+        let mut landed = Vec::new();
+        let stopped = loop {
+            match counter.answers.try_recv() {
+                Ok(answer) => landed.push(answer),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break true,
+            }
+        };
+        if stopped {
+            self.project_worktree_files = None;
+        }
+        if landed.is_empty() && !stopped {
+            return;
+        }
+        self.mark_frame_dirty();
+        let PromptState::ConfirmDeleteProject {
+            project_id,
+            worktree_files,
+            ..
+        } = &mut self.prompt
+        else {
+            return;
+        };
+        for answer in landed {
+            if answer.project_id != *project_id {
+                continue;
+            }
+            if let Some(entry) = worktree_files
+                .iter_mut()
+                .find(|entry| entry.session_id == answer.session_id)
+            {
+                entry.answer = Some(answer.answer);
+            }
+        }
+        if stopped {
+            for entry in worktree_files.iter_mut().filter(|e| e.answer.is_none()) {
+                entry.answer = Some(Err(
+                    "the uncommitted-file check stopped unexpectedly".to_string()
+                ));
+            }
+        }
     }
 
     /// How many agents belong to `project_id`, a real project's or an
@@ -3561,7 +4539,7 @@ impl App {
     /// Remove a real, agent-less project from yaran, keeping its files. Runs only
     /// once the removal is confirmed, and refuses a project that has gained an
     /// agent behind the open dialog.
-    pub(crate) fn run_remove_project(&mut self, project: Project) -> Result<()> {
+    pub(crate) fn run_remove_project(&mut self, project: &Project) -> Result<()> {
         // Removing one that still has agents here would orphan them. Use
         // "delete project" to remove agents too.
         if self.project_agent_count(&project.id) > 0 {
@@ -3588,13 +4566,21 @@ impl App {
         let pending = self.engine.begin_status_op(&op);
         let op_id = op.id().to_string();
         self.pending_persist_ops.insert(op_id.clone(), op);
-        let reaction = self.engine.apply(Command::PersistProject {
+        let reaction = match self.engine.apply(Command::PersistProject {
             action: Box::new(ProjectPersistenceAction::Remove {
                 project_id: project.id.clone(),
                 project_name: project.name.clone(),
             }),
-            status_op_id: Some(op_id),
-        })?;
+            status_op_id: Some(op_id.clone()),
+        }) {
+            Ok(reaction) => reaction,
+            // Refused before anything ran, so no final will ever come for this op.
+            Err(error) => {
+                self.pending_persist_ops.remove(&op_id);
+                self.engine.retire_status_key(&op_id);
+                return Err(error);
+            }
+        };
         self.apply_reaction(reaction);
         self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
         Ok(())
@@ -3614,19 +4600,21 @@ impl App {
         })?;
         self.apply_reaction(reaction);
         // The cascade mutates engine.sessions synchronously; refresh the cache
-        // (and fix the selection) so render never indexes a stale row.
+        // so render never indexes a stale row. A cursor on a removed agent
+        // rests on no row.
         self.rebuild_left_items();
         Ok(())
     }
 
     /// Delete a project, every agent in it and their worktrees. Runs only once
     /// the deletion is confirmed.
-    pub(crate) fn run_delete_project(&mut self, project: Project) -> Result<()> {
+    pub(crate) fn run_delete_project(&mut self, project: &Project) -> Result<()> {
         // The whole delete (guards, the per-session cascade with worktree
         // removal, and the project record and config removal) is owned by the
         // core `Command::DeleteProject`, so the two surfaces cannot disagree on
-        // the sequencing. It is synchronous, running `git worktree remove`
-        // inline, so no async status op is needed.
+        // the sequencing. The records go at once; each worktree is removed on a
+        // worker once its agent has stopped, under one keyed busy the engine
+        // opens here and resolves when the last removal lands.
         logger::info(&format!("deleting project {}", project.path));
         let reaction = self.engine.apply(Command::DeleteProject {
             project_id: project.id.clone(),
@@ -3634,7 +4622,8 @@ impl App {
         })?;
         self.apply_reaction(reaction);
         // The cascade mutated engine.sessions/projects synchronously; refresh the
-        // cache (and fix the selection) so render never indexes a stale row.
+        // cache so render never indexes a stale row. A cursor on a deleted agent
+        // rests on no row.
         self.rebuild_left_items();
         Ok(())
     }
@@ -3651,19 +4640,23 @@ impl App {
         logger::info(&format!(
             "restarting agent {session_id} with fresh session (no resume args)"
         ));
-        self.dispatch_reconnect_plan(&session_id, true, false)
+        self.dispatch_reconnect_plan(
+            &session_id,
+            yaran_core::engine::ReconnectMode::Force,
+            LaunchView::Minimized,
+        )
     }
 
-    /// `seek_fullscreen` marks a fullscreen-seeking relaunch: only the fullscreen
-    /// toggle passes `true`, and every other caller lands the completed launch
+    /// `view` marks a fullscreen-seeking relaunch: only the fullscreen
+    /// toggle passes [`LaunchView::Fullscreen`], and every other caller lands the completed launch
     /// focused but minimized. See `launch_seeks_fullscreen`.
-    pub(crate) fn reconnect_selected_session(&mut self, seek_fullscreen: bool) -> Result<()> {
+    pub(crate) fn reconnect_selected_session(&mut self, view: LaunchView) -> Result<()> {
         let Some(session_id) = self.selected_session().map(|s| s.id.clone()) else {
             self.set_error("Select a stopped agent first to reconnect.");
             return Ok(());
         };
         logger::info(&format!("reconnecting session {session_id}"));
-        self.dispatch_reconnect_plan(&session_id, false, seek_fullscreen)
+        self.dispatch_reconnect_plan(&session_id, yaran_core::engine::ReconnectMode::Normal, view)
     }
 
     /// Shared TUI reconnect dispatch: build the single-source
@@ -3675,8 +4668,8 @@ impl App {
     fn dispatch_reconnect_plan(
         &mut self,
         session_id: &str,
-        force: bool,
-        seek_fullscreen: bool,
+        mode: yaran_core::engine::ReconnectMode,
+        view: LaunchView,
     ) -> Result<()> {
         // Shared main-workspace mode: reconnecting a shared agent while another
         // agent is live in the same checkout needs the same consent as a
@@ -3695,24 +4688,41 @@ impl App {
                 existing_agent: yaran_core::sanitize::for_terminal(&existing.display_label()),
                 action: crate::app::SharedWriterAction::Reconnect {
                     session_id: session_id.to_string(),
-                    force,
-                    seek_fullscreen,
+                    mode,
+                    view,
                 },
                 focus: ConfirmFocus::Cancel,
             };
             return Ok(());
         }
-        self.dispatch_reconnect_plan_confirmed(session_id, force, seek_fullscreen)
+        self.dispatch_reconnect_plan_confirmed(session_id, mode, view)
     }
 
     fn dispatch_reconnect_plan_confirmed(
         &mut self,
         session_id: &str,
-        force: bool,
-        seek_fullscreen: bool,
+        mode: yaran_core::engine::ReconnectMode,
+        view: LaunchView,
     ) -> Result<()> {
+        // A start ends any other agent in the same folder, a forced one this
+        // agent's own run too: all of it is reserved before anything is torn down.
+        let mut scope = self.engine.launch_conflict_scope(session_id);
+        if mode == yaran_core::engine::ReconnectMode::Force {
+            scope.extend(self.engine.agent_scope(session_id));
+        }
+        let _reservation = if scope.is_empty() {
+            None
+        } else {
+            match self.engine.reserve_destruction(scope) {
+                Ok(reservation) => Some(reservation),
+                Err(attached) => {
+                    self.set_error(attached.to_string());
+                    return Ok(());
+                }
+            }
+        };
         let pty_size = self.pty_size_for_launch();
-        match self.engine.reconnect_plan(session_id, force, pty_size)? {
+        match self.engine.reconnect_plan(session_id, mode, pty_size)? {
             yaran_core::engine::ReconnectPlan::AlreadyConnected { message } => {
                 self.set_info(message);
             }
@@ -3724,12 +4734,12 @@ impl App {
                 busy_message,
                 ..
             } => {
-                request.wants_fullscreen = self.launch_seeks_fullscreen(seek_fullscreen);
+                request.wants_fullscreen = self.launch_seeks_fullscreen(view);
                 if self.dispatch_agent_launch(*request) {
                     // Route the busy through a keyed reconnect op so its final
                     // (resolved in the shared launch-ready/failed view handlers)
                     // replaces exactly this spinner instead of most-recent-wins.
-                    let op = self.build_reconnect_status_op(busy_message.to_string());
+                    let op = Self::build_reconnect_status_op(busy_message.to_string());
                     let pending = self.engine.begin_status_op(&op);
                     self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
                     self.pending_reconnect_ops
@@ -3740,20 +4750,25 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn open_diff_for_selected_file(&mut self) -> Result<()> {
+    pub(crate) fn open_diff_for_selected_file(&mut self) {
         if self.selected_session().is_none() {
             self.set_error("Select a session first.");
-            return Ok(());
+            return;
+        }
+        // A folder row expands or collapses instead: it has no diff, and
+        // reading a directory as a file is the one thing this must never do.
+        if self.toggle_selected_folder() {
+            return;
         }
         let Some(rel_path) = self.selected_changed_file().map(|file| file.path.clone()) else {
-            return Ok(());
+            return;
         };
         // Through the same gate every other changes-panel action uses, rather
         // than reading the session's directory raw: the gate is what stops a
         // folder with no repository from rendering every file as fully added,
         // since an empty base version reads as a new file.
         let Some(worktree_path) = self.diff_worktree_for_selection() else {
-            return Ok(());
+            return;
         };
         let worktree_path = worktree_path.to_string_lossy().to_string();
         // The pane switches to Diff straight away and starts empty. Everything
@@ -3769,7 +4784,6 @@ impl App {
         };
         self.focus = FocusPane::Center;
         self.begin_diff_computation(worktree_path, rel_path, 0);
-        Ok(())
     }
 
     /// Re-generate the currently displayed diff (e.g. after toggling line
@@ -3786,7 +4800,7 @@ impl App {
                 scroll,
                 ..
             } => (worktree_path.clone(), rel_path.clone(), *scroll),
-            _ => return,
+            CenterMode::Agent => return,
         };
         self.begin_diff_computation(worktree_path, rel_path, scroll);
     }
@@ -3796,17 +4810,17 @@ impl App {
     /// The busy is deferred by [`SLOW_DIFF_READ`]: most diffs land before anyone
     /// could read a spinner, and writing over the status line on every file the
     /// user arrows through would bury whatever it was saying.
-    fn begin_diff_computation(&mut self, worktree_path: String, rel_path: String, scroll: u16) {
+    fn begin_diff_computation(&mut self, worktree_path: String, rel_path: String, scroll: usize) {
         self.diff_request_seq = self.diff_request_seq.wrapping_add(1);
         let key = crate::diff::DiffRequestKey {
             worktree_path,
             rel_path: rel_path.clone(),
-            show_line_numbers: self.show_diff_line_numbers,
+            show_line_numbers: self.view_prefs.show_diff_line_numbers,
             tab_width: self.engine.config.ui.diff_tab_width,
             seq: self.diff_request_seq,
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        crate::diff::spawn_diff_job(key.clone(), self.theme, Arc::clone(&self.syntax_cache), tx);
+        crate::diff::spawn_diff_job(key.clone(), &self.theme, Arc::clone(&self.syntax_cache), tx);
         self.pending_diff = Some(PendingDiff {
             key,
             rx,
@@ -3831,6 +4845,7 @@ impl App {
         }
         pending.announce_at = None;
         let message = diff_read_busy(&pending.label);
+        self.engine.register_status_key(DIFF_STATUS_KEY);
         self.status.set(
             now,
             Some(DIFF_STATUS_KEY.to_string()),
@@ -3859,8 +4874,24 @@ impl App {
         let Some(pending) = self.pending_diff.as_ref() else {
             return;
         };
-        let Ok(answer) = pending.rx.try_recv() else {
-            return;
+        let answer = match pending.rx.try_recv() {
+            Ok(answer) => answer,
+            Err(mpsc::TryRecvError::Empty) => return,
+            // The worker is gone without an answer (it panicked): its busy
+            // gets a final rather than spinning forever.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.pending_diff = None;
+                self.mark_frame_dirty();
+                self.status.set(
+                    Instant::now(),
+                    Some(DIFF_STATUS_KEY.to_string()),
+                    StatusTone::Error,
+                    "yaran could not build the diff: the worker building it stopped before \
+                     answering. Open the file again to retry."
+                        .to_string(),
+                );
+                return;
+            }
         };
         let pending = self.pending_diff.take().expect("checked just above");
         self.mark_frame_dirty();
@@ -3920,51 +4951,81 @@ impl App {
                 .map(|s| s.directory().to_string()),
             _ => None,
         };
-        // Fall back to a chooser-picked project (agent-less projects have no row
-        // to select, so this is how their path is reachable). `take_selected_project`
-        // consumes the one-and-done `manage-projects` target.
-        let (path, label) = match agent_path {
-            Some(p) => (Some(p), "Agent's path copied to clipboard."),
-            None => (
-                self.take_selected_project().map(|p| p.path),
-                "Project's path copied to clipboard.",
-            ),
+        // With no agent selected, the path is a project's: the project list
+        // opens and the pick's path is copied (an agent-less project has no
+        // row of its own to select).
+        let Some(path) = agent_path else {
+            return self.run_project_command(ProjectAction::CopyPath);
         };
-        match path {
-            Some(p) => {
-                match self.clipboard.copy_text(&p, label, &self.engine.worker_tx) {
-                    Ok(pending) => {
-                        self.apply_reaction(yaran_core::engine::EventReaction::Status(pending))
-                    }
-                    Err(e) => self.set_error(format!("Copy path failed: {e}")),
-                }
-                Ok(())
-            }
-            None => {
-                self.set_error("No project or agent selected. Select one from the sidebar first.");
-                Ok(())
-            }
+        self.copy_to_clipboard(&path, "Agent's path copied to clipboard.");
+        Ok(())
+    }
+
+    /// Copy `project`'s folder path to the clipboard.
+    pub(crate) fn copy_project_path(&mut self, project: &Project) {
+        self.copy_to_clipboard(&project.path, "Project's path copied to clipboard.");
+    }
+
+    /// Hand `text` to the clipboard worker, its spinner and `label` (the
+    /// success sentence) with it, or say why it could not be handed over.
+    pub(crate) fn copy_to_clipboard(&mut self, text: &str, label: &str) {
+        match self
+            .clipboard
+            .copy_text(text, label, &self.engine.worker_tx)
+        {
+            Ok(pending) => self.apply_reaction(yaran_core::engine::EventReaction::Status(pending)),
+            Err(e) => self.set_error(format!("Clipboard copy failed: {e}.")),
         }
     }
 
-    pub(crate) fn open_selected_worktree_in_default_editor(&mut self) -> Result<()> {
+    /// Open the selected agent's directory in the configured editor. Finding
+    /// the editors reads every `PATH` directory, so it runs on a worker and the
+    /// open follows when it answers.
+    pub(crate) fn open_selected_worktree_in_default_editor(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             self.set_error("Select an agent session first.");
-            return Ok(());
+            return;
         };
-        let editors = editor::detect_installed_editors();
+        let directory = session.directory().to_string();
+        let session_label = session.display_label();
+        let request = self.ui_jobs.begin_request(RequestKind::Editor);
+        self.spawn_ui_job(
+            editor_search_job(),
+            editor::detect_installed_editors,
+            move |app: &mut App, editors: Option<Vec<editor::DetectedEditor>>| {
+                let Some(editors) = editors else { return };
+                if !app.ui_jobs.is_newest(RequestKind::Editor, request) {
+                    app.set_info(format!(
+                        "Agent \"{session_label}\" was not opened in an editor: a newer editor \
+                         request replaced it."
+                    ));
+                    return;
+                }
+                app.open_in_preferred_editor(&directory, &session_label, &editors);
+            },
+        );
+    }
+
+    fn open_in_preferred_editor(
+        &mut self,
+        directory: &str,
+        session_label: &str,
+        editors: &[editor::DetectedEditor],
+    ) {
         let Some(selected_editor) =
-            editor::preferred_editor(&editors, &self.engine.config.editor.default)
+            editor::preferred_editor(editors, &self.engine.config.editor.default)
         else {
             self.set_error(
                 "No supported editor CLI found on PATH. Install cursor, code, zed, vscodium, or sublime.",
             );
-            return Ok(());
+            return;
         };
 
-        let session_label = self.session_label(&session);
         let configured_default = self.engine.config.editor.default.trim().to_string();
-        self.open_worktree_in_editor(session.directory(), &session_label, &selected_editor)?;
+        if let Err(e) = self.open_worktree_in_editor(directory, session_label, &selected_editor) {
+            self.set_error(format!("{e:#}"));
+            return;
+        }
 
         if !configured_default.is_empty()
             && !editor::matches_configured_editor(&selected_editor, &configured_default)
@@ -3973,25 +5034,58 @@ impl App {
                 "Opened agent \"{session_label}\" in {} via {} at {} (configured default \"{}\" was not found on PATH).",
                 selected_editor.label,
                 selected_editor.command,
-                session.directory(),
+                directory,
                 configured_default
             ));
         }
-
-        Ok(())
     }
 
-    pub(crate) fn open_worktree_editor_picker(&mut self) -> Result<()> {
+    /// Offer the editors found on `PATH` for the selected agent's directory.
+    /// The search runs on a worker; the picker opens when it answers, unless
+    /// another dialog has been opened meanwhile.
+    pub(crate) fn open_worktree_editor_picker(&mut self) {
         let Some(session) = self.selected_session().cloned() else {
             self.set_error("Select an agent session first.");
-            return Ok(());
+            return;
         };
-        let editors = editor::detect_installed_editors();
+        let worktree_path = session.directory().to_string();
+        let session_label = session.display_label();
+        let request = self.ui_jobs.begin_request(RequestKind::Editor);
+        self.spawn_ui_job(
+            editor_search_job(),
+            editor::detect_installed_editors,
+            move |app: &mut App, editors: Option<Vec<editor::DetectedEditor>>| {
+                let Some(editors) = editors else { return };
+                if !app.ui_jobs.is_newest(RequestKind::Editor, request) {
+                    app.set_info(format!(
+                        "The editor picker for agent \"{session_label}\" was not opened: a newer \
+                         editor request replaced it."
+                    ));
+                    return;
+                }
+                app.open_editor_picker_with(worktree_path, session_label, editors);
+            },
+        );
+    }
+
+    fn open_editor_picker_with(
+        &mut self,
+        worktree_path: String,
+        session_label: String,
+        editors: Vec<editor::DetectedEditor>,
+    ) {
         if editors.is_empty() {
             self.set_error(
                 "No supported editor CLI found on PATH. Install cursor, code, zed, vscodium, or sublime.",
             );
-            return Ok(());
+            return;
+        }
+        if let Some(blocker) = self.job_dialog_blocker() {
+            self.set_info(format!(
+                "The editor picker for agent \"{session_label}\" was not opened because \
+                 {blocker}. Ask for it again when you are ready."
+            ));
+            return;
         }
 
         let selected = editor::preferred_editor(&editors, &self.engine.config.editor.default)
@@ -4001,15 +5095,13 @@ impl App {
                     .position(|editor| editor.command == preferred.command)
             })
             .unwrap_or(0);
-        let session_label = self.session_label(&session);
         self.prompt = PromptState::PickEditor {
             session_label,
-            worktree_path: session.directory().to_string(),
+            worktree_path,
             editors,
             selected,
         };
         self.set_prompt_hint("Choose an editor and press Enter to open the selected worktree.");
-        Ok(())
     }
 
     pub(crate) fn open_worktree_in_editor(
@@ -4026,13 +5118,13 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn current_pr_info(&self) -> Option<&crate::model::PrInfo> {
+    /// The pull request the band shows for the selected agent: the one the
+    /// next-pull-request key stepped to, or the first in the agent's order.
+    /// What the open key and a click on the band open.
+    pub(crate) fn current_pr_info(&self) -> Option<&crate::model::AgentPr> {
         self.selected_session()
-            .and_then(|session| self.engine.pr_statuses.get(&session.id))
-    }
-
-    pub(crate) fn current_pr_url(&self) -> Option<&str> {
-        self.current_pr_info().map(|pr| pr.url.as_str())
+            .and_then(|session| self.band_pr(&session.id))
+            .map(|band| band.pr)
     }
 
     /// Infallible on purpose: every outcome it can have, including "there is
@@ -4044,10 +5136,13 @@ impl App {
             self.set_error("No pull request is known for the selected agent yet.");
             return;
         };
+        self.open_pr_in_browser(&pr);
+    }
 
-        let url = self.current_pr_url().unwrap_or(pr.url.as_str()).to_string();
+    /// Open one pull request in the default browser and say which.
+    pub(crate) fn open_pr_in_browser(&mut self, pr: &crate::model::AgentPr) {
         self.open_url_in_browser(
-            url,
+            pr.url.clone(),
             format!(
                 "Opened PR {}#{} in your default browser.",
                 pr.owner_repo, pr.number
@@ -4055,88 +5150,13 @@ impl App {
         );
     }
 
-    /// `attach-pull-request`: open the reference field for the selected agent.
-    /// The session fixes the project, so unlike the create-from-PR modal there
-    /// is no project to choose and the field is the only control.
-    pub(crate) fn open_attach_pull_request_prompt(&mut self) -> Result<()> {
-        if !self.github_pr_agent_command_available() {
-            self.set_error(
-                "Attaching a pull request requires GitHub integration and an authenticated gh CLI.",
-            );
-            return Ok(());
-        }
-        let Some(session) = self.selected_session().cloned() else {
-            self.set_error("No agent session selected. Select an agent to attach a pull request.");
-            return Ok(());
-        };
-        // The body names the PR currently shown so overriding it is explicit.
-        let current_pr = self.engine.pr_statuses.get(&session.id).map(|pr| {
-            let overridden = self.engine.pr_overrides.contains_key(&session.id);
-            format!(
-                "#{} ({}) {}{}",
-                pr.number,
-                super::pr_state_word(&pr.state),
-                pr.title,
-                if overridden {
-                    " (manually attached)"
-                } else {
-                    ""
-                }
-            )
-        });
-        self.input_target = InputTarget::None;
-        self.fullscreen_overlay = FullscreenOverlay::None;
-        self.prompt = PromptState::AttachPullRequestInput {
-            session_id: session.id,
-            current_pr,
-            input: TextInput::new(),
-        };
-        Ok(())
-    }
-
-    /// `detach-pull-request`: the selected agent has no pull request as of now.
-    /// Drops a pin if there is one, clears the badge, and stops autodetection
-    /// until it is attached by hand or detection is resumed. Synchronous and
-    /// reversible both ways, so no modal and no confirmation.
-    pub(crate) fn detach_pull_request(&mut self) -> Result<()> {
-        let Some(session_id) = self.selected_session().map(|s| s.id.clone()) else {
-            self.set_error(
-                "No agent session selected. Select an agent to detach its pull request.",
-            );
-            return Ok(());
-        };
-        match self.engine.clear_pull_request_override(&session_id) {
-            Ok(message) => self.set_info(message),
-            Err(err) => self.set_error(format!("{err:#}")),
-        }
-        Ok(())
-    }
-
-    /// `resume-pull-request-autodetection`: the way back from a detach. Turns
-    /// detection on again for the selected agent and runs one check right
-    /// away. Synchronous and reversible, so no modal and no confirmation.
-    pub(crate) fn resume_pull_request_autodetection(&mut self) -> Result<()> {
-        let Some(session_id) = self.selected_session().map(|s| s.id.clone()) else {
-            self.set_error(
-                "No agent session selected. Select an agent to resume its pull-request \
-                 autodetection.",
-            );
-            return Ok(());
-        };
-        match self.engine.resume_pr_autodetection(&session_id) {
-            Ok(message) => self.set_info(message),
-            Err(err) => self.set_error(format!("{err:#}")),
-        }
-        Ok(())
-    }
-
-    pub(crate) fn open_kill_running(&mut self) -> Result<()> {
+    pub(crate) fn open_kill_running(&mut self) {
         let runtimes = self.running_runtime_snapshot();
         if runtimes.is_empty() {
             self.set_error(
                 "No running agents or companion terminals are available to kill. Start one first, then reopen the command palette.",
             );
-            return Ok(());
+            return;
         }
 
         self.prompt = PromptState::KillRunning(KillRunningPrompt {
@@ -4152,12 +5172,64 @@ impl App {
         self.set_info(format!(
             "Kill Running opened. Press {select} to toggle runtimes, {search} to search, and {next}/{prev} to move between the list and actions.",
         ));
-        Ok(())
     }
 
     pub(crate) fn running_runtime_snapshot(&self) -> Vec<KillableRuntime> {
         let mut runtimes = Vec::new();
 
+        self.push_agent_runtimes(&mut runtimes);
+
+        // The UNFILTERED list: the kill overlay is its own surface with its own
+        // filter row, so a query typed into the sidebar must not decide which
+        // processes it offers to stop.
+        let mut terminals: Vec<(&String, &CompanionTerminal)> =
+            self.engine.companion_terminals.iter().collect();
+        terminals.sort_by_key(|(_, terminal)| terminal.sort_order);
+        for (terminal_id, terminal) in terminals {
+            let context_owner = self.terminal_runtime_context(terminal);
+            // Normalize the foreground through the shared core rule (trim + strip
+            // "TERM "/"term "; None when blank), so the kill overlay, the sidebar,
+            // and the web all agree on the app name. None (idle shell) reads
+            // "shell" in this list.
+            let label = yaran_core::terminal_title::terminal_foreground_display(
+                terminal.foreground_cmd.as_deref(),
+            )
+            .unwrap_or_else(|| "shell".to_string());
+            let context = context_owner;
+            let search_text = format!(
+                "{} {} {} {}",
+                label,
+                context,
+                terminal.label,
+                KillableRuntimeKind::Terminal.noun()
+            );
+            runtimes.push(KillableRuntime {
+                id: RuntimeTargetId::Terminal(terminal_id.clone()),
+                kind: KillableRuntimeKind::Terminal,
+                label,
+                context,
+                search_text,
+            });
+        }
+
+        runtimes.sort_by(|a, b| {
+            (
+                a.context.to_lowercase(),
+                a.kind.noun(),
+                a.label.to_lowercase(),
+            )
+                .cmp(&(
+                    b.context.to_lowercase(),
+                    b.kind.noun(),
+                    b.label.to_lowercase(),
+                ))
+        });
+        runtimes
+    }
+
+    /// Every live provider process the kill overlay can stop: each agent's slot
+    /// tab and each running extra tab.
+    fn push_agent_runtimes(&self, runtimes: &mut Vec<KillableRuntime>) {
         for session in &self.engine.sessions {
             let main_running = self.engine.providers.contains_key(session.slot_tab_id());
             let has_live_support = self
@@ -4172,7 +5244,7 @@ impl App {
                 continue;
             }
             let project_name = self.engine.project_name_for_session(session);
-            let agent_name = self.session_label(session);
+            let agent_name = session.display_label();
             if main_running {
                 let provider_name = session.provider.as_str();
                 let label = Self::title_case_word(provider_name);
@@ -4225,82 +5297,45 @@ impl App {
                 });
             }
         }
+    }
 
-        // The UNFILTERED list: the kill overlay is its own surface with its own
-        // filter row, so a query typed into the sidebar must not decide which
-        // processes it offers to stop.
-        for (terminal_id, terminal) in self.sorted_terminal_items() {
-            let context_owner = match &terminal.owner {
-                TerminalOwner::Session(session_id) => {
-                    let (project_name, session_label) = self
-                        .engine
-                        .sessions
-                        .iter()
-                        .find(|session| session.id == *session_id)
-                        .map(|session| {
+    /// Where a terminal in the kill overlay lives, in the words its sidebar row
+    /// uses.
+    fn terminal_runtime_context(&self, terminal: &CompanionTerminal) -> String {
+        match &terminal.owner {
+            TerminalOwner::Session(session_id) => {
+                let (project_name, session_label) = self
+                    .engine
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == *session_id)
+                    .map_or_else(
+                        || ("unknown".to_string(), session_id.clone()),
+                        |session| {
                             (
                                 self.engine.project_name_for_session(session),
-                                self.session_label(session),
+                                session.display_label(),
                             )
-                        })
-                        .unwrap_or_else(|| ("unknown".to_string(), session_id.clone()));
-                    format!("on agent \"{session_label}\" under project \"{project_name}\"")
-                }
-                TerminalOwner::Project(project_id) => {
-                    let project_name = self
-                        .engine
-                        .projects
-                        .iter()
-                        .find(|project| project.id == *project_id)
-                        .map(|project| project.name.clone())
-                        .unwrap_or_else(|| project_id.clone());
-                    format!("at the repo root of project \"{project_name}\"")
-                }
-                // No owner to name, so the kill overlay says where it is instead,
-                // which is the same thing its sidebar row says.
-                TerminalOwner::Standalone => format!(
-                    "standalone, in {}",
-                    yaran_core::home_path::shorten_home(terminal.client.spawn_dir())
-                ),
-            };
-            // Normalize the foreground through the shared core rule (trim + strip
-            // "TERM "/"term "; None when blank), so the kill overlay, the sidebar,
-            // and the web all agree on the app name. None (idle shell) reads
-            // "shell" in this list.
-            let label = yaran_core::terminal_title::terminal_foreground_display(
-                terminal.foreground_cmd.as_deref(),
-            )
-            .unwrap_or_else(|| "shell".to_string());
-            let context = context_owner;
-            let search_text = format!(
-                "{} {} {} {}",
-                label,
-                context,
-                terminal.label,
-                KillableRuntimeKind::Terminal.noun()
-            );
-            runtimes.push(KillableRuntime {
-                id: RuntimeTargetId::Terminal(terminal_id.clone()),
-                kind: KillableRuntimeKind::Terminal,
-                label,
-                context,
-                search_text,
-            });
+                        },
+                    );
+                format!("on agent \"{session_label}\" under project \"{project_name}\"")
+            }
+            TerminalOwner::Project(project_id) => {
+                let project_name = self
+                    .engine
+                    .projects
+                    .iter()
+                    .find(|project| project.id == *project_id)
+                    .map_or_else(|| project_id.clone(), |project| project.name.clone());
+                format!("at the repo root of project \"{project_name}\"")
+            }
+            // No owner to name, so the kill overlay says where it is instead,
+            // which is the same thing its sidebar row says.
+            TerminalOwner::Standalone => format!(
+                "standalone, in {}",
+                yaran_core::home_path::shorten_home(terminal.client.spawn_dir())
+            ),
         }
-
-        runtimes.sort_by(|a, b| {
-            (
-                a.context.to_lowercase(),
-                a.kind.noun(),
-                a.label.to_lowercase(),
-            )
-                .cmp(&(
-                    b.context.to_lowercase(),
-                    b.kind.noun(),
-                    b.label.to_lowercase(),
-                ))
-        });
-        runtimes
     }
 
     pub(crate) fn visible_kill_running_indices(prompt: &KillRunningPrompt) -> Vec<usize> {
@@ -4322,20 +5357,16 @@ impl App {
         prompt.list.clamp_selected(visible_len);
     }
 
-    pub(crate) fn open_confirm_kill_running_action(
-        &mut self,
-        action: KillRunningAction,
-    ) -> Result<()> {
+    pub(crate) fn open_confirm_kill_running_action(&mut self, action: KillRunningAction) {
         let PromptState::KillRunning(prompt) = &self.prompt else {
-            return Ok(());
+            return;
         };
         let prompt = prompt.clone();
         let visible_indices = Self::visible_kill_running_indices(&prompt);
         let target_ids = match action {
             KillRunningAction::Hovered => visible_indices
                 .get(prompt.list.selected)
-                .map(|&index| vec![prompt.runtimes[index].id.clone()])
-                .unwrap_or_default(),
+                .map_or_default(|&index| vec![prompt.runtimes[index].id.clone()]),
             KillRunningAction::Selected => prompt
                 .runtimes
                 .iter()
@@ -4361,10 +5392,11 @@ impl App {
                 }
             };
             self.set_error(message);
-            return Ok(());
+            return;
         }
 
         self.prompt = PromptState::ConfirmKillRunning(ConfirmKillRunningPrompt {
+            attached: Vec::new(),
             previous: prompt,
             action,
             target_ids,
@@ -4374,7 +5406,6 @@ impl App {
             "{} is ready. Review the warning and press Enter to confirm, or Esc to keep your running sessions alive.",
             action.button_label()
         ));
-        Ok(())
     }
 
     pub(crate) fn kill_runtime_targets(
@@ -4436,29 +5467,27 @@ impl App {
 
         if active_terminal_killed {
             self.active_terminal_id = None;
-            if self.session_surface == SessionSurface::Terminal {
+            if self.focused_surface() == SessionSurface::Terminal {
                 self.input_target = InputTarget::None;
                 self.fullscreen_overlay = FullscreenOverlay::None;
                 self.session_surface = SessionSurface::Agent;
             }
         }
 
-        if selected_agent_killed && self.session_surface == SessionSurface::Agent {
+        if selected_agent_killed && self.focused_surface() == SessionSurface::Agent {
             self.input_target = InputTarget::None;
             self.fullscreen_overlay = FullscreenOverlay::None;
             self.focus = FocusPane::Left;
         }
 
-        self.clamp_terminal_cursor();
+        // A killed agent can leave for the Inactive tail, and a cursor on it
+        // then rests on no row.
+        self.rebuild_left_items();
         // The kill just removed PTYs; keep the poll-cadence flag honest right
         // away rather than waiting for the next tick.
         self.engine.sync_has_active_processes();
 
         (killed_agents, killed_terminals)
-    }
-
-    pub(crate) fn session_label(&self, session: &AgentSession) -> String {
-        session.display_label()
     }
 
     /// Palette action: tear down the TUI and serve the web UI in the same
@@ -4475,7 +5504,7 @@ impl App {
     /// while a successful flip is stashed waiting for the run loop, is refused
     /// rather than racing to bind the same ports and reporting EADDRINUSE.
     pub(crate) fn start_web_server(&mut self) {
-        if self.server_flip_preflight_pending || self.pending_server_flip.is_some() {
+        if self.serving.flip_preflight_pending || self.pending_server_flip.is_some() {
             self.set_warning("Web server start already in progress.".to_string());
             return;
         }
@@ -4484,7 +5513,7 @@ impl App {
         // collision against yaran itself. Refuse with the honest reason instead,
         // and point at the two ways out. A background start still in its own
         // pre-flight counts, because that worker already has the ports.
-        if self.background_server_preflight_pending {
+        if self.serving.background_preflight_pending {
             self.set_warning(
                 "yaran is already starting the web server in the background. Wait for it to \
                  report back, then run stop-background-server if you want the terminal handed \
@@ -4497,8 +5526,7 @@ impl App {
             let urls = self
                 .companion
                 .as_ref()
-                .map(|companion| companion.urls())
-                .unwrap_or_default();
+                .map_or_default(|companion| companion.urls());
             self.set_warning(format!(
                 "The web UI is already serving in the background on {}, so just open it. If you \
                  want the terminal handed over to it instead, run stop-background-server first \
@@ -4521,52 +5549,149 @@ impl App {
         let pending = self.engine.begin_status_op(&op);
         self.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
         self.pending_server_flip_op = Some(op);
-        self.server_flip_preflight_pending = true;
+        self.serving.flip_preflight_pending = true;
         let port = self.engine.config.server.port;
         let tailscale = self.engine.config.server.tailscale_mode();
         let tx = self.engine.worker_tx.clone();
-        std::thread::spawn(move || {
-            // Detect the Tailscale address off the UI thread; the CLI call is the
-            // reason this runs on a worker. A failed detection the user opted in
-            // to carries a non-fatal warning whose wording differs by mode: on
-            // "auto" yaran keeps watching and binds the leg when the interface
-            // shows up, on "yes" this run is loopback-only for good.
-            let (tailscale_ip, detect_warning) = if tailscale.wants_tailscale() {
-                match yaran_core::tailscale::detect_ip() {
-                    Ok(ip) => (Some(ip), None),
-                    Err(reason) => (
-                        None,
-                        Some(yaran_core::tailscale::undetected_warning(
-                            tailscale, reason, "loopback",
-                        )),
-                    ),
-                }
-            } else {
-                (None, None)
-            };
+        let panic_tx = tx.clone();
+        spawn_guarded(
+            "web server pre-flight",
+            move || {
+                // Detect the Tailscale address off the UI thread; the CLI call is the
+                // reason this runs on a worker. A failed detection the user opted in
+                // to carries a non-fatal warning whose wording differs by mode: on
+                // "auto" yaran keeps watching and binds the leg when the interface
+                // shows up, on "yes" this run is loopback-only for good.
+                let (tailscale_ip, detect_warning) = if tailscale.wants_tailscale() {
+                    match yaran_core::tailscale::detect_ip() {
+                        Ok(ip) => (Some(ip), None),
+                        Err(reason) => (
+                            None,
+                            Some(yaran_core::tailscale::undetected_warning(
+                                tailscale, &reason, "loopback",
+                            )),
+                        ),
+                    }
+                } else {
+                    (None, None)
+                };
 
-            // The pre-flight returns its own best-effort (Tailscale BIND-failure)
-            // warnings; combine them with the detection warning into the single
-            // `warning` the event carries, so a busy Tailscale port and a missing
-            // Tailscale daemon both surface the same way (serving loopback-only).
-            let result = match preflight_server_listeners(port, tailscale_ip) {
-                Ok((listeners, urls, bind_warnings)) => {
-                    let warning = combine_flip_warnings(detect_warning, bind_warnings);
-                    let _ = tx.send(WorkerEvent::ServerFlipPreflightReady {
-                        result: Ok((listeners, urls)),
-                        warning,
-                    });
-                    return;
-                }
-                Err(err) => Err(format!("{err:#}")),
-            };
-            // A required (loopback) bind failed: surface the error; the detection
-            // warning (if any) is moot because the flip is not happening.
-            let _ = tx.send(WorkerEvent::ServerFlipPreflightReady {
-                result,
-                warning: detect_warning,
+                // The pre-flight returns its own best-effort (Tailscale BIND-failure)
+                // warnings; combine them with the detection warning into the single
+                // `warning` the event carries, so a busy Tailscale port and a missing
+                // Tailscale daemon both surface the same way (serving loopback-only).
+                let result = match preflight_server_listeners(port, tailscale_ip) {
+                    Ok((listeners, urls, bind_warnings)) => {
+                        // The flip's log opens with these, exactly as `yaran server`
+                        // prints them: the detection warning as a line of its own,
+                        // the bind failures as banner rows.
+                        let startup = yaran_core::serve_log::StartupNotes {
+                            warnings: detect_warning.iter().cloned().collect(),
+                            bind_warnings: bind_warnings.clone(),
+                            tailscale_detected: tailscale_ip.is_some(),
+                        };
+                        let warning = combine_flip_warnings(detect_warning, bind_warnings);
+                        let _ = tx.send(WorkerEvent::ServerFlipPreflightReady {
+                            result: Ok((listeners, urls)),
+                            warning,
+                            startup,
+                        });
+                        return;
+                    }
+                    Err(err) => Err(format!("{err:#}")),
+                };
+                // A required (loopback) bind failed: surface the error; the detection
+                // warning (if any) is moot because the flip is not happening.
+                let _ = tx.send(WorkerEvent::ServerFlipPreflightReady {
+                    result,
+                    warning: detect_warning,
+                    startup: yaran_core::serve_log::StartupNotes::default(),
+                });
+            },
+            move |reason| {
+                let _ = panic_tx.send(WorkerEvent::ServerFlipPreflightReady {
+                    result: Err(format!("the pre-flight stopped unexpectedly: {reason}")),
+                    warning: None,
+                    startup: yaran_core::serve_log::StartupNotes::default(),
+                });
+            },
+        );
+    }
+}
+
+/// Start the Delete Project dialog's counter: one worker that counts, with
+/// `count`, the uncommitted files of each worktree queued on it, in turn, off
+/// the UI thread, and sends each answer as it lands, so the dialog fills in line
+/// by line and nothing holds the confirm. It checks the job's cancel flag
+/// before each worktree, so dropping the job stops it before the next `git
+/// status`, and it exits once the queue closes.
+fn spawn_project_worktree_counter(
+    project_id: &str,
+    count: impl Fn(&std::path::Path) -> yaran_core::delete_agent_prose::UncommittedAnswer
+    + Send
+    + 'static,
+) -> crate::app::ProjectWorktreeFilesJob {
+    let (queue, jobs) = std::sync::mpsc::channel::<(String, String)>();
+    let (answer_tx, answers) = std::sync::mpsc::channel();
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop = std::sync::Arc::clone(&cancelled);
+    let tagged = project_id.to_string();
+    std::thread::spawn(move || {
+        while let Ok((session_id, path)) = jobs.recv() {
+            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            let answer = count(std::path::Path::new(&path));
+            let sent = answer_tx.send(crate::app::ProjectWorktreeFilesAnswer {
+                project_id: tagged.clone(),
+                session_id,
+                answer,
             });
-        });
+            if sent.is_err() {
+                // The dialog is gone; nobody reads the rest.
+                return;
+            }
+        }
+    });
+    crate::app::ProjectWorktreeFilesJob {
+        project_id: project_id.to_string(),
+        queue,
+        answers,
+        cancelled,
+    }
+}
+
+/// Run `job` on a thread of its own. A panic in it is logged and its message
+/// handed to `on_panic`, which sends whatever event the job owed: the job's
+/// keyed busy is live until a final lands, so a job that dies silently would
+/// keep a spinner up with nothing behind it.
+fn spawn_guarded(
+    label: &'static str,
+    job: impl FnOnce() + Send + 'static,
+    on_panic: impl FnOnce(String) + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
+            let reason = yaran_core::engine::format_panic_payload(&*payload);
+            yaran_core::logger::error(&format!("{label} worker panicked: {reason}"));
+            on_panic(reason);
+        }
+    });
+}
+
+/// The final that retires a status op whose worker panicked, keyed to `key`.
+fn status_op_panic_final(
+    key: &str,
+    what: &'static str,
+) -> impl FnOnce(String) -> WorkerEvent + use<> {
+    let key = key.to_string();
+    move |reason| WorkerEvent::StatusOpCompleted {
+        resolved: yaran_core::engine::ResolvedFinal::error(
+            key,
+            format!(
+                "Could not {what}: the worker stopped unexpectedly ({reason}). yaran.log has the details."
+            ),
+        ),
     }
 }
 
@@ -4585,33 +5710,85 @@ pub(super) fn combine_flip_warnings(detect: Option<String>, binds: Vec<String>) 
     }
 }
 
+/// The status a terminal that did not launch leaves: an environment refusal is
+/// already a whole sentence and is shown as it is; anything else is said behind
+/// `prefix`.
+fn terminal_launch_failure(prefix: &str, err: &anyhow::Error) -> String {
+    if err
+        .downcast_ref::<yaran_core::engine::EnvRefusal>()
+        .is_some()
+    {
+        err.to_string()
+    } else {
+        format!("{prefix}: {err:#}")
+    }
+}
+
+/// The worker job that looks for editor CLIs on `PATH`.
+fn editor_search_job() -> crate::app::ui_jobs::UiJob {
+    crate::app::ui_jobs::UiJob {
+        busy: "Looking for editor CLIs on PATH\u{2026}".into(),
+        stopped:
+            "yaran could not finish looking for editor CLIs on PATH; yaran.log has the details."
+                .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::ChangesTreeState;
+    use crate::app::background_server::ReloadListenerChanges;
+    use crate::app::redraw::RedrawGate;
+    use crate::app::{
+        ConfirmAnswer, InactiveTailState, LeftRowsState, MouseLayoutState, OneShotNotes,
+        OverlayMouseLayout, OverlayMouseLayoutState, PaletteOpenedOver, PaneFlags, RawPaste,
+        RightSection, ServingFlags, ViewPrefs, WelcomeLogo, default_url_opener,
+    };
+    use crate::clipboard::Clipboard;
     use crate::config::YaranPaths;
     use crate::keybindings::{BINDING_DEFS, RuntimeBindings};
     use crate::model::{AgentSession, Project, ProviderKind, SessionStatus};
+    use crate::statusline::LiveStatusKeys;
+    use crate::statusline::StatusScope;
     use crate::storage::SessionStore;
     use crate::theme::Theme;
     use chrono::Utc;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::collections::BTreeMap;
+    use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
     use tempfile::tempdir;
+    use yaran_core::attachments::Attachments;
+    use yaran_core::changes_status::ChangedFilesFailures;
+    use yaran_core::clone_project::Clones;
+    use yaran_core::config_sync::portable_project_path;
+    use yaran_core::engine::BranchSyncWait;
+    use yaran_core::engine::GhProbeState;
+    use yaran_core::engine::PrSyncControl;
+    use yaran_core::engine::ReloadOrigin;
+    use yaran_core::engine::RemovalCoordination;
     use yaran_core::engine::{ProjectPersistenceOutcome, ProjectPersistenceView};
+    use yaran_core::model::CompanionTerminal;
+    use yaran_core::operations::Operations;
+    use yaran_core::process_sessions::AgentProcessRegistry;
+    use yaran_core::serve_log::StartupNotes;
 
     fn test_bindings() -> RuntimeBindings {
-        RuntimeBindings::new(
-            |action| {
-                BINDING_DEFS
-                    .iter()
-                    .find(|d| d.action == action)
-                    .map(|d| d.default_keys.to_vec())
-                    .unwrap_or_default()
-            },
-            true,
-        )
+        RuntimeBindings::new(|action| {
+            BINDING_DEFS
+                .iter()
+                .find(|d| d.action == action)
+                .map_or_default(|d| d.default_keys.to_vec())
+        })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one field initializer per App field, the test twin of the production constructor"
+    )]
     fn test_app_with_sessions(sessions: Vec<AgentSession>, projects: Vec<Project>) -> App {
         let tmp = tempdir().expect("tempdir");
         let root = tmp.path().to_path_buf();
@@ -4620,7 +5797,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             root: root.clone(),
         };
         std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees dir");
@@ -4650,11 +5828,12 @@ mod tests {
             sessions,
             staged_files: Vec::new(),
             unstaged_files: Vec::new(),
+            changed_files_revision: 0,
             terminal_counter: 0,
             github_integration_enabled: false,
             single_instance_lock,
             surface_kind: yaran_core::term_identity::SurfaceKind::Tui,
-            resource_collector: Default::default(),
+            resource_collector: Arc::default(),
             host_env: yaran_core::term_identity::HostEnvProbe::default(),
             worker_tx,
             worker_rx,
@@ -4665,53 +5844,69 @@ mod tests {
             command_applies: 0,
             deferred_commands: Vec::new(),
             reload_guard: None,
+            reload_origin: ReloadOrigin::default(),
+            reloaded_projects: None,
             providers: std::collections::HashMap::new(),
             running_provider_pins: std::collections::HashMap::new(),
-            launched_drop_paste: Default::default(),
+            launched_drop_paste: HashMap::default(),
             watch: Default::default(),
             companion_terminals: std::collections::HashMap::new(),
             agent_tabs: std::collections::HashMap::new(),
+            slot_tab_positions: std::collections::HashMap::new(),
+            slot_tab_created_ms: std::collections::HashMap::new(),
             terminating_ptys: Vec::new(),
+            process_registry: AgentProcessRegistry::default(),
+            removal_workers: Vec::new(),
             pending_group_removals: Vec::new(),
             pending_detachments: Vec::new(),
+            pending_tab_restarts: Vec::new(),
+            unsaved_branch_drifts: std::collections::HashMap::new(),
             gh_status: crate::model::GhStatus::Unknown,
-            gh_probe: Default::default(),
-            pr_statuses: std::collections::HashMap::new(),
-            pr_overrides: std::collections::HashMap::new(),
-            pr_suppressions: std::collections::HashSet::new(),
+            gh_probe: GhProbeState::default(),
+            agent_prs: std::collections::HashMap::new(),
+            pr_prefs: std::collections::HashMap::new(),
+            pr_prefs_retry_at: None,
+            pr_unsaved: std::collections::HashSet::new(),
+            branch_histories: std::collections::HashMap::new(),
+            pr_revision: std::collections::HashMap::new(),
             branch_sync_sessions: Arc::new(Mutex::new(Vec::new())),
             pr_sync_sessions: Arc::new(Mutex::new(Vec::new())),
-            pr_sync: Arc::new(Default::default()),
+            pr_sync: Arc::new(PrSyncControl::default()),
             pr_poll_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pr_poll_inactive_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            pr_inactive_sessions: Default::default(),
-            pr_inactive_sweep_at: Default::default(),
-            pr_return_checks_owed: Default::default(),
+            pr_inactive_sessions: HashSet::default(),
+            pr_inactive_sweep_at: Arc::default(),
+            pr_return_checks_owed: HashSet::default(),
+            pr_branch_asks: HashMap::default(),
+            pr_own_repos: HashMap::default(),
+            pr_branch_checks_owed: HashSet::default(),
             branch_sync_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            branch_sync_wait: Arc::new(Default::default()),
+            branch_sync_wait: Arc::new(BranchSyncWait::default()),
             pr_backoff: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            refs_watcher: None,
-            refs_watch_paths: std::collections::HashMap::new(),
             resume_fallback_candidates: std::collections::HashMap::new(),
             resumed_tab_runs: std::collections::HashSet::new(),
             pending_deletions: std::collections::HashSet::new(),
             folder_repo_statuses: std::collections::HashMap::new(),
-            changed_files_failures: Default::default(),
+            no_branch_checked_out: std::collections::HashSet::new(),
+            changed_files_failures: ChangedFilesFailures::default(),
             closing_sessions: std::collections::HashSet::new(),
             deletion_busy_messages: std::collections::HashMap::new(),
             watched_worktree: Arc::new(Mutex::new(None::<PathBuf>)),
-            changed_files_refresh: Default::default(),
+            changed_files_refresh: Arc::default(),
             watched_session_id: None,
-            current_origin: Default::default(),
+            current_origin: StatusScope::default(),
             has_active_processes: Arc::new(AtomicBool::new(false)),
+            serve_memory: Arc::default(),
             in_flight: std::collections::HashSet::new(),
             rename_expected: std::collections::HashMap::new(),
             pr_last_checked: std::collections::HashMap::new(),
             changed_files_poller_started: AtomicBool::new(false),
             branch_sync_worker_started: AtomicBool::new(false),
             pty_activity: std::collections::HashMap::new(),
+            terminal_activity_at: std::collections::HashMap::new(),
             pty_input: std::collections::HashMap::new(),
             pty_pointer: std::collections::HashMap::new(),
+            pty_used: std::collections::HashSet::new(),
             needs_attention: std::collections::HashSet::new(),
             failed_tab_runs: std::collections::HashMap::new(),
             pty_progress: std::collections::HashMap::new(),
@@ -4720,28 +5915,43 @@ mod tests {
             limits: Default::default(),
             amq: Default::default(),
             pending_web_checkout_ops: std::collections::HashMap::new(),
+            pending_web_project_saves: std::collections::HashSet::new(),
+            pending_change_base_ops: std::collections::HashMap::new(),
             pending_web_add_project_ops: std::collections::HashMap::new(),
             pending_web_pr_lookup_ops: std::collections::HashMap::new(),
+            clones: Clones::default(),
             pending_pr_attach_ops: std::collections::HashMap::new(),
             pending_recreate_ops: std::collections::HashMap::new(),
             pending_delete_ops_web: std::collections::HashMap::new(),
             pending_delete_reports_web: std::collections::HashMap::new(),
             pending_create_ops: std::collections::HashMap::new(),
             pending_web_launch_ops: std::collections::HashMap::new(),
-            live_status_keys: Default::default(),
+            live_status_keys: LiveStatusKeys::default(),
             last_created_op_id: None,
+            operations: Operations::default(),
+            operation_in_dispatch: None,
+            attachments: Attachments::default(),
+            dispatch_policy: None,
+            deferred_operations: Vec::new(),
+            deferred_policies: Vec::new(),
             created_session_by_op: std::collections::HashMap::new(),
             startup_launches: Default::default(),
+            removal_coordination: RemovalCoordination::default(),
         };
         let app_live_status_keys = engine.live_status_keys.clone();
         let mut app = App {
             engine,
             bindings,
             missing_project_warning_gen: None,
+            palette_hint_gen: None,
+            palette_opened_over: PaletteOpenedOver::NotRecorded,
             selected_left: 0,
             left_scroll_offset: 0,
-            left_section: crate::app::LeftSection::Projects,
-            selected_terminal_index: 0,
+            left_terminals: Vec::new(),
+            dock_layouts: std::collections::HashMap::new(),
+            dock_active: std::collections::HashMap::new(),
+            stopped_layout: None,
+            last_dock_strip: None,
             right_section: RightSection::Unstaged,
             files_index: 0,
             files_search: TextInput::new(),
@@ -4749,17 +5959,14 @@ mod tests {
             commit_input: TextInput::new()
                 .with_multiline(4)
                 .with_placeholder("Type your commit message\u{2026}"),
-            show_diff_line_numbers: false,
+            pending_commit: None,
             left_width_pct: 20,
             right_width_pct: 23,
-            terminal_pane_height_pct: 35,
+            terminal_dock_pct: 35,
             staged_pane_height_pct: 50,
             commit_pane_height_pct: 40,
             focus: FocusPane::Left,
             center_mode: CenterMode::Agent,
-            left_collapsed: false,
-            right_collapsed: false,
-            right_hidden: false,
             resize_mode: false,
             help_scroll: None,
             last_help_height: 0,
@@ -4770,6 +5977,15 @@ mod tests {
             last_error_dialog_lines: 0,
             pending_first_load: None,
             unpushed_count_rx: None,
+            project_worktree_files: None,
+            rename_pushed_rx: None,
+            pr_clone_check_rx: None,
+            ui_jobs: crate::app::ui_jobs::UiJobs::default(),
+            path_completion: crate::app::PathCompletion::default(),
+            browser_add: crate::app::BrowserAdd::default(),
+            theme_previews: None,
+            diff_wrap_ask: None,
+            pr_clone_awaiting: None,
             notes_fetch_rx: None,
             orphan_worktrees_rx: None,
             cloud: Default::default(),
@@ -4779,6 +5995,7 @@ mod tests {
             )),
             fullscreen_overlay: FullscreenOverlay::None,
             startup_log_viewer: None,
+            server_log_viewer: None,
             status: crate::statusline::KeyedStatusController::with_clear_after(
                 std::time::Duration::ZERO,
             )
@@ -4790,18 +6007,20 @@ mod tests {
             active_terminal_id: None,
             focused_tabs: std::collections::HashMap::new(),
             host_forward_carry: Vec::new(),
+            extended_keys: crate::keybindings::ExtendedKeys::Off,
+            host_keys: crate::host_keys::HostKeysState::default(),
             host_forward_error_logged_at: None,
             agent_tab_regions: Vec::new(),
-            terminal_return_to_list: false,
-            last_pty_size: (0, 0),
-            last_pty_resize_target: None,
-            tui_launched_ptys: Default::default(),
-            create_agent_started_here: false,
+            pty_sizes: std::collections::HashMap::new(),
+            part_targets: crate::app::PartTargets::default(),
+            tui_launched_ptys: HashSet::default(),
+            pull_request_create: None,
+            clone_draft: None,
+            macro_editor_version: None,
             pending_new_agent_settings: None,
             armed_new_agent_settings: None,
             pending_pty_takeover: None,
             last_refused_pty_resize: None,
-            grid_generation: 0,
             presize: Default::default(),
             scroll_mode: std::collections::HashSet::new(),
             last_diff_height: 0,
@@ -4811,9 +6030,7 @@ mod tests {
             tick_count: 0,
             start_time: std::time::Instant::now(),
             refusal_blink: None,
-            inactive_collapsed: false,
             inactive_search_dismissed: None,
-            inactive_collapse_overridden: false,
             left_items_cache: Vec::new(),
             left_groups_cache: Vec::new(),
             collapsed_groups: HashSet::new(),
@@ -4821,6 +6038,8 @@ mod tests {
             overlay_layout: OverlayMouseLayoutState::default(),
             mouse_drag: None,
             row_drag: None,
+            tab_drag: None,
+            last_tab_strip: None,
             center_mouse_forward: None,
             last_mouse_click: None,
             pressed_button: None,
@@ -4830,34 +6049,28 @@ mod tests {
                 bindings: Vec::new(),
             },
             raw_input_parser: crate::raw_input::RawInputParser::default(),
+            debug_raw_input: crate::app::debug_input::DebugRawInput::default(),
             raw_input_buf: Vec::new(),
             loading_input_buf: Vec::new(),
-            in_bracket_paste: false,
-            raw_paste_normalize: false,
-            raw_paste_prev_cr: false,
             terminal_focus: crate::focus::TerminalFocus::new(),
             macro_bar: None,
             sigwinch_flag: Arc::new(AtomicBool::new(false)),
             sigwinch_sig_id: None,
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             shutdown_sig_ids: Vec::new(),
-            force_redraw: false,
             redraw: RedrawGate::default(),
             welcome_tip_index: 0,
-            welcome_logo_visible: false,
-            welcome_logo_alt: false,
             welcome_tip_selection: usize::MAX,
-            pr_banner_at_bottom: true,
             syntax_cache: Arc::new(crate::diff::SyntaxCache::new()),
             pending_diff: None,
-            pending_changes_job: None,
-            human_board: super::human_board::HumanBoardState::default(),
+            human_board: crate::app::human_board::HumanBoardState::default(),
+            changes_tree: ChangesTreeState::default(),
             diff_request_seq: 0,
-            snapshot_buf: crate::pty::TerminalSnapshot::empty(),
-            last_snapshot_id: None,
+            part_snapshots: crate::app::PartSnapshots::default(),
             terminal_selection: None,
             pending_link_click: None,
             pending_pr_banner_press: None,
+            pr_cursors: std::collections::HashMap::new(),
             last_link_open: None,
             url_opener: default_url_opener(),
             startup_log_selection: None,
@@ -4865,14 +6078,16 @@ mod tests {
             pending_reload: None,
             reload_selected_session: None,
             reload_target: yaran_core::reload_policy::ReloadTarget::capture(),
+            drawn_ptys: Vec::new(),
+            published_ptys: None,
             companion: None,
-            background_server_preflight_pending: false,
-            background_server_wanted: false,
-            companion_followup_ran: false,
+            left_rows: Vec::new(),
+            tui_fallback_tabs: HashSet::default(),
             pending_background_server_start: None,
             pending_tailscale_mode_op: None,
             pending_cloud_mode_op: None,
-            server_flip_preflight_pending: false,
+            tailscale_answer_from: crate::app::TailscaleAnswerFrom::Serve,
+            reload_listener_changes: ReloadListenerChanges::default(),
             pending_persist_ops: std::collections::HashMap::new(),
             configure_save_op: None,
             pending_worktree_ops: std::collections::HashMap::new(),
@@ -4886,9 +6101,45 @@ mod tests {
             pending_changed_files_refresh: None,
             pending_server_flip_op: None,
             pending_config_reload_op: None,
-            project_chooser_context: None,
+            pending_branch_listing: None,
             agent_filter: None,
             test_scratch_dirs: tmp.into(),
+            panes: PaneFlags {
+                left_collapsed: false,
+                right_collapsed: false,
+                right_hidden: false,
+            },
+            inactive_tail: InactiveTailState {
+                collapsed: false,
+                overridden: false,
+            },
+            raw_paste: RawPaste {
+                in_bracket: false,
+                normalize: false,
+                newlines: crate::raw_input::PasteNewlines::default(),
+            },
+            welcome_logo: WelcomeLogo {
+                visible: false,
+                alt: false,
+            },
+            view_prefs: ViewPrefs {
+                show_diff_line_numbers: false,
+                pr_banner_at_bottom: true,
+            },
+            serving: ServingFlags {
+                flip_preflight_pending: false,
+                background_preflight_pending: false,
+                background_wanted: false,
+            },
+            left_list: LeftRowsState {
+                built: false,
+                cursor_parked: false,
+            },
+            notes: OneShotNotes {
+                force_redraw: false,
+                companion_followup_ran: false,
+                create_agent_started_here: false,
+            },
         };
         app.interactive_patterns = app.bindings.interactive_byte_patterns();
         app.rebuild_left_items();
@@ -4926,6 +6177,24 @@ mod tests {
         }
     }
 
+    /// A guarded worker that panics still answers: the panic's message reaches
+    /// `on_panic`, which is what retires the busy the work was shown under.
+    #[test]
+    fn a_guarded_worker_that_panics_hands_its_message_on() {
+        let (tx, rx) = mpsc::channel();
+        spawn_guarded(
+            "test",
+            || panic!("the job broke"),
+            move |reason| {
+                let _ = tx.send(reason);
+            },
+        );
+        let reason = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the panic is handed on");
+        assert!(reason.contains("the job broke"), "{reason}");
+    }
+
     /// Forking a standalone agent gives the purposeful refusal, not "select an
     /// agent first" with an agent plainly selected.
     ///
@@ -4942,7 +6211,7 @@ mod tests {
         let mut app = test_app_with_sessions(vec![session], Vec::new());
         app.selected_left = 1;
 
-        app.fork_selected_session().expect("fork is handled");
+        app.fork_selected_session();
         let status = app.status.message();
         assert!(
             status.contains("standalone agent") && status.contains("fork"),
@@ -4980,6 +6249,10 @@ mod tests {
     /// An engine over a scratch config root, returned with the root's guard:
     /// the caller holds it for as long as the engine runs, and dropping it
     /// removes the directory.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one field initializer per Engine field, the test twin of the production constructor"
+    )]
     fn test_engine_with_sessions(
         sessions: Vec<AgentSession>,
         projects: Vec<Project>,
@@ -4991,7 +6264,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
             root: root.clone(),
         };
         std::fs::create_dir_all(&paths.worktrees_root).expect("worktrees dir");
@@ -5017,11 +6291,12 @@ mod tests {
             sessions,
             staged_files: Vec::new(),
             unstaged_files: Vec::new(),
+            changed_files_revision: 0,
             terminal_counter: 0,
             github_integration_enabled: false,
             single_instance_lock,
             surface_kind: yaran_core::term_identity::SurfaceKind::Tui,
-            resource_collector: Default::default(),
+            resource_collector: Arc::default(),
             host_env: yaran_core::term_identity::HostEnvProbe::default(),
             worker_tx,
             worker_rx,
@@ -5032,53 +6307,69 @@ mod tests {
             command_applies: 0,
             deferred_commands: Vec::new(),
             reload_guard: None,
+            reload_origin: ReloadOrigin::default(),
+            reloaded_projects: None,
             providers: std::collections::HashMap::new(),
             running_provider_pins: std::collections::HashMap::new(),
-            launched_drop_paste: Default::default(),
+            launched_drop_paste: HashMap::default(),
             watch: Default::default(),
             companion_terminals: std::collections::HashMap::new(),
             agent_tabs: std::collections::HashMap::new(),
+            slot_tab_positions: std::collections::HashMap::new(),
+            slot_tab_created_ms: std::collections::HashMap::new(),
             terminating_ptys: Vec::new(),
+            process_registry: AgentProcessRegistry::default(),
+            removal_workers: Vec::new(),
             pending_group_removals: Vec::new(),
             pending_detachments: Vec::new(),
+            pending_tab_restarts: Vec::new(),
+            unsaved_branch_drifts: std::collections::HashMap::new(),
             gh_status: crate::model::GhStatus::Unknown,
-            gh_probe: Default::default(),
-            pr_statuses: std::collections::HashMap::new(),
-            pr_overrides: std::collections::HashMap::new(),
-            pr_suppressions: std::collections::HashSet::new(),
+            gh_probe: GhProbeState::default(),
+            agent_prs: std::collections::HashMap::new(),
+            pr_prefs: std::collections::HashMap::new(),
+            pr_prefs_retry_at: None,
+            pr_unsaved: std::collections::HashSet::new(),
+            branch_histories: std::collections::HashMap::new(),
+            pr_revision: std::collections::HashMap::new(),
             branch_sync_sessions: Arc::new(Mutex::new(Vec::new())),
             pr_sync_sessions: Arc::new(Mutex::new(Vec::new())),
-            pr_sync: Arc::new(Default::default()),
+            pr_sync: Arc::new(PrSyncControl::default()),
             pr_poll_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pr_poll_inactive_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            pr_inactive_sessions: Default::default(),
-            pr_inactive_sweep_at: Default::default(),
-            pr_return_checks_owed: Default::default(),
+            pr_inactive_sessions: HashSet::default(),
+            pr_inactive_sweep_at: Arc::default(),
+            pr_return_checks_owed: HashSet::default(),
+            pr_branch_asks: HashMap::default(),
+            pr_own_repos: HashMap::default(),
+            pr_branch_checks_owed: HashSet::default(),
             branch_sync_interval_secs: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            branch_sync_wait: Arc::new(Default::default()),
+            branch_sync_wait: Arc::new(BranchSyncWait::default()),
             pr_backoff: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            refs_watcher: None,
-            refs_watch_paths: std::collections::HashMap::new(),
             resume_fallback_candidates: std::collections::HashMap::new(),
             resumed_tab_runs: std::collections::HashSet::new(),
             pending_deletions: std::collections::HashSet::new(),
             folder_repo_statuses: std::collections::HashMap::new(),
-            changed_files_failures: Default::default(),
+            no_branch_checked_out: std::collections::HashSet::new(),
+            changed_files_failures: ChangedFilesFailures::default(),
             closing_sessions: std::collections::HashSet::new(),
             deletion_busy_messages: std::collections::HashMap::new(),
             watched_worktree: Arc::new(Mutex::new(None::<PathBuf>)),
-            changed_files_refresh: Default::default(),
+            changed_files_refresh: Arc::default(),
             watched_session_id: None,
-            current_origin: Default::default(),
+            current_origin: StatusScope::default(),
             has_active_processes: Arc::new(AtomicBool::new(false)),
+            serve_memory: Arc::default(),
             in_flight: std::collections::HashSet::new(),
             rename_expected: std::collections::HashMap::new(),
             pr_last_checked: std::collections::HashMap::new(),
             changed_files_poller_started: AtomicBool::new(false),
             branch_sync_worker_started: AtomicBool::new(false),
             pty_activity: std::collections::HashMap::new(),
+            terminal_activity_at: std::collections::HashMap::new(),
             pty_input: std::collections::HashMap::new(),
             pty_pointer: std::collections::HashMap::new(),
+            pty_used: std::collections::HashSet::new(),
             needs_attention: std::collections::HashSet::new(),
             failed_tab_runs: std::collections::HashMap::new(),
             pty_progress: std::collections::HashMap::new(),
@@ -5087,18 +6378,28 @@ mod tests {
             limits: Default::default(),
             amq: Default::default(),
             pending_web_checkout_ops: std::collections::HashMap::new(),
+            pending_web_project_saves: std::collections::HashSet::new(),
+            pending_change_base_ops: std::collections::HashMap::new(),
             pending_web_add_project_ops: std::collections::HashMap::new(),
             pending_web_pr_lookup_ops: std::collections::HashMap::new(),
+            clones: Clones::default(),
             pending_pr_attach_ops: std::collections::HashMap::new(),
             pending_recreate_ops: std::collections::HashMap::new(),
             pending_delete_ops_web: std::collections::HashMap::new(),
             pending_delete_reports_web: std::collections::HashMap::new(),
             pending_create_ops: std::collections::HashMap::new(),
             pending_web_launch_ops: std::collections::HashMap::new(),
-            live_status_keys: Default::default(),
+            live_status_keys: LiveStatusKeys::default(),
             last_created_op_id: None,
+            operations: Operations::default(),
+            operation_in_dispatch: None,
+            attachments: Attachments::default(),
+            dispatch_policy: None,
+            deferred_operations: Vec::new(),
+            deferred_policies: Vec::new(),
             created_session_by_op: std::collections::HashMap::new(),
             startup_launches: Default::default(),
+            removal_coordination: RemovalCoordination::default(),
         };
         (engine, tmp)
     }
@@ -5195,17 +6496,24 @@ mod tests {
     fn set_focused_tab_writes_through_to_the_engine_and_persists() {
         let mut app =
             test_app_with_sessions(vec![make_session("s1", "codex", "/tmp/w1")], Vec::new());
+        // The session's slot tab is stored too, as every agent's is.
         app.engine
             .session_store
-            .upsert_session(&app.engine.sessions[0].clone())
+            .create_session(&app.engine.sessions[0].clone())
             .expect("seed session row");
         seed_tab(&mut app, "t1", "s1", "claude", 1);
+        let stored_tab = app.engine.agent_tabs[TabIdRef::new("t1")].clone();
+        app.engine
+            .session_store
+            .insert_agent_tab(&stored_tab)
+            .expect("store the tab");
 
         app.set_focused_tab("s1", "t1");
         assert_eq!(
             app.engine.sessions[0].last_focused_tab.as_deref(),
             Some("t1")
         );
+        app.engine.wait_for_focused_tab_writes();
         let reloaded = app.engine.session_store.load_sessions().expect("reload");
         let s = reloaded.iter().find(|s| s.id == "s1").expect("row");
         assert_eq!(s.last_focused_tab.as_deref(), Some("t1"));
@@ -5213,6 +6521,7 @@ mod tests {
         // Switching back to Main clears the remembered engine value too.
         app.set_focused_tab("s1", "s1");
         assert_eq!(app.engine.sessions[0].last_focused_tab, None);
+        app.engine.wait_for_focused_tab_writes();
         let reloaded = app.engine.session_store.load_sessions().expect("reload");
         let s = reloaded.iter().find(|s| s.id == "s1").expect("row");
         assert_eq!(s.last_focused_tab, None);
@@ -5238,7 +6547,7 @@ mod tests {
         let mut app = test_app_with_sessions(Vec::new(), Vec::new());
         app.start_web_server();
         assert!(
-            app.server_flip_preflight_pending,
+            app.serving.flip_preflight_pending,
             "first trigger arms guard"
         );
         assert!(app.status.message().contains("Starting the web server"));
@@ -5251,7 +6560,7 @@ mod tests {
             "second trigger while pending must be refused"
         );
         assert!(
-            app.server_flip_preflight_pending,
+            app.serving.flip_preflight_pending,
             "guard stays armed after a refused retry"
         );
 
@@ -5259,9 +6568,10 @@ mod tests {
         app.apply_reaction(EventReaction::ServerFlipPreflightReady {
             result: Err("could not start the web server: address in use".to_string()),
             warning: None,
+            startup: StartupNotes::default(),
         });
         assert!(
-            !app.server_flip_preflight_pending,
+            !app.serving.flip_preflight_pending,
             "guard clears when the worker event lands"
         );
 
@@ -5271,6 +6581,7 @@ mod tests {
         app.apply_reaction(EventReaction::ServerFlipPreflightReady {
             result: Ok((vec![listener], vec![url])),
             warning: None,
+            startup: StartupNotes::default(),
         });
         assert!(app.pending_server_flip.is_some());
         app.start_web_server();
@@ -5317,14 +6628,15 @@ mod tests {
         app.apply_reaction(EventReaction::ServerFlipPreflightReady {
             result: Ok((vec![listener], vec![url.clone()])),
             warning: None,
+            startup: StartupNotes::default(),
         });
 
-        let (listeners, urls) = app
+        let flip = app
             .pending_server_flip
             .as_ref()
             .expect("a successful pre-flight stashes the flip");
-        assert_eq!(listeners.len(), 1);
-        assert_eq!(urls, &vec![url.clone()]);
+        assert_eq!(flip.listeners.len(), 1);
+        assert_eq!(flip.urls, vec![url.clone()]);
         assert_eq!(app.status.tone(), crate::statusline::StatusTone::Busy);
         assert_eq!(
             app.status.message(),
@@ -5336,6 +6648,31 @@ mod tests {
         );
     }
 
+    /// The pre-flight's warnings and Tailscale facts ride with the flip, so the
+    /// server status screen's log opens with them exactly as `yaran server` does.
+    #[test]
+    fn server_flip_preflight_carries_its_startup_notes_to_the_flip() {
+        let mut app = test_app_with_sessions(Vec::new(), Vec::new());
+        stash_server_flip_op(&mut app);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let startup = yaran_core::serve_log::StartupNotes {
+            warnings: vec!["Tailscale not detected (test).".to_string()],
+            bind_warnings: vec!["could not bind the Tailscale address".to_string()],
+            tailscale_detected: true,
+        };
+        app.apply_reaction(EventReaction::ServerFlipPreflightReady {
+            result: Ok((vec![listener], vec![url])),
+            warning: None,
+            startup: startup.clone(),
+        });
+        let flip = app
+            .pending_server_flip
+            .as_ref()
+            .expect("a successful pre-flight stashes the flip");
+        assert_eq!(flip.startup, startup);
+    }
+
     #[test]
     fn server_flip_preflight_ready_warning_shows_warning_status() {
         let mut app = test_app_with_sessions(Vec::new(), Vec::new());
@@ -5345,6 +6682,7 @@ mod tests {
         app.apply_reaction(EventReaction::ServerFlipPreflightReady {
             result: Ok((vec![listener], vec![url.clone()])),
             warning: Some("Tailscale not detected, serving on loopback only.".to_string()),
+            startup: StartupNotes::default(),
         });
         assert!(app.pending_server_flip.is_some());
         assert_eq!(app.status.tone(), crate::statusline::StatusTone::Warning);
@@ -5367,6 +6705,7 @@ mod tests {
         app.apply_reaction(EventReaction::ServerFlipPreflightReady {
             result: Err("could not start the web server: address in use".to_string()),
             warning: None,
+            startup: StartupNotes::default(),
         });
         assert!(
             app.pending_server_flip.is_none(),
@@ -5396,8 +6735,8 @@ mod tests {
         let mut app = test_app_with_sessions(Vec::new(), Vec::new());
 
         app.finish_add_project_with_status(
-            repo.path().to_string_lossy().into_owned(),
-            "Demo".to_string(),
+            &repo.path().to_string_lossy(),
+            "Demo",
             "main".to_string(),
             "main".to_string(),
             "Added project \"Demo\" to the workspace.".to_string(),
@@ -5442,8 +6781,9 @@ mod tests {
         let (_repo, path) = init_unborn_repo();
         let mut app = test_app_with_sessions(Vec::new(), Vec::new());
 
-        app.add_project(path.clone(), "Fresh".to_string())
-            .expect("add_project");
+        app.add_project(&path, "Fresh".to_string());
+
+        crate::app::test_support::finish_ui_jobs(&mut app);
 
         assert!(
             matches!(app.prompt, PromptState::ConfirmCreateInitialCommit { .. }),
@@ -5461,12 +6801,13 @@ mod tests {
     fn resolving_create_initial_commit_births_head_and_adds_project() {
         let (_repo, path) = init_unborn_repo();
         let mut app = test_app_with_sessions(Vec::new(), Vec::new());
-        app.add_project(path.clone(), "Fresh".to_string())
-            .expect("add_project");
+        app.add_project(&path.clone(), "Fresh".to_string());
+        crate::app::test_support::finish_ui_jobs(&mut app);
 
         // Confirming dispatches a background worker; the commit + registration
         // complete asynchronously. Drain until the project appears (bounded).
-        app.resolve_confirm_create_initial_commit(true);
+        app.resolve_confirm_create_initial_commit(ConfirmAnswer::Confirm);
+        crate::app::test_support::finish_ui_jobs(&mut app);
         assert!(matches!(app.prompt, PromptState::None));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while app.engine.projects.is_empty() && std::time::Instant::now() < deadline {
@@ -5513,9 +6854,7 @@ mod tests {
         if std::process::Command::new("id")
             .arg("-u")
             .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-            .unwrap_or(false)
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
         {
             return; // root bypasses the read-only trick
         }
@@ -5546,18 +6885,20 @@ mod tests {
         );
 
         let mut app = test_app_with_sessions(Vec::new(), Vec::new());
-        app.add_project(path.clone(), "Fresh".to_string())
-            .expect("add_project");
-        app.resolve_confirm_create_initial_commit(true);
-        // The wait is on the ERROR TONE, not merely on the gate: the gate is
-        // released by the same event that reports the failure, but the keyed
-        // BUSY the dispatch posted is only retired when that event has been
-        // DRAINED, so waiting on the gate alone can observe the release while
-        // the busy is still on the line and then read the busy as the tone.
+        app.add_project(&path.clone(), "Fresh".to_string());
+        crate::app::test_support::finish_ui_jobs(&mut app);
+        app.resolve_confirm_create_initial_commit(ConfirmAnswer::Confirm);
+        crate::app::test_support::finish_ui_jobs(&mut app);
+        // The gate is keyed by the repository's real path, which macOS reaches
+        // through a symlink.
+        let gate = yaran_core::engine::InFlightKey::InitialCommit(
+            std::fs::canonicalize(&path)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while app.status.tone() != yaran_core::statusline::StatusTone::Error
-            && std::time::Instant::now() < deadline
-        {
+        while app.engine.is_in_flight(&gate) && std::time::Instant::now() < deadline {
             app.drain_events();
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -5566,10 +6907,7 @@ mod tests {
         std::fs::set_permissions(&objects, original).unwrap();
 
         assert!(
-            !app.engine
-                .is_in_flight(&yaran_core::engine::InFlightKey::InitialCommit(
-                    path.clone()
-                )),
+            !app.engine.is_in_flight(&gate),
             "a failed commit must still release the in-flight gate"
         );
         assert!(
@@ -5599,7 +6937,8 @@ mod tests {
         let path = repo.path().to_string_lossy().to_string();
 
         let mut app = test_app_with_sessions(Vec::new(), Vec::new());
-        app.add_project(path, "Trunk".to_string()).expect("add");
+        app.add_project(&path, "Trunk".to_string());
+        crate::app::test_support::finish_ui_jobs(&mut app);
         assert!(
             matches!(app.prompt, PromptState::ConfirmCreateInitialCommit { .. }),
             "unborn repo must prompt for a commit, not the branch warning, got {:?}",
@@ -5640,8 +6979,12 @@ mod tests {
             default_mode: yaran_core::config::WorkspaceMode::Shared,
             auto_resume_shared: false,
         });
-        app.add_project(path.clone(), "demo".to_string())
-            .expect("register shared project");
+        app.add_project(&path, "demo".to_string());
+        // The path probe runs on a worker; the registration follows it.
+        crate::app::test_support::finish_ui_jobs(&mut app);
+        drain_until(&mut app, "the project registration", |app| {
+            !app.engine.projects.is_empty()
+        });
 
         assert!(
             matches!(app.prompt, PromptState::None),
@@ -5668,8 +7011,11 @@ mod tests {
         run_git(other.path(), &["commit", "--allow-empty", "-m", "init"]);
         run_git(other.path(), &["switch", "-c", "feature"]);
         app.engine.config.workspace = None;
-        app.add_project(other.path().to_string_lossy().to_string(), "w".to_string())
-            .expect("register worktree project");
+        app.add_project(&other.path().to_string_lossy(), "w".to_string());
+        crate::app::test_support::finish_ui_jobs(&mut app);
+        drain_until(&mut app, "the branch question", |app| {
+            !matches!(app.prompt, PromptState::None)
+        });
         assert!(
             matches!(app.prompt, PromptState::ConfirmNonDefaultBranch { .. }),
             "{:?}",
@@ -5681,10 +7027,11 @@ mod tests {
     fn cancelling_create_initial_commit_leaves_repo_and_workspace_untouched() {
         let (_repo, path) = init_unborn_repo();
         let mut app = test_app_with_sessions(Vec::new(), Vec::new());
-        app.add_project(path.clone(), "Fresh".to_string())
-            .expect("add_project");
+        app.add_project(&path.clone(), "Fresh".to_string());
+        crate::app::test_support::finish_ui_jobs(&mut app);
 
-        app.resolve_confirm_create_initial_commit(false);
+        app.resolve_confirm_create_initial_commit(ConfirmAnswer::Cancel);
+        crate::app::test_support::finish_ui_jobs(&mut app);
 
         assert!(
             !yaran_core::git::repo_has_commits(Path::new(&path)),
@@ -5944,8 +7291,8 @@ mod tests {
             yaran_core::config_queue::ConfigWriteQueue::new("/nonexistent/dir/cfg.toml".into());
 
         app.finish_add_project_with_status(
-            repo.path().to_string_lossy().into_owned(),
-            "Demo".to_string(),
+            &repo.path().to_string_lossy(),
+            "Demo",
             "main".to_string(),
             "main".to_string(),
             "Added project \"Demo\" to the workspace.".to_string(),
@@ -5965,13 +7312,13 @@ mod tests {
             app.status.message()
         );
         // The rollback undid the in-memory list and the SQLite row.
-        assert!(app.engine.projects.is_empty());
-        assert!(
+        assert_eq!(app.engine.projects, []);
+        assert_eq!(
             app.engine
                 .session_store
                 .load_projects()
-                .expect("load projects")
-                .is_empty()
+                .expect("load projects"),
+            Vec::<yaran_core::config::ProjectConfig>::new()
         );
     }
 
@@ -6002,8 +7349,8 @@ mod tests {
             yaran_core::config_queue::ConfigWriteQueue::new(queue_target.clone());
 
         app.finish_add_project_with_status(
-            raw_path.clone(),
-            "Demo".to_string(),
+            &raw_path.clone(),
+            "Demo",
             "main".to_string(),
             "main".to_string(),
             "Added project \"Demo\" to the workspace.".to_string(),
@@ -6068,10 +7415,128 @@ mod tests {
         assert_eq!(combined, "the Tailscale port is busy.");
     }
 
+    /// A terminal refused for its environment shows the refusal as the whole
+    /// sentence it already is, not behind a second "could not launch".
+    #[test]
+    fn a_terminal_refused_for_its_environment_says_so_once() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        app.engine
+            .config
+            .env
+            .insert("BROKEN".to_string(), "x$".to_string());
+
+        app.show_standalone_terminal();
+
+        assert_eq!(app.status.tone(), crate::statusline::StatusTone::Error);
+        assert!(
+            app.status.message().starts_with(
+                "yaran did not open the standalone terminal: environment variable BROKEN could \
+                 not be resolved, because its value has invalid expansion syntax."
+            ),
+            "{}",
+            app.status.message()
+        );
+    }
+
+    /// A rerun whose environment cannot be resolved is refused on the status
+    /// line before anything is claimed.
+    #[test]
+    fn rerun_startup_command_refuses_an_environment_it_cannot_resolve() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        app.selected_left = 1;
+        app.engine.projects[0].startup_command = Some("true".to_string());
+        app.engine.projects[0]
+            .env
+            .insert("BROKEN".to_string(), "x$".to_string());
+
+        app.rerun_startup_command_on_agent();
+
+        assert_eq!(app.status.tone(), crate::statusline::StatusTone::Error);
+        assert!(
+            app.status.message().starts_with(
+                "yaran did not rerun the startup command: environment variable BROKEN"
+            ),
+            "{}",
+            app.status.message()
+        );
+        assert!(!app.engine.process_registry.startup_running("session-1"));
+    }
+
     /// The way out of a working copy the agent deleted from under itself. It is
     /// offered only in that state, and hidden rather than disabled elsewhere: a
     /// command that exists only while something is broken would otherwise sit in
     /// the palette promising a repair nothing needs.
+    /// The editor search runs on a worker: the picker is not up when the key
+    /// returns, only a busy, and it opens once the search answers.
+    #[test]
+    fn the_editor_picker_opens_when_the_editor_search_answers() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        app.selected_left = 1;
+
+        app.open_worktree_editor_picker();
+        assert!(matches!(app.prompt, PromptState::None));
+        assert_eq!(app.status.tone(), crate::statusline::StatusTone::Busy);
+
+        drain_until(&mut app, "the editor picker", |app| {
+            matches!(app.prompt, PromptState::PickEditor { .. })
+        });
+    }
+
+    /// Only the newest editor request acts: an earlier one's answer is
+    /// dropped and says so.
+    #[test]
+    fn only_the_newest_editor_request_opens_the_picker() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        app.selected_left = 1;
+
+        app.open_worktree_editor_picker();
+        app.open_worktree_editor_picker();
+        crate::app::test_support::finish_ui_jobs(&mut app);
+
+        assert!(matches!(app.prompt, PromptState::PickEditor { .. }));
+        // The two searches answer in either order, and the picker's own
+        // instruction can land after the dropped answer's sentence, so the
+        // sentence is looked for among everything the status line holds.
+        let said: Vec<String> = app
+            .status
+            .snapshot()
+            .into_iter()
+            .map(|status| status.message)
+            .collect();
+        assert!(
+            said.iter()
+                .any(|message| message.contains("a newer editor request replaced it")),
+            "{said:?}"
+        );
+    }
+
+    /// A picker whose answer lands over another dialog does not replace it,
+    /// and says it was not opened.
+    #[test]
+    fn the_editor_picker_does_not_replace_a_dialog_opened_meanwhile() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        app.selected_left = 1;
+
+        app.open_worktree_editor_picker();
+        app.prompt = PromptState::Command {
+            input: crate::app::text_input::TextInput::new(),
+            selected: 0,
+        };
+        crate::app::test_support::finish_ui_jobs(&mut app);
+
+        assert!(matches!(app.prompt, PromptState::Command { .. }));
+        let said = app
+            .status
+            .most_recent_tui()
+            .map_or_default(|(_, message)| message);
+        assert!(said.contains("another dialog is open"), "{said}");
+    }
+
     #[test]
     fn recreate_working_copy_is_offered_only_where_there_is_something_to_recreate() {
         let mut app =
@@ -6111,21 +7576,24 @@ mod tests {
             .folder_repo_statuses
             .insert(id, yaran_core::git::FolderRepoStatus::Missing);
 
-        app.confirm_recreate_selected_working_copy()
-            .expect("dispatch");
+        app.confirm_recreate_selected_working_copy();
         let PromptState::ConfirmRecreateWorkingCopy {
             worktree_path,
             branch_name,
             source_branch,
             conversation_resumes,
-            running_providers,
+            running_tabs,
             focus,
             ..
         } = &app.prompt
         else {
             panic!("a missing working copy raises the confirmation")
         };
-        assert_eq!(*focus, ConfirmFocus::Cancel, "Cancel is the safe default");
+        assert_eq!(
+            *focus,
+            RecreateWorkingCopyFocus::Cancel,
+            "Cancel is the safe default"
+        );
         assert!(
             *conversation_resumes,
             "the fixture agent runs codex, which resumes per directory"
@@ -6134,8 +7602,12 @@ mod tests {
             worktree_path,
             branch_name,
             source_branch,
-            *conversation_resumes,
-            running_providers,
+            if *conversation_resumes {
+                yaran_core::working_copy::ConversationResume::Resumes
+            } else {
+                yaran_core::working_copy::ConversationResume::StartsFresh
+            },
+            running_tabs,
         );
         assert!(body.contains("are gone either way"), "{body}");
         assert!(body.contains("same path"), "{body}");
@@ -6151,6 +7623,14 @@ mod tests {
         app.selected_left = 1;
         let id = app.engine.sessions[0].id.clone();
         app.engine.sessions[0].provider = yaran_core::model::ProviderKind::new("claude");
+        // The CLI is told by its command; this one is never started.
+        app.engine
+            .config
+            .providers
+            .commands
+            .get_mut("claude")
+            .expect("claude is configured")
+            .command = "/nowhere/claude".to_string();
         app.engine
             .folder_repo_statuses
             .insert(id.clone(), yaran_core::git::FolderRepoStatus::Missing);
@@ -6161,16 +7641,18 @@ mod tests {
         app.engine
             .mark_in_flight(yaran_core::engine::InFlightKey::AgentLaunch(tab));
 
-        app.confirm_recreate_selected_working_copy()
-            .expect("dispatch");
+        app.confirm_recreate_selected_working_copy();
 
         let PromptState::ConfirmRecreateWorkingCopy {
-            running_providers, ..
+            running_tabs,
+            restart_offer,
+            ..
         } = &app.prompt
         else {
             panic!("a running agent is confirmed like any other")
         };
-        assert_eq!(running_providers, &vec!["claude".to_string()]);
+        assert_eq!(running_tabs.follows, vec!["claude".to_string()]);
+        assert!(restart_offer.is_empty(), "Claude follows the folder");
     }
 
     /// The body follows the tab that is RUNNING: a dormant claude slot beside a
@@ -6201,27 +7683,30 @@ mod tests {
                 yaran_core::ids::TabId::new("tab-live"),
             ));
 
-        app.confirm_recreate_selected_working_copy()
-            .expect("dispatch");
+        app.confirm_recreate_selected_working_copy();
 
         let PromptState::ConfirmRecreateWorkingCopy {
             worktree_path,
             branch_name,
             source_branch,
             conversation_resumes,
-            running_providers,
+            running_tabs,
             ..
         } = &app.prompt
         else {
             panic!("a running agent is confirmed like any other")
         };
-        assert_eq!(running_providers, &vec!["codex".to_string()]);
+        assert_eq!(running_tabs.restartable, vec!["codex".to_string()]);
         let body = yaran_core::working_copy::recreate_confirm_body(
             worktree_path,
             branch_name,
             source_branch,
-            *conversation_resumes,
-            running_providers,
+            if *conversation_resumes {
+                yaran_core::working_copy::ConversationResume::Resumes
+            } else {
+                yaran_core::working_copy::ConversationResume::StartsFresh
+            },
+            running_tabs,
         );
         assert!(body.contains("A running Codex tab cannot follow"), "{body}");
     }
@@ -6236,10 +7721,9 @@ mod tests {
         app.engine
             .folder_repo_statuses
             .insert(id.clone(), yaran_core::git::FolderRepoStatus::Missing);
-        app.confirm_recreate_selected_working_copy()
-            .expect("dispatch");
+        app.confirm_recreate_selected_working_copy();
 
-        app.resolve_confirm_recreate_working_copy(false);
+        app.resolve_confirm_recreate_working_copy(ConfirmAnswer::Cancel);
 
         assert!(matches!(app.prompt, PromptState::None));
         assert!(
@@ -6256,8 +7740,7 @@ mod tests {
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
         app.selected_left = 1;
 
-        app.confirm_recreate_selected_working_copy()
-            .expect("dispatch");
+        app.confirm_recreate_selected_working_copy();
 
         assert!(matches!(app.prompt, PromptState::None));
         assert!(
@@ -6350,7 +7833,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,
@@ -6358,7 +7841,7 @@ mod tests {
         }
     }
 
-    /// Inserts a dummy PtyClient placeholder into `app.engine.providers` so that the
+    /// Inserts a dummy `PtyClient` placeholder into `app.engine.providers` so that the
     /// session appears "active" without actually spawning a process. `providers`
     /// is tab-keyed, so the client lands under the agent's slot tab, which the
     /// resolver names.
@@ -6382,6 +7865,7 @@ mod tests {
             binary: false,
             diff_excluded: false,
             renamed_from: None,
+            kind: yaran_core::model::ChangedFileKind::File,
         }
     }
 
@@ -6474,7 +7958,8 @@ mod tests {
             .expect("pending read")
             .announce_at
             .expect("a selection read owes a late spinner")
-            - crate::app::SLOW_CHANGED_FILES_READ;
+            .checked_sub(crate::app::SLOW_CHANGED_FILES_READ)
+            .expect("the monotonic clock reads past the offset a test steps back");
 
         app.announce_slow_changed_files_read(started + Duration::from_millis(100));
         assert!(
@@ -6485,6 +7970,13 @@ mod tests {
         app.announce_slow_changed_files_read(started + Duration::from_secs(1));
         let (tone, message) = app.status.most_recent_tui().expect("the wait is explained");
         assert_eq!(tone, yaran_core::statusline::StatusTone::Busy);
+        let key = app
+            .pending_changed_files_refresh
+            .as_ref()
+            .expect("still pending")
+            .key
+            .clone();
+        assert!(app.engine.status_op_is_live(&key), "the shown busy is live");
         assert!(
             message.contains("Reading changed files"),
             "unexpected message: {message}"
@@ -6679,6 +8171,17 @@ mod tests {
             Some("s3"),
             "the same agent must stay selected across a config reload",
         );
+
+        // A `yaran config set` that re-sorts the list moves the agent's row, and
+        // the cursor goes with it.
+        let mut config = app.engine.config.clone();
+        config.ui.agent_sort = "name_desc".to_string();
+        app.apply_reloaded_config(config).expect("reload config");
+        assert_eq!(
+            app.selected_session().map(|s| s.id.as_str()),
+            Some("s3"),
+            "a reload that re-sorts the list keeps the cursor on its agent",
+        );
     }
 
     /// The "Inactive (N)" toggle count must reflect the active search filter:
@@ -6722,10 +8225,12 @@ mod tests {
         );
     }
 
-    /// The `manage-projects` target is one-and-done: a project-scoped action
-    /// consumes it, so a second action falls back to the ordinary selection.
+    /// A project command run with no agent selected opens the project list,
+    /// titled for the command, and picking a project runs the command on it:
+    /// the agent-less project is reachable, and nothing is remembered after.
     #[test]
-    fn project_action_consumes_manage_projects_target() {
+    fn a_project_command_with_no_agent_selected_runs_on_the_project_picked_from_the_list() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let p1 = make_project("project-1", "codex");
         let mut p2 = make_project("project-2", "codex");
         p2.name = "empty".to_string();
@@ -6741,24 +8246,75 @@ mod tests {
         }
         let mut app = test_app_with_sessions(sessions, vec![p1, p2]);
         app.rebuild_left_items();
+        // Nothing agent-shaped under the cursor.
+        app.left_items_cache.clear();
         app.selected_left = 0;
+        assert!(app.selected_session().is_none());
 
-        // Point the chooser at the agent-less project and run one project action.
-        app.project_chooser_context = Some("project-2".to_string());
-        app.open_configure_project_env().expect("configure env");
+        app.execute_command("configure-project-env")
+            .expect("open the list");
+        let pick_empty = match &app.prompt {
+            PromptState::PickProject {
+                intent, entries, ..
+            } => {
+                assert_eq!(
+                    *intent,
+                    ProjectChooserIntent::Action(ProjectAction::Environment)
+                );
+                assert_eq!(intent.title(), "Configure project environment");
+                entries
+                    .iter()
+                    .position(|entry| entry.id == "project-2")
+                    .expect("the agent-less project is listed")
+            }
+            other => panic!("expected the project list, got {other:?}"),
+        };
+        for _ in 0..pick_empty {
+            app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+                .unwrap();
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
 
-        // The action captured project-2 (proof it resolved the target)…
         match &app.prompt {
             PromptState::ConfigureProjectEnv { project_id, .. } => {
                 assert_eq!(project_id, "project-2");
             }
             other => panic!("expected ConfigureProjectEnv prompt, got {other:?}"),
         }
-        // …and the target is now consumed so the next action won't reuse it.
-        assert!(
-            app.project_chooser_context.is_none(),
-            "the manage-projects target must be cleared after one project action",
-        );
+    }
+
+    /// With an agent selected, a project command acts on that agent's project
+    /// straight away, with no list in between.
+    #[test]
+    fn a_project_command_acts_on_the_selected_agents_project() {
+        let p1 = make_project("project-1", "codex");
+        let mut p2 = make_project("project-2", "codex");
+        p2.name = "empty".to_string();
+        let mut session = make_session("s1", "codex", "/tmp/worktree-s1");
+        session
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .project_id = "project-1".to_string();
+        session.status = SessionStatus::Active;
+        let mut app = test_app_with_sessions(vec![session], vec![p1, p2]);
+        app.rebuild_left_items();
+        app.selected_left = app
+            .left_items()
+            .iter()
+            .position(|item| matches!(item, LeftItem::Session(_)))
+            .expect("the agent row");
+
+        app.execute_command("configure-project-env")
+            .expect("open the editor");
+
+        match &app.prompt {
+            PromptState::ConfigureProjectEnv { project_id, .. } => {
+                assert_eq!(project_id, "project-1");
+            }
+            other => panic!("expected ConfigureProjectEnv prompt, got {other:?}"),
+        }
     }
 
     /// Confirming the project chooser after the picked project vanished from
@@ -6775,6 +8331,8 @@ mod tests {
                 path: "/tmp/ghost".to_string(),
                 agent_count: 0,
                 path_missing: false,
+                base_branch: None,
+                orphaned: false,
             }],
             list: SearchableList::new(),
         };
@@ -6806,22 +8364,69 @@ mod tests {
         p3.name = "gamma".to_string();
         let mut app = test_app_with_sessions(vec![], vec![p1, p2, p3]);
 
-        app.open_project_chooser(ProjectChooserIntent::Manage)
-            .unwrap();
+        app.open_project_chooser(ProjectChooserIntent::Manage);
 
         // `/` enters search; typing "beta" narrows the visible list to one row.
         press(&mut app, KeyCode::Char('/'));
         for c in "beta".chars() {
             press(&mut app, KeyCode::Char(c));
         }
-        // Commit the query (leave search mode), then confirm the sole match.
-        press(&mut app, KeyCode::Enter);
+        // Confirm the sole match.
         press(&mut app, KeyCode::Enter);
 
-        // Manage intent records the picked project as the action target: even
-        // though "beta" is index 1 in `entries`, the visible-index resolution
-        // must land on it, not on `entries[0]`.
-        assert_eq!(app.project_chooser_context.as_deref(), Some("beta"));
+        // Manage opens the picked project's actions: even though "beta" is
+        // index 1 in `entries`, the visible-index resolution must land on it,
+        // not on `entries[0]`.
+        match &app.prompt {
+            PromptState::ProjectActions(prompt) => assert_eq!(
+                prompt.target,
+                ProjectActionsTarget::Project {
+                    id: "beta".to_string()
+                }
+            ),
+            other => panic!("expected beta's action list, got {other:?}"),
+        }
+    }
+
+    /// Typing a query highlights its first match, wherever the cursor was
+    /// before, so Enter right after typing picks the top row.
+    #[test]
+    fn project_chooser_query_highlights_the_first_match() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let press = |app: &mut App, code: KeyCode| {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE))
+                .unwrap();
+        };
+
+        let projects = ["alpha", "beta-one", "beta-two"].map(|name| {
+            let mut project = make_project(name, "codex");
+            project.name = name.to_string();
+            project
+        });
+        let mut app = test_app_with_sessions(vec![], projects.to_vec());
+        app.open_project_chooser(ProjectChooserIntent::Manage);
+
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('/'));
+        for c in "beta".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        let PromptState::PickProject { entries, list, .. } = &app.prompt else {
+            panic!("expected the project chooser, got {:?}", app.prompt);
+        };
+        let first_match = entries[list.visible_indices(entries, pick_project_matches)[0]]
+            .id
+            .clone();
+        press(&mut app, KeyCode::Enter);
+
+        match &app.prompt {
+            PromptState::ProjectActions(prompt) => assert_eq!(
+                prompt.target,
+                ProjectActionsTarget::Project { id: first_match }
+            ),
+            other => panic!("expected the first match's action list, got {other:?}"),
+        }
     }
 
     /// The chooser lists projects by what was touched most recently: the project
@@ -6876,8 +8481,7 @@ mod tests {
 
         let mut app = test_app_with_sessions(vec![], vec![oldest, middle, newest]);
         let only = vec!["oldest".to_string(), "middle".to_string()];
-        app.open_project_chooser_over(ProjectChooserIntent::FromPr, Some(&only))
-            .unwrap();
+        app.open_project_chooser_over(ProjectChooserIntent::FromPr, Some(&only));
 
         let ids: Vec<String> = match &app.prompt {
             PromptState::PickProject { entries, .. } => {
@@ -6901,8 +8505,7 @@ mod tests {
         newest.created_at = Some(at(9));
 
         let mut app = test_app_with_sessions(vec![], vec![oldest, newest]);
-        app.open_project_chooser(ProjectChooserIntent::Manage)
-            .unwrap();
+        app.open_project_chooser(ProjectChooserIntent::Manage);
 
         let ids: Vec<String> = match &app.prompt {
             PromptState::PickProject { entries, .. } => {
@@ -7072,7 +8675,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,
@@ -7098,7 +8701,7 @@ mod tests {
         let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
-        app.do_delete_session("s1", false, None)
+        app.do_delete_session("s1", yaran_core::engine::WorktreeOnDelete::Keep, None)
             .expect("delete should succeed without touching git");
 
         assert!(
@@ -7111,12 +8714,11 @@ mod tests {
         );
     }
 
-    /// Deleting the selected agent must land the cursor on the row that slid
-    /// into the freed slot (id-stable reselection), not on the row above it.
-    /// The old `saturating_sub(1)` double-adjusted after the rebuild already
-    /// re-clamped, jumping the cursor up one row.
+    /// Deleting the selected agent leaves nothing selected and the tips screen
+    /// in the centre: the row that slid into its place is an agent nobody
+    /// picked, and drawing it would attach this surface to it.
     #[test]
-    fn delete_selected_agent_keeps_cursor_on_next_row() {
+    fn deleting_the_selected_agent_here_leaves_nothing_selected() {
         let project = make_project_at("project-1", "codex", "/tmp/project");
         let mut sessions = Vec::new();
         for id in ["s1", "s2", "s3"] {
@@ -7135,15 +8737,12 @@ mod tests {
         app.selected_left = 1;
         assert_eq!(app.selected_session().map(|s| s.id.as_str()), Some("s2"));
 
-        app.do_delete_session("s2", false, None).expect("delete s2");
+        mark_active(&mut app, "s3");
 
-        // The cursor stays at display index 1, which now holds s3 (the row that
-        // slid up), NOT s1 (which a decrement would have selected).
-        assert_eq!(
-            app.selected_session().map(|s| s.id.as_str()),
-            Some("s3"),
-            "cursor should land on the row that took the deleted row's place",
-        );
+        app.do_delete_session("s2", yaran_core::engine::WorktreeOnDelete::Keep, None)
+            .expect("delete s2");
+
+        assert_resting_on_the_tips_screen(&mut app);
     }
 
     /// Deleting a row OTHER than the selected one must not drag the selection
@@ -7168,7 +8767,8 @@ mod tests {
         app.selected_left = 0;
         assert_eq!(app.selected_session().map(|s| s.id.as_str()), Some("s1"));
 
-        app.do_delete_session("s2", false, None).expect("delete s2");
+        app.do_delete_session("s2", yaran_core::engine::WorktreeOnDelete::Keep, None)
+            .expect("delete s2");
 
         assert_eq!(
             app.selected_session().map(|s| s.id.as_str()),
@@ -7199,7 +8799,7 @@ mod tests {
         let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
         let mut app = test_app_with_sessions(vec![s1, s2], vec![project]);
 
-        app.do_delete_session("s1", true, None)
+        app.do_delete_session("s1", yaran_core::engine::WorktreeOnDelete::Remove, None)
             .expect("delete should succeed without touching git for shared worktree");
 
         assert!(
@@ -7216,12 +8816,13 @@ mod tests {
         );
     }
 
-    /// If git fails to remove the worktree, the session record must remain.
-    /// Otherwise the user loses their agent with no way to retry. We force
-    /// the git call to fail by pointing the project path at a directory that
-    /// is not a git repository.
+    /// If git fails to remove the worktree, the folder is untouched and the
+    /// failure is said out loud, naming git and the worktree. (The agent's
+    /// record leaves the list at once, as every delete's does; the worktree
+    /// stays on disk for the worktree manager.) We force the git call to fail
+    /// by pointing the project path at a directory that is not a repository.
     #[test]
-    fn do_delete_session_preserves_session_when_git_fails() {
+    fn do_delete_session_reports_a_git_failure_and_keeps_the_folder() {
         let project_dir = tempdir().expect("project tempdir");
         // Intentionally NOT a git repo, so `git worktree remove` will exit
         // non-zero, which bubbles up as Err from git::remove_worktree.
@@ -7237,7 +8838,7 @@ mod tests {
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
         let err = app
-            .do_delete_session("s1", true, None)
+            .do_delete_session("s1", yaran_core::engine::WorktreeOnDelete::Remove, None)
             .expect_err("git should fail against a non-git project dir");
         let msg = format!("{err:#}");
         assert!(
@@ -7246,16 +8847,12 @@ mod tests {
         );
 
         assert!(
-            app.engine.sessions.iter().any(|s| s.id == "s1"),
-            "session must be preserved when git fails so user can retry",
-        );
-        assert!(
             worktree_dir.path().exists(),
             "worktree directory should be untouched on failure",
         );
     }
 
-    /// Graceful delete vanishes the session immediately: its PTY is SIGTERMed and
+    /// Graceful delete vanishes the session immediately: its PTY is `SIGTERMed` and
     /// held for a background reap, and the worktree is removed in the background
     /// only after the agent exits. The session never lingers until the worker
     /// reports, the user-chosen tradeoff for a snappy, non-blocking delete.
@@ -7273,7 +8870,7 @@ mod tests {
         let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
-        app.begin_delete_session("s1", true, None);
+        app.begin_delete_session("s1", yaran_core::engine::WorktreeOnDelete::Remove, None);
 
         assert!(
             app.engine.sessions.iter().all(|s| s.id != "s1"),
@@ -7298,7 +8895,7 @@ mod tests {
         let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
-        app.begin_delete_session("s1", false, None);
+        app.begin_delete_session("s1", yaran_core::engine::WorktreeOnDelete::Keep, None);
 
         assert!(
             app.engine.sessions.iter().all(|s| s.id != "s1"),
@@ -7323,11 +8920,19 @@ mod tests {
         let project = make_project("project-1", "claude");
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
-        app.finish_delete_session("s1", WorktreeRemoval::PreservedOrphan, true)
-            .expect("first finish succeeds");
+        app.finish_delete_session(
+            "s1",
+            WorktreeRemoval::PreservedOrphan,
+            DeleteReport::Announce,
+        )
+        .expect("first finish succeeds");
         // Second call must not panic or return Err even though session is gone.
-        app.finish_delete_session("s1", WorktreeRemoval::PreservedOrphan, true)
-            .expect("second finish is a no-op");
+        app.finish_delete_session(
+            "s1",
+            WorktreeRemoval::PreservedOrphan,
+            DeleteReport::Announce,
+        )
+        .expect("second finish is a no-op");
     }
 
     /// Deleting a session must clear its PTY-activity entry (now owned by the
@@ -7351,8 +8956,12 @@ mod tests {
         assert!(app.engine.pty_activity.contains_key("s1-slot"));
         assert!(app.engine.pty_input.contains_key("s1-slot"));
 
-        app.finish_delete_session("s1", WorktreeRemoval::PreservedOrphan, true)
-            .expect("finish succeeds");
+        app.finish_delete_session(
+            "s1",
+            WorktreeRemoval::PreservedOrphan,
+            DeleteReport::Announce,
+        )
+        .expect("finish succeeds");
 
         assert!(
             !app.engine.pty_activity.contains_key("s1-slot"),
@@ -7380,7 +8989,7 @@ mod tests {
         let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
-        app.begin_delete_session("s1", true, None);
+        app.begin_delete_session("s1", yaran_core::engine::WorktreeOnDelete::Remove, None);
 
         assert!(
             app.engine.pending_deletions.contains("s1"),
@@ -7388,7 +8997,7 @@ mod tests {
         );
     }
 
-    /// The inline (no-git) path completes immediately, so pending_deletions
+    /// The inline (no-git) path completes immediately, so `pending_deletions`
     /// should never gain the session in the first place.
     #[test]
     fn begin_delete_session_inline_does_not_track() {
@@ -7404,7 +9013,7 @@ mod tests {
         let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
-        app.begin_delete_session("s1", false, None);
+        app.begin_delete_session("s1", yaran_core::engine::WorktreeOnDelete::Keep, None);
 
         assert!(
             app.engine.pending_deletions.is_empty(),
@@ -7429,18 +9038,197 @@ mod tests {
         let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
-        app.begin_delete_session("s1", true, None);
+        app.begin_delete_session("s1", yaran_core::engine::WorktreeOnDelete::Remove, None);
         assert_eq!(
             app.engine.pending_deletions.len(),
             1,
             "first call records pending"
         );
 
-        app.begin_delete_session("s1", true, None);
+        app.begin_delete_session("s1", yaran_core::engine::WorktreeOnDelete::Remove, None);
         assert_eq!(
             app.engine.pending_deletions.len(),
             1,
             "duplicate request must not spawn a second worker",
+        );
+    }
+
+    /// Every keyed busy still open for `key`.
+    fn open_busy(app: &App, key: &str) -> Vec<yaran_core::statusline::KeyedWireStatus> {
+        app.status
+            .snapshot()
+            .into_iter()
+            .filter(|status| status.key.as_deref() == Some(key) && status.tone == "busy")
+            .collect()
+    }
+
+    /// A delete whose worktree went but whose session cleanup then failed
+    /// still retires its keyed busy and its live key; the failure is the line
+    /// that stays.
+    #[test]
+    fn a_delete_whose_cleanup_fails_retires_its_busy() {
+        let project_dir = tempdir().expect("project tempdir");
+        let worktree_dir = tempdir().expect("worktree tempdir");
+        let worktree_path = worktree_dir.path().to_string_lossy().to_string();
+        let mut s1 = make_session("s1", "claude", &worktree_path);
+        s1.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .project_id = "project-1".to_string();
+        let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
+        let mut app = test_app_with_sessions(vec![s1], vec![project]);
+        let op = app.build_delete_status_op("s1", "Removing worktree\u{2026}".to_string());
+        let key = op.pending_status().key.expect("a keyed op");
+        let pending = app.engine.begin_status_op(&op);
+        app.apply_reaction(yaran_core::engine::EventReaction::Status(pending));
+        app.pending_delete_ops.insert("s1".to_string(), op);
+        app.engine.pending_deletions.insert("s1".to_string());
+        // The cleanup's database write is refused.
+        app.engine.session_store.fail_session_deletes_for_tests();
+        app.engine
+            .worker_tx
+            .send(WorkerEvent::WorktreeRemoveCompleted {
+                session_id: "s1".to_string(),
+                result: Ok(yaran_core::engine::RemovedBranches::Deleted(
+                    yaran_core::git::RemoveResult::default(),
+                )),
+            })
+            .expect("channel send");
+        app.drain_events();
+        assert!(
+            open_busy(&app, &key).is_empty(),
+            "the delete's busy is retired"
+        );
+        assert!(!app.engine.status_op_is_live(&key), "its key is retired");
+        assert!(
+            app.status.text().contains("session cleanup failed"),
+            "{}",
+            app.status.text()
+        );
+    }
+
+    /// A delete whose first cleanup fails while the worktree is still being
+    /// removed keeps its busy open, so the removal's own outcome is reported
+    /// when it lands instead of the agent changing with no word.
+    #[test]
+    fn a_delete_whose_first_cleanup_fails_reports_the_removal_outcome() {
+        let project_dir = tempdir().expect("project tempdir");
+        let worktree_dir = tempdir().expect("worktree tempdir");
+        let worktree_path = worktree_dir.path().to_string_lossy().to_string();
+        let mut s1 = make_session("s1", "claude", &worktree_path);
+        s1.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .project_id = "project-1".to_string();
+        let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
+        let mut app = test_app_with_sessions(vec![s1], vec![project]);
+        app.engine.session_store.fail_session_deletes_for_tests();
+        app.apply_reaction(yaran_core::engine::EventReaction::BeginDeleteSessionView(
+            Box::new(yaran_core::engine::BeginDeleteSessionView {
+                session_id: "s1".to_string(),
+                outcome: yaran_core::engine::BeginDeleteSessionOutcome::AsyncStarted {
+                    busy_message: "Removing worktree\u{2026}".to_string().into(),
+                },
+            }),
+        ));
+        let key = app
+            .pending_delete_ops
+            .get("s1")
+            .and_then(|op| op.pending_status().key)
+            .expect("the delete keeps its op");
+        assert_eq!(open_busy(&app, &key).len(), 1, "the removal's busy shows");
+
+        app.engine.pending_deletions.insert("s1".to_string());
+        app.engine
+            .worker_tx
+            .send(WorkerEvent::WorktreeRemoveCompleted {
+                session_id: "s1".to_string(),
+                result: Err("git refused".to_string()),
+            })
+            .expect("channel send");
+        app.drain_events();
+        let finals: Vec<_> = app
+            .status
+            .snapshot()
+            .into_iter()
+            .filter(|status| status.key.as_deref() == Some(key.as_str()))
+            .collect();
+        assert!(
+            finals.iter().any(|status| status.tone == "error"),
+            "the removal's failure is reported: {finals:?}"
+        );
+    }
+
+    /// A diff whose worker stops without answering gives its busy a final.
+    #[test]
+    fn a_diff_whose_worker_stops_gives_its_busy_a_final() {
+        let mut app = test_app_with_sessions(Vec::new(), Vec::new());
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        app.pending_diff = Some(PendingDiff {
+            key: crate::diff::DiffRequestKey {
+                worktree_path: "/tmp/wt".to_string(),
+                rel_path: "a.rs".to_string(),
+                show_line_numbers: false,
+                tab_width: 4,
+                seq: 1,
+            },
+            rx,
+            label: "a.rs".to_string(),
+            scroll: 0,
+            announce_at: Some(Instant::now()),
+        });
+        app.announce_slow_diff(Instant::now());
+        assert_eq!(
+            open_busy(&app, DIFF_STATUS_KEY).len(),
+            1,
+            "the busy is showing"
+        );
+        assert!(
+            app.engine.status_op_is_live(DIFF_STATUS_KEY),
+            "a showing busy is live, so it is not called timed out"
+        );
+        app.drain_pending_diff();
+        assert!(
+            open_busy(&app, DIFF_STATUS_KEY).is_empty(),
+            "the busy got a final"
+        );
+        assert!(app.pending_diff.is_none());
+        assert!(!app.engine.status_op_is_live(DIFF_STATUS_KEY));
+    }
+
+    /// A branch rename whose worker never starts retires the key it
+    /// registered, and leaves no busy showing.
+    #[test]
+    fn a_branch_rename_that_never_starts_retires_its_key() {
+        let project_dir = tempdir().expect("project tempdir");
+        let worktree_dir = tempdir().expect("worktree tempdir");
+        let worktree_path = worktree_dir.path().to_string_lossy().to_string();
+        let mut s1 = make_session("s1", "claude", &worktree_path);
+        s1.workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .project_id = "project-1".to_string();
+        let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
+        let mut app = test_app_with_sessions(vec![s1], vec![project]);
+        let live_before = app.engine.live_status_keys.len();
+        yaran_core::engine::fail_next_worker_spawn();
+        app.apply_rename_session(
+            "s1",
+            "renamed-agent",
+            yaran_core::engine::BranchRename::AlsoTheBranch,
+        );
+        assert_eq!(
+            app.engine.live_status_keys.len(),
+            live_before,
+            "the rename's key was retired"
+        );
+        assert!(
+            app.status
+                .snapshot()
+                .iter()
+                .all(|status| status.tone != "busy"),
+            "no busy is left showing"
         );
     }
 
@@ -7601,12 +9389,12 @@ mod tests {
         );
     }
 
-    /// Project deletion must be refused when any of the project's sessions
-    /// have an async worktree removal in-flight. Allowing it would race the
-    /// synchronous `do_delete_session` against the worker and could leave the
-    /// project half-deleted with an orphaned worktree.
+    /// A project delete goes ahead while one of its agents' worktree removals
+    /// is already running: the cascade no longer removes anything on the UI
+    /// thread, so there is nothing to race, and that removal is left to finish
+    /// and report on its own rather than run a second time.
     #[test]
-    fn delete_selected_project_blocked_when_pending() {
+    fn delete_selected_project_goes_ahead_past_a_pending_agent_delete() {
         let project_dir = tempdir().expect("project tempdir");
         let worktree_dir = tempdir().expect("worktree tempdir");
         let worktree_path = worktree_dir.path().to_string_lossy().to_string();
@@ -7616,33 +9404,36 @@ mod tests {
             .as_managed_mut()
             .expect("managed test session")
             .project_id = "project-1".to_string();
+        s1.status = SessionStatus::Active;
         let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
         // Simulate an async delete in-flight for this session.
         app.engine.pending_deletions.insert("s1".to_string());
 
-        // The project is the first item in the list, select it.
-        app.selected_left = 0;
+        // Select the agent, so the command acts on its project.
+        app.selected_left = app
+            .left_items()
+            .iter()
+            .position(|item| matches!(item, LeftItem::Session(_)))
+            .expect("the agent row");
 
         app.delete_selected_project()
             .expect("open the confirmation");
         // The engine's guard answers the confirmed delete.
-        app.resolve_confirm_delete_project(true);
+        app.resolve_confirm_delete_project(ConfirmAnswer::Confirm);
 
-        // Session must still be present, because deletion was refused.
         assert!(
-            app.engine.sessions.iter().any(|s| s.id == "s1"),
-            "session must not be removed when deletion is blocked",
+            app.engine.sessions.iter().all(|s| s.id != "s1"),
+            "the agent's record goes with the project",
         );
         assert!(
-            app.engine.projects.iter().any(|p| p.id == "project-1"),
-            "project must not be removed when deletion is blocked",
+            app.engine.projects.iter().all(|p| p.id != "project-1"),
+            "the project is deleted",
         );
-        assert_eq!(
-            app.status.tone(),
-            crate::statusline::StatusTone::Error,
-            "should show an error explaining why deletion was blocked",
+        assert!(
+            app.engine.pending_deletions.contains("s1"),
+            "the removal already running is left to finish",
         );
     }
 
@@ -7657,6 +9448,7 @@ mod tests {
             .as_managed_mut()
             .expect("managed test session")
             .project_id = "project-1".to_string();
+        s1.status = SessionStatus::Active;
         let project = make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
         let mut app = test_app_with_sessions(vec![s1], vec![project]);
 
@@ -7667,12 +9459,17 @@ mod tests {
             .mark_in_flight(yaran_core::engine::InFlightKey::AgentLaunch(TabId::new(
                 "s1-slot",
             )));
-        app.selected_left = 0;
+        // Select the agent, so the command acts on its project.
+        app.selected_left = app
+            .left_items()
+            .iter()
+            .position(|item| matches!(item, LeftItem::Session(_)))
+            .expect("the agent row");
 
         app.delete_selected_project()
             .expect("open the confirmation");
         // The engine's guard answers the confirmed delete.
-        app.resolve_confirm_delete_project(true);
+        app.resolve_confirm_delete_project(ConfirmAnswer::Confirm);
 
         assert!(
             app.engine.sessions.iter().any(|s| s.id == "s1"),
@@ -7731,6 +9528,95 @@ mod tests {
         );
     }
 
+    /// The two finals a removal that something else was writing into can end
+    /// with reach the status line whole: the folder git could not finish (what
+    /// is left and how to finish) and the worktree kept because something yaran
+    /// started would not die (which processes, and what to do).
+    #[test]
+    fn a_half_finished_or_refused_removal_says_how_to_finish_on_the_status_line() {
+        let leftover = yaran_core::git::LeftoverWorktreeFolder {
+            path: std::path::PathBuf::from("/work/wt-feat"),
+            leftovers: vec![".astro/collections".to_string()],
+            more: 0,
+            git_error: "error: failed to delete '/work/wt-feat': Directory not empty".to_string(),
+            kept_branches: vec![yaran_core::git::KeptBranch {
+                name: "feat".to_string(),
+                oid: Some("abc".to_string()),
+                provenance: None,
+            }],
+            gone_branches: Vec::new(),
+            unchecked_branches: Vec::new(),
+            in_manager: true,
+        }
+        .to_string();
+        let survivors = yaran_core::engine::survivors_kept_worktree_message(
+            "/work/wt-feat",
+            &[yaran_core::process_sessions::ProcRow {
+                pid: 4242,
+                ppid: Some(1),
+                sid: Some(4000),
+                start_time: 0,
+                name: "node".to_string(),
+                exited: false,
+            }],
+        );
+        for (message, needles) in [
+            (
+                leftover,
+                &[
+                    "kept writing into /work/wt-feat (.astro/collections)",
+                    "Stop it, then delete the folder from the project's worktree manager.",
+                    "Branch feat was kept because the folder is still on disk",
+                ][..],
+            ),
+            (
+                survivors,
+                &[
+                    "/work/wt-feat was kept, untouched",
+                    "node (pid 4242)",
+                    "would not stop, even after SIGKILL",
+                    "remove the worktree from the worktree manager",
+                ][..],
+            ),
+        ] {
+            let project_dir = tempdir().expect("project tempdir");
+            let worktree_dir = tempdir().expect("worktree tempdir");
+            let mut s1 = make_session("s1", "claude", &worktree_dir.path().to_string_lossy());
+            s1.workspace
+                .as_managed_mut()
+                .expect("managed test session")
+                .project_id = "project-1".to_string();
+            let project =
+                make_project_at("project-1", "claude", &project_dir.path().to_string_lossy());
+            let mut app = test_app_with_sessions(vec![s1], vec![project]);
+            let op = app.build_delete_status_op(
+                "s1",
+                "Removing worktree for agent \"branch-s1\"\u{2026}".to_string(),
+            );
+            app.apply_reaction(yaran_core::engine::EventReaction::Status(
+                op.pending_status(),
+            ));
+            app.pending_delete_ops.insert("s1".to_string(), op);
+            app.engine.pending_deletions.insert("s1".to_string());
+
+            app.engine
+                .worker_tx
+                .send(WorkerEvent::WorktreeRemoveCompleted {
+                    session_id: "s1".to_string(),
+                    result: Err(message),
+                })
+                .expect("channel send");
+            app.drain_events();
+
+            let line = app.status.text();
+            assert_eq!(app.status.tone(), crate::statusline::StatusTone::Error);
+            assert!(line.starts_with("Worktree delete failed for "), "{line}");
+            for needle in needles {
+                assert!(line.contains(needle), "missing {needle:?} in: {line}");
+            }
+        }
+    }
+
     /// The async success path (session still present at completion) resolves the
     /// keyed delete op rather than letting `apply_finish_delete_session_outcome`
     /// author the line, and both say what the one core formatter says.
@@ -7780,7 +9666,7 @@ mod tests {
                 .expect("channel send");
             app.drain_events();
 
-            assert_eq!(app.status.message(), expected, "branch outcome {branch:?}",);
+            assert_eq!(app.status.message(), expected, "branch outcome {branch:?}");
             assert!(
                 !app.engine.sessions.iter().any(|s| s.id == "s1"),
                 "session should be cleaned up after async success",
@@ -7827,8 +9713,12 @@ mod tests {
                 },
             );
         }
-        app.finish_delete_session("s1", WorktreeRemoval::PreservedOrphan, true)
-            .expect("delete");
+        app.finish_delete_session(
+            "s1",
+            WorktreeRemoval::PreservedOrphan,
+            DeleteReport::Announce,
+        )
+        .expect("delete");
         for id in ["s1-slot", "tab-9"] {
             assert!(!app.engine.pty_activity.contains_key(id), "activity {id}");
             assert!(!app.engine.pty_input.contains_key(id), "input {id}");
@@ -7892,7 +9782,12 @@ mod tests {
                 ),
                 project_still_has_sessions: false,
             };
-            app.apply_finish_delete_session_outcome("s1", outcome, removal.clone(), true);
+            app.apply_finish_delete_session_outcome(
+                "s1",
+                outcome,
+                &removal.clone(),
+                DeleteReport::Announce,
+            );
             assert_eq!(app.status.message(), expected, "variant {removal:?}");
         }
     }
@@ -7920,7 +9815,7 @@ mod tests {
         app.apply_finish_delete_session_outcome(
             "s1",
             outcome,
-            WorktreeRemoval::Performed {
+            &WorktreeRemoval::Performed {
                 branches: yaran_core::engine::RemovedBranches::Deleted(
                     yaran_core::git::RemoveResult {
                         branch: yaran_core::git::BranchDeletion::Deleted,
@@ -7928,7 +9823,7 @@ mod tests {
                     },
                 ),
             },
-            true,
+            DeleteReport::Announce,
         );
 
         assert_eq!(
@@ -7967,14 +9862,14 @@ mod tests {
         app.apply_finish_delete_session_outcome(
             "s1",
             outcome,
-            WorktreeRemoval::Performed {
+            &WorktreeRemoval::Performed {
                 branches: yaran_core::engine::RemovedBranches::Kept(
                     yaran_core::model::BranchKeptReason::NotYarans(
                         yaran_core::model::BranchProvenance::AttachedExisting,
                     ),
                 ),
             },
-            true,
+            DeleteReport::Announce,
         );
 
         assert_eq!(
@@ -8115,6 +10010,16 @@ mod tests {
                 "s1-slot",
             )));
 
+        // Refused, naming who, while a browser watches the agent.
+        let watching = crate::app::test_support::watch_from_a_browser(&app, "s1-slot", "s1");
+        app.force_reconnect_agent().expect("force reconnect");
+        assert!(
+            app.status.message().contains("10.0.0.7"),
+            "{}",
+            app.status.message()
+        );
+        crate::app::test_support::stop_watching(&app, watching);
+
         app.force_reconnect_agent().expect("force reconnect");
 
         assert!(
@@ -8125,13 +10030,13 @@ mod tests {
         );
     }
 
-    // ---- terminal_items sort-mode coverage ------------------------------------
+    // ---- terminal rows under each sort mode ------------------------------------
     //
-    // These mirror the agent-list sort tests above but over the flat Terminals
-    // section, and must stay in lockstep with the web `sortFlatTerminals` tests.
+    // A standalone terminal is a row of the agents list and sorts with the agents
+    // under every mode; these pin the terminal rows' relative order.
 
-    /// Insert a companion terminal with fully controlled sort keys. Spawns a cheap
-    /// throwaway PTY (`echo`) for `client`; `terminal_items` never reads it.
+    /// Insert a standalone terminal with fully controlled sort keys. Spawns a
+    /// cheap throwaway PTY (`echo`) for `client`; the list never reads it.
     fn insert_test_terminal(
         app: &mut App,
         id: &str,
@@ -8146,12 +10051,13 @@ mod tests {
         app.engine.companion_terminals.insert(
             id.to_string(),
             CompanionTerminal {
-                owner: TerminalOwner::Session("s1".to_string()),
+                owner: TerminalOwner::Standalone,
                 label: label.to_string(),
-                foreground_cmd: foreground_cmd.map(|s| s.to_string()),
+                foreground_cmd: foreground_cmd.map(std::string::ToString::to_string),
                 client,
                 sort_order,
                 created_at,
+                list_after: None,
             },
         );
     }
@@ -8162,10 +10068,17 @@ mod tests {
         test_app_with_sessions(vec![session], vec![project])
     }
 
-    fn terminal_order(app: &App) -> Vec<String> {
-        app.terminal_items()
-            .into_iter()
-            .map(|(id, _)| id.clone())
+    /// The terminal rows of the agents list, top to bottom.
+    fn terminal_order(app: &mut App) -> Vec<String> {
+        app.rebuild_left_items();
+        app.left_rows
+            .iter()
+            .filter_map(|row| match row {
+                crate::app::LeftRow::Terminal(id) => Some(id.clone()),
+                crate::app::LeftRow::Group(_)
+                | crate::app::LeftRow::Agent(_)
+                | crate::app::LeftRow::InactiveToggle => None,
+            })
             .collect()
     }
 
@@ -8177,9 +10090,9 @@ mod tests {
         insert_test_terminal(&mut app, "term-a", 0, Utc::now(), "Terminal 1", None);
         let before = app.status.most_recent_tui().map(|(_, text)| text);
 
-        app.selected_terminal_index = 0;
-        app.open_terminal_from_terminal_list()
-            .expect("open the terminal");
+        app.rebuild_left_items();
+        app.reselect_left_terminal("term-a");
+        app.open_selected_terminal_row();
 
         assert_eq!(app.active_terminal_id.as_deref(), Some("term-a"));
         assert_eq!(
@@ -8190,11 +10103,16 @@ mod tests {
     }
 
     /// The other route onto an existing terminal, from the selected agent
-    /// rather than the terminals list, is quiet for the same reason.
+    /// rather than a terminal row, is quiet for the same reason.
     #[test]
     fn reopening_an_agents_first_terminal_announces_nothing() {
         let mut app = app_with_one_session();
         insert_test_terminal(&mut app, "term-a", 0, Utc::now(), "Terminal 1", None);
+        app.engine
+            .companion_terminals
+            .get_mut("term-a")
+            .expect("inserted")
+            .owner = TerminalOwner::Session("s1".to_string());
         let before = app.status.most_recent_tui().map(|(_, text)| text);
 
         app.selected_left = app
@@ -8202,14 +10120,37 @@ mod tests {
             .iter()
             .position(|item| matches!(item, LeftItem::Session(_)))
             .expect("the seeded agent's row");
-        app.show_or_open_first_terminal()
-            .expect("open the agent's first terminal");
+        app.show_or_open_first_terminal();
 
         assert_eq!(app.active_terminal_id.as_deref(), Some("term-a"));
         assert_eq!(
             app.status.most_recent_tui().map(|(_, text)| text),
             before,
             "reopening the agent's terminal announced itself"
+        );
+    }
+
+    /// The themes are read on a worker: the picker is not up when the
+    /// command returns, only a busy, and opens with every theme already read,
+    /// so a preview needs no file.
+    #[test]
+    fn the_theme_picker_opens_once_its_themes_are_read() {
+        let mut app = app_with_one_session();
+        app.open_change_theme_prompt();
+        assert!(matches!(app.prompt, PromptState::None));
+        assert_eq!(app.status.tone(), crate::statusline::StatusTone::Busy);
+
+        crate::app::test_support::finish_ui_jobs(&mut app);
+
+        let PromptState::ChangeTheme(prompt) = &app.prompt else {
+            panic!("expected the picker, got {:?}", app.prompt);
+        };
+        let previews = app.theme_previews.as_ref().expect("read");
+        assert!(
+            prompt
+                .options
+                .iter()
+                .all(|option| previews.loaded.contains_key(&option.id))
         );
     }
 
@@ -8224,13 +10165,25 @@ mod tests {
             return;
         };
         let before = app.status.most_recent_tui().map(|(_, text)| text);
+        // The themes the picker read when it opened.
+        app.theme_previews = Some(crate::app::ThemePreviews {
+            loaded: options
+                .iter()
+                .map(|option| {
+                    let theme = crate::theme::load(&option.id, &app.engine.paths)
+                        .map_err(|err| format!("{err:#}"));
+                    (option.id.clone(), theme)
+                })
+                .collect(),
+            original: app.theme,
+        });
 
         app.prompt = PromptState::ChangeTheme(ChangeThemePrompt {
             options,
             selected: target,
             current,
         });
-        app.apply_change_theme().expect("change the theme");
+        app.apply_change_theme();
 
         assert_eq!(
             app.status.most_recent_tui().map(|(_, text)| text),
@@ -8240,7 +10193,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_items_manual_orders_by_sort_order() {
+    fn terminal_rows_in_manual_order_follow_sort_order() {
         let mut app = app_with_one_session();
         app.engine.config.ui.agent_sort = "manual".to_string();
         let now = Utc::now();
@@ -8249,11 +10202,11 @@ mod tests {
         insert_test_terminal(&mut app, "term-a", 0, now, "mmm", None);
         insert_test_terminal(&mut app, "term-b", 1, now, "aaa", None);
 
-        assert_eq!(terminal_order(&app), vec!["term-a", "term-b", "term-c"]);
+        assert_eq!(terminal_order(&mut app), vec!["term-a", "term-b", "term-c"]);
     }
 
     #[test]
-    fn terminal_items_created_orders_newest_first() {
+    fn terminal_rows_in_created_order_put_the_newest_first() {
         let mut app = app_with_one_session();
         app.engine.config.ui.agent_sort = "created".to_string();
         let t0 = Utc::now();
@@ -8276,11 +10229,11 @@ mod tests {
         );
 
         // Newest created first.
-        assert_eq!(terminal_order(&app), vec!["term-c", "term-b", "term-a"]);
+        assert_eq!(terminal_order(&mut app), vec!["term-c", "term-b", "term-a"]);
     }
 
     #[test]
-    fn terminal_items_updated_orders_by_recent_pty_activity() {
+    fn terminal_rows_in_updated_order_follow_recent_pty_activity() {
         let mut app = app_with_one_session();
         app.engine.config.ui.agent_sort = "updated".to_string();
         let now = Utc::now();
@@ -8292,45 +10245,49 @@ mod tests {
         // term-b activity is the most recent (smallest elapsed), term-a the oldest.
         app.engine.pty_activity.insert(
             "term-a".to_string(),
-            std::time::Instant::now() - std::time::Duration::from_secs(30),
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(30))
+                .expect("the monotonic clock reads past the offset a test steps back"),
         );
         app.engine.pty_activity.insert(
             "term-c".to_string(),
-            std::time::Instant::now() - std::time::Duration::from_secs(15),
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(15))
+                .expect("the monotonic clock reads past the offset a test steps back"),
         );
         app.engine
             .pty_activity
             .insert("term-b".to_string(), std::time::Instant::now());
 
-        assert_eq!(terminal_order(&app), vec!["term-b", "term-c", "term-a"]);
+        assert_eq!(terminal_order(&mut app), vec!["term-b", "term-c", "term-a"]);
     }
 
     #[test]
-    fn terminal_items_name_uses_displayed_label_and_reverses() {
+    fn terminal_rows_sort_by_the_name_they_were_opened_with_and_reverse() {
         let mut app = app_with_one_session();
         let now = Utc::now();
-        // Displayed name = foreground_cmd when present/non-empty, else label. The
-        // sort_order is deliberately anti-alphabetical to prove name wins.
-        insert_test_terminal(&mut app, "term-vim", 0, now, "shell", Some("vim"));
-        insert_test_terminal(&mut app, "term-bash", 1, now, "bash", None);
-        insert_test_terminal(&mut app, "term-htop", 2, now, "shell", Some("htop"));
+        // The foreground programs sort the other way round, and the sort_order is
+        // anti-alphabetical too: only the opened-with label can produce this
+        // order, so a program renaming its window never moves the row.
+        insert_test_terminal(&mut app, "term-zsh", 0, now, "zsh", Some("aaa"));
+        insert_test_terminal(&mut app, "term-fish", 1, now, "fish", Some("mmm"));
+        insert_test_terminal(&mut app, "term-bash", 2, now, "bash", Some("zzz"));
 
         app.engine.config.ui.agent_sort = "name".to_string();
-        // bash < htop < vim
         assert_eq!(
-            terminal_order(&app),
-            vec!["term-bash", "term-htop", "term-vim"]
+            terminal_order(&mut app),
+            vec!["term-bash", "term-fish", "term-zsh"]
         );
 
         app.engine.config.ui.agent_sort = "name_desc".to_string();
         assert_eq!(
-            terminal_order(&app),
-            vec!["term-vim", "term-htop", "term-bash"]
+            terminal_order(&mut app),
+            vec!["term-zsh", "term-fish", "term-bash"]
         );
     }
 
     #[test]
-    fn terminal_items_active_floats_working_or_typing_to_top() {
+    fn terminal_rows_in_active_order_float_working_or_typing_to_the_top() {
         let mut app = app_with_one_session();
         app.engine.config.ui.agent_sort = "active".to_string();
         let now = Utc::now();
@@ -8350,7 +10307,7 @@ mod tests {
         // Hot terminals float up keeping base sort_order order (b before c), then
         // the idle rest in base order (a, d).
         assert_eq!(
-            terminal_order(&app),
+            terminal_order(&mut app),
             vec!["term-b", "term-c", "term-a", "term-d"]
         );
     }
@@ -8387,8 +10344,12 @@ mod tests {
             cmd.args = Vec::new();
         }
 
-        app.dispatch_reconnect_plan("s1", false, false)
-            .expect("reconnect");
+        app.dispatch_reconnect_plan(
+            "s1",
+            yaran_core::engine::ReconnectMode::Normal,
+            LaunchView::Minimized,
+        )
+        .expect("reconnect");
 
         assert!(
             app.tui_launched_ptys.contains("t2"),
@@ -8430,8 +10391,7 @@ mod tests {
             ),
             "the activate branch reads this, and it must say the promoted tab is the slot"
         );
-        app.launch_focused_extra_tab("s1", "t2", false)
-            .expect("no-op");
+        app.launch_focused_extra_tab("s1", "t2", LaunchView::Minimized);
         assert!(
             app.tui_launched_ptys.is_empty(),
             "the extra-tab launch path must not start the agent's own tab"
@@ -8445,7 +10405,7 @@ mod tests {
     #[test]
     fn detach_agent_refuses_with_no_agent_selected() {
         let mut app = test_app_with_sessions(vec![], vec![make_project("p1", "claude")]);
-        app.confirm_detach_selected_session().expect("dispatch");
+        app.confirm_detach_selected_session();
         assert!(matches!(app.prompt, PromptState::None));
         assert!(
             app.status.text().contains("Select an agent first"),
@@ -8455,13 +10415,14 @@ mod tests {
     }
 
     /// A dormant agent's row already looks exactly as it would after a
-    /// successful detach, so silence here is indistinguishable from a failure.
+    /// successful detach or tab stop, so silence here is indistinguishable
+    /// from a failure.
     #[test]
-    fn detach_agent_refuses_a_dormant_agent_out_loud() {
+    fn detaching_or_stopping_a_tab_of_a_dormant_agent_says_so_without_a_dialog() {
         let session = make_session("s1", "claude", "/tmp/wt/a");
         let mut app = test_app_with_sessions(vec![session], vec![make_project("p1", "claude")]);
         app.selected_left = 1;
-        app.confirm_detach_selected_session().expect("dispatch");
+        app.confirm_detach_selected_session();
         assert!(
             matches!(app.prompt, PromptState::None),
             "nothing to confirm, so no dialog"
@@ -8472,6 +10433,16 @@ mod tests {
                 .contains("is not running, so there is nothing to detach"),
             "status: {}",
             app.status.text()
+        );
+
+        app.stop_focused_tab_prompt();
+        assert!(
+            matches!(app.prompt, PromptState::None),
+            "nothing to confirm, so no dialog"
+        );
+        assert_eq!(
+            app.status.text(),
+            "The Claude tab is not running, so there is nothing to stop."
         );
     }
 
@@ -8484,13 +10455,14 @@ mod tests {
         app.engine.config.shutdown_timeout_seconds = 45;
         mark_active(&mut app, "s1");
 
-        app.confirm_detach_selected_session().expect("dispatch");
+        app.confirm_detach_selected_session();
         let PromptState::ConfirmDetachAgent {
             session_id,
             label,
             grace_seconds,
             live_tabs,
             focus,
+            ..
         } = &app.prompt
         else {
             panic!("a live agent raises the confirmation");
@@ -8517,19 +10489,192 @@ mod tests {
         assert!(!app.engine.providers.is_empty());
     }
 
-    /// Cancelling abandons, exactly as Escape does, and touches nothing.
+    /// Cancelling abandons, exactly as Escape does, and touches nothing. A
+    /// tab stop confirms first too, and confirming it ends that tab's process
+    /// through the engine and keeps the tab.
     #[test]
-    fn detach_agent_cancel_leaves_the_agent_running() {
+    fn detach_or_stop_cancel_leaves_the_agent_running_and_a_confirmed_stop_keeps_the_tab() {
         let session = make_session("s1", "claude", "/tmp/wt/a");
         let mut app = test_app_with_sessions(vec![session], vec![make_project("p1", "claude")]);
         app.selected_left = 1;
         mark_active(&mut app, "s1");
-        app.confirm_detach_selected_session().expect("dispatch");
+        app.confirm_detach_selected_session();
 
-        app.resolve_confirm_detach_agent(false);
+        app.resolve_confirm_detach_agent(ConfirmAnswer::Cancel);
         assert!(matches!(app.prompt, PromptState::None));
         assert!(!app.engine.providers.is_empty(), "nothing was stopped");
         assert!(app.engine.pending_detachments.is_empty());
+
+        app.stop_focused_tab_prompt();
+        let PromptState::ConfirmStopTab {
+            session_id,
+            provider_label,
+            last_running,
+            focus,
+            ..
+        } = &app.prompt
+        else {
+            panic!("a running tab raises the confirmation");
+        };
+        assert_eq!(session_id, "s1");
+        assert_eq!(provider_label, "Claude");
+        assert!(*last_running, "it is the agent's only running tab");
+        assert_eq!(*focus, ConfirmFocus::Cancel, "Cancel is the safe default");
+        app.resolve_confirm_stop_tab(ConfirmAnswer::Cancel);
+        assert!(matches!(app.prompt, PromptState::None));
+        assert!(!app.engine.providers.is_empty(), "nothing was stopped");
+
+        // Refused while a browser watches the tab: the dialog stays open
+        // naming who, with focus back on Cancel, and the tab keeps running.
+        crate::app::test_support::watch_from_a_browser(&app, "s1-slot", "s1");
+        app.stop_focused_tab_prompt();
+        app.resolve_confirm_stop_tab(ConfirmAnswer::Confirm);
+        match &app.prompt {
+            PromptState::ConfirmStopTab {
+                attached, focus, ..
+            } => {
+                assert_eq!(attached.len(), 1);
+                assert_eq!(attached[0].address.as_deref(), Some("10.0.0.7"));
+                assert_eq!(*focus, ConfirmFocus::Cancel);
+            }
+            other => panic!("the stop dialog stays open, got {other:?}"),
+        }
+        assert!(!app.engine.providers.is_empty(), "nothing was stopped");
+
+        // Confirming again stops it over them.
+        app.resolve_confirm_stop_tab(ConfirmAnswer::Confirm);
+        assert!(matches!(app.prompt, PromptState::None));
+        assert!(app.engine.providers.is_empty(), "the tab's process ended");
+        assert_eq!(app.engine.sessions[0].status, SessionStatus::Detached);
+        assert!(
+            app.status
+                .text()
+                .starts_with("Stopped the Claude tab. It was the agent's last running tab"),
+            "{}",
+            app.status.text()
+        );
+    }
+
+    /// Hold agent `session_id` from another surface: a followed stop, as a
+    /// browser or the command line would leave it, open as `op-held`.
+    fn hold_agent_elsewhere(app: &mut App, session_id: &str) {
+        app.engine
+            .open_operation("op-held", yaran_core::operations::OperationKind::AgentStop);
+        app.engine
+            .operations
+            .admit(
+                Some("op-held"),
+                &[],
+                &[yaran_core::operations::Hold::exclusive(
+                    yaran_core::engine::InFlightKey::Agent(session_id.to_string()),
+                )],
+            )
+            .unwrap();
+    }
+
+    fn release_agent_elsewhere(app: &mut App) {
+        app.engine.operations.finish(
+            "op-held",
+            yaran_core::statusline::StatusTone::Info,
+            "",
+            None,
+            std::time::Instant::now(),
+        );
+    }
+
+    /// Adding a tab or a terminal to an agent, or starting it, is refused,
+    /// naming the operation, while another surface's change holds the agent.
+    #[test]
+    fn a_tab_a_terminal_or_a_start_is_refused_while_another_surface_holds_the_agent() {
+        let session = make_session("s1", "claude", "/tmp/wt/a");
+        let mut app = test_app_with_sessions(vec![session], vec![make_project("p1", "claude")]);
+        app.selected_left = 1;
+        hold_agent_elsewhere(&mut app, "s1");
+        let tabs = app.engine.agent_tabs.len();
+        let terminals = app.engine.companion_terminals.len();
+
+        app.spawn_tab_with_provider("s1", ProviderKind::new("claude"));
+        assert!(
+            app.status.text().contains("op-held"),
+            "{}",
+            app.status.text()
+        );
+        assert_eq!(app.engine.agent_tabs.len(), tabs, "no tab was added");
+
+        app.set_info("cleared");
+        app.show_companion_terminal();
+        assert!(
+            app.status.text().contains("op-held"),
+            "{}",
+            app.status.text()
+        );
+        assert_eq!(
+            app.engine.companion_terminals.len(),
+            terminals,
+            "no terminal was opened"
+        );
+
+        app.set_info("cleared");
+        let request = app.agent_launch_request(
+            app.engine.sessions[0].clone(),
+            yaran_core::model::ConversationStart::Fresh,
+            AgentLaunchKind::Reconnect {
+                status_message: "Starting".into(),
+            },
+        );
+        assert!(!app.dispatch_agent_launch(request), "nothing launched");
+        assert!(
+            app.status.text().contains("op-held"),
+            "{}",
+            app.status.text()
+        );
+    }
+
+    /// A tab a working-copy recreate is restarting is dormant while its old
+    /// process shuts down, and it is the restart's to start: a start from here
+    /// launches nothing, and the status line says why.
+    #[test]
+    fn a_start_is_refused_while_a_recreate_is_restarting_the_tab() {
+        let session = make_session("s1", "claude", "/tmp/wt/a");
+        let mut app =
+            test_app_with_sessions(vec![session], vec![make_project("project-1", "claude")]);
+        app.selected_left = 1;
+        let cwd = tempfile::tempdir().expect("a directory for the stand-in process");
+        app.engine
+            .folder_repo_statuses
+            .insert("s1".to_string(), yaran_core::git::FolderRepoStatus::Missing);
+        let slot = app.engine.sessions[0].slot_tab_id().to_owned();
+        app.engine.providers.insert(
+            slot.clone(),
+            yaran_core::pty::PtyClient::spawn_with_env("cat", &[], cwd.path(), 24, 80, 1000, &[])
+                .expect("spawn"),
+        );
+        app.engine
+            .begin_recreate_working_copy("s1", yaran_core::engine::TabsAfterRecreate::Restart)
+            .expect("the recreate starts");
+        app.engine
+            .process_worker_event(yaran_core::worker::WorkerEvent::WorkingCopyRecreated {
+                session_id: "s1".to_string(),
+                outcome: Ok(yaran_core::working_copy::RecreatedBranch::CheckedOut),
+            });
+        assert!(!app.engine.providers.contains_key(slot.as_ref_id()));
+
+        let request = app.agent_launch_request(
+            app.engine.sessions[0].clone(),
+            yaran_core::model::ConversationStart::Resume,
+            AgentLaunchKind::Reconnect {
+                status_message: "Starting".into(),
+            },
+        );
+        assert!(!app.dispatch_agent_launch(request), "nothing launched");
+        assert!(
+            app.status
+                .text()
+                .contains("is being restarted after its working copy was recreated"),
+            "{}",
+            app.status.text()
+        );
+        assert!(!app.engine.tab_is_live(slot.as_ref_id()));
     }
 
     /// Confirming reaches the shared engine teardown: the provider leaves for
@@ -8541,9 +10686,38 @@ mod tests {
         let mut app = test_app_with_sessions(vec![session], vec![make_project("p1", "claude")]);
         app.selected_left = 1;
         mark_active(&mut app, "s1");
-        app.confirm_detach_selected_session().expect("dispatch");
 
-        app.resolve_confirm_detach_agent(true);
+        // Refused, saying which operation, while another surface holds it.
+        hold_agent_elsewhere(&mut app, "s1");
+        app.confirm_detach_selected_session();
+        app.resolve_confirm_detach_agent(ConfirmAnswer::Confirm);
+        assert!(
+            app.status.text().contains("op-held"),
+            "{}",
+            app.status.text()
+        );
+        assert!(!app.engine.providers.is_empty(), "nothing was stopped");
+        release_agent_elsewhere(&mut app);
+
+        // Refused while a browser watches it: the dialog stays open naming
+        // who, with focus back on Cancel, and nothing is stopped.
+        crate::app::test_support::watch_from_a_browser(&app, "s1-slot", "s1");
+        app.confirm_detach_selected_session();
+        app.resolve_confirm_detach_agent(ConfirmAnswer::Confirm);
+        match &app.prompt {
+            PromptState::ConfirmDetachAgent {
+                attached, focus, ..
+            } => {
+                assert_eq!(attached.len(), 1);
+                assert_eq!(attached[0].address.as_deref(), Some("10.0.0.7"));
+                assert_eq!(*focus, ConfirmFocus::Cancel);
+            }
+            other => panic!("the detach dialog stays open, got {other:?}"),
+        }
+        assert!(!app.engine.providers.is_empty(), "nothing was stopped");
+
+        // Confirming again goes ahead over them.
+        app.resolve_confirm_detach_agent(ConfirmAnswer::Confirm);
         assert!(matches!(app.prompt, PromptState::None));
         assert!(
             app.engine.providers.is_empty(),
@@ -8563,24 +10737,220 @@ mod tests {
             "status: {}",
             app.status.text()
         );
+
+        // Nobody can attach to the agent while it is still shutting down, and
+        // can once the stop's final lands.
+        let late = || yaran_core::attachments::Target {
+            kind: yaran_core::attachments::TargetKind::Tab,
+            id: "s1-slot".to_string(),
+            agent: Some("s1".to_string()),
+        };
+        assert!(
+            app.engine
+                .attachments
+                .attach("late-tab", late(), None, None)
+                .is_err(),
+            "the stop is still running"
+        );
+        let key = app
+            .status
+            .snapshot()
+            .into_iter()
+            .find_map(|status| (status.tone == "busy").then_some(status.key).flatten())
+            .expect("the stop's busy");
+        app.apply_reaction(yaran_core::engine::EventReaction::Status(
+            yaran_core::engine::StatusUpdate::keyed(
+                key,
+                yaran_core::statusline::StatusTone::Info,
+                "stopped",
+            ),
+        ));
+        assert!(
+            app.engine
+                .attachments
+                .attach("late-tab", late(), None, None)
+                .is_ok()
+        );
+    }
+
+    /// Put the sidebar cursor on the (only) agent row, so a project command acts
+    /// on that agent's project.
+    fn select_the_agent_row(app: &mut App) {
+        app.rebuild_left_items();
+        app.selected_left = app
+            .left_items()
+            .iter()
+            .position(|item| matches!(item, LeftItem::Session(_)))
+            .expect("an agent row");
+    }
+
+    /// Run a project palette command with no agent selected: the project list
+    /// opens, and the highlighted project (the only one, in these journeys) is
+    /// picked the way a person picks it.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a test helper: the wrong prompt must fail the test, not read as the command's own error"
+    )]
+    fn run_via_project_list(app: &mut App, command: &str) -> Result<()> {
+        app.execute_command(command)?;
+        assert!(
+            matches!(app.prompt, PromptState::PickProject { .. }),
+            "{command} with no agent selected opens the project list, got {:?}",
+            app.prompt
+        );
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))?;
+        Ok(())
     }
 
     /// A real project (a clone added through the add-project flow) holding one
-    /// real agent whose worktree exists on disk, targeted by the project-scoped
-    /// palette commands.
+    /// real agent whose worktree exists on disk, the agent selected so the
+    /// project-scoped palette commands act on its project.
     fn project_with_a_real_agent() -> (tempfile::TempDir, App, PathBuf) {
         let (root, _repo, mut app) = project_based_on_develop();
         let worktree = create_agent_worktree(&mut app);
         assert!(worktree.is_dir(), "the agent's worktree is on disk");
-        app.project_chooser_context = Some(app.engine.projects[0].id.clone());
+        select_the_agent_row(&mut app);
         (root, app, worktree)
+    }
+
+    /// The delete-project dialog counts each agent worktree's uncommitted
+    /// files on a worker, saying it is still looking until the count lands.
+    #[test]
+    fn the_delete_project_dialog_counts_each_worktrees_uncommitted_files_on_a_worker() {
+        let (_root, mut app, worktree) = project_with_a_real_agent();
+        std::fs::write(worktree.join("NOTES.md"), "draft").unwrap();
+
+        app.execute_command("delete-project")
+            .expect("open the confirmation");
+        let answers = |app: &App| match &app.prompt {
+            PromptState::ConfirmDeleteProject { worktree_files, .. } => worktree_files
+                .iter()
+                .map(|entry| entry.answer.clone())
+                .collect::<Vec<_>>(),
+            other => panic!("expected the delete-project confirmation, got {other:?}"),
+        };
+        assert_eq!(answers(&app), vec![None], "still looking as it opens");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while answers(&app) == vec![None] && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            app.drain_project_worktree_files();
+        }
+        assert_eq!(answers(&app), vec![Some(Ok(1))]);
+    }
+
+    /// Cancelling the dialog stops its counter on the next drain, so nothing
+    /// is left counting the project's worktrees for a dialog that is gone.
+    #[test]
+    fn cancelling_the_delete_project_dialog_stops_its_counter() {
+        let (_root, mut app, _worktree) = project_with_a_real_agent();
+        app.execute_command("delete-project")
+            .expect("open the confirmation");
+        let cancelled = Arc::clone(
+            &app.project_worktree_files
+                .as_ref()
+                .expect("the dialog starts a counter")
+                .cancelled,
+        );
+
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        app.drain_project_worktree_files();
+
+        assert!(app.project_worktree_files.is_none());
+        assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    /// A dropped counter starts no further count: the one in flight finishes
+    /// and every worktree still queued behind it is left alone.
+    #[test]
+    fn a_dropped_project_worktree_counter_counts_nothing_more() {
+        let counted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = std::sync::Mutex::new(gate);
+        let seen = Arc::clone(&counted);
+        let job = spawn_project_worktree_counter("p", move |path| {
+            seen.lock().unwrap().push(path.to_path_buf());
+            let _ = gate.lock().unwrap().recv();
+            Ok(0)
+        });
+        for name in ["a", "b", "c"] {
+            job.queue
+                .send((name.to_string(), format!("/wt/{name}")))
+                .unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while counted.lock().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first count starts"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        drop(job);
+        release.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert_eq!(*counted.lock().unwrap(), vec![PathBuf::from("/wt/a")]);
+    }
+
+    /// An agent that joins the project while the dialog is open gets a line
+    /// and a count of its own, because Delete removes its worktree too, and
+    /// one that leaves loses its line, as in the browser's dialog.
+    #[test]
+    fn the_delete_project_dialog_counts_an_agent_that_joins_while_it_is_open() {
+        let (_root, mut app, worktree) = project_with_a_real_agent();
+        std::fs::write(worktree.join("NOTES.md"), "draft").unwrap();
+        app.execute_command("delete-project")
+            .expect("open the confirmation");
+        let lines = |app: &App| match &app.prompt {
+            PromptState::ConfirmDeleteProject { worktree_files, .. } => worktree_files
+                .iter()
+                .map(|entry| (entry.session_id.clone(), entry.answer.clone()))
+                .collect::<Vec<_>>(),
+            other => panic!("expected the delete-project confirmation, got {other:?}"),
+        };
+        let first = app.engine.sessions[0].id.clone();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while lines(&app) != vec![(first.clone(), Some(Ok(1)))] {
+            assert!(std::time::Instant::now() < deadline, "{:?}", lines(&app));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            app.drain_project_worktree_files();
+        }
+
+        let mut joiner = app.engine.sessions[0].clone();
+        joiner.id = "joined-while-open".to_string();
+        app.engine.sessions.push(joiner);
+        app.drain_project_worktree_files();
+        assert_eq!(
+            lines(&app),
+            vec![
+                (first.clone(), Some(Ok(1))),
+                ("joined-while-open".to_string(), None),
+            ],
+            "the joiner is asked about, and the first answer is kept"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while lines(&app)[1].1.is_none() {
+            assert!(std::time::Instant::now() < deadline, "{:?}", lines(&app));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            app.drain_project_worktree_files();
+        }
+        assert_eq!(lines(&app)[1].1, Some(Ok(1)));
+
+        app.engine.sessions.retain(|s| s.id != first);
+        app.drain_project_worktree_files();
+        assert_eq!(
+            lines(&app),
+            vec![("joined-while-open".to_string(), Some(Ok(1)))]
+        );
     }
 
     #[test]
     fn the_delete_project_command_asks_first_and_deletes_nothing() {
         let (_root, mut app, worktree) = project_with_a_real_agent();
 
-        app.execute_command("delete-project".to_string())
+        app.execute_command("delete-project")
             .expect("open the confirmation");
 
         match &app.prompt {
@@ -8604,7 +10974,7 @@ mod tests {
     #[test]
     fn escape_cancels_the_project_delete_and_keeps_the_worktree() {
         let (_root, mut app, worktree) = project_with_a_real_agent();
-        app.execute_command("delete-project".to_string())
+        app.execute_command("delete-project")
             .expect("open the confirmation");
 
         app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
@@ -8626,7 +10996,7 @@ mod tests {
     #[test]
     fn pressing_cancel_on_the_project_delete_deletes_nothing_either() {
         let (_root, mut app, worktree) = project_with_a_real_agent();
-        app.execute_command("delete-project".to_string())
+        app.execute_command("delete-project")
             .expect("open the confirmation");
 
         // Cancel has focus; activating it is the same answer as Escape.
@@ -8649,10 +11019,30 @@ mod tests {
     #[test]
     fn confirming_the_project_delete_runs_the_cascade_and_removes_the_worktree() {
         let (_root, mut app, worktree) = project_with_a_real_agent();
-        app.execute_command("delete-project".to_string())
+        app.execute_command("delete-project")
             .expect("open the confirmation");
+        let agent = app.engine.sessions[0].id.clone();
+        let tab = app.engine.sessions[0].slot_tab_id().to_string();
+        crate::app::test_support::watch_from_a_browser(&app, &tab, &agent);
 
-        // Move focus from Cancel to Delete, then press it.
+        // Move focus from Cancel to Delete, then press it: refused while a
+        // browser watches the agent, naming who, with focus back on Cancel.
+        app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        match &app.prompt {
+            PromptState::ConfirmDeleteProject {
+                attached, focus, ..
+            } => {
+                assert_eq!(attached.len(), 1);
+                assert_eq!(*focus, ConfirmFocus::Cancel);
+            }
+            other => panic!("the delete dialog stays open naming who, got {other:?}"),
+        }
+        assert_eq!(app.engine.sessions.len(), 1, "nothing is deleted yet");
+
+        // The override deletes it over them.
         app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE))
             .unwrap();
         app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
@@ -8665,18 +11055,19 @@ mod tests {
             app.engine.session_store.load_projects().unwrap().is_empty(),
             "the project record is gone"
         );
-        assert!(!worktree.exists(), "the worktree was removed from disk");
+        // The removal runs on a worker once the agent has exited.
+        drain_until(&mut app, "the worktree removal", |_| !worktree.exists());
     }
 
     #[test]
     fn confirming_the_project_delete_after_the_project_is_gone_says_so() {
         let (_root, mut app, worktree) = project_with_a_real_agent();
-        app.execute_command("delete-project".to_string())
+        app.execute_command("delete-project")
             .expect("open the confirmation");
         // The project leaves behind the open dialog (the browser removed it).
         app.engine.projects.clear();
 
-        app.resolve_confirm_delete_project(true);
+        app.resolve_confirm_delete_project(ConfirmAnswer::Confirm);
 
         assert!(matches!(app.prompt, PromptState::None));
         assert_eq!(app.engine.sessions.len(), 1, "nothing is cascaded");
@@ -8714,7 +11105,7 @@ mod tests {
     fn clicking_the_project_delete_buttons_cancels_and_confirms() {
         let (_root, mut app, worktree) = project_with_a_real_agent();
 
-        app.execute_command("delete-project".to_string())
+        app.execute_command("delete-project")
             .expect("open the confirmation");
         render_once(&mut app);
         let OverlayMouseLayout::ConfirmDeleteProject { cancel_button, .. } =
@@ -8727,8 +11118,7 @@ mod tests {
         assert_eq!(app.engine.projects.len(), 1, "Cancel deletes nothing");
         assert!(worktree.is_dir());
 
-        app.project_chooser_context = Some(app.engine.projects[0].id.clone());
-        app.execute_command("delete-project".to_string())
+        app.execute_command("delete-project")
             .expect("open the confirmation");
         render_once(&mut app);
         let OverlayMouseLayout::ConfirmDeleteProject { confirm_button, .. } =
@@ -8738,7 +11128,8 @@ mod tests {
         };
         click(&mut app, confirm_button);
         assert!(app.engine.projects.is_empty(), "Delete runs the cascade");
-        assert!(!worktree.exists(), "the worktree was removed from disk");
+        // The removal runs on a worker once the agent has exited.
+        drain_until(&mut app, "the worktree removal", |_| !worktree.exists());
     }
 
     /// A second real agent in the first project, created the way the palette
@@ -8752,6 +11143,7 @@ mod tests {
                 use_existing_branch: false,
                 pull_before_create: true,
                 copy_uncommitted_changes: false,
+                cloned: None,
             },
             "Creating an agent...".to_string(),
         )
@@ -8782,7 +11174,7 @@ mod tests {
     #[test]
     fn the_project_delete_dialog_counts_an_agent_added_while_it_is_open() {
         let (_root, mut app, _worktree) = project_with_a_real_agent();
-        app.execute_command("delete-project".to_string())
+        app.execute_command("delete-project")
             .expect("open the confirmation");
         assert!(rendered_text(&mut app).contains("its 1 agent,"));
 
@@ -8806,7 +11198,7 @@ mod tests {
     #[test]
     fn confirming_after_the_project_gained_an_agent_deletes_nothing_and_asks_again() {
         let (_root, mut app, worktree) = project_with_a_real_agent();
-        app.execute_command("delete-project".to_string())
+        app.execute_command("delete-project")
             .expect("open the confirmation");
         rendered_text(&mut app);
         if let PromptState::ConfirmDeleteProject { focus, .. } = &mut app.prompt {
@@ -8814,7 +11206,7 @@ mod tests {
         }
 
         add_second_agent(&mut app);
-        app.resolve_confirm_delete_project(true);
+        app.resolve_confirm_delete_project(ConfirmAnswer::Confirm);
 
         assert_eq!(app.engine.projects.len(), 1, "the project is kept");
         assert_eq!(app.engine.sessions.len(), 2, "no agent is deleted");
@@ -8833,7 +11225,7 @@ mod tests {
         assert!(rendered_text(&mut app).contains("its 2 agents,"));
 
         // Asked again with the true count on screen, the answer stands.
-        app.resolve_confirm_delete_project(true);
+        app.resolve_confirm_delete_project(ConfirmAnswer::Confirm);
         assert!(app.engine.projects.is_empty(), "the second answer deletes");
     }
 
@@ -8841,14 +11233,13 @@ mod tests {
     fn confirming_an_orphan_removal_after_the_group_grew_asks_again() {
         let (_root, mut app, _worktree) = project_with_a_real_agent();
         app.engine.projects.clear();
-        app.project_chooser_context = None;
         app.rebuild_left_items();
         app.selected_left = app
             .left_items()
             .iter()
             .position(|item| matches!(item, LeftItem::Session(_)))
             .expect("the orphaned agent's row");
-        app.execute_command("remove-project".to_string())
+        app.execute_command("remove-project")
             .expect("open the confirmation");
         rendered_text(&mut app);
 
@@ -8856,7 +11247,7 @@ mod tests {
         let mut extra = app.engine.sessions[0].clone();
         extra.id = "orphan-two".into();
         app.engine.sessions.push(extra);
-        app.resolve_confirm_remove_project(true);
+        app.resolve_confirm_remove_project(ConfirmAnswer::Confirm);
 
         assert_eq!(app.engine.sessions.len(), 2, "no record is cleared");
         assert!(matches!(
@@ -8875,10 +11266,10 @@ mod tests {
         );
     }
 
-    /// A real project with no agents, targeted by the project-scoped commands.
+    /// A real project with no agents, which the project commands reach through
+    /// the project list.
     fn agentless_project() -> (tempfile::TempDir, App) {
-        let (root, _repo, mut app) = project_based_on_develop();
-        app.project_chooser_context = Some(app.engine.projects[0].id.clone());
+        let (root, _repo, app) = project_based_on_develop();
         (root, app)
     }
 
@@ -8886,8 +11277,7 @@ mod tests {
     fn the_remove_project_command_asks_first_and_removes_nothing() {
         let (_root, mut app) = agentless_project();
 
-        app.execute_command("remove-project".to_string())
-            .expect("open the confirmation");
+        run_via_project_list(&mut app, "remove-project").expect("open the confirmation");
 
         match &app.prompt {
             PromptState::ConfirmRemoveProject {
@@ -8911,8 +11301,7 @@ mod tests {
     #[test]
     fn escape_cancels_the_project_removal() {
         let (_root, mut app) = agentless_project();
-        app.execute_command("remove-project".to_string())
-            .expect("open the confirmation");
+        run_via_project_list(&mut app, "remove-project").expect("open the confirmation");
 
         app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
             .unwrap();
@@ -8932,19 +11321,85 @@ mod tests {
     fn confirming_the_project_removal_removes_the_record_and_keeps_the_folder() {
         let (_root, mut app) = agentless_project();
         let folder = PathBuf::from(&app.engine.projects[0].path);
-        app.execute_command("remove-project".to_string())
-            .expect("open the confirmation");
+        let project = app.engine.projects[0].clone();
+        app.show_project_terminal(&project);
+        let terminal = app
+            .engine
+            .companion_terminals
+            .keys()
+            .next()
+            .cloned()
+            .expect("the project terminal");
+        let watched = || yaran_core::attachments::Target {
+            kind: yaran_core::attachments::TargetKind::Terminal,
+            id: terminal.clone(),
+            agent: None,
+        };
 
+        // Refused, naming who, while a browser watches the project's terminal.
+        app.engine.attachments.register(
+            "browser-tab",
+            yaran_core::attachments::ConnectionFacts {
+                surface: yaran_core::attachments::Surface::Browser,
+                device: Some("Firefox".to_string()),
+                address: Some("10.0.0.7".parse().unwrap()),
+                verified: false,
+                events: true,
+                browser: None,
+            },
+            None,
+        );
+        app.engine
+            .attachments
+            .attach("browser-tab", watched(), None, None)
+            .unwrap();
+        run_via_project_list(&mut app, "remove-project").expect("open the confirmation");
         app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE))
             .unwrap();
         app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
+        match &app.prompt {
+            PromptState::ConfirmRemoveProject {
+                attached, focus, ..
+            } => {
+                assert_eq!(attached.len(), 1);
+                assert_eq!(attached[0].address.as_deref(), Some("10.0.0.7"));
+                assert_eq!(*focus, ConfirmFocus::Cancel);
+            }
+            other => panic!("the removal dialog stays open naming who, got {other:?}"),
+        }
+        assert_eq!(app.engine.projects.len(), 1);
+        // A refusal leaves no operation behind it.
+        assert!(app.pending_persist_ops.is_empty());
+        assert_eq!(app.engine.live_status_keys.len(), 0);
+
+        // The override goes ahead over them.
+        app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        // Nobody attaches to what the removal is ending until it has finished.
+        assert!(
+            app.engine
+                .attachments
+                .attach("late-tab", watched(), None, None)
+                .is_err()
+        );
         drain_until(&mut app, "the project to be removed", |app| {
             app.engine.projects.is_empty()
         });
+        assert!(
+            app.engine
+                .attachments
+                .attach("late-tab", watched(), None, None)
+                .is_ok()
+        );
 
         assert!(matches!(app.prompt, PromptState::None));
-        assert!(app.engine.session_store.load_projects().unwrap().is_empty());
+        assert_eq!(
+            app.engine.session_store.load_projects().unwrap(),
+            Vec::<yaran_core::config::ProjectConfig>::new()
+        );
         assert!(folder.is_dir(), "the source checkout stays on disk");
     }
 
@@ -8952,8 +11407,7 @@ mod tests {
     fn removing_a_project_that_still_has_agents_is_refused_without_asking() {
         let (_root, mut app, worktree) = project_with_a_real_agent();
 
-        app.execute_command("remove-project".to_string())
-            .expect("refuse");
+        app.execute_command("remove-project").expect("refuse");
 
         assert!(matches!(app.prompt, PromptState::None));
         assert_eq!(
@@ -8969,7 +11423,6 @@ mod tests {
         let (_root, mut app, worktree) = project_with_a_real_agent();
         // The project record goes, leaving its agent as an orphan.
         app.engine.projects.clear();
-        app.project_chooser_context = None;
         app.rebuild_left_items();
         app.selected_left = app
             .left_items()
@@ -8977,7 +11430,7 @@ mod tests {
             .position(|item| matches!(item, LeftItem::Session(_)))
             .expect("the orphaned agent's row");
 
-        app.execute_command("remove-project".to_string())
+        app.execute_command("remove-project")
             .expect("open the confirmation");
         match &app.prompt {
             PromptState::ConfirmRemoveProject { agent_count, .. } => {
@@ -8987,7 +11440,7 @@ mod tests {
         }
         assert_eq!(app.engine.sessions.len(), 1, "nothing is removed yet");
 
-        app.resolve_confirm_remove_project(true);
+        app.resolve_confirm_remove_project(ConfirmAnswer::Confirm);
 
         assert!(app.engine.sessions.is_empty(), "the orphan record is gone");
         assert!(worktree.is_dir(), "its worktree stays on disk");
@@ -9061,7 +11514,10 @@ mod tests {
 
     /// Answer the non-default-branch dialog the way a person does: move focus
     /// to the checkbox, set it, then press the confirm button.
-    fn answer_branch_dialog(app: &mut App, check_out_default: bool) {
+    fn answer_branch_dialog(
+        app: &mut App,
+        checkout: yaran_core::add_project_plan::DefaultCheckout,
+    ) {
         let PromptState::ConfirmNonDefaultBranch {
             checkout_default, ..
         } = &app.prompt
@@ -9077,7 +11533,9 @@ mod tests {
             .unwrap();
         app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE))
             .unwrap();
-        if starts_checked != check_out_default {
+        if starts_checked
+            != (checkout == yaran_core::add_project_plan::DefaultCheckout::CheckOutDefault)
+        {
             app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE))
                 .unwrap();
         }
@@ -9117,6 +11575,7 @@ mod tests {
                 use_existing_branch: false,
                 pull_before_create: true,
                 copy_uncommitted_changes: false,
+                cloned: None,
             },
             "Creating an agent...".to_string(),
         )
@@ -9134,6 +11593,140 @@ mod tests {
                 .find_map(|s| s.managed_worktree())
                 .unwrap(),
         )
+    }
+
+    /// Drain the worker channel one event at a time until `done` holds,
+    /// recording what the status line shows after every event, so a status that
+    /// is set and replaced within one drain is still seen.
+    fn drain_recording_statuses(
+        app: &mut App,
+        what: &str,
+        mut done: impl FnMut(&App) -> bool,
+    ) -> Vec<(StatusTone, String)> {
+        fn record(app: &App, seen: &mut Vec<(StatusTone, String)>) {
+            let now = (app.status.tone(), app.status.message());
+            if !now.1.is_empty() && seen.last() != Some(&now) {
+                seen.push(now);
+            }
+        }
+        let mut seen = Vec::new();
+        record(app, &mut seen);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !done(app) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}; statuses so far: {seen:?}"
+            );
+            while let Ok(event) = app.engine.worker_rx.try_recv() {
+                let reaction = app.engine.process_worker_event(event);
+                app.apply_reaction(reaction);
+                record(app, &mut seen);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        seen
+    }
+
+    /// Create an agent called `name` in the only project the way a user does:
+    /// the palette's New agent, the project row, the name prompt, Enter.
+    fn create_agent_through_the_name_prompt(app: &mut App, name: &str) {
+        run_via_project_list(app, "new-agent").expect("pick the project");
+        drain_until(app, "the name prompt", |app| {
+            matches!(app.prompt, PromptState::NameNewAgent { .. })
+        });
+        for c in name.chars() {
+            app.handle_key(key(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap();
+        }
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(
+            matches!(app.prompt, PromptState::None),
+            "Enter dispatches the create and closes the prompt, got {:?}",
+            app.prompt
+        );
+        // Whether the name is taken is asked on a worker first.
+        crate::app::test_support::finish_ui_jobs(app);
+    }
+
+    const CREATED_SENTENCE: &str = "Created claude agent \"agent-one\" in project \"repo\". The new worktree is ready in a fresh session.";
+
+    /// Creating an agent on the terminal UI must say so for its whole life: a
+    /// spinner the moment it is dispatched, the worker's progress while the
+    /// worktree is made, and a sentence when it lands.
+    #[test]
+    fn creating_an_agent_shows_its_busy_progress_and_final_on_the_status_line() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        create_agent_through_the_name_prompt(&mut app, "agent-one");
+        let seen = drain_recording_statuses(&mut app, "the agent", |app| {
+            !app.engine
+                .is_in_flight(&yaran_core::engine::InFlightKey::CreateAgent)
+        });
+        assert!(
+            seen.iter().any(|(tone, text)| *tone == StatusTone::Busy
+                && text.starts_with("Creating a new agent worktree \"agent-one\"")),
+            "the dispatch busy must reach the line: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|(tone, text)| *tone == StatusTone::Busy
+                && text.starts_with("Pulling latest changes")),
+            "the worker's progress must reach the line: {seen:?}"
+        );
+        assert_eq!(
+            seen.last(),
+            Some(&(StatusTone::Info, CREATED_SENTENCE.to_string())),
+            "the create must end on a sentence, not a blank line: {seen:?}"
+        );
+    }
+
+    /// A fast create can finish inside one poll of the run loop, so one drain
+    /// applies everything it posted and only what is left after that drain is
+    /// drawn. The create's busy rides the worker channel too (the dispatch
+    /// posts it there rather than setting it on the line), so it is among the
+    /// events held here. Whatever the spinner managed to show, the line must
+    /// end on the sentence, not blank.
+    #[test]
+    fn a_create_that_finishes_inside_one_drain_still_leaves_a_sentence() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        create_agent_through_the_name_prompt(&mut app, "agent-one");
+
+        // Hold every event the create posts until it has posted its last, then
+        // hand them all back for ONE drain, which is a create faster than a
+        // frame.
+        let mut held = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for the create's worker"
+            );
+            match app.engine.worker_rx.try_recv() {
+                Ok(event) => {
+                    let last = matches!(
+                        event,
+                        WorkerEvent::AgentLaunchReady(_)
+                            | WorkerEvent::AgentLaunchFailed(_)
+                            | WorkerEvent::CreateAgentFailed { .. }
+                    );
+                    held.push(event);
+                    if last {
+                        break;
+                    }
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+        for event in held {
+            app.engine.worker_tx.send(event).unwrap();
+        }
+        app.drain_events();
+
+        assert_eq!(app.engine.sessions.len(), 1, "the agent was created");
+        assert_eq!(
+            (app.status.tone(), app.status.message()),
+            (StatusTone::Info, CREATED_SENTENCE.to_string()),
+            "a create the line never got to show a spinner for must still say it happened"
+        );
     }
 
     fn worktree_has_commit(worktree: &Path, commit: &str) -> bool {
@@ -9160,9 +11753,13 @@ mod tests {
         let (_root, repo, feature_commit) = clone_on_a_feature_branch();
         let mut app = journey_app();
 
-        app.add_project(repo.to_string_lossy().to_string(), "repo".to_string())
-            .expect("add_project");
-        answer_branch_dialog(&mut app, false);
+        app.add_project(repo.to_string_lossy().as_ref(), "repo".to_string());
+
+        crate::app::test_support::finish_ui_jobs(&mut app);
+        answer_branch_dialog(
+            &mut app,
+            yaran_core::add_project_plan::DefaultCheckout::StayOnCurrent,
+        );
         drain_until(&mut app, "the project", |app| {
             !app.engine.projects.is_empty() && stored_project_base(app).is_some()
         });
@@ -9189,9 +11786,13 @@ mod tests {
         let (_root, repo, feature_commit) = clone_on_a_feature_branch();
         let mut app = journey_app();
 
-        app.add_project(repo.to_string_lossy().to_string(), "repo".to_string())
-            .expect("add_project");
-        answer_branch_dialog(&mut app, true);
+        app.add_project(repo.to_string_lossy().as_ref(), "repo".to_string());
+
+        crate::app::test_support::finish_ui_jobs(&mut app);
+        answer_branch_dialog(
+            &mut app,
+            yaran_core::add_project_plan::DefaultCheckout::CheckOutDefault,
+        );
         drain_until(&mut app, "the project", |app| {
             !app.engine.projects.is_empty() && stored_project_base(app).is_some()
         });
@@ -9209,20 +11810,23 @@ mod tests {
     }
 
     /// A real project whose folder is on `develop` and whose recorded base is
-    /// `develop` (added with the checkout box unticked), selected so the
-    /// project-scoped command acts on it. origin's default is `main`.
+    /// `develop` (added with the checkout box unticked). It has no agent, so a
+    /// project command reaches it through the project list. origin's default
+    /// is `main`.
     fn project_based_on_develop() -> (tempfile::TempDir, PathBuf, App) {
         let (root, repo, _) = clone_on_a_feature_branch();
         crate::app::test_support::run_git_output(&repo, &["switch", "-q", "-c", "develop"]);
         let mut app = journey_app();
-        app.add_project(repo.to_string_lossy().to_string(), "repo".to_string())
-            .expect("add_project");
-        answer_branch_dialog(&mut app, false);
+        app.add_project(repo.to_string_lossy().as_ref(), "repo".to_string());
+        crate::app::test_support::finish_ui_jobs(&mut app);
+        answer_branch_dialog(
+            &mut app,
+            yaran_core::add_project_plan::DefaultCheckout::StayOnCurrent,
+        );
         drain_until(&mut app, "the project", |app| {
             !app.engine.projects.is_empty() && stored_project_base(app).is_some()
         });
         assert_eq!(stored_project_base(&app).as_deref(), Some("develop"));
-        app.project_chooser_context = Some(app.engine.projects[0].id.clone());
         (root, repo, app)
     }
 
@@ -9234,7 +11838,7 @@ mod tests {
     fn checking_out_the_default_branch_asks_before_anything_runs() {
         let (_root, repo, mut app) = project_based_on_develop();
 
-        app.checkout_selected_project_default_branch()
+        run_via_project_list(&mut app, "checkout-project-default-branch")
             .expect("open the confirmation");
 
         match &app.prompt {
@@ -9260,7 +11864,7 @@ mod tests {
     #[test]
     fn escape_cancels_the_default_branch_checkout_and_says_nothing_changed() {
         let (_root, repo, mut app) = project_based_on_develop();
-        app.checkout_selected_project_default_branch()
+        run_via_project_list(&mut app, "checkout-project-default-branch")
             .expect("open the confirmation");
 
         app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
@@ -9287,7 +11891,7 @@ mod tests {
     #[test]
     fn pressing_cancel_runs_nothing_either() {
         let (_root, repo, mut app) = project_based_on_develop();
-        app.checkout_selected_project_default_branch()
+        run_via_project_list(&mut app, "checkout-project-default-branch")
             .expect("open the confirmation");
 
         // Cancel has focus; activating it is the same answer as Escape.
@@ -9305,7 +11909,7 @@ mod tests {
     #[test]
     fn confirming_checks_out_the_default_and_makes_it_the_project_base() {
         let (_root, repo, mut app) = project_based_on_develop();
-        app.checkout_selected_project_default_branch()
+        run_via_project_list(&mut app, "checkout-project-default-branch")
             .expect("open the confirmation");
 
         // Move focus from Cancel to the confirm button, then press it.
@@ -9335,7 +11939,7 @@ mod tests {
     #[test]
     fn cancelling_names_the_base_as_it_is_when_the_dialog_closes() {
         let (_root, _repo, mut app) = project_based_on_develop();
-        app.checkout_selected_project_default_branch()
+        run_via_project_list(&mut app, "checkout-project-default-branch")
             .expect("open the confirmation");
         app.engine.projects[0].leading_branch = Some("main".to_string());
 
@@ -9354,7 +11958,7 @@ mod tests {
     #[test]
     fn cancelling_after_the_project_is_gone_says_so() {
         let (_root, _repo, mut app) = project_based_on_develop();
-        app.checkout_selected_project_default_branch()
+        run_via_project_list(&mut app, "checkout-project-default-branch")
             .expect("open the confirmation");
         app.engine.projects.clear();
 
@@ -9375,7 +11979,7 @@ mod tests {
     fn a_second_checkout_while_one_runs_is_refused_and_the_repository_is_released_after() {
         let (_root, repo, mut app) = project_based_on_develop();
         let project = app.engine.projects[0].clone();
-        let key = yaran_core::engine::InFlightKey::CheckoutDefaultBranch(project.path.clone());
+        let folder = project.path.clone();
 
         app.dispatch_checkout_project_default_branch(project.clone());
         assert_eq!(app.pending_checkout_inspect_ops.len(), 1);
@@ -9400,7 +12004,11 @@ mod tests {
         drain_until(&mut app, "the chain to finish", |app| {
             app.pending_checkout_inspect_ops.is_empty()
         });
-        assert!(!app.engine.is_in_flight(&key), "success releases it");
+        assert_eq!(
+            app.engine.project_folder_action(&folder),
+            None,
+            "success releases it"
+        );
         assert_eq!(folder_branch(&repo), "main");
 
         // Ending two: the folder is already on the default branch.
@@ -9409,9 +12017,1000 @@ mod tests {
         drain_until(&mut app, "the already-there answer", |app| {
             app.pending_checkout_inspect_ops.is_empty()
         });
-        assert!(
-            !app.engine.is_in_flight(&key),
+        assert_eq!(
+            app.engine.project_folder_action(&folder),
+            None,
             "already being there releases it"
         );
+    }
+
+    // ── manage-projects: a project's action list ───────────────────────────
+
+    /// Open `manage-projects` and pick the project whose id is `id` the way a
+    /// person does: move down to it and press Enter.
+    fn manage_project(app: &mut App, id: &str) {
+        app.execute_command("manage-projects")
+            .expect("open the project list");
+        let row = match &app.prompt {
+            PromptState::PickProject {
+                intent,
+                entries,
+                list,
+            } => {
+                assert_eq!(*intent, ProjectChooserIntent::Manage);
+                let visible = list.visible_indices(entries, pick_project_matches);
+                visible
+                    .iter()
+                    .position(|index| entries[*index].id == id)
+                    .unwrap_or_else(|| panic!("{id} is listed in {entries:?}"))
+            }
+            other => panic!("expected the project list, got {other:?}"),
+        };
+        for _ in 0..row {
+            app.handle_key(key(KeyCode::Down, KeyModifiers::NONE))
+                .unwrap();
+        }
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(
+            matches!(app.prompt, PromptState::ProjectActions(_)),
+            "Enter on a project opens its actions, got {:?}",
+            app.prompt
+        );
+    }
+
+    /// Move the action list's cursor onto `action`'s row and press Enter.
+    fn pick_project_action(app: &mut App, action: ProjectAction) {
+        let (rows, selected) = match &app.prompt {
+            PromptState::ProjectActions(prompt) => {
+                (app.project_action_rows(&prompt.target), prompt.selected)
+            }
+            other => panic!("expected the action list, got {other:?}"),
+        };
+        let row = rows
+            .iter()
+            .position(|row| row.action == action)
+            .unwrap_or_else(|| panic!("{action:?} is a row of {rows:?}"));
+        for _ in 0..row.saturating_sub(selected) {
+            app.handle_key(key(KeyCode::Down, KeyModifiers::NONE))
+                .unwrap();
+        }
+        for _ in 0..selected.saturating_sub(row) {
+            app.handle_key(key(KeyCode::Up, KeyModifiers::NONE))
+                .unwrap();
+        }
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+    }
+
+    #[test]
+    fn managing_a_project_then_delete_asks_first_and_cancelling_returns_to_its_actions() {
+        let (_root, mut app, worktree) = project_with_a_real_agent();
+        let id = app.engine.projects[0].id.clone();
+
+        manage_project(&mut app, &id);
+        let text = rendered_text(&mut app);
+        assert!(text.contains("Manage Project"), "{text}");
+        assert!(text.contains("Delete project…"), "{text}");
+        pick_project_action(&mut app, ProjectAction::Delete);
+
+        match &app.prompt {
+            PromptState::ConfirmDeleteProject {
+                project_name,
+                agent_count,
+                focus,
+                ..
+            } => {
+                assert_eq!(project_name, "repo");
+                assert_eq!(*agent_count, 1);
+                assert_eq!(*focus, ConfirmFocus::Cancel, "Cancel is the safe default");
+            }
+            other => panic!("expected the delete-project confirmation, got {other:?}"),
+        }
+
+        // Escape cancels, and the list the question came from comes back.
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        match &app.prompt {
+            PromptState::ProjectActions(prompt) => {
+                assert_eq!(
+                    prompt.target,
+                    ProjectActionsTarget::Project { id: id.clone() }
+                );
+                let rows = app.project_action_rows(&prompt.target);
+                assert_eq!(
+                    rows[prompt.selected].action,
+                    ProjectAction::Delete,
+                    "the cursor is still on the row that asked"
+                );
+            }
+            other => panic!("cancelling returns to the action list, got {other:?}"),
+        }
+        assert_eq!(
+            app.status.text(),
+            "Cancelled deleting project \"repo\". Nothing was deleted: its agent and its \
+             worktree are still here."
+        );
+        assert_eq!(app.engine.projects.len(), 1, "nothing is deleted");
+        assert!(worktree.is_dir(), "the worktree is untouched");
+
+        // The Cancel button is the same answer as Escape.
+        pick_project_action(&mut app, ProjectAction::Delete);
+        app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.prompt, PromptState::ProjectActions(_)));
+
+        // Confirming runs the existing cascade and leaves nothing to go back to.
+        pick_project_action(&mut app, ProjectAction::Delete);
+        app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.prompt, PromptState::None));
+        assert!(app.engine.projects.is_empty(), "the project is gone");
+        // The removal runs on a worker once the agent has exited.
+        drain_until(&mut app, "the worktree removal", |_| !worktree.exists());
+    }
+
+    /// Every row of a project's action list runs its own flow, and runs it for
+    /// the project the list was opened on, never for whatever agent happens to
+    /// be selected.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario walked in order on one app, each step asserting on the state the previous step left"
+    )]
+    fn every_project_action_row_runs_its_flow_for_the_picked_project() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        // A project terminal is a plain PTY; `cat` stands in for the shell.
+        app.engine.config.terminal.command = "cat".to_string();
+        app.engine.config.terminal.args = Vec::new();
+        let id = app.engine.projects[0].id.clone();
+
+        let rows: Vec<ProjectAction> = app
+            .project_action_rows(&ProjectActionsTarget::Project { id: id.clone() })
+            .into_iter()
+            .map(|row| row.action)
+            .collect();
+        let mut expected: Vec<ProjectAction> = ProjectAction::ROWS.to_vec();
+        if !app.github_pr_agent_command_available() {
+            // Where GitHub is unavailable the browser hides the row too.
+            expected.retain(|action| *action != ProjectAction::NewAgentFromPr);
+        }
+        assert_eq!(rows, expected, "the rows follow the browser menu's order");
+
+        for action in rows {
+            manage_project(&mut app, &id);
+            pick_project_action(&mut app, action);
+            let prompt = &app.prompt;
+            match action {
+                ProjectAction::NewAgent => {
+                    drain_until(&mut app, "the new-agent name prompt", |app| {
+                        matches!(app.prompt, PromptState::NameNewAgent { .. })
+                    });
+                    match &app.prompt {
+                        PromptState::NameNewAgent {
+                            request: CreateAgentRequest::NewProject { project, .. },
+                            ..
+                        } => assert_eq!(project.id, id),
+                        other => panic!("{action:?}: expected the name prompt, got {other:?}"),
+                    }
+                }
+                ProjectAction::NewAgentFromPr => match prompt {
+                    PromptState::PullRequestInput {
+                        project: Some(project),
+                        ..
+                    } => assert_eq!(project.id, id),
+                    other => panic!("{action:?}: got {other:?}"),
+                },
+                ProjectAction::Worktrees => match prompt {
+                    PromptState::ManageWorktrees(manager) => assert_eq!(manager.project.id, id),
+                    other => panic!("{action:?}: got {other:?}"),
+                },
+                ProjectAction::NewTerminal => {
+                    assert!(
+                        matches!(prompt, PromptState::None),
+                        "{action:?}: {prompt:?}"
+                    );
+                    assert!(
+                        app.engine
+                            .companion_terminals
+                            .values()
+                            .any(|t| t.owner == TerminalOwner::Project(id.clone())),
+                        "a terminal owned by the project was opened"
+                    );
+                }
+                ProjectAction::Pull => {
+                    assert!(
+                        matches!(prompt, PromptState::ProjectActions(_)),
+                        "{action:?}: the list stays, like the browser's: {prompt:?}"
+                    );
+                    // The pull holds the project folder until it ends.
+                    let path = app.engine.projects[0].path.clone();
+                    assert_eq!(
+                        app.engine.project_folder_action(&path),
+                        Some(yaran_core::engine::ProjectFolderAction::Pull),
+                        "{action:?}: the project's pull is running"
+                    );
+                    drain_until(&mut app, "the pull to finish", |app| {
+                        app.engine.project_folder_action(&path).is_none()
+                    });
+                }
+                ProjectAction::CheckoutDefaultBranch => match prompt {
+                    PromptState::ConfirmCheckoutDefaultBranch { project_id, .. } => {
+                        assert_eq!(project_id, &id);
+                    }
+                    other => panic!("{action:?}: got {other:?}"),
+                },
+                ProjectAction::ChangeBaseBranch => {
+                    match prompt {
+                        PromptState::ChangeBaseBranch(picker) => {
+                            assert_eq!(picker.project_id, id);
+                        }
+                        other => panic!("{action:?}: got {other:?}"),
+                    }
+                    drain_until(&mut app, "the branch listing", |app| {
+                        app.pending_branch_listing.is_none()
+                    });
+                }
+                ProjectAction::Info => match prompt {
+                    PromptState::ProjectInfo(info) => assert_eq!(info.project_name, "repo"),
+                    other => panic!("{action:?}: got {other:?}"),
+                },
+                ProjectAction::DefaultProvider => match prompt {
+                    PromptState::ChangeProjectDefaultProvider(picker) => {
+                        assert_eq!(picker.project_id, id);
+                    }
+                    other => panic!("{action:?}: got {other:?}"),
+                },
+                ProjectAction::AutoReopen => {
+                    assert!(app.engine.project_allows_auto_reopen(&id));
+                    drain_until(&mut app, "the auto-reopen change to save", |app| {
+                        !app.engine
+                            .project_allows_auto_reopen(&app.engine.projects[0].id)
+                    });
+                }
+                ProjectAction::StartupCommand => match prompt {
+                    PromptState::ConfigureStartupCommand { project_id, .. } => {
+                        assert_eq!(project_id, &id);
+                    }
+                    other => panic!("{action:?}: got {other:?}"),
+                },
+                ProjectAction::Environment => match prompt {
+                    PromptState::ConfigureProjectEnv { project_id, .. } => {
+                        assert_eq!(project_id, &id);
+                    }
+                    other => panic!("{action:?}: got {other:?}"),
+                },
+                ProjectAction::StartupLogs => {
+                    assert!(
+                        matches!(prompt, PromptState::ProjectActions(_)),
+                        "{action:?}: the list stays while the logs are read: {prompt:?}"
+                    );
+                    drain_until(&mut app, "the startup logs answer", |app| {
+                        app.status.text().contains("project \"repo\"")
+                    });
+                }
+                ProjectAction::Delete => match prompt {
+                    PromptState::ConfirmDeleteProject { project_id, .. } => {
+                        assert_eq!(project_id, &id);
+                    }
+                    other => panic!("{action:?}: got {other:?}"),
+                },
+                ProjectAction::Remove => match prompt {
+                    PromptState::ConfirmRemoveProject {
+                        project_id,
+                        orphaned,
+                        ..
+                    } => {
+                        assert_eq!(project_id, &id);
+                        assert!(!orphaned);
+                    }
+                    other => panic!("{action:?}: got {other:?}"),
+                },
+                ProjectAction::CopyPath => unreachable!("never a row"),
+            }
+            app.prompt = PromptState::None;
+        }
+    }
+
+    /// An agent whose project record is gone shows up in `manage-projects` as
+    /// an orphaned group, offers Remove project… and nothing else, and removing
+    /// it clears the ghost records while the worktree stays on disk.
+    #[test]
+    fn an_orphaned_group_is_listed_offers_only_remove_and_removing_it_clears_its_agents() {
+        let (_root, mut app, worktree) = project_with_a_real_agent();
+        let ghost = app.engine.projects[0].id.clone();
+        app.engine.projects.clear();
+        app.rebuild_left_items();
+
+        app.execute_command("manage-projects")
+            .expect("open the project list");
+        match &app.prompt {
+            PromptState::PickProject { entries, .. } => {
+                assert_eq!(entries.len(), 1);
+                assert!(entries[0].orphaned, "{entries:?}");
+                assert_eq!(entries[0].id, ghost);
+                assert_eq!(
+                    entries[0].name,
+                    yaran_core::sidebar::short_project_id(&ghost)
+                );
+                assert_eq!(entries[0].agent_count, 1);
+            }
+            other => panic!("expected the project list, got {other:?}"),
+        }
+        let text = rendered_text(&mut app);
+        assert!(text.contains("orphaned"), "{text}");
+        assert!(text.contains("its project record is gone"), "{text}");
+
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        match &app.prompt {
+            PromptState::ProjectActions(prompt) => {
+                let rows = app.project_action_rows(&prompt.target);
+                assert_eq!(
+                    rows.iter().map(|row| row.action).collect::<Vec<_>>(),
+                    vec![ProjectAction::Remove]
+                );
+            }
+            other => panic!("expected the group's actions, got {other:?}"),
+        }
+
+        pick_project_action(&mut app, ProjectAction::Remove);
+        match &app.prompt {
+            PromptState::ConfirmRemoveProject {
+                orphaned,
+                agent_count,
+                ..
+            } => {
+                assert!(orphaned);
+                assert_eq!(*agent_count, 1);
+            }
+            other => panic!("expected the removal question, got {other:?}"),
+        }
+        // Cancelling steps back to the group's actions.
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.prompt, PromptState::ProjectActions(_)));
+
+        pick_project_action(&mut app, ProjectAction::Remove);
+        app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.engine.sessions.is_empty(), "the ghost record is gone");
+        assert!(worktree.is_dir(), "its worktree stays on disk");
+        assert!(matches!(app.prompt, PromptState::None));
+    }
+
+    /// With the project's folder gone, the rows that need it are shown but
+    /// unavailable, say why on screen, and picking one says why again and runs
+    /// nothing.
+    #[test]
+    fn with_the_folder_missing_the_folder_bound_rows_are_unavailable_and_say_why() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        app.engine.config.terminal.command = "cat".to_string();
+        app.engine.config.terminal.args = Vec::new();
+        // A short path that really is missing: the header row clips at the
+        // dialog's edge, and the temp folder's path (long on macOS) would push
+        // the missing marker past it.
+        app.engine.projects[0].path = "/gone/repo".to_string();
+        app.engine.projects[0].path_missing = true;
+        let id = app.engine.projects[0].id.clone();
+        let path = app.engine.projects[0].path.clone();
+
+        manage_project(&mut app, &id);
+        let rows = app.project_action_rows(&ProjectActionsTarget::Project { id: id.clone() });
+        let unavailable: Vec<ProjectAction> = rows
+            .iter()
+            .filter(|row| row.unavailable.is_some())
+            .map(|row| row.action)
+            .collect();
+        assert_eq!(
+            unavailable,
+            vec![
+                ProjectAction::NewAgent,
+                ProjectAction::NewTerminal,
+                ProjectAction::ChangeBaseBranch
+            ],
+            "exactly where the browser disables a row"
+        );
+        let text = rendered_text(&mut app);
+        assert_eq!(
+            text.matches("unavailable: the folder is missing").count(),
+            3,
+            "{text}"
+        );
+        assert!(text.contains("⚠ missing"), "{text}");
+
+        pick_project_action(&mut app, ProjectAction::NewTerminal);
+        assert!(
+            matches!(app.prompt, PromptState::ProjectActions(_)),
+            "an unavailable row runs nothing and keeps the list: {:?}",
+            app.prompt
+        );
+        assert_eq!(app.status.tone(), crate::statusline::StatusTone::Warning);
+        assert_eq!(
+            app.status.text(),
+            format!(
+                "New terminal at the project root is unavailable: the folder of project \
+                 \"repo\" is missing at {path}."
+            )
+        );
+        assert!(
+            app.engine.companion_terminals.is_empty(),
+            "no terminal opened"
+        );
+
+        pick_project_action(&mut app, ProjectAction::ChangeBaseBranch);
+        assert!(matches!(app.prompt, PromptState::ProjectActions(_)));
+        assert!(
+            app.status
+                .text()
+                .starts_with("Change base branch is unavailable"),
+            "{}",
+            app.status.text()
+        );
+        assert!(app.pending_branch_listing.is_none(), "nothing was listed");
+    }
+
+    /// Change base branch, end to end on a real repository: the listing marks
+    /// the base, names the agent holding its own branch, offers a branch only
+    /// origin has; the held branch cannot be picked, and the origin-only one is
+    /// created locally, checked out in the folder and saved as the base.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario walked in order on one app, each step asserting on the state the previous step left"
+    )]
+    fn changing_the_base_branch_runs_end_to_end_including_an_origin_only_branch() {
+        let (root, mut app, _worktree) = project_with_a_real_agent();
+        let id = app.engine.projects[0].id.clone();
+        let repo = PathBuf::from(&app.engine.projects[0].path);
+        let held = app.engine.sessions[0]
+            .workspace
+            .as_managed()
+            .expect("managed agent")
+            .branch_name
+            .clone();
+        // A branch only origin has, pushed from a second clone.
+        let other = root.path().join("other");
+        let origin = root.path().join("origin.git");
+        crate::app::test_support::run_git_output(
+            root.path(),
+            &[
+                "clone",
+                "-q",
+                origin.to_string_lossy().as_ref(),
+                other.to_string_lossy().as_ref(),
+            ],
+        );
+        crate::app::test_support::run_git_output(
+            &other,
+            &["config", "user.email", "t@example.com"],
+        );
+        crate::app::test_support::run_git_output(&other, &["config", "user.name", "Test"]);
+        crate::app::test_support::run_git_output(&other, &["switch", "-q", "-c", "release"]);
+        std::fs::write(other.join("release.txt"), "release\n").unwrap();
+        crate::app::test_support::run_git_output(&other, &["add", "release.txt"]);
+        crate::app::test_support::run_git_output(&other, &["commit", "-q", "-m", "release"]);
+        crate::app::test_support::run_git_output(&other, &["push", "-q", "origin", "release"]);
+        let release_commit =
+            crate::app::test_support::run_git_output(&other, &["rev-parse", "HEAD"]);
+
+        manage_project(&mut app, &id);
+        pick_project_action(&mut app, ProjectAction::ChangeBaseBranch);
+        match &app.prompt {
+            PromptState::ChangeBaseBranch(picker) => assert!(picker.loading),
+            other => panic!("expected the branch picker, got {other:?}"),
+        }
+        assert!(
+            rendered_text(&mut app).contains("Fetching origin and listing branches…"),
+            "the picker shows a loading row while the worker runs"
+        );
+        assert_eq!(app.status.tone(), crate::statusline::StatusTone::Busy);
+        drain_until(&mut app, "the branch listing", |app| {
+            app.pending_branch_listing.is_none()
+        });
+
+        let branches = match &app.prompt {
+            PromptState::ChangeBaseBranch(picker) => {
+                assert!(!picker.loading);
+                assert_eq!(picker.fetch_note, None, "origin was fetched");
+                assert_eq!(picker.current_base.as_deref(), Some("develop"));
+                picker.branches.clone()
+            }
+            other => panic!("expected the loaded picker, got {other:?}"),
+        };
+        let release = branches
+            .iter()
+            .find(|branch| branch.name == "release")
+            .expect("the origin-only branch is listed");
+        assert_eq!(release.location, yaran_core::git::BranchLocation::Remote);
+        assert!(
+            branches
+                .iter()
+                .find(|branch| branch.name == held)
+                .is_some_and(|branch| branch.held_by.is_some()),
+            "the agent's branch is listed as held: {branches:?}"
+        );
+        let text = rendered_text(&mut app);
+        assert!(text.contains("Change Base Branch"), "{text}");
+        assert!(text.contains("unavailable: checked out by agent"), "{text}");
+        assert!(text.contains("on origin only"), "{text}");
+
+        // Search narrows to the held branch; picking it is refused out loud.
+        app.handle_key(key(KeyCode::Char('/'), KeyModifiers::NONE))
+            .unwrap();
+        for c in held.chars() {
+            app.handle_key(key(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap();
+        }
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(
+            matches!(app.prompt, PromptState::ChangeBaseBranch(_)),
+            "a held branch cannot be picked: {:?}",
+            app.prompt
+        );
+        assert_eq!(app.status.tone(), crate::statusline::StatusTone::Warning);
+        assert!(
+            app.status.text().contains("it is checked out by agent"),
+            "{}",
+            app.status.text()
+        );
+
+        // Escape clears the search, then pick the origin-only branch.
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(key(KeyCode::Char('/'), KeyModifiers::NONE))
+            .unwrap();
+        for c in "release".chars() {
+            app.handle_key(key(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap();
+        }
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        match &app.prompt {
+            PromptState::ConfirmChangeBaseBranch(confirm) => {
+                assert_eq!(confirm.branch, "release");
+                assert_eq!(
+                    confirm.focus,
+                    ConfirmFocus::Cancel,
+                    "Cancel is the safe default"
+                );
+            }
+            other => panic!("expected the confirmation, got {other:?}"),
+        }
+        let text = rendered_text(&mut app);
+        assert!(
+            text.contains("This switches the source checkout for")
+                && text.contains("After the switch,"),
+            "the shared prose is the body: {text}"
+        );
+
+        // Cancelling steps back to the picker and says nothing moved.
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.prompt, PromptState::ChangeBaseBranch(_)));
+        assert_eq!(
+            app.status.text(),
+            "Cancelled changing the base branch of project \"repo\". Nothing was checked out, \
+             and new worktrees still branch from \"develop\"."
+        );
+        assert_eq!(folder_branch(&repo), "develop");
+
+        // Confirm for real.
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(key(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.prompt, PromptState::None));
+        drain_until(&mut app, "the base to move to release", |app| {
+            stored_project_base(app).as_deref() == Some("release")
+        });
+        assert_eq!(folder_branch(&repo), "release");
+        assert_eq!(
+            crate::app::test_support::run_git_output(&repo, &["rev-parse", "refs/heads/release"]),
+            release_commit,
+            "the local branch was created from origin's"
+        );
+        assert_eq!(
+            app.engine.projects[0].leading_branch.as_deref(),
+            Some("release")
+        );
+        drain_until(&mut app, "the final", |app| {
+            app.status
+                .text()
+                .contains("New worktrees branch from \"release\" now.")
+        });
+    }
+
+    /// A project command with no agent selected reaches Change base branch too.
+    #[test]
+    fn change_project_base_branch_with_no_agent_selected_opens_the_project_list_first() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        run_via_project_list(&mut app, "change-project-base-branch").expect("open the picker");
+        match &app.prompt {
+            PromptState::ChangeBaseBranch(picker) => {
+                assert_eq!(picker.project_name, "repo");
+                assert!(picker.return_to.is_none(), "nothing to step back to");
+            }
+            other => panic!("expected the branch picker, got {other:?}"),
+        }
+        drain_until(&mut app, "the branch listing", |app| {
+            app.pending_branch_listing.is_none()
+        });
+        // Escape with nothing behind it closes the picker.
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.prompt, PromptState::None));
+    }
+
+    /// Project info shows the browser dialog's facts, and closing it returns to
+    /// the action list it was opened from.
+    #[test]
+    fn project_info_shows_the_projects_facts_and_closes_back_onto_its_actions() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        let id = app.engine.projects[0].id.clone();
+        manage_project(&mut app, &id);
+        pick_project_action(&mut app, ProjectAction::Info);
+        let text = rendered_text(&mut app);
+        for fact in [
+            "Project Info",
+            "Path:",
+            "Current branch:",
+            "Base branch:",
+            "develop",
+            "Added:",
+            "Default provider:",
+            "Auto-reopen:",
+            "Inherit",
+            "Startup command:",
+            "Environment:",
+            "0 variables",
+            "Live agents:",
+            "0 agents",
+            "Companion terminals:",
+            "0 terminals",
+        ] {
+            assert!(text.contains(fact), "{fact} is on screen:\n{text}");
+        }
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.prompt, PromptState::ProjectActions(_)));
+    }
+
+    // ── manage-projects: review round two ───────────────────────────────────
+
+    /// The holder of a held branch is named from what the listing worker
+    /// resolved, not from a lookup on every paint: the label survives the
+    /// agent's record changing after the list landed.
+    #[test]
+    fn a_held_branch_names_its_agent_from_the_listing_not_from_a_lookup_at_paint() {
+        let (_root, mut app, _worktree) = project_with_a_real_agent();
+        let id = app.engine.projects[0].id.clone();
+        manage_project(&mut app, &id);
+        pick_project_action(&mut app, ProjectAction::ChangeBaseBranch);
+        drain_until(&mut app, "the branch listing", |app| {
+            app.pending_branch_listing.is_none()
+        });
+        // A paint-time lookup would no longer find the agent at the holder.
+        app.engine.sessions[0]
+            .workspace
+            .as_managed_mut()
+            .expect("managed agent")
+            .worktree_path = "/nonexistent/elsewhere".to_string();
+        let text = rendered_text(&mut app);
+        assert!(
+            text.contains("checked out by agent  agent-one "),
+            "the holder is named from the listing: {text}"
+        );
+    }
+
+    /// A project whose folder is missing offers New agent… as unavailable too,
+    /// and the new-agent flow itself says why instead of closing silently.
+    #[test]
+    fn new_agent_on_a_project_whose_folder_is_missing_says_why() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        app.engine.projects[0].path_missing = true;
+        let path = app.engine.projects[0].path.clone();
+        run_via_project_list(&mut app, "new-agent").expect("pick the project");
+        assert!(matches!(app.prompt, PromptState::None));
+        assert_eq!(app.status.tone(), crate::statusline::StatusTone::Warning);
+        assert_eq!(
+            app.status.text(),
+            format!("Cannot create an agent in project \"repo\": its folder is missing at {path}.")
+        );
+    }
+
+    /// Cancelling the change-base confirmation after the project was removed
+    /// behind it closes the stack and says why, instead of restoring a picker
+    /// for a project that no longer exists.
+    #[test]
+    fn cancelling_the_change_base_confirmation_after_the_project_is_gone_closes_and_says_so() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        let id = app.engine.projects[0].id.clone();
+        manage_project(&mut app, &id);
+        pick_project_action(&mut app, ProjectAction::ChangeBaseBranch);
+        drain_until(&mut app, "the branch listing", |app| {
+            app.pending_branch_listing.is_none()
+        });
+        app.pick_change_base_branch_row();
+        assert!(matches!(
+            app.prompt,
+            PromptState::ConfirmChangeBaseBranch(_)
+        ));
+        app.engine.projects.clear();
+
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(
+            matches!(app.prompt, PromptState::None),
+            "nothing to step back to: {:?}",
+            app.prompt
+        );
+        assert_eq!(
+            app.status.text(),
+            "Project \"repo\" is gone, so there is no base branch to change."
+        );
+    }
+
+    /// Open `action` from `id`'s action list and return the prompt it opened.
+    fn open_from_actions(app: &mut App, id: &str, action: ProjectAction) {
+        manage_project(app, id);
+        pick_project_action(app, action);
+    }
+
+    fn assert_back_on_the_action_list(app: &App, what: &str) {
+        assert!(
+            matches!(app.prompt, PromptState::ProjectActions(_)),
+            "{what} returns to the action list, got {:?}",
+            app.prompt
+        );
+    }
+
+    #[test]
+    fn the_default_provider_picker_opened_from_the_list_returns_to_it() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        let id = app.engine.projects[0].id.clone();
+        open_from_actions(&mut app, &id, ProjectAction::DefaultProvider);
+        assert!(matches!(
+            app.prompt,
+            PromptState::ChangeProjectDefaultProvider(_)
+        ));
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert_back_on_the_action_list(&app, "Escape on the provider picker");
+
+        pick_project_action(&mut app, ProjectAction::DefaultProvider);
+        app.handle_key(key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert_back_on_the_action_list(&app, "picking a provider");
+    }
+
+    #[test]
+    fn the_startup_command_editor_opened_from_the_list_returns_to_it() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        let id = app.engine.projects[0].id.clone();
+        open_from_actions(&mut app, &id, ProjectAction::StartupCommand);
+        assert!(matches!(
+            app.prompt,
+            PromptState::ConfigureStartupCommand { .. }
+        ));
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert_back_on_the_action_list(&app, "Escape on the startup-command editor");
+
+        pick_project_action(&mut app, ProjectAction::StartupCommand);
+        app.apply_configure_startup_command().expect("save");
+        // The save is written off the run loop; the editor waits for it.
+        drain_until(&mut app, "the config save", |app| {
+            app.configure_save_op.is_none()
+        });
+        assert_back_on_the_action_list(&app, "saving the startup command");
+    }
+
+    #[test]
+    fn the_environment_editor_opened_from_the_list_returns_to_it() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        let id = app.engine.projects[0].id.clone();
+        open_from_actions(&mut app, &id, ProjectAction::Environment);
+        assert!(matches!(
+            app.prompt,
+            PromptState::ConfigureProjectEnv { .. }
+        ));
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert_back_on_the_action_list(&app, "Escape on the environment editor");
+
+        pick_project_action(&mut app, ProjectAction::Environment);
+        app.apply_configure_project_env().expect("save");
+        // The save is written off the run loop; the editor waits for it.
+        drain_until(&mut app, "the config save", |app| {
+            app.configure_save_op.is_none()
+        });
+        assert_back_on_the_action_list(&app, "saving the environment");
+    }
+
+    #[test]
+    fn the_worktree_manager_opened_from_the_list_returns_to_it() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        let id = app.engine.projects[0].id.clone();
+        open_from_actions(&mut app, &id, ProjectAction::Worktrees);
+        assert!(matches!(app.prompt, PromptState::ManageWorktrees(_)));
+        drain_until(
+            &mut app,
+            "the worktree listing",
+            |app| matches!(&app.prompt, PromptState::ManageWorktrees(m) if !m.loading),
+        );
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert_back_on_the_action_list(&app, "Escape on the worktree manager");
+    }
+
+    #[test]
+    fn the_startup_logs_opened_from_the_list_return_to_it() {
+        let (_root, _repo, mut app) = project_based_on_develop();
+        let id = app.engine.projects[0].id.clone();
+        open_from_actions(&mut app, &id, ProjectAction::StartupLogs);
+        assert_back_on_the_action_list(&app, "the list while the logs are read");
+        // The logs land the way the reader's worker delivers them.
+        app.apply_reaction(yaran_core::engine::EventReaction::StartupLogsArrived {
+            scope_label: "project \"repo\"".to_string(),
+            listing: crate::startup::StartupCommandLogListing {
+                entries: vec![crate::startup::StartupCommandLogEntry {
+                    path: PathBuf::from("/nonexistent/run.log"),
+                    display_name: "run.log".to_string(),
+                    modified_at: None,
+                }],
+                content: "ran\n".to_string(),
+            },
+        });
+        assert!(matches!(app.prompt, PromptState::StartupCommandLogs(_)));
+        app.handle_key(key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert_back_on_the_action_list(&app, "Escape on the startup logs");
+    }
+
+    /// Nothing is selected, the centre shows the yaran tips screen, and this
+    /// surface is attached to no agent, though the agent that took the gone
+    /// one's row is running.
+    fn assert_resting_on_the_tips_screen(app: &mut App) {
+        let _ = rendered_text(app);
+        assert_eq!(app.selected_session().map(|s| s.id.clone()), None);
+        assert!(app.welcome_logo.visible, "the centre shows the tips screen");
+        let attached: Vec<String> = app
+            .engine
+            .attachments
+            .connections(std::time::Instant::now())
+            .into_iter()
+            .filter(|c| c.surface == yaran_core::attachments::Surface::TerminalUi)
+            .flat_map(|c| c.attachments)
+            .map(|a| a.target.id)
+            .collect();
+        assert!(attached.is_empty(), "attached to {attached:?}");
+    }
+
+    /// Three running agents in manual order, the middle one in `middle_project`
+    /// and under the cursor, the other two in project-1.
+    fn three_running_agents_cursor_on_the_middle(middle_project: &str) -> App {
+        let mut sessions = Vec::new();
+        for id in ["s1", "s2", "s3"] {
+            let mut s = make_session(id, "codex", &format!("/tmp/worktree-{id}"));
+            s.workspace
+                .as_managed_mut()
+                .expect("managed test session")
+                .project_id = if id == "s2" {
+                middle_project.to_string()
+            } else {
+                "project-1".to_string()
+            };
+            s.status = SessionStatus::Active;
+            sessions.push(s);
+        }
+        let mut app = test_app_with_sessions(
+            sessions,
+            vec![
+                make_project_at("project-1", "codex", "/tmp/project"),
+                make_project_at("project-2", "codex", "/tmp/project-2"),
+            ],
+        );
+        app.engine.config.ui.agent_sort = "manual".to_string();
+        for session in app.engine.sessions.clone() {
+            app.engine
+                .session_store
+                .create_session(&session)
+                .expect("store the agent");
+        }
+        for id in ["s1", "s2", "s3"] {
+            mark_active(&mut app, id);
+        }
+        app.rebuild_left_items();
+        app.reselect_left_session("s2");
+        assert_eq!(app.selected_session().map(|s| s.id.as_str()), Some("s2"));
+        app
+    }
+
+    /// Detaching the agent under the cursor from here sends it to the collapsed
+    /// Inactive tail and leaves nothing selected.
+    #[test]
+    fn detaching_the_selected_agent_here_leaves_nothing_selected() {
+        let mut app = three_running_agents_cursor_on_the_middle("project-1");
+
+        app.confirm_detach_selected_session();
+        app.resolve_confirm_detach_agent(ConfirmAnswer::Confirm);
+
+        assert_eq!(app.engine.sessions[1].status, SessionStatus::Detached);
+        assert_resting_on_the_tips_screen(&mut app);
+    }
+
+    /// Removing the orphaned group the cursor's agent is in, from here, leaves
+    /// nothing selected.
+    #[test]
+    fn removing_a_project_here_leaves_nothing_selected() {
+        let mut app = three_running_agents_cursor_on_the_middle("gone-project");
+
+        app.run_remove_orphaned_project("gone-project".to_string(), "gone".to_string())
+            .expect("remove the orphaned group");
+
+        assert!(
+            app.engine.sessions.iter().all(|s| s.id != "s2"),
+            "{}",
+            app.status.text()
+        );
+        assert_resting_on_the_tips_screen(&mut app);
+    }
+
+    /// Stopping the only running tab of the agent under the cursor, from here,
+    /// sends it to the collapsed Inactive tail and leaves nothing selected.
+    #[test]
+    fn stopping_the_selected_agents_tab_here_leaves_nothing_selected() {
+        let mut app = three_running_agents_cursor_on_the_middle("project-1");
+
+        app.stop_focused_tab_prompt();
+        assert!(matches!(app.prompt, PromptState::ConfirmStopTab { .. }));
+        app.resolve_confirm_stop_tab(ConfirmAnswer::Confirm);
+
+        assert_eq!(app.engine.sessions[1].status, SessionStatus::Detached);
+        assert_resting_on_the_tips_screen(&mut app);
+    }
+
+    /// Killing the agent under the cursor from the running-processes list sends
+    /// it to the collapsed Inactive tail and leaves nothing selected.
+    #[test]
+    fn killing_the_selected_agent_here_leaves_nothing_selected() {
+        let mut app = three_running_agents_cursor_on_the_middle("project-1");
+
+        let (agents, _) = app.kill_runtime_targets(&[RuntimeTargetId::Agent("s2".to_string())]);
+
+        assert_eq!(agents, 1);
+        assert_eq!(app.engine.sessions[1].status, SessionStatus::Detached);
+        assert_resting_on_the_tips_screen(&mut app);
+    }
+
+    /// Deleting the project the cursor's agent is in, from here, leaves nothing
+    /// selected.
+    #[test]
+    fn deleting_a_project_here_leaves_nothing_selected() {
+        let mut app = three_running_agents_cursor_on_the_middle("project-2");
+        let project = app
+            .engine
+            .projects
+            .iter()
+            .find(|p| p.id == "project-2")
+            .cloned()
+            .expect("project-2");
+
+        app.run_delete_project(&project).expect("delete project-2");
+
+        assert!(
+            app.engine.sessions.iter().all(|s| s.id != "s2"),
+            "{}",
+            app.status.text()
+        );
+        assert_resting_on_the_tips_screen(&mut app);
     }
 }

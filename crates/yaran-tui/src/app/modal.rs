@@ -26,7 +26,8 @@
 //! The compiler enforces the exhaustive matches in [`modal_spec`] and
 //! [`prompt_text_inputs`]: adding a [`PromptState`] variant is a build error
 //! until somebody classifies it. That gate holds whether or not any code reads
-//! the result, which is why every item here carries `#[allow(dead_code)]`.
+//! the result, which is why every item only the tests read carries
+//! `#[expect(dead_code)]` outside test builds.
 //!
 //! [`ModalSpec`], [`ModalFamily`], [`KNOWN_DUAL_MODE_VIOLATIONS`] and
 //! [`ModalSpec::satisfies_dual_mode_rule`] are read by the guard tests and by
@@ -76,6 +77,7 @@ use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 
 use super::cloud_commands::CloudPrompt;
+use super::components::FocusStep;
 use super::input::contains_point;
 use super::text_input::TextInput;
 use super::{App, OverlayMouseLayout, PromptState};
@@ -88,7 +90,6 @@ use crate::keybindings::{Action, text_field_owns_key};
 // Not called from the render or input paths: the registry is a declaration
 // whose value is the exhaustive match the compiler checks whether or not
 // anything reads the result. Do not "clean it up" by deleting an unread arm.
-#[allow(dead_code)]
 pub(crate) enum ModalFamily {
     /// Read-only and scrollable. No focus concept, because there is nothing to
     /// focus: the vertical keys scroll the body.
@@ -107,7 +108,6 @@ pub(crate) enum ModalFamily {
 /// one match: two exhaustive matches over the same enum would be two places to
 /// forget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) struct ModalSpec {
     /// Which of the four families this modal belongs to.
     pub(crate) family: ModalFamily,
@@ -123,16 +123,7 @@ pub(crate) struct ModalSpec {
     pub(crate) confirm_button: bool,
 }
 
-#[allow(dead_code)]
 impl ModalSpec {
-    const fn new(family: ModalFamily, multiline_field: bool, confirm_button: bool) -> Self {
-        Self {
-            family,
-            multiline_field,
-            confirm_button,
-        }
-    }
-
     /// The dual-mode rule: **a modal containing a multi-line text field must
     /// have a confirm button.**
     ///
@@ -141,6 +132,13 @@ impl ModalSpec {
     /// Without one there is no third meaning for Enter to land on. A modal with
     /// only single-line fields needs no button, because Enter submits and
     /// nothing competes for it. House style for modals, not a logical necessity.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "a guard the compiler checks for exhaustiveness; only the tests read it"
+        )
+    )]
     pub(crate) fn satisfies_dual_mode_rule(self) -> bool {
         !self.multiline_field || self.confirm_button
     }
@@ -151,7 +149,13 @@ impl ModalSpec {
 /// Empty, and it must stay that way. The test asserts this set exactly, so a new
 /// violator cannot be added without writing its name here and defending it in
 /// review. The list should only ever shrink.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a guard the compiler checks for exhaustiveness; only the tests read it"
+    )
+)]
 pub(crate) const KNOWN_DUAL_MODE_VIOLATIONS: &[&str] = &[];
 
 /// The registry. `None` means "no modal is open" ([`PromptState::None`]).
@@ -160,9 +164,12 @@ pub(crate) const KNOWN_DUAL_MODE_VIOLATIONS: &[&str] = &[];
 /// compile error here until its family and its two obligations are declared. Do
 /// not add a catch-all arm, and do not group a new variant into an existing arm
 /// without checking that all three answers really are the same.
-#[allow(dead_code)]
 pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
     use ModalFamily::{Confirm, Form, Picker, Report};
+    #[expect(
+        clippy::match_same_arms,
+        reason = "one arm per reason a modal gets its answer; arms whose answers agree stay apart so each keeps its own justification"
+    )]
     let spec = match prompt {
         PromptState::None => return None,
 
@@ -172,26 +179,28 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         PromptState::AgentInfo(_)
         | PromptState::AddProjectFailed { .. }
         | PromptState::FirstLoad(_)
-        | PromptState::DebugInput { .. } => ModalSpec::new(Report, false, false),
+        | PromptState::DebugInput { .. }
+        // The Project info screen: facts and a Close, which dismisses.
+        | PromptState::ProjectInfo(_) => ModalSpec { family: Report, multiline_field: false, confirm_button: false },
 
         // A Picker despite reading like a report: a `ListState` cursor over the
         // runs, vertical keys that move that selection (the output pane scrolls
         // on the paging keys), a filter, and a confirm key that promotes the
         // selected run to the fullscreen viewer. Its one button is a Close, a way
         // out and not a commit, so the confirm-button claim stays false.
-        PromptState::StartupCommandLogs(_) => ModalSpec::new(Picker, false, false),
+        PromptState::StartupCommandLogs(_) => ModalSpec { family: Picker, multiline_field: false, confirm_button: false },
 
         // A Picker despite reading like a report: a `ListState` selection cursor,
         // vertical keys that move that cursor (a value, not a scroll offset and
         // not focus), and a confirm key that acts on the selected row by
         // expanding it rather than choosing it and closing.
-        PromptState::ResourceMonitor { .. } => ModalSpec::new(Picker, false, false),
+        PromptState::ResourceMonitor { .. } => ModalSpec { family: Picker, multiline_field: false, confirm_button: false },
 
         // A human-board card that can take a reply: a single-line field, so
         // Enter sends it, plus Close and Mark done / Send & mark done. Single
         // line, so the dual-mode rule asks no confirm button of it; the action
         // button is a commit in its own right.
-        PromptState::HumanBoardCard { reply: Some(_), .. } => ModalSpec::new(Form, false, true),
+        PromptState::HumanBoardCard { reply: Some(_), .. } => ModalSpec { family: Form, multiline_field: false, confirm_button: true },
 
         // ── Confirm ─────────────────────────────────────────────────────
         PromptState::ConfirmDeleteAgent { .. }
@@ -201,9 +210,12 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         | PromptState::HumanBoardCard { reply: None, .. }
         | PromptState::ConfirmDeleteTerminal { .. }
         | PromptState::ConfirmCloseTab { .. }
+        | PromptState::ConfirmStopTab { .. }
         | PromptState::ConfirmDetachAgent { .. }
         | PromptState::ConfirmRecreateWorkingCopy { .. }
         | PromptState::ConfirmCheckoutDefaultBranch { .. }
+        // The shared prose and a Cancel / Change pair, Cancel focused.
+        | PromptState::ConfirmChangeBaseBranch(_)
         // Prose and a Cancel / Danger pair, Cancel focused: the project-scoped
         // deletes, the same questions the browser's dialogs ask.
         | PromptState::ConfirmDeleteProject { .. }
@@ -219,11 +231,16 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // Prose, a conditional checkbox and a Cancel/Delete pair; horizontal
         // keys move focus and Space acts on what has it.
         | PromptState::ConfirmDeleteWorktree(_)
-        | PromptState::ConfigReloadFailed { .. } => ModalSpec::new(Confirm, false, true),
+        // The left-over folder delete: the same shape as the worktree removal.
+        | PromptState::ConfirmDeleteLeftoverFolder(_)
+        | PromptState::ConfigReloadFailed { .. } => ModalSpec { family: Confirm, multiline_field: false, confirm_button: true },
 
         // ── Picker ──────────────────────────────────────────────────────
-        // A selection cursor over rows; Enter picks. Their filter rows are
-        // type-immediately and single-line, so no dual-mode question arises.
+        // A selection cursor over rows; Enter picks. The palette types into
+        // its query at once; the other filter rows open on the search binding
+        // and then take typing at once, with the movement keys still moving
+        // the cursor and the query's first match highlighted. Every filter is
+        // single-line, so no multiline engage question arises.
         // A picker gets no Cancel and no Apply: its footer names the keys
         // through the bindings, and a button label cannot stay truthful once a
         // user rebinds.
@@ -231,6 +248,12 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         | PromptState::BrowseProjects { .. }
         | PromptState::PickEditor { .. }
         | PromptState::PickProject { .. }
+        // A project's actions: rows with a selection cursor, and picking one
+        // runs it. No buttons.
+        | PromptState::ProjectActions(_)
+        // Branches with a selection cursor and a `/`-toggled search row;
+        // picking a free one raises the confirmation. No buttons.
+        | PromptState::ChangeBaseBranch(_)
         | PromptState::PickProjectWorktree(_)
         // The worktree manager: rows with a selection cursor over the
         // REMOVABLE worktrees, and a confirm key that acts on the selection by
@@ -239,6 +262,9 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // The orphan cleaner: rows plus a per-item keyboard confirmation that
         // publishes no buttons.
         | PromptState::OrphanWorktrees(_)
+        // A left-over folder's actions: rows with a selection cursor, and
+        // picking one runs it. No buttons.
+        | PromptState::LeftoverFolderActions(_)
         | PromptState::ChangeTheme(_)
         | PromptState::ChangeAgentProvider(_)
         | PromptState::ChangeDefaultProvider(_)
@@ -252,48 +278,55 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         | PromptState::AssignBoardCard(_)
         // Rules on live tabs; Enter toggles the highlighted one's arm state
         // and the list stays open. Rows only, no buttons.
-        | PromptState::WatchRules(_) => ModalSpec::new(Picker, false, false),
+        | PromptState::WatchRules(_)
+        // An agent's pull requests (or its branches) with a selection cursor;
+        // Enter opens the selected one and every other key is a binding of the
+        // modal's own scope. No buttons.
+        | PromptState::PullRequests(_) => ModalSpec { family: Picker, multiline_field: false, confirm_button: false },
 
         // The one picker that keeps its buttons: they are distinct actions (kill
         // the hovered runtime, kill the marked ones, kill everything the filter
         // shows), not a confirm/cancel pair restating what Enter does. Do not
         // remove them for consistency.
-        PromptState::KillRunning(_) => ModalSpec::new(Picker, false, true),
+        PromptState::KillRunning(_) => ModalSpec { family: Picker, multiline_field: false, confirm_button: true },
 
         // ── Form ────────────────────────────────────────────────────────
         // Single-line field plus (for two of them) checkboxes. Enter submits,
         // so the rule asks no button of them.
         PromptState::RenameSession { .. }
         | PromptState::NameNewAgent { .. }
+        // Three single-line fields and the random-name checkbox: Enter submits
+        // from any control, so the rule asks no button of it.
+        | PromptState::CloneProject { .. }
         | PromptState::PullRequestInput { .. }
         | PromptState::AttachPullRequestInput { .. }
         // The standalone-agent name field: one single-line control, so Enter
         // submits and the rule asks no button of it either.
-        | PromptState::NameStandaloneAgent { .. } => ModalSpec::new(Form, false, false),
+        | PromptState::NameStandaloneAgent { .. } => ModalSpec { family: Form, multiline_field: false, confirm_button: false },
 
         // The three configure modals: one full-text field plus Cancel/Save.
         // They were the dual-mode rule's only violators and are now compliant,
         // so `KNOWN_DUAL_MODE_VIOLATIONS` is empty.
         PromptState::ConfigureStartupCommand { .. }
         | PromptState::ConfigureProjectEnv { .. }
-        | PromptState::ConfigureGlobalEnv { .. } => ModalSpec::new(Form, true, true),
+        | PromptState::ConfigureGlobalEnv { .. } => ModalSpec { family: Form, multiline_field: true, confirm_button: true },
 
         // Session settings: a single-line title, the multiline system-prompt
         // editor, radios and checkboxes, and Cancel/Save. The Save button is
         // what keeps it dual-mode compliant.
-        PromptState::SessionSettings(_) => ModalSpec::new(Form, true, true),
+        PromptState::SessionSettings(_) => ModalSpec { family: Form, multiline_field: true, confirm_button: true },
 
         // ── Yaran Cloud: one variant, five modals ───────────────────────
         // Login: one single-line field at a time (the org address, then the
         // pasted landing address) and no buttons, so Enter submits.
-        PromptState::Cloud(CloudPrompt::Login(_)) => ModalSpec::new(Form, false, false),
+        PromptState::Cloud(CloudPrompt::Login(_)) => ModalSpec { family: Form, multiline_field: false, confirm_button: false },
         // Disconnect / Rotate token: prose and Cancel (focused) plus the act.
         PromptState::Cloud(CloudPrompt::Logout(_) | CloudPrompt::Rotate(_)) => {
-            ModalSpec::new(Confirm, false, true)
+            ModalSpec { family: Confirm, multiline_field: false, confirm_button: true }
         }
         // Status and the phone QR: read-only.
         PromptState::Cloud(CloudPrompt::Status(_) | CloudPrompt::PairPhone(_)) => {
-            ModalSpec::new(Report, false, false)
+            ModalSpec { family: Report, multiline_field: false, confirm_button: false }
         }
 
         // ── The one variant that is two modals ──────────────────────────
@@ -303,16 +336,16 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         PromptState::EditMacros {
             pending_delete: Some(_),
             ..
-        } => ModalSpec::new(Confirm, false, true),
+        } => ModalSpec { family: Confirm, multiline_field: false, confirm_button: true },
         // The editor: a name field, a multiline body, a surface selector, and
         // Cancel/Save. Compliant with the dual-mode rule, and the reference for
         // what compliance looks like.
         PromptState::EditMacros {
             editing: Some(_), ..
-        } => ModalSpec::new(Form, true, true),
+        } => ModalSpec { family: Form, multiline_field: true, confirm_button: true },
         // The list underneath: rows with a selection cursor, no buttons,
         // publishing its rows as `OverlayMouseLayout::EditMacroList`.
-        PromptState::EditMacros { .. } => ModalSpec::new(Picker, false, false),
+        PromptState::EditMacros { .. } => ModalSpec { family: Picker, multiline_field: false, confirm_button: false },
     };
     Some(spec)
 }
@@ -321,7 +354,13 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
 /// claim can be checked against a live instance instead of trusted. Exhaustive
 /// for the same reason [`modal_spec`] is: a new variant that quietly grows a
 /// text field would otherwise sail past the dual-mode check.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a guard the compiler checks for exhaustiveness; only the tests read it"
+    )
+)]
 pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
     match prompt {
         PromptState::None
@@ -335,6 +374,7 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::HumanBoardCard { reply: None, .. }
         | PromptState::ConfirmDeleteTerminal { .. }
         | PromptState::ConfirmCloseTab { .. }
+        | PromptState::ConfirmStopTab { .. }
         | PromptState::ConfirmDetachAgent { .. }
         | PromptState::ConfirmRecreateWorkingCopy { .. }
         | PromptState::ConfirmCheckoutDefaultBranch { .. }
@@ -352,6 +392,8 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::ManageWorktrees(_)
         | PromptState::ConfirmDeleteWorktree(_)
         | PromptState::OrphanWorktrees(_)
+        | PromptState::LeftoverFolderActions(_)
+        | PromptState::ConfirmDeleteLeftoverFolder(_)
         | PromptState::ChangeTheme(_)
         | PromptState::ChangeAgentProvider(_)
         | PromptState::ChangeDefaultProvider(_)
@@ -359,7 +401,13 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::SetTailscaleMode(_)
         | PromptState::SetCloudMode(_)
         | PromptState::AssignBoardCard(_)
-        | PromptState::WatchRules(_) => Vec::new(),
+        | PromptState::WatchRules(_)
+        | PromptState::PullRequests(_)
+        | PromptState::ProjectActions(_)
+        | PromptState::ProjectInfo(_) => Vec::new(),
+
+        PromptState::ChangeBaseBranch(prompt) => vec![&prompt.list.filter],
+        PromptState::ConfirmChangeBaseBranch(prompt) => vec![&prompt.previous.list.filter],
 
         PromptState::Command { input, .. }
         | PromptState::ConfigureStartupCommand { input, .. }
@@ -381,6 +429,19 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
             | CloudPrompt::PairPhone(_),
         ) => Vec::new(),
 
+        // The pull-request form's address is read-only: it takes no caret, so
+        // it is not a field the registry asks to publish a rect for.
+        PromptState::CloneProject {
+            address,
+            destination,
+            agent_name,
+            pull_request,
+            ..
+        } => match pull_request {
+            Some(_) => vec![destination, agent_name],
+            None => vec![address, destination, agent_name],
+        },
+
         PromptState::StartupCommandLogs(prompt) => vec![&prompt.filter],
         PromptState::SessionSettings(prompt) => {
             vec![&prompt.draft_title, &prompt.draft_system_prompt]
@@ -393,14 +454,19 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         } => vec![filter, path_input],
         PromptState::EditMacros { editing, .. } => editing
             .as_ref()
-            .map(|state| vec![&state.name_input, &state.text_input])
-            .unwrap_or_default(),
+            .map_or_default(|state| vec![&state.name_input, &state.text_input]),
     }
 }
 
 /// Whether the open modal really does hold a full-text field, asked of the live
 /// value rather than of the table.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a guard the compiler checks for exhaustiveness; only the tests read it"
+    )
+)]
 pub(crate) fn prompt_has_multiline_field(prompt: &PromptState) -> bool {
     prompt_text_inputs(prompt)
         .iter()
@@ -412,7 +478,13 @@ pub(crate) fn prompt_has_multiline_field(prompt: &PromptState) -> bool {
 /// Commit versus dismiss: an `ok_button` on an error report or a `close_button`
 /// on a log viewer is a way out, not a third meaning for Enter to land on, so
 /// neither counts. Exhaustive with no `_` arm.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a guard the compiler checks for exhaustiveness; only the tests read it"
+    )
+)]
 pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bool {
     match layout {
         // Nothing published, or nothing but a way out.
@@ -425,6 +497,8 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
         | OverlayMouseLayout::ChangeProjectDefaultProvider { .. }
         | OverlayMouseLayout::SetTailscaleMode { .. }
         | OverlayMouseLayout::SetCloudMode { .. }
+        | OverlayMouseLayout::WatchRules { .. }
+        | OverlayMouseLayout::OrphanWorktrees { .. }
         | OverlayMouseLayout::AssignBoardCard { .. }
         | OverlayMouseLayout::AddProjectFailed { .. }
         | OverlayMouseLayout::AgentInfo { .. }
@@ -432,9 +506,14 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
         | OverlayMouseLayout::PickEditor { .. }
         | OverlayMouseLayout::PickProjectWorktree { .. }
         | OverlayMouseLayout::ManageWorktrees { .. }
+        | OverlayMouseLayout::LeftoverFolderActions { .. }
         | OverlayMouseLayout::PickProject { .. }
+        | OverlayMouseLayout::ProjectActions { .. }
+        | OverlayMouseLayout::ChangeBaseBranch { .. }
+        | OverlayMouseLayout::ProjectInfo { .. }
         | OverlayMouseLayout::ChangeTheme { .. }
         | OverlayMouseLayout::EditMacroList { .. }
+        | OverlayMouseLayout::PullRequests { .. }
         | OverlayMouseLayout::ResourceMonitor { .. }
         | OverlayMouseLayout::StartupCommandLogs { .. }
         | OverlayMouseLayout::RenameSession { .. }
@@ -447,6 +526,8 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
         | OverlayMouseLayout::AttachPullRequestInput { .. }
         // Likewise one single-line field and nothing else.
         | OverlayMouseLayout::NameStandaloneAgent { .. }
+        // Three single-line fields and a checkbox: Enter submits.
+        | OverlayMouseLayout::CloneProject { .. }
         | OverlayMouseLayout::NameNewAgent { .. } => false,
 
         // A button that commits.
@@ -455,11 +536,14 @@ pub(crate) fn layout_publishes_confirm_button(layout: &OverlayMouseLayout) -> bo
         | OverlayMouseLayout::ConfirmDeleteAgent { .. }
         | OverlayMouseLayout::ConfirmDeleteWorktree { .. }
         | OverlayMouseLayout::HumanBoardCard { .. }
+        | OverlayMouseLayout::ConfirmDeleteLeftoverFolder { .. }
         | OverlayMouseLayout::ConfirmDeleteTerminal { .. }
         | OverlayMouseLayout::ConfirmCloseTab { .. }
+        | OverlayMouseLayout::ConfirmStopTab { .. }
         | OverlayMouseLayout::ConfirmDetachAgent { .. }
         | OverlayMouseLayout::ConfirmRecreateWorkingCopy { .. }
         | OverlayMouseLayout::ConfirmCheckoutDefaultBranch { .. }
+        | OverlayMouseLayout::ConfirmChangeBaseBranch { .. }
         | OverlayMouseLayout::ConfirmDeleteProject { .. }
         | OverlayMouseLayout::ConfirmRemoveProject { .. }
         | OverlayMouseLayout::ConfirmDeleteMacro { .. }
@@ -506,7 +590,7 @@ impl App {
     /// cells, or by content.
     pub(crate) fn open_modal_frame(
         &self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         title: &str,
         area: Rect,
     ) -> ModalFrame {
@@ -546,8 +630,8 @@ pub(crate) enum ModalKeyStep {
     /// Dismiss the modal, through its real cancel path (never a bare
     /// `prompt = None`; see [`super::overlay_dismiss`]).
     Close,
-    /// Move focus. `true` is forwards.
-    MoveFocus(bool),
+    /// Move focus in the given direction.
+    MoveFocus(FocusStep),
     /// The confirm key. What it means is the family's business: a `Confirm` or
     /// `Picker` acts on whatever has focus, while a `Form` whose fields are all
     /// single-line submits whichever control has focus. Collapsing this into
@@ -561,6 +645,15 @@ pub(crate) enum ModalKeyStep {
     FallThroughToField,
 }
 
+/// Whether a dialog's focus rests on a text field, which owns the keys a caret needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextFieldFocus {
+    /// A text field has focus.
+    Field,
+    /// A button, checkbox or list has it.
+    Elsewhere,
+}
+
 /// Whether the binding lookup must be skipped for this key.
 ///
 /// True exactly when a text field has focus and the field owns the key, which
@@ -572,35 +665,44 @@ pub(crate) enum ModalKeyStep {
 /// The renderer must ask the same question when it picks the footer's key
 /// (`RuntimeBindings::label_for_text_field_dialog`), so the hint can never name
 /// a key the field swallows.
-pub(crate) fn binding_lookup_is_suppressed(key: KeyEvent, text_field_focused: bool) -> bool {
-    text_field_focused && text_field_owns_key(key)
+pub(crate) fn binding_lookup_is_suppressed(
+    key: KeyEvent,
+    focus: TextFieldFocus,
+    extended_keys: crate::keybindings::ExtendedKeys,
+) -> bool {
+    focus == TextFieldFocus::Field && text_field_owns_key(key, extended_keys)
 }
 
 /// Classify a key into its rung, given the action the bindings resolved it to
 /// (or `None`, whether because nothing is bound or because
 /// [`binding_lookup_is_suppressed`] said not to look).
 ///
-/// `text_field_focused` only affects Space: Space is content in both kinds of
+/// `focus` only affects Space: Space is content in both kinds of
 /// text field, so it may only act on focus when focus is sitting on a button or
 /// a checkbox.
 pub(crate) fn modal_key_step(
     action: Option<Action>,
     key: KeyEvent,
-    text_field_focused: bool,
+    focus: TextFieldFocus,
 ) -> ModalKeyStep {
     match action {
         Some(Action::CloseOverlay) => ModalKeyStep::Close,
-        Some(Action::ToggleSelection) => ModalKeyStep::MoveFocus(!focus_move_is_reverse(key)),
+        Some(Action::ToggleSelection) => ModalKeyStep::MoveFocus(focus_move_step(key)),
         Some(Action::Confirm) => ModalKeyStep::Confirm,
-        _ if key.code == KeyCode::Char(' ') && !text_field_focused => ModalKeyStep::ActivateFocus,
+        _ if key.code == KeyCode::Char(' ') && focus == TextFieldFocus::Elsewhere => {
+            ModalKeyStep::ActivateFocus
+        }
         _ => ModalKeyStep::FallThroughToField,
     }
 }
 
-/// Whether a focus-movement key means "backwards". The movement action carries
-/// no direction of its own, so the key that triggered it supplies one. Mirrors
-/// `super::input::focus_move_is_reverse`, kept here so the ladder stays a pure
-/// function the tests can drive without an `App`.
+/// Whether a focus-movement key means "backwards".
+///
+/// The movement action carries no direction of its own, so the key that
+/// triggered it supplies one: `Shift-Tab`/`BackTab` and the two conventional
+/// "left" keys walk backwards, and anything else walks forwards. This is a
+/// directional hint for the default key set, not a hardcoded binding: a
+/// rebound key simply moves forwards.
 fn focus_move_is_reverse(key: KeyEvent) -> bool {
     use ratatui::crossterm::event::KeyModifiers;
     matches!(key.code, KeyCode::BackTab)
@@ -608,8 +710,17 @@ fn focus_move_is_reverse(key: KeyEvent) -> bool {
         || matches!(key.code, KeyCode::Left | KeyCode::Char('h'))
 }
 
+/// Which way a focus-moving key travels.
+pub(crate) fn focus_move_step(key: KeyEvent) -> FocusStep {
+    if focus_move_is_reverse(key) {
+        FocusStep::Backward
+    } else {
+        FocusStep::Forward
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use ratatui::crossterm::event::KeyModifiers;
 
@@ -625,9 +736,21 @@ mod tests {
 
     #[test]
     fn the_dual_mode_rule_only_bites_multiline_modals() {
-        let single_line_no_button = ModalSpec::new(ModalFamily::Form, false, false);
-        let multiline_no_button = ModalSpec::new(ModalFamily::Form, true, false);
-        let multiline_with_button = ModalSpec::new(ModalFamily::Form, true, true);
+        let single_line_no_button = ModalSpec {
+            family: ModalFamily::Form,
+            multiline_field: false,
+            confirm_button: false,
+        };
+        let multiline_no_button = ModalSpec {
+            family: ModalFamily::Form,
+            multiline_field: true,
+            confirm_button: false,
+        };
+        let multiline_with_button = ModalSpec {
+            family: ModalFamily::Form,
+            multiline_field: true,
+            confirm_button: true,
+        };
         assert!(single_line_no_button.satisfies_dual_mode_rule());
         assert!(!multiline_no_button.satisfies_dual_mode_rule());
         assert!(multiline_with_button.satisfies_dual_mode_rule());
@@ -645,7 +768,7 @@ mod tests {
             selected_row: 0,
             expanded: std::collections::HashSet::new(),
             last_refresh: std::time::Instant::now(),
-            short_window_sample: false,
+            cpu_window: crate::app::CpuWindow::Full,
         };
         assert_eq!(
             modal_spec(&monitor).map(|spec| spec.family),
@@ -666,6 +789,7 @@ mod tests {
     #[test]
     fn the_startup_log_modal_is_a_picker() {
         let logs = PromptState::StartupCommandLogs(StartupCommandLogPrompt {
+            return_to: None,
             scope_label: "demo".to_string(),
             entries: Vec::new(),
             selected: 0,
@@ -756,8 +880,9 @@ mod tests {
         ConfirmKillRunningPrompt, ConfirmNonDefaultBranchFocus, DeleteAgentFocus,
         DeleteWorktreeFocus, KillRunningAction, KillRunningFocus, KillRunningPrompt,
         MacroEditFocus, MacroEditState, ManageWorktreesPrompt, NameNewAgentFocus,
-        PendingMacroDelete, PickProjectWorktreePrompt, ProjectChooserIntent, RenameSessionFocus,
-        SearchableList, StartupCommandLogFocus, StartupCommandLogPrompt,
+        PendingMacroDelete, PickProjectWorktreePrompt, ProjectChooserIntent,
+        RecreateWorkingCopyFocus, RenameSessionFocus, SearchableList, StartupCommandLogFocus,
+        StartupCommandLogPrompt,
     };
     use crate::model::ProviderKind;
     use ratatui::Terminal;
@@ -795,6 +920,7 @@ mod tests {
             use_existing_branch: false,
             pull_before_create: false,
             copy_uncommitted_changes: false,
+            cloned: None,
         }
     }
 
@@ -805,15 +931,62 @@ mod tests {
     /// variant serving three modals - see the note on `modal_spec`.
     fn manage_worktrees_prompt(project: &crate::model::Project) -> ManageWorktreesPrompt {
         ManageWorktreesPrompt {
+            return_to: None,
             project: project.clone(),
             entries: Vec::new(),
+            leftovers: Vec::new(),
             loading: false,
             selected: None,
             error: None,
         }
     }
 
-    fn every_prompt(app: &App) -> Vec<(&'static str, PromptState)> {
+    fn leftover_folder_actions_prompt(
+        project: &crate::model::Project,
+    ) -> crate::app::LeftoverFolderActionsPrompt {
+        crate::app::LeftoverFolderActionsPrompt::new(
+            manage_worktrees_prompt(project),
+            yaran_core::leftover_folders::LeftoverFolder {
+                folder_present: true,
+                path: PathBuf::from("/tmp/worktrees/demo/left"),
+                branches: vec!["left".to_string()],
+                undeletable: Vec::new(),
+                provenance: None,
+                left_by: yaran_core::leftover_folders::LeftBy::Manager,
+                busy: None,
+            },
+        )
+    }
+
+    fn change_base_branch_prompt(
+        project: &crate::model::Project,
+    ) -> crate::app::ChangeBaseBranchPrompt {
+        crate::app::ChangeBaseBranchPrompt {
+            holders: std::collections::HashMap::new(),
+            project_id: project.id.clone(),
+            project_name: project.name.clone(),
+            current_base: Some("main".to_string()),
+            loading: false,
+            branches: vec![yaran_core::git::BranchChoice {
+                name: "develop".to_string(),
+                location: yaran_core::git::BranchLocation::Local,
+                held_by: None,
+            }],
+            fetch_note: None,
+            error: None,
+            list: SearchableList::new(),
+            return_to: None,
+        }
+    }
+
+    /// Every modal as the registry's fixtures build it. Shared with the confirm
+    /// dialog's own journey tests, so a new Confirm-family modal is covered
+    /// there the moment it has a fixture here.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a table of one fixture per prompt variant, one entry each"
+    )]
+    pub(in crate::app) fn every_prompt(app: &App) -> Vec<(&'static str, PromptState)> {
         let project = app.engine.projects[0].clone();
         let mut prompts = vec![
             (
@@ -887,7 +1060,7 @@ mod tests {
                     focus: FirstLoadButton::Primary,
                     ..FirstLoadPrompt::welcome(
                         yaran_core::welcome_screen::welcome_screen(&app.engine.paths.config_path),
-                        false,
+                        crate::app::first_load::SeenNote::Skip,
                     )
                 }),
             ),
@@ -905,6 +1078,7 @@ mod tests {
             (
                 "ChangeProjectDefaultProvider",
                 PromptState::ChangeProjectDefaultProvider(ChangeProjectDefaultProviderPrompt {
+                    return_to: None,
                     project_id: project.id.clone(),
                     project_name: project.name.clone(),
                     current: ProviderKind::new("claude"),
@@ -998,6 +1172,7 @@ mod tests {
             (
                 "ConfigureStartupCommand",
                 PromptState::ConfigureStartupCommand {
+                    return_to: None,
                     project_id: project.id.clone(),
                     project_name: project.name.clone(),
                     input: TextInput::with_text("npm install".to_string()).with_multiline(6),
@@ -1007,6 +1182,7 @@ mod tests {
             (
                 "ConfigureProjectEnv",
                 PromptState::ConfigureProjectEnv {
+                    return_to: None,
                     project_id: project.id.clone(),
                     project_name: project.name.clone(),
                     input: TextInput::with_text("K=V".to_string()).with_multiline(8),
@@ -1039,6 +1215,7 @@ mod tests {
             (
                 "StartupCommandLogs",
                 PromptState::StartupCommandLogs(StartupCommandLogPrompt {
+                    return_to: None,
                     scope_label: "my cool project".to_string(),
                     entries: Vec::new(),
                     selected: 0,
@@ -1057,6 +1234,39 @@ mod tests {
                     entries: Vec::new(),
                     list: SearchableList::new(),
                 },
+            ),
+            (
+                "ProjectActions",
+                PromptState::ProjectActions(crate::app::ProjectActionsPrompt {
+                    action: None,
+                    target: crate::app::ProjectActionsTarget::Project {
+                        id: project.id.clone(),
+                    },
+                    selected: 0,
+                    return_to: None,
+                }),
+            ),
+            (
+                "ProjectInfo",
+                PromptState::ProjectInfo(crate::app::ProjectInfoPrompt {
+                    project_name: project.name.clone(),
+                    rows: app.project_info_rows(&project),
+                    return_to: None,
+                }),
+            ),
+            (
+                "ChangeBaseBranch",
+                PromptState::ChangeBaseBranch(Box::new(change_base_branch_prompt(&project))),
+            ),
+            (
+                "ConfirmChangeBaseBranch",
+                PromptState::ConfirmChangeBaseBranch(Box::new(
+                    crate::app::ConfirmChangeBaseBranchPrompt {
+                        previous: change_base_branch_prompt(&project),
+                        branch: "develop".to_string(),
+                        focus: ConfirmFocus::Cancel,
+                    },
+                )),
             ),
             (
                 "PickProjectWorktree",
@@ -1086,12 +1296,29 @@ mod tests {
                 })),
             ),
             (
+                "LeftoverFolderActions",
+                PromptState::LeftoverFolderActions(Box::new(leftover_folder_actions_prompt(
+                    &project,
+                ))),
+            ),
+            (
+                "ConfirmDeleteLeftoverFolder",
+                PromptState::ConfirmDeleteLeftoverFolder(Box::new(
+                    crate::app::ConfirmDeleteLeftoverFolderPrompt {
+                        previous: leftover_folder_actions_prompt(&project),
+                        delete_branches: true,
+                        focus: DeleteWorktreeFocus::Cancel,
+                    },
+                )),
+            ),
+            (
                 "KillRunning",
                 PromptState::KillRunning(kill_running_prompt()),
             ),
             (
                 "ConfirmKillRunning",
                 PromptState::ConfirmKillRunning(ConfirmKillRunningPrompt {
+                    attached: Vec::new(),
                     previous: kill_running_prompt(),
                     action: KillRunningAction::Visible,
                     target_ids: Vec::new(),
@@ -1110,14 +1337,14 @@ mod tests {
             (
                 "ConfirmDeleteAgent",
                 PromptState::ConfirmDeleteAgent {
-                    delete_branch: false,
-                    unpushed_commits: None,
+                    offer: crate::app::DeleteBranchOffer::Pending,
+                    attached: Vec::new(),
+                    delete_branch: Some(false),
+                    delete_other_branches: None,
                     session_id: "s1".to_string(),
                     agent_label: "my cool agent".to_string(),
                     target: crate::app::DeleteAgentTarget::Managed {
                         branch_name: "b".to_string(),
-                        initial_branch: "wt-branch".to_string(),
-                        branch_provenance: yaran_core::model::BranchProvenance::CreatedByYaran,
                         worktree_shared: false,
                     },
                     focus: DeleteAgentFocus::Cancel,
@@ -1196,6 +1423,7 @@ mod tests {
             (
                 "ConfirmDeleteTerminal",
                 PromptState::ConfirmDeleteTerminal {
+                    attached: Vec::new(),
                     terminal_id: "t1".to_string(),
                     terminal_label: "My Cool Terminal".to_string(),
                     foreground_cmd: None,
@@ -1205,6 +1433,7 @@ mod tests {
             (
                 "ConfirmCloseTab",
                 PromptState::ConfirmCloseTab {
+                    attached: Vec::new(),
                     session_id: "s1".to_string(),
                     tab_id: "t1".to_string(),
                     provider_label: "Claude Code".to_string(),
@@ -1213,8 +1442,20 @@ mod tests {
                 },
             ),
             (
+                "ConfirmStopTab",
+                PromptState::ConfirmStopTab {
+                    attached: Vec::new(),
+                    session_id: "s1".to_string(),
+                    tab_id: "t1".to_string(),
+                    provider_label: "Claude Code".to_string(),
+                    last_running: true,
+                    focus: ConfirmFocus::Cancel,
+                },
+            ),
+            (
                 "ConfirmDetachAgent",
                 PromptState::ConfirmDetachAgent {
+                    attached: Vec::new(),
                     session_id: "s1".to_string(),
                     label: "my cool agent".to_string(),
                     grace_seconds: 30,
@@ -1230,8 +1471,15 @@ mod tests {
                     branch_name: "feat".to_string(),
                     source_branch: "main".to_string(),
                     conversation_resumes: true,
-                    running_providers: vec!["claude".to_string()],
-                    focus: ConfirmFocus::Cancel,
+                    running_tabs: yaran_core::working_copy::RunningTabs {
+                        follows: vec!["claude".to_string()],
+                        restartable: Vec::new(),
+                        left_running: Vec::new(),
+                    },
+                    restart_offer: Vec::new(),
+                    restart_tabs: false,
+                    focus: RecreateWorkingCopyFocus::Cancel,
+                    attached: Vec::new(),
                 },
             ),
             (
@@ -1241,25 +1489,31 @@ mod tests {
                     project_name: "My Cool Project".to_string(),
                     stored_base: Some("develop".to_string()),
                     focus: ConfirmFocus::Cancel,
+                    return_to: None,
                 },
             ),
             (
                 "ConfirmDeleteProject",
                 PromptState::ConfirmDeleteProject {
+                    attached: Vec::new(),
                     project_id: "p1".to_string(),
                     project_name: "My Cool Project".to_string(),
                     agent_count: 2,
                     focus: ConfirmFocus::Cancel,
+                    return_to: None,
+                    worktree_files: Vec::new(),
                 },
             ),
             (
                 "ConfirmRemoveProject",
                 PromptState::ConfirmRemoveProject {
+                    attached: Vec::new(),
                     project_id: "p1".to_string(),
                     project_name: "My Cool Project".to_string(),
                     agent_count: 0,
                     orphaned: false,
                     focus: ConfirmFocus::Cancel,
+                    return_to: None,
                 },
             ),
             (
@@ -1267,6 +1521,7 @@ mod tests {
                 PromptState::ConfirmQuit {
                     agent_count: 1,
                     terminal_count: 0,
+                    attached: Vec::new(),
                     focus: ConfirmFocus::Cancel,
                 },
             ),
@@ -1274,6 +1529,7 @@ mod tests {
                 "ConfirmDiscardFile",
                 PromptState::ConfirmDiscardFile {
                     file_path: "my notes.txt".to_string(),
+                    kind: yaran_core::model::ChangedFileKind::File,
                     focus: ConfirmFocus::Cancel,
                 },
             ),
@@ -1293,6 +1549,8 @@ mod tests {
                     rename_branch: false,
                     focus: RenameSessionFocus::Input,
                     branch_named: true,
+                    open_pr: None,
+                    pushed: false,
                 },
             ),
             (
@@ -1307,9 +1565,15 @@ mod tests {
                 "AttachPullRequestInput",
                 PromptState::AttachPullRequestInput {
                     session_id: "s1".to_string(),
-                    current_pr: Some("#42 (open) Fix the frobnicator".to_string()),
+                    back: crate::app::test_support::pull_requests_prompt("s1"),
                     input: TextInput::new(),
                 },
+            ),
+            (
+                "PullRequests",
+                PromptState::PullRequests(crate::app::test_support::pull_requests_prompt(
+                    "session-1",
+                )),
             ),
             (
                 "NameStandaloneAgent",
@@ -1326,8 +1590,23 @@ mod tests {
                     randomize_name: false,
                     randomized_name: None,
                     copy_changes: false,
+                    review_copy: None,
                     focus: NameNewAgentFocus::Input,
                     extras: Default::default(),
+                },
+            ),
+            (
+                "CloneProject",
+                PromptState::CloneProject {
+                    address: TextInput::with_text("https://example.com/acme/widget".to_string()),
+                    destination: TextInput::with_text("/srv/code/widget".to_string()),
+                    destination_edited: false,
+                    start_folder: std::path::PathBuf::from("/srv/code"),
+                    agent_name: TextInput::with_text("first-agent".to_string()),
+                    randomize_name: false,
+                    randomized_name: None,
+                    focus: crate::app::CloneProjectFocus::Address,
+                    pull_request: None,
                 },
             ),
             (
@@ -1431,7 +1710,7 @@ mod tests {
                     selected_row: 0,
                     expanded: HashSet::new(),
                     last_refresh: Instant::now(),
-                    short_window_sample: false,
+                    cpu_window: crate::app::CpuWindow::Full,
                 },
             ),
         ];
@@ -1551,7 +1830,7 @@ mod tests {
             .map(|cell| cell.symbol().to_string())
             .collect::<Vec<_>>()
             .chunks(width)
-            .map(|row| row.concat())
+            .map(<[std::string::String]>::concat)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -1680,6 +1959,10 @@ mod tests {
             }
             let theme = theme.unwrap_or("default");
             app.engine.projects[0].name = "My Cool Project".to_string();
+            // The project's path is a chip in Project info. Left as the temp
+            // folder it would be longer than a row on macOS, where a name that
+            // cannot fit has to break.
+            app.engine.projects[0].path = "/home/me/code/my cool project".to_string();
             let chip_style = app.theme.name_style();
             let chip = (
                 chip_style.fg.expect("the chip names its text color"),
@@ -1819,6 +2102,8 @@ mod tests {
             rename_branch: false,
             focus: RenameSessionFocus::Input,
             branch_named: true,
+            open_pr: None,
+            pushed: false,
         };
         let (width, height) = (80, 30);
         let baseline = painted_buffer(&mut app, PromptState::None, width, height);
@@ -1831,7 +2116,10 @@ mod tests {
             })
             .collect();
         assert_eq!(caret.len(), 1, "the caret sits on the one letter a");
-        assert!(split_chips(&buf, &probe, &baseline, chip).is_empty());
+        assert_eq!(
+            split_chips(&buf, &probe, &baseline, chip),
+            Vec::<(u16, String)>::new()
+        );
     }
 
     /// The scan itself, on the shapes it has to catch and the ones it must not.
@@ -1845,8 +2133,11 @@ mod tests {
             quoted_runs("│ a \"b\" c \"d e\" │", ""),
             vec!["\"b\"".to_string(), "\"d e\"".to_string()]
         );
-        assert!(quoted_runs("│ Delete  feat/x  now? │", "").is_empty());
-        assert!(quoted_runs("│ a lone \" quote │", "").is_empty());
+        assert_eq!(
+            quoted_runs("│ Delete  feat/x  now? │", ""),
+            Vec::<String>::new()
+        );
+        assert_eq!(quoted_runs("│ a lone \" quote │", ""), Vec::<String>::new());
         assert!(
             quoted_runs("│ \"x\" │", "│ \"x\" │").is_empty(),
             "a run already on screen with no dialog open is not the dialog's"
@@ -1936,27 +2227,51 @@ mod tests {
     #[test]
     fn the_ladder_runs_close_then_move_then_act_then_fall_through() {
         assert_eq!(
-            modal_key_step(Some(Action::CloseOverlay), key(KeyCode::Esc), false),
+            modal_key_step(
+                Some(Action::CloseOverlay),
+                key(KeyCode::Esc),
+                crate::app::modal::TextFieldFocus::Elsewhere
+            ),
             ModalKeyStep::Close
         );
         assert_eq!(
-            modal_key_step(Some(Action::ToggleSelection), key(KeyCode::Tab), false),
-            ModalKeyStep::MoveFocus(true)
+            modal_key_step(
+                Some(Action::ToggleSelection),
+                key(KeyCode::Tab),
+                crate::app::modal::TextFieldFocus::Elsewhere
+            ),
+            ModalKeyStep::MoveFocus(FocusStep::Forward)
         );
         assert_eq!(
-            modal_key_step(Some(Action::ToggleSelection), key(KeyCode::BackTab), false),
-            ModalKeyStep::MoveFocus(false)
+            modal_key_step(
+                Some(Action::ToggleSelection),
+                key(KeyCode::BackTab),
+                crate::app::modal::TextFieldFocus::Elsewhere
+            ),
+            ModalKeyStep::MoveFocus(FocusStep::Backward)
         );
         assert_eq!(
-            modal_key_step(Some(Action::ToggleSelection), key(KeyCode::Left), false),
-            ModalKeyStep::MoveFocus(false)
+            modal_key_step(
+                Some(Action::ToggleSelection),
+                key(KeyCode::Left),
+                crate::app::modal::TextFieldFocus::Elsewhere
+            ),
+            ModalKeyStep::MoveFocus(FocusStep::Backward)
         );
         assert_eq!(
-            modal_key_step(Some(Action::Confirm), key(KeyCode::Enter), false),
+            modal_key_step(
+                Some(Action::Confirm),
+                key(KeyCode::Enter),
+                crate::app::modal::TextFieldFocus::Elsewhere
+            ),
             ModalKeyStep::Confirm
         );
         assert_eq!(
-            modal_key_step(None, key(KeyCode::Char('x')), true),
+            modal_key_step(
+                None,
+                key(KeyCode::Char('x')),
+                crate::app::modal::TextFieldFocus::Field
+            ),
             ModalKeyStep::FallThroughToField
         );
     }
@@ -1964,11 +2279,19 @@ mod tests {
     #[test]
     fn space_acts_on_a_focused_button_and_types_into_a_focused_field() {
         assert_eq!(
-            modal_key_step(None, key(KeyCode::Char(' ')), false),
+            modal_key_step(
+                None,
+                key(KeyCode::Char(' ')),
+                crate::app::modal::TextFieldFocus::Elsewhere
+            ),
             ModalKeyStep::ActivateFocus
         );
         assert_eq!(
-            modal_key_step(None, key(KeyCode::Char(' ')), true),
+            modal_key_step(
+                None,
+                key(KeyCode::Char(' ')),
+                crate::app::modal::TextFieldFocus::Field
+            ),
             ModalKeyStep::FallThroughToField
         );
     }
@@ -1976,11 +2299,27 @@ mod tests {
     #[test]
     fn the_field_gate_only_closes_while_a_field_has_focus() {
         // The shipped bug: Left is in the movement action's default key set.
-        assert!(binding_lookup_is_suppressed(key(KeyCode::Left), true));
-        assert!(binding_lookup_is_suppressed(key(KeyCode::Char('a')), true));
+        assert!(binding_lookup_is_suppressed(
+            key(KeyCode::Left),
+            crate::app::modal::TextFieldFocus::Field,
+            crate::keybindings::ExtendedKeys::Off
+        ));
+        assert!(binding_lookup_is_suppressed(
+            key(KeyCode::Char('a')),
+            crate::app::modal::TextFieldFocus::Field,
+            crate::keybindings::ExtendedKeys::Off
+        ));
         // With focus on a checkbox the field owns nothing, so movement works.
-        assert!(!binding_lookup_is_suppressed(key(KeyCode::Left), false));
+        assert!(!binding_lookup_is_suppressed(
+            key(KeyCode::Left),
+            crate::app::modal::TextFieldFocus::Elsewhere,
+            crate::keybindings::ExtendedKeys::Off
+        ));
         // Tab is never owned by the field, so it stays a focus key in both.
-        assert!(!binding_lookup_is_suppressed(key(KeyCode::Tab), true));
+        assert!(!binding_lookup_is_suppressed(
+            key(KeyCode::Tab),
+            crate::app::modal::TextFieldFocus::Field,
+            crate::keybindings::ExtendedKeys::Off
+        ));
     }
 }

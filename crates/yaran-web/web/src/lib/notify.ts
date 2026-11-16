@@ -6,8 +6,13 @@
 // except `sticky`, which waits for the user, and a busy spinner, which sonner
 // never auto-closes at all and which this module's leak guard retires by
 // replacing it with a warning rather than taking it off the screen.
+//
+// Nothing is raised while the page is signed out, blocked or broken
+// (`authGate.ts`): that page is on screen and says what happened, and every
+// failure behind it is the sign-out's echo. Dropped, not queued, so signing in
+// does not replay a burst of stale errors.
 
-import { createElement, Fragment, type ReactNode } from "react"
+import { cloneElement, createElement, Fragment, isValidElement, type ReactNode } from "react"
 import { toast } from "sonner"
 
 import {
@@ -18,6 +23,10 @@ import {
   WARNING_DURATION_FACTOR,
 } from "@yaran/ui-kit/toast-policy"
 
+import { Button } from "@yaran/ui-kit/button"
+import { ToastCountdown } from "@yaran/ui-kit/sonner"
+
+import { authPaused, subscribeAuth } from "./authGate"
 import { type Prose, proseText, renderProse } from "./prose"
 
 // The timing policy lives in the shared kit so the phone shell's toasts keep the
@@ -61,6 +70,26 @@ export interface NotifyOptions {
   /// a notification the user must act on outside the toast, or where something may
   /// have been lost or left half-done.
   sticky?: boolean
+  /// One button on the toast. Pressing it never closes the toast by itself:
+  /// only the handler knows whether the press worked, so it replaces or
+  /// dismisses the toast on its own `id`.
+  action?: NotifyAction
+}
+
+export interface NotifyAction {
+  label: string
+  onClick: () => void
+}
+
+// The shared button rather than sonner's own, so the action carries the app's
+// theme and focus ring. 40px tall for the touch floor; it sits beside the text,
+// and the toast's close button is its only interactive neighbour.
+function actionButton(action: NotifyAction): ReactNode {
+  return createElement(
+    Button,
+    { variant: "outline", className: "h-10 shrink-0", onClick: action.onClick },
+    action.label,
+  )
 }
 
 // The user's configured window, at module scope rather than threaded through call
@@ -84,26 +113,141 @@ function cancelBusyGuard(id: string): void {
   busyGuards.delete(id)
 }
 
-// The one call into sonner for a final tone. Everything above resolves to this.
-function raiseFinal(tone: string, message: ReactNode, duration: number, id?: string): void {
-  const options = id === undefined ? { duration } : { id, duration }
-  if (tone === "error") toast.error(message, options)
-  else if (tone === "warning") toast.warning(message, options)
-  else if (tone === "info") toast.info(message, options)
-  else toast.success(message, options)
+// Every raise gets a fresh key on its countdown, so a toast replaced on its id
+// starts its bar over in the same commit that sonner restarts its timer.
+let countdownSeq = 0
+
+// The toast's foot (`ToastCountdown`): a bar over `ms`, or none for a toast that
+// will not dismiss itself. It rides sonner's description slot, which every raise
+// names, so a replacement can never inherit the bar of the toast it replaced. It
+// also watches the toast's height for sonner (`remeasure` below), so it is told
+// the id it sits on: `target.id`, filled in once sonner has assigned one to a
+// toast raised without an id of its own.
+function countdown(tone: string, ms: number | null, target: ToastTarget): ReactNode {
+  countdownSeq += 1
+  return createElement(ToastCountdown, {
+    key: countdownSeq,
+    tone,
+    ms,
+    onStaleHeight: (remainingMs: number | null) => {
+      if (target.id !== undefined) remeasure(target.id, remainingMs)
+    },
+  })
 }
+
+type ToastTarget = { id?: string | number }
+
+// The sonner raiser for a type a live toast already has, so a re-raise keeps it.
+const RAISER_FOR_TYPE: Record<string, (message: ReactNode, data: object) => string | number> = {
+  success: toast.success,
+  info: toast.info,
+  warning: toast.warning,
+  error: toast.error,
+  loading: toast.loading,
+}
+
+/// Have sonner measure a toast's height again. sonner measures a toast when it
+/// mounts and when a raise replaces its text, and sizes the toast to that number
+/// while the stack is expanded (hovered) and stacks the toasts behind it by it,
+/// but text can still change height after that: a name chip decides whether it
+/// wraps in a commit of its own, once the toast is laid out, and again when a
+/// font arrives or the toast changes width. Read stale, the hovered toast shrank
+/// and clipped its own text. sonner measures again only when a raise hands it a
+/// new title, so this raises the live toast again on its id with the same type,
+/// text and foot: the title is a fresh element with the same content, which is
+/// what sonner keys its measurement on, and nothing in it remounts.
+///
+/// Any raise restarts sonner's timer from the time it had left at its last
+/// pause, which would add however long the toast has been running since, so
+/// `remainingMs`, what the foot's bar has left to drain, is handed over as the
+/// new duration. `null` is a toast with no timer (sticky, or a spinner), whose
+/// duration stays as it is.
+function remeasure(id: string | number, remainingMs: number | null): void {
+  const current = toast.getToasts().find((t) => t.id === id)
+  if (!current || !("type" in current)) return
+  const raise = (current.type && RAISER_FOR_TYPE[current.type]) || toast.message
+  const title = typeof current.title === "function" ? current.title() : current.title
+  const fresh = isValidElement(title) ? cloneElement(title) : createElement(Fragment, null, title)
+  raise(fresh, {
+    id,
+    dismissible: current.dismissible,
+    ...(remainingMs === null ? {} : { duration: Math.max(1, Math.round(remainingMs)) }),
+  })
+}
+
+// sonner restarts a replaced toast's timer from its remaining time, which it only
+// resets when the duration changes: a toast that was once paused and is then
+// replaced with the same duration would finish early while its bar started
+// over. One millisecond less makes sonner start over too.
+function restartingDuration(id: string | undefined, duration: number): number {
+  if (id === undefined || !Number.isFinite(duration)) return duration
+  const current = toast.getToasts().find((t) => t.id === id)
+  return current && "duration" in current && current.duration === duration
+    ? duration - 1
+    : duration
+}
+
+// The one call into sonner for a final tone. Everything above resolves to this.
+function raiseFinal(
+  tone: string,
+  message: ReactNode,
+  windowMs: number,
+  id?: string,
+  action?: NotifyAction,
+): void {
+  const duration = restartingDuration(id, windowMs)
+  const target: ToastTarget = { id }
+  const description = countdown(tone, Number.isFinite(duration) ? duration : null, target)
+  // sonner MERGES a raise into the toast already on its id, so a replacement
+  // names `action` even when it has none, or the old button would survive it.
+  const options =
+    id === undefined
+      ? { duration, description, ...(action ? { action: actionButton(action) } : {}) }
+      : { id, duration, description, action: action ? actionButton(action) : undefined }
+  const raise =
+    tone === "error"
+      ? toast.error
+      : tone === "warning"
+        ? toast.warning
+        : tone === "info"
+          ? toast.info
+          : toast.success
+  target.id = raise(message, options)
+}
+
+// Take a spinner off the screen along with its guard, without saying anything.
+function retireBusy(id: string): void {
+  cancelBusyGuard(id)
+  toast.dismiss(id)
+}
+
+// Going to a gate page retires every spinner on screen. Its final, if one
+// comes, is dropped while signed out; a server still running the operation
+// re-sends its busy once this page is back, so nothing real is lost, and
+// nothing stale comes back as a "still waiting" warning.
+subscribeAuth(() => {
+  if (!authPaused()) return
+  for (const id of [...busyGuards.keys()]) retireBusy(id)
+})
 
 /// Raise a final (non-busy) notification. The window comes from the user's
 /// configured `ui.status_clear_seconds`, graded by tone, unless `sticky` is set.
 export function notify(tone: FinalTone, message: Notice, opts: NotifyOptions = {}): void {
   if (!noticeText(message)) return
+  if (authPaused()) {
+    // Dropped, but whatever it would have replaced goes with it: a spinner
+    // left behind would have its guard warn, after the next sign-in, about
+    // an operation that has long ended.
+    if (opts.id !== undefined) retireBusy(opts.id)
+    return
+  }
   // This raise supersedes anything on the id, including a spinner whose guard is
   // still pending.
   if (opts.id !== undefined) cancelBusyGuard(opts.id)
   const duration = opts.sticky
     ? Infinity
     : statusToastDuration(tone, configuredStatusClearSeconds)
-  raiseFinal(tone, noticeBody(message), duration, opts.id)
+  raiseFinal(tone, noticeBody(message), duration, opts.id, opts.action)
 }
 
 /// A neutral, informational notification.
@@ -155,6 +299,10 @@ export function notifyBusy(
   opts: { id: string; origin?: BusyOrigin },
 ): void {
   if (!noticeText(message)) return
+  if (authPaused()) {
+    retireBusy(opts.id)
+    return
+  }
   const duration = statusToastDuration("busy", null)
   const origin = opts.origin ?? "wire"
   // Whatever was armed for this id is now stale: this call replaces the toast.
@@ -166,7 +314,11 @@ export function notifyBusy(
       notify("warning", strandedBusyMessage(noticeText(message), origin), { id: opts.id })
     }, duration),
   )
-  toast.loading(noticeBody(message), { id: opts.id, duration })
+  toast.loading(noticeBody(message), {
+    id: opts.id,
+    duration,
+    description: countdown("busy", null, { id: opts.id }),
+  })
 }
 
 /// Raise a notification whose tone arrived over the wire as a string, correlated

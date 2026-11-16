@@ -1,4 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 import type { Bootstrap } from "./bootstrapApi"
 
 // Exercises the bootstrap slice end to end: the boot fetch populating the slice,
@@ -85,7 +93,12 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -111,6 +124,22 @@ describe("bootstrap slice", () => {
     expect(b?.welcome_tips).toEqual(["surprise!"])
     // Exactly one bootstrap GET on boot.
     expect(bootstrapFetches).toBe(1)
+  })
+
+  // The Changes pane's request deadline is configured in `[server]` and only
+  // reaches the browser through this document, and a reload retimes it.
+  it("publishes the configured changes request deadline, and a reload retimes it", async () => {
+    bootstrapBody = makeBootstrap({ changes_request_timeout_seconds: 7 })
+    const mod = await loadStore()
+    const timing = await import("./connectionTiming")
+    expect(timing.changesRequestTimeoutMs()).toBe(7_000)
+
+    bootstrapBody = makeBootstrap({ changes_request_timeout_seconds: 11 })
+    mod.eventsSocket.onEvent({ event: "config.changed" })
+    await vi.waitFor(() => {
+      expect(timing.changesRequestTimeoutMs()).toBe(11_000)
+    })
+    timing.publishConnectionTiming(undefined)
   })
 
   it("a config.changed event triggers a refetch that replaces the slice", async () => {

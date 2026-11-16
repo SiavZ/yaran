@@ -42,22 +42,61 @@
 
 use std::sync::mpsc::Sender;
 
+use yaran_core::config_reload_status::ConfigReloadOutcome;
 use yaran_core::engine::{
     AgentLaunchFailedOutcome, AgentLaunchReadyOutcome, AgentLaunchReadyView,
     BeginDeleteSessionOutcome, BeginDeleteSessionView, DeleteTerminalView, DispatchAgentLaunchView,
-    DoDeleteSessionView, EventReaction, FinishDeleteSessionView, ProjectPersistenceOutcome,
-    ProjectPersistenceView, PrunedPty, PrunedPtyKind, StatusUpdate, WorktreeRemoval,
-    closed_tab_exit_notice,
+    EventReaction, FinishDeleteSessionView, ProjectPersistenceOutcome, ProjectPersistenceView,
+    PrunedPty, PrunedPtyKind, StatusUpdate, WorktreeRemoval, closed_tab_exit_notice,
+};
+use yaran_core::worker::ReviewCopyConsent;
+
+use super::background_server::CompanionRouting;
+use super::text_input::TextInput;
+use super::{
+    App, CenterMode, ChangedFilesAnswer, CpuWindow, DeleteReport, DrainedEventMetadata, FocusPane,
+    FullscreenOverlay, InputTarget, LaunchView, LeftItem, PersistFinalOutcome,
+    PrLookupFinalOutcome, PrReferenceResolutionAnswer, PromptState, PruneViewContext,
+    StartupCommandLogFocus, StartupCommandLogPrompt, TuiCheckoutInspectOutcome,
+    TuiConfigReloadOutcome, TuiDeleteOutcome, TuiServerFlipOutcome, WorktreesFinalOutcome,
+    build_visual_rows, manager_selectable_rows, selectable_project_worktree_indices,
+};
+use crate::config::Config;
+use crate::keybindings::Action;
+use crate::model::{Project, ProviderKind, SessionSurface};
+use crate::statusline::StatusTone;
+use crate::theme::FocusState;
+use crate::{git, logger};
+use anyhow::Result;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+use yaran_core::engine::Engine;
+use yaran_core::ids::{SessionIdRef, TabId, TabIdRef};
+use yaran_core::model::{TerminalOwner, TerminalOwnerRef};
+use yaran_core::project_browser::leading_branch_for_project;
+use yaran_core::worker::{
+    AgentLaunchKind, BrowserEntry, CreateAgentBranchInspection, CreateAgentRequest,
+    NonDefaultBranchAction, ProjectPersistenceAction, ProjectWorktreeEntry, ResourceStats,
+    WorkerEvent,
 };
 
-use super::*;
-
 impl PruneViewContext {
-    fn capture(app: &App) -> Self {
+    pub(super) fn capture(app: &App) -> Self {
         let selected_session = app.selected_session().map(|session| session.id.clone());
-        let focused_tab = selected_session
-            .as_ref()
-            .map(|session_id| app.focused_tab_id(session_id));
+        // The tab on screen when the strip was last drawn, if it has since been
+        // closed elsewhere: resolving the focus now would already have fallen
+        // back to another tab, and the close would look like one that was not
+        // on screen.
+        let focused_tab = selected_session.as_ref().map(|session_id| {
+            let now = app.session_tab_ids(session_id);
+            match &app.last_tab_strip {
+                Some(drawn) if drawn.session_id == *session_id && !now.contains(&drawn.focused) => {
+                    drawn.focused.clone()
+                }
+                _ => app.focused_tab_id(session_id),
+            }
+        });
         // Extra tabs only: a closed tab's sentence comes from the prune itself,
         // and the slot tab's own exit is the agent's notice rather than a tab's.
         let tab_providers: HashMap<String, String> = app
@@ -73,11 +112,21 @@ impl PruneViewContext {
                 .find(|session| &session.id == session_id)
                 .map(|session| session.slot_tab_id().as_str().to_string())
         });
+        // The strip as last drawn when it is this agent's: a tab another screen
+        // closed is already gone from the engine, but not from that drawing.
+        let strip_before =
+            selected_session
+                .as_ref()
+                .map_or_default(|session_id| match &app.last_tab_strip {
+                    Some(drawn) if drawn.session_id == *session_id => drawn.tabs.clone(),
+                    _ => app.session_tab_ids(session_id),
+                });
         Self {
             selected_session,
             focused_tab,
             selected_slot_tab,
             tab_providers,
+            strip_before,
         }
     }
 }
@@ -91,6 +140,21 @@ impl DrainedEventMetadata {
                     result,
                     purpose: yaran_core::worker::PrLookupPurpose::CreateAgent,
                 } => Some((id.clone(), result.is_ok())),
+                _ => None,
+            },
+            clone_completion: match event {
+                WorkerEvent::RepositoryCloned {
+                    status_op_id: Some(id),
+                    result,
+                    ..
+                } => Some((
+                    id.clone(),
+                    matches!(
+                        result,
+                        Err(yaran_core::clone_project::CloneOutcome::Refused(_)
+                            | yaran_core::clone_project::CloneOutcome::Failed(_))
+                    ),
+                )),
                 _ => None,
             },
             checkout_inspect_completion: match event {
@@ -117,17 +181,23 @@ impl DrainedEventMetadata {
                     raw_input,
                     repository,
                     result,
+                    offer,
+                    clone_unavailable,
                     status_op_id,
                 } => Some(PrReferenceResolutionAnswer {
                     raw_input: raw_input.clone(),
                     repository: repository.clone(),
                     result: result.clone(),
+                    offer: offer.clone(),
+                    clone_unavailable: clone_unavailable.clone(),
                     status_op_id: status_op_id.clone(),
                 }),
                 _ => None,
             },
             changed_files_answer: match event {
-                WorkerEvent::ChangedFilesReady { outcome, worktree } => Some(ChangedFilesAnswer {
+                WorkerEvent::ChangedFilesReady {
+                    outcome, worktree, ..
+                } => Some(ChangedFilesAnswer {
                     worktree: worktree.clone(),
                     error: outcome.as_ref().err().cloned(),
                 }),
@@ -135,6 +205,34 @@ impl DrainedEventMetadata {
             },
         }
     }
+}
+
+/// Whether a drained worker reaction carries a checkout inspection on into a
+/// default-branch checkout, which keeps the inspection's status op open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InspectFollowUp {
+    /// The reaction dispatches the checkout; its own final closes the op.
+    ChainsCheckout,
+    /// Nothing follows; the inspection is done.
+    Done,
+}
+
+/// How a project clone a draft was kept for ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloneEnding {
+    /// It cloned; the draft is no longer needed.
+    Cloned,
+    /// It was refused or failed; the draft can be restored.
+    RefusedOrFailed,
+}
+
+/// Whether a background server is serving when server settings change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BackgroundServing {
+    /// A listener is bound and keeps its old settings until restarted.
+    Serving,
+    /// Nothing is serving.
+    Idle,
 }
 
 impl App {
@@ -146,9 +244,14 @@ impl App {
         self.drain_unpushed_count();
         self.drain_orphan_worktrees();
         self.drain_cloud();
+        self.drain_project_worktree_files();
+        self.drain_rename_pushed_probe();
+        self.drain_pr_clone_folder_check();
+        self.drain_ui_jobs();
+        self.drain_branch_listing();
         self.drain_pending_diff();
-        self.drain_changes_job();
         self.drain_human_board();
+        self.drain_changes_tree_work();
         self.drain_worker_events();
         // After the drain, so a launch that resolved this tick frees its
         // `[auto_resume]` slot for the next queued startup relaunch.
@@ -159,6 +262,7 @@ impl App {
         self.apply_amq_tick();
         let maintenance = self.apply_pruned_pty_events();
         self.note_companion_maintenance(&maintenance);
+        self.retire_spent_fallback_claims();
         self.refresh_resource_monitor_if_due();
         // After the prune, so a PTY that exited this tick is not resized.
         self.presize_background_agent_ptys(Instant::now());
@@ -201,7 +305,11 @@ impl App {
         }
     }
 
-    fn apply_pruned_agent_tabs(&mut self, pruned: &[PrunedPty], context: &PruneViewContext) {
+    pub(super) fn apply_pruned_agent_tabs(
+        &mut self,
+        pruned: &[PrunedPty],
+        context: &PruneViewContext,
+    ) {
         let mut rebuild_needed = false;
         for pty in pruned.iter().filter(|pty| pty.kind == PrunedPtyKind::Agent) {
             rebuild_needed |= self.apply_pruned_agent_tab(pty, context);
@@ -215,8 +323,13 @@ impl App {
         let Some(session_id) = session_owner_id(pty) else {
             return false;
         };
-        let was_focused_tab = context.selected_session.as_deref() == Some(session_id)
-            && context.focused_tab.as_deref() == Some(pty.id.as_str());
+        let was_focused_tab = if context.selected_session.as_deref() == Some(session_id)
+            && context.focused_tab.as_deref() == Some(pty.id.as_str())
+        {
+            FocusState::Focused
+        } else {
+            FocusState::Unfocused
+        };
         let support_provider = (!self
             .engine
             .is_slot_tab_of(SessionIdRef::new(session_id), TabIdRef::new(&pty.id)))
@@ -228,7 +341,7 @@ impl App {
                 .unwrap_or_default()
         });
         if pty.tab_closed {
-            self.apply_closed_agent_tab(pty, session_id, was_focused_tab);
+            self.apply_closed_agent_tab(pty, session_id, was_focused_tab, context);
             true
         } else {
             self.apply_exited_agent_tab(support_provider, was_focused_tab);
@@ -236,21 +349,32 @@ impl App {
         }
     }
 
-    fn apply_closed_agent_tab(&mut self, pty: &PrunedPty, session_id: &str, was_focused_tab: bool) {
+    fn apply_closed_agent_tab(
+        &mut self,
+        pty: &PrunedPty,
+        session_id: &str,
+        tab_focus: FocusState,
+        context: &PruneViewContext,
+    ) {
         // The prune's own account of the close, in the sentence the browser
         // gets: the row is gone, so nothing here could look these facts up.
         if let Some(closed) = &pty.closed_tab {
             self.set_info(closed_tab_exit_notice(closed));
         }
-        if !was_focused_tab {
+        if tab_focus == FocusState::Unfocused {
             return;
         }
-        let target = self
-            .engine
-            .first_live_tab(session_id)
+        // The tab that closed was on screen, so the view lands beside where it
+        // was, like a browser tab; a neighbour that is gone too falls back to
+        // the first live tab.
+        let strip_now = self.session_tab_ids(session_id);
+        let target = yaran_core::agent_tabs::tab_after_close(&context.strip_before, &pty.id)
+            .filter(|id| strip_now.iter().any(|now| now == id))
+            .map(str::to_string)
+            .or_else(|| self.engine.first_live_tab(session_id))
             .unwrap_or_else(|| session_id.to_string());
         self.set_focused_tab(session_id, &target);
-        if self.session_surface == SessionSurface::Agent {
+        if self.focused_surface() == SessionSurface::Agent {
             self.reset_raw_input_state();
             self.fullscreen_overlay = FullscreenOverlay::None;
             if pty.agent_detached {
@@ -259,13 +383,13 @@ impl App {
         }
     }
 
-    fn apply_exited_agent_tab(&mut self, support_provider: Option<String>, was_focused_tab: bool) {
+    fn apply_exited_agent_tab(&mut self, support_provider: Option<String>, tab_focus: FocusState) {
         if let Some(provider) = support_provider {
             self.set_info(format!("Tab ({provider}) exited."));
         }
         if self.input_target == InputTarget::Agent
-            && self.session_surface == SessionSurface::Agent
-            && was_focused_tab
+            && self.focused_surface() == SessionSurface::Agent
+            && tab_focus == FocusState::Focused
         {
             self.reset_raw_input_state();
         }
@@ -326,7 +450,7 @@ impl App {
 
     fn apply_selected_agent_exit_status(&mut self, pty: &PrunedPty) {
         let key = self.bindings.label_for(Action::ReconnectAgent);
-        if self.session_surface != SessionSurface::Agent {
+        if self.focused_surface() != SessionSurface::Agent {
             self.set_info(yaran_core::engine::agent_exit_with_companion_notice(
                 pty,
                 &format!("Press \"{key}\" to relaunch the agent."),
@@ -374,19 +498,18 @@ impl App {
         if exited_terminal_ids.is_empty() {
             return;
         }
-        if let Some(active_id) = self.active_terminal_id.as_deref()
-            && exited_terminal_ids.contains(&active_id)
+        if let Some(active_id) = self.active_terminal_id.clone()
+            && exited_terminal_ids.contains(&active_id.as_str())
         {
-            self.active_terminal_id = None;
+            self.land_beside_a_closed_terminal(&active_id);
             if self.input_target == InputTarget::Terminal {
                 self.input_target = InputTarget::None;
             }
             self.fullscreen_overlay = FullscreenOverlay::None;
-            self.session_surface = SessionSurface::Agent;
             self.set_info("Terminal exited. Press the terminal key to launch a new one.");
         }
-        self.clamp_terminal_cursor();
         self.rebuild_left_items();
+        self.reconcile_center_target();
     }
 
     fn drain_worker_events(&mut self) {
@@ -396,14 +519,36 @@ impl App {
             let metadata = DrainedEventMetadata::capture(&event);
             self.disarm_tui_launch_for_failed_event(&event);
             let reaction = self.engine.process_worker_event(event);
-            let chains_forward = matches!(
+            self.note_changed_files_owner(&metadata);
+            let chains_forward = if matches!(
                 reaction,
                 EventReaction::DispatchProjectDefaultBranchCheckout { .. }
-            );
+            ) {
+                InspectFollowUp::ChainsCheckout
+            } else {
+                InspectFollowUp::Done
+            };
             let routing = self.companion_routing();
             self.notify_companion(&reaction);
             self.apply_routed_reaction(reaction, &routing);
             self.apply_drained_event_metadata(metadata, chains_forward);
+        }
+    }
+
+    /// A successful changed-files read for the worktree still watched is what
+    /// the engine just applied, so the lists now belong to the watched agent.
+    /// Recorded before the reaction runs, because that reaction is what
+    /// reconciles the expanded folders against those lists.
+    fn note_changed_files_owner(&mut self, metadata: &DrainedEventMetadata) {
+        let Some(answer) = &metadata.changed_files_answer else {
+            return;
+        };
+        if answer.error.is_some() {
+            return;
+        }
+        let watched = self.engine.watched_worktree_path();
+        if watched.as_deref() == Some(answer.worktree.as_path()) {
+            self.changes_tree.lists_for = self.engine.watched_session_id.clone();
         }
     }
 
@@ -475,6 +620,23 @@ impl App {
             self.notify_companion(&reaction);
             self.apply_routed_reaction(reaction, &routing);
         }
+        // Tabs a recreate stopped start again once the pass above has seen the
+        // last of them go, through the same launch path a resume fallback
+        // takes, and the recreate's spinner is answered by its final.
+        let restarts = self
+            .engine
+            .sweep_recreate_restarts(self.pty_size_for_launch());
+        for reaction in restarts.launches.into_iter().chain(
+            restarts
+                .finals
+                .into_iter()
+                .map(yaran_core::engine::ResolvedFinal::into_reaction),
+        ) {
+            self.mark_frame_dirty();
+            let routing = self.companion_routing();
+            self.notify_companion(&reaction);
+            self.apply_routed_reaction(reaction, &routing);
+        }
     }
 
     fn disarm_tui_launch_for_failed_event(&mut self, event: &WorkerEvent) {
@@ -482,12 +644,17 @@ impl App {
             WorkerEvent::AgentLaunchFailed(data) => {
                 self.tui_launched_ptys.remove(data.request.tab_id.as_str());
                 if matches!(data.request.kind, AgentLaunchKind::Create { .. }) {
-                    self.create_agent_started_here = false;
+                    self.notes.create_agent_started_here = false;
+                    self.pull_request_create = None;
                     self.armed_new_agent_settings = None;
                 }
             }
-            WorkerEvent::CreateAgentFailed { .. } => {
-                self.create_agent_started_here = false;
+            WorkerEvent::CreateAgentFailed { message, .. } => {
+                self.notes.create_agent_started_here = false;
+                // A question keeps the request: the reply reopens the prompt on it.
+                if message.ask().is_none() {
+                    self.pull_request_create = None;
+                }
                 self.armed_new_agent_settings = None;
             }
             _ => {}
@@ -497,7 +664,7 @@ impl App {
     fn apply_drained_event_metadata(
         &mut self,
         metadata: DrainedEventMetadata,
-        chains_forward: bool,
+        follow_up: InspectFollowUp,
     ) {
         if let Some(answer) = metadata.changed_files_answer {
             self.apply_changed_files_refresh_outcome(&answer.worktree, answer.error);
@@ -509,7 +676,34 @@ impl App {
             self.resolve_pr_lookup_completion(completion);
         }
         if let Some(id) = metadata.checkout_inspect_completion {
-            self.resolve_checkout_inspect_completion(id, chains_forward);
+            self.resolve_checkout_inspect_completion(&id, follow_up);
+        }
+        if let Some((id, refused_or_failed)) = metadata.clone_completion {
+            self.settle_clone_draft(
+                &id,
+                if refused_or_failed {
+                    CloneEnding::RefusedOrFailed
+                } else {
+                    CloneEnding::Cloned
+                },
+            );
+        }
+    }
+
+    /// A clone this form started has answered: keep its draft for the next
+    /// open when it was refused or failed, and drop it otherwise, since the
+    /// clone is on disk and the same request would only be refused.
+    fn settle_clone_draft(&mut self, op_id: &str, ending: CloneEnding) {
+        let Some(draft) = self.clone_draft.as_mut() else {
+            return;
+        };
+        if draft.op_id != op_id {
+            return;
+        }
+        if ending == CloneEnding::RefusedOrFailed {
+            draft.restorable = true;
+        } else {
+            self.clone_draft = None;
         }
     }
 
@@ -518,13 +712,13 @@ impl App {
             && answer.status_op_id.is_some();
         if current {
             self.pending_pr_reference_op = None;
-            if let Err(error) = self.apply_pull_request_reference_resolution(
+            self.apply_pull_request_reference_resolution(
                 answer.raw_input,
-                answer.repository,
+                &answer.repository,
                 answer.result,
-            ) {
-                self.set_error(format!("{error:#}"));
-            }
+                answer.offer,
+                answer.clone_unavailable,
+            );
         }
         if let Some(id) = answer.status_op_id
             && let Some(op) = self.pending_pr_lookup_ops.remove(&id)
@@ -545,8 +739,10 @@ impl App {
         }
     }
 
-    fn resolve_checkout_inspect_completion(&mut self, id: String, chains_forward: bool) {
-        if !chains_forward && let Some(op) = self.pending_checkout_inspect_ops.remove(&id) {
+    fn resolve_checkout_inspect_completion(&mut self, id: &str, follow_up: InspectFollowUp) {
+        if follow_up == InspectFollowUp::Done
+            && let Some(op) = self.pending_checkout_inspect_ops.remove(id)
+        {
             self.apply_reaction(op.resolve(&TuiCheckoutInspectOutcome::Done).into_reaction());
         }
     }
@@ -563,6 +759,10 @@ impl App {
         self.apply_routed_reaction(reaction, &routing);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one short arm per EventReaction variant, each handing its fields to the method that applies them"
+    )]
     pub(super) fn apply_routed_reaction(
         &mut self,
         reaction: EventReaction,
@@ -582,47 +782,20 @@ impl App {
             // its view even though it did no work itself. `service_companion`
             // folds this into its own post-mutation refresh at the end of the
             // iteration.
-            self.companion_followup_ran = true;
+            self.notes.companion_followup_ran = true;
             return;
         }
         match reaction {
             EventReaction::Nothing => {}
             // The terminal UI reads `Engine::gh_status` live every time it gates
             // a pull-request command, so the flip is already visible here and
-            // the accompanying keyed status carries the explanation. The arm
-            // exists so a surface that DOES need to react cannot forget to.
-            EventReaction::GhAvailabilityChanged { .. } => {}
-            EventReaction::Status(StatusUpdate {
-                tone,
-                message,
-                key,
-                quiet_on,
-                ..
-            }) => {
-                // Only an INFO may be withheld: a warning, an error and a
-                // spinner all report something the screen cannot be standing in
-                // for, whatever the site asked for.
-                if quiet_on.tui && tone == StatusTone::Info {
-                    // A keyed final still has a spinner to take down: the
-                    // sentence goes, the busy must not be stranded behind it.
-                    // A sticky busy refuses to go, and there the sentence is
-                    // shown instead, because a spinner nothing retires is worse
-                    // than a line nobody needed.
-                    let stranded = match &key {
-                        Some(key) => !self.status.clear(key, None),
-                        None => false,
-                    };
-                    if !stranded {
-                        return;
-                    }
-                }
-                // When a `StatusUpdate` carries a key (keyed operation), write it
-                // into the named slot so `most_recent_tui` can pick it up.
-                // Unkeyed updates (`key == None`) write the anonymous slot.
-                // Info entries auto-clear after `clear_after`; Busy persists until
-                // replaced; Warning/Error persist until the next status.
-                self.status.set(Instant::now(), key, tone, message);
+            // the accompanying keyed status carries the explanation. The one
+            // thing held rather than read live is an open clone form's
+            // suggested destination, which follows the GitHub hosts.
+            EventReaction::GhAvailabilityChanged { .. } | EventReaction::GithubFactsChanged => {
+                self.refresh_clone_destination_suggestion();
             }
+            EventReaction::Status(update) => self.apply_status_update(update),
             EventReaction::ClearStatus(key) => {
                 // The `Final::Clear` outcome of a StatusOp: dismiss the keyed
                 // entry with no replacement message.
@@ -639,7 +812,12 @@ impl App {
             }
             EventReaction::RebuildLeftItems => self.rebuild_left_items(),
             EventReaction::ReloadChangedFiles => self.reload_changed_files(),
-            EventReaction::ClampFilesCursor => self.clamp_files_cursor(),
+            EventReaction::ClampFilesCursor => {
+                // A fresh changed-files read: expanded folders follow it before
+                // the cursor is clamped to the rows that result.
+                self.reconcile_changes_tree();
+                self.clamp_files_cursor();
+            }
 
             EventReaction::AgentLaunchReadyView(boxed) => {
                 self.apply_agent_launch_ready_view(*boxed);
@@ -649,46 +827,69 @@ impl App {
             }
 
             EventReaction::BrowserEntriesArrived { dir, entries } => {
-                self.apply_browser_entries(dir, entries);
+                self.apply_browser_entries(&dir, entries);
             }
             EventReaction::ProjectWorktreesArrived {
                 project_id,
                 result,
                 status_op_id,
             } => {
-                self.apply_project_worktrees_arrived(project_id, result, status_op_id);
+                self.apply_project_worktrees_arrived(&project_id, result, status_op_id);
             }
 
             EventReaction::ManageableWorktreesArrived {
                 project_id,
                 result,
+                leftovers,
                 status_op_id,
             } => {
-                self.apply_manageable_worktrees_arrived(project_id, result, status_op_id);
+                self.apply_manageable_worktrees_arrived(
+                    &project_id,
+                    result,
+                    leftovers,
+                    status_op_id,
+                );
             }
 
             EventReaction::OpenNewAgentPromptForPr {
                 pr,
                 status_op_id: _,
             } => {
-                self.apply_open_new_agent_prompt_for_pr(*pr);
+                self.apply_open_new_agent_prompt_for_pr(&pr);
             }
             EventReaction::WorktreeRemoveSucceeded {
                 session_id,
                 branches,
                 our_busy_message: _,
             } => {
-                self.apply_worktree_remove_succeeded(session_id, branches);
+                self.apply_worktree_remove_succeeded(&session_id, branches);
             }
             EventReaction::WorktreeRemoveFailed {
                 session_id,
                 message,
             } => {
-                self.apply_worktree_remove_failed(session_id, message);
+                self.apply_worktree_remove_failed(&session_id, message);
+            }
+            EventReaction::WorktreeRemoveWaiting {
+                session_id,
+                message,
+            } => {
+                // The delete's own spinner says what the removal is waiting for.
+                if let Some(op) = self.pending_delete_ops.get(&session_id) {
+                    let progress = op.progress(message);
+                    self.apply_reaction(EventReaction::Status(progress));
+                }
             }
 
             EventReaction::ResourceStatsArrived(stats, was_baseline) => {
-                self.apply_resource_stats(stats, was_baseline);
+                self.apply_resource_stats(
+                    stats,
+                    if was_baseline {
+                        CpuWindow::Short
+                    } else {
+                        CpuWindow::Full
+                    },
+                );
             }
 
             EventReaction::AddProjectAfterBranchCheckout {
@@ -699,9 +900,9 @@ impl App {
                 status_op_id: _,
             } => {
                 self.apply_add_project_after_branch_checkout(
-                    path,
-                    name,
-                    target_branch,
+                    &path,
+                    &name,
+                    &target_branch,
                     leading_branch,
                 );
             }
@@ -717,12 +918,25 @@ impl App {
                 status_op_id: _,
             } => {
                 self.apply_add_project_after_initial_commit(
-                    path,
-                    name,
+                    &path,
+                    &name,
                     branch,
                     leading_branch,
                     (initialized_repo, seeded_gitignore, seed_warning),
                 );
+            }
+
+            EventReaction::AddProjectAfterClone(done) => {
+                // The engine adds the project and dispatches the agent; this
+                // surface shows what it says, and, as for a create dispatched
+                // here, the agent it starts is this surface's.
+                let create = yaran_core::engine::InFlightKey::CreateAgent;
+                let was_in_flight = self.engine.is_in_flight(&create);
+                let finished = self.engine.finish_clone(&done);
+                if !was_in_flight && self.engine.is_in_flight(&create) {
+                    self.notes.create_agent_started_here = true;
+                }
+                self.apply_routed_reaction(finished, routing);
             }
 
             EventReaction::ContinueCreateAgentAfterInspection {
@@ -755,6 +969,19 @@ impl App {
             EventReaction::OpenConfigReloadFailedModal(message) => {
                 self.apply_open_config_reload_failed_modal(message);
             }
+            EventReaction::ConfigAdopted {
+                before,
+                github_was_enabled,
+                error,
+            } => self.apply_config_adopted(
+                &before,
+                if github_was_enabled {
+                    yaran_core::engine::GithubIntegration::Enabled
+                } else {
+                    yaran_core::engine::GithubIntegration::Disabled
+                },
+                error,
+            ),
 
             EventReaction::ProjectPersistenceOutcome(boxed) => {
                 self.apply_project_persistence_outcome(*boxed);
@@ -775,10 +1002,6 @@ impl App {
                 self.apply_finish_delete_session_view(*view);
             }
 
-            EventReaction::DoDeleteSessionView(view) => {
-                self.apply_do_delete_session_view(*view);
-            }
-
             EventReaction::BeginDeleteSessionView(view) => {
                 self.apply_begin_delete_session_view(*view);
             }
@@ -791,31 +1014,119 @@ impl App {
                 self.apply_delete_terminal_view(*view);
             }
 
-            EventReaction::ServerFlipPreflightReady { result, warning } => {
-                self.apply_server_flip_preflight(result, warning);
+            EventReaction::ServerFlipPreflightReady {
+                result,
+                warning,
+                startup,
+            } => {
+                self.apply_server_flip_preflight(result, warning, startup);
             }
 
-            EventReaction::BackgroundServerPreflightReady { result, warning } => {
-                self.apply_background_server_preflight(result, warning);
+            EventReaction::BackgroundServerPreflightReady {
+                result,
+                warning,
+                startup,
+            } => {
+                self.apply_background_server_preflight(result, warning, startup);
             }
         }
     }
 
+    /// Show one status the engine raised, after the side effects its key or its
+    /// ask owes this surface first.
+    fn apply_status_update(&mut self, update: StatusUpdate) {
+        let StatusUpdate {
+            tone,
+            message,
+            key,
+            quiet_on,
+            ask,
+            ..
+        } = update;
+        // A final ends whatever a change of this surface's still holds
+        // under its key, shown or not.
+        if tone != StatusTone::Busy
+            && let Some(key) = &key
+        {
+            self.engine.attachments.finish_key(key);
+        }
+        // A clone or add this surface started that stopped short of the
+        // agent for want of that agreement leaves its project behind. The
+        // name prompt for it opens with the question, and the sentence
+        // still goes on the status line below.
+        if let Some(yaran_core::status_text::StatusAsk::ReviewCopy(question)) = &ask {
+            self.reopen_pull_request_after_clone(question);
+        }
+        // A refused create that asks for agreement to a review copy is
+        // answered in the name prompt, not on the status line, and the
+        // create's spinner is retired by it. One this surface did not
+        // dispatch has no request to reopen, and shows its sentence
+        // like any other refusal.
+        if let Some(yaran_core::status_text::StatusAsk::ReviewCopy(question)) = ask
+            && let Some(key) = &key
+            && self
+                .pull_request_create
+                .as_ref()
+                .is_some_and(|(pending, _)| pending == key)
+            && let Some((_, request)) = self.pull_request_create.take()
+        {
+            self.status.clear(key, None);
+            self.reopen_name_prompt_for_review_copy(request, question.warned, question.warning);
+            return;
+        }
+        // Only an INFO may be withheld: a warning, an error and a
+        // spinner all report something the screen cannot be standing in
+        // for, whatever the site asked for.
+        if quiet_on.tui && tone == StatusTone::Info {
+            // A keyed final still has a spinner to take down: the
+            // sentence goes, the busy must not be stranded behind it.
+            // A sticky busy refuses to go, and there the sentence is
+            // shown instead, because a spinner nothing retires is worse
+            // than a line nobody needed.
+            let stranded = match &key {
+                Some(key) => !self.status.clear(key, None),
+                None => false,
+            };
+            if !stranded {
+                return;
+            }
+        }
+        // A commit's final: a landed commit clears the typed message, a
+        // refused one leaves it for another try.
+        if tone != StatusTone::Busy
+            && let (Some(key), Some((pending, committed))) = (&key, &self.pending_commit)
+            && key == pending
+        {
+            // Only the message that was committed is cleared: one typed
+            // since, for the next commit, stays.
+            if tone == StatusTone::Info && self.commit_input.text == *committed {
+                self.commit_input.clear();
+            }
+            self.pending_commit = None;
+        }
+        // When a `StatusUpdate` carries a key (keyed operation), write it
+        // into the named slot so `most_recent_tui` can pick it up.
+        // Unkeyed updates (`key == None`) write the anonymous slot.
+        // Info entries auto-clear after `clear_after`; Busy persists until
+        // replaced; Warning/Error persist until the next status.
+        self.status.set(Instant::now(), key, tone, message);
+    }
+
     fn apply_add_project_after_branch_checkout(
         &mut self,
-        path: String,
-        name: String,
-        target_branch: String,
+        path: &str,
+        name: &str,
+        target_branch: &str,
         leading_branch: String,
     ) {
-        let display_name = project_display_name(&path, &name);
+        let display_name = project_display_name(path, name);
         let status_message = format!(
             "Checked out \"{target_branch}\" and added project \"{display_name}\" to workspace."
         );
         if let Err(error) = self.finish_add_project_with_status(
             path,
             name,
-            target_branch.clone(),
+            target_branch.to_string(),
             leading_branch,
             status_message,
         ) {
@@ -825,16 +1136,20 @@ impl App {
 
     fn apply_add_project_after_initial_commit(
         &mut self,
-        path: String,
-        name: String,
+        path: &str,
+        name: &str,
         branch: String,
         leading_branch: String,
         setup: (bool, bool, Option<String>),
     ) {
         let (initialized_repo, seeded_gitignore, seed_warning) = setup;
-        let display_name = project_display_name(&path, &name);
-        let status_message =
-            initial_commit_project_status(&display_name, initialized_repo, seeded_gitignore);
+        let display_name = project_display_name(path, name);
+        let repo = match (initialized_repo, seeded_gitignore) {
+            (true, true) => RepoSetup::InitializedWithGitignore,
+            (true, false) => RepoSetup::Initialized,
+            (false, _) => RepoSetup::Existing,
+        };
+        let status_message = initial_commit_project_status(&display_name, repo);
         if let Err(error) =
             self.finish_add_project_with_status(path, name, branch, leading_branch, status_message)
         {
@@ -845,36 +1160,91 @@ impl App {
         }
     }
 
+    /// Save the branch the inspection found for `project`, then carry on with
+    /// the create. The session database is written on a worker, since another
+    /// writer can hold it for seconds; the create continues once it is saved,
+    /// as it did when the save ran here.
+    /// Save the branch the inspection found for `project`, then carry on with
+    /// the create. Only that project's base is written, and on a worker, since
+    /// another writer can hold the session database for seconds; a project
+    /// removed meanwhile is left alone. The create continues once the base is
+    /// saved, as it did when the save ran here.
     fn apply_continue_create_agent_after_inspection(
         &mut self,
         project: Project,
         inspection: CreateAgentBranchInspection,
     ) {
         let project_name = project.name.clone();
-        match self.sync_projects_to_store_and_update_config() {
-            Ok(()) => {
+        let project_id = project.id.clone();
+        let base = inspection.leading_branch.clone();
+        let db_path = self.engine.paths.sessions_db_path.clone();
+        self.spawn_ui_job(
+            crate::app::ui_jobs::UiJob {
+                busy: yaran_core::status_text![
+                    "Saving the branch yaran found for project ",
+                    q(project_name.clone()),
+                    "\u{2026}"
+                ],
+                stopped: format!(
+                    "yaran could not finish saving the branch it found for project \
+                     \"{project_name}\"; yaran.log has the details."
+                ),
+            },
+            move || save_project_base(&db_path, &project_id, &base),
+            move |app: &mut App, saved: Option<Result<BaseSaved, String>>| {
+                app.continue_after_base_saved(project, inspection, saved);
+            },
+        );
+    }
+
+    fn continue_after_base_saved(
+        &mut self,
+        project: Project,
+        inspection: CreateAgentBranchInspection,
+        saved: Option<Result<BaseSaved, String>>,
+    ) {
+        let project_name = project.name.clone();
+        // The project as the workspace has it now decides whether the create
+        // goes on; a row the database no longer holds was only not written.
+        if !self.engine.projects.iter().any(|p| p.id == project.id) {
+            self.set_info(format!(
+                "No agent was started: project \"{project_name}\" was removed while yaran was \
+                 saving the branch it found."
+            ));
+            return;
+        }
+        match saved {
+            Some(Ok(BaseSaved::Saved)) => {
+                self.rebuild_config_projects();
                 if let Err(error) = self
                     .engine
                     .config_writer
                     .save_eager(self.engine.config.clone())
                 {
                     self.set_error(format!(
-                        "Project branch was detected, but config.toml could not be updated: {error}"
+                        "Project branch was detected, but config.toml could not be updated: \
+                         {error}"
                     ));
                 }
             }
-            Err(error) => self.set_error(format!(
-                "Project branch was detected, but config.toml could not be updated: {error:#}"
+            Some(Err(error)) => self.set_error(format!(
+                "Project branch was detected, but the session database could not be updated: \
+                 {error}"
             )),
+            Some(Ok(BaseSaved::ProjectGone)) | None => {}
         }
-        if let Err(error) = self.continue_create_agent_after_branch_inspection(project, inspection)
-        {
-            self.set_error(format!("{error:#}"));
-        } else {
+        if let Some(blocker) = self.job_dialog_blocker() {
             self.set_info(format!(
-                "Branch check complete for \"{project_name}\". Confirm or edit the agent name to continue."
+                "The new agent's name prompt for project \"{project_name}\" was not opened \
+                 because {blocker}. Start the agent again when you are ready."
             ));
+            return;
         }
+        self.continue_create_agent_after_branch_inspection(project, inspection);
+        self.set_info(format!(
+            "Branch check complete for \"{project_name}\". Confirm or edit the agent name to \
+             continue."
+        ));
     }
 
     fn apply_dispatch_project_default_branch_checkout(
@@ -898,32 +1268,121 @@ impl App {
         self.dispatch_non_default_branch_checkout(
             NonDefaultBranchAction::CheckoutProjectDefault { project },
             default_branch,
-            "for the selected project".to_string(),
+            "for the selected project",
             status_op_id,
         );
     }
 
-    fn apply_reloaded_config_reaction(&mut self, config: Config) {
-        let bind_settings_changed = yaran_core::config::server_bind_settings_changed(
-            &self.engine.config.server,
-            &config.server,
-        );
+    pub(crate) fn apply_reloaded_config_reaction(&mut self, config: Config) {
+        let before = self.engine.config.clone();
+        let github_was_enabled = if self.engine.github_integration_enabled {
+            yaran_core::engine::GithubIntegration::Enabled
+        } else {
+            yaran_core::engine::GithubIntegration::Disabled
+        };
+        let fallback = config.clone();
+        let mut apply_error = None;
         let outcome = match self.apply_reloaded_config(config) {
-            Err(error) => TuiConfigReloadOutcome::ApplyFailed(format!("{error:#}")),
+            Err(error) => {
+                // The view could not take the new config, but the engine still
+                // adopts it, so memory, the writer's base and the file agree
+                // and nothing old is saved over the new file. Everything a
+                // swap owes then runs against it, as after a successful
+                // apply, so no setting is claimed that is not in force; the
+                // failure is said last, so it holds the line.
+                self.engine.keep_reloaded_config(fallback);
+                self.run_config_swap_effects(&before, github_was_enabled);
+                self.note_config_adopted(&before);
+                let error = format!("{error:#}");
+                apply_error = Some(error.clone());
+                TuiConfigReloadOutcome::ApplyFailed(error)
+            }
             Ok(()) => TuiConfigReloadOutcome::Applied,
         };
-        let applied = matches!(outcome, TuiConfigReloadOutcome::Applied);
-        if applied && let Some(companion) = self.companion.as_mut() {
-            companion.note_config_applied(&self.engine.config.server);
+        // A reload yaran asked for after writing the file itself is nobody's
+        // news.
+        let quiet = matches!(outcome, TuiConfigReloadOutcome::Applied)
+            && self.engine.reload_origin.last_reload_was_own();
+        if let Some(op) = self.pending_config_reload_op.take() {
+            self.apply_reaction(op.resolve(&outcome).into_reaction());
         }
+        if !quiet {
+            self.post_config_reload_outcome(&outcome);
+        }
+        // This surface owns the reload here, so a client that asked for it
+        // hears how it ended.
+        let told = match apply_error {
+            Some(error) => ConfigReloadOutcome::ApplyFailed(error),
+            None => ConfigReloadOutcome::Applied {
+                notes: self.note_config_adopted(&before).into_iter().collect(),
+            },
+        };
+        self.engine.finish_config_reload_operations(&told);
+    }
+
+    /// The engine adopted a reloaded config its own apply could not finish
+    /// (see `EventReaction::ConfigAdopted`): the view takes it, everything a
+    /// reload's swap owes runs against `before`, the config it replaced, and
+    /// the reload answers as an apply that failed, the same answer the
+    /// terminal UI's own failed apply gives. `github` is the
+    /// engine's own state before the reload; its apply asked `gh` for
+    /// nothing, so this surface asks where a reload owes it.
+    fn apply_config_adopted(
+        &mut self,
+        before: &Config,
+        github: yaran_core::engine::GithubIntegration,
+        error: String,
+    ) {
+        let adopted = self.engine.config.clone();
+        // The failure is the message, so the theme's own warning is left to
+        // the next reload.
+        let _ = self.take_reload_view_state(&adopted);
+        self.run_config_swap_effects(before, github);
+        self.note_config_adopted(before);
+        let outcome = TuiConfigReloadOutcome::ApplyFailed(error.clone());
         if let Some(op) = self.pending_config_reload_op.take() {
             self.apply_reaction(op.resolve(&outcome).into_reaction());
         }
         self.post_config_reload_outcome(&outcome);
-        if applied && bind_settings_changed {
-            let serving = self.background_server_is_serving();
-            self.set_pinned_warning(server_restart_warning(serving));
+        self.engine
+            .finish_config_reload_operations(&ConfigReloadOutcome::ApplyFailed(error));
+    }
+
+    /// Hand a new config's `[server]` section to the background server; returns the
+    /// restart-needed warning it raised, so a client that asked for the reload hears it.
+    fn note_config_adopted(&mut self, before: &Config) -> Option<String> {
+        if let Some(companion) = self.companion.as_mut() {
+            companion.note_config_applied(&self.engine.config);
         }
+        // The listener's bind settings and the server log's are both read when a
+        // serve starts, so a running one cannot adopt either.
+        let mut owed: Vec<String> = Vec::new();
+        let mut changed = yaran_core::config::server_bind_setting_names(
+            &before.server,
+            &self.engine.config.server,
+        );
+        changed.extend(yaran_core::config::server_log_file_setting_names(
+            &before.server,
+            &self.engine.config.server,
+        ));
+        if !changed.is_empty() {
+            let serving = if self.background_server_is_serving() {
+                BackgroundServing::Serving
+            } else {
+                BackgroundServing::Idle
+            };
+            owed.push(server_restart_warning(serving, &changed));
+        }
+        owed.extend(yaran_core::control_socket::moved_warning(
+            &before.server,
+            &self.engine.config.server,
+        ));
+        if owed.is_empty() {
+            return None;
+        }
+        let warning = owed.join(" ");
+        self.set_pinned_warning(warning.clone());
+        Some(warning)
     }
 
     /// Answer the reload on the worker lane, so the browsers that were told to
@@ -939,7 +1398,7 @@ impl App {
         let status = match outcome {
             TuiConfigReloadOutcome::Applied => yaran_core::config_reload_status::applied(),
             TuiConfigReloadOutcome::ApplyFailed(error) => {
-                yaran_core::config_reload_status::apply_failed(error)
+                yaran_core::config_reload_status::adopted_but_apply_failed(error)
             }
             TuiConfigReloadOutcome::ValidationFailed => return,
         };
@@ -947,6 +1406,8 @@ impl App {
     }
 
     fn apply_open_config_reload_failed_modal(&mut self, message: String) {
+        self.engine
+            .finish_config_reload_operations(&ConfigReloadOutcome::Refused(message.clone()));
         self.open_config_reload_failed_modal(message);
         if let Some(op) = self.pending_config_reload_op.take() {
             self.apply_reaction(
@@ -962,11 +1423,12 @@ impl App {
         &mut self,
         result: Result<(Vec<std::net::TcpListener>, Vec<String>), String>,
         warning: Option<String>,
+        startup: yaran_core::serve_log::StartupNotes,
     ) {
-        self.server_flip_preflight_pending = false;
+        self.serving.flip_preflight_pending = false;
         match result {
             Ok((listeners, urls)) => {
-                self.apply_server_flip_preflight_success(listeners, urls, warning)
+                self.apply_server_flip_preflight_success(listeners, urls, warning, startup);
             }
             Err(error) => {
                 if let Some(op) = self.pending_server_flip_op.take() {
@@ -984,6 +1446,7 @@ impl App {
         listeners: Vec<std::net::TcpListener>,
         urls: Vec<String>,
         warning: Option<String>,
+        startup: yaran_core::serve_log::StartupNotes,
     ) {
         let url_list = urls.join(", ");
         if let Some(warning) = warning {
@@ -1001,10 +1464,15 @@ impl App {
             ));
             self.apply_reaction(EventReaction::Status(progress));
         }
-        self.pending_server_flip = Some((listeners, urls));
+        self.pending_server_flip = Some(super::PendingServerFlip {
+            listeners,
+            urls,
+            startup,
+        });
     }
 
-    fn apply_browser_entries(&mut self, dir: PathBuf, entries: Vec<BrowserEntry>) {
+    fn apply_browser_entries(&mut self, dir: &Path, entries: Result<Vec<BrowserEntry>, String>) {
+        let mut failure = None;
         if let PromptState::BrowseProjects {
             current_dir,
             entries: current_entries,
@@ -1012,29 +1480,48 @@ impl App {
             selected,
             ..
         } = &mut self.prompt
-            && *current_dir == dir
+            && current_dir.as_path() == dir
         {
-            *current_entries = entries;
             *loading = false;
             *selected = 0;
+            match entries {
+                Ok(entries) => *current_entries = entries,
+                Err(why) => {
+                    current_entries.clear();
+                    failure = Some(why);
+                }
+            }
+        }
+        if let Some(why) = failure {
+            self.set_error(why);
         }
     }
 
     fn apply_worktree_remove_succeeded(
         &mut self,
-        session_id: String,
+        session_id: &str,
         branches: yaran_core::engine::RemovedBranches,
     ) {
-        let op = self.pending_delete_ops.remove(&session_id);
+        let op = self.pending_delete_ops.remove(session_id);
         if self.engine.sessions.iter().any(|s| s.id == session_id) {
             let cleanup = self.finish_delete_session(
-                &session_id,
+                session_id,
                 WorktreeRemoval::Performed {
                     branches: branches.clone(),
                 },
-                false,
+                DeleteReport::Quiet,
             );
             if let Err(error) = cleanup {
+                // The delete's own busy is dismissed first, so it does not
+                // outlive the failure; the failure is the line that stays.
+                if let Some(op) = op {
+                    self.apply_reaction(
+                        op.resolve(&TuiDeleteOutcome::SucceededGone {
+                            our_busy_still_showing: false,
+                        })
+                        .into_reaction(),
+                    );
+                }
                 self.set_error(format!(
                     "Worktree removed but session cleanup failed: {error:#}"
                 ));
@@ -1059,9 +1546,9 @@ impl App {
         }
     }
 
-    fn apply_worktree_remove_failed(&mut self, session_id: String, message: String) {
+    fn apply_worktree_remove_failed(&mut self, session_id: &str, message: String) {
         let session_present = self.engine.sessions.iter().any(|s| s.id == session_id);
-        if let Some(op) = self.pending_delete_ops.remove(&session_id) {
+        if let Some(op) = self.pending_delete_ops.remove(session_id) {
             let outcome = if session_present {
                 TuiDeleteOutcome::FailedNamed { message }
             } else {
@@ -1093,17 +1580,27 @@ impl App {
                         yaran_core::git::RemoveResult::default(),
                     ),
                 };
-                if let Err(error) = self.finish_delete_session(&session_id, removal, false) {
-                    self.set_error(format!("Failed to delete agent: {error:#}"));
-                } else {
-                    let op = self.build_delete_status_op(&session_id, busy_message.to_string());
-                    let pending = self.engine.begin_status_op(&op);
-                    self.apply_reaction(EventReaction::Status(pending));
-                    self.pending_delete_ops.insert(session_id, op);
+                // Built while the agent is still here, so a final can name it.
+                let op = self.build_delete_status_op(&session_id, busy_message.to_string());
+                let cleanup = self.finish_delete_session(&session_id, removal, DeleteReport::Quiet);
+                // The worktree removal is running either way, so its busy is
+                // shown and its op kept: when it lands, the final says how the
+                // delete really ended, a later successful cleanup included.
+                let pending = self.engine.begin_status_op(&op);
+                self.apply_reaction(EventReaction::Status(pending));
+                self.pending_delete_ops.insert(session_id, op);
+                if let Err(error) = cleanup {
+                    self.set_error(format!(
+                        "Could not remove the agent from yaran's records: {error:#}. Its worktree \
+                         is still being removed, and yaran reports how the delete ended when that \
+                         finishes."
+                    ));
                 }
             }
             BeginDeleteSessionOutcome::Inline { removal } => {
-                if let Err(error) = self.finish_delete_session(&session_id, removal, true) {
+                if let Err(error) =
+                    self.finish_delete_session(&session_id, removal, DeleteReport::Announce)
+                {
                     self.set_error(format!("{error:#}"));
                 }
             }
@@ -1114,17 +1611,12 @@ impl App {
         self.apply_finish_delete_session_outcome(
             &view.session_id,
             view.outcome,
-            view.removal,
-            view.update_status,
-        );
-    }
-
-    fn apply_do_delete_session_view(&mut self, view: DoDeleteSessionView) {
-        self.apply_finish_delete_session_outcome(
-            &view.session_id,
-            view.outcome.finish,
-            view.outcome.removal,
-            true,
+            &view.removal,
+            if view.update_status {
+                DeleteReport::Announce
+            } else {
+                DeleteReport::Quiet
+            },
         );
     }
 
@@ -1138,7 +1630,14 @@ impl App {
         self.startup_log_selection = None;
         self.fullscreen_overlay = FullscreenOverlay::None;
         self.startup_log_viewer = None;
+        // Logs asked for from a project's action list land over it, and
+        // closing them steps back to it.
+        let return_to = match std::mem::replace(&mut self.prompt, PromptState::None) {
+            PromptState::ProjectActions(list) => Some(Box::new(list)),
+            _ => None,
+        };
         self.prompt = PromptState::StartupCommandLogs(StartupCommandLogPrompt {
+            return_to,
             scope_label,
             entries: listing.entries,
             selected: 0,
@@ -1158,11 +1657,19 @@ impl App {
     }
 
     fn apply_delete_terminal_view(&mut self, view: DeleteTerminalView) {
-        if self.active_terminal_id.as_deref() == Some(view.terminal_id.as_str()) {
-            self.active_terminal_id = None;
-        }
-        self.clamp_terminal_cursor();
+        let shown = self.active_terminal_id.as_deref() == Some(view.terminal_id.as_str());
         self.rebuild_left_items();
+        if shown {
+            // Whatever was typing into it stops with it: keys never carry over
+            // to the neighbour or the agent the view lands on.
+            if self.input_target == InputTarget::Terminal {
+                self.input_target = InputTarget::None;
+            }
+            if self.fullscreen_overlay == FullscreenOverlay::Terminal {
+                self.fullscreen_overlay = FullscreenOverlay::None;
+            }
+            self.land_beside_a_closed_terminal(&view.terminal_id);
+        }
         if let Some(label) = view.label {
             self.set_info(yaran_core::engine::closed_terminal_notice(&label));
         }
@@ -1170,7 +1677,7 @@ impl App {
 
     fn apply_project_worktrees_arrived(
         &mut self,
-        project_id: String,
+        project_id: &str,
         result: Result<Vec<ProjectWorktreeEntry>, String>,
         status_op_id: Option<String>,
     ) {
@@ -1197,52 +1704,64 @@ impl App {
         } else {
             WorktreesFinalOutcome::Dismissed
         };
-        self.resolve_worktree_listing_op(status_op_id, outcome);
+        self.resolve_worktree_listing_op(status_op_id, &outcome);
     }
 
     fn apply_manageable_worktrees_arrived(
         &mut self,
-        project_id: String,
+        project_id: &str,
         result: Result<Vec<yaran_core::worktree_manager::ManagedWorktree>, String>,
+        leftovers: Vec<yaran_core::leftover_folders::LeftoverFolder>,
         status_op_id: Option<String>,
     ) {
+        let mut note = None;
         let outcome = if let PromptState::ManageWorktrees(prompt) = &mut self.prompt
             && prompt.project.id == project_id
         {
             prompt.loading = false;
             match result {
                 Ok(entries) => {
-                    prompt.selected = removable_worktree_indices(&entries).into_iter().next();
+                    prompt.selected = manager_selectable_rows(&entries, &leftovers)
+                        .into_iter()
+                        .next();
                     prompt.entries = entries;
+                    prompt.leftovers = leftovers;
                     prompt.error = None;
                     WorktreesFinalOutcome::Loaded
                 }
                 Err(error) => {
                     prompt.entries.clear();
+                    prompt.leftovers.clear();
                     prompt.selected = None;
                     prompt.error = Some(error.clone());
                     WorktreesFinalOutcome::Failed(error)
                 }
             }
         } else {
+            if let Ok(entries) = result {
+                note = self.refresh_open_leftover_prompt(project_id, entries, leftovers);
+            }
             WorktreesFinalOutcome::Dismissed
         };
-        self.resolve_worktree_listing_op(status_op_id, outcome);
+        self.resolve_worktree_listing_op(status_op_id, &outcome);
+        if let Some(note) = note {
+            self.set_info(note);
+        }
     }
 
     fn resolve_worktree_listing_op(
         &mut self,
         status_op_id: Option<String>,
-        outcome: WorktreesFinalOutcome,
+        outcome: &WorktreesFinalOutcome,
     ) {
         if let Some(id) = status_op_id
             && let Some(op) = self.pending_worktree_ops.remove(&id)
         {
-            self.apply_reaction(op.resolve(&outcome).into_reaction());
+            self.apply_reaction(op.resolve(outcome).into_reaction());
         }
     }
 
-    fn apply_open_new_agent_prompt_for_pr(&mut self, pr: yaran_core::worker::ResolvedPullRequest) {
+    fn apply_open_new_agent_prompt_for_pr(&mut self, pr: &yaran_core::worker::ResolvedPullRequest) {
         let request = CreateAgentRequest::PullRequest {
             project: pr.project.clone(),
             host: pr.host.clone(),
@@ -1256,30 +1775,31 @@ impl App {
             head_branch: pr.head_ref_name.clone(),
             custom_name: Some(yaran_core::bidi::strip_bidi_controls(&pr.head_ref_name)),
             use_existing_branch: false,
+            review_copy: ReviewCopyConsent::default(),
+            ask_id: None,
+            agents: Vec::new(),
+            cloned: None,
         };
-        if let Err(err) = self.open_name_new_agent_prompt(request) {
-            self.set_error(format!("{err:#}"));
-        } else {
-            self.set_info(format!(
-                "Resolved PR #{}: {}. Confirm or edit the branch name.",
-                pr.number, pr.title
-            ));
-        }
+        self.open_name_new_agent_prompt(request);
+        self.set_info(format!(
+            "Resolved PR #{}: {}. Confirm or edit the branch name.",
+            pr.number, pr.title
+        ));
     }
 
-    fn apply_resource_stats(&mut self, stats: Vec<ResourceStats>, was_baseline: bool) {
+    fn apply_resource_stats(&mut self, stats: Vec<ResourceStats>, window: CpuWindow) {
         if let PromptState::ResourceMonitor {
             rows,
             selected_row,
             expanded,
             last_refresh,
-            short_window_sample,
+            cpu_window,
             ..
         } = &mut self.prompt
         {
             *rows = stats;
             *last_refresh = Instant::now();
-            *short_window_sample = was_baseline;
+            *cpu_window = window;
             let max_row = build_visual_rows(rows, expanded).len().saturating_sub(1);
             if *selected_row > max_row {
                 *selected_row = max_row;
@@ -1295,8 +1815,8 @@ impl App {
     /// can fall back to its legacy `set_info`/`set_error`.
     fn resolve_persist_op(
         &mut self,
-        status_op_id: &Option<String>,
-        outcome: PersistFinalOutcome,
+        status_op_id: Option<&str>,
+        outcome: &PersistFinalOutcome,
     ) -> bool {
         let Some(id) = status_op_id else {
             return false;
@@ -1320,11 +1840,15 @@ impl App {
             };
             self.configure_save_op = None;
             if same_project && matches!(&outcome, PersistFinalOutcome::Saved) {
+                // Back to the project's action list when the editor was opened
+                // from it, as a save that lands at once does.
+                let return_to = super::project_actions::configure_return_to(&mut self.prompt);
                 self.prompt = PromptState::None;
                 self.input_target = InputTarget::None;
+                self.return_to_project_actions(return_to);
             }
         }
-        let resolved = op.resolve(&outcome);
+        let resolved = op.resolve(outcome);
         self.apply_reaction(resolved.into_reaction());
         true
     }
@@ -1332,13 +1856,16 @@ impl App {
     fn apply_project_persistence_failure(
         &mut self,
         action: ProjectPersistenceAction,
-        error: String,
-        status_op_id: &Option<String>,
+        error: &str,
+        status_op_id: Option<&str>,
     ) {
-        if self.resolve_persist_op(status_op_id, PersistFinalOutcome::DbFailed(error.clone())) {
+        if self.resolve_persist_op(
+            status_op_id,
+            &PersistFinalOutcome::DbFailed(error.to_string()),
+        ) {
             return;
         }
-        self.set_error(project_persistence_failure_message(action, &error));
+        self.set_error(project_persistence_failure_message(action, error));
     }
 
     fn apply_added_project(&mut self, status_message: String) {
@@ -1350,7 +1877,7 @@ impl App {
 
     fn apply_project_removal(
         &mut self,
-        status_op_id: &Option<String>,
+        status_op_id: Option<&str>,
         config_error_prefix: &'static str,
         success_message: String,
     ) {
@@ -1366,10 +1893,10 @@ impl App {
 
     fn apply_default_provider_update(
         &mut self,
-        project_name: String,
+        project_name: &str,
         provider: Option<ProviderKind>,
-        global_default: ProviderKind,
-        status_op_id: &Option<String>,
+        global_default: &ProviderKind,
+        status_op_id: Option<&str>,
     ) {
         self.rebuild_left_items();
         let success_message = match provider {
@@ -1395,9 +1922,9 @@ impl App {
 
     fn apply_auto_reopen_update(
         &mut self,
-        project_name: String,
+        project_name: &str,
         auto_reopen_agents: Option<bool>,
-        status_op_id: &Option<String>,
+        status_op_id: Option<&str>,
     ) {
         let enabled = auto_reopen_agents.unwrap_or(true);
         self.save_runtime_projects_and_finish_status(
@@ -1415,9 +1942,9 @@ impl App {
 
     fn apply_startup_command_update(
         &mut self,
-        project_name: String,
+        project_name: &str,
         startup_command: Option<String>,
-        status_op_id: &Option<String>,
+        status_op_id: Option<&str>,
     ) {
         let success_message = match startup_command {
             Some(command) => {
@@ -1436,11 +1963,11 @@ impl App {
 
     fn apply_env_update(
         &mut self,
-        project_name: String,
+        project_name: &str,
         env_count: usize,
-        status_op_id: &Option<String>,
+        status_op_id: Option<&str>,
     ) {
-        let success_message = super::render::project_env_saved_message(env_count, &project_name);
+        let success_message = super::render::project_env_saved_message(env_count, project_name);
         self.save_runtime_projects_and_finish_status(
             status_op_id,
             &format!(
@@ -1452,7 +1979,7 @@ impl App {
 
     fn save_runtime_projects_and_finish_status(
         &mut self,
-        status_op_id: &Option<String>,
+        status_op_id: Option<&str>,
         config_error_prefix: &str,
         success_message: String,
     ) {
@@ -1463,15 +1990,15 @@ impl App {
             .save_eager(self.engine.config.clone())
         {
             Ok(()) => {
-                if !self.resolve_persist_op(status_op_id, PersistFinalOutcome::Saved) {
+                if !self.resolve_persist_op(status_op_id, &PersistFinalOutcome::Saved) {
                     self.set_info(success_message);
                 }
             }
             Err(error) => {
-                let error = error.to_string();
+                let error = error.clone();
                 if !self.resolve_persist_op(
                     status_op_id,
-                    PersistFinalOutcome::ConfigWriteFailed(error.clone()),
+                    &PersistFinalOutcome::ConfigWriteFailed(error.clone()),
                 ) {
                     self.set_error(format!("{config_error_prefix}: {error}"));
                 }
@@ -1488,7 +2015,7 @@ impl App {
 
         match view {
             ProjectPersistenceView::PersistenceFailed { error } => {
-                self.apply_project_persistence_failure(action, error, &status_op_id);
+                self.apply_project_persistence_failure(action, &error, status_op_id.as_deref());
             }
             ProjectPersistenceView::Added {
                 project_id: _,
@@ -1498,14 +2025,14 @@ impl App {
             }
             ProjectPersistenceView::Removed { project_name } => {
                 self.apply_project_removal(
-                    &status_op_id,
+                    status_op_id.as_deref(),
                     "Project was removed from the database, but config.toml could not be updated",
                     format!("Removed project \"{project_name}\" from app"),
                 );
             }
             ProjectPersistenceView::Deleted { project_name } => {
                 self.apply_project_removal(
-                    &status_op_id,
+                    status_op_id.as_deref(),
                     "Project was deleted from the database, but config.toml could not be updated",
                     format!("Deleted project \"{project_name}\" and all its agents"),
                 );
@@ -1516,35 +2043,44 @@ impl App {
                 global_default,
             } => {
                 self.apply_default_provider_update(
-                    project_name,
+                    &project_name,
                     provider,
-                    global_default,
-                    &status_op_id,
+                    &global_default,
+                    status_op_id.as_deref(),
                 );
             }
             ProjectPersistenceView::AutoReopenUpdated {
                 project_name,
                 auto_reopen_agents,
             } => {
-                self.apply_auto_reopen_update(project_name, auto_reopen_agents, &status_op_id);
+                self.apply_auto_reopen_update(
+                    &project_name,
+                    auto_reopen_agents,
+                    status_op_id.as_deref(),
+                );
             }
             ProjectPersistenceView::StartupCommandUpdated {
                 project_name,
                 startup_command,
             } => {
-                self.apply_startup_command_update(project_name, startup_command, &status_op_id);
+                self.apply_startup_command_update(
+                    &project_name,
+                    startup_command,
+                    status_op_id.as_deref(),
+                );
             }
             ProjectPersistenceView::EnvUpdated {
                 project_name,
                 env_count,
             } => {
-                self.apply_env_update(project_name, env_count, &status_op_id);
+                self.apply_env_update(&project_name, env_count, status_op_id.as_deref());
             }
         }
     }
 
-    pub(super) fn apply_agent_launch_ready_view(&mut self, outcome: AgentLaunchReadyOutcome) {
-        self.last_pty_size = outcome.pty_size;
+    /// Whether this surface started the launch that just became ready, spending
+    /// the marks that said so, and claiming the pty it produced when it did.
+    fn note_launch_origin(&mut self, outcome: &AgentLaunchReadyOutcome) -> bool {
         // This arm runs on both surfaces (see `owner_of_reaction`), so a child
         // this surface started has to be recognised rather than assumed: an id
         // armed at dispatch for every ordinary launch, and the create flag for a
@@ -1557,8 +2093,39 @@ impl App {
             &outcome.view,
             AgentLaunchReadyView::CreateCommitted { .. }
                 | AgentLaunchReadyView::CreatePersistFailed { .. }
-        ) && std::mem::take(&mut self.create_agent_started_here);
-        if (armed || created_here)
+        ) && std::mem::take(&mut self.notes.create_agent_started_here);
+        if created_here {
+            self.pull_request_create = None;
+            // A create that never persisted has no agent to apply its armed
+            // settings to.
+            if matches!(
+                &outcome.view,
+                AgentLaunchReadyView::CreatePersistFailed { .. }
+            ) {
+                self.armed_new_agent_settings = None;
+            }
+        }
+        // A fallback is the engine relaunching a tab whose resume failed, so it
+        // was started here only when the launch it falls back from was.
+        let fell_back_from_here =
+            matches!(&outcome.view, AgentLaunchReadyView::ResumeFallback { .. })
+                && self.tui_fallback_tabs.remove(&outcome.tab_id);
+        let started_here = armed || created_here || fell_back_from_here;
+        if started_here
+            && self
+                .engine
+                .resume_fallback_candidates
+                .contains_key(TabIdRef::new(&outcome.tab_id))
+        {
+            self.tui_fallback_tabs.insert(outcome.tab_id.clone());
+        } else {
+            self.tui_fallback_tabs.remove(&outcome.tab_id);
+        }
+        // A launch a browser started moves nothing here: the cursor stays on the
+        // row it was on (the rebuild finds that row by id), because drawing the
+        // browser's agent here would be an attachment that refuses that
+        // browser's own delete in this surface's name.
+        if started_here
             && self
                 .engine
                 .providers
@@ -1566,41 +2133,45 @@ impl App {
         {
             self.claim_launched_pty(&outcome.tab_id);
         }
+        started_here
+    }
+
+    pub(super) fn apply_agent_launch_ready_view(&mut self, outcome: AgentLaunchReadyOutcome) {
+        self.pty_sizes
+            .insert(outcome.tab_id.clone(), outcome.pty_size);
+        let started_here = self.note_launch_origin(&outcome);
+        let view = if outcome.wants_fullscreen {
+            LaunchView::Fullscreen
+        } else {
+            LaunchView::Minimized
+        };
         // The engine's `detach_conflicting_worktree_session` already cleared every
         // runtime map (incl. pty_activity/pty_input) for the detached agent's
         // tabs, so no follow-up clear is needed here.
         match outcome.view {
-            AgentLaunchReadyView::CreatePersistFailed { .. } => {
-                self.armed_new_agent_settings = None;
-                // The create op's keyed error final is resolved ENGINE-SIDE and
-                // arrives alongside this View as a sibling `Status` in the same
-                // `Multi`, so there is no status to set here.
+            AgentLaunchReadyView::CreateCommitted { .. } if !started_here => {
+                self.rebuild_left_items();
             }
             AgentLaunchReadyView::CreateCommitted {
                 status_message: _,
                 startup_result_error: _,
             } => {
-                if created_here {
-                    self.apply_armed_new_agent_settings(&outcome.session.id);
-                }
+                // Reached only for a create started here (the arm above takes
+                // the rest), so the settings armed for it apply now.
+                self.apply_armed_new_agent_settings(&outcome.session.id);
                 self.rebuild_left_items();
                 self.selected_left = self
                     .left_items()
                     .iter()
                     .position(|item| matches!(item, LeftItem::Session(index) if self.engine.sessions.get(*index).map(|candidate| candidate.id.as_str()) == Some(outcome.session.id.as_str())))
                     .unwrap_or(0);
-                // The selection just moved onto the freshly created agent, so a
-                // lingering `manage-projects` target no longer matches what the
-                // cursor points at; clear it so a follow-up project action
-                // resolves the new agent's project, not the stale pick.
-                self.project_chooser_context = None;
                 self.reload_changed_files();
                 self.show_agent_surface();
                 // A launched agent lands focused-but-minimized
                 // (Center focused, typeable); only a fullscreen-seeking launch
                 // lands fullscreen. A create is never fullscreen-seeking, but
                 // the shared landing helper keeps the rule in one place.
-                self.land_completed_launch(outcome.wants_fullscreen);
+                self.land_completed_launch(view);
                 // The create success / startup-error keyed final is resolved
                 // ENGINE-SIDE and arrives as a sibling `Status` in the same
                 // `Multi`; this arm keeps only the non-status view work.
@@ -1622,21 +2193,22 @@ impl App {
                 self.status.retire_newest_busy();
             }
             AgentLaunchReadyView::Reconnect { status_message } => {
-                self.show_agent_surface();
-                // Land minimized unless the launch sought
-                // fullscreen (see CreateCommitted above).
-                self.land_completed_launch(outcome.wants_fullscreen);
+                // Only a launch started here lands here, and only a landing
+                // earns the note about where it landed.
+                let status_message = if started_here {
+                    self.show_agent_surface();
+                    // Land minimized unless the launch sought
+                    // fullscreen (see CreateCommitted above).
+                    self.land_completed_launch(view);
+                    self.launch_completion_message(&status_message.to_string(), view)
+                } else {
+                    status_message.to_string()
+                };
                 // Resolve the keyed reconnect op so its success replaces exactly
                 // the "Launching…"/"Starting fresh…" busy. Keyed by tab id, which
                 // the slot pointer names; an extra-tab launch has no op under its
                 // tab id and falls back to an anonymous info rather than
-                // resolving the slot tab's op with the wrong message. The engine's
-                // message is shared with the web; the TUI appends where the launch
-                // landed and how to toggle fullscreen.
-                let status_message = self.launch_completion_message(
-                    status_message.to_string(),
-                    outcome.wants_fullscreen,
-                );
+                // resolving the slot tab's op with the wrong message.
                 // `dispatch_reconnect_plan_confirmed` stashes the op under the SESSION
                 // id, and the failed-view arms resolve it by the session id too. The
                 // slot tab's id is not the session id for an agent created after
@@ -1652,24 +2224,29 @@ impl App {
                 };
                 self.resolve_reconnect_op_or(
                     &op_key,
-                    yaran_core::engine::LaunchOutcome::Ready {
+                    &yaran_core::engine::LaunchOutcome::Ready {
                         status_message: status_message.into(),
                         quiet_on: outcome.status_quiet,
                     },
                 );
                 // The engine flipped the session Active while launching it, so the
                 // flat list must re-partition: a just-reconnected agent leaves the
-                // Inactive tail and rejoins the active section. Re-follow it by id
-                // so the cursor stays on the agent as its row moves.
+                // Inactive tail and rejoins the active section. A launch started
+                // here puts the cursor on the agent it launched.
                 self.rebuild_left_items();
-                self.reselect_left_session(&outcome.session.id);
+                if started_here {
+                    self.reselect_left_session(&outcome.session.id);
+                }
             }
             AgentLaunchReadyView::ResumeFallback {
                 session_id,
                 status_message,
             } => {
-                let landed_here = self.selected_session().map(|selected| selected.id.as_str())
-                    == Some(session_id.as_str());
+                // Lands only where this surface started the launch AND that very
+                // tab's pane is the one on screen: not an agent row remembered
+                // behind a terminal or a diff, and not another tab of the agent.
+                let landed_here =
+                    started_here && self.shows_agent_tab(&session_id, &outcome.tab_id);
                 let status_message = if landed_here {
                     self.show_agent_surface();
                     // The fallback relaunch is engine-initiated
@@ -1678,36 +2255,58 @@ impl App {
                     // when the landing actually happened: a fallback for an
                     // unselected agent moves no focus, so promising a typeable
                     // pane there would be a lie.
-                    self.land_completed_launch(outcome.wants_fullscreen);
-                    self.launch_completion_message(
-                        status_message.to_string(),
-                        outcome.wants_fullscreen,
-                    )
+                    self.land_completed_launch(view);
+                    self.launch_completion_message(&status_message.to_string(), view)
                 } else {
                     status_message.to_string()
                 };
                 self.resolve_reconnect_op_or(
                     &session_id,
-                    yaran_core::engine::LaunchOutcome::Ready {
+                    &yaran_core::engine::LaunchOutcome::Ready {
                         status_message: status_message.into(),
                         quiet_on: outcome.status_quiet,
                     },
                 );
                 // Same re-partition as Reconnect: the resumed agent is Active now.
                 self.rebuild_left_items();
-                self.reselect_left_session(&session_id);
             }
-            AgentLaunchReadyView::StartupAutoReopen => {}
+            // The create op's keyed error final is resolved ENGINE-SIDE and
+            // arrives alongside this View as a sibling `Status` in the same
+            // `Multi`, so there is no status to set here.
+            AgentLaunchReadyView::CreatePersistFailed { .. }
+            | AgentLaunchReadyView::StartupAutoReopen => {}
         }
+    }
+
+    /// Whether the centre pane on screen is tab `tab_id` of agent `session_id`.
+    fn shows_agent_tab(&self, session_id: &str, tab_id: &str) -> bool {
+        self.focused_surface() == SessionSurface::Agent
+            && matches!(self.center_mode, CenterMode::Agent)
+            && matches!(
+                self.fullscreen_overlay,
+                FullscreenOverlay::None | FullscreenOverlay::Agent
+            )
+            && self.selected_session().map(|selected| selected.id.as_str()) == Some(session_id)
+            && self.focused_tab_id(session_id) == tab_id
+    }
+
+    /// Drop the claims on fallbacks that can no longer come: a tab whose resume
+    /// is no longer eligible and that has no fallback launch in flight (it
+    /// ended normally, failed, was pruned, or its agent was deleted).
+    fn retire_spent_fallback_claims(&mut self) {
+        let engine = &self.engine;
+        self.tui_fallback_tabs.retain(|tab_id| {
+            engine
+                .resume_fallback_candidates
+                .contains_key(TabIdRef::new(tab_id))
+                || engine.is_in_flight(&yaran_core::engine::InFlightKey::AgentLaunch(TabId::new(
+                    tab_id.clone(),
+                )))
+        });
     }
 
     fn apply_agent_launch_failed_view(&mut self, outcome: AgentLaunchFailedOutcome) {
         match outcome {
-            AgentLaunchFailedOutcome::Create { .. } => {
-                // The create op's keyed error final is resolved ENGINE-SIDE and
-                // arrives as a sibling `Status` in the same `Multi`, so this arm
-                // has no status to set.
-            }
             AgentLaunchFailedOutcome::Reconnect {
                 session_id,
                 agent_label,
@@ -1718,7 +2317,7 @@ impl App {
                 // stashed (the message is byte-identical either way).
                 self.resolve_reconnect_op_or(
                     &session_id,
-                    yaran_core::engine::LaunchOutcome::ReconnectFailed {
+                    &yaran_core::engine::LaunchOutcome::ReconnectFailed {
                         branch_name: agent_label,
                         message,
                     },
@@ -1731,14 +2330,11 @@ impl App {
             } => {
                 self.resolve_reconnect_op_or(
                     &session_id,
-                    yaran_core::engine::LaunchOutcome::ForceReconnectFailed {
+                    &yaran_core::engine::LaunchOutcome::ForceReconnectFailed {
                         branch_name: agent_label,
                         message,
                     },
                 );
-            }
-            AgentLaunchFailedOutcome::ResumeFallback => {
-                // Engine logged + marked Detached; nothing for the view.
             }
             AgentLaunchFailedOutcome::StartupAutoReopen {
                 agent_label,
@@ -1761,10 +2357,16 @@ impl App {
                     "Tab launch failed for \"{agent_label}\": {message}"
                 ));
             }
-            AgentLaunchFailedOutcome::Silent => {
-                // Ghost-tab launch failure: the row was already closed by the
-                // user, so there is nothing to warn about.
-            }
+            // The create op's keyed error final is resolved ENGINE-SIDE and
+            // arrives as a sibling `Status` in the same `Multi`, so a failed
+            // create has no status to set here.
+            AgentLaunchFailedOutcome::Create { .. }
+            // The engine logged it and marked the agent Detached; nothing for the
+            // view.
+            | AgentLaunchFailedOutcome::ResumeFallback
+            // Ghost-tab launch failure: the row was already closed by the user,
+            // so there is nothing to warn about.
+            | AgentLaunchFailedOutcome::Silent => {}
         }
     }
 
@@ -1777,15 +2379,15 @@ impl App {
     fn resolve_reconnect_op_or(
         &mut self,
         session_id: &str,
-        outcome: yaran_core::engine::LaunchOutcome,
+        outcome: &yaran_core::engine::LaunchOutcome,
     ) {
         if let Some(op) = self.pending_reconnect_ops.remove(session_id) {
-            self.apply_reaction(op.resolve(&outcome).into_reaction());
+            self.apply_reaction(op.resolve(outcome).into_reaction());
             return;
         }
         // No op stashed: apply the SAME final anonymously (no key), preserving the
         // pre-op behavior. `reconnect_final` is the single wording source.
-        match yaran_core::engine::launch_outcome_final(&outcome) {
+        match yaran_core::engine::launch_outcome_final(outcome) {
             // An extra tab has no op under its id, so this is the only path its
             // final takes; it honours the surface flag or a quieted launch would
             // still print here.
@@ -1870,21 +2472,28 @@ fn project_display_name(path: &str, name: &str) -> String {
     }
 }
 
-fn initial_commit_project_status(
-    display_name: &str,
-    initialized_repo: bool,
-    seeded_gitignore: bool,
-) -> String {
-    if initialized_repo && seeded_gitignore {
-        format!(
+/// What adding a project with an initial commit did to its folder first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RepoSetup {
+    /// The folder was already a repository.
+    Existing,
+    /// A repository was initialized.
+    Initialized,
+    /// A repository was initialized and a starter .gitignore seeded.
+    InitializedWithGitignore,
+}
+
+fn initial_commit_project_status(display_name: &str, repo: RepoSetup) -> String {
+    match repo {
+        RepoSetup::InitializedWithGitignore => format!(
             "Initialized a git repository, seeded a starter .gitignore, created an initial commit, and added project \"{display_name}\" to workspace."
-        )
-    } else if initialized_repo {
-        format!(
+        ),
+        RepoSetup::Initialized => format!(
             "Initialized a git repository, created an initial commit, and added project \"{display_name}\" to workspace."
-        )
-    } else {
-        format!("Created an initial commit and added project \"{display_name}\" to workspace.")
+        ),
+        RepoSetup::Existing => {
+            format!("Created an initial commit and added project \"{display_name}\" to workspace.")
+        }
     }
 }
 
@@ -1911,11 +2520,24 @@ fn pruned_agent_exit_message(pty: &PrunedPty, reconnect_key: &str) -> String {
     }
     agent_exit_status_message(
         pty.exit_success,
-        pty.is_minimal,
+        if pty.is_minimal {
+            ExitScreen::Minimal
+        } else {
+            ExitScreen::Full
+        },
         &pty.output_excerpt,
         pty.read_error.as_deref(),
         reconnect_key,
     )
+}
+
+/// How much an exited agent left on its screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitScreen {
+    /// Little enough to quote in the status line.
+    Minimal,
+    /// A full screen, which the pane itself shows.
+    Full,
 }
 
 /// The ordinary exit status line for an agent PTY that has been pruned.
@@ -1927,7 +2549,7 @@ fn pruned_agent_exit_message(pty: &PrunedPty, reconnect_key: &str) -> String {
 /// read the terminal and killed a process that may have been perfectly healthy.
 fn agent_exit_status_message(
     exit_success: Option<bool>,
-    is_minimal: bool,
+    screen: ExitScreen,
     excerpt: &str,
     read_error: Option<&str>,
     reconnect_key: &str,
@@ -1942,7 +2564,7 @@ fn agent_exit_status_message(
         .join(" ");
     // What the provider left on screen, when there is a short enough run of it
     // to be worth quoting. Built once so the read-error message can carry it too.
-    let output_clause = if is_minimal && !output.is_empty() {
+    let output_clause = if screen == ExitScreen::Minimal && !output.is_empty() {
         let output = truncate_status_output(&output, MAX_EXIT_OUTPUT_CHARS);
         let more = if output.truncated {
             " Full output was written to the logs."
@@ -1999,26 +2621,26 @@ fn truncate_status_output(text: &str, max_chars: usize) -> TruncatedStatusOutput
     }
 }
 
-/// What a reloaded startup-bound `[server]` change means for this terminal UI.
-/// A background listener is restarted from inside yaran, so the serving copy names
-/// that pair of commands; with nothing serving there is nothing to restart and
-/// the change simply waits for the next listener.
-pub(crate) fn server_restart_warning(serving_in_background: bool) -> &'static str {
-    match serving_in_background {
-        true => {
-            "Server settings changed in config, but a listener that is already bound cannot adopt \
-             them. Stop the background server and start it again to apply them."
-        }
-        false => {
-            "Server settings changed in config. Nothing is serving right now, so they apply the \
-             next time a server starts."
-        }
+/// The warning for a reloaded `[server]` change that only a restart applies,
+/// naming the changed `settings`.
+pub(crate) fn server_restart_warning(serving: BackgroundServing, settings: &[&str]) -> String {
+    let named = settings.join(", ");
+    if serving == BackgroundServing::Serving {
+        format!(
+            "Server settings changed in config ({named}), but a listener that is already bound \
+         cannot adopt them. Stop the background server and start it again to apply them."
+        )
+    } else {
+        format!(
+            "Server settings changed in config ({named}). Nothing is serving right now, so they \
+         apply the next time a server starts."
+        )
     }
 }
 
 pub(crate) fn run_create_agent_branch_inspection_job(
     project: Project,
-    worker_tx: Sender<WorkerEvent>,
+    worker_tx: &Sender<WorkerEvent>,
     status_op_id: Option<String>,
 ) {
     let repo_path = PathBuf::from(&project.path);
@@ -2055,14 +2677,59 @@ pub(crate) fn run_create_agent_branch_inspection_job(
     });
 }
 
+/// How saving a project's detected base ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaseSaved {
+    /// The base is in the session database.
+    Saved,
+    /// The project is no longer stored, so nothing was written.
+    ProjectGone,
+}
+
+/// Write `base` as the base of project `project_id`, and nothing else, so a
+/// removal or reorder made meanwhile is not undone. Blocking: run it on a
+/// worker.
+fn save_project_base(
+    db_path: &std::path::Path,
+    project_id: &str,
+    base: &str,
+) -> Result<BaseSaved, String> {
+    let store = crate::storage::SessionStore::open_live(db_path).map_err(|e| format!("{e:#}"))?;
+    let stored = store.load_projects().map_err(|e| format!("{e:#}"))?;
+    if !stored.iter().any(|project| project.id == project_id) {
+        return Ok(BaseSaved::ProjectGone);
+    }
+    store
+        .update_project_leading_branch(project_id, base)
+        .map(|()| BaseSaved::Saved)
+        .map_err(|e| format!("{e:#}"))
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// What a test writes to `server.auth.disable_no_auth_warning`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum NoAuthWarning {
+        /// `true`: the warning is dismissed.
+        Dismissed,
+        /// `false`: it shows again.
+        Shown,
+    }
     use std::sync::mpsc;
 
     use chrono::Utc;
     use tempfile::tempdir;
 
     use super::*;
+    use crate::app::{BrowsePurpose, TermGridPos, TerminalSelection};
+    use crate::config::YaranPaths;
+    use crate::model::{AgentSession, ProjectBranchStatus, SessionStatus};
+    use std::collections::BTreeMap;
+    use yaran_core::agent_job::CreateJobRegistries;
+    use yaran_core::process_sessions::SpawnGate;
+    use yaran_core::term_identity::TerminalIdentity;
+    use yaran_core::worker::AgentLaunchRequest;
 
     /// An agent detaching is a fact about the workspace: a browser has always
     /// been told, and this surface used to speak only for the selected agent.
@@ -2128,6 +2795,156 @@ mod tests {
         // nothing and keeps this surface's own modal-and-error path.
         app.post_config_reload_outcome(&TuiConfigReloadOutcome::ValidationFailed);
         assert!(app.engine.worker_rx.try_recv().is_err());
+    }
+
+    /// The next reload's answer, held so a test can act before it lands.
+    fn next_reload_read(app: &App) -> WorkerEvent {
+        loop {
+            let event = app
+                .engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the reload ends");
+            if matches!(event, WorkerEvent::ConfigReloadReady(_)) {
+                return event;
+            }
+        }
+    }
+
+    /// Land `read`, and every reload that follows it, on this surface, as
+    /// the run loop drains them, and answer what they posted on the
+    /// config-reload key, the lane both surfaces show.
+    fn land_reloads(app: &mut App, read: WorkerEvent) -> Vec<String> {
+        let mut messages = Vec::new();
+        let mut next = Some(read);
+        loop {
+            let event = match next.take() {
+                Some(event) => event,
+                None if app.engine.reloading => app
+                    .engine
+                    .worker_rx
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("the follow-up reload ends"),
+                None => match app.engine.worker_rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => return messages,
+                },
+            };
+            match event {
+                WorkerEvent::ConfigReloadReady(_) => {
+                    let reaction = app.engine.process_worker_event(event);
+                    app.apply_reaction(reaction);
+                }
+                WorkerEvent::PollerStatus(status)
+                    if status.key.as_deref()
+                        == Some(yaran_core::wire::status_keys::CONFIG_RELOAD) =>
+                {
+                    messages.push(status.message);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A reload somebody asks for: the palette's and SIGUSR1's own path.
+    fn ask_for_a_reload(app: &mut App) {
+        app.reload_config_from_disk()
+            .expect("the reload is asked for");
+    }
+
+    /// yaran writes the no-password warning's dismissal (`warning`) to the file
+    /// itself, as the route does, and asks for the reload it owes.
+    fn dismiss_and_reload(app: &mut App, warning: NoAuthWarning) {
+        let key = yaran_core::config_keys::lookup("server.auth.disable_no_auth_warning").unwrap();
+        yaran_core::config_keys::set_plain(
+            &app.engine.paths.config_path,
+            &key,
+            &(warning == NoAuthWarning::Dismissed).to_string(),
+        )
+        .expect("yaran writes the file");
+        app.engine
+            .reload_after_own_config_write(|engine| {
+                engine.apply(yaran_core::engine::Command::ReloadConfig)
+            })
+            .expect("the reload is asked for");
+    }
+
+    const RELOADED: &str = "Configuration reloaded. New settings are active now.";
+
+    /// A reload yaran asks for after its own write to config.toml (here the
+    /// no-password warning's dismissal) says nothing on either surface. A
+    /// reload somebody asks for always answers, also when it waits behind,
+    /// or is folded into, one of yaran's own.
+    #[test]
+    fn a_reload_yaran_asks_for_after_its_own_write_is_quiet_and_one_somebody_asks_for_answers() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        let paths = app.engine.paths.clone();
+        crate::config::ensure_config(&paths).expect("a config file");
+        // The fixture's project sits at yaran's own root, which the shared
+        // workspace default refuses on every reload once the project is
+        // written to the file; this test is about the reload's wording.
+        let text = std::fs::read_to_string(&paths.config_path).expect("the config");
+        std::fs::write(
+            &paths.config_path,
+            text.replacen(
+                "default_mode = \"shared\"",
+                "default_mode = \"worktree\"",
+                1,
+            ),
+        )
+        .expect("worktree mode");
+        ask_for_a_reload(&mut app);
+        let read = next_reload_read(&app);
+        assert_eq!(land_reloads(&mut app, read), vec![RELOADED.to_string()]);
+
+        dismiss_and_reload(&mut app, NoAuthWarning::Dismissed);
+        let read = next_reload_read(&app);
+        assert_eq!(land_reloads(&mut app, read), Vec::<String>::new());
+        assert!(app.engine.config.server.auth.disable_no_auth_warning);
+
+        // Two quick writes of yaran's own, the second while the first one's
+        // reload is still reading.
+        dismiss_and_reload(&mut app, NoAuthWarning::Shown);
+        let read = next_reload_read(&app);
+        dismiss_and_reload(&mut app, NoAuthWarning::Dismissed);
+        assert_eq!(land_reloads(&mut app, read), Vec::<String>::new());
+        assert!(app.engine.config.server.auth.disable_no_auth_warning);
+
+        // Somebody asks while yaran's own reload is reading.
+        dismiss_and_reload(&mut app, NoAuthWarning::Shown);
+        let read = next_reload_read(&app);
+        ask_for_a_reload(&mut app);
+        assert_eq!(land_reloads(&mut app, read), vec![RELOADED.to_string()]);
+        assert!(!app.engine.config.server.auth.disable_no_auth_warning);
+
+        // Somebody's reload is reading when yaran writes.
+        ask_for_a_reload(&mut app);
+        let read = next_reload_read(&app);
+        dismiss_and_reload(&mut app, NoAuthWarning::Dismissed);
+        assert_eq!(land_reloads(&mut app, read), vec![RELOADED.to_string()]);
+        assert!(app.engine.config.server.auth.disable_no_auth_warning);
+
+        // yaran's write and somebody's request fold into one follow-up.
+        dismiss_and_reload(&mut app, NoAuthWarning::Shown);
+        let read = next_reload_read(&app);
+        dismiss_and_reload(&mut app, NoAuthWarning::Dismissed);
+        ask_for_a_reload(&mut app);
+        assert_eq!(land_reloads(&mut app, read), vec![RELOADED.to_string()]);
+        assert!(app.engine.config.server.auth.disable_no_auth_warning);
+
+        // yaran's own reload never starts (the config writer will not pause),
+        // and a reload somebody asks for later answers.
+        let writer = std::mem::replace(
+            &mut app.engine.config_writer,
+            yaran_core::config_queue::ConfigWriteQueue::with_dead_writer(&paths.config_path),
+        );
+        dismiss_and_reload(&mut app, NoAuthWarning::Shown);
+        assert!(!app.engine.reloading, "the reload never started");
+        app.engine.config_writer = writer;
+        ask_for_a_reload(&mut app);
+        let read = next_reload_read(&app);
+        assert_eq!(land_reloads(&mut app, read), vec![RELOADED.to_string()]);
     }
 
     fn test_session(worktree: &Path) -> AgentSession {
@@ -2332,8 +3149,7 @@ mod tests {
         // a provider that never came up, which keeps the row for a reason that has
         // nothing to do with what is under test here.
         app.engine.note_pty_input("tab-x");
-        app.focused_tabs
-            .insert(session_id.clone(), "tab-x".to_string());
+        app.focused_tabs.insert(session_id, "tab-x".to_string());
         app.focus = FocusPane::Center;
         app.center_mode = CenterMode::Agent;
         app.input_target = InputTarget::Agent;
@@ -2343,10 +3159,11 @@ mod tests {
             end: TermGridPos { row: 0, col: 1 },
             dragging: true,
             origin: app.snapshot_selection_origin(),
+            part: crate::app::CenterPart::Main,
         });
         app.raw_input_parser
             .feed_sequences(crate::raw_input::BRACKET_PASTE_START);
-        app.in_bracket_paste = true;
+        app.raw_paste.in_bracket = true;
         app.raw_input_buf = b"pending".to_vec();
         app.loading_input_buf = b"loading".to_vec();
 
@@ -2368,11 +3185,11 @@ mod tests {
     fn assert_agent_input_cleared(app: &crate::app::App) {
         assert_eq!(app.input_target, InputTarget::None);
         assert!(app.terminal_selection.is_none());
-        assert!(!app.in_bracket_paste);
-        assert!(app.raw_input_buf.is_empty());
-        assert!(app.raw_input_parser.pending().is_empty());
+        assert!(!app.raw_paste.in_bracket);
+        assert_eq!(app.raw_input_buf, Vec::<u8>::new());
+        assert_eq!(app.raw_input_parser.pending(), b"");
         assert!(!app.raw_input_parser.in_bracket_paste());
-        assert!(app.loading_input_buf.is_empty());
+        assert_eq!(app.loading_input_buf, Vec::<u8>::new());
     }
 
     /// The TUI exit-prune teardown must clear EVERY runtime map keyed by the
@@ -2510,21 +3327,22 @@ mod tests {
     fn create_failure_disarms_the_tui_origin_before_the_event_is_processed() {
         let mut app =
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
-        app.create_agent_started_here = true;
+        app.notes.create_agent_started_here = true;
         app.engine
             .worker_tx
             .send(WorkerEvent::CreateAgentFailed {
                 status_op_id: "missing-op".to_string(),
+                attempted_name: None,
                 message: "creation failed".to_string().into(),
             })
             .expect("send create failure");
 
         app.drain_events();
 
-        assert!(!app.create_agent_started_here);
+        assert!(!app.notes.create_agent_started_here);
     }
 
-    /// `EventReaction::ClearStatus` (the `Final::Clear` outcome of a StatusOp)
+    /// `EventReaction::ClearStatus` (the `Final::Clear` outcome of a `StatusOp`)
     /// must remove the keyed entry with no replacement.
     #[test]
     fn clear_status_reaction_dismisses_the_keyed_entry() {
@@ -2653,7 +3471,7 @@ mod tests {
             StatusTone::Busy,
             "Launching...",
             yaran_core::statusline::StatusScope::All,
-            true,
+            yaran_core::statusline::Stickiness::Sticky,
         );
 
         app.apply_reaction(EventReaction::Status(
@@ -2666,6 +3484,42 @@ mod tests {
             .most_recent_tui()
             .expect("the final must be shown rather than strand the spinner");
         assert_eq!(message, "launched");
+    }
+
+    /// A folder that could not be listed is said, not shown as an empty folder.
+    #[test]
+    fn a_listing_that_failed_leaves_loading_and_says_why() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        let root = PathBuf::from(&app.engine.projects[0].path);
+        app.prompt = PromptState::BrowseProjects {
+            purpose: BrowsePurpose::AddProject,
+            current_dir: root.clone(),
+            entries: Vec::new(),
+            loading: true,
+            selected: 0,
+            filter: TextInput::new(),
+            searching: false,
+            editing_path: false,
+            path_input: TextInput::new(),
+            tab_completions: Vec::new(),
+            tab_index: 0,
+        };
+
+        app.apply_reaction(EventReaction::BrowserEntriesArrived {
+            dir: root,
+            entries: Err("yaran could not list ~/code: it broke.".to_string()),
+        });
+
+        assert!(matches!(
+            &app.prompt,
+            PromptState::BrowseProjects { loading: false, .. }
+        ));
+        assert_eq!(app.status.tone(), StatusTone::Error);
+        assert_eq!(
+            app.status.message(),
+            "yaran could not list ~/code: it broke."
+        );
     }
 
     #[test]
@@ -2695,7 +3549,7 @@ mod tests {
 
         app.apply_reaction(EventReaction::BrowserEntriesArrived {
             dir: root.join("stale"),
-            entries: vec![entry.clone()],
+            entries: Ok(vec![entry.clone()]),
         });
         match &app.prompt {
             PromptState::BrowseProjects {
@@ -2713,7 +3567,7 @@ mod tests {
 
         app.apply_reaction(EventReaction::BrowserEntriesArrived {
             dir: root,
-            entries: vec![entry],
+            entries: Ok(vec![entry]),
         });
         match &app.prompt {
             PromptState::BrowseProjects {
@@ -2761,38 +3615,7 @@ mod tests {
         );
     }
 
-    /// Creating an agent moves the cursor onto the new agent, so a lingering
-    /// `manage-projects` target must be cleared. Otherwise a follow-up project
-    /// action would resolve the stale pick instead of the new agent's project.
-    #[test]
-    fn create_committed_view_clears_manage_projects_target() {
-        let mut app =
-            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
-        let session = app.engine.sessions[0].clone();
-
-        // A prior manage-projects pick targeted some other project.
-        app.project_chooser_context = Some("some-other-project".to_string());
-
-        app.apply_agent_launch_ready_view(AgentLaunchReadyOutcome {
-            tab_id: session.id.clone(),
-            session,
-            pty_size: (80, 24),
-            detached_session_id: None,
-            wants_fullscreen: false,
-            status_quiet: yaran_core::statusline::QuietSurfaces::LOUD,
-            view: AgentLaunchReadyView::CreateCommitted {
-                status_message: "Created agent.".to_string().into(),
-                startup_result_error: None,
-            },
-        });
-
-        assert!(
-            app.project_chooser_context.is_none(),
-            "creating an agent must clear the manage-projects target",
-        );
-    }
-
-    /// A completed launch lands focused-but-minimized. The
+    /// A completed launch this surface started lands focused-but-minimized. The
     /// Reconnect ready with `wants_fullscreen: false` must put focus on the
     /// Center pane with NO fullscreen overlay and NO interactive input
     /// target, leaving the pane typeable (the derived predicate).
@@ -2816,6 +3639,9 @@ mod tests {
             .providers
             .insert(session.slot_tab_id().to_owned(), client);
         app.focus = FocusPane::Left;
+        // Started here: the dispatch arms its tab.
+        app.tui_launched_ptys
+            .insert(session.slot_tab_id().to_string());
 
         app.apply_agent_launch_ready_view(AgentLaunchReadyOutcome {
             tab_id: session.slot_tab_id().to_string(),
@@ -2853,6 +3679,7 @@ mod tests {
         let mut app =
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
         let session = app.engine.sessions[0].clone();
+        app.tui_launched_ptys.insert(session.id.clone());
 
         app.apply_agent_launch_ready_view(AgentLaunchReadyOutcome {
             tab_id: session.id.clone(),
@@ -2870,13 +3697,14 @@ mod tests {
         assert_eq!(app.fullscreen_overlay, FullscreenOverlay::Agent);
     }
 
-    /// A create is never fullscreen-seeking: the CreateCommitted ready lands
-    /// the fresh agent focused-but-minimized.
+    /// A create is never fullscreen-seeking: the `CreateCommitted` ready of a
+    /// create started here lands the fresh agent focused-but-minimized.
     #[test]
     fn create_committed_ready_lands_minimized() {
         let mut app =
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
         let session = app.engine.sessions[0].clone();
+        app.notes.create_agent_started_here = true;
 
         app.apply_agent_launch_ready_view(AgentLaunchReadyOutcome {
             tab_id: session.id.clone(),
@@ -2896,29 +3724,84 @@ mod tests {
         assert_eq!(app.fullscreen_overlay, FullscreenOverlay::None);
     }
 
-    /// The engine-initiated resume-fallback relaunch is never
-    /// fullscreen-seeking; when its ready arrives for the selected session it
-    /// lands minimized too.
+    /// A fresh agent created here is the list's selection AND on screen, even when the
+    /// cursor was on a terminal row and the agent lands at the bottom of a list
+    /// taller than the pane: the list scrolls only to its selection.
     #[test]
-    fn resume_fallback_ready_lands_minimized_for_the_selected_session() {
+    fn create_committed_ready_scrolls_the_new_agent_into_view() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
         let mut app =
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
-        let session = app.engine.sessions[0].clone();
-        app.input_target = InputTarget::Agent;
-        app.fullscreen_overlay = FullscreenOverlay::Agent;
+        app.engine.config.terminal.command = "cat".to_string();
+        app.engine.config.terminal.args = vec![];
+        let base = app.engine.sessions[0].clone();
+        app.engine.sessions.clear();
+        for index in 0..20 {
+            let mut session = base.clone();
+            session.id = format!("s{index:02}");
+            session.title = Some(format!("agent {index:02}"));
+            session.status = crate::model::SessionStatus::Active;
+            app.engine.sessions.push(session);
+        }
+        app.rebuild_left_items();
+        let (terminal_id, _) = app
+            .engine
+            .create_standalone_terminal(24, 80)
+            .expect("standalone terminal");
+        app.rebuild_left_items();
+        app.reselect_left_terminal(&terminal_id);
 
+        let newest = app.engine.sessions[19].clone();
+        app.notes.create_agent_started_here = true;
         app.apply_agent_launch_ready_view(AgentLaunchReadyOutcome {
-            tab_id: session.id.clone(),
-            session: session.clone(),
+            tab_id: newest.id.clone(),
+            session: newest.clone(),
             pty_size: (80, 24),
             detached_session_id: None,
             wants_fullscreen: false,
             status_quiet: yaran_core::statusline::QuietSurfaces::LOUD,
-            view: AgentLaunchReadyView::ResumeFallback {
-                session_id: session.id.clone(),
-                status_message: "Fresh restart.".to_string().into(),
+            view: AgentLaunchReadyView::CreateCommitted {
+                status_message: "Created agent.".to_string().into(),
+                startup_result_error: None,
             },
         });
+
+        assert_eq!(
+            app.selected_session().map(|s| s.id.as_str()),
+            Some(newest.id.as_str())
+        );
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).expect("terminal");
+        terminal
+            .draw(|frame| app.render(frame))
+            .expect("render frame");
+        assert!(
+            app.mouse_layout
+                .left_row_to_item
+                .contains(&app.selected_left),
+            "the new agent's row must be on screen; visible items {:?}, selected {}",
+            app.mouse_layout.left_row_to_item,
+            app.selected_left
+        );
+    }
+
+    /// The engine-initiated resume-fallback relaunch is never
+    /// fullscreen-seeking; when its ready arrives for the selected session,
+    /// falling back from a launch started here, it lands minimized too.
+    #[test]
+    fn resume_fallback_ready_lands_minimized_for_the_selected_session() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        let slot = app.engine.sessions[0].slot_tab_id().to_string();
+        // A resuming launch of the first tab started here lands first; its
+        // fallback follows.
+        land_a_resume_started_here(&mut app, &slot);
+        app.input_target = InputTarget::Agent;
+        app.fullscreen_overlay = FullscreenOverlay::Agent;
+
+        let outcome = fallback_ready(&app, &slot);
+        app.apply_agent_launch_ready_view(outcome);
 
         assert_eq!(app.input_target, InputTarget::None);
         assert_eq!(app.fullscreen_overlay, FullscreenOverlay::None);
@@ -2985,7 +3868,7 @@ mod tests {
         let session = app.engine.sessions[0].clone();
 
         // Mirror the dispatch site: mint the op, show its pending busy, stash it.
-        let op = app.build_reconnect_status_op(format!(
+        let op = App::build_reconnect_status_op(format!(
             "Launching agent \"{}\"...",
             session.branch_name().expect("managed test session")
         ));
@@ -2994,6 +3877,7 @@ mod tests {
             op.pending_status(),
         ));
         app.pending_reconnect_ops.insert(session.id.clone(), op);
+        app.tui_launched_ptys.insert(session.id.clone());
 
         app.apply_agent_launch_ready_view(AgentLaunchReadyOutcome {
             tab_id: session.id.clone(),
@@ -3054,7 +3938,7 @@ mod tests {
             "the fixture must keep the two ids apart"
         );
 
-        let op = app.build_reconnect_status_op("Launching agent...".to_string());
+        let op = App::build_reconnect_status_op("Launching agent...".to_string());
         let op_key = op.id().to_string();
         app.apply_reaction(yaran_core::engine::EventReaction::Status(
             op.pending_status(),
@@ -3095,7 +3979,7 @@ mod tests {
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
         let session = app.engine.sessions[0].clone();
 
-        let op = app.build_reconnect_status_op("Launching agent...".to_string());
+        let op = App::build_reconnect_status_op("Launching agent...".to_string());
         let op_key = op.id().to_string();
         app.apply_reaction(yaran_core::engine::EventReaction::Status(
             op.pending_status(),
@@ -3168,7 +4052,7 @@ mod tests {
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
         let session = app.engine.sessions[0].clone();
 
-        let op = app.build_reconnect_status_op(format!(
+        let op = App::build_reconnect_status_op(format!(
             "Launching agent \"{}\"...",
             session.branch_name().expect("managed test session")
         ));
@@ -3212,20 +4096,23 @@ mod tests {
                 yaran_core::worker::WorkerEvent::ChangedFilesReady {
                     outcome: Err("git status failed: index.lock exists".to_string()),
                     worktree: worktree.clone(),
+                    read: 0,
                 },
             );
             app.apply_reaction(reaction);
         }
 
         assert!(
-            app.status.message().contains("temporarily unavailable"),
+            app.status
+                .message()
+                .contains("cannot list the changed files"),
             "got {}",
             app.status.message()
         );
         assert!(
             app.status.snapshot().iter().any(|s| s.key.as_deref()
                 == Some(yaran_core::changes_status::warn_key(&session_id).as_str())),
-            "the warning carries the shared key, so the recovery replaces it"
+            "the warning carries the shared key, so its withdrawal can take it down"
         );
     }
 
@@ -3274,7 +4161,7 @@ mod tests {
             pty_size: (24, 80),
             scrollback_lines: 1_000,
             env: Vec::new(),
-            identity: Default::default(),
+            identity: TerminalIdentity::default(),
             kind: AgentLaunchKind::Reconnect {
                 status_message: "reconnect".to_string().into(),
             },
@@ -3284,7 +4171,7 @@ mod tests {
             yolo_args: Vec::new(),
         };
 
-        yaran_core::agent_job::run_agent_launch_job(request, worker_tx);
+        yaran_core::agent_job::run_agent_launch_job(request, &worker_tx, &SpawnGate::default());
 
         match worker_rx.recv().expect("worker event") {
             WorkerEvent::AgentLaunchFailed(data) => {
@@ -3300,7 +4187,8 @@ mod tests {
     fn agent_exit_status_message_caps_long_provider_output() {
         let long_output = "x".repeat(200);
 
-        let message = agent_exit_status_message(Some(false), true, &long_output, None, "r");
+        let message =
+            agent_exit_status_message(Some(false), ExitScreen::Minimal, &long_output, None, "r");
 
         assert!(message.contains("Output: "));
         assert!(message.contains("…"));
@@ -3313,7 +4201,8 @@ mod tests {
 
     #[test]
     fn agent_exit_status_message_concats_short_provider_output() {
-        let message = agent_exit_status_message(Some(false), true, "first\nsecond", None, "r");
+        let message =
+            agent_exit_status_message(Some(false), ExitScreen::Minimal, "first\nsecond", None, "r");
 
         assert!(message.contains("Output: first second."));
         assert!(!message.contains('|'));
@@ -3326,8 +4215,13 @@ mod tests {
     /// yaran stopped being able to read the terminal and killed it.
     #[test]
     fn agent_exit_status_message_says_a_read_error_ended_the_run() {
-        let message =
-            agent_exit_status_message(None, true, "boot\nfailed", Some("bad file descriptor"), "r");
+        let message = agent_exit_status_message(
+            None,
+            ExitScreen::Minimal,
+            "boot\nfailed",
+            Some("bad file descriptor"),
+            "r",
+        );
 
         assert!(
             message.contains("read error"),
@@ -3343,11 +4237,57 @@ mod tests {
         );
         assert!(message.contains("to relaunch"));
 
-        let ordinary = agent_exit_status_message(None, true, "boot\nfailed", None, "r");
+        let ordinary =
+            agent_exit_status_message(None, ExitScreen::Minimal, "boot\nfailed", None, "r");
         assert!(
             !ordinary.contains("read error"),
             "an ordinary end of input must not gain a read-error clause: {ordinary}"
         );
+    }
+
+    /// The agent exiting while it is typed into fullscreen, opened from a
+    /// layout that shows only its terminal, ends the typing and the fullscreen
+    /// view as it does anywhere else.
+    #[test]
+    fn an_agent_typed_into_from_a_terminal_only_layout_exits_out_of_fullscreen() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        app.engine.config.terminal.command = "cat".to_string();
+        app.engine.config.terminal.args = Vec::new();
+        let session_id = app.engine.sessions[0].id.clone();
+        let slot = app.engine.sessions[0].slot_tab_id().as_str().to_string();
+        app.engine.providers.insert(
+            yaran_core::ids::TabId::new(slot),
+            crate::pty::PtyClient::spawn(
+                "sh",
+                &["-c".to_string(), "sleep 30".to_string()],
+                std::path::Path::new("."),
+                10,
+                10,
+                100,
+            )
+            .expect("spawn pty"),
+        );
+        app.engine
+            .create_companion_terminal(&session_id, 24, 80)
+            .expect("companion terminal");
+        app.rebuild_left_items();
+        app.reselect_left_session(&session_id);
+        app.center_mode = CenterMode::Agent;
+        app.focus = FocusPane::Left;
+        app.reconcile_center_target();
+        app.set_dock_layout(&session_id, crate::app::DockLayout::Term);
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('i'),
+            crossterm::event::KeyModifiers::NONE,
+        ))
+        .unwrap();
+        app.reconcile_center_target();
+        assert_eq!(app.fullscreen_overlay, FullscreenOverlay::Agent);
+
+        app.apply_selected_agent_exit_status(&pruned_agent("feat/x"));
+        assert_eq!(app.input_target, InputTarget::None);
+        assert_eq!(app.fullscreen_overlay, FullscreenOverlay::None);
     }
 
     /// A pruned agent whose exit detached it, with no refusal recorded.
@@ -3398,7 +4338,7 @@ mod tests {
         let message = pruned_agent_exit_message(&pruned_agent("feat/x"), "Ctrl-r");
         assert_eq!(
             message,
-            agent_exit_status_message(Some(false), true, "boom", None, "Ctrl-r"),
+            agent_exit_status_message(Some(false), ExitScreen::Minimal, "boom", None, "Ctrl-r"),
             "with no refusal recorded the line is the ordinary exit message"
         );
         assert!(!message.contains("could not resume"));
@@ -3411,7 +4351,8 @@ mod tests {
             config_path: tmp.path().join("config.toml"),
             sessions_db_path: tmp.path().join("sessions.sqlite3"),
             worktrees_root: tmp.path().join("worktrees"),
-            lock_path: tmp.path().join("yaran.lock"),
+            lock_path: tmp.path().join("dux.lock"),
+            socket_path: tmp.path().join("yaran.sock"),
             root: tmp.path().to_path_buf(),
         };
         let project = Project {
@@ -3423,7 +4364,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,
@@ -3467,11 +4408,12 @@ mod tests {
                 custom_name: None,
             },
             paths,
-            yaran_core::test_provider::harmless_config(),
-            worker_tx,
+            &yaran_core::test_provider::harmless_config(),
+            &worker_tx,
             (80, 24),
             "op-test".to_string(),
             yaran_core::term_identity::TerminalIdentity::default(),
+            CreateJobRegistries::default(),
         );
 
         match worker_rx.recv().expect("worker event") {
@@ -3492,6 +4434,15 @@ mod tests {
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
         let mut config = app.engine.config.clone();
         config.server.port += 1;
+        // A client that asked for this reload waits on its record.
+        app.engine.open_operation(
+            "reload-op",
+            yaran_core::operations::OperationKind::ConfigReload,
+        );
+        app.engine
+            .operations
+            .await_reload("reload-op", yaran_core::engine::ReloadSlot::Now);
+        app.engine.operations.reload_closed();
 
         app.apply_reaction(EventReaction::ApplyReloadedConfig(Box::new(config)));
         app.drain_worker_events();
@@ -3501,6 +4452,22 @@ mod tests {
         assert!(
             message.contains("server"),
             "the warning names what needs restarting: {message}"
+        );
+        let record = app
+            .engine
+            .operations
+            .peek("reload-op", std::time::Instant::now())
+            .expect("the record is kept");
+        assert_eq!(
+            record.state,
+            yaran_core::operations::OperationState::Succeeded
+        );
+        assert!(
+            record.message.starts_with(
+                "Configuration reloaded. New settings are active now. Server settings changed"
+            ),
+            "{}",
+            record.message
         );
     }
 
@@ -3542,31 +4509,100 @@ mod tests {
     /// The copy is chosen by whether a listener is up on this process, so the
     /// choice must read the live companion rather than a remembered flag.
     #[test]
-    fn a_serving_terminal_ui_gets_the_stop_and_start_wording_on_a_bind_change() {
-        let (companion, _recorded) = crate::app::background_server::tests::FakeCompanion::serving();
+    fn a_serving_terminal_ui_gets_the_stop_and_start_wording_on_a_startup_bound_change() {
+        // A bind setting and each of the four server log settings: the log is
+        // opened when the serve starts, so a running one cannot adopt them.
+        type Change = fn(&mut yaran_core::config::ServerConfig);
+        let changes: [(&str, Change); 15] = [
+            ("host", |server| server.host = "0.0.0.0".into()),
+            ("port", |server| server.port += 1),
+            ("max_websocket_events_connections", |server| {
+                server.max_websocket_events_connections += 1;
+            }),
+            ("max_websocket_agent_connections", |server| {
+                server.max_websocket_agent_connections += 1;
+            }),
+            ("max_websocket_terminal_connections", |server| {
+                server.max_websocket_terminal_connections += 1;
+            }),
+            ("max_websocket_tab_connections", |server| {
+                server.max_websocket_tab_connections += 1;
+            }),
+            ("max_websocket_tabs_per_agent", |server| {
+                server.max_websocket_tabs_per_agent += 1;
+            }),
+            ("file_drop_max_bytes", |server| {
+                server.file_drop_max_bytes += 1;
+            }),
+            ("file_drop_max_concurrency", |server| {
+                server.file_drop_max_concurrency += 1;
+            }),
+            ("tree_list_max_concurrency", |server| {
+                server.tree_list_max_concurrency += 1;
+            }),
+            ("release_notes_max_concurrency", |server| {
+                server.release_notes_max_concurrency += 1;
+            }),
+            ("log_path", |server| server.log_path = "other.log".into()),
+            ("log_max_bytes", |server| server.log_max_bytes += 1),
+            ("log_keep", |server| server.log_keep += 1),
+            ("log_compress", |server| {
+                server.log_compress = !server.log_compress;
+            }),
+        ];
+        for (setting, change) in changes {
+            let (companion, _recorded) =
+                crate::app::background_server::tests::FakeCompanion::serving();
+            let mut app =
+                crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+            app.engine.config.server.serve_while_tui = true;
+            app.companion = Some(companion);
+            let mut config = app.engine.config.clone();
+            // Kept on, or the reload's own live switch stops the serve before the
+            // warning is chosen and the copy would be right for the wrong reason.
+            config.server.serve_while_tui = true;
+            change(&mut config.server);
+
+            app.apply_reaction(EventReaction::ApplyReloadedConfig(Box::new(config)));
+
+            let (tone, message) = app.status.most_recent_tui().expect("a status");
+            assert_eq!(tone, StatusTone::Warning, "{setting}");
+            assert!(
+                message.contains(&format!("({setting})")),
+                "{setting}: the warning names what changed: {message}"
+            );
+            assert!(
+                message.contains("Stop the background server and start it again"),
+                "{setting}: a serving companion picks the stop-and-start copy: {message}"
+            );
+        }
+    }
+
+    /// A config the engine adopted after its own apply failed runs the same
+    /// comparison a successful reload does: a bind change still owes the
+    /// restart warning.
+    #[test]
+    fn an_adopted_config_runs_the_reload_comparison() {
         let mut app =
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
-        app.engine.config.server.serve_while_tui = true;
-        app.companion = Some(companion);
-        let mut config = app.engine.config.clone();
-        // Kept on, or the reload's own live switch stops the serve before the
-        // warning is chosen and the copy would be right for the wrong reason.
-        config.server.serve_while_tui = true;
-        config.server.port += 1;
+        let before = app.engine.config.clone();
+        app.engine.config.server.port += 1;
 
-        app.apply_reaction(EventReaction::ApplyReloadedConfig(Box::new(config)));
+        app.apply_reaction(EventReaction::ConfigAdopted {
+            github_was_enabled: before.ui.github_integration,
+            before: Box::new(before),
+            error: "the session database could not be read".to_string(),
+        });
 
-        let (tone, message) = app.status.most_recent_tui().expect("a status");
-        assert_eq!(tone, StatusTone::Warning);
+        let (_, message) = app.status.most_recent_tui().expect("a status");
         assert_eq!(
             message,
-            server_restart_warning(true),
-            "a serving companion picks the stop-and-start copy"
+            server_restart_warning(BackgroundServing::Idle, &["port"])
         );
     }
 
     #[test]
-    fn an_idle_terminal_ui_gets_the_next_start_wording_on_a_bind_change() {
+    fn an_idle_terminal_ui_gets_the_next_start_wording_on_a_bind_or_socket_change() {
         let mut app =
             crate::app::test_support::test_app(crate::app::test_support::default_bindings());
         assert!(!app.background_server_is_serving());
@@ -3576,7 +4612,26 @@ mod tests {
         app.apply_reaction(EventReaction::ApplyReloadedConfig(Box::new(config)));
 
         let (_, message) = app.status.most_recent_tui().expect("a status");
-        assert_eq!(message, server_restart_warning(false));
+        assert_eq!(
+            message,
+            server_restart_warning(BackgroundServing::Idle, &["port"])
+        );
+        assert_eq!(
+            message,
+            "Server settings changed in config (port). Nothing is serving right now, so they apply the next time a server starts."
+        );
+
+        // The control socket is bound once per process: a new path waits for
+        // yaran itself to start again, serving or not.
+        let mut config = app.engine.config.clone();
+        config.server.control_socket = "/run/user/1000/yaran.sock".to_string();
+
+        app.apply_reaction(EventReaction::ApplyReloadedConfig(Box::new(config)));
+
+        let (tone, message) = app.status.most_recent_tui().expect("a status");
+        assert_eq!(tone, StatusTone::Warning);
+        assert!(message.contains("control_socket"), "{message}");
+        assert!(message.contains("next time yaran starts"), "{message}");
     }
 
     /// The restart is owed until the user performs it, so unlike an ordinary
@@ -3600,13 +4655,16 @@ mod tests {
             .status
             .most_recent_tui()
             .expect("the restart warning must survive the warning window");
-        assert_eq!(message, server_restart_warning(false));
+        assert_eq!(
+            message,
+            server_restart_warning(BackgroundServing::Idle, &["port"])
+        );
     }
 
     #[test]
     fn the_server_restart_warning_names_the_background_server_only_while_it_serves() {
-        let serving = server_restart_warning(true);
-        let idle = server_restart_warning(false);
+        let serving = server_restart_warning(BackgroundServing::Serving, &["port"]);
+        let idle = server_restart_warning(BackgroundServing::Idle, &["port"]);
         assert_ne!(serving, idle);
         assert!(
             serving.contains("background server"),
@@ -3628,7 +4686,8 @@ mod tests {
             config_path: tmp.path().join("config.toml"),
             sessions_db_path: tmp.path().join("sessions.sqlite3"),
             worktrees_root: tmp.path().join("worktrees"),
-            lock_path: tmp.path().join("yaran.lock"),
+            lock_path: tmp.path().join("dux.lock"),
+            socket_path: tmp.path().join("yaran.sock"),
             root: tmp.path().to_path_buf(),
         };
         let project = Project {
@@ -3640,7 +4699,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,
@@ -3655,13 +4714,15 @@ mod tests {
                 use_existing_branch: false,
                 pull_before_create: true,
                 copy_uncommitted_changes: false,
+                cloned: None,
             },
             paths,
-            yaran_core::test_provider::harmless_config(),
-            worker_tx,
+            &yaran_core::test_provider::harmless_config(),
+            &worker_tx,
             (80, 24),
             "op-create-1".to_string(),
             yaran_core::term_identity::TerminalIdentity::default(),
+            CreateJobRegistries::default(),
         );
 
         match worker_rx.recv().expect("worker event") {
@@ -3714,7 +4775,7 @@ mod tests {
         );
         assert_eq!(app.status.tone(), StatusTone::Busy);
 
-        app.resolve_reconnect_op_or("session-1", yaran_core::engine::LaunchOutcome::Missing);
+        app.resolve_reconnect_op_or("session-1", &yaran_core::engine::LaunchOutcome::Missing);
 
         assert!(
             app.status.most_recent_tui().is_none(),
@@ -3841,6 +4902,124 @@ mod tests {
             app.status.text().contains("detached"),
             "the one sentence is the detach's own: {}",
             app.status.text()
+        );
+    }
+
+    /// A resuming launch of `tab_id` this surface started, landed: what makes a
+    /// later fallback for that tab this surface's.
+    fn land_a_resume_started_here(app: &mut App, tab_id: &str) {
+        let session = app.engine.sessions[0].clone();
+        app.tui_launched_ptys.insert(tab_id.to_string());
+        app.engine
+            .resume_fallback_candidates
+            .insert(TabId::new(tab_id.to_string()), std::time::Instant::now());
+        app.apply_agent_launch_ready_view(AgentLaunchReadyOutcome {
+            tab_id: tab_id.to_string(),
+            session,
+            pty_size: (80, 24),
+            detached_session_id: None,
+            wants_fullscreen: false,
+            status_quiet: yaran_core::statusline::QuietSurfaces::LOUD,
+            view: AgentLaunchReadyView::Reconnect {
+                status_message: "Resumed.".to_string().into(),
+            },
+        });
+    }
+
+    fn fallback_ready(app: &App, tab_id: &str) -> AgentLaunchReadyOutcome {
+        let session = app.engine.sessions[0].clone();
+        AgentLaunchReadyOutcome {
+            tab_id: tab_id.to_string(),
+            session: session.clone(),
+            pty_size: (80, 24),
+            detached_session_id: None,
+            wants_fullscreen: false,
+            status_quiet: yaran_core::statusline::QuietSurfaces::LOUD,
+            view: AgentLaunchReadyView::ResumeFallback {
+                session_id: session.id.clone(),
+                status_message: "Fresh restart.".to_string().into(),
+            },
+        }
+    }
+
+    /// A fallback lands only on the pane actually on screen: not over a diff
+    /// opened since the resume started, and not on another tab of the same
+    /// agent that has focus.
+    #[test]
+    fn a_resume_fallback_lands_only_on_the_pane_that_is_on_screen() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        let slot = app.engine.sessions[0].slot_tab_id().to_string();
+        land_a_resume_started_here(&mut app, &slot);
+        app.center_mode = CenterMode::Diff {
+            lines: std::sync::Arc::new(Vec::new()),
+            scroll: 0,
+            gutter_width: 0,
+            worktree_path: String::new(),
+            rel_path: "a.rs".to_string(),
+        };
+        let outcome = fallback_ready(&app, &slot);
+        app.apply_agent_launch_ready_view(outcome);
+        assert!(
+            matches!(app.center_mode, CenterMode::Diff { .. }),
+            "the diff opened since the resume stays on screen"
+        );
+
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        land_a_resume_started_here(&mut app, "tab-x");
+        let session_id = app.engine.sessions[0].id.clone();
+        let slot = app.engine.sessions[0].slot_tab_id().to_string();
+        app.set_focused_tab(&session_id, &slot);
+        app.input_target = InputTarget::Agent;
+        app.fullscreen_overlay = FullscreenOverlay::Agent;
+        let outcome = fallback_ready(&app, "tab-x");
+        app.apply_agent_launch_ready_view(outcome);
+        assert_eq!(app.input_target, InputTarget::Agent);
+        assert_eq!(app.fullscreen_overlay, FullscreenOverlay::Agent);
+    }
+
+    /// The claim on a tab's fallback lives only while that tab can still fall
+    /// back: a resume that ended normally, followed by the agent's delete,
+    /// leaves no claim behind.
+    #[test]
+    fn a_fallback_claim_is_retired_once_the_tab_can_no_longer_fall_back() {
+        let mut app =
+            crate::app::test_support::test_app(crate::app::test_support::default_bindings());
+        let slot = app.engine.sessions[0].slot_tab_id().to_string();
+        let client = crate::pty::PtyClient::spawn(
+            "/bin/sh",
+            &[
+                "-c".to_string(),
+                "echo resumed the conversation; exit 0".to_string(),
+            ],
+            Path::new("."),
+            24,
+            80,
+            1_000,
+        )
+        .expect("spawn pty");
+        app.engine
+            .providers
+            .insert(TabId::new(slot.clone()), client);
+        app.engine
+            .mark_session_status("session-1", crate::model::SessionStatus::Active);
+        land_a_resume_started_here(&mut app, &slot);
+        assert!(app.tui_fallback_tabs.contains(&slot));
+
+        crate::app::test_support::wait_for_pty_eof(&mut app, &slot);
+        app.drain_events();
+        app.do_delete_session(
+            "session-1",
+            yaran_core::engine::WorktreeOnDelete::Keep,
+            None,
+        )
+        .expect("delete the agent");
+
+        assert!(
+            app.tui_fallback_tabs.is_empty(),
+            "{:?}",
+            app.tui_fallback_tabs
         );
     }
 }

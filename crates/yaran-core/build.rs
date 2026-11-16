@@ -1,4 +1,6 @@
-//! yaran-core build script: stamps the display version, the git commit and the publisher domain into the crate.
+//! yaran-core build script: stamps the display version (`v<version>` for a
+//! release build, `development` otherwise), the git commit and the publisher
+//! domain into the crate.
 //!
 //! <module-headers:begin>
 //! Uses: none

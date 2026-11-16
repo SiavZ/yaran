@@ -84,6 +84,12 @@ pub struct CloudModeControl {
     changed: tokio::sync::broadcast::Sender<()>,
 }
 
+impl std::fmt::Debug for CloudModeControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudModeControl").finish_non_exhaustive()
+    }
+}
+
 impl CloudModeControl {
     /// Build the control and the receiving end the serve loop owns.
     pub(crate) fn new(

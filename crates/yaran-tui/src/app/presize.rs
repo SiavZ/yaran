@@ -118,7 +118,7 @@ impl App {
             };
             // `render_center` hides the banner while typing into the selected
             // agent, so a sibling tab is shown without it too.
-            let banner = self.engine.pr_statuses.contains_key(&session_id)
+            let banner = self.engine.shown_pr(&session_id).is_some()
                 && !(is_input && selected.as_deref() == Some(session_id.as_str()));
             let tab_count = self
                 .engine
@@ -283,7 +283,10 @@ mod tests {
                 .presize
                 .area
                 .expect("a windowed render records its area");
-            let rendered = app.mouse_layout.agent_term.expect("the terminal was drawn");
+            let rendered = app
+                .mouse_layout
+                .focused_term
+                .expect("the terminal was drawn");
             let tabs = app.session_tab_ids("session-1").len();
             assert_eq!(
                 minimized_agent_term_size(area, false, tabs, false),
@@ -303,7 +306,7 @@ mod tests {
         let pane = grid(&app, "session-1-slot").expect("the shown agent is sized");
         assert_ne!(pane, (10, 10), "the render sized the shown agent");
         assert_eq!(grid(&app, "session-2-slot"), Some((10, 10)));
-        let selected_dedupe = (app.last_pty_size, app.last_pty_resize_target.clone());
+        let selected_dedupe = app.part_targets.clone();
 
         // Not before the geometry has held still.
         assert_eq!(app.presize_background_agent_ptys(Instant::now()), 0);
@@ -312,7 +315,7 @@ mod tests {
         assert_eq!(app.presize_background_agent_ptys(settled()), 1);
         assert_eq!(grid(&app, "session-2-slot"), Some(pane));
         assert_eq!(
-            (app.last_pty_size, app.last_pty_resize_target.clone()),
+            app.part_targets.clone(),
             selected_dedupe,
             "the shown surface's resize dedupe is the render pass's, untouched"
         );

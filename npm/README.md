@@ -6,7 +6,7 @@
 
 No protocol layers. No adapters. No JSON-RPC. Just real CLIs running in real terminals.
 
-yaran is fast and keeps resource usage low, leaving more RAM for Claude, Codex, Copilot, OpenCode, or any other agent CLI you bring.
+yaran is fast and keeps resource usage low, leaving more RAM for Claude, Codex, Copilot, Grok, OpenCode, or any other agent CLI you bring.
 
 ## Why yaran?
 

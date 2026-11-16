@@ -1,3 +1,6 @@
+//! Checks that this platform's pseudo-terminal spawns a child, carries its
+//! output and input, resizes, and reports the child's exit.
+
 use std::thread;
 use std::time::Duration;
 
@@ -30,7 +33,7 @@ fn pty_spawn_and_detect_exit() {
     assert!(status.success());
 }
 
-/// Verify that PTY output can be read and parsed by alacritty_terminal.
+/// Verify that PTY output can be read and parsed by `alacritty_terminal`.
 #[test]
 fn pty_read_output_into_alacritty_terminal() {
     use alacritty_terminal::event::VoidListener;
@@ -87,9 +90,8 @@ fn pty_read_output_into_alacritty_terminal() {
     let mut buf = [0u8; 4096];
     loop {
         match reader.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => parser.advance(&mut term, &buf[..n]),
-            Err(_) => break,
         }
     }
 
@@ -142,9 +144,7 @@ fn pty_write_input() {
     let mut reader = pair.master.try_clone_reader().expect("reader");
     let mut writer = pair.master.take_writer().expect("writer");
 
-    // Write some text followed by EOF (Ctrl-D).
     writer.write_all(b"test-input\n").expect("write");
-    writer.write_all(b"\x04").expect("write eof");
     let _ = writer.flush();
 
     // Drain on a thread and wait for the echo, up to 5s, BEFORE the kill

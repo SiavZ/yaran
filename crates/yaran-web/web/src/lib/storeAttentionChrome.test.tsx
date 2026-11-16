@@ -1,6 +1,15 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies. Its first load is
+// by far the slowest step in the file; left to the first test, a busy machine
+// pushes that test past its timeout. Every test still imports its own fresh
+// instance after `vi.resetModules`. Under jsdom there is a window, so this
+// instance boots for real; its app socket is stopped at once, or it would keep
+// reconnecting on real timers into the tests' fakes.
+import { eventsSocket as collectionSocket } from "./store"
+collectionSocket.dispose()
+
 import type { Bootstrap } from "./bootstrapApi"
 import type { Spine } from "./workspaceApi"
 
@@ -8,8 +17,8 @@ import type { Spine } from "./workspaceApi"
 // "needs attention" chrome: a `(N) ` count prefix on the document title. The pure
 // count/format helpers are unit-tested in attention.test.ts; this proves the store
 // actually wires the live spine → refreshAttentionChrome → document.title. The
-// canvas-composited favicon dot is not asserted (jsdom has no 2D context); the
-// clean-favicon restore path is covered in favicon.dom.test.tsx.
+// canvas-composited favicon dot and its blink are covered in
+// favicon.dom.test.tsx, which fakes the 2D context jsdom lacks.
 
 const BASE_TITLE = "workbench"
 
@@ -63,6 +72,13 @@ let bootstrapBody: Bootstrap = makeBootstrap()
 let spineBody: Spine = makeSpine()
 
 const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (u.includes("/api/v1/bootstrap")) {
     return {
@@ -120,7 +136,12 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   document.head.innerHTML = ""
@@ -167,19 +188,33 @@ describe("store attention chrome (browser-tab count)", () => {
     expect(document.title).toBe(BASE_TITLE)
   })
 
+  it("shows no count and no favicon dot while the attention indicator is off", async () => {
+    // The server stops flagging agents once the setting is off, but a live
+    // toggle can land before the spine that drops the flags; the setting wins.
+    bootstrapBody = makeBootstrap({ attention_indicator: false })
+    spineBody = makeSpine({ sessions: [session("s1", true)] })
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext")
+    await loadStore()
+    expect(document.title).toBe(BASE_TITLE)
+    const links = Array.from(document.querySelectorAll("link[rel='icon']"))
+    expect(links).toHaveLength(1)
+    expect(links[0].getAttribute("href")).toBe("/favicon.png")
+    expect(getContext).not.toHaveBeenCalled()
+  })
+
   it("never counts in the standalone editor tab, however many agents are flagged", async () => {
-    // The editor tab is not the thing needing attention, so its title keeps the
-    // "Editor" prefix and never grows a "(N) " one.
+    // The editor tab is not the thing needing attention, so its title names the
+    // editor and never grows a "(N) " prefix. These sessions have no name to show.
     window.location.hash = "#/editor/agent/s1"
     spineBody = makeSpine({ sessions: [session("s1", true), session("s2", true)] })
     const mod = await loadStore()
     expect(mod.getSnapshot().standaloneEditor).toBe(true)
-    expect(document.title).toBe(`Editor: ${BASE_TITLE}`)
+    expect(document.title).toBe(`Editor — ${BASE_TITLE}`)
 
     await pushSpine(
       mod,
       makeSpine({ sessions: [session("s1", true), session("s2", true)] }),
     )
-    expect(document.title).toBe(`Editor: ${BASE_TITLE}`)
+    expect(document.title).toBe(`Editor — ${BASE_TITLE}`)
   })
 })

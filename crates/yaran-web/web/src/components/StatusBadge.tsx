@@ -19,13 +19,13 @@ const STATUS: Record<
   { className: string; Icon: typeof Circle; fill: boolean; label: string }
 > = {
   active: {
-    className: "border-transparent bg-transparent text-green-500",
+    className: "border-transparent bg-transparent text-yaran-active",
     Icon: Circle,
     fill: true,
     label: "active",
   },
   detached: {
-    className: "border-transparent bg-transparent text-amber-500",
+    className: "border-transparent bg-transparent text-yaran-detached",
     Icon: CirclePause,
     fill: false,
     label: "detached",

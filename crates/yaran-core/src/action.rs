@@ -1,7 +1,7 @@
 //! The `Action` enum: yaran's transport-agnostic command vocabulary.
 //!
 //! Every bindable or invokable action is an `Action`. `config_name` returns the
-//! stable snake_case identifier used as the `[keys]` config key. The TUI's key
+//! stable `snake_case` identifier used as the `[keys]` config key. The TUI's key
 //! parsing, default key tables and runtime binding lookup live in the binary's
 //! `keybindings` module, not here.
 //!
@@ -21,109 +21,253 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
     // Navigation
+    /// Navigate down through projects, sessions, files, and lists.
     MoveDown,
+    /// Navigate up through projects, sessions, files, and lists.
     MoveUp,
     // Projects pane
+    /// Collapse or expand the selected project.
     ToggleProject,
+    /// Create a new agent session (worktree).
     NewAgent,
+    /// Create a new agent session from a GitHub pull request.
     NewAgentFromPr,
+    /// Create a new agent from an existing git worktree.
     NewAgentFromWorktree,
+    /// Manage a project: its actions, settings and base branch.
     ManageProjects,
+    /// Remove a worktree yaran manages for a project, and optionally its branch.
     ManageWorktrees,
+    /// Filter the agent list by name, branch, project, or provider.
     FilterAgents,
+    /// Fork the selected agent into a fresh worktree and session.
     ForkAgent,
+    /// Swap the selected agent worktree to a different provider.
     ChangeAgentProvider,
+    /// Change the global default provider used for new agent sessions in projects without an
+    /// explicit project override.
     ChangeDefaultProvider,
+    /// Change the selected project's default provider used for new agent sessions in that project
+    /// only.
     ChangeProjectDefaultProvider,
+    /// Focus the selected agent's pane. With the pane focused, this key types into a live agent and
+    /// launches a dormant one.
     FocusAgent,
+    /// Open the project browser.
     OpenProjectBrowser,
+    /// Palette-only: open the clone form, which clones a repository as a new
+    /// project and starts an agent on it. The web counterpart is "Clone a
+    /// repository…" in the Add project menu.
+    CloneProject,
+    /// Copy the selected agent's directory.
     CopyPath,
+    /// Open the selected agent's directory in the configured editor.
     OpenWorktreeInEditor,
+    /// Open a picker and choose which editor should open the selected agent's directory.
     ChooseWorktreeEditor,
+    /// Git pull the selected project checkout.
     RefreshProject,
+    /// Check out the default branch for the selected project, and branch new worktrees from it.
     CheckoutProjectDefaultBranch,
+    /// Pick any local or origin branch for the selected project to switch to, and branch new
+    /// worktrees from it.
+    ChangeProjectBaseBranch,
+    /// Restart the CLI for the selected agent.
     ReconnectAgent,
+    /// Delete the selected session and worktree; with an agent's terminal dock focused, or a
+    /// terminal's row selected, close that terminal instead.
     DeleteSession,
-    DeleteTerminal,
-    /// Select the next / previous agent in the selected agent's project (the
-    /// harnesses sharing its checkout), wrapping. Fork binding `}` / `{`.
+    /// Close the selected terminal.
+    CloseTerminal,
+    /// Select the next agent in the selected agent's project (the harnesses
+    /// sharing its checkout), wrapping. Fork binding `}`.
     NextSiblingAgent,
+    /// Select the previous agent in the selected agent's project, wrapping.
+    /// Fork binding `{`.
     PrevSiblingAgent,
+    /// Move the selected project up one position in the sidebar.
     MoveProjectUp,
+    /// Move the selected project down one position in the sidebar.
     MoveProjectDown,
     // Agent pane
+    /// Open the selected agent fullscreen, where keys go straight to the agent.
     InteractAgent,
+    /// Open the first companion terminal for the selected agent, or launch a new one in the agent's
+    /// directory if none exists.
     ShowTerminal,
+    /// Cycle the selected agent's center pane between the agent alone, the agent with its
+    /// terminal dock, and the dock alone.
+    CycleTerminalLayout,
     // Agent tabs (Center-scope; non-interactive only)
+    /// Focus the next tab of the selected agent.
     NextTab,
+    /// Focus the previous tab of the selected agent.
     PrevTab,
+    /// Add a tab to the selected agent (starts fresh).
     NewTab,
+    /// Close the focused tab of the selected agent.
     CloseTab,
+    /// Stop the focused tab of the selected agent; the tab stays, ready to start again.
+    StopTab,
+    /// Move the focused tab of the selected agent one place to the left.
+    MoveTabLeft,
+    /// Move the focused tab of the selected agent one place to the right.
+    MoveTabRight,
+    /// Focus tab 1 of the selected agent. Ships with no default key: most terminals send Ctrl-1 as
+    /// a plain 1, so bind your own key here for direct access.
     SelectTab1,
+    /// Focus tab 2 of the selected agent. Ships with no default key: most terminals send Ctrl-2 as
+    /// Ctrl-Space, so bind your own key here for direct access.
     SelectTab2,
+    /// Focus tab 3 of the selected agent. Ships with no default key: most terminals send Ctrl-3 as
+    /// Escape, so bind your own key here for direct access.
     SelectTab3,
+    /// Focus tab 4 of the selected agent. Ships with no default key: most terminals send the same
+    /// byte for Ctrl-4 and Ctrl-\ (the macro bar), so bind your own key here for direct access.
     SelectTab4,
+    /// Focus tab 5 of the selected agent. Ships with no default key: most terminals send the same
+    /// byte for Ctrl-5 and Ctrl-] (remove the git pane), so bind your own key here for direct
+    /// access.
     SelectTab5,
+    /// Focus tab 6 of the selected agent.
     SelectTab6,
+    /// Focus tab 7 of the selected agent.
     SelectTab7,
+    /// Focus tab 8 of the selected agent. Ships with no default key: most terminals send Ctrl-8 as
+    /// Backspace, so bind your own key here for direct access.
     SelectTab8,
+    /// Focus tab 9 of the selected agent. Ships with no default key: most terminals send Ctrl-9 as
+    /// a plain 9, so bind your own key here for direct access.
     SelectTab9,
+    /// Open the macro command bar to send text macros. Works over the windowed agent pane and in
+    /// fullscreen.
     OpenMacroBar,
+    /// Open the pull request the band shows in the default browser.
     OpenCurrentPullRequest,
-    AttachPullRequest,
-    DetachPullRequest,
-    ResumePullRequestAutodetection,
+    /// Step the band to the agent's next pull request.
+    NextPullRequest,
+    /// Palette-only: show, order, attach and hide the selected agent's pull
+    /// requests in one modal.
+    PullRequests,
+    /// Pull requests modal: attach a pull request to the agent.
+    PullRequestsAttach,
+    /// Pull requests modal: hide the selected pull request yaran found, detach one
+    /// you attached, or show a hidden one again. The row decides which.
+    PullRequestHideOrDetach,
+    /// Pull requests modal: show or hide the hidden pull requests.
+    PullRequestsToggleHidden,
+    /// Pull requests modal: switch between the pull requests and the branches.
+    PullRequestsToggleView,
+    /// Pull requests modal: switch between automatic order and your own.
+    PullRequestsToggleSort,
+    /// Pull requests modal: move the selected pull request up.
+    PullRequestMoveUp,
+    /// Pull requests modal: move the selected pull request down.
+    PullRequestMoveDown,
+    /// Pull requests modal: move the selected pull request to the top.
+    PullRequestMoveTop,
+    /// Toggle the agent pane between windowed and fullscreen. Windowed, typing reaches the agent
+    /// while yaran chords stay active; fullscreen, keys go straight to the agent.
     ToggleFullscreen,
+    /// Scroll up one page in the agent output. Forwarded to the app itself when it owns the screen
+    /// (see each provider's `forward_scroll`).
     ScrollPageUp,
+    /// Scroll down one page in the agent output. Forwarded to the app itself when it owns the
+    /// screen (see each provider's `forward_scroll`).
     ScrollPageDown,
+    /// Scroll up one line in any scrollable view. In a typing agent pane this key reaches the agent
+    /// until the view is scrolled back.
     ScrollLineUp,
+    /// Scroll down one line in any scrollable view. In a typing agent pane this key reaches the
+    /// agent until the view is scrolled back.
     ScrollLineDown,
+    /// Exit scroll mode and jump to the latest output.
     ScrollToBottom,
+    /// Jump to the top of the scrollback buffer.
     ScrollToTop,
     // Files pane (git staging)
+    /// Open the selected file's diff, or expand or collapse the selected folder.
     OpenDiff,
+    /// Stage or unstage the selected file, or a whole folder.
     StageUnstage,
+    /// Commit staged changes.
     CommitChanges,
+    /// Discard changes to the selected file, or delete an untracked folder.
     DiscardChanges,
+    /// Open the commit message editor.
     EngageCommitInput,
+    /// Push to remote.
     PushToRemote,
+    /// Pull from remote.
     PullFromRemote,
+    /// Start searching changed files in the files pane.
     SearchFiles,
+    /// Jump to the next active search match in the files pane.
     SearchNext,
     /// Show the right column's next / previous tab while the human board is
     /// on: a person's queue, every card, or the Changes list.
     NextRightTab,
     PrevRightTab,
     // Commit message editor
+    /// Exit the commit message editor.
     ExitCommitInput,
     // Global
+    /// Focus the next pane.
     FocusNext,
+    /// Focus the previous pane.
     FocusPrev,
+    /// Open the command palette.
     OpenPalette,
+    /// Enter resize mode to resize side panes.
     ToggleResizeMode,
+    /// Toggle the projects sidebar.
     ToggleSidebar,
+    /// Toggle the git pane.
     ToggleGitPane,
+    /// Toggle the help overlay.
     ToggleHelp,
+    /// Force a full terminal redraw.
     ForceRedraw,
+    /// Quit the application.
     Quit,
+    /// Close the current overlay or dialog.
     CloseOverlay,
     // Resize mode
+    /// Grow the left pane width.
     ResizeGrow,
+    /// Shrink the left pane width.
     ResizeShrink,
     // Overlays and dialogs
+    /// Toggle search mode in search-capable lists and overlays.
     SearchToggle,
+    /// Open path editor in the project browser.
     GoToPath,
+    /// Exit typed-path mode in the project browser.
     ExitPathEditorOnProjectAdd,
+    /// Open or navigate into the selected entry in the project browser.
     OpenEntry,
+    /// Add the current directory as a project.
     AddCurrentDir,
+    /// Open the selected startup command log file.
     OpenStartupCommandLogFile,
+    /// Open the selected startup command log folder.
     OpenStartupCommandLogFolder,
+    /// Confirm the selected action in a dialog.
     Confirm,
+    /// Toggle between options in a confirmation dialog.
     ToggleSelection,
+    /// Toggle the hovered runtime in the kill-running modal.
     ToggleMarked,
     // Palette-only (no direct keybinding)
+    /// Open the kill-running modal for agents and companion terminals.
     KillRunning,
+    /// Clear the message on the status line.
+    ClearStatusLine,
+    /// Ask the selected agent to shut down and wait the configured shutdown timeout before forcing
+    /// it; it stays listed as Detached and can be resumed.
     DetachAgent,
+    /// Check the selected agent's branch out again at the path its working copy used to occupy, for
+    /// an agent whose working copy is gone from disk.
     RecreateWorkingCopy,
     /// Web-only: open the Monaco config.toml editor, reached from the web app
     /// menu's Configuration submenu. Has no TUI behavior (the TUI edits config
@@ -138,6 +282,7 @@ pub enum Action {
     /// `config.server.title`/`favicon` via `yaran config`) and no palette registry
     /// row. Kept for the same `validate_keys` reason as `EditConfig` above.
     RenameWebInstance,
+    /// Spawn a new companion terminal in the selected agent's directory.
     NewTerminal,
     /// Palette-only: open the project chooser to pick a project, then spawn a
     /// project-owned terminal at that project's repo root. Distinct from
@@ -157,11 +302,17 @@ pub enum Action {
     /// inside the NEW-AGENT project chooser, where it answers "none of these". It
     /// is inert in that modal's other intents, which ask a different question.
     NewStandaloneAgent,
+    /// Rename the selected agent session.
     RenameSession,
+    /// Remove the selected project and its sessions.
     DeleteProject,
+    /// Remove project from app (keeps files on disk).
     RemoveProject,
+    /// Cycle the agent-list sort mode (active, updated, created, name).
     SortAgents,
+    /// Remove or restore the git pane.
     RemoveGitPane,
+    /// Open the text macros editor.
     EditMacros,
     /// Create a new macro from the macro list.
     NewMacro,
@@ -169,36 +320,55 @@ pub enum Action {
     DeleteMacro,
     /// Empty the focused full-text field (a modal body, or the commit message).
     ClearTextField,
+    /// Open input event debugger to inspect keyboard and mouse events.
     DebugInput,
+    /// Toggle line numbers in diff view.
     ToggleDiffLineNumbers,
+    /// Show CPU and memory usage for yaran and all running agents.
     ResourceMonitor,
     /// Review and remove git-registered worktrees under yaran's root that no
     /// agent (live or soft-deleted) owns. Palette-only, per-item confirmation.
     PruneOrphanWorktrees,
+    /// Toggle GitHub PR integration.
     ToggleGithubIntegration,
+    /// Ask the gh CLI again whether GitHub features can be used, without restarting yaran.
     RecheckGithub,
+    /// Toggle auto-copying selected text in the web terminal.
     ToggleCopyOnSelect,
+    /// Toggle startup auto-reopen for agents in the selected project.
     ToggleProjectAutoReopenAgents,
+    /// Toggle startup auto-reopen for the selected agent.
     ToggleAgentAutoReopen,
+    /// Configure the selected project's startup command for newly created agents.
     ConfigureStartupCommand,
+    /// Configure environment variables for every project's agents and terminals.
     ConfigureGlobalEnv,
+    /// Configure the selected project's environment variables for agents and terminals.
     ConfigureProjectEnv,
+    /// Rerun the selected agent's project startup command.
     RerunStartupCommandOnAgent,
+    /// Open startup command logs for the selected agent or project.
     ReadStartupCommandLogs,
+    /// Toggle whether the agent name prompt starts with a random pet name.
     ToggleRandomizedPetNameDefault,
+    /// Move PR banner between top and bottom of agent pane.
     TogglePrBannerPosition,
+    /// Restart the agent without resuming the prior session.
     ForceReconnectAgent,
     /// Palette-only: recompute the selected agent's changed files right now.
     /// yaran polls for changes a user makes outside it (from a terminal, say),
     /// so this is the way to stop waiting for the next poll. No default
     /// keybinding.
     RefreshChanges,
+    /// Open a picker to switch the yaran color theme.
     ChangeTheme,
+    /// Reload the configuration file.
     ReloadConfig,
     /// Palette-only: replace the running yaran with a newer build on disk,
     /// keeping every agent alive across the swap. Refuses when no newer binary
     /// exists or an agent is mid-turn, because a reload clears the transcripts.
     ReloadBinary,
+    /// Tear down the TUI and serve the yaran web UI over the same agents.
     StartWebServer,
     /// Palette-only: start serving the web UI in the BACKGROUND, with the
     /// terminal UI still running. Distinct from `StartWebServer`, which hands the
@@ -206,12 +376,16 @@ pub enum Action {
     StartBackgroundServer,
     /// Palette-only: stop the background web server, leaving every agent running.
     StopBackgroundServer,
+    /// Palette-only: open the server log viewer full-screen over the terminal UI
+    /// while it serves in the background.
+    ViewServerLog,
     /// Palette-only: open the `[server] tailscale` picker. The web counterpart is
     /// the Preferences dialog's Tailscale row.
     SetTailscaleMode,
     /// Palette-only: open the `[cloud] mode` picker. The web counterpart is the
     /// Preferences dialog's cloud row.
     SetCloudMode,
+    /// Toggle always showing the agent tab strip, even with a single tab.
     ToggleAlwaysShowTabs,
     /// Flip `ui.tab_reaches_agent`: whether the typeable center pane sends Tab
     /// and Shift-Tab to the agent instead of cycling panes with them.
@@ -227,6 +401,9 @@ pub enum Action {
     CloudRotateToken,
     CloudStatus,
     CloudPairPhone,
+    /// Flip `ui.nerd_font_icons`: whether the terminal UI draws its icons from a
+    /// Nerd Font instead of the plain Unicode set. TUI-only.
+    ToggleNerdFontIcons,
     /// Open the read-only Agent Info modal for the focused agent (name, provider,
     /// branch lineage, worktree, status).
     OpenAgentInfo,
@@ -243,13 +420,21 @@ pub enum Action {
     // Manual reordering (the TUI equivalent of the web's drag-to-reorder). Each
     // moves the selected agent/terminal in the sidebar and switches the sort to
     // manual. Palette-only (no default keybinding).
+    /// Move the selected agent up one position (switches sorting to manual).
     MoveAgentUp,
+    /// Move the selected agent down one position (switches sorting to manual).
     MoveAgentDown,
+    /// Move the selected agent to the top (switches sorting to manual).
     MoveAgentTop,
+    /// Move the selected agent to the bottom (switches sorting to manual).
     MoveAgentBottom,
+    /// Move the selected terminal up one position (switches sorting to manual).
     MoveTerminalUp,
+    /// Move the selected terminal down one position (switches sorting to manual).
     MoveTerminalDown,
+    /// Move the selected terminal to the top (switches sorting to manual).
     MoveTerminalTop,
+    /// Move the selected terminal to the bottom (switches sorting to manual).
     MoveTerminalBottom,
     /// Palette-only: list every watch rule on the live agent tabs with its
     /// state, and disarm or re-arm the selected one.
@@ -261,7 +446,11 @@ pub enum Action {
 }
 
 impl Action {
-    /// The snake_case config key for this action.
+    /// The `snake_case` config key for this action.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per Action in an exhaustive match, so a new action does not compile until it is answered here"
+    )]
     pub fn config_name(self) -> &'static str {
         match self {
             Action::MoveDown => "move_down",
@@ -279,24 +468,30 @@ impl Action {
             Action::ChangeProjectDefaultProvider => "change_project_default_provider",
             Action::FocusAgent => "focus_agent",
             Action::OpenProjectBrowser => "open_project_browser",
+            Action::CloneProject => "clone_project",
             Action::CopyPath => "copy_path",
             Action::OpenWorktreeInEditor => "open_worktree_in_editor",
             Action::ChooseWorktreeEditor => "choose_worktree_editor",
             Action::RefreshProject => "refresh_project",
             Action::CheckoutProjectDefaultBranch => "checkout_project_default_branch",
+            Action::ChangeProjectBaseBranch => "change_project_base_branch",
             Action::ReconnectAgent => "reconnect_agent",
             Action::DeleteSession => "delete_session",
-            Action::DeleteTerminal => "delete_terminal",
+            Action::CloseTerminal => "close_terminal",
             Action::NextSiblingAgent => "next_sibling_agent",
             Action::PrevSiblingAgent => "prev_sibling_agent",
             Action::MoveProjectUp => "move_project_up",
             Action::MoveProjectDown => "move_project_down",
             Action::InteractAgent => "interact_agent",
             Action::ShowTerminal => "show_terminal",
+            Action::CycleTerminalLayout => "cycle_terminal_layout",
             Action::NextTab => "next_tab",
             Action::PrevTab => "prev_tab",
             Action::NewTab => "new_tab",
             Action::CloseTab => "close_tab",
+            Action::StopTab => "stop_tab",
+            Action::MoveTabLeft => "move_tab_left",
+            Action::MoveTabRight => "move_tab_right",
             Action::SelectTab1 => "select_tab_1",
             Action::SelectTab2 => "select_tab_2",
             Action::SelectTab3 => "select_tab_3",
@@ -308,9 +503,16 @@ impl Action {
             Action::SelectTab9 => "select_tab_9",
             Action::OpenMacroBar => "open_macro_bar",
             Action::OpenCurrentPullRequest => "open_current_pull_request",
-            Action::AttachPullRequest => "attach_pull_request",
-            Action::DetachPullRequest => "detach_pull_request",
-            Action::ResumePullRequestAutodetection => "resume_pull_request_autodetection",
+            Action::NextPullRequest => "next_pull_request",
+            Action::PullRequests => "pull_requests",
+            Action::PullRequestsAttach => "pull_requests_attach",
+            Action::PullRequestHideOrDetach => "pull_request_hide_or_detach",
+            Action::PullRequestsToggleHidden => "pull_requests_toggle_hidden",
+            Action::PullRequestsToggleView => "pull_requests_toggle_view",
+            Action::PullRequestsToggleSort => "pull_requests_toggle_sort",
+            Action::PullRequestMoveUp => "pull_request_move_up",
+            Action::PullRequestMoveDown => "pull_request_move_down",
+            Action::PullRequestMoveTop => "pull_request_move_top",
             Action::ToggleFullscreen => "toggle_fullscreen",
             Action::ScrollPageUp => "scroll_page_up",
             Action::ScrollPageDown => "scroll_page_down",
@@ -352,6 +554,7 @@ impl Action {
             Action::ToggleSelection => "toggle_selection",
             Action::ToggleMarked => "toggle_marked",
             Action::KillRunning => "kill_running",
+            Action::ClearStatusLine => "clear_status_line",
             Action::DetachAgent => "detach_agent",
             Action::RecreateWorkingCopy => "recreate_working_copy",
             Action::EditConfig => "edit_config",
@@ -394,6 +597,7 @@ impl Action {
             Action::StartWebServer => "start_web_server",
             Action::StartBackgroundServer => "start_background_server",
             Action::StopBackgroundServer => "stop_background_server",
+            Action::ViewServerLog => "view_server_log",
             Action::SetTailscaleMode => "set_tailscale_mode",
             Action::SetCloudMode => "set_cloud_mode",
             Action::ToggleAlwaysShowTabs => "toggle_always_show_tabs",
@@ -404,6 +608,7 @@ impl Action {
             Action::CloudRotateToken => "cloud_rotate_token",
             Action::CloudStatus => "cloud_status",
             Action::CloudPairPhone => "cloud_pair_phone",
+            Action::ToggleNerdFontIcons => "toggle_nerd_font_icons",
             Action::OpenAgentInfo => "open_agent_info",
             Action::ShowWelcomeScreen => "show_welcome_screen",
             Action::ShowReleaseNotes => "show_release_notes",
@@ -421,6 +626,10 @@ impl Action {
     }
 
     /// Human description used as a TOML comment in the config file.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per Action in an exhaustive match, so a new action does not compile until it is answered here"
+    )]
     pub fn config_description(self) -> &'static str {
         match self {
             Action::MoveDown => "Navigate down through projects, sessions, files, and lists.",
@@ -429,9 +638,7 @@ impl Action {
             Action::NewAgent => "Create a new agent session (worktree).",
             Action::NewAgentFromPr => "Create a new agent session from a GitHub pull request.",
             Action::NewAgentFromWorktree => "Create a new agent from an existing git worktree.",
-            Action::ManageProjects => {
-                "Choose a project to target for project-scoped palette actions."
-            }
+            Action::ManageProjects => "Manage a project: its actions, settings and base branch.",
             Action::ManageWorktrees => {
                 "Remove a worktree yaran manages for a project, and optionally its branch."
             }
@@ -450,6 +657,7 @@ impl Action {
                 "Focus the selected agent's pane. With the pane focused, this key types into a live agent and launches a dormant one."
             }
             Action::OpenProjectBrowser => "Open the project browser.",
+            Action::CloneProject => "Clone a repository as a new project and start an agent on it.",
             // "Directory" rather than "worktree": these act on the agent's
             // working directory, which is a worktree yaran made for a managed
             // agent and the user's own folder for a standalone one. Both work.
@@ -464,9 +672,16 @@ impl Action {
             Action::CheckoutProjectDefaultBranch => {
                 "Check out the default branch for the selected project, and branch new worktrees from it."
             }
+            Action::ChangeProjectBaseBranch => {
+                "Pick any local or origin branch for the selected project to switch to, and branch new worktrees from it."
+            }
             Action::ReconnectAgent => "Restart the CLI for the selected agent.",
-            Action::DeleteSession => "Delete the selected session and worktree.",
-            Action::DeleteTerminal => "Delete the selected companion terminal.",
+            Action::DeleteSession => {
+                "Delete the selected session and worktree; with an agent's terminal dock focused, or a terminal's row selected, close that terminal instead."
+            }
+            Action::CloseTerminal => {
+                "Close the selected terminal. A row under its old name, delete_terminal, is read as this one."
+            }
             Action::NextSiblingAgent => {
                 "Select the next agent in the selected agent's project (the agents sharing its checkout), wrapping around."
             }
@@ -480,26 +695,54 @@ impl Action {
                 "Move the selected project down one position in the TUI sidebar."
             }
             Action::InteractAgent => {
-                "Open the selected agent fullscreen, where keys go to the agent verbatim."
+                "Open the selected agent fullscreen, where keys go straight to the agent."
             }
             Action::ShowTerminal => {
                 "Open the first companion terminal for the selected agent, or launch a new one in the agent's directory if none exists."
             }
-            Action::NextTab => "Focus the next tab of the selected agent.",
-            Action::PrevTab => "Focus the previous tab of the selected agent.",
+            Action::CycleTerminalLayout => {
+                "Cycle the selected agent's center pane between the agent alone, the agent with its terminal dock, and the dock alone."
+            }
+            Action::NextTab => {
+                "Focus the next tab of the selected agent, or its next terminal while its terminal dock has focus."
+            }
+            Action::PrevTab => {
+                "Focus the previous tab of the selected agent, or its previous terminal while its terminal dock has focus."
+            }
             Action::NewTab => "Add a tab to the selected agent (starts fresh).",
             Action::CloseTab => "Close the focused tab of the selected agent.",
-            Action::SelectTab1 => "Focus tab 1 of the selected agent.",
-            Action::SelectTab2 => "Focus tab 2 of the selected agent.",
-            Action::SelectTab3 => "Focus tab 3 of the selected agent.",
+            Action::StopTab => {
+                "Stop the focused tab of the selected agent; the tab stays, ready to start again."
+            }
+            Action::MoveTabLeft => {
+                "Move the focused tab of the selected agent one place left, or its terminal while its terminal dock has focus."
+            }
+            Action::MoveTabRight => {
+                "Move the focused tab of the selected agent one place right, or its terminal while its terminal dock has focus."
+            }
+            Action::SelectTab1 => {
+                "Focus tab 1 of the selected agent. Ships with no default key: most terminals send Ctrl-1 as a plain 1, so bind your own key here for direct access."
+            }
+            Action::SelectTab2 => {
+                "Focus tab 2 of the selected agent. Ships with no default key: most terminals send Ctrl-2 as Ctrl-Space, so bind your own key here for direct access."
+            }
+            Action::SelectTab3 => {
+                "Focus tab 3 of the selected agent. Ships with no default key: most terminals send Ctrl-3 as Escape, so bind your own key here for direct access."
+            }
             Action::SelectTab4 => {
                 "Focus tab 4 of the selected agent. Ships with no default key: most terminals send the same byte for Ctrl-4 and Ctrl-\\ (the macro bar), so bind your own key here for direct access."
             }
-            Action::SelectTab5 => "Focus tab 5 of the selected agent.",
+            Action::SelectTab5 => {
+                "Focus tab 5 of the selected agent. Ships with no default key: most terminals send the same byte for Ctrl-5 and Ctrl-] (remove the git pane), so bind your own key here for direct access."
+            }
             Action::SelectTab6 => "Focus tab 6 of the selected agent.",
             Action::SelectTab7 => "Focus tab 7 of the selected agent.",
-            Action::SelectTab8 => "Focus tab 8 of the selected agent.",
-            Action::SelectTab9 => "Focus tab 9 of the selected agent.",
+            Action::SelectTab8 => {
+                "Focus tab 8 of the selected agent. Ships with no default key: most terminals send Ctrl-8 as Backspace, so bind your own key here for direct access."
+            }
+            Action::SelectTab9 => {
+                "Focus tab 9 of the selected agent. Ships with no default key: most terminals send Ctrl-9 as a plain 9, so bind your own key here for direct access."
+            }
             Action::NewTerminal => {
                 "Spawn a new companion terminal in the selected agent's directory."
             }
@@ -514,19 +757,30 @@ impl Action {
                 "Open the macro command bar to send text macros. Works over the windowed agent pane and in fullscreen."
             }
             Action::OpenCurrentPullRequest => {
-                "Open the selected agent's current pull request in the default browser."
+                "Open the pull request the band shows in the default browser."
             }
-            Action::AttachPullRequest => {
-                "Attach a GitHub pull request to the selected agent, pausing autodetection."
+            Action::NextPullRequest => {
+                "Step the band to the agent's next pull request. While you type to the agent the key reaches the agent instead."
             }
-            Action::DetachPullRequest => {
-                "Detach the selected agent's pull request and stop looking for one on it, until you attach a pull request by hand or resume autodetection."
+            Action::PullRequests => {
+                "Show, order, attach and hide the selected agent's pull requests."
             }
-            Action::ResumePullRequestAutodetection => {
-                "Start looking for a pull request on the selected agent's branch again, after a detach."
+            Action::PullRequestsAttach => "Pull requests: attach a pull request to the agent.",
+            Action::PullRequestHideOrDetach => {
+                "Pull requests: hide the selected one yaran found, detach one you attached, or show a hidden one again."
             }
+            Action::PullRequestsToggleHidden => "Pull requests: show or hide the hidden ones.",
+            Action::PullRequestsToggleView => {
+                "Pull requests: switch between the pull requests and the branches."
+            }
+            Action::PullRequestsToggleSort => {
+                "Pull requests: switch between automatic order and your own."
+            }
+            Action::PullRequestMoveUp => "Pull requests: move the selected one up.",
+            Action::PullRequestMoveDown => "Pull requests: move the selected one down.",
+            Action::PullRequestMoveTop => "Pull requests: move the selected one to the top.",
             Action::ToggleFullscreen => {
-                "Toggle the agent pane between windowed and fullscreen. Windowed, typing reaches the agent while yaran chords stay active; fullscreen, keys go to the agent verbatim."
+                "Toggle the agent pane between windowed and fullscreen. Windowed, typing reaches the agent while yaran chords stay active; fullscreen, keys go straight to the agent."
             }
             Action::ScrollPageUp => {
                 "Scroll up one page in the agent output. Forwarded to the app itself when it owns the screen (see each provider's forward_scroll)."
@@ -542,10 +796,14 @@ impl Action {
             }
             Action::ScrollToBottom => "Exit scroll mode and jump to the latest output.",
             Action::ScrollToTop => "Jump to the top of the scrollback buffer.",
-            Action::OpenDiff => "Open the selected file's diff.",
-            Action::StageUnstage => "Stage or unstage the selected file.",
+            Action::OpenDiff => {
+                "Open the selected file's diff, or expand or collapse the selected folder."
+            }
+            Action::StageUnstage => "Stage or unstage the selected file, or a whole folder.",
             Action::CommitChanges => "Commit staged changes.",
-            Action::DiscardChanges => "Discard changes to the selected file.",
+            Action::DiscardChanges => {
+                "Discard changes to the selected file, or delete an untracked folder."
+            }
             Action::EngageCommitInput => "Open the commit message editor.",
             Action::PushToRemote => "Push to remote.",
             Action::PullFromRemote => "Pull from remote.",
@@ -582,6 +840,7 @@ impl Action {
             Action::KillRunning => {
                 "Open the kill-running modal for agents and companion terminals."
             }
+            Action::ClearStatusLine => "Clear the message on the status line.",
             Action::DetachAgent => {
                 "Ask the selected agent to shut down and wait the configured shutdown \
                  timeout before forcing it; it stays listed as Detached and can be resumed."
@@ -664,6 +923,9 @@ impl Action {
             Action::StopBackgroundServer => {
                 "Stop serving the web UI in the background; agents keep running."
             }
+            Action::ViewServerLog => {
+                "Show the server's log full-screen: the last lines of server.log, then live."
+            }
             Action::SetTailscaleMode => {
                 "Choose whether yaran binds your Tailscale address: auto, yes, or no."
             }
@@ -687,6 +949,9 @@ impl Action {
             Action::CloudStatus => "Show whether this machine is paired with Yaran Cloud.",
             Action::CloudPairPhone => {
                 "Show the QR code that adds your Yaran Cloud organization to the phone app."
+            }
+            Action::ToggleNerdFontIcons => {
+                "Toggle Nerd Font icons for yaran's own sidebar, header and dialogs (needs a patched Nerd Font)."
             }
             Action::OpenAgentInfo => {
                 "Show the selected agent's details: provider, branch lineage, worktree, and status."
@@ -725,6 +990,10 @@ impl Action {
     }
 
     /// Help section name for the help overlay.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per Action in an exhaustive match, so a new action does not compile until it is answered here"
+    )]
     pub fn help_section(self) -> Option<&'static str> {
         match self {
             Action::MoveDown
@@ -743,25 +1012,100 @@ impl Action {
             | Action::ChooseWorktreeEditor
             | Action::RefreshProject
             | Action::CheckoutProjectDefaultBranch
+            | Action::ChangeProjectBaseBranch
             | Action::InteractAgent
             | Action::ReconnectAgent
             | Action::DeleteSession
-            | Action::DeleteTerminal
+            | Action::CloseTerminal
             | Action::NextSiblingAgent
             | Action::PrevSiblingAgent
             | Action::MoveProjectUp
             | Action::MoveProjectDown => Some("Projects pane"),
-            Action::NewAgentFromPr | Action::ManageProjects | Action::ManageWorktrees => None,
+            Action::NewAgentFromPr
+            | Action::ManageProjects
+            | Action::ManageWorktrees
+            | Action::KillRunning
+            | Action::ClearStatusLine
+            | Action::DetachAgent
+            | Action::RecreateWorkingCopy
+            | Action::EditConfig
+            | Action::RenameWebInstance
+            | Action::NewTerminal
+            | Action::NewProjectTerminal
+            | Action::NewStandaloneTerminal
+            | Action::RenameSession
+            | Action::DeleteProject
+            | Action::RemoveProject
+            | Action::SortAgents
+            | Action::EditMacros
+            | Action::DebugInput
+            | Action::ToggleDiffLineNumbers
+            | Action::ResourceMonitor
+            | Action::ToggleGithubIntegration
+            | Action::RecheckGithub
+            | Action::ToggleCopyOnSelect
+            | Action::ToggleProjectAutoReopenAgents
+            | Action::ToggleAgentAutoReopen
+            | Action::ConfigureStartupCommand
+            | Action::ConfigureGlobalEnv
+            | Action::ConfigureProjectEnv
+            | Action::RerunStartupCommandOnAgent
+            | Action::ReadStartupCommandLogs
+            | Action::ToggleRandomizedPetNameDefault
+            | Action::TogglePrBannerPosition
+            | Action::ForceReconnectAgent
+            | Action::PullRequests
+            | Action::RefreshChanges
+            | Action::ChangeDefaultProvider
+            | Action::ChangeProjectDefaultProvider
+            | Action::ChangeTheme
+            | Action::ReloadConfig
+            | Action::StartWebServer
+            | Action::StartBackgroundServer
+            | Action::StopBackgroundServer
+            | Action::ViewServerLog
+            | Action::SetTailscaleMode
+            | Action::CloneProject
+            | Action::ToggleAlwaysShowTabs
+            | Action::ToggleTabReachesAgent
+            | Action::ToggleNerdFontIcons
+            | Action::OpenAgentInfo
+            | Action::ShowWelcomeScreen
+            | Action::ShowReleaseNotes
+            | Action::MoveAgentUp
+            | Action::MoveAgentDown
+            | Action::MoveAgentTop
+            | Action::MoveAgentBottom
+            | Action::MoveTerminalUp
+            | Action::MoveTerminalDown
+            | Action::MoveTerminalTop
+            | Action::MoveTerminalBottom
+            | Action::PruneOrphanWorktrees
+            | Action::ReloadBinary
+            | Action::SetCloudMode
+            | Action::ToggleHumanBoard
+            | Action::CloudLogin
+            | Action::CloudLogout
+            | Action::CloudRotateToken
+            | Action::CloudStatus
+            | Action::CloudPairPhone
+            | Action::WatchRules => None,
+            Action::SessionSettings => Some("Global"),
             Action::OpenMacroBar
             | Action::OpenCurrentPullRequest
+            | Action::NextPullRequest
             | Action::ToggleFullscreen
             | Action::ScrollPageUp
             | Action::ScrollPageDown
             | Action::ShowTerminal
+            | Action::CycleTerminalLayout
             | Action::NextTab
             | Action::PrevTab
             | Action::NewTab
             | Action::CloseTab
+            | Action::StopTab
+            | Action::MoveTabLeft
+            | Action::MoveTabRight
             | Action::SelectTab1
             | Action::SelectTab2
             | Action::SelectTab3
@@ -811,72 +1155,15 @@ impl Action {
             | Action::ToggleMarked
             | Action::NewMacro
             | Action::DeleteMacro
+            | Action::PullRequestsAttach
+            | Action::PullRequestHideOrDetach
+            | Action::PullRequestsToggleHidden
+            | Action::PullRequestsToggleView
+            | Action::PullRequestsToggleSort
+            | Action::PullRequestMoveUp
+            | Action::PullRequestMoveDown
+            | Action::PullRequestMoveTop
             | Action::ClearTextField => Some("Overlays"),
-            Action::KillRunning
-            | Action::DetachAgent
-            | Action::RecreateWorkingCopy
-            | Action::EditConfig
-            | Action::RenameWebInstance
-            | Action::NewTerminal
-            | Action::NewProjectTerminal
-            | Action::NewStandaloneTerminal
-            | Action::RenameSession
-            | Action::DeleteProject
-            | Action::RemoveProject
-            | Action::SortAgents
-            | Action::EditMacros
-            | Action::DebugInput
-            | Action::ToggleDiffLineNumbers
-            | Action::ResourceMonitor
-            | Action::PruneOrphanWorktrees
-            | Action::ToggleGithubIntegration
-            | Action::RecheckGithub
-            | Action::ToggleCopyOnSelect
-            | Action::ToggleProjectAutoReopenAgents
-            | Action::ToggleAgentAutoReopen
-            | Action::ConfigureStartupCommand
-            | Action::ConfigureGlobalEnv
-            | Action::ConfigureProjectEnv
-            | Action::RerunStartupCommandOnAgent
-            | Action::ReadStartupCommandLogs
-            | Action::ToggleRandomizedPetNameDefault
-            | Action::TogglePrBannerPosition
-            | Action::ForceReconnectAgent
-            | Action::AttachPullRequest
-            | Action::DetachPullRequest
-            | Action::ResumePullRequestAutodetection
-            | Action::RefreshChanges
-            | Action::ChangeDefaultProvider
-            | Action::ChangeProjectDefaultProvider
-            | Action::ChangeTheme
-            | Action::ReloadConfig
-            | Action::ReloadBinary
-            | Action::StartWebServer
-            | Action::StartBackgroundServer
-            | Action::StopBackgroundServer
-            | Action::SetTailscaleMode
-            | Action::SetCloudMode
-            | Action::ToggleAlwaysShowTabs
-            | Action::ToggleTabReachesAgent
-            | Action::ToggleHumanBoard
-            | Action::CloudLogin
-            | Action::CloudLogout
-            | Action::CloudRotateToken
-            | Action::CloudStatus
-            | Action::CloudPairPhone
-            | Action::OpenAgentInfo
-            | Action::ShowWelcomeScreen
-            | Action::ShowReleaseNotes
-            | Action::MoveAgentUp
-            | Action::MoveAgentDown
-            | Action::MoveAgentTop
-            | Action::MoveAgentBottom
-            | Action::MoveTerminalUp
-            | Action::MoveTerminalDown
-            | Action::MoveTerminalTop
-            | Action::MoveTerminalBottom
-            | Action::WatchRules => None,
-            Action::SessionSettings => Some("Global"),
         }
     }
 }

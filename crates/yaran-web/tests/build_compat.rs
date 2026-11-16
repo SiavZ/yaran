@@ -1,3 +1,5 @@
+//! The build script's legacy `DUX_*` compatibility, tested outside the build.
+
 #[path = "../build_compat.rs"]
 mod build_compat;
 

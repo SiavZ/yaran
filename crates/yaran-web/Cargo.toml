@@ -19,6 +19,9 @@ futures-util.workspace = true
 uuid.workspace = true
 # Wall-clock `HH:MM:SS` timestamps for the vite-style server console (console.rs).
 chrono.workspace = true
+# The terminal's width, so the `yaran server` console lays its QR codes out side
+# by side only when they fit (console.rs). Already in the tree through yaran-core.
+rustix.workspace = true
 # `interpolate-folder-path` is REQUIRED, not a nicety: web_assets.rs embeds
 # `$OUT_DIR/ui`, the staged copy build.rs writes, and rust-embed only expands an
 # environment variable in `folder` when this feature is on (the expansion is
@@ -30,6 +33,8 @@ rust-embed = { version = "8", features = [
     "debug-embed",
     "interpolate-folder-path",
 ] }
+# Wipes a login request's body once the password is out of it (auth/routes.rs).
+zeroize = "1.9"
 # Decompress embedded assets on the fly for the rare client that doesn't accept
 # br (build.rs stores them Brotli-compressed to shrink the binary).
 brotli = "8"
@@ -63,3 +68,9 @@ tokio-tungstenite = { workspace = true }
 tracing-subscriber.workspace = true
 tower = { version = "0.5", features = ["util"] }
 reqwest = { version = "0.12", default-features = false, features = ["cookies", "json"] }
+# Breaks one column's writes in a test's session database, so a route can be
+# shown answering a write that failed partway through.
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+
+[lints]
+workspace = true

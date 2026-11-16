@@ -62,7 +62,7 @@ fn fixture(scrollback: usize, initial: &str, phases: &[&str]) -> (App, OutputFix
     app.session_surface = SessionSurface::Agent;
     app.focus = FocusPane::Center;
     app.mouse_layout.center = Rect::new(9, 1, 82, 26);
-    app.mouse_layout.agent_term = Some(Rect::new(10, 2, 80, 24));
+    app.mouse_layout.focused_term = Some(Rect::new(10, 2, 80, 24));
     app.engine.sessions[0].provider = ProviderKind::from_str("jcode");
     let policy = app
         .engine
@@ -83,7 +83,9 @@ fn fixture(scrollback: usize, initial: &str, phases: &[&str]) -> (App, OutputFix
 }
 
 fn row_text(app: &App, row: u16) -> String {
-    app.snapshot_buf
+    app.part_snapshots
+        .main
+        .buf
         .cells
         .iter()
         .filter(|cell| cell.row == row)
@@ -97,7 +99,9 @@ fn wait_for_text(app: &mut App, needle: &str) -> u16 {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         app.refresh_snapshot_buf();
-        if let Some(row) = (0..app.snapshot_buf.rows).find(|row| row_text(app, *row) == needle) {
+        if let Some(row) =
+            (0..app.part_snapshots.main.buf.rows).find(|row| row_text(app, *row) == needle)
+        {
             return row;
         }
         assert!(
@@ -119,7 +123,10 @@ fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
 
 fn select_host_row(app: &mut App, needle: &str) {
     let row = wait_for_text(app, needle);
-    let area = app.mouse_layout.agent_term.expect("private pane geometry");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("private pane geometry");
     app.handle_mouse(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         area.x,
@@ -143,12 +150,12 @@ fn host_selection_crossing_history_capacity_never_copies_different_text() {
     let (mut app, mut output) = fixture(5, &initial, &["M00\r\nM01\r\nM02\r\n"]);
     wait_for_text(&mut app, "L26");
     select_host_row(&mut app, "L20");
-    assert_eq!(app.snapshot_buf.scrollback_total, 4);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 4);
     assert!(!app.snapshot_selection_origin().history_saturated);
 
     output.advance();
     wait_for_text(&mut app, "M02");
-    assert_eq!(app.snapshot_buf.scrollback_total, 5);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 5);
     assert!(app.snapshot_selection_origin().history_saturated);
     assert_eq!(
         app.terminal_selection_text(),
@@ -165,7 +172,7 @@ fn host_selection_below_history_capacity_follows_the_selected_text() {
     select_host_row(&mut app, "L20");
     output.advance();
     wait_for_text(&mut app, "M02");
-    assert_eq!(app.snapshot_buf.scrollback_total, 7);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 7);
     assert_eq!(app.terminal_selection_text(), "L20");
 }
 
@@ -181,10 +188,10 @@ fn host_selection_alt_screen_does_not_inherit_saturated_main_history() {
         ],
     );
     wait_for_text(&mut app, "L39");
-    assert_eq!(app.snapshot_buf.scrollback_total, 5);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 5);
     output.advance();
     select_host_row(&mut app, "STATIC TARGET");
-    assert_eq!(app.snapshot_buf.scrollback_total, 0);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 0);
     assert!(!app.snapshot_selection_origin().history_saturated);
     output.advance();
     wait_for_text(&mut app, "UNRELATED REPAINT");
@@ -209,7 +216,10 @@ fn first_drag_after_saturated_repaint(initial_lines: usize, repaint: &str, senti
     let (mut app, mut output) = fixture(5, &initial, &[repaint]);
     wait_for_text(&mut app, &format!("L{:02}", initial_lines - 1));
     let row = wait_for_text(&mut app, "L20");
-    let area = app.mouse_layout.agent_term.expect("private pane geometry");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("private pane geometry");
     app.handle_mouse(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         area.x,
@@ -225,7 +235,7 @@ fn first_drag_after_saturated_repaint(initial_lines: usize, repaint: &str, senti
     output.advance();
     wait_for_text(&mut app, sentinel);
     assert!(app.snapshot_selection_origin().history_saturated);
-    assert_ne!(app.grid_generation, origin.grid_generation);
+    assert_ne!(app.part_snapshots.main.generation, origin.grid_generation);
     // Match the render lifecycle between the press and the first real motion.
     // A fix may retain a zero-extent carrier solely for click replay, but must
     // never re-stamp that carrier into a valid selection at the new generation.
@@ -272,7 +282,7 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
         .draw(|frame| app.render(frame))
         .expect("establish real host pane geometry");
     select_host_row(&mut app, "STATIC TARGET");
-    assert_eq!(app.snapshot_buf.scrollback_total, 5);
+    assert_eq!(app.part_snapshots.main.buf.scrollback_total, 5);
     assert!(app.snapshot_selection_origin().history_saturated);
     assert!(
         !app.selected_terminal_surface_client()
@@ -281,7 +291,9 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
     );
     let origin = app.snapshot_selection_origin();
     let text_cells = |app: &App| {
-        app.snapshot_buf
+        app.part_snapshots
+            .main
+            .buf
             .cells
             .iter()
             .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
@@ -289,7 +301,9 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
     };
     let before = text_cells(&app);
     assert!(
-        !app.snapshot_buf
+        !app.part_snapshots
+            .main
+            .buf
             .cursor
             .is_some_and(|cursor| cursor.row == 9 && cursor.col == 11),
         "the cursor-only phase must move the cursor to a different position"
@@ -300,7 +314,9 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
     loop {
         app.refresh_snapshot_buf();
         if app
-            .snapshot_buf
+            .part_snapshots
+            .main
+            .buf
             .cursor
             .is_some_and(|cursor| cursor.row == 9 && cursor.col == 11)
         {
@@ -367,9 +383,14 @@ fn host_selection_cursor_only_before_first_drag_copies_static_target_to_memory()
             .unwrap()
             .is_alt_screen()
     );
-    let area = app.mouse_layout.agent_term.expect("rendered private pane");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("rendered private pane");
     let before: Vec<_> = app
-        .snapshot_buf
+        .part_snapshots
+        .main
+        .buf
         .cells
         .iter()
         .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
@@ -385,7 +406,9 @@ fn host_selection_cursor_only_before_first_drag_copies_static_target_to_memory()
     loop {
         app.refresh_snapshot_buf();
         if app
-            .snapshot_buf
+            .part_snapshots
+            .main
+            .buf
             .cursor
             .is_some_and(|cursor| cursor.row == 9 && cursor.col == 11)
         {
@@ -401,7 +424,9 @@ fn host_selection_cursor_only_before_first_drag_copies_static_target_to_memory()
         .draw(|frame| app.render(frame))
         .expect("real host render between press and first drag");
     let after: Vec<_> = app
-        .snapshot_buf
+        .part_snapshots
+        .main
+        .buf
         .cells
         .iter()
         .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
@@ -499,7 +524,10 @@ fn status_redraw_gesture(
             .unwrap()
             .is_alt_screen()
     );
-    let area = app.mouse_layout.agent_term.expect("rendered private pane");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("rendered private pane");
     let end_col = area.x + "STATIC TARGET".len() as u16 - 1;
 
     app.handle_mouse(mouse_event(
@@ -515,7 +543,7 @@ fn status_redraw_gesture(
         ));
     }
     let stamped = app.snapshot_selection_origin();
-    let generation_before = app.grid_generation;
+    let generation_before = app.part_snapshots.main.generation;
 
     output.advance();
     wait_for_text(&mut app, "STATUS 1");
@@ -553,7 +581,7 @@ fn status_redraw_gesture(
         after.history_saturated,
         selection_after_redraw,
         generation_before,
-        app.grid_generation,
+        app.part_snapshots.main.generation,
         app.terminal_selection.is_some(),
     );
     (copied, trace)
@@ -636,7 +664,10 @@ fn saturated_established_drag_failsafe(
         .draw(|frame| app.render(frame))
         .expect("establish real host pane geometry");
     let row = wait_for_text(&mut app, "STATIC TARGET");
-    let area = app.mouse_layout.agent_term.expect("rendered private pane");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("rendered private pane");
     // Down plus Drag: an established drag with anchor != end, copyable right now.
     select_host_row(&mut app, "STATIC TARGET");
     assert!(app.snapshot_selection_origin().history_saturated);
@@ -731,7 +762,10 @@ fn host_selection_saturated_repeated_row_scroll_then_distinct_row_never_copies_w
         .expect("establish real host pane geometry");
     // The first of the two identical rows.
     let row = wait_for_text(&mut app, "STATIC TARGET");
-    let area = app.mouse_layout.agent_term.expect("rendered private pane");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("rendered private pane");
     select_host_row(&mut app, "STATIC TARGET");
     assert!(app.snapshot_selection_origin().history_saturated);
     let origin = app.snapshot_selection_origin();
@@ -747,7 +781,7 @@ fn host_selection_saturated_repeated_row_scroll_then_distinct_row_never_copies_w
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_ne!(app.grid_generation, origin.grid_generation);
+    assert_ne!(app.part_snapshots.main.generation, origin.grid_generation);
     assert_eq!(
         row_text(&app, row),
         "STATIC TARGET",
@@ -824,11 +858,16 @@ fn host_selection_saturated_scroll_that_keeps_same_visible_text_still_retires_se
         .draw(|frame| app.render(frame))
         .expect("establish real host pane geometry");
     let row = wait_for_text(&mut app, "STATIC TARGET");
-    let area = app.mouse_layout.agent_term.expect("private pane geometry");
+    let area = app
+        .mouse_layout
+        .focused_term
+        .expect("private pane geometry");
     select_host_row(&mut app, "STATIC TARGET");
     let origin = app.snapshot_selection_origin();
     let before = app
-        .snapshot_buf
+        .part_snapshots
+        .main
+        .buf
         .cells
         .iter()
         .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
@@ -838,16 +877,24 @@ fn host_selection_saturated_scroll_that_keeps_same_visible_text_still_retires_se
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         app.refresh_snapshot_buf();
-        if app.snapshot_buf.full_damage_epoch != origin.full_damage_epoch {
+        if app.part_snapshots.main.buf.full_damage_epoch != origin.full_damage_epoch {
             break;
         }
         assert!(Instant::now() < deadline, "private scroll did not arrive");
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(app.snapshot_buf.scrollback_offset, origin.scrollback_offset);
-    assert_eq!(app.snapshot_buf.scrollback_total, origin.scrollback_total);
     assert_eq!(
-        app.snapshot_buf
+        app.part_snapshots.main.buf.scrollback_offset,
+        origin.scrollback_offset
+    );
+    assert_eq!(
+        app.part_snapshots.main.buf.scrollback_total,
+        origin.scrollback_total
+    );
+    assert_eq!(
+        app.part_snapshots
+            .main
+            .buf
             .cells
             .iter()
             .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
@@ -855,9 +902,12 @@ fn host_selection_saturated_scroll_that_keeps_same_visible_text_still_retires_se
         before,
         "fixture must leave visible cells and scroll geometry unchanged"
     );
-    assert_ne!(app.snapshot_buf.full_damage_epoch, origin.full_damage_epoch);
+    assert_ne!(
+        app.part_snapshots.main.buf.full_damage_epoch,
+        origin.full_damage_epoch
+    );
     assert_eq!(
-        app.grid_generation, origin.grid_generation,
+        app.part_snapshots.main.generation, origin.grid_generation,
         "identical text and geometry must not advance the legacy generation"
     );
     app.drop_drifted_selection();

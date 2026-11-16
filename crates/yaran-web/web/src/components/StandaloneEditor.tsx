@@ -1,23 +1,26 @@
-import { FileCode2, Loader2, SquareTerminal } from "lucide-react"
+import { Loader2 } from "lucide-react"
 
-import { AgentNotFound } from "@/components/AgentNotFound"
+import { RouteNotFoundScreen } from "@/components/RouteNotFoundScreen"
 import { LazyEditorBody } from "@/components/LazyEditorBody"
 import { useIsMobile } from "@yaran/ui-kit/use-mobile"
 import { useVisualViewportHeight } from "@/hooks/use-visual-viewport"
 import { swallowMissedFileDrop } from "@/lib/editorDrop"
 import { useYaran } from "@/lib/store"
 import { rootKey } from "@/lib/editorRoot"
-import { standaloneEditorName } from "@/lib/standaloneEditorName"
 import { keyboardLikelyOpen } from "@/lib/viewport"
+import { SHELL_SAFE_TOP, shellHeight } from "@/lib/appViewport"
 
 // The standalone editor surface: a whole browser tab that is nothing but the
 // editor, at `#/editor/<root>[/<mode>/<encoded-path>]`. It is a full second SPA
-// instance, and that cost is accepted. There is deliberately no in-app way out:
-// the browser's own Back and tab close are the exit. Phones reach it best-effort,
-// so the shell carries `MobileApp`'s two mobile-root behaviors, the safe-area
+// instance, and that cost is accepted. On a computer there is deliberately no
+// in-app way out: the browser's own Back and tab close are the exit. A phone's
+// editor header leads with the Back every phone screen has, an Up control that
+// pushes the editor's named parent (see `leaveStandaloneEditor`) rather than
+// returning wherever the editor was opened from. Phones reach it best-effort, so the
+// shell carries `MobileApp`'s two mobile-root behaviors, the safe-area
 // padding and the visual-viewport pin that keeps Monaco clear of the keyboard.
 export function StandaloneEditorShell() {
-  const { editorTarget, routeNotFound, spine } = useYaran()
+  const { editorTarget, routeNotFound } = useYaran()
   const isMobile = useIsMobile()
   // The editor IS the whole surface and always holds a focusable input, so the
   // pin applies whenever the API reports a height on a phone.
@@ -30,10 +33,6 @@ export function StandaloneEditorShell() {
     viewportHeight !== null &&
     keyboardLikelyOpen(viewportHeight, window.innerHeight)
 
-  // The header's identity, from the same facts the sidebar row is drawn from,
-  // so the tab and the row cannot disagree about what this editor is on.
-  const named = standaloneEditorName(editorTarget?.root ?? null, spine)
-
   return (
     <div
       className="flex min-h-0 flex-col overflow-hidden bg-background"
@@ -42,50 +41,31 @@ export function StandaloneEditorShell() {
       onDragOver={swallowMissedFileDrop}
       onDrop={swallowMissedFileDrop}
       style={{
-        height:
-          constrainToKeyboard && viewportHeight !== null
-            ? viewportHeight
-            : "100svh",
-        paddingTop: "env(safe-area-inset-top)",
+        height: shellHeight(
+          constrainToKeyboard && viewportHeight !== null ? viewportHeight : null,
+        ),
+        paddingTop: SHELL_SAFE_TOP,
         paddingBottom: dropBottomInset ? 0 : "env(safe-area-inset-bottom)",
         paddingLeft: "env(safe-area-inset-left)",
         paddingRight: "env(safe-area-inset-right)",
       }}
     >
       {routeNotFound !== null ? (
-        // The address names an agent this workspace does not have: the same
+        // The address names an agent or a terminal this workspace does not have: the same
         // truthful screen the main app renders, filling the tab.
-        <AgentNotFound sessionId={routeNotFound.sessionId} />
+        <RouteNotFoundScreen missing={routeNotFound} />
       ) : editorTarget === null ? (
         // Booting: the spine has not resolved the deep link yet.
         <div className="flex h-full items-center justify-center text-muted-foreground">
           <Loader2 className="size-5 motion-safe:animate-spin" />
         </div>
       ) : (
-        <>
-          <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-            {/* The root's own glyph, so a terminal-rooted tab reads as one at a
-                glance rather than as an agent whose name happens to be a path. */}
-            {named.glyph === "terminal" ? (
-              <SquareTerminal className="size-4 shrink-0 text-muted-foreground" />
-            ) : (
-              <FileCode2 className="size-4 shrink-0 text-muted-foreground" />
-            )}
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">
-              {named.name}
-            </span>
-            {named.detail !== null && (
-              <span className="min-w-0 shrink truncate text-xs text-muted-foreground">
-                {named.detail}
-              </span>
-            )}
-          </div>
-          <LazyEditorBody
-            key={rootKey(editorTarget.root)}
-            root={editorTarget.root}
-            standalone
-          />
-        </>
+        // The body's own header names what this editor is rooted at.
+        <LazyEditorBody
+          key={rootKey(editorTarget.root)}
+          root={editorTarget.root}
+          standalone
+        />
       )}
     </div>
   )

@@ -37,6 +37,11 @@ use crate::storage::SessionStore;
 /// was repaired from config-only projects, to keep the on-disk config
 /// normalized). Identity conflicts within either store, or across the two, abort
 /// with a descriptive error and no writes.
+///
+/// # Errors
+///
+/// Fails on an identity conflict within or across the two stores, or when the database or `persist`
+/// fails.
 pub fn reconcile_config_projects<P>(
     config: &mut Config,
     session_store: &SessionStore,
@@ -52,32 +57,53 @@ where
     let mut changed_config = false;
     let mut changed_store = false;
     let mut merged = config.projects.clone();
+    // Every write waits until the whole list has been judged, so a conflict
+    // found on a later entry leaves the store as it was.
+    let mut upserts: Vec<(ProjectConfig, i64)> = Vec::new();
 
     for (index, cfg_project) in config.projects.iter().enumerate() {
-        match stored.iter().position(|stored_project| {
+        if let Some(stored_index) = stored.iter().position(|stored_project| {
             stored_project.id == cfg_project.id
                 || same_expanded_project_path(stored_project, cfg_project)
         }) {
-            Some(stored_index) => {
-                let stored_project = &stored[stored_index];
-                let (merged_config_project, merged_stored_project) =
-                    merge_project_records(cfg_project, stored_project)?;
-                if &merged_config_project != cfg_project {
-                    merged[index] = merged_config_project;
-                    changed_config = true;
-                }
-                if &merged_stored_project != stored_project {
-                    session_store.upsert_project_at(&merged_stored_project, stored_index as i64)?;
-                    stored[stored_index] = merged_stored_project;
-                    changed_store = true;
-                }
+            let stored_project = &stored[stored_index];
+            // Named by its line in config.toml, never by its id or path.
+            let (merged_config_project, merged_stored_project) =
+                merge_project_records(cfg_project, stored_project).map_err(|clause| {
+                    let label = config
+                        .source_text
+                        .as_str()
+                        .and_then(|raw| crate::config::line_of_project(raw, index))
+                        .map_or_else(
+                            || format!("project {} (counting from 1)", index + 1),
+                            |line| format!("the project on line {line}"),
+                        );
+                    anyhow::anyhow!("Project sync conflict: {label} in config.toml {clause:#}")
+                })?;
+            if &merged_config_project != cfg_project {
+                merged[index] = merged_config_project;
+                changed_config = true;
             }
-            None => {
-                session_store.upsert_project_at(cfg_project, index as i64)?;
+            if &merged_stored_project != stored_project {
+                upserts.push((
+                    merged_stored_project.clone(),
+                    crate::numeric::usize_to_i64_wrapping(stored_index),
+                ));
+                stored[stored_index] = merged_stored_project;
                 changed_store = true;
-                stored.push(cfg_project.clone());
             }
+        } else {
+            upserts.push((
+                cfg_project.clone(),
+                crate::numeric::usize_to_i64_wrapping(index),
+            ));
+            changed_store = true;
+            stored.push(cfg_project.clone());
         }
+    }
+
+    for (project, position) in &upserts {
+        session_store.upsert_project_at(project, *position)?;
     }
 
     for stored_project in stored {
@@ -106,24 +132,73 @@ where
 /// reconciliation touches anything: two entries with the same id, or two entries
 /// whose expanded paths collide. `source` names the store ("config.toml" or
 /// "SQLite") for the error.
+///
+/// # Errors
+///
+/// Fails when two records share an id or a path.
 pub fn validate_project_records(source: &str, projects: &[ProjectConfig]) -> Result<()> {
-    for (index, project) in projects.iter().enumerate() {
-        for other in projects.iter().skip(index + 1) {
+    match duplicate_project(projects) {
+        // Named by position, never by path, name or id: those are what a
+        // user may keep private in a pasted bug report.
+        Some(duplicate) => anyhow::bail!(
+            "Project sync conflict in {source}: {}",
+            duplicate.sentence(
+                &format!("project {} (counting from 1)", duplicate.first + 1),
+                &format!("project {}", duplicate.second + 1),
+            )
+        ),
+        None => Ok(()),
+    }
+}
+
+/// Two project records yaran cannot tell apart, by their positions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DuplicateProject {
+    pub first: usize,
+    pub second: usize,
+    /// Whether they share an id (else they share a path).
+    pub(crate) same_id: bool,
+}
+
+impl DuplicateProject {
+    /// The sentence, with the two projects as `first` and `second` say
+    /// them (by position or by line), never by path, name or id.
+    pub(crate) fn sentence(&self, first: &str, second: &str) -> String {
+        if self.same_id {
+            format!(
+                "{first} and {second} have the same id. Remove one, or give it another id, then \
+                 restart yaran."
+            )
+        } else {
+            format!(
+                "{first} and {second} have the same path. Remove one of them, then restart yaran."
+            )
+        }
+    }
+}
+
+/// The first two project records in `projects` that share an id or a path.
+pub(crate) fn duplicate_project(projects: &[ProjectConfig]) -> Option<DuplicateProject> {
+    for (first, project) in projects.iter().enumerate() {
+        for (offset, other) in projects.iter().skip(first + 1).enumerate() {
+            let second = first + 1 + offset;
             if project.id == other.id {
-                anyhow::bail!(
-                    "Project sync conflict in {source}: duplicate project id \"{}\". Remove or rename one [[projects]] entry, then restart yaran.",
-                    project.id
-                );
+                return Some(DuplicateProject {
+                    first,
+                    second,
+                    same_id: true,
+                });
             }
             if same_expanded_project_path(project, other) {
-                anyhow::bail!(
-                    "Project sync conflict in {source}: duplicate project path \"{}\". Remove one duplicate project entry, then restart yaran.",
-                    expanded_project_path(project).unwrap_or_else(|| project.path.clone())
-                );
+                return Some(DuplicateProject {
+                    first,
+                    second,
+                    same_id: false,
+                });
             }
         }
     }
-    Ok(())
+    None
 }
 
 /// Merge a config project with its matching stored project, returning the
@@ -134,26 +209,29 @@ pub fn validate_project_records(source: &str, projects: &[ProjectConfig]) -> Res
 /// back into portable config); `env` is config-authoritative wholesale. A
 /// same-id/different-path or same-path/different-id mismatch is an identity
 /// conflict and aborts.
+///
+/// # Errors
+///
+/// Fails when the two records share an id but not a path, or a path but not an id.
 pub fn merge_project_records(
     config_project: &ProjectConfig,
     stored_project: &ProjectConfig,
 ) -> Result<(ProjectConfig, ProjectConfig)> {
     let config_path = expanded_project_path(config_project);
     let stored_path = expanded_project_path(stored_project);
+    // Said without the id or either path, which a user may keep private in a
+    // pasted bug report: the caller names the project by its line.
     if config_project.id == stored_project.id && config_path != stored_path {
         anyhow::bail!(
-            "Project sync conflict for id \"{}\": config.toml points to \"{}\" but SQLite points to \"{}\". Edit config.toml or remove/re-add the project so both stores agree.",
-            config_project.id,
-            config_project.path,
-            stored_project.path
+            "points to a different folder than yaran recorded for it. If the project moved, \
+             remove it in yaran and add it again from its new folder; otherwise put its old path \
+             back in config.toml."
         );
     }
     if config_path == stored_path && config_project.id != stored_project.id {
         anyhow::bail!(
-            "Project sync conflict for path \"{}\": config.toml uses id \"{}\" but SQLite uses id \"{}\". Edit config.toml or remove/re-add the project so both stores agree.",
-            config_path.unwrap_or_else(|| config_project.path.clone()),
-            config_project.id,
-            stored_project.id
+            "has a different id than yaran recorded for the same folder. Put the id back as it \
+             was in config.toml, or remove the project in yaran and add it again."
         );
     }
 
@@ -196,7 +274,7 @@ fn sync_config_authoritative_project_field<T>(
             *stored_value = Some(config.clone());
         }
         None => {
-            *config_value = stored_value.clone();
+            config_value.clone_from(stored_value);
         }
     }
 }
@@ -227,7 +305,7 @@ pub fn portable_project_path(path: &str) -> String {
         if relative.is_empty() {
             "$HOME".to_string()
         } else {
-            format!("$HOME/{}", relative)
+            format!("$HOME/{relative}")
         }
     } else {
         path.to_string()
@@ -251,7 +329,7 @@ mod tests {
             leading_branch: None,
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             workspace_mode: None,
         }
     }
@@ -370,7 +448,12 @@ mod tests {
         let err = reconcile_config_projects(&mut config, &store, |_| Ok(()))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("duplicate project id"), "{err}");
+        // Named by position, never by the id itself.
+        assert!(
+            err.contains("project 1 (counting from 1) and project 2 have the same id"),
+            "{err}"
+        );
+        assert!(!err.contains("dup"), "{err}");
     }
 
     #[test]
@@ -386,7 +469,40 @@ mod tests {
         let err = reconcile_config_projects(&mut config, &store, |_| Ok(()))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("config.toml points to"), "{err}");
+        assert!(
+            err.contains("in config.toml points to a different folder than yaran recorded"),
+            "{err}"
+        );
+        for private in ["p1", "/tmp/here", "/tmp/there"] {
+            assert!(!err.contains(private), "{err}");
+        }
+    }
+
+    /// A conflict found late in the list leaves the store as it was, even when
+    /// earlier entries would have been adopted or updated.
+    #[test]
+    fn a_conflict_anywhere_writes_nothing() {
+        let store = store();
+        let mut in_store = project("p1", "/tmp/p1");
+        in_store.name = Some("old".to_string());
+        store.upsert_project_at(&in_store, 0).unwrap();
+        store
+            .upsert_project_at(&project("p3", "/tmp/here"), 1)
+            .unwrap();
+        let before = store.load_projects().unwrap();
+
+        let mut renamed = project("p1", "/tmp/p1");
+        renamed.name = Some("new".to_string());
+        let mut config = Config {
+            projects: vec![
+                renamed,
+                project("p2", "/tmp/p2"),
+                project("p3", "/tmp/there"),
+            ],
+            ..Config::default()
+        };
+        reconcile_config_projects(&mut config, &store, |_| Ok(())).unwrap_err();
+        assert_eq!(store.load_projects().unwrap(), before);
     }
 
     #[test]
@@ -402,6 +518,12 @@ mod tests {
         let err = reconcile_config_projects(&mut config, &store, |_| Ok(()))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("config.toml uses id"), "{err}");
+        assert!(
+            err.contains("has a different id than yaran recorded for the same folder"),
+            "{err}"
+        );
+        for private in ["stored-id", "config-id", "/tmp/same"] {
+            assert!(!err.contains(private), "{err}");
+        }
     }
 }

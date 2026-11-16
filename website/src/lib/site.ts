@@ -6,10 +6,10 @@
 // differentiator and never gets cut for length.
 
 export const SITE_TITLE =
-  "Yaran: run multiple Claude Code, Codex & Copilot agents in parallel, terminal or browser";
+  "Yaran: run multiple Claude Code, Codex & Grok agents in parallel, terminal or browser";
 
 export const SITE_DESCRIPTION =
-  "yaran runs multiple AI coding agents (Claude Code, Codex, Copilot, OpenCode, or any CLI) in parallel, a git worktree each or straight in a folder you already have. Two front ends over one workspace: a terminal UI, and a web UI you start with yaran server, both driving the same agents, phone included. Real CLIs, real PTYs, no protocol layers.";
+  "yaran runs multiple AI coding agents (Claude Code, Codex, Copilot, Grok, OpenCode, or any CLI) in parallel, a git worktree each or straight in a folder you already have. Two front ends over one workspace: a terminal UI, and a web UI you start with yaran server, both driving the same agents, phone included. Real CLIs, real PTYs, no protocol layers.";
 
 // The blog and its RSS feed share a description too. Kept alongside the site
 // strings so a change to how yaran describes itself lands in one edit.

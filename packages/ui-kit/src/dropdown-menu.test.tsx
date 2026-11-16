@@ -17,7 +17,17 @@
  * <module-headers:end>
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+
+import { closeModals, openModals } from "./modalHistory"
+
+// The web's store gives an open menu a history entry and, on the browser's
+// Back, closes the newest modal through `closeModals`. The kit has no store, so
+// Back here is that close; the store's own half is pinned in the web's suite.
+function back(): void {
+  const newest = openModals().at(-1)
+  if (newest) closeModals([newest.id])
+}
 
 import {
   DropdownMenu,
@@ -123,6 +133,26 @@ describe("DropdownMenuContent on desktop (innerWidth 1280)", () => {
     expect(positioner.style.bottom).not.toBe("0px")
   })
 
+  it("leaves the page behind an open menu live, so a click aimed past it lands", async () => {
+    render(
+      <>
+        <button type="button">outside</button>
+        <DropdownMenu>
+          <DropdownMenuTrigger>open</DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem>Alpha</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </>,
+    )
+    await openRoot()
+    // A modal menu lays an invisible full-page layer over the page, which is
+    // what swallows the click.
+    expect(
+      document.querySelector("div[role='presentation'][data-base-ui-inert]"),
+    ).toBeNull()
+  })
+
   it("renders submenus as nested popups without a Back row", async () => {
     renderMenu()
     await openRoot()
@@ -170,13 +200,20 @@ describe("DropdownMenuContent on mobile (innerWidth 500)", () => {
     expect(popup.className).toContain("overscroll-contain")
   })
 
-  it("keeps menu semantics: items are menuitems and Escape closes", async () => {
+  it("keeps menu semantics: items are menuitems, and Escape and the browser's Back close it", async () => {
     renderMenu()
     await openRoot()
     expect(
       screen.getAllByRole("menuitem").map((el) => el.textContent),
     ).toContain("Alpha")
     fireEvent.keyDown(popupEl(), { key: "Escape" })
+    await settle()
+    expect(screen.queryByRole("menu")).toBeNull()
+    const before = openModals().length
+    await openRoot()
+    await settle()
+    expect(openModals().length).toBe(before + 1)
+    act(() => back())
     await settle()
     expect(screen.queryByRole("menu")).toBeNull()
   })

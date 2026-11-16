@@ -65,11 +65,12 @@ fn build_engine() -> (Engine, yaran_core::test_scratch::ScratchDir) {
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -79,10 +80,10 @@ fn build_engine() -> (Engine, yaran_core::test_scratch::ScratchDir) {
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session(
                 "s1",
@@ -90,13 +91,16 @@ fn build_engine() -> (Engine, yaran_core::test_scratch::ScratchDir) {
                 "feat",
                 root.to_string_lossy().as_ref(),
             ))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
     yaran_core::test_provider::defuse_config(&mut engine.config);
+    // Not tests about Tailscale: on any other mode every request waits on the
+    // first Funnel check, which would consult this machine's real CLI.
+    engine.config.server.tailscale = "no".to_string();
     engine.config.providers.commands.insert(
         "claude".to_string(),
         ProviderCommandConfig {
@@ -111,14 +115,169 @@ fn build_engine() -> (Engine, yaran_core::test_scratch::ScratchDir) {
     (engine, tmp)
 }
 
+/// Send `GET <uri>` over the control socket at `path` on its own thread, so it
+/// can be sent while nothing serves the socket and wait in its backlog.
+fn request_over_socket(
+    path: &std::path::Path,
+    uri: &str,
+) -> std::thread::JoinHandle<Result<String, String>> {
+    use std::io::{Read, Write};
+    let path = path.to_path_buf();
+    let uri = uri.to_string();
+    std::thread::spawn(move || {
+        let mut stream = std::os::unix::net::UnixStream::connect(&path)
+            .map_err(|e| format!("connect failed: {e}"))?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .map_err(|e| e.to_string())?;
+        write!(
+            stream,
+            "GET {uri} HTTP/1.1\r\nHost: yaran\r\nConnection: close\r\n\r\n"
+        )
+        .map_err(|e| format!("write failed: {e}"))?;
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .map_err(|e| format!("read failed: {e}"))?;
+        Ok(response)
+    })
+}
+
+fn socket_inode(path: &std::path::Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).expect("the socket").ino()
+}
+
+/// Serve `engine` through the flip until `stop` is set, then come back under the
+/// terminal UI's own core. Answers the exit, whether the live terminal
+/// survived, the answer to a request sent after the flip, and the socket's inode.
+fn flip_and_come_back(
+    engine: Engine,
+    listener: TcpListener,
+    stop: &AtomicBool,
+    terminal_id: &str,
+    socket: &std::path::Path,
+) -> (ServerExit, bool, String, u64) {
+    let (returned_engine, exit) = serve_with_engine(
+        engine,
+        vec![listener],
+        yaran_core::activity::ActivityRing::default(),
+        &yaran_core::serve_log::StartupNotes::default(),
+        yaran_web::FlipHooks::default(),
+        yaran_web::FlipTurns {
+            on_tick: || {
+                if stop.load(Ordering::SeqCst) {
+                    ServerTick::ReturnToTui
+                } else {
+                    ServerTick::Continue
+                }
+            },
+            on_shutdown_status: |_message: &str| {},
+            on_shutdown_wait: || false,
+        },
+    )
+    .expect("serve_with_engine");
+
+    // The SAME engine came back: the terminal we created is still live and
+    // still writable (PTYs untouched by ReturnToTui).
+    let terminal = returned_engine.companion_terminals.get(terminal_id);
+    let survived = match terminal {
+        Some(t) => !t.client.is_exited() && t.client.write_bytes(b"ping\n").is_ok(),
+        None => false,
+    };
+
+    // Back under the terminal UI: a request sent before its core is up
+    // waits for it.
+    let mut engine = returned_engine;
+    let after_the_flip = request_over_socket(socket, "/api/v1/workspace");
+    let mut core = yaran_web::background::BackgroundServer::start_control_only(&mut engine)
+        .expect("the socket core starts")
+        .expect("the engine still holds its socket");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !after_the_flip.is_finished() && std::time::Instant::now() < deadline {
+        core.service(&mut engine);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let answer = after_the_flip
+        .join()
+        .expect("the request thread does not panic")
+        .unwrap_or_else(|e| format!("unanswered: {e}"));
+    let _ = core.hand_over(&mut engine);
+    // Read here, while this engine still holds the socket: its lock removes
+    // the socket file when this thread drops it, so the test thread could
+    // otherwise look after it is gone.
+    let inode = socket_inode(socket);
+    (exit, survived, answer, inode)
+}
+
+/// Open an operation and have the command line wait on it over `socket`, giving
+/// the wait time to arrive before the caller moves on.
+fn an_operation_wait_in_flight(
+    operations: &yaran_core::operations::Operations,
+    socket: &std::path::Path,
+) -> std::thread::JoinHandle<Result<String, String>> {
+    operations.open(
+        "op-across-the-flip",
+        yaran_core::operations::OperationKind::TabClose,
+        yaran_core::operations::OperationPolicy {
+            unknown_after: Duration::from_secs(600),
+            retention: Duration::from_secs(600),
+        },
+        std::time::Instant::now(),
+    );
+    let wait = request_over_socket(
+        socket,
+        "/api/v1/operations/op-across-the-flip?wait_seconds=25",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    wait
+}
+
+/// Whether a `connected` frame arrives on `ws` within five seconds.
+async fn saw_connected_frame(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some(Ok(m))) = tokio::time::timeout(Duration::from_millis(300), ws.next()).await
+            && let Ok(t) = m.into_text()
+            && t.contains("\"event\":\"connected\"")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// A ws client connects to `/ws/events` and receives the `connected` handshake
 /// frame, then a programmatic `ReturnToTui` tick stops serving: the engine comes
 /// back (proved by the returned `ServerExit::ReturnToTui` and a surviving
 /// in-memory terminal), and the port can be re-bound (the server is actually down
 /// and released it).
+///
+/// The control socket rides through the flip and back: a request sent before
+/// the flip serves is answered by the flip, one sent while it serves too, and
+/// one sent after it returned is answered by the terminal UI's own core, all on
+/// the one socket bound before any of it.
 #[tokio::test]
 async fn serve_with_engine_returns_to_tui_and_closes_the_port() {
     let (mut engine, _tmp) = build_engine();
+    // The config folder is owner-only, and the control socket goes nowhere else.
+    std::fs::set_permissions(
+        &engine.paths.root,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .unwrap();
+    let socket = engine.paths.root.join("yaran.sock");
+    assert_eq!(
+        yaran_core::control_socket::open(&mut engine.single_instance_lock, &socket),
+        None
+    );
+    let bound = socket_inode(&socket);
+    let operations = engine.operations.clone();
+    let before_the_flip = request_over_socket(&socket, "/api/v1/workspace");
 
     // Create a live companion terminal BEFORE serving so we can prove the
     // ReturnToTui path preserves running PTYs (the engine is never dropped).
@@ -143,36 +302,34 @@ async fn serve_with_engine_returns_to_tui_and_closes_the_port() {
 
     // serve_with_engine runs the engine loop on THIS thread, so it must run on a
     // dedicated thread (the engine is `!Send`, hence we build it here too). The
-    // thread reports back only `Send` values: the exit reason plus a flag for
-    // whether the live terminal survived the round-trip.
-    let (result_tx, result_rx) = std::sync::mpsc::channel::<(ServerExit, bool)>();
+    // thread reports back only `Send` values: the exit reason, a flag for
+    // whether the live terminal survived the round-trip, the answer to the
+    // request sent after it, and the socket's inode once the engine is back.
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<(ServerExit, bool, String, u64)>();
+    let socket_for_thread = socket.clone();
     let serve_thread = std::thread::spawn(move || {
-        let (returned_engine, exit) = serve_with_engine(
+        let result = flip_and_come_back(
             engine,
-            vec![listener],
-            yaran_core::activity::ActivityRing::new(),
-            || {
-                if stop_for_thread.load(Ordering::SeqCst) {
-                    ServerTick::ReturnToTui
-                } else {
-                    ServerTick::Continue
-                }
-            },
-            |_message| {},
-        )
-        .expect("serve_with_engine");
-
-        // The SAME engine came back: the terminal we created is still live and
-        // still writable (PTYs untouched by ReturnToTui).
-        let terminal = returned_engine
-            .companion_terminals
-            .get(&terminal_id_for_thread);
-        let survived = match terminal {
-            Some(t) => !t.client.is_exited() && t.client.write_bytes(b"ping\n").is_ok(),
-            None => false,
-        };
-        result_tx.send((exit, survived)).unwrap();
+            listener,
+            &stop_for_thread,
+            &terminal_id_for_thread,
+            &socket_for_thread,
+        );
+        result_tx
+            .send(result)
+            .expect("the test thread waits for the result");
     });
+
+    let answer = before_the_flip
+        .join()
+        .unwrap()
+        .expect("a request sent before the flip is answered by it");
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    let answer = request_over_socket(&socket, "/api/v1/workspace")
+        .join()
+        .unwrap()
+        .expect("the flip answers on the socket");
+    assert!(answer.contains("\"projects\""), "{answer}");
 
     // Connect a ws client to `/ws/events` and confirm the `connected` handshake
     // frame arrives, proof the socket is live. All data (the session spine, its
@@ -180,25 +337,39 @@ async fn serve_with_engine_returns_to_tui_and_closes_the_port() {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
         .await
         .expect("connect");
-    let mut saw_connected = false;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while tokio::time::Instant::now() < deadline && !saw_connected {
-        if let Ok(Some(Ok(m))) = tokio::time::timeout(Duration::from_millis(300), ws.next()).await
-            && let Ok(t) = m.into_text()
-            && t.contains("\"event\":\"connected\"")
-        {
-            saw_connected = true;
-        }
-    }
-    assert!(saw_connected, "never received a connected frame");
+    assert!(
+        saw_connected_frame(&mut ws).await,
+        "never received a connected frame"
+    );
+
+    // A command-line wait on an operation, in flight as the flip hands back,
+    // answers the record as it stands at once instead of being waited out.
+    let wait = an_operation_wait_in_flight(&operations, &socket);
 
     // Ask the status-screen tick to flip back to the TUI.
+    let handed_back = std::time::Instant::now();
     stop.store(true, Ordering::SeqCst);
+    let answer = wait
+        .join()
+        .unwrap()
+        .expect("the wait is answered as the flip hands back");
+    assert!(answer.contains("\"running\""), "{answer}");
+    assert!(
+        handed_back.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        handed_back.elapsed()
+    );
 
     // The serve thread should return promptly with the engine intact.
-    let (exit, survived) = result_rx
-        .recv_timeout(Duration::from_secs(10))
+    let (exit, survived, after_the_flip, inode) = result_rx
+        .recv_timeout(Duration::from_secs(30))
         .expect("serve thread reported a result");
+    assert!(
+        after_the_flip.starts_with("HTTP/1.1 200"),
+        "a request sent after the flip returned is answered by the terminal UI's core: \
+         {after_the_flip}"
+    );
+    assert_eq!(inode, bound, "the same bound socket");
     assert!(
         matches!(exit, ServerExit::ReturnToTui),
         "expected ReturnToTui exit"
@@ -220,7 +391,7 @@ async fn serve_with_engine_returns_to_tui_and_closes_the_port() {
 }
 
 /// A `QuitProcess` tick stops serving and runs the quit teardown
-/// (`shutdown_ptys`), so a live agent/terminal child is SIGTERMed. We assert
+/// (`shutdown_ptys`), so a live agent/terminal child is `SIGTERMed`. We assert
 /// the exit reason is `QuitProcess` and the previously-live terminal is now
 /// marked exited on the returned engine.
 #[tokio::test]
@@ -243,15 +414,20 @@ async fn serve_with_engine_quit_process_shuts_down_ptys() {
         let (returned_engine, exit) = serve_with_engine(
             engine,
             vec![listener],
-            yaran_core::activity::ActivityRing::new(),
-            || {
-                if quit_for_thread.load(Ordering::SeqCst) {
-                    ServerTick::QuitProcess
-                } else {
-                    ServerTick::Continue
-                }
+            yaran_core::activity::ActivityRing::default(),
+            &yaran_core::serve_log::StartupNotes::default(),
+            yaran_web::FlipHooks::default(),
+            yaran_web::FlipTurns {
+                on_tick: || {
+                    if quit_for_thread.load(Ordering::SeqCst) {
+                        ServerTick::QuitProcess
+                    } else {
+                        ServerTick::Continue
+                    }
+                },
+                on_shutdown_status: |_message: &str| {},
+                on_shutdown_wait: || false,
             },
-            |_message| {},
         )
         .expect("serve_with_engine");
         // After QuitProcess teardown the child should have been SIGTERMed; the
@@ -259,8 +435,7 @@ async fn serve_with_engine_quit_process_shuts_down_ptys() {
         let exited = returned_engine
             .companion_terminals
             .get(&terminal_id_for_thread)
-            .map(|t| t.client.is_exited())
-            .unwrap_or(true);
+            .is_none_or(|t| child_is_shut_down(&t.client));
         result_tx.send((exit, exited)).unwrap();
     });
 
@@ -283,14 +458,86 @@ async fn serve_with_engine_quit_process_shuts_down_ptys() {
     serve_thread.join().expect("serve thread joined");
 }
 
+/// Whether the quit teardown has ended this terminal's child.
+///
+/// The teardown stops waiting at whichever end-of-run fact arrives first, the
+/// reap or the reader's end of input, and the two land in either order. So the
+/// question is "is a child still running here", not "has the reader seen EOF":
+/// the reader can still be draining when the serve thread looks.
+fn child_is_shut_down(client: &yaran_core::pty::PtyClient) -> bool {
+    !client.is_live()
+}
+
+/// The quit teardown ends the child, and the check above must say so even when
+/// the PTY's read side is still open at that moment. A grandchild that ignores
+/// the shutdown signals holds the PTY open past the reap, which pins the
+/// ordering the suite otherwise hits only by chance: the child reaped, the
+/// reader not yet at end of input.
+// Linux only: macOS revokes a terminal when its session leader exits, so no
+// grandchild can hold it open past the reap. The quit ending the child is
+// covered on macOS by `serve_with_engine_quit_process_shuts_down_ptys`.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn quit_process_counts_a_reaped_child_whose_pty_is_still_open_as_shut_down() {
+    let (mut engine, _tmp) = build_engine();
+    engine.config.terminal.command = "sh".to_string();
+    engine.config.terminal.args = vec![
+        "-c".to_string(),
+        "(trap '' TERM HUP; exec sleep 5) & exec cat".to_string(),
+    ];
+    let (terminal_id, _label) = engine
+        .create_companion_terminal("s1", 24, 80)
+        .expect("create terminal");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<(ServerExit, bool, bool)>();
+    let serve_thread = std::thread::spawn(move || {
+        let (returned_engine, exit) = serve_with_engine(
+            engine,
+            vec![listener],
+            yaran_core::activity::ActivityRing::default(),
+            &yaran_core::serve_log::StartupNotes::default(),
+            yaran_web::FlipHooks::default(),
+            yaran_web::FlipTurns {
+                on_tick: || ServerTick::QuitProcess,
+                on_shutdown_status: |_message: &str| {},
+                on_shutdown_wait: || false,
+            },
+        )
+        .expect("serve_with_engine");
+        let client = &returned_engine.companion_terminals[&terminal_id].client;
+        result_tx
+            .send((exit, client.is_exited(), child_is_shut_down(client)))
+            .unwrap();
+    });
+
+    let (exit, reader_at_eof, shut_down) = result_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("serve thread reported a result");
+    assert!(
+        matches!(exit, ServerExit::QuitProcess),
+        "expected QuitProcess exit"
+    );
+    assert!(
+        !reader_at_eof,
+        "the grandchild must still hold the PTY open, or this test proves nothing"
+    );
+    assert!(
+        shut_down,
+        "a reaped child is shut down even while its PTY's read side is open"
+    );
+
+    serve_thread.join().expect("serve thread joined");
+}
+
 /// Regression for the flip hang: a subscribed PTY forwarder must not wedge the
-/// runtime teardown on ReturnToTui. A ws client subscribes to a live `cat`
+/// runtime teardown on `ReturnToTui`. A ws client subscribes to a live `cat`
 /// companion terminal and gets an echoed binary frame (so the forwarder is live
 /// and parked on its blocking `recv_timeout`, with the engine (and thus the
-/// PtyClient `Sender`) still alive). Then a `ReturnToTui` tick stops serving,
+/// `PtyClient` `Sender`) still alive). Then a `ReturnToTui` tick stops serving,
 /// and the serve thread must JOIN within a tight bound. Before the fix the
 /// forwarder parked on `recv()` forever (the Sender never dropped on
-/// ReturnToTui), so dropping the multi-thread runtime hung indefinitely.
+/// `ReturnToTui`), so dropping the multi-thread runtime hung indefinitely.
 #[tokio::test]
 async fn return_to_tui_does_not_hang_with_a_subscribed_pty() {
     let (mut engine, _tmp) = build_engine();
@@ -313,23 +560,27 @@ async fn return_to_tui_does_not_hang_with_a_subscribed_pty() {
         let (returned_engine, exit) = serve_with_engine(
             engine,
             vec![listener],
-            yaran_core::activity::ActivityRing::new(),
-            || {
-                if stop_for_thread.load(Ordering::SeqCst) {
-                    ServerTick::ReturnToTui
-                } else {
-                    ServerTick::Continue
-                }
+            yaran_core::activity::ActivityRing::default(),
+            &yaran_core::serve_log::StartupNotes::default(),
+            yaran_web::FlipHooks::default(),
+            yaran_web::FlipTurns {
+                on_tick: || {
+                    if stop_for_thread.load(Ordering::SeqCst) {
+                        ServerTick::ReturnToTui
+                    } else {
+                        ServerTick::Continue
+                    }
+                },
+                on_shutdown_status: |_message: &str| {},
+                on_shutdown_wait: || false,
             },
-            |_message| {},
         )
         .expect("serve_with_engine");
         // ReturnToTui keeps PTYs alive: the terminal must still be running.
         let alive = returned_engine
             .companion_terminals
             .get(&terminal_id_for_thread)
-            .map(|t| !t.client.is_exited())
-            .unwrap_or(false);
+            .is_some_and(|t| !t.client.is_exited());
         result_tx.send((exit, alive)).unwrap();
     });
 
@@ -394,5 +645,267 @@ async fn return_to_tui_does_not_hang_with_a_subscribed_pty() {
         "flip took too long ({flip_latency:?}); the forwarder likely wedged the runtime"
     );
 
+    serve_thread.join().expect("serve thread joined");
+}
+
+/// The flip's log viewer shows the pre-flight warning, the banner, the access
+/// log, the client connecting and the shutdown.
+fn the_viewer_shows_the_serve_log(
+    ring: &yaran_core::activity::ActivityRing,
+    addr: std::net::SocketAddr,
+) {
+    let lines: Vec<String> = ring
+        .snapshot()
+        .lines
+        .iter()
+        .map(yaran_core::serve_log::LogLine::text)
+        .collect();
+    let joined = lines.join("\n");
+    // Timestamps are wall-clock, so each line is matched after its stamp.
+    let stamped = |rest: &str| {
+        lines
+            .iter()
+            .any(|l| l.len() > 9 && l.as_bytes()[2] == b':' && l[9..].starts_with(rest))
+    };
+    assert!(
+        stamped("\u{26a0} Tailscale not detected (test)"),
+        "the pre-flight warning opens the log:\n{joined}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("yaran ") && l.ends_with("  plain HTTP")),
+        "the banner header:\n{joined}"
+    );
+    assert!(
+        lines.contains(&format!("  \u{279c} Local (loopback): http://{addr}")),
+        "the banner names the URL:\n{joined}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("yaran is not checking Tailscale")
+                && l.contains("tailscale = \"no\"")
+                && l.contains("signs in too")),
+        "tailscale = \"no\" says once what it costs:\n{joined}"
+    );
+    assert!(
+        stamped("GET /api/v1/build 200 "),
+        "the access log reaches the viewer:\n{joined}"
+    );
+    assert!(
+        stamped("\u{279c} client connected from 127.0.0.1"),
+        "the client connecting:\n{joined}"
+    );
+    assert!(
+        stamped("\u{279c} Requesting 0 agents and 1 terminal to gracefully shut down"),
+        "the shutdown progress:\n{joined}"
+    );
+}
+
+/// `server.log` holds the same lines as the viewer in the plain spelling, each
+/// leading with the full date and time.
+fn server_log_holds_the_plain_lines(server_log_path: &std::path::Path, addr: std::net::SocketAddr) {
+    // `server.log` holds the same lines in the plain spelling `yaran server`
+    // prints with color off.
+    let file = std::fs::read_to_string(server_log_path).expect("server.log");
+    // Each line leads with the full date and time, in `yaran.log`'s format.
+    let file_lines: Vec<&str> = file
+        .lines()
+        .map(|line| {
+            let (stamp, rest) = line.split_once(' ').expect("a dated line");
+            chrono::DateTime::parse_from_rfc3339(stamp).expect("an RFC 3339 date");
+            rest
+        })
+        .collect();
+    let file_stamped = |rest: &str| {
+        file_lines
+            .iter()
+            .any(|l| l.len() > 9 && l.as_bytes()[2] == b':' && l[9..].starts_with(rest))
+    };
+    assert!(
+        file_stamped("warn Tailscale not detected (test)"),
+        "the pre-flight warning opens the file:\n{file}"
+    );
+    assert!(
+        file_lines
+            .iter()
+            .any(|l| l.starts_with("yaran ") && l.ends_with("  plain HTTP")),
+        "the banner header:\n{file}"
+    );
+    assert!(
+        file_lines.contains(&format!("  -> Local (loopback): http://{addr}").as_str()),
+        "the banner names the URL:\n{file}"
+    );
+    assert!(
+        file_stamped("GET /api/v1/build 200 "),
+        "the access log reaches the file:\n{file}"
+    );
+    assert!(
+        file_stamped("info client connected from 127.0.0.1"),
+        "the client connecting:\n{file}"
+    );
+    assert!(
+        file_stamped("info Requesting 0 agents and 1 terminal to gracefully shut down"),
+        "the shutdown progress:\n{file}"
+    );
+}
+
+/// The flip's log viewer shows the log `yaran server` prints. A user who flips the
+/// TUI into the server, opens it in a browser, and quits sees, in the viewer:
+/// the pre-flight's warning, the startup banner naming the loopback URL, the
+/// access log of the page's requests, the client connecting, and the shutdown.
+#[tokio::test]
+async fn the_flip_logs_what_yaran_server_prints() {
+    let (mut engine, _tmp) = build_engine();
+    engine.config.server.access_log = true;
+    let server_log_path = engine.paths.root.join("server.log");
+    let (terminal_id, _label) = engine
+        .create_companion_terminal("s1", 24, 80)
+        .expect("create terminal");
+    let _ = terminal_id;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let ring = yaran_core::activity::ActivityRing::new(500);
+    let startup = yaran_core::serve_log::StartupNotes {
+        warnings: vec![
+            "Tailscale not detected (test), so yaran is serving on loopback only.".into(),
+        ],
+        bind_warnings: Vec::new(),
+        tailscale_detected: false,
+    };
+
+    let quit = Arc::new(AtomicBool::new(false));
+    let quit_for_thread = Arc::clone(&quit);
+    let ring_for_thread = ring.clone();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let serve_thread = std::thread::spawn(move || {
+        let (_engine, _exit) = serve_with_engine(
+            engine,
+            vec![listener],
+            ring_for_thread,
+            &startup,
+            yaran_web::FlipHooks::default(),
+            yaran_web::FlipTurns {
+                on_tick: || {
+                    if quit_for_thread.load(Ordering::SeqCst) {
+                        ServerTick::QuitProcess
+                    } else {
+                        ServerTick::Continue
+                    }
+                },
+                on_shutdown_status: |_message: &str| {},
+                on_shutdown_wait: || false,
+            },
+        )
+        .expect("serve_with_engine");
+        done_tx.send(()).unwrap();
+    });
+
+    // A page's first request, then its events socket.
+    let body = reqwest_like_get(addr, "/api/v1/build").await;
+    assert!(body.starts_with("HTTP/1.1 200"), "{body}");
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
+        .await
+        .expect("connect");
+    let _ = tokio::time::timeout(Duration::from_secs(3), ws.next()).await;
+
+    quit.store(true, Ordering::SeqCst);
+    done_rx
+        .recv_timeout(Duration::from_secs(15))
+        .expect("serve thread finished");
+    serve_thread.join().expect("serve thread joined");
+
+    the_viewer_shows_the_serve_log(&ring, addr);
+    server_log_holds_the_plain_lines(&server_log_path, addr);
+}
+
+/// A bare HTTP/1.1 GET over a plain TCP socket, returning the raw response, so
+/// this suite needs no HTTP client dependency.
+async fn reqwest_like_get(addr: std::net::SocketAddr, path: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.expect("write");
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut out)).await;
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// In the flip the terminal is in raw mode, so Ctrl-c is a key, not a signal,
+/// and the status screen is not reading keys while the main thread waits out
+/// the shutdown grace. A second Ctrl-c pressed during that wait must still end
+/// it: the children are killed at once and the flip reports a forced quit, so
+/// the binary gives the terminal back and exits.
+#[tokio::test]
+async fn a_second_ctrl_c_during_the_shutdown_wait_forces_the_exit() {
+    let (mut engine, _tmp) = build_engine();
+    engine.config.server.shutdown_timeout_seconds = 60;
+    engine.config.terminal.command = "sh".to_string();
+    engine.config.terminal.args = vec![
+        "-c".to_string(),
+        "trap '' TERM HUP; exec sleep 120".to_string(),
+    ];
+    let (terminal_id, _label) = engine
+        .create_companion_terminal("s1", 24, 80)
+        .expect("create terminal");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let ring = yaran_core::activity::ActivityRing::new(100);
+
+    // The key arrives a short way into the wait: the first looks find nothing.
+    // Each look is a turn the wait hands the serving thread, where the status
+    // screen lives and reads its keys.
+    let looks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let looks_for_hook = Arc::clone(&looks);
+
+    let ring_for_thread = ring.clone();
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<(ServerExit, bool, Duration)>();
+    let serve_thread = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let (returned_engine, exit) = serve_with_engine(
+            engine,
+            vec![listener],
+            ring_for_thread,
+            &yaran_core::serve_log::StartupNotes::default(),
+            yaran_web::FlipHooks::default(),
+            yaran_web::FlipTurns {
+                on_tick: || ServerTick::QuitProcess,
+                on_shutdown_status: |_message: &str| {},
+                on_shutdown_wait: move || looks_for_hook.fetch_add(1, Ordering::SeqCst) >= 3,
+            },
+        )
+        .expect("serve_with_engine");
+        let client = &returned_engine.companion_terminals[&terminal_id].client;
+        result_tx
+            .send((exit, child_is_shut_down(client), started.elapsed()))
+            .unwrap();
+    });
+
+    let (exit, shut_down, took) = result_rx
+        .recv_timeout(Duration::from_secs(40))
+        .expect("the forced quit must not wait out the 60 second grace");
+    assert!(
+        matches!(exit, ServerExit::ForceQuit(_)),
+        "expected a forced quit"
+    );
+    assert!(took < Duration::from_secs(20), "took {took:?}");
+    assert!(shut_down, "the child that ignored SIGTERM is killed");
+    assert!(
+        looks.load(Ordering::SeqCst) >= 4,
+        "the key was looked for during the wait"
+    );
+    let lines: Vec<String> = ring
+        .snapshot()
+        .lines
+        .iter()
+        .map(yaran_core::serve_log::LogLine::text)
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.ends_with(yaran_web::FORCE_EXIT_MESSAGE)),
+        "the log says why it ended early: {lines:?}"
+    );
     serve_thread.join().expect("serve thread joined");
 }

@@ -2,6 +2,7 @@
 // socket; these requests carry the connection id for status routing and surface
 // failures as `TabsApiError`.
 
+import { forceConnectedQuery } from "./attached"
 import { createJsonRequest } from "./jsonRequest"
 
 // A failed tabs REST call. `status` is the HTTP status (0 for a network/transport
@@ -31,6 +32,11 @@ export interface ClosedTab {
   promoted?: string
 }
 
+// The 200 body for a tab reorder: the lowest workspace revision certain to show it.
+export interface ReorderedTabs {
+  min_workspace_rev?: number
+}
+
 const request = createJsonRequest(
   (message, status) => new TabsApiError(message, status),
   { mapSerializationErrors: true },
@@ -46,12 +52,13 @@ export const tabsApi = {
       provider === undefined ? {} : { provider },
     ),
   // Close a tab. The agent detaches when it was the last live one, and closing the slot tab
-  // promotes the next tab in strip order; the 200 body carries both outcomes. The agent's
+  // promotes the leftmost other tab; the 200 body carries both outcomes. The agent's
   // only tab is refused with a 400, because an agent always has a slot.
-  remove: (sessionId: string, tabId: string) =>
+  remove: (sessionId: string, tabId: string, accepted: readonly string[] | null = null) =>
     request<ClosedTab | undefined>(
       "DELETE",
-      `/api/v1/sessions/${encodeURIComponent(sessionId)}/tabs/${encodeURIComponent(tabId)}`,
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/tabs/${encodeURIComponent(tabId)}` +
+        forceConnectedQuery(accepted, true),
     ),
   // Start a dormant tab. It is the only start that gets past a recorded launch failure, which
   // opening the tab's PTY socket refuses; dispatching the launch clears that verdict, so the
@@ -60,6 +67,22 @@ export const tabsApi = {
     request<void>(
       "POST",
       `/api/v1/sessions/${encodeURIComponent(sessionId)}/tabs/${encodeURIComponent(tabId)}/start`,
+    ),
+  // Stop a tab: its process ends and the tab stays, dormant. The agent detaches
+  // when it was the last running tab.
+  stop: (sessionId: string, tabId: string, accepted: readonly string[] | null = null) =>
+    request<void>(
+      "POST",
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/tabs/${encodeURIComponent(tabId)}/stop` +
+        forceConnectedQuery(accepted, true),
+    ),
+  // Persist a new left-to-right order for the agent's tabs, the slot tab included. `tabIds`
+  // must be the complete set. Which tab holds the slot does not change.
+  reorder: (sessionId: string, tabIds: string[]) =>
+    request<ReorderedTabs | undefined>(
+      "POST",
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/tabs/reorder`,
+      { tab_ids: tabIds },
     ),
   // Retarget a tab's provider (effective on its next launch).
   patch: (sessionId: string, tabId: string, provider: string) =>

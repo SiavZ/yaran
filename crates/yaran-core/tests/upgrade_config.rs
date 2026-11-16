@@ -114,7 +114,7 @@ fn load_old(raw: &str) -> (tempfile::TempDir, YaranPaths, Config) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let paths = paths_in(tmp.path());
     std::fs::write(&paths.config_path, raw).expect("write config");
-    let config = load_config(&paths);
+    let config = load_config(&paths).expect("config loads");
     (tmp, paths, config)
 }
 
@@ -125,6 +125,7 @@ fn paths_in(root: &std::path::Path) -> YaranPaths {
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
         lock_path: root.join("yaran.lock"),
+        socket_path: root.join("yaran.sock"),
     }
 }
 
@@ -139,6 +140,8 @@ fn an_older_config_loads_without_error_and_keeps_every_value_the_user_set() {
     assert_eq!(config.terminal.command, "/usr/bin/fish");
     assert_eq!(config.terminal.args, vec!["-l".to_string()]);
     assert_eq!(config.ui.left_width_pct, 33);
+    // A setting the old file predates takes its default.
+    assert_eq!(config.ui.extended_keys, "auto");
 
     // The user's hand-added provider survives, arguments and all.
     let mine = config
@@ -208,7 +211,7 @@ fn a_retired_stock_provider_stops_being_offered_after_the_upgrade() {
         config.providers.commands.keys().collect::<Vec<_>>()
     );
     // ...while the providers yaran does ship are all present.
-    for shipped in ["claude", "codex", "opencode", "copilot"] {
+    for shipped in ["claude", "codex", "opencode", "copilot", "grok"] {
         assert!(
             config.providers.commands.contains_key(shipped),
             "{shipped} must be restored by ensure_defaults"
@@ -317,7 +320,7 @@ fn writing_after_an_upgrade_keeps_the_users_unmanaged_keys_and_comments() {
     // The user's own comment.
     assert!(saved.contains("Do not lose these comments."), "{saved}");
 
-    let reloaded = load_config(&paths);
+    let reloaded = load_config(&paths).expect("config loads");
     assert_eq!(reloaded.ui.left_width_pct, 41, "the edit must stick");
     assert_eq!(
         reloaded.shutdown_timeout_seconds, 17,
@@ -344,7 +347,7 @@ fn the_migrated_values_are_what_gets_persisted_not_the_deprecated_keys() {
     assert!(saved.contains("host = \"0.0.0.0\""), "{saved}");
     assert!(saved.contains("port = 9100"), "{saved}");
 
-    let reloaded = load_config(&paths);
+    let reloaded = load_config(&paths).expect("config loads");
     assert_eq!(reloaded.server.host, "0.0.0.0");
     assert_eq!(reloaded.server.port, 9100);
     assert!(reloaded.defaults.enable_randomized_pet_name_by_default);
@@ -356,7 +359,7 @@ fn a_second_load_of_a_migrated_config_is_stable() {
     // entrypoint AND on every config reload, so a migration that flip-flopped
     // would flip-flop many times per session.
     let (_tmp, paths, first) = load_old(OLD_CONFIG);
-    let second = load_config(&paths);
+    let second = load_config(&paths).expect("config loads");
     assert_eq!(first, second);
 }
 
@@ -403,7 +406,7 @@ PROJECT_ONE = "2"
     );
 
     patch_config_file_with(&paths.config_path, &config, Durability::NoFsync).expect("patch");
-    let reloaded = load_config(&paths);
+    let reloaded = load_config(&paths).expect("config loads");
     assert_eq!(reloaded.env, config.env);
     assert_eq!(reloaded.projects[0].env, config.projects[0].env);
 }
@@ -489,7 +492,7 @@ fn config_v0_loads_and_migrates_to_current() {
             "v{version}: provider kept"
         );
         assert_eq!(first.ui.left_width_pct, 31, "v{version}: ui value kept");
-        let second = load_config(&paths);
+        let second = load_config(&paths).expect("config loads");
         assert_eq!(first, second, "v{version}: a second load is stable");
     }
 }
@@ -508,7 +511,11 @@ fn config_v2_moves_default_codex_scrollback_into_yaran() {
         config.providers.commands["codex"].forward_scroll, None,
         "a stock codex block must stop forcing the wheel into codex"
     );
-    assert_eq!(load_config(&paths), config, "a second load is stable");
+    assert_eq!(
+        load_config(&paths).expect("config loads"),
+        config,
+        "a second load is stable"
+    );
 
     let customized = "schema_version = 2\n\n[providers.codex]\ncommand = \"codex-amq\"\n\
                       args = [\"--model\", \"o3\"]\nforward_scroll = true\n";
@@ -544,7 +551,11 @@ fn config_v3_keeps_claude_and_codex_drags_in_yaran() {
     let (_tmp, paths, config) = load_old(raw);
     assert!(!config.providers.commands["claude"].forwards_mouse());
     assert!(!config.providers.commands["codex"].forwards_mouse());
-    assert_eq!(load_config(&paths), config, "a second load is stable");
+    assert_eq!(
+        load_config(&paths).expect("config loads"),
+        config,
+        "a second load is stable"
+    );
 
     let custom = raw.replace(
         "command = \"claude-amq\"",

@@ -69,10 +69,10 @@ pub mod status_keys {
     pub const CONFIG_RELOAD: &str = "config-reload";
     /// Worktree-list failure key. Parameterised by project id at call sites:
     /// `format!("{WORKTREE_LIST_PREFIX}:{project_id}")`.
-    pub const WORKTREE_LIST_PREFIX: &str = "worktree-list";
+    pub(crate) const WORKTREE_LIST_PREFIX: &str = "worktree-list";
     /// Push key prefix. Parameterised by worktree path at call sites:
     /// `format!("{PUSH_PREFIX}:{worktree_path}")`.
-    pub const PUSH_PREFIX: &str = "push";
+    pub(crate) const PUSH_PREFIX: &str = "push";
     /// Phone-notification emitter warnings (and its one recovery info). Singleton:
     /// one emitter per process.
     pub const CLOUD_PUSH: &str = "cloud-push";
@@ -84,10 +84,11 @@ pub mod status_keys {
 }
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::command::ConfigSetChange;
 use crate::engine::{
     AgentLaunchFailedOutcome, AgentLaunchReadyView, BeginDeleteSessionOutcome, CloseTabOutcome,
     Command, Engine, EventReaction, FinishDeleteSessionOutcome, ProjectPersistenceView,
@@ -97,7 +98,7 @@ use crate::ids::{SessionIdRef, TabId, TabIdRef};
 use crate::model::{Project, ProjectBranchStatus, ProviderKind};
 use crate::prose::ProseSegment;
 use crate::status_text::StatusText;
-use crate::statusline::{QuietSurfaces, StatusScope};
+use crate::statusline::{QuietSurfaces, StatusScope, StatusTone};
 use crate::worker::{
     CreateAgentRequest, NonDefaultBranchAction, ProjectPersistenceAction, PullTarget,
 };
@@ -108,12 +109,18 @@ use crate::worker::{
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "command", content = "args", rename_all = "snake_case")]
 pub enum WireCommand {
+    /// Stage one file's changes in an agent's worktree.
     StageFile {
+        /// The agent whose worktree holds the file.
         session_id: String,
+        /// The file's path, relative to the worktree.
         path: String,
     },
+    /// Unstage one file in an agent's worktree, keeping its working-tree changes.
     UnstageFile {
+        /// The agent whose worktree holds the file.
         session_id: String,
+        /// The file's path, relative to the worktree.
         path: String,
     },
     /// Discard a single file's working-tree changes. The wire layer derives the
@@ -122,17 +129,26 @@ pub enum WireCommand {
     /// rejects the command when the file is currently staged, mirroring the
     /// TUI, which only allows discarding unstaged files.
     DiscardFile {
+        /// The agent whose worktree holds the file.
         session_id: String,
+        /// The file's path, relative to the worktree.
         path: String,
     },
+    /// Commit the staged changes in an agent's worktree.
     CommitChanges {
+        /// The agent whose worktree is committed.
         session_id: String,
+        /// The commit message, as typed.
         message: String,
     },
+    /// Push an agent's branch to its remote.
     Push {
+        /// The agent whose branch is pushed.
         session_id: String,
     },
+    /// Pull the remote's changes into an agent's worktree.
     Pull {
+        /// The agent whose worktree is pulled.
         session_id: String,
     },
     /// Pull (refresh) a PROJECT's source checkout from remote, mirroring the
@@ -142,10 +158,14 @@ pub enum WireCommand {
     /// `PullTarget::Project`. The busy/already-running copy and the leading
     /// branch source match the TUI byte-for-byte.
     PullProject {
+        /// The project whose source checkout is pulled.
         project_id: String,
     },
+    /// Turn startup auto-reopen on or off for one agent.
     ToggleAgentAutoReopen {
+        /// The agent the setting belongs to.
         session_id: String,
+        /// Whether yaran brings the agent back at startup.
         enabled: bool,
     },
     /// Re-run the agent's project startup command in that agent's worktree,
@@ -155,38 +175,67 @@ pub enum WireCommand {
     /// final status pair flows back through `spawn_status_op`). Rejected when the
     /// session/project is unknown or the project has no startup command.
     RerunStartupCommand {
+        /// The agent whose startup command runs again.
         session_id: String,
     },
+    /// Close a companion, project or standalone terminal and end its shell.
     DeleteTerminal {
+        /// The terminal to close.
         terminal_id: String,
     },
+    /// Delete an agent session, optionally removing its worktree and branch.
     DeleteSession {
+        /// The agent to delete.
         session_id: String,
+        /// Whether the agent's worktree is removed from disk too.
         delete_worktree: bool,
         /// The delete dialog's "also delete the branch" answer. ABSENT means
         /// nobody was asked, which keeps the provenance default and is what a
         /// caller that only knows about `delete_worktree` gets. See
-        /// [`crate::model::BranchProvenance::resolve_branch_deletion`].
+        /// [`crate::branch_history::BranchDeleteRequest::from_legacy`].
         #[serde(default)]
         delete_branch: Option<bool>,
+        /// Both delete-dialog boxes' answers, each over the branches it pinned.
+        /// Absent means the caller predates them and `delete_branch` speaks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branches: Option<crate::branch_history::BranchAnswersWire>,
     },
+    /// Replace the global `[env]` table with these variables.
     PersistGlobalEnv {
+        /// Every global environment variable, by name.
         env: BTreeMap<String, String>,
+        /// The [`global_env_version`] this save was based on: a changed table
+        /// refuses it with [`StaleSet::GlobalEnv`]; absent, the save replaces it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
     },
+    /// Set or clear a project's default provider.
     UpdateProjectProvider {
+        /// The project the setting belongs to.
         project_id: String,
+        /// The provider's name, or `None` to fall back to the global default.
         provider: Option<String>,
     },
+    /// Set or clear a project's auto-reopen preference.
     UpdateProjectAutoReopen {
+        /// The project the setting belongs to.
         project_id: String,
+        /// Whether the project's agents come back at startup, or `None` to follow the global
+        /// setting.
         auto_reopen_agents: Option<bool>,
     },
+    /// Set or clear a project's startup command.
     UpdateProjectStartupCommand {
+        /// The project the setting belongs to.
         project_id: String,
+        /// The command run in each new worktree, or `None` to run nothing.
         startup_command: Option<String>,
     },
+    /// Replace a project's environment overlay.
     UpdateProjectEnv {
+        /// The project the setting belongs to.
         project_id: String,
+        /// Every project environment variable, by name.
         env: BTreeMap<String, String>,
     },
     /// Re-read `config.toml` from disk and apply it to the running engine.
@@ -201,9 +250,10 @@ pub enum WireCommand {
     RecoverConfig {},
     /// Persist the Changes (git) pane's visibility to `config.toml`
     /// (`ui.show_changes_pane`). Sent by the web's hide/show toggle so the
-    /// choice sticks across restarts; the next ViewModel broadcast carries the
+    /// choice sticks across restarts; the next `ViewModel` broadcast carries the
     /// new value, and the client reconciles its optimistic override against it.
     SetChangesPaneVisible {
+        /// Whether the Changes pane is shown.
         visible: bool,
     },
     /// Persist this yaran instance's identity to `config.toml`: the browser tab
@@ -217,7 +267,9 @@ pub enum WireCommand {
     /// failure, and a non-empty body mutates config-static state, so the web
     /// fires `config.changed`.
     SetInstanceIdentity {
+        /// The browser tab title, or `None` to leave it unchanged.
         title: Option<String>,
+        /// The favicon color name, or `None` to leave it unchanged.
         favicon: Option<String>,
     },
     /// Flip `defaults.enable_randomized_pet_name_by_default` and persist it,
@@ -232,12 +284,13 @@ pub enum WireCommand {
     /// banner lane. Low-stakes preference, lazy write.
     TogglePrBannerPosition {},
     /// Set `ui.agent_sort` to an explicit mode ("active" | "updated" | "created"
-    /// | "name" | "name_desc" | "manual") and persist it. Unlike the toggles, this carries a
+    /// | "name" | "`name_desc`" | "manual") and persist it. Unlike the toggles, this carries a
     /// value: the web sidebar's sort control sets it directly, and a drag-reorder
     /// sets it to "manual". The next `config.changed` refetch carries the new value
     /// so every client's sort control agrees. Unknown values are rejected. Low-stakes
     /// preference, lazy write.
     SetAgentSort {
+        /// The sort mode's name.
         sort: String,
     },
     /// Flip `ui.github_integration` and persist it, mirroring the TUI's
@@ -252,36 +305,74 @@ pub enum WireCommand {
     /// reason that has since passed, for a user who cannot restart yaran without
     /// taking every running agent down with it.
     RecheckGithub {},
-    /// Manually attach (pin) an already-RESOLVED pull request to a session. The
-    /// fields carry what `gh pr view` answered; parsing/resolution of the raw
-    /// reference happens earlier (the attach lookup worker), so applying this is
-    /// a synchronous row + map mutation and mints no busy of its own; the
-    /// resolve→attach flow's single keyed op carries the busy and the final.
+    /// Attach an already-RESOLVED pull request to a session, beside the ones
+    /// it already has. The fields carry what `gh pr view` answered; parsing
+    /// and resolution of the raw reference happen earlier (the attach lookup
+    /// worker), so applying this is a synchronous row + map mutation and mints
+    /// no busy of its own; the resolve→attach flow's single keyed op carries
+    /// the busy and the final.
     AttachPullRequest {
+        /// The agent the pull request is attached to.
         session_id: String,
+        /// The GitHub host the pull request lives on.
         host: String,
+        /// The repository, as `owner/name`.
         owner_repo: String,
+        /// The pull request's number.
         number: u64,
+        /// The pull request's title.
         title: String,
+        /// The pull request's state as `gh` reported it.
         state: String,
+        /// The pull request's web address.
         url: String,
     },
-    /// Detach a session's pull request: this agent has no PR, as of now. The
-    /// pin goes if there was one, the badge clears immediately, and
-    /// autodetection is suppressed for the session (durably) so it cannot put
-    /// the badge straight back. Synchronous. Applies to an autodetected
-    /// association too, not only to a pin. Reversed by an
-    /// `AttachPullRequest` or a `ResumePullRequestAutodetection`.
-    ClearPullRequestOverride {
+    /// Detach one pull request the user attached. One yaran also found stays,
+    /// as found. Synchronous, and needs neither the integration nor `gh`.
+    DetachPullRequest {
+        /// The agent.
         session_id: String,
+        /// Which of its pull requests.
+        pr: crate::viewmodel::PrKeyView,
     },
-    /// Undo a detach: switch pull-request autodetection back on for the
-    /// session and run one immediate check, so the badge returns now rather
-    /// than at the next poll. Synchronous, and deliberately not gated on `gh`
-    /// (the suppression is yaran's own state); without a usable `gh` the check
-    /// is a no-op and the session is picked up once the integration re-arms.
-    ResumePullRequestAutodetection {
+    /// Put one found pull request out of sight. Synchronous.
+    HidePullRequest {
+        /// The agent.
         session_id: String,
+        /// Which of its pull requests.
+        pr: crate::viewmodel::PrKeyView,
+    },
+    /// Show a hidden pull request again, in the place it had. Synchronous.
+    ShowPullRequest {
+        /// The agent.
+        session_id: String,
+        /// Which of its pull requests.
+        pr: crate::viewmodel::PrKeyView,
+    },
+    /// Order an agent's pull requests automatically or in the user's own
+    /// order. Synchronous.
+    SetPullRequestSort {
+        /// The agent.
+        session_id: String,
+        /// The order.
+        mode: PullRequestSort,
+    },
+    /// Move one shown pull request in the agent's order. Synchronous.
+    MovePullRequest {
+        /// The agent.
+        session_id: String,
+        /// Which of its pull requests.
+        pr: crate::viewmodel::PrKeyView,
+        /// Where to.
+        to: PullRequestMove,
+    },
+    /// Put the agent's shown pull requests in the order a drag left them; it
+    /// must name exactly the shown ones. Synchronous.
+    ReorderPullRequests {
+        /// The agent.
+        session_id: String,
+        /// Every shown pull request, in the order wanted.
+        order: Vec<crate::viewmodel::PrKeyView>,
     },
     /// Flip `ui.copy_on_select` and persist it, mirroring the web
     /// `toggle-copy-on-select` palette command. The next `config.changed` refetch
@@ -307,14 +398,13 @@ pub enum WireCommand {
     /// refused rather than degraded, because this arrives from a picker and a
     /// value outside the tri-state is a bug, not a typo in a file.
     SetTailscaleMode {
+        /// The mode's name: `auto`, `yes` or `no`.
         mode: String,
     },
     /// Save `[cloud] mode` (`auto` | `yes` | `no`): the `set-cloud-mode` palette
     /// command and the web Preferences row. The config write only; the serve loop
     /// moves the tunnel afterwards. An unrecognized value is refused.
-    SetCloudMode {
-        mode: String,
-    },
+    SetCloudMode { mode: String },
     /// Set explicit values for the Preferences dialog's `[ui]`/`[capabilities]`
     /// knobs in one request. The payload and the field-by-field semantics live on
     /// [`SettingsPatch`]; `server.title` and `server.favicon` are deliberately
@@ -331,6 +421,7 @@ pub enum WireCommand {
     /// Companion terminals are killed through `DeleteTerminal`. Unknown session
     /// is an `Err`; killing an agent that is not running is an idempotent no-op.
     KillSessionPty {
+        /// The agent whose processes are killed.
         session_id: String,
     },
     /// Detach an agent WHOLE: ask every one of its tabs' provider processes to
@@ -352,7 +443,9 @@ pub enum WireCommand {
     /// they asked for. Everything else (the row menu, the palette, a single
     /// row's Stop) leaves it false and gets the polite path.
     DetachAgent {
+        /// The agent to detach.
         session_id: String,
+        /// Whether the processes end at once instead of being asked to shut down.
         #[serde(default)]
         force: bool,
     },
@@ -366,14 +459,29 @@ pub enum WireCommand {
     ///
     /// Answers with a keyed BUSY: git runs off the engine thread and the final
     /// names what happened to the branch.
+    ///
+    /// `restart_tabs` is the confirmation's restart checkbox: once the checkout
+    /// succeeds, the running tabs whose CLI cannot follow the folder and can
+    /// pick its conversation back up are stopped politely and started again.
+    /// Absent is false, so a client that predates it keeps the old behaviour.
     RecreateWorkingCopy {
+        /// The agent whose working copy is recreated.
         session_id: String,
+        /// Whether the tabs that cannot follow the new folder are restarted after the checkout.
+        #[serde(default)]
+        restart_tabs: bool,
     },
     /// Register an existing git repository on the server as a project. `name`
     /// may be empty to derive the display name from the path's basename.
     AddProject {
+        /// The repository's path on the server.
         path: String,
+        /// The project's display name; empty derives it from the path.
         name: String,
+        /// What the route already read from git for this command, so the
+        /// engine thread does not; never sent by a client.
+        #[serde(skip)]
+        checked: Option<crate::route_checks::AddProjectChecked>,
     },
     /// Check the repo's default branch out FIRST, then register it as a project,
     /// mirroring the TUI's "Check Out & Add" button. Only valid when the repo's
@@ -387,8 +495,14 @@ pub enum WireCommand {
     /// `NonDefaultBranchCheckoutCompleted` for `drive_add_project_followup` on
     /// the web, or the TUI's own drain, to finish the add.
     AddProjectCheckoutDefault {
+        /// The repository's path on the server.
         path: String,
+        /// The project's display name; empty derives it from the path.
         name: String,
+        /// What the route already read from git for this command, so the
+        /// engine thread does not; never sent by a client.
+        #[serde(skip)]
+        checked: Option<crate::route_checks::CheckoutDefaultChecked>,
     },
     /// Create an empty initial commit for a fresh (unborn) repo, THEN register
     /// it as a project. Used when the client's inspect reported `has_commits:
@@ -399,8 +513,14 @@ pub enum WireCommand {
     /// whose `AddProjectAfterInitialCommit` reaction is driven to the actual add
     /// by `drive_add_project_followup` (web) or the TUI's `workers.rs` drain.
     AddProjectCreateInitialCommit {
+        /// The repository's path on the server.
         path: String,
+        /// The project's display name; empty derives it from the path.
         name: String,
+        /// What the route already read from git for this command, so the
+        /// engine thread does not; never sent by a client.
+        #[serde(skip)]
+        checked: Option<crate::route_checks::InitialCommitChecked>,
     },
     /// Initialize a brand-new git repository in a plain folder, seed a starter
     /// `.gitignore`, create an empty initial commit, THEN register it as a
@@ -410,23 +530,58 @@ pub enum WireCommand {
     /// `InFlightKey::InitialCommit`, spawns `run_init_repo_job`, and returns a
     /// busy status resolved by `drive_add_project_followup`.
     AddProjectInitRepo {
+        /// The folder's path on the server.
         path: String,
+        /// The project's display name; empty derives it from the path.
         name: String,
+    },
+    /// Clone `url` into `path` as a new project, then start an agent named
+    /// `agent_name` there, or a random name when it is blank (`random_name` is
+    /// the New agent dialog's checkbox). The same request as `Command::CloneProject`: the checks that
+    /// need no git refuse it at once, and the rest runs on a worker under the
+    /// returned busy (see [`crate::clone_project`]).
+    CloneProject {
+        /// The address to clone from.
+        url: String,
+        /// The server path the clone is written to.
+        path: String,
+        /// The new agent's name; absent or blank picks one.
+        #[serde(default)]
+        agent_name: Option<String>,
+        /// Whether the agent gets a random name.
+        #[serde(default)]
+        random_name: bool,
+        /// Create the agent from this pull request instead of a plain one:
+        /// the engine builds the clone address itself and `url` is ignored.
+        #[serde(default)]
+        pull_request: Option<crate::pr_reference::PullRequestCloneTarget>,
+        /// With `pull_request`: `path` already holds a checkout of the
+        /// repository, so add that folder as the project instead of cloning.
+        #[serde(default)]
+        add_existing: bool,
+        /// With `pull_request`: the agreement to a review copy the user gave
+        /// before the clone or the add, after being shown the warning.
+        #[serde(default)]
+        review_copy: crate::clone_project::UpfrontReviewCopy,
     },
     /// Remove a project from the workspace by id (does not touch its checkout).
     RemoveProject {
+        /// The project to remove.
         project_id: String,
     },
     /// Delete a project by id AND remove its agents' worktrees from disk (the
     /// destructive counterpart to `RemoveProject`). Guarded and sequenced by
     /// `Command::DeleteProject`.
     DeleteProject {
+        /// The project to delete.
         project_id: String,
     },
     /// Create a new agent in a project. `name` may be empty to auto-generate a
     /// branch name; a non-empty name becomes the custom branch/agent name.
     CreateAgent {
+        /// The project the agent is created in.
         project_id: String,
+        /// The agent and branch name; empty generates one.
         name: String,
         /// Per-agent override for copying the project checkout's uncommitted
         /// changes into the new worktree. `None` falls back to the config
@@ -441,6 +596,11 @@ pub enum WireCommand {
         /// confirmed, so the create proceeds and adopts that branch's history.
         #[serde(default)]
         use_existing_branch: bool,
+        /// The name the route already asked git about and found no branch
+        /// for, so the engine thread does not ask again; never sent by a
+        /// client.
+        #[serde(skip)]
+        name_checked: Option<String>,
     },
     /// Create a STANDALONE agent: point a provider at a folder the user already
     /// has and run it there. No project, no branch, no worktree.
@@ -472,18 +632,25 @@ pub enum WireCommand {
     /// name becomes the custom branch/agent name. Mirrors the TUI's
     /// `fork_selected_session`, which builds a `CreateAgentRequest::ForkSession`.
     ForkSession {
+        /// The agent to fork.
         session_id: String,
+        /// The new agent and branch name; empty generates one.
         name: String,
     },
-    /// Rename an agent session's display title. `title` is trimmed; an empty
-    /// title clears the custom name back to `None`, so the row reverts to
-    /// showing the branch name. A non-empty title is validated with the same
-    /// agent-name rules the TUI rename enforces. This is title-only: unlike the
-    /// TUI prompt (which can also rename the git branch via a checkbox), the web
-    /// rename never touches the branch. See `rename_session` for the rationale.
+    /// Rename an agent, the same act as the terminal UI's rename dialog. `title`
+    /// is trimmed; an empty title clears the custom name, so the row shows the
+    /// branch name again (a standalone agent's folder name). For an agent with a
+    /// branch a non-empty title is held to the agent-name rules. With
+    /// `rename_branch` the git branch is renamed to `title` as well, on a
+    /// background worker; it is refused with an empty title. Absent means false.
     RenameSession {
+        /// The agent to rename.
         session_id: String,
+        /// The new display name; empty clears it.
         title: String,
+        /// Whether the git branch is renamed to the title as well.
+        #[serde(default)]
+        rename_branch: bool,
     },
     /// Reconnect (relaunch) an agent session's provider. `force == false`
     /// resumes the prior conversation when the provider supports it (the
@@ -491,36 +658,52 @@ pub enum WireCommand {
     /// fresh session with no resume args and first tears down any running
     /// provider (the TUI's `force_reconnect_agent`).
     ReconnectSession {
+        /// The agent whose provider is relaunched.
         session_id: String,
+        /// Whether a fresh conversation starts, tearing down any running provider first.
         force: bool,
-    },
-    /// Persist a custom display order for a project's agent sessions.
-    /// `session_ids` must list exactly that project's sessions (the engine
-    /// validates this strictly and errors otherwise). Drives the web UI's
-    /// drag-and-drop reordering.
-    ReorderSessions {
-        project_id: String,
-        session_ids: Vec<String>,
     },
     /// Persist a GLOBAL custom order for every agent (the flat model). `session_ids`
     /// must list exactly the full set of all sessions, in the desired order (the
     /// engine validates strictly). This is the web flat list's drag: agents reorder
     /// as one independent list, so a drop can land anywhere regardless of project.
     ReorderAgents {
+        /// Every agent, in the new order.
         session_ids: Vec<String>,
     },
     /// Persist a custom display order for the workspace's projects.
     /// `project_ids` must list exactly the known projects.
     ReorderProjects {
+        /// Every project, in the new order.
         project_ids: Vec<String>,
     },
-    /// Persist a GLOBAL runtime order for every companion terminal (session- and
-    /// project-owned alike; the web renders one flat Terminals section).
+    /// Persist a GLOBAL runtime order for every companion terminal, whatever its
+    /// owner.
     /// `terminal_ids` must list exactly the current set of terminals, in the
     /// desired order (the engine validates strictly). Runtime-only: terminals
     /// have no SQLite row, so this order resets to creation order on restart.
     ReorderTerminals {
+        /// Every terminal, in the new order.
         terminal_ids: Vec<String>,
+    },
+    /// Put a project or standalone terminal's row right after an agent in the
+    /// agents list's manual order, or first when `after_agent` is absent.
+    /// Runtime-only, like the terminal.
+    PlaceTerminalInList {
+        /// The terminal whose row moves.
+        terminal_id: String,
+        /// The agent its row sits right after; absent for the top.
+        #[serde(default)]
+        after_agent: Option<String>,
+    },
+    /// Persist a new left-to-right order for one agent's provider tabs, the slot
+    /// tab included. `tab_ids` must list exactly the agent's tabs (the engine
+    /// validates strictly). Persisted, so the order survives a restart.
+    ReorderAgentTabs {
+        /// The agent whose strip reorders.
+        session_id: String,
+        /// Every tab of the agent, in the new order.
+        tab_ids: Vec<String>,
     },
     /// Swap which CLI a session uses, mirroring the TUI palette's
     /// `change-agent-provider`. `provider` is validated server-side against the
@@ -531,7 +714,9 @@ pub enum WireCommand {
     /// the session's PTY, pins the previously-running one so labels stay truthful
     /// until the user reconnects. Selecting the current provider is a no-op.
     ChangeAgentProvider {
+        /// The agent whose provider changes.
         session_id: String,
+        /// The provider's name.
         provider: String,
     },
     /// Close an extra tab (a non-Main provider tab): tear down its PTY and delete
@@ -539,7 +724,17 @@ pub enum WireCommand {
     /// ephemeral). The session-slot tab is never closed through here: a Main "close" is a
     /// detach via `KillSessionPty`. `tab_id` must belong to `session_id`.
     CloseAgentTab {
+        /// The agent the tab belongs to.
         session_id: String,
+        /// The tab to close.
+        tab_id: String,
+    },
+    /// Stop one tab's provider process and keep the tab dormant; the agent
+    /// detaches only with its last running tab. A tab not running is a no-op.
+    StopAgentTab {
+        /// The agent the tab belongs to.
+        session_id: String,
+        /// The tab to stop.
         tab_id: String,
     },
     /// Retarget one tab's provider (effective on its next launch), mirroring
@@ -547,8 +742,11 @@ pub enum WireCommand {
     /// this delegates to the session-level change; for a
     /// extra tab it updates only that tab. `provider` is validated server-side.
     ChangeAgentTabProvider {
+        /// The agent the tab belongs to.
         session_id: String,
+        /// The tab whose provider changes.
         tab_id: String,
+        /// The provider's name.
         provider: String,
     },
     /// Remember the tab the user last focused on this agent, so switching away
@@ -558,7 +756,9 @@ pub enum WireCommand {
     /// frequency and user-paced: dispatched with no status/toast (`status: None`)
     /// and the TUI/web writers treat it as fire-and-forget.
     SetLastFocusedTab {
+        /// The agent the tab belongs to.
         session_id: String,
+        /// The tab to remember, or `None` to clear the memory.
         tab_id: Option<String>,
     },
     /// Switch a project's SOURCE checkout back to its default branch, mirroring
@@ -573,7 +773,26 @@ pub enum WireCommand {
     /// confirms in the frontend dialog before sending this, because a menu click
     /// is a lighter gesture and the checkout moves HEAD.
     CheckoutProjectDefaultBranch {
+        /// The project whose source checkout switches.
         project_id: String,
+    },
+    /// Switch a project's SOURCE checkout to `branch` and make it the base new
+    /// worktrees branch from: "Change base branch", generalising
+    /// [`WireCommand::CheckoutProjectDefaultBranch`] to a branch the user
+    /// picked from `GET /api/v1/projects/{id}/branches`. A branch only origin
+    /// has is created locally, tracking it, before the switch.
+    ///
+    /// Runs through [`Engine::change_project_base_branch`], the one entry
+    /// point both surfaces use. The synchronous status is the op's busy (or an
+    /// ordinary warning when another folder-switching operation holds the
+    /// folder); the outcome is the same op's final. Whether `branch` is still
+    /// listed, a valid branch name, and not checked out in another worktree is
+    /// checked in the worker, never here.
+    ChangeProjectBaseBranch {
+        /// The project whose source checkout switches.
+        project_id: String,
+        /// The branch to switch to and branch new worktrees from.
+        branch: String,
     },
     /// Adopt an orphaned managed worktree (created by yaran, no live session) as a
     /// new agent, mirroring the TUI's `new-agent-from-worktree`. `worktree_path`
@@ -587,9 +806,16 @@ pub enum WireCommand {
     /// bounded plumbing reads with no working-tree writes, so it runs inline
     /// rather than through a worker.
     CreateAgentFromWorktree {
+        /// The project the worktree belongs to.
         project_id: String,
+        /// The worktree's canonical path, as the listing returned it.
         worktree_path: String,
+        /// The new agent's display name.
         name: String,
+        /// What the route already read from git for this command, so the
+        /// engine thread does not; never sent by a client.
+        #[serde(skip)]
+        checked: Option<crate::route_checks::AdoptChecked>,
     },
     /// Create a new agent checked out on a GitHub PR's head branch, mirroring
     /// the TUI's `new-agent-from-pr` palette command. `pr` is the user-typed
@@ -605,33 +831,73 @@ pub enum WireCommand {
     /// would open a name prompt instead. A lookup failure surfaces on the async
     /// status stream.
     CreateAgentFromPr {
+        /// The project the agent is created in.
         project_id: String,
+        /// The pull request reference as the user typed it.
         pr: String,
+        /// The agent and branch name; empty uses the pull request's head branch.
         name: String,
-    },
-    /// Run a configured text macro against a live PTY target, mirroring the TUI's
-    /// macro bar. `target_id` names EITHER an agent session (surface `Agent`) OR
-    /// a companion terminal (surface `Terminal`), resolved through the same
-    /// lookup the actor's `pty_for` uses. `name` is the macro's `[macros]` key.
-    ///
-    /// An unknown name and a macro whose surface does not match the resolved
-    /// target are both errors: the TUI bar simply omits mismatches, but an
-    /// explicit wire error is the right shape for a programmatic client. The text
-    /// is translated by the shared `yaran_core::macros::macro_payload_bytes` before
-    /// the write, so parity with the TUI is by construction.
-    RunMacro {
-        target_id: String,
-        name: String,
+        /// The user agreed to a review copy of the pull request, in case the
+        /// branch cannot be used as it is. Without it such a create is refused
+        /// and nothing is made.
+        #[serde(default)]
+        review_copy: bool,
+        /// Which warning the agreement answers, as the refusal sent it. Absent
+        /// from a caller that never saw one (the command line), whose
+        /// agreement then covers any copy.
+        #[serde(default)]
+        review_copy_warned: Option<String>,
+        /// The caller agrees with a flag rather than a box (the command line),
+        /// so a refusal names the flag.
+        #[serde(default)]
+        review_copy_by_flag: bool,
+        /// An id the client gives this create, echoed on the question a
+        /// refusal puts so the client can tell which create it answers.
+        #[serde(default)]
+        ask_id: Option<String>,
     },
     /// Wholesale-replace the `[macros]` config, mirroring the TUI macro editor's
     /// save semantics. `entries` is an ORDERED list of `(name, {text, surface})`
-    /// and the order is preserved into the config map and the ViewModel's
+    /// and the order is preserved into the config map and the `ViewModel`'s
     /// `macros`. Persisted through the engine's config writer, so user comments
     /// survive the in-place patch. Validated server-side, never trusting the
     /// client: empty names, duplicate names, empty text and unknown surface
     /// strings are all rejected.
     UpdateMacros {
+        /// Every macro, in order.
         entries: Vec<WireMacroEntry>,
+        /// The [`macros_version`] this save was based on: a changed list refuses
+        /// it with [`StaleSet::Macros`]; absent, the save replaces it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    /// Add the macro `name`, or replace it in place, keeping every other
+    /// macro and the list's order. Validated as a whole-list save is.
+    SetMacro {
+        /// The macro's name.
+        name: String,
+        /// The text the macro types.
+        text: String,
+        /// Where the macro may run: `agent`, `terminal` or `both`.
+        surface: String,
+    },
+    /// Remove the macro `name`; an unknown name is an error.
+    RemoveMacro {
+        /// The macro's name.
+        name: String,
+    },
+    /// Set one global environment variable, keeping the rest of `[env]`; the
+    /// value never appears in any status.
+    SetGlobalEnvVar {
+        /// The variable's name.
+        name: String,
+        /// The variable's value.
+        value: String,
+    },
+    /// Remove one global environment variable; an unknown name is an error.
+    RemoveGlobalEnvVar {
+        /// The variable's name.
+        name: String,
     },
     /// Point the changed-files watch at a session's worktree, mirroring the TUI's
     /// selection-driven `reload_changed_files`. `session_id` is nullable: `null`
@@ -643,6 +909,7 @@ pub enum WireCommand {
     /// `#[serde(default)]` so the absent form is accepted as well as an explicit
     /// `null`, matching the frontend's clear path.
     WatchChangedFiles {
+        /// The agent whose worktree is watched, or `None` to clear the watch.
         #[serde(default)]
         session_id: Option<String>,
     },
@@ -657,103 +924,6 @@ pub enum WireCommand {
     },
 }
 
-/// The curated favicon TINT color names accepted by `config.server.favicon` and
-/// the customize-webapp dialog. The default (an empty value) is the original
-/// full-color yellow duck; these names recolor a flat duck silhouette instead, so
-/// `yellow` is intentionally NOT a tint. This is the CANONICAL list; the web
-/// frontend mirrors it. Keep the two in sync.
-pub const CURATED_FAVICON_COLORS: &[&str] = &[
-    "violet", "blue", "sky", "cyan", "teal", "green", "amber", "orange", "red", "pink", "rose",
-];
-
-/// Normalize a favicon value for `config.server.favicon`.
-///
-/// Trims and lowercases the input. An empty (or whitespace-only) value resets the
-/// favicon to the default (the empty string, which the web renders as the brand
-/// yellow duck). A curated color name is accepted as-is. Any other value is
-/// invalid and yields `None` so the caller can reject it.
-pub fn normalize_instance_favicon(raw: &str) -> Option<String> {
-    let normalized = raw.trim().to_lowercase();
-    if normalized.is_empty() {
-        return Some(String::new());
-    }
-    if CURATED_FAVICON_COLORS.contains(&normalized.as_str()) {
-        Some(normalized)
-    } else {
-        None
-    }
-}
-
-/// True for a character that must not survive into a title: a Unicode control
-/// code (category Cc, via `char::is_control`) OR one of the bidi/format
-/// characters (a subset of Cf) that can visually reorder or hide text.
-/// `char::is_control` alone misses Cf, so a right-to-left override (U+202E) or
-/// zero-width joiner would pass through and spoof the rendered tab title and the
-/// on-disk `config.toml`, a Trojan-Source-style display attack.
-fn is_unsafe_title_char(ch: char) -> bool {
-    ch.is_control()
-        || matches!(ch,
-            // Zero-width + directional marks, bidi embeddings/overrides, bidi
-            // isolates, and the byte-order mark / zero-width no-break space.
-            '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{FEFF}')
-}
-
-/// Normalize a title for `config.server.title`.
-///
-/// Replaces every unsafe character (Unicode control codes and bidi/format
-/// characters; see [`is_unsafe_title_char`]) with a space, collapses runs of
-/// whitespace to a single space, and trims. Caps the result to at most 200
-/// characters (counted by `char`, never bytes, so multi-byte glyphs can't be
-/// sliced mid-codepoint). An empty result resets to the default `"yaran"` (which is
-/// also the reset value the dialog sends as an empty title).
-pub fn normalize_instance_title(raw: &str) -> String {
-    let mut collapsed = String::new();
-    let mut pending_space = false;
-    for ch in raw.chars() {
-        let ch = if is_unsafe_title_char(ch) { ' ' } else { ch };
-        if ch == ' ' {
-            // Defer emitting whitespace so runs collapse and leading space drops.
-            if !collapsed.is_empty() {
-                pending_space = true;
-            }
-        } else {
-            if pending_space {
-                collapsed.push(' ');
-                pending_space = false;
-            }
-            collapsed.push(ch);
-        }
-    }
-    let capped: String = collapsed.chars().take(200).collect();
-    let trimmed = capped.trim();
-    if trimmed.is_empty() {
-        "yaran".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-/// Sanitize a `ui.terminal_font_family` settings-PATCH value: drop every ASCII
-/// control character and cap the result to 200 characters (counted by `char`,
-/// never bytes, so a multi-byte glyph can't be sliced mid-codepoint).
-///
-/// Defense in depth alongside the web's own sanitizing, which strips a wider set
-/// because the value there is concatenated into a CSS `font-family` declaration.
-/// The goal here is narrower: no control character, a literal newline above all,
-/// may survive into `config.toml`, and the field must not grow unbounded.
-/// Degrades quietly rather than rejecting the patch, matching this settings
-/// API's tolerant style elsewhere (for example [`normalize_instance_title`]).
-pub fn sanitize_terminal_font_family(raw: &str) -> String {
-    raw.chars()
-        .filter(|ch| !ch.is_ascii_control())
-        .take(200)
-        .collect()
-}
-
 /// Clamp a numeric settings-PATCH field to `[0, max]`, preserving `0`
 /// unclamped: several of these fields document `0` as a distinct "disable"/
 /// "never" meaning (`status_clear_seconds`, `attention_grace_seconds`), not
@@ -761,20 +931,6 @@ pub fn sanitize_terminal_font_family(raw: &str) -> String {
 /// input.
 fn clamp_nonzero<T: PartialOrd + Copy>(value: T, max: T) -> T {
     if value > max { max } else { value }
-}
-
-/// Normalize a `ui.pr_banner_position` value for [`Engine::set_settings`].
-/// Accepts exactly "top" or "bottom", case-insensitive and trimmed; anything
-/// else is rejected so the endpoint returns a plain-text 400 rather than
-/// coercing. Deliberately stricter than `toggle_pr_banner_position`, which only
-/// ever flips between two known values it already holds, while this validates a
-/// client-supplied string.
-pub fn normalize_pr_banner_position(raw: &str) -> Option<String> {
-    match raw.trim().to_lowercase().as_str() {
-        "top" => Some("top".to_string()),
-        "bottom" => Some("bottom".to_string()),
-        _ => None,
-    }
 }
 
 /// The present/absent fields for [`WireCommand::SetSettings`], the SINGLE
@@ -792,6 +948,7 @@ pub fn normalize_pr_banner_position(raw: &str) -> Option<String> {
 /// state, so the web fires `config.changed`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SettingsPatch {
+    /// `ui.copy_on_select`: whether selecting text in the web terminal copies it.
     pub copy_on_select: Option<bool>,
     /// `ui.compose_bar`: WHEN the web's touch terminal puts up the compose bar
     /// (the buffered phone typing surface). One of `"auto"`, `"always"` or
@@ -821,18 +978,39 @@ pub struct SettingsPatch {
     /// field write with no side effects (the reopen pass reads it at the NEXT
     /// startup), so it rides the generic settings path.
     pub auto_reopen_agents: Option<bool>,
+    /// `ui.show_changes_pane`: whether the Changes pane is shown.
     pub show_changes_pane: Option<bool>,
+    /// `ui.web_notifications`: whether an agent's notification sequences become browser
+    /// notifications.
     pub web_notifications: Option<bool>,
+    /// `ui.always_show_tab_strip`: whether the agent tab strip shows with a single tab.
     pub always_show_tab_strip: Option<bool>,
     /// `ui.tab_reaches_agent`: whether the TUI's typeable center pane hands Tab
     /// and Shift-Tab to the agent. A plain field write the TUI reads live, so it
     /// rides the generic settings path even though nothing in the web reads it.
     pub tab_reaches_agent: Option<bool>,
+    /// `ui.extended_keys`: whether the TUI asks its host terminal for extended
+    /// keys. One of `"auto"`, `"on"` or `"off"`; an unrecognized value REJECTS
+    /// the whole command, like `compose_bar`. A plain field write: the TUI reads
+    /// it the next time it starts, so it rides the generic settings path even
+    /// though nothing in the web reads it.
+    pub extended_keys: Option<String>,
+    /// `ui.nerd_font_icons`: whether the TUI draws its icons from a Nerd Font.
+    /// A plain field write the TUI reads on every frame, so it rides the
+    /// generic settings path even though the web draws its own icons.
+    pub nerd_font_icons: Option<bool>,
+    /// `ui.status_clear_seconds`: the base window a status stays up for; 0 disables auto-clear.
     pub status_clear_seconds: Option<u16>,
+    /// `ui.attention_grace_seconds`: how long attention indicators stay after yaran regains your
+    /// attention; 0 clears them at once.
     pub attention_grace_seconds: Option<u64>,
+    /// `ui.attention_indicator`: whether an agent asking for attention is marked on either surface.
     pub attention_indicator: Option<bool>,
+    /// `ui.attention_on_bell`: whether a plain terminal bell counts as an attention request.
     pub attention_on_bell: Option<bool>,
+    /// `ui.pr_banner_position`: `top` or `bottom`.
     pub pr_banner_position: Option<String>,
+    /// `ui.hyperlinks`: whether OSC 8 hyperlinks in a terminal are clickable.
     pub hyperlinks: Option<bool>,
     /// `defaults.enable_randomized_pet_name_by_default`. It rides the generic
     /// settings path (rather than its dedicated toggle endpoint) because
@@ -862,7 +1040,7 @@ pub struct SettingsPatch {
     pub disable_release_notes: Option<bool>,
     /// `ui.terminal_font_family`: a font name installed on the viewing device,
     /// placed ahead of the bundled web terminal font stack. Sanitized by
-    /// [`crate::wire::sanitize_terminal_font_family`] before being stored, and
+    /// [`crate::config_effective::effective_terminal_font_family`] before being stored, and
     /// degrades quietly rather than rejecting the patch. An empty string is a
     /// valid value and means "use the bundled stack only".
     pub terminal_font_family: Option<String>,
@@ -890,7 +1068,7 @@ impl SettingsPatch {
     /// `Self::default()`. Keep it a whole-struct compare rather than a per-field
     /// list: a field added to this struct then CANNOT make the check stale and
     /// silently read a patch carrying only that field as empty.
-    pub fn any_present(&self) -> bool {
+    pub(crate) fn any_present(&self) -> bool {
         // `quiet` is a presentation flag, not a settings field: neutralize it
         // in the compare so a patch carrying only `quiet` still reads as
         // empty (nothing to write, no `config.changed`).
@@ -905,7 +1083,7 @@ impl SettingsPatch {
     /// settings field. This is the gate that scopes `quiet`: the whole-struct
     /// compare (every field its own default except that one and the flag)
     /// cannot go stale when a field is added, mirroring `any_present`.
-    pub fn is_accessory_bar_only(&self) -> bool {
+    pub(crate) fn is_accessory_bar_only(&self) -> bool {
         self.mobile_accessory_bar.is_some()
             && *self
                 == Self {
@@ -913,6 +1091,60 @@ impl SettingsPatch {
                     quiet: self.quiet,
                     ..Self::default()
                 }
+    }
+}
+
+/// How an agent's pull requests are ordered, as a change names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PullRequestSort {
+    /// Open, draft, merged, closed; newest first.
+    #[serde(alias = "auto")]
+    Automatic,
+    /// The user's own order.
+    Manual,
+}
+
+impl From<PullRequestSort> for crate::pr_list::PrSortMode {
+    fn from(sort: PullRequestSort) -> Self {
+        match sort {
+            PullRequestSort::Automatic => Self::Automatic,
+            PullRequestSort::Manual => Self::Manual,
+        }
+    }
+}
+
+/// Where a move puts a pull request: `"top"`, `"up"`, `"down"`, or a
+/// position counted from 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum PullRequestMove {
+    /// One of the named places.
+    Named(PullRequestMoveNamed),
+    /// A place in the shown list, counted from 1.
+    Position(usize),
+}
+
+/// The named places a move can go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PullRequestMoveNamed {
+    /// First.
+    Top,
+    /// One place earlier.
+    Up,
+    /// One place later.
+    Down,
+}
+
+impl From<PullRequestMove> for crate::pr_list::MoveTo {
+    fn from(to: PullRequestMove) -> Self {
+        match to {
+            PullRequestMove::Named(PullRequestMoveNamed::Top) => Self::Top,
+            PullRequestMove::Named(PullRequestMoveNamed::Up) => Self::Up,
+            PullRequestMove::Named(PullRequestMoveNamed::Down) => Self::Down,
+            PullRequestMove::Position(n) => Self::Position(n),
+        }
     }
 }
 
@@ -942,7 +1174,11 @@ impl WireCommand {
         matches!(
             self,
             WireCommand::UpdateMacros { .. }
+                | WireCommand::SetMacro { .. }
+                | WireCommand::RemoveMacro { .. }
                 | WireCommand::PersistGlobalEnv { .. }
+                | WireCommand::SetGlobalEnvVar { .. }
+                | WireCommand::RemoveGlobalEnvVar { .. }
                 | WireCommand::SetChangesPaneVisible { .. }
                 | WireCommand::ToggleRandomizedPetNameDefault {}
                 | WireCommand::TogglePrBannerPosition {}
@@ -957,13 +1193,70 @@ impl WireCommand {
     }
 }
 
+/// The version of a macro list a client read, carried back on its whole-list
+/// save: a digest of content and order, so any edit, a reorder included, moves it.
+pub fn macros_version(macros: &crate::config::MacrosConfig) -> String {
+    let entries: Vec<(&String, &str, &crate::config::MacroSurface)> = macros
+        .entries
+        .iter()
+        .map(|(name, entry)| (name, entry.text.as_str(), &entry.surface))
+        .collect();
+    content_version(&entries)
+}
+
+/// [`macros_version`] for the global `[env]` table.
+pub fn global_env_version(env: &BTreeMap<String, String>) -> String {
+    content_version(env)
+}
+
+fn content_version(value: &impl Serialize) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    crate::text::hex_lower(&Sha256::digest(&bytes)[..8])
+}
+
+/// A whole-set save refused because the set changed after the client read it.
+/// Nothing was written; the client reads the set again and redoes its edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StaleSet {
+    Macros,
+    GlobalEnv,
+}
+
+impl std::fmt::Display for StaleSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let what = match self {
+            Self::Macros => "The macro list",
+            Self::GlobalEnv => "The global environment",
+        };
+        write!(
+            f,
+            "{what} changed after this dialog read it, so nothing was saved. \
+             Reload to see the change, then make your edit again."
+        )
+    }
+}
+
+impl std::error::Error for StaleSet {}
+
+/// Whether an engine error's text is a [`StaleSet`] refusal, which a route
+/// answers `409 {"error":"changed"}` rather than `400`.
+pub fn is_stale_set(message: &str) -> bool {
+    [StaleSet::Macros, StaleSet::GlobalEnv]
+        .iter()
+        .any(|stale| stale.to_string() == message)
+}
+
 /// A single macro in a [`WireCommand::UpdateMacros`] payload. `surface` is the
 /// canonical lowercase string ("agent" | "terminal" | "both"), matching the
-/// `MacroSurface` serde casing and the ViewModel's `MacroView::surface`.
+/// `MacroSurface` serde casing and the `ViewModel`'s `MacroView::surface`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct WireMacroEntry {
+    /// The macro's name.
     pub name: String,
+    /// The text the macro types.
     pub text: String,
+    /// Where the macro may run.
     pub surface: String,
 }
 
@@ -976,6 +1269,7 @@ pub struct WireMacroEntry {
 pub struct WireStatus {
     /// "info" | "busy" | "warning" | "error"
     pub tone: String,
+    /// The sentence shown to the user.
     pub message: String,
     /// The parts `message` was built from, in the browser's `Prose` shape
     /// (words as strings, names as `{ name, quoted }`), so a toast draws each
@@ -983,6 +1277,11 @@ pub struct WireStatus {
     /// sends it reads as plain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub segments: Option<Vec<ProseSegment>>,
+    /// The question this status puts to the user, when it is one, so the
+    /// browser can offer the answer where the user is instead of toasting a
+    /// sentence. Absent for every other status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<crate::status_text::StatusAsk>,
     /// `None` = an unkeyed transient (anonymous slot). `Some` = a keyed op whose
     /// later success/error/clear carries the same key so the surfaces correlate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1038,11 +1337,15 @@ mod quiet_web_wire {
     use super::QuietSurfaces;
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(value: &QuietSurfaces, s: S) -> Result<S::Ok, S::Error> {
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's serialize_with hands the function a reference to the field"
+    )]
+    pub(super) fn serialize<S: Serializer>(value: &QuietSurfaces, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_bool(value.web)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<QuietSurfaces, D::Error> {
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<QuietSurfaces, D::Error> {
         Ok(QuietSurfaces {
             web: bool::deserialize(d)?,
             tui: false,
@@ -1058,14 +1361,53 @@ mod quiet_web_wire {
 /// something away is often the only place the way back is named. Written as one
 /// helper so a flip's two arms are decided together at the site rather than by
 /// remembering to append `.quiet_web()` to one branch of an `if`.
-fn quiet_web_when(status: WireStatus, quiet: bool) -> WireStatus {
-    if quiet { status.quiet_web() } else { status }
+/// The one status a pull-request change answers with.
+fn pull_request_change_answer(update: &crate::engine::StatusUpdate) -> WireDispatch {
+    WireDispatch::handled(WireCommandOutcome::with_status(WireStatus::from_update(
+        update,
+    )))
+}
+
+fn quiet_web_when(status: WireStatus, web: WebScreen) -> WireStatus {
+    match web {
+        WebScreen::ShowsTheOutcome => status.quiet_web(),
+        WebScreen::LacksTheOutcome => status,
+    }
+}
+
+/// Whether the web already shows what a status reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebScreen {
+    /// The outcome is on screen there, so a toast would only repeat it.
+    ShowsTheOutcome,
+    /// Nothing on screen shows it, so the toast is the only place it is said.
+    LacksTheOutcome,
+}
+
+/// Whether the changes pane is to be shown or hidden.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaneVisibility {
+    /// On screen.
+    Shown,
+    /// Off screen.
+    Hidden,
+}
+
+/// What a new agent's create does when a branch with its name already exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExistingBranch {
+    /// Attach to that branch's history.
+    Attach,
+    /// Refuse, so the user can confirm attaching or pick another name.
+    Refuse,
 }
 
 impl WireStatus {
     /// Construct a wire status directly (for non-reaction sources like PTY-exit notices).
     pub fn new(tone: impl Into<String>, message: impl Into<StatusText>) -> Self {
-        let (message, segments) = message.into().into_parts();
+        let message = message.into();
+        let ask = message.ask().cloned();
+        let (message, segments) = message.into_parts();
         Self {
             tone: tone.into(),
             // Sanitized like the TUI's status controller (fork 2d9423ae).
@@ -1075,6 +1417,7 @@ impl WireStatus {
                 crate::sanitize::prose_segments(segments, &crate::sanitize::for_terminal(&message))
             }),
             message: crate::sanitize::for_terminal(&message),
+            ask,
             key: None,
             scope: StatusScope::All,
             sticky: false,
@@ -1088,13 +1431,16 @@ impl WireStatus {
         tone: impl Into<String>,
         message: impl Into<StatusText>,
     ) -> Self {
-        let (message, segments) = message.into().into_parts();
+        let message = message.into();
+        let ask = message.ask().cloned();
+        let (message, segments) = message.into_parts();
         Self {
             tone: tone.into(),
             segments: segments.map(|segments| {
                 crate::sanitize::prose_segments(segments, &crate::sanitize::for_terminal(&message))
             }),
             message: crate::sanitize::for_terminal(&message),
+            ask,
             key: Some(key.into()),
             scope: StatusScope::All,
             sticky: false,
@@ -1106,6 +1452,7 @@ impl WireStatus {
     /// [`yaran_core::statusline::KeyedWireStatus::sticky`] for when to use it.
     ///
     /// [`yaran_core::statusline::KeyedWireStatus::sticky`]: crate::statusline::KeyedWireStatus::sticky
+    #[must_use]
     pub fn sticky(mut self) -> Self {
         self.sticky = true;
         self
@@ -1114,18 +1461,21 @@ impl WireStatus {
     /// Builder that keeps this status as the command's answer while raising no
     /// notification for it on the WEB. See [`WireStatus::quiet_on`] for when
     /// that is right.
+    #[must_use]
     pub fn quiet_web(mut self) -> Self {
         self.quiet_on.web = true;
         self
     }
 
     /// Builder that attaches a correlation key to an existing status.
+    #[must_use]
     pub fn with_key(mut self, key: impl Into<String>) -> Self {
         self.key = Some(key.into());
         self
     }
 
     /// Builder that sets the delivery [`StatusScope`] on an existing status.
+    #[must_use]
     pub fn with_scope(mut self, scope: StatusScope) -> Self {
         self.scope = scope;
         self
@@ -1144,6 +1494,7 @@ impl WireStatus {
                     &crate::sanitize::for_terminal(&update.message),
                 )
             }),
+            ask: update.ask.clone(),
             key: update.key.clone(),
             scope: update.scope.clone(),
             sticky: update.sticky,
@@ -1157,14 +1508,22 @@ impl WireStatus {
 /// What one dispatch group did with a command: answered it, or handed it back
 /// untouched for the next group (or the shared tail) to answer.
 enum WireDispatch {
-    Handled(WireCommandOutcome),
+    /// Boxed: an outcome is several times the size of a command.
+    Handled(Box<WireCommandOutcome>),
     Unhandled(WireCommand),
+}
+
+impl WireDispatch {
+    fn handled(outcome: WireCommandOutcome) -> Self {
+        Self::Handled(Box::new(outcome))
+    }
 }
 
 /// What the client learns synchronously from applying a command. Fresh domain
 /// state arrives separately via `view_model()`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct WireCommandOutcome {
+    /// The status the command raised at once, if any.
     pub status: Option<WireStatus>,
     /// Whether a tab-close command (`KillSessionPty` for the session-slot tab,
     /// `CloseAgentTab` for an extra tab) DETACHED the agent. Computed in core
@@ -1191,6 +1550,22 @@ pub struct WireCommandOutcome {
     /// from-PR create (its op is minted later, inside the PR-lookup followup).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_op_id: Option<String>,
+    /// The operation record that follows this command, set only when it was
+    /// dispatched through [`Engine::apply_wire_operation`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    /// The final of the keyed busy in `status`, when the command already reached
+    /// it inside the call; raised right after `status`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled: Option<WireStatus>,
+    /// The operation record as it stood when the command answered, so the reply
+    /// holds it even when the record is kept for no time at all.
+    #[serde(skip)]
+    pub operation: Option<Box<crate::operations::OperationView>>,
+    /// The version the macro list or the global environment is at after a command
+    /// that changes it, for the client's next whole-set save.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 impl WireCommandOutcome {
@@ -1204,14 +1579,6 @@ impl WireCommandOutcome {
     fn with_optional_status(status: Option<WireStatus>) -> Self {
         Self {
             status,
-            ..Self::default()
-        }
-    }
-
-    fn with_detached(status: WireStatus, detached: bool) -> Self {
-        Self {
-            status: Some(status),
-            detached: Some(detached),
             ..Self::default()
         }
     }
@@ -1237,11 +1604,13 @@ impl WireCommandOutcome {
 /// dismiss. The `statuses` are broadcast as usual.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WebFollowupStatuses {
+    /// The statuses to broadcast.
     pub statuses: Vec<WireStatus>,
+    /// The keys of the busy statuses to dismiss.
     pub clear_keys: Vec<String>,
 }
 
-fn wire_status_from_reaction(reaction: &EventReaction) -> Option<WireStatus> {
+pub(crate) fn wire_status_from_reaction(reaction: &EventReaction) -> Option<WireStatus> {
     match reaction {
         EventReaction::Status(update) => Some(WireStatus::from_update(update)),
         EventReaction::Multi(items) => items.iter().find_map(wire_status_from_reaction),
@@ -1251,6 +1620,68 @@ fn wire_status_from_reaction(reaction: &EventReaction) -> Option<WireStatus> {
             .label
             .as_ref()
             .map(|l| WireStatus::new("info", crate::engine::closed_terminal_notice(l))),
+        _ => None,
+    }
+}
+
+/// The final of the keyed busy `answered`, when the same reaction already carries
+/// it: a command that opens and finishes an operation in one call answers both.
+pub(crate) fn settled_final_from_reaction(
+    reaction: &EventReaction,
+    answered: Option<&WireStatus>,
+) -> Option<WireStatus> {
+    let busy = answered.filter(|s| StatusTone::from_wire(&s.tone) == StatusTone::Busy)?;
+    busy.key.as_ref()?;
+    wire_statuses_from_reaction(reaction)
+        .into_iter()
+        .rev()
+        .find(|status| {
+            status.key == busy.key && StatusTone::from_wire(&status.tone) != StatusTone::Busy
+        })
+}
+
+/// Whom a launch reaction reports to: the key its records wait on, the tab it
+/// launched when the report names one, and whether it came up.
+struct LaunchReport {
+    key: String,
+    tab_id: Option<String>,
+    launched: bool,
+}
+
+/// The [`LaunchReport`] of a launch reaction, `None` for a create's launch; a failure
+/// reported by agent reports under its [`crate::operations::launch_failure_key`].
+fn launch_report(reaction: &EventReaction) -> Option<LaunchReport> {
+    let tab = |tab_id: &str, launched| LaunchReport {
+        key: crate::operations::launch_binding_key(tab_id),
+        tab_id: Some(tab_id.to_string()),
+        launched,
+    };
+    match reaction {
+        EventReaction::AgentLaunchReadyView(outcome) => match &outcome.view {
+            AgentLaunchReadyView::Reconnect { .. }
+            | AgentLaunchReadyView::ResumeFallback { .. }
+            | AgentLaunchReadyView::StartupAutoReopen => Some(tab(&outcome.tab_id, true)),
+            AgentLaunchReadyView::SessionMissing => Some(tab(&outcome.tab_id, false)),
+            AgentLaunchReadyView::CreateCommitted { .. }
+            | AgentLaunchReadyView::CreatePersistFailed { .. } => None,
+        },
+        EventReaction::AgentLaunchFailedView(outcome) => match outcome.as_ref() {
+            AgentLaunchFailedOutcome::Tab { tab_id, .. } => Some(tab(tab_id, false)),
+            AgentLaunchFailedOutcome::Reconnect { session_id, .. }
+            | AgentLaunchFailedOutcome::ForceReconnect { session_id, .. }
+            | AgentLaunchFailedOutcome::StartupAutoReopen { session_id, .. } => {
+                Some(LaunchReport {
+                    key: crate::operations::launch_failure_key(session_id),
+                    tab_id: None,
+                    launched: false,
+                })
+            }
+            // A ghost tab's failure finishes its records where it is decided,
+            // since it says nothing on the screen.
+            AgentLaunchFailedOutcome::ResumeFallback
+            | AgentLaunchFailedOutcome::Create { .. }
+            | AgentLaunchFailedOutcome::Silent => None,
+        },
         _ => None,
     }
 }
@@ -1269,10 +1700,44 @@ struct WebProjectAdd<'a> {
     status_op_id: &'a Option<String>,
 }
 
+/// [`WebProjectAdd`] without an op to resolve, for
+/// [`Engine::add_project_without_op`].
+pub(crate) struct ProjectAdd<'a> {
+    pub path: &'a str,
+    pub display_name: String,
+    pub current_branch: &'a str,
+    pub leading_branch: &'a str,
+    pub status_message: StatusText,
+    /// Prefix for the "git succeeded but registration failed" error message.
+    pub(crate) add_failed_prefix: &'a str,
+}
+
+/// What [`Engine::add_project_without_op`] did.
+pub(crate) struct ProjectAddResult {
+    /// The statuses the add said, as a caller with no op of its own shows them.
+    pub statuses: Vec<WireStatus>,
+    /// The project at the path and the engine's sentence about it, when the add
+    /// landed or found that project already registered.
+    pub added: Option<(String, StatusText)>,
+}
+
+impl ProjectAddResult {
+    /// Why the add failed: its first error, or `fallback`.
+    pub(crate) fn failure(&self, fallback: &StatusText) -> StatusText {
+        self.statuses
+            .iter()
+            .find(|s| s.tone == "error")
+            .map_or_else(
+                || fallback.clone(),
+                |s| StatusText::from_parts(s.message.clone(), s.segments.clone()),
+            )
+    }
+}
+
 /// The authoritative "added" status message from a `PersistProject::Add`
 /// reaction (the engine's real outcome: an honest dedup message when a race
 /// hit that path, or the normal success text), or `None` for any other reaction.
-fn added_status_message(reaction: &EventReaction) -> Option<StatusText> {
+pub(crate) fn added_status_message(reaction: &EventReaction) -> Option<StatusText> {
     if let EventReaction::ProjectPersistenceOutcome(outcome) = reaction
         && let ProjectPersistenceView::Added { status_message, .. } = &outcome.view
     {
@@ -1284,7 +1749,7 @@ fn added_status_message(reaction: &EventReaction) -> Option<StatusText> {
 
 /// Resolve a project's display name: the trimmed user-supplied name, or the
 /// path's basename when empty. Shared by the add-project followups.
-fn display_project_name(name: &str, path: &str) -> String {
+pub(crate) fn display_project_name(name: &str, path: &str) -> String {
     if name.trim().is_empty() {
         PathBuf::from(path)
             .file_name()
@@ -1311,6 +1776,10 @@ pub fn wire_statuses_from_reaction(reaction: &EventReaction) -> Vec<WireStatus> 
         // resume-fallback and startup-auto-reopen finals are resolved per-surface
         // in `drive_web_launch_followup`. So both launch View reactions emit
         // nothing here, avoiding a double status.
+        #[expect(
+            clippy::match_same_arms,
+            reason = "named apart from the catch-all so the reason they emit nothing stays with them"
+        )]
         EventReaction::AgentLaunchFailedView(_) | EventReaction::AgentLaunchReadyView(_) => vec![],
         // DeleteTerminal is a one-shot info; no busy precedes it, so it stays
         // unkeyed (anonymous slot). Loud for the same reason as its sibling in
@@ -1337,6 +1806,15 @@ pub fn wire_statuses_from_reaction(reaction: &EventReaction) -> Vec<WireStatus> 
             ),
         ],
         _ => vec![],
+    }
+}
+
+/// The keys a reaction dismisses, `Multi` flattened.
+fn cleared_keys(reaction: &EventReaction) -> Vec<String> {
+    match reaction {
+        EventReaction::ClearStatus(key) => vec![key.clone()],
+        EventReaction::Multi(items) => items.iter().flat_map(cleared_keys).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -1384,7 +1862,7 @@ impl DeleteReportFacts {
 
     /// The same read off a finished delete cascade, which already carries the
     /// project it resolved.
-    pub fn from_finish_outcome(outcome: &FinishDeleteSessionOutcome) -> Self {
+    pub(crate) fn from_finish_outcome(outcome: &FinishDeleteSessionOutcome) -> Self {
         Self::from_session(
             &outcome.session,
             outcome.project.as_ref().map(|p| p.name.clone()),
@@ -1411,6 +1889,45 @@ impl DeleteReportFacts {
             crate::status_text![n(self.provider), " agent ", q(self.label)]
         }
     }
+}
+
+/// The message for a worktree-removing delete that reported every branch's
+/// fate: the current branch folded into the opening, the rest after it.
+fn branch_outcomes_message(
+    opening: StatusText,
+    outcomes: &[crate::branch_history::BranchOutcome],
+) -> StatusText {
+    use crate::branch_history::{BranchFate, BranchRole};
+    let current = outcomes
+        .iter()
+        .find(|outcome| outcome.role == BranchRole::Current);
+    let mut message = match current.map(|outcome| (&outcome.name, &outcome.fate)) {
+        Some((name, BranchFate::Deleted)) => crate::status_text![
+            opening,
+            ", removed its worktree and deleted its branch ",
+            q(name),
+            "."
+        ],
+        Some((name, BranchFate::AlreadyGone)) => crate::status_text![
+            opening,
+            " and removed its worktree. Its branch ",
+            q(name),
+            " was already gone."
+        ],
+        Some((name, BranchFate::Refused { reason })) => crate::status_text![
+            opening,
+            " and removed its worktree, but its branch ",
+            q(name),
+            " is still there. ",
+            crate::git::branch_refusal_note(name, reason)
+        ],
+        _ => crate::status_text![opening, " and removed its worktree."],
+    };
+    if let Some(note) = crate::branch_history::branch_outcomes_note(outcomes) {
+        message.push(" ");
+        message.push(note);
+    }
+    message
 }
 
 /// User-facing message for a completed session deletion, varying by what
@@ -1451,6 +1968,9 @@ pub fn delete_session_status_message(
                 reason.kept_branches_note(branch, &facts.initial_branch)
             ]
         }
+        WorktreeRemoval::Performed {
+            branches: crate::engine::RemovedBranches::Outcomes(outcomes),
+        } => branch_outcomes_message(opening, outcomes),
         WorktreeRemoval::Performed {
             branches: crate::engine::RemovedBranches::Deleted(branches),
         } => {
@@ -1548,6 +2068,7 @@ struct SettingsUiBehaviorPatch {
     show_changes_pane: Option<bool>,
     always_show_tab_strip: Option<bool>,
     tab_reaches_agent: Option<bool>,
+    extended_keys: Option<String>,
 }
 
 impl SettingsUiBehaviorPatch {
@@ -1580,6 +2101,9 @@ impl SettingsUiBehaviorPatch {
         if let Some(value) = self.tab_reaches_agent {
             config.ui.tab_reaches_agent = value;
         }
+        if let Some(value) = self.extended_keys {
+            config.ui.extended_keys = value;
+        }
     }
 }
 
@@ -1593,6 +2117,7 @@ struct SettingsUiDisplayPatch {
     disable_release_notes: Option<bool>,
     terminal_font_family: Option<String>,
     terminal_font_size: Option<u16>,
+    nerd_font_icons: Option<bool>,
 }
 
 impl SettingsUiDisplayPatch {
@@ -1621,10 +2146,14 @@ impl SettingsUiDisplayPatch {
             config.ui.disable_release_notes = value;
         }
         if let Some(value) = self.terminal_font_family {
-            config.ui.terminal_font_family = sanitize_terminal_font_family(&value);
+            config.ui.terminal_font_family =
+                crate::config_effective::effective_terminal_font_family(&value);
         }
         if let Some(value) = self.terminal_font_size {
             config.ui.terminal_font_size = crate::config::normalized_terminal_font_size(value);
+        }
+        if let Some(value) = self.nerd_font_icons {
+            config.ui.nerd_font_icons = value;
         }
     }
 }
@@ -1668,7 +2197,8 @@ fn validate_settings_patch(
     patch.pr_banner_position = patch
         .pr_banner_position
         .map(|raw| {
-            normalize_pr_banner_position(&raw)
+            crate::config_effective::PrBannerPosition::parse(&raw)
+                .map(|position| position.as_str().to_string())
                 .ok_or_else(|| anyhow::anyhow!("unknown PR banner position \"{raw}\""))
         })
         .transpose()?;
@@ -1680,6 +2210,14 @@ fn validate_settings_patch(
                 .ok_or_else(|| anyhow::anyhow!("unknown compose bar mode \"{raw}\""))
         })
         .transpose()?;
+    patch.extended_keys = patch
+        .extended_keys
+        .map(|raw| {
+            crate::config::ExtendedKeysMode::parse(&raw)
+                .map(|mode| mode.as_str().to_string())
+                .ok_or_else(|| anyhow::anyhow!("unknown extended keys mode \"{raw}\""))
+        })
+        .transpose()?;
     if let Some(provider) = &patch.default_provider
         && !config.providers.commands.contains_key(provider.as_str())
     {
@@ -1688,8 +2226,169 @@ fn validate_settings_patch(
     Ok(patch)
 }
 
+/// The final a web default-branch checkout of `project_name` resolves to, for each
+/// way the two-worker chain can end.
+fn checkout_default_branch_final(
+    project_name: &str,
+    o: &crate::engine::WebCheckoutOutcome,
+) -> crate::engine::Final {
+    use crate::engine::{Final, WebCheckoutOutcome};
+    match o {
+        // STICKY on a failed save: the base did not move, and
+        // the fix (a full disk, a locked database) is outside the
+        // toast, followed by running the checkout again.
+        WebCheckoutOutcome::Ok {
+            target_branch,
+            base,
+        } => match base.save_failure_message(project_name, target_branch) {
+            Some(message) => Final::error(message).sticky(),
+            None => Final::info(crate::engine::checkout_default_branch_message(
+                project_name,
+                target_branch,
+                base,
+            )),
+        },
+        // STICKY: the checkout stopped part-way and the repository
+        // is left on whatever branch it landed on. The message says
+        // outright that the fix is in the user's terminal, which is
+        // as far outside the toast as recovery gets.
+        WebCheckoutOutcome::Failed {
+            target_branch,
+            repo_path,
+        } => Final::error(crate::status_text![
+            "Couldn't check out ",
+            q(target_branch),
+            " in ",
+            n(repo_path),
+            ". Resolve in your terminal and retry."
+        ])
+        .sticky(),
+        // STICKY on a failed save: the base did not move, and
+        // the fix (a full disk, a locked database) is outside the
+        // toast, followed by running the checkout again.
+        WebCheckoutOutcome::AlreadyLeading {
+            current_branch,
+            base,
+        } => match base.save_failure_message(project_name, current_branch) {
+            Some(message) => Final::error(message).sticky(),
+            None => Final::info(crate::engine::already_on_default_branch_message(
+                project_name,
+                current_branch,
+                base,
+            )),
+        },
+        // STICKY: same shape, same instruction. yaran cannot proceed
+        // and is asking the user to go and settle the repository's
+        // default branch by hand before retrying.
+        WebCheckoutOutcome::Heuristic { current_branch } => Final::error(crate::status_text![
+            "Can't determine the default branch for project ",
+            q(project_name),
+            " while it is on ",
+            q(current_branch),
+            ". Resolve the default branch in your terminal and retry."
+        ])
+        .sticky(),
+        WebCheckoutOutcome::InspectFailed { error } => Final::error(crate::status_text![
+            "Couldn't inspect the default branch for project ",
+            q(project_name),
+            format!(": {}", error)
+        ]),
+    }
+}
+
+/// The final a web check-out-and-add resolves to, for each way it can end.
+fn add_project_final(o: &crate::engine::WebAddProjectOutcome) -> crate::engine::Final {
+    use crate::engine::{Final, WebAddProjectOutcome};
+    match o {
+        WebAddProjectOutcome::Added { status_message } => Final::info(status_message.clone()),
+        // STICKY: the project was added but the branch switch it
+        // was supposed to make did not happen, so the checkout is
+        // not where the user asked for it and the message sends
+        // them to their terminal to finish the job.
+        WebAddProjectOutcome::SwitchFailed {
+            target_branch,
+            repo_path,
+        } => Final::error(crate::status_text![
+            "Couldn't check out ",
+            q(target_branch),
+            " in ",
+            n(repo_path),
+            ". Resolve in your terminal and retry."
+        ])
+        .sticky(),
+        WebAddProjectOutcome::AddFailed { message } => Final::error(message.clone()),
+    }
+}
+
+/// The default branch a check-out-and-add of the repository at `validated` switches to,
+/// with HEAD on `branch` (`None` when detached).
+///
+/// # Errors
+///
+/// Fails when no default branch is known for certain: a heuristic guess on a branch, or a
+/// detached HEAD with no `origin/HEAD`.
+pub(crate) fn checkout_default_target(
+    validated: &Path,
+    branch: Option<&str>,
+) -> anyhow::Result<String> {
+    Ok(match branch {
+        // On a normal HEAD: require a Known default (Heuristic is rejected).
+        Some(current) => match crate::git::branch_warning_kind(validated, current) {
+            Some(crate::worker::BranchWarningKind::Known { default_branch }) => default_branch,
+            _ => anyhow::bail!(
+                "Cannot determine a default branch to check out for \"{}\". Switch branches in your terminal and retry.",
+                validated.display()
+            ),
+        },
+        // On a detached HEAD: try origin/HEAD directly before giving up.
+        None => match crate::git::remote_default_branch(validated) {
+            Some(default) => default,
+            None => anyhow::bail!(
+                "HEAD is detached and no remote default branch (origin/HEAD) is \
+                     configured; check out a branch first."
+            ),
+        },
+    })
+}
+
+/// The final a web delete resolves to, for each way its worktree removal can end.
+fn delete_final(o: &crate::engine::WebDeleteOutcome) -> crate::engine::Final {
+    use crate::engine::{Final, WebDeleteOutcome};
+    match o {
+        // STICKY: a branch git refused to delete is
+        // still on disk and only the user can clear
+        // it, and the worktree that named it is gone,
+        // so a toast that timed out would take the
+        // last mention of it with it.
+        WebDeleteOutcome::Succeeded {
+            message,
+            refused: true,
+        } => Final::warning(message.clone()).sticky(),
+        WebDeleteOutcome::Succeeded { message, .. } => Final::info(message.clone()),
+        WebDeleteOutcome::SucceededGone => Final::info("Agent and worktree removed."),
+        // STICKY: the agent row is already gone from
+        // the UI but its worktree is still on disk, so
+        // the user is left with an orphaned directory
+        // only `git worktree remove` will clear. The
+        // sentence is authored at the call site, which
+        // is the side that still holds the snapshot.
+        WebDeleteOutcome::Failed { message } => Final::error(message.clone()).sticky(),
+        // STICKY: same half-done delete from the other
+        // side, the worktree went but the records did
+        // not, so the agent can come back on restart.
+        WebDeleteOutcome::CleanupFailed { message } => {
+            Final::error(format!("Session cleanup failed: {message}")).sticky()
+        }
+    }
+}
+
 impl Engine {
     /// Reconstruct and dispatch a wire command, returning a wire-safe outcome.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the command is refused, in the way of a running operation, would end somebody
+    /// else's terminal, or fails to apply.
     pub fn apply_wire(&mut self, command: WireCommand) -> anyhow::Result<WireCommandOutcome> {
         // Stamp the synchronous command-result status with the current command
         // origin. Deferred busies and finals capture `current_origin` at their
@@ -1697,7 +2396,43 @@ impl Engine {
         // Clear the create-op correlation slot before dispatch, so the value read
         // back reflects only THIS command's create.
         self.last_created_op_id = None;
+        self.admit_wire(&command)?;
+        // The changes this dispatches to an engine method directly; the ones
+        // it turns into a `Command` are guarded in `Engine::apply`.
+        let reservation = self.guard_wire(&command)?;
+        // A recreate stops the tabs it restarts only once its checkout lands,
+        // under the same key its busy runs on, so what it reserved stays
+        // reserved until that key's final.
+        let holds_until_final = matches!(
+            command,
+            WireCommand::RecreateWorkingCopy {
+                restart_tabs: true,
+                ..
+            }
+        );
+        let set = match &command {
+            WireCommand::UpdateMacros { .. }
+            | WireCommand::SetMacro { .. }
+            | WireCommand::RemoveMacro { .. } => Some(StaleSet::Macros),
+            WireCommand::PersistGlobalEnv { .. }
+            | WireCommand::SetGlobalEnvVar { .. }
+            | WireCommand::RemoveGlobalEnvVar { .. } => Some(StaleSet::GlobalEnv),
+            _ => None,
+        };
         let mut outcome = self.apply_wire_inner(command)?;
+        if holds_until_final
+            && let Some(reservation) = reservation
+            && let Some(key) = outcome
+                .status
+                .as_ref()
+                .and_then(|status| status.key.clone())
+        {
+            reservation.until_final(&key);
+        }
+        outcome.version = set.map(|set| match set {
+            StaleSet::Macros => macros_version(&self.config.macros),
+            StaleSet::GlobalEnv => global_env_version(&self.config.env),
+        });
         if let Some(status) = outcome.status.as_mut() {
             status.scope = self.current_origin.clone();
         }
@@ -1715,11 +2450,12 @@ impl Engine {
         for dispatch in [
             Self::dispatch_project_command,
             Self::dispatch_agent_command,
+            Self::dispatch_agent_tab_command,
             Self::dispatch_preference_command,
             Self::dispatch_pull_request_command,
         ] {
             match dispatch(self, pending)? {
-                WireDispatch::Handled(outcome) => return Ok(outcome),
+                WireDispatch::Handled(outcome) => return Ok(*outcome),
                 WireDispatch::Unhandled(command) => pending = command,
             }
         }
@@ -1729,34 +2465,92 @@ impl Engine {
         if status.is_none() {
             status = self.drive_delete_followup(&reaction).into_iter().next();
         }
-        Ok(WireCommandOutcome::with_optional_status(status))
+        let settled = settled_final_from_reaction(&reaction, status.as_ref());
+        Ok(WireCommandOutcome {
+            settled,
+            ..WireCommandOutcome::with_optional_status(status)
+        })
     }
 
     /// Answer the commands that add a project or prepare its checkout.
     fn dispatch_project_command(&mut self, command: WireCommand) -> anyhow::Result<WireDispatch> {
         match command {
+            // Saved on the project-persistence worker, so the generic tail
+            // would answer success before anything was written. Refused here,
+            // so no caller can be told a setting was saved that was not.
+            WireCommand::UpdateProjectProvider { .. }
+            | WireCommand::UpdateProjectAutoReopen { .. }
+            | WireCommand::UpdateProjectStartupCommand { .. }
+            | WireCommand::UpdateProjectEnv { .. } => {
+                anyhow::bail!(
+                    "a project setting is not saved through apply_wire, which would answer \
+                     before the write: use Engine::dispatch_project_setting and wait for the \
+                     ProjectPersistenceCompleted carrying the id it returns"
+                )
+            }
             WireCommand::CheckoutProjectDefaultBranch { project_id } => {
                 let status = self.checkout_project_default_branch(&project_id)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
-            WireCommand::AddProjectCheckoutDefault { path, name } => {
-                let status = self.add_project_checkout_default(&path, name)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+            WireCommand::ChangeProjectBaseBranch { project_id, branch } => {
+                let update = self.change_project_base_branch(&project_id, &branch)?;
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
+                    WireStatus::from_update(&update),
+                )))
+            }
+            WireCommand::AddProjectCheckoutDefault {
+                path,
+                name,
+                checked,
+            } => {
+                let status = self.add_project_checkout_default(&path, name, checked)?;
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
-            WireCommand::AddProjectCreateInitialCommit { path, name } => {
-                let status = self.add_project_create_initial_commit(&path, name)?;
-                Ok(WireDispatch::Handled(
+            WireCommand::AddProjectCreateInitialCommit {
+                path,
+                name,
+                checked,
+            } => {
+                let status = self.add_project_create_initial_commit(&path, name, checked)?;
+                Ok(WireDispatch::handled(
                     WireCommandOutcome::with_optional_status(status),
                 ))
             }
             WireCommand::AddProjectInitRepo { path, name } => {
                 let status = self.add_project_init_repo(&path, name)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
+                )))
+            }
+            // The engine command's own entry, told a browser asked so the web
+            // layer drives the follow-up.
+            WireCommand::CloneProject {
+                url,
+                path,
+                agent_name,
+                random_name,
+                pull_request,
+                add_existing,
+                review_copy,
+            } => {
+                let request = crate::clone_project::CloneRequest {
+                    url,
+                    path,
+                    agent_name,
+                    random_name,
+                    pull_request,
+                    add_existing,
+                    review_copy,
+                };
+                let busy = self
+                    .begin_clone_project(&request, crate::engine::CloneAskedBy::Browser)
+                    .map_err(|refused| anyhow::anyhow!("{refused}"))?;
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
+                    WireStatus::from_update(&busy),
                 )))
             }
             WireCommand::AddProject { .. } => {
@@ -1767,7 +2561,7 @@ impl Engine {
                 let status = added_status_message(&reaction)
                     .map(|message| WireStatus::new("info", message))
                     .or_else(|| wire_status_from_reaction(&reaction));
-                Ok(WireDispatch::Handled(
+                Ok(WireDispatch::handled(
                     WireCommandOutcome::with_optional_status(status),
                 ))
             }
@@ -1775,25 +2569,38 @@ impl Engine {
         }
     }
 
-    /// Answer the commands that create, reshape or stop an agent session
-    /// or one of its tabs.
+    /// Answer the commands that create, reshape or stop an agent session.
     fn dispatch_agent_command(&mut self, command: WireCommand) -> anyhow::Result<WireDispatch> {
         match command {
-            WireCommand::RenameSession { session_id, title } => {
-                let status = self.rename_session(&session_id, &title)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+            WireCommand::RenameSession {
+                session_id,
+                title,
+                rename_branch,
+            } => {
+                let branch = if rename_branch {
+                    crate::engine::BranchRename::AlsoTheBranch
+                } else {
+                    crate::engine::BranchRename::NameOnly
+                };
+                let status = self.rename_session(&session_id, &title, branch)?;
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::ReconnectSession { session_id, force } => {
-                let status = self.reconnect_session(&session_id, force)?;
-                Ok(WireDispatch::Handled(
+                let mode = if force {
+                    crate::engine::ReconnectMode::Force
+                } else {
+                    crate::engine::ReconnectMode::Normal
+                };
+                let status = self.reconnect_session(&session_id, mode)?;
+                Ok(WireDispatch::handled(
                     WireCommandOutcome::with_optional_status(status),
                 ))
             }
             WireCommand::RerunStartupCommand { session_id } => {
                 let status = self.rerun_startup_command(&session_id)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
@@ -1802,7 +2609,7 @@ impl Engine {
                 provider,
             } => {
                 let status = self.change_agent_provider_wire(&session_id, &provider)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
@@ -1810,35 +2617,76 @@ impl Engine {
                 project_id,
                 pr,
                 name,
+                review_copy,
+                review_copy_warned,
+                review_copy_by_flag,
+                ask_id,
             } => {
-                let status = self.create_agent_from_pr(&project_id, &pr, name)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                let consent = crate::worker::ReviewCopyConsent::from_request(
+                    crate::worker::ReviewCopyAnswer {
+                        agreed: review_copy,
+                        by_flag: review_copy_by_flag,
+                    },
+                    review_copy_warned,
+                );
+                let status = self.create_agent_from_pr(&project_id, &pr, &name, consent, ask_id)?;
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::KillSessionPty { session_id } => {
                 let (status, detached) = self.kill_session_pty(&session_id)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_detached(
-                    status, detached,
-                )))
+                Ok(WireDispatch::handled(WireCommandOutcome {
+                    status: Some(status),
+                    detached: Some(detached),
+                    ..WireCommandOutcome::default()
+                }))
             }
             WireCommand::DetachAgent { session_id, force } => {
-                let status = self.detach_agent(&session_id, force)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                let status = if force {
+                    self.force_detach_agent(&session_id)?
+                } else {
+                    self.detach_agent(&session_id)?
+                };
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
-            WireCommand::RecreateWorkingCopy { session_id } => {
-                let status = self.recreate_working_copy_wire(&session_id)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+            WireCommand::RecreateWorkingCopy {
+                session_id,
+                restart_tabs,
+            } => {
+                let tabs = if restart_tabs {
+                    crate::engine::TabsAfterRecreate::Restart
+                } else {
+                    crate::engine::TabsAfterRecreate::Leave
+                };
+                let status = self.recreate_working_copy_wire(&session_id, tabs)?;
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
+            other => Ok(WireDispatch::Unhandled(other)),
+        }
+    }
+
+    /// Answer the commands that close, stop, retarget or focus one tab of an
+    /// agent.
+    fn dispatch_agent_tab_command(&mut self, command: WireCommand) -> anyhow::Result<WireDispatch> {
+        match command {
             WireCommand::CloseAgentTab { session_id, tab_id } => {
                 let (status, outcome) = self.close_agent_tab_wire(&session_id, &tab_id)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_close_tab(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_close_tab(
                     status, &outcome,
                 )))
+            }
+            WireCommand::StopAgentTab { session_id, tab_id } => {
+                let (status, detached) = self.stop_agent_tab_wire(&session_id, &tab_id)?;
+                Ok(WireDispatch::handled(WireCommandOutcome {
+                    status: Some(status),
+                    detached: Some(detached),
+                    ..WireCommandOutcome::default()
+                }))
             }
             WireCommand::ChangeAgentTabProvider {
                 session_id,
@@ -1846,7 +2694,7 @@ impl Engine {
                 provider,
             } => {
                 let status = self.change_tab_provider_wire(&session_id, &tab_id, &provider)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
@@ -1854,7 +2702,7 @@ impl Engine {
                 self.set_last_focused_tab(&session_id, tab_id.as_deref())?;
                 // Focus changes are high-frequency and user-paced, so they do
                 // not surface a toast or status.
-                Ok(WireDispatch::Handled(WireCommandOutcome::quiet()))
+                Ok(WireDispatch::handled(WireCommandOutcome::quiet()))
             }
             other => Ok(WireDispatch::Unhandled(other)),
         }
@@ -1868,14 +2716,18 @@ impl Engine {
     ) -> anyhow::Result<WireDispatch> {
         match command {
             WireCommand::SetChangesPaneVisible { visible } => {
-                let status = self.set_changes_pane_visible(visible);
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                let status = self.set_changes_pane_visible(if visible {
+                    PaneVisibility::Shown
+                } else {
+                    PaneVisibility::Hidden
+                });
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::SetInstanceIdentity { title, favicon } => {
                 let status = self.set_instance_identity(title, favicon)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
@@ -1883,66 +2735,66 @@ impl Engine {
                 // `set_settings` decides its own status presence: a quiet
                 // accessory-bar-only patch succeeds with `None` (no toast).
                 let status = self.set_settings(patch)?;
-                Ok(WireDispatch::Handled(
+                Ok(WireDispatch::handled(
                     WireCommandOutcome::with_optional_status(status),
                 ))
             }
             WireCommand::ToggleRandomizedPetNameDefault {} => {
                 let status = self.toggle_randomized_pet_name_default();
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::TogglePrBannerPosition {} => {
                 let status = self.toggle_pr_banner_position();
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::SetAgentSort { sort } => {
                 let status = self.set_agent_sort(&sort);
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::ToggleCopyOnSelect {} => {
                 let status = self.toggle_copy_on_select();
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::ToggleAlwaysShowTabStrip {} => {
                 let status = self.toggle_always_show_tab_strip();
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::ToggleTabReachesAgent {} => {
                 let status = self.toggle_tab_reaches_agent();
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::SetCloudMode { mode } => {
                 self.set_cloud_mode(&mode)?;
                 // The serve layer reports what the tunnel did.
-                Ok(WireDispatch::Handled(WireCommandOutcome::quiet()))
+                Ok(WireDispatch::handled(WireCommandOutcome::quiet()))
             }
             WireCommand::SetTailscaleMode { mode } => {
                 self.set_tailscale_mode(&mode)?;
                 // The serve layer reports the listener outcome; a status here
                 // would produce two toasts for one gesture.
-                Ok(WireDispatch::Handled(WireCommandOutcome::quiet()))
+                Ok(WireDispatch::handled(WireCommandOutcome::quiet()))
             }
             WireCommand::ToggleGithubIntegration {} => {
                 let status = self.toggle_github_integration();
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     status,
                 )))
             }
             WireCommand::RecheckGithub {} => {
                 let update = self.request_gh_recheck();
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     WireStatus::from_update(&update),
                 )))
             }
@@ -1950,8 +2802,7 @@ impl Engine {
         }
     }
 
-    /// Answer the commands that change which pull request an agent's branch
-    /// is shown as.
+    /// Answer the commands that change an agent's pull requests.
     fn dispatch_pull_request_command(
         &mut self,
         command: WireCommand,
@@ -1975,21 +2826,35 @@ impl Engine {
                     &state,
                     &url,
                 )?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
+                Ok(WireDispatch::handled(WireCommandOutcome::with_status(
                     WireStatus::new("info", message),
                 )))
             }
-            WireCommand::ClearPullRequestOverride { session_id } => {
-                let message = self.clear_pull_request_override(&session_id)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
-                    WireStatus::new("info", message),
-                )))
+            WireCommand::DetachPullRequest { session_id, pr } => {
+                let update = self.detach_pull_request(&session_id, &pr.key())?;
+                Ok(pull_request_change_answer(&update))
             }
-            WireCommand::ResumePullRequestAutodetection { session_id } => {
-                let message = self.resume_pr_autodetection(&session_id)?;
-                Ok(WireDispatch::Handled(WireCommandOutcome::with_status(
-                    WireStatus::new("info", message),
-                )))
+            WireCommand::HidePullRequest { session_id, pr } => {
+                let update = self.hide_pull_request(&session_id, &pr.key())?;
+                Ok(pull_request_change_answer(&update))
+            }
+            WireCommand::ShowPullRequest { session_id, pr } => {
+                let update = self.show_pull_request(&session_id, &pr.key())?;
+                Ok(pull_request_change_answer(&update))
+            }
+            WireCommand::SetPullRequestSort { session_id, mode } => {
+                let update = self.set_pull_request_sort(&session_id, mode.into())?;
+                Ok(pull_request_change_answer(&update))
+            }
+            WireCommand::MovePullRequest { session_id, pr, to } => {
+                let update = self.move_pull_request(&session_id, &pr.key(), to.into())?;
+                Ok(pull_request_change_answer(&update))
+            }
+            WireCommand::ReorderPullRequests { session_id, order } => {
+                let order: Vec<crate::model::PrKey> =
+                    order.iter().map(crate::viewmodel::PrKeyView::key).collect();
+                let update = self.reorder_pull_requests(&session_id, &order)?;
+                Ok(pull_request_change_answer(&update))
             }
             other => Ok(WireDispatch::Unhandled(other)),
         }
@@ -1998,11 +2863,12 @@ impl Engine {
     /// Persist the Changes (git) pane's visibility to `config.toml`
     /// (`ui.show_changes_pane`) so the choice survives a restart, mirroring the
     /// TUI's persist-on-toggle. The field is the single persisted source of
-    /// truth: the next ViewModel broadcast carries it, and the web clears its
+    /// truth: the next `ViewModel` broadcast carries it, and the web clears its
     /// optimistic override once they match. Visibility is a low-stakes
     /// preference, so the write is lazy: the queue coalesces concurrent toggles
     /// and logs any disk failure; no rollback is needed.
-    fn set_changes_pane_visible(&mut self, visible: bool) -> WireStatus {
+    fn set_changes_pane_visible(&mut self, visibility: PaneVisibility) -> WireStatus {
+        let visible = visibility == PaneVisibility::Shown;
         // Idempotent: skip the disk write when nothing changes (also blunts a
         // client that spams the toggle).
         if self.config.ui.show_changes_pane == visible {
@@ -2017,7 +2883,14 @@ impl Engine {
             // Quiet only when the pane is (or already was) SHOWN: the pane is
             // right there. Both hidden answers stay loud, because they name the
             // way back to something that has just left the screen.
-            return quiet_web_when(WireStatus::new("info", message.to_string()), visible);
+            return quiet_web_when(
+                WireStatus::new("info", message.to_string()),
+                if visible {
+                    WebScreen::ShowsTheOutcome
+                } else {
+                    WebScreen::LacksTheOutcome
+                },
+            );
         }
         self.config.ui.show_changes_pane = visible;
         self.config_writer.save_lazy(self.config.clone());
@@ -2026,7 +2899,14 @@ impl Engine {
         } else {
             "Changes pane hidden. Reopen it from the show button in the header, or set it permanently in Preferences."
         };
-        quiet_web_when(WireStatus::new("info", message.to_string()), visible)
+        quiet_web_when(
+            WireStatus::new("info", message.to_string()),
+            if visible {
+                WebScreen::ShowsTheOutcome
+            } else {
+                WebScreen::LacksTheOutcome
+            },
+        )
     }
 
     /// Persist this yaran instance's identity, the browser tab title
@@ -2036,8 +2916,9 @@ impl Engine {
     ///
     /// Each field is optional and an empty body is a no-op, with no write and no
     /// `config.changed`. A `Some` title is normalized (see
-    /// [`normalize_instance_title`]); a `Some` favicon must be a curated color
-    /// name or empty (see [`normalize_instance_favicon`]) or the command is
+    /// [`crate::config_effective::effective_server_title`]); a `Some` favicon must
+    /// be a curated color name or empty (see
+    /// [`crate::config_effective::parse_server_favicon`]) or the command is
     /// rejected, which the dispatch layer turns into a plain-text `400`. The
     /// write is eager and idempotent, and mutates config-static state, so the web
     /// fires `config.changed`.
@@ -2054,11 +2935,11 @@ impl Engine {
         }
         let mut candidate = self.config.clone();
         if let Some(raw) = title {
-            candidate.server.title = normalize_instance_title(&raw);
+            candidate.server.title = crate::config_effective::effective_server_title(&raw);
         }
         if let Some(raw) = favicon {
-            candidate.server.favicon = normalize_instance_favicon(&raw)
-                .ok_or_else(|| anyhow::anyhow!("unknown favicon color \"{}\"", raw))?;
+            candidate.server.favicon = crate::config_effective::parse_server_favicon(&raw)
+                .ok_or_else(|| anyhow::anyhow!("unknown favicon color \"{raw}\""))?;
         }
         // Idempotent: skip the write (and the fan-out) when nothing changed.
         if candidate.server.title == self.config.server.title
@@ -2123,6 +3004,8 @@ impl Engine {
             web_notifications,
             always_show_tab_strip,
             tab_reaches_agent,
+            extended_keys,
+            nerd_font_icons,
             status_clear_seconds,
             attention_grace_seconds,
             attention_indicator,
@@ -2148,6 +3031,7 @@ impl Engine {
             show_changes_pane,
             always_show_tab_strip,
             tab_reaches_agent,
+            extended_keys,
         }
         .apply_to(&mut candidate);
         SettingsUiDisplayPatch {
@@ -2160,6 +3044,7 @@ impl Engine {
             disable_release_notes,
             terminal_font_family,
             terminal_font_size,
+            nerd_font_icons,
         }
         .apply_to(&mut candidate);
         SettingsDefaultsPatch {
@@ -2228,15 +3113,15 @@ impl Engine {
     }
 
     /// Flip `ui.pr_banner_position` between "top" and "bottom" and persist it,
-    /// mirroring the TUI's `toggle-pr-banner-position` handler. Any value other
-    /// than "bottom" is treated as "top" (so an unexpected/legacy string moves to
-    /// "bottom" on first toggle). Low-stakes preference, lazy write.
+    /// mirroring the TUI's `toggle-pr-banner-position` handler. It flips the
+    /// position yaran shows (an unknown value shows at the default, the bottom),
+    /// so the banner always visibly moves. Low-stakes preference, lazy write.
     fn toggle_pr_banner_position(&mut self) -> WireStatus {
-        let next = if self.config.ui.pr_banner_position == "bottom" {
-            "top"
-        } else {
-            "bottom"
-        };
+        let next = crate::config_effective::effective_pr_banner_position(
+            &self.config.ui.pr_banner_position,
+        )
+        .flipped()
+        .as_str();
         self.config.ui.pr_banner_position = next.to_string();
         self.config_writer.save_lazy(self.config.clone());
         // Loud: one band of chrome is a small indicator, and on an agent with
@@ -2252,27 +3137,23 @@ impl Engine {
     /// preference, lazy write.
     ///
     /// The shared value set is "active" (default), "updated", "created", "name"
-    /// (ascending), "name_desc" (descending) and "manual" (the hand-placed order,
+    /// (ascending), "`name_desc`" (descending) and "manual" (the hand-placed order,
     /// which a drag on the web or a `move-agent-*` / `move-terminal-*` command in
     /// the TUI stamps). Each surface OFFERS its own subset in its picker but
     /// DISPLAYS any value the other one sets. `pub` so the TUI's `sort-agents`
     /// palette command can drive it too.
     pub fn set_agent_sort(&mut self, sort: &str) -> WireStatus {
-        const VALID: [&str; 6] = [
-            "active",
-            "updated",
-            "created",
-            "name",
-            "name_desc",
-            "manual",
-        ];
-        if !VALID.contains(&sort) {
+        if crate::config_effective::parse_agent_sort(sort).is_none() {
+            let known: Vec<&str> = crate::config_effective::AGENT_SORTS
+                .iter()
+                .map(|(name, _)| *name)
+                .collect();
             return WireStatus::new(
                 "error",
                 crate::status_text![
                     "Unknown agent sort ",
                     q(sort),
-                    format!(". Expected one of: {}.", VALID.join(", "))
+                    format!(". Expected one of: {}.", known.join(", "))
                 ],
             );
         }
@@ -2302,6 +3183,10 @@ impl Engine {
     /// Lazy rather than eager, matching the sibling preferences: the serve has
     /// already acted by the time the file lands, and the saved value only decides
     /// what the NEXT run does.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `mode` is not `auto`, `yes` or `no`.
     pub fn set_tailscale_mode(
         &mut self,
         mode: &str,
@@ -2330,7 +3215,14 @@ impl Engine {
         // Turning it OFF takes a behavior away with nothing on screen to show
         // for it, and the sentence is where the other three ways to copy are
         // named, so that arm stays loud.
-        quiet_web_when(WireStatus::new("info", message.to_string()), next)
+        quiet_web_when(
+            WireStatus::new("info", message.to_string()),
+            if next {
+                WebScreen::ShowsTheOutcome
+            } else {
+                WebScreen::LacksTheOutcome
+            },
+        )
     }
 
     /// Flip `ui.always_show_tab_strip` and persist it, mirroring the TUI's
@@ -2346,7 +3238,14 @@ impl Engine {
         };
         // Turning it on puts the strip on screen. Turning it off can make the
         // strip vanish, so that arm keeps the sentence that explains why.
-        quiet_web_when(WireStatus::new("info", message.to_string()), next)
+        quiet_web_when(
+            WireStatus::new("info", message.to_string()),
+            if next {
+                WebScreen::ShowsTheOutcome
+            } else {
+                WebScreen::LacksTheOutcome
+            },
+        )
     }
 
     /// Flip `ui.tab_reaches_agent` and persist it, mirroring the TUI's
@@ -2395,7 +3294,7 @@ impl Engine {
             // answer this probe is about to replace, and doubles the API traffic.
             self.spawn_gh_status_check();
         } else {
-            self.pr_statuses.clear();
+            self.clear_agent_prs();
             self.disarm_pr_sync();
         }
         let detail = if next {
@@ -2482,13 +3381,11 @@ impl Engine {
     /// by the background reaper. So the status this returns is a keyed BUSY, and
     /// the reaper's own final replaces it once the last tab is actually gone.
     ///
-    /// `force` takes the immediate path instead ([`Engine::kill_session_runtime`]),
-    /// for the panic button. It answers with a plain final, because there is
-    /// nothing left to wait for by the time it returns.
-    fn detach_agent(&mut self, session_id: &str, force: bool) -> anyhow::Result<WireStatus> {
-        if force {
-            return self.force_detach_agent(session_id);
-        }
+    /// [`Self::force_detach_agent`] takes the immediate path instead
+    /// ([`Engine::kill_session_runtime`]), for the panic button. It answers
+    /// with a plain final, because there is nothing left to wait for by the
+    /// time it returns.
+    fn detach_agent(&mut self, session_id: &str) -> anyhow::Result<WireStatus> {
         match self.begin_detach_session(session_id) {
             crate::engine::DetachSessionOutcome::UnknownSession => {
                 Err(anyhow::anyhow!("unknown session: {session_id}"))
@@ -2511,7 +3408,11 @@ impl Engine {
     /// Refusals are errors rather than a quiet no-op: this is also an HTTP route
     /// and a palette command, so an id that should never have reached here has
     /// to be answered in a sentence.
-    fn recreate_working_copy_wire(&mut self, session_id: &str) -> anyhow::Result<WireStatus> {
+    fn recreate_working_copy_wire(
+        &mut self,
+        session_id: &str,
+        tabs: crate::engine::TabsAfterRecreate,
+    ) -> anyhow::Result<WireStatus> {
         // An id nobody has is a 404, not a refusal about an agent: without this
         // bail every unknown id fell through to "yaran only recreates a working
         // copy it manages", which is a sentence about an agent that is not
@@ -2519,9 +3420,24 @@ impl Engine {
         if !self.sessions.iter().any(|s| s.id == session_id) {
             anyhow::bail!("unknown session: {session_id}");
         }
-        let reaction = self.begin_recreate_working_copy(session_id)?;
+        let reaction = self.begin_recreate_working_copy(session_id, tabs)?;
         wire_status_from_reaction(&reaction)
             .ok_or_else(|| anyhow::anyhow!("recreating the working copy raised no status"))
+    }
+
+    /// Rename an agent through [`Engine::rename_agent`], the implementation the
+    /// terminal UI's dialog calls too, so the rules, the refusals and the
+    /// statuses are one set. The answer is the final of a rename that is done,
+    /// or the keyed busy of a branch rename now running.
+    fn rename_session(
+        &mut self,
+        session_id: &str,
+        title: &str,
+        branch: crate::engine::BranchRename,
+    ) -> anyhow::Result<WireStatus> {
+        let reaction = self.rename_agent(session_id, title, branch)?;
+        wire_status_from_reaction(&reaction)
+            .ok_or_else(|| anyhow::anyhow!("renaming the agent raised no status"))
     }
 
     /// The panic button's arm of [`Self::detach_agent`]: end the agent's
@@ -2558,83 +3474,6 @@ impl Engine {
                 })
             }
         }
-    }
-
-    /// Rename an agent session's display title, mirroring the title half of the
-    /// TUI's `apply_rename_session`. The custom `title` is trimmed; a non-empty
-    /// title is validated with the same `is_valid_agent_name` backstop the TUI
-    /// enforces, and an empty title clears it back to `None` so the row reverts
-    /// to the branch name.
-    ///
-    /// Deliberately unlike the TUI prompt, which also renames the git branch by
-    /// default and rejects an empty name: the web rename is title-only, so
-    /// clearing the title is the only way back to the branch name.
-    fn rename_session(&mut self, session_id: &str, title: &str) -> anyhow::Result<WireStatus> {
-        let trimmed = title.trim();
-        // The refname rules apply only where the name can become a git branch.
-        // A STANDALONE agent's title is a label taken verbatim at creation
-        // (folder names legally contain characters a ref cannot), so validating
-        // it as a ref here made a title yaran itself minted impossible to type
-        // back. Same rule as `Engine::prepare_branch_rename`.
-        let branch_named = self
-            .sessions
-            .iter()
-            .find(|s| s.id == session_id)
-            .map(|s| s.supports_branch_git())
-            .unwrap_or(true);
-        let new_title = if trimmed.is_empty() {
-            None
-        } else {
-            if branch_named && !crate::git::is_valid_agent_name(trimmed) {
-                anyhow::bail!(
-                    "Invalid agent name \"{trimmed}\". Use only letters, digits, dashes, \
-                     underscores and slashes; it must start with a letter or digit, must \
-                     not contain \"//\", and must not end with \"/\"."
-                );
-            }
-            Some(trimmed.to_string())
-        };
-        let session = self
-            .sessions
-            .iter_mut()
-            .find(|s| s.id == session_id)
-            .ok_or_else(|| anyhow::anyhow!("unknown session: {session_id}"))?;
-        session.title = new_title.clone();
-        session.updated_at = chrono::Utc::now();
-        // Re-borrow immutably to persist (the mutable borrow above has ended).
-        if let Some(session) = self.sessions.iter().find(|s| s.id == session_id) {
-            self.session_store.upsert_session(session)?;
-        }
-        let message = match &new_title {
-            Some(name) => crate::status_text!["Renamed agent to ", q(name), "."],
-            None => {
-                // A standalone agent has no branch to fall back to; its label
-                // falls back to its folder's name instead, so the sentence has
-                // to name whichever one it actually landed on.
-                let session = self.sessions.iter().find(|s| s.id == session_id);
-                match session.and_then(|s| s.branch_name().map(str::to_string)) {
-                    Some(branch) => crate::status_text![
-                        "Cleared the custom name. Agent shows its branch name ",
-                        q(branch),
-                        " again."
-                    ],
-                    None => {
-                        let label = session
-                            .map(|s| s.display_label())
-                            .unwrap_or_else(|| session_id.to_string());
-                        crate::status_text![
-                            "Cleared the custom name. Agent shows its folder's name ",
-                            q(label),
-                            " again."
-                        ]
-                    }
-                }
-            }
-        };
-        // Loud on both arms: a rename lands on one row's label in a long list,
-        // which can sit outside the visible scroll area, and a clear lands on a
-        // fallback the user did not choose and that only this sentence names.
-        Ok(WireStatus::new("info", message))
     }
 
     /// Swap which provider a session uses, mirroring the TUI's
@@ -2684,7 +3523,7 @@ impl Engine {
             ));
         }
 
-        let outcome = self.change_agent_provider(session_id, provider.clone())?;
+        let outcome = self.change_agent_provider(session_id, &provider)?;
 
         if outcome.running {
             Ok(WireStatus::new(
@@ -2742,6 +3581,13 @@ impl Engine {
             .map(|t| TabId::new(t.id.clone()))
             .and_then(|id| self.tab_prose_label(sid, id.as_ref_id()));
         let outcome = self.close_tab(session_id, tab_id)?;
+        self.note_operation(
+            None,
+            &crate::operations::OperationNotes {
+                removed: vec![tab_id.to_string()],
+                ..Default::default()
+            },
+        );
         let message = match (&outcome.promoted, closed.as_deref(), successor.as_deref()) {
             (Some(_), Some(closed), Some(next)) => crate::status_text![
                 "Closed the first tab, ",
@@ -2764,6 +3610,46 @@ impl Engine {
         Ok((WireStatus::new("info", message), outcome))
     }
 
+    /// Stop one tab's process and keep the tab, through the teardown every
+    /// surface's kill shares. Answers whether the agent detached.
+    fn stop_agent_tab_wire(
+        &mut self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> anyhow::Result<(WireStatus, bool)> {
+        if self.owning_session_for_tab(tab_id).as_deref() != Some(session_id) {
+            anyhow::bail!("unknown tab: {tab_id} is not a tab of agent {session_id}");
+        }
+        let label = self
+            .tab_prose_label(SessionIdRef::new(session_id), TabIdRef::new(tab_id))
+            .unwrap_or_else(|| tab_id.to_string());
+        let outcome = self.kill_tab_runtime(tab_id);
+        // Loud in every case: a pill going quiet is too small to stand in for
+        // a stop, and a stop that found nothing running looks like a failure.
+        let message = if !outcome.killed {
+            crate::status_text![
+                "The ",
+                n(label),
+                " tab is not running, so there was nothing to stop."
+            ]
+        } else if outcome.detached {
+            crate::status_text![
+                "Stopped the ",
+                n(label),
+                " tab. It was the agent's last running tab, so the agent is detached now; \
+                 start it again from its menu."
+            ]
+        } else {
+            crate::status_text![
+                "Stopped the ",
+                n(label),
+                " tab. Its other tabs are still running."
+            ]
+        };
+        let detached = outcome.detached || !self.any_tab_active(session_id);
+        Ok((WireStatus::new("info", message), detached))
+    }
+
     /// Retarget one tab's provider, validating the choice server-side. The
     /// session-slot tab delegates to the session-level change (identical UX); an
     /// extra tab updates only that tab.
@@ -2782,7 +3668,7 @@ impl Engine {
             anyhow::bail!("{}", crate::provider::provider_not_configured(provider));
         }
         let provider = ProviderKind::new(provider);
-        let outcome = self.change_tab_provider(session_id, tab_id, provider.clone())?;
+        let outcome = self.change_tab_provider(session_id, tab_id, &provider)?;
         if outcome.running {
             Ok(WireStatus::new(
                 "warning",
@@ -2829,7 +3715,7 @@ impl Engine {
     fn reconnect_session(
         &mut self,
         session_id: &str,
-        force: bool,
+        mode: crate::engine::ReconnectMode,
     ) -> anyhow::Result<Option<WireStatus>> {
         // The guards, the collision-aware resume decision, the status message,
         // and the pre-dispatch mutations (force teardown + conflicting-worktree
@@ -2837,7 +3723,7 @@ impl Engine {
         // TUI. The web sources no PTY size, so it uses the subscribe-launch
         // default `(24, 80)` (rows, cols); the focused pane re-attaches via the
         // subscribe machinery once the new provider comes up.
-        let (request, busy) = match self.reconnect_plan(session_id, force, (24, 80))? {
+        let (request, busy) = match self.reconnect_plan(session_id, mode, (24, 80))? {
             crate::engine::ReconnectPlan::AlreadyConnected { message } => {
                 return Ok(Some(WireStatus::new("info", message)));
             }
@@ -2929,10 +3815,20 @@ impl Engine {
                 )
             })?;
 
+        // Resolved before the claim, so a refusal leaves nothing claimed.
+        let env = crate::engine::resolve_env_or_refuse(
+            &self.config.env,
+            crate::engine::EnvOverlay::Project {
+                name: &project.name,
+                env: &project.env,
+            },
+            "rerun the startup command",
+        )?;
+        let claim = self
+            .claim_startup_rerun(session_id, &session.display_label(), &managed.worktree_path)
+            .map_err(|refusal| anyhow::anyhow!(refusal.to_string()))?;
         let paths = self.paths.clone();
         let terminal = self.config.startup_command_terminal.clone();
-        let env =
-            crate::config::resolve_agent_env(&self.config.env, &project.env).unwrap_or_default();
         let branch = managed.branch_name.clone();
         let success_name = project.name.clone();
         let failure_name = project.name.clone();
@@ -2941,7 +3837,7 @@ impl Engine {
             q(branch),
             "..."
         ])
-        .on_success(move |_: &()| {
+        .on_success(move |(): &()| {
             crate::engine::Final::info(crate::status_text![
                 "Startup command completed for project ",
                 q(success_name),
@@ -2968,7 +3864,12 @@ impl Engine {
             env,
         };
         let reaction = self.spawn_status_op(op, move || {
-            crate::startup::run_startup_command(&paths, run).status
+            let crate::engine::StartupRerunClaim {
+                run: run_claim,
+                hold,
+            } = claim;
+            let _hold = hold;
+            crate::startup::run_claimed_startup_command(&paths, run, run_claim).status
         });
         // `spawn_status_op` returns the pending Busy as an `EventReaction::Status`;
         // surface it as the wire outcome so the originating client shows the spinner
@@ -2986,7 +3887,7 @@ impl Engine {
     ///
     /// It kicks off the TUI's two-worker chain rather than working inline:
     /// `git switch` rewrites the working tree and blocks indefinitely on a held
-    /// `index.lock`, and the web engine loop thread also drives every ViewModel
+    /// `index.lock`, and the web engine loop thread also drives every `ViewModel`
     /// push and PTY route, so a synchronous checkout would freeze every connected
     /// browser.
     ///
@@ -3014,7 +3915,11 @@ impl Engine {
             );
         }
         // One at a time per repository, whichever surface asked first.
-        if let Err(refusal) = self.begin_default_branch_checkout(&project) {
+        if let Err(refusal) = self.begin_project_folder_action(
+            &project.path,
+            &project.name,
+            crate::engine::ProjectFolderAction::CheckoutDefaultBranch,
+        ) {
             return Ok(WireStatus::from_update(&refusal));
         }
 
@@ -3031,72 +3936,7 @@ impl Engine {
         let project_name = project.name.clone();
         let op = crate::engine::status_op(busy).resolve_in_handler(
             move |o: &crate::engine::WebCheckoutOutcome| {
-                use crate::engine::{Final, WebCheckoutOutcome};
-                match o {
-                    // STICKY on a failed save: the base did not move, and
-                    // the fix (a full disk, a locked database) is outside the
-                    // toast, followed by running the checkout again.
-                    WebCheckoutOutcome::Ok {
-                        target_branch,
-                        base,
-                    } => match base.save_failure_message(&project_name, target_branch) {
-                        Some(message) => Final::error(message).sticky(),
-                        None => Final::info(crate::engine::checkout_default_branch_message(
-                            &project_name,
-                            target_branch,
-                            base.moved(),
-                        )),
-                    },
-                    // STICKY: the checkout stopped part-way and the repository
-                    // is left on whatever branch it landed on. The message says
-                    // outright that the fix is in the user's terminal, which is
-                    // as far outside the toast as recovery gets.
-                    WebCheckoutOutcome::Failed {
-                        target_branch,
-                        repo_path,
-                    } => Final::error(crate::status_text![
-                        "Couldn't check out ",
-                        q(target_branch),
-                        " in ",
-                        n(repo_path),
-                        ". Resolve in your terminal and retry."
-                    ])
-                    .sticky(),
-                    // STICKY on a failed save: the base did not move, and
-                    // the fix (a full disk, a locked database) is outside the
-                    // toast, followed by running the checkout again.
-                    WebCheckoutOutcome::AlreadyLeading {
-                        current_branch,
-                        base,
-                    } => match base.save_failure_message(&project_name, current_branch) {
-                        Some(message) => Final::error(message).sticky(),
-                        None => Final::info(crate::engine::already_on_default_branch_message(
-                            &project_name,
-                            current_branch,
-                            base.moved(),
-                        )),
-                    },
-                    // STICKY: same shape, same instruction. yaran cannot proceed
-                    // and is asking the user to go and settle the repository's
-                    // default branch by hand before retrying.
-                    WebCheckoutOutcome::Heuristic { current_branch } => {
-                        Final::error(crate::status_text![
-                            "Can't determine the default branch for project ",
-                            q(project_name),
-                            " while it is on ",
-                            q(current_branch),
-                            ". Resolve the default branch in your terminal and retry."
-                        ])
-                        .sticky()
-                    }
-                    WebCheckoutOutcome::InspectFailed { error } => {
-                        Final::error(crate::status_text![
-                            "Couldn't inspect the default branch for project ",
-                            q(project_name),
-                            format!(": {}", error)
-                        ])
-                    }
-                }
+                checkout_default_branch_final(&project_name, o)
             },
         );
         let op = op.with_scope(self.current_origin.clone());
@@ -3115,7 +3955,7 @@ impl Engine {
             if std::panic::catch_unwind(AssertUnwindSafe(|| {
                 crate::project_browser::run_checkout_project_default_branch_inspection_job(
                     project,
-                    worker_tx,
+                    &worker_tx,
                     Some(op_id),
                 );
             }))
@@ -3148,10 +3988,8 @@ impl Engine {
         &mut self,
         path: &str,
         name: String,
+        checked: Option<crate::route_checks::CheckoutDefaultChecked>,
     ) -> anyhow::Result<WireStatus> {
-        let validated = self
-            .validate_project_add_path(path)
-            .map_err(|e| anyhow::anyhow!(e))?;
         // A project registered in shared mode runs its agents in this very
         // checkout, on whatever branch the user has there; yaran never switches
         // it (fork `shared_registration_does_not_switch_real_checkout_or_create_link`).
@@ -3160,43 +3998,29 @@ impl Engine {
         if self.config.default_workspace_mode() == crate::config::WorkspaceMode::Shared {
             anyhow::bail!(
                 "New projects are registered in shared mode, where yaran uses your checkout as \
-                 it is and never switches its branch. Add \"{}\" without checking out the \
-                 default branch.",
-                validated.display()
+                 it is and never switches its branch. Add \"{path}\" without checking out the \
+                 default branch."
             );
         }
-        // A confirmed unborn repo has no default branch to check out; reject
-        // explicitly rather than relying on `branch_warning_kind` to bail with a
-        // less specific message. Fail open on an indeterminate git result.
-        if crate::git::repo_commit_state(&validated) == crate::git::CommitState::Unborn {
-            anyhow::bail!(
-                "\"{}\" has no commits yet, so there's no default branch to check out. Create an initial commit first.",
-                validated.display()
-            );
-        }
-        let branch = crate::git::current_branch_opt(&validated)?;
-        let default_branch = match branch.as_deref() {
-            // On a normal HEAD: require a Known default (Heuristic is rejected).
-            Some(current) => match crate::git::branch_warning_kind(&validated, current) {
-                Some(crate::worker::BranchWarningKind::Known { default_branch }) => default_branch,
-                _ => anyhow::bail!(
-                    "Cannot determine a default branch to check out for \"{}\". Switch branches in your terminal and retry.",
-                    validated.display()
-                ),
-            },
-            // On a detached HEAD: try origin/HEAD directly before giving up.
-            None => match crate::git::remote_default_branch(&validated) {
-                Some(default) => default,
-                None => anyhow::bail!(
-                    "HEAD is detached and no remote default branch (origin/HEAD) is \
-                         configured; check out a branch first."
-                ),
-            },
+        let checked = match checked {
+            Some(checked) => {
+                self.refuse_registered(&checked.validated)?;
+                checked
+            }
+            None => crate::route_checks::check_add_project_checkout_default(
+                path,
+                &self.project_paths(),
+            )?,
         };
+        let crate::route_checks::CheckoutDefaultChecked {
+            validated,
+            branch,
+            default_branch,
+        } = checked;
         let leading_branch = crate::add_project_plan::project_base_at_add(
             branch.as_deref(),
             Some(&default_branch),
-            true,
+            crate::add_project_plan::DefaultCheckout::CheckOutDefault,
         )
         .into_branch();
         let path_str = validated.to_string_lossy().to_string();
@@ -3219,36 +4043,14 @@ impl Engine {
         // message) and the switch FAILURE in `process_worker_event`; both share
         // this op's opaque id so the busy is replaced, not stranded.
         let op = crate::engine::status_op(busy).resolve_in_handler(
-            move |o: &crate::engine::WebAddProjectOutcome| {
-                use crate::engine::{Final, WebAddProjectOutcome};
-                match o {
-                    WebAddProjectOutcome::Added { status_message } => {
-                        Final::info(status_message.clone())
-                    }
-                    // STICKY: the project was added but the branch switch it
-                    // was supposed to make did not happen, so the checkout is
-                    // not where the user asked for it and the message sends
-                    // them to their terminal to finish the job.
-                    WebAddProjectOutcome::SwitchFailed {
-                        target_branch,
-                        repo_path,
-                    } => Final::error(crate::status_text![
-                        "Couldn't check out ",
-                        q(target_branch),
-                        " in ",
-                        n(repo_path),
-                        ". Resolve in your terminal and retry."
-                    ])
-                    .sticky(),
-                    WebAddProjectOutcome::AddFailed { message } => Final::error(message.clone()),
-                }
-            },
+            move |o: &crate::engine::WebAddProjectOutcome| add_project_final(o),
         );
         let op = op.with_scope(self.current_origin.clone());
         let op_id = op.id().to_string();
         let pending = WireStatus::from_update(&self.begin_status_op(&op));
         self.pending_web_add_project_ops.insert(op_id.clone(), op);
         let worker_tx = self.worker_tx.clone();
+        let guard = self.checkout_move_guard();
         std::thread::spawn(move || {
             use std::panic::AssertUnwindSafe;
             // Guarantee the op resolves even if the job panics; see the sibling
@@ -3261,8 +4063,9 @@ impl Engine {
                 crate::project_browser::run_add_project_checkout_job(
                     action,
                     default_branch,
-                    worker_tx,
+                    &worker_tx,
                     Some(op_id),
+                    &guard,
                 );
             }))
             .is_err()
@@ -3291,28 +4094,37 @@ impl Engine {
         &mut self,
         path: &str,
         name: String,
+        checked: Option<crate::route_checks::InitialCommitChecked>,
     ) -> anyhow::Result<Option<WireStatus>> {
-        let validated = self
-            .validate_project_add_path(path)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let path_str = validated.to_string_lossy().to_string();
-        // Handle the race where a commit landed between the client's inspect and
-        // this request. Fail-closed commit state: only Unborn proceeds to the
-        // bootstrap; a now-Born repo is just registered (no commit needed), and an
-        // indeterminate git state is a hard, synchronous error (not a stranded
-        // busy that expires to a 202).
-        match crate::git::repo_commit_state(&validated) {
-            crate::git::CommitState::Unborn => {}
-            crate::git::CommitState::Born => {
-                // Already has commits, so there is nothing to bootstrap: register
-                // it through the normal add path so the request still succeeds.
-                // Map the reaction to a status EXACTLY as the plain `AddProject`
-                // handler does: only a confirmed `Added` outcome is info, a
-                // rolled-back add relays its error tone, and a deferred `Nothing`
-                // yields no toast rather than a fabricated success.
+        let checked = match checked {
+            Some(checked) => {
+                self.refuse_registered(checked.validated())?;
+                checked
+            }
+            None => crate::route_checks::check_add_project_create_initial_commit(
+                path,
+                &self.project_paths(),
+            )?,
+        };
+        let (validated, branch, leading_branch) = match checked {
+            crate::route_checks::InitialCommitChecked::Unborn {
+                validated,
+                branch,
+                leading_branch,
+            } => (validated, branch, leading_branch),
+            crate::route_checks::InitialCommitChecked::Born(plain) => {
+                // A commit has landed since the client looked, so there is
+                // nothing to bootstrap: register it through the normal add path
+                // so the request still succeeds. Map the reaction to a status
+                // EXACTLY as the plain `AddProject` handler does: only a
+                // confirmed `Added` outcome is info, a rolled-back add relays its
+                // error tone, and a deferred `Nothing` yields no toast rather
+                // than a fabricated success.
+                let path_str = plain.validated.to_string_lossy().to_string();
                 let cmd = self.wire_to_command(WireCommand::AddProject {
                     path: path_str,
                     name,
+                    checked: Some(plain),
                 })?;
                 let reaction = self.apply(cmd)?;
                 let status = match added_status_message(&reaction) {
@@ -3321,22 +4133,14 @@ impl Engine {
                 };
                 return Ok(status);
             }
-            crate::git::CommitState::Indeterminate => {
-                anyhow::bail!(
-                    "Couldn't determine the commit state of \"{path_str}\"; not creating an initial commit. Check the repository and retry."
-                );
-            }
-        }
-        // Real branch the commit will land on (propagate a git error rather than
-        // silently defaulting the branch, matching the sibling add paths).
-        let branch = crate::git::current_branch_opt(&validated)?.unwrap_or_default();
-        let leading_branch = crate::project_browser::leading_branch_for_project(
-            &validated,
-            (!branch.is_empty()).then_some(branch.as_str()),
-        );
+        };
+        let path_str = validated.to_string_lossy().to_string();
         // Serialize per repo path: reject a second concurrent request rather than
         // let two workers both bootstrap. Cleared on completion in
         // `process_worker_event` (and on a worker panic, below).
+        if let Some(refused) = self.clone_running_refusal(std::path::Path::new(&path_str)) {
+            anyhow::bail!(refused);
+        }
         if !self.mark_in_flight(crate::engine::InFlightKey::InitialCommit(path_str.clone())) {
             anyhow::bail!(
                 "An initial commit is already being created for \"{path_str}\". Please wait for it to finish."
@@ -3351,7 +4155,11 @@ impl Engine {
             seeded_gitignore: false,
             seed_warning: None,
         };
-        let busy = format!("Creating an initial commit in {path_str} before adding the project...");
+        let busy = crate::status_text![
+            "Creating an initial commit in ",
+            n(path_str),
+            " before adding the project..."
+        ];
         // Mint a HandlerStatusOp: SUCCESS resolved in `drive_add_project_followup`
         // after the inline add; FAILURE resolved in `process_worker_event`. Both
         // share this op id so the busy is replaced, not stranded.
@@ -3389,7 +4197,7 @@ impl Engine {
             let add_panic = add.clone();
             let op_id_panic = op_id.clone();
             if std::panic::catch_unwind(AssertUnwindSafe(|| {
-                crate::project_browser::run_create_initial_commit_job(add, worker_tx, Some(op_id));
+                crate::project_browser::run_create_initial_commit_job(add, &worker_tx, Some(op_id));
             }))
             .is_err()
             {
@@ -3419,6 +4227,9 @@ impl Engine {
         // Serialize per path: reject a second concurrent bootstrap (init or
         // commit-only) rather than let two workers race. Cleared on completion
         // in `process_worker_event` (and on a worker panic, below).
+        if let Some(refused) = self.clone_running_refusal(std::path::Path::new(&path_str)) {
+            anyhow::bail!(refused);
+        }
         if !self.mark_in_flight(crate::engine::InFlightKey::InitialCommit(path_str.clone())) {
             anyhow::bail!(
                 "A repository is already being initialized in \"{path_str}\". Please wait for it to finish."
@@ -3435,8 +4246,11 @@ impl Engine {
             seeded_gitignore: false,
             seed_warning: None,
         };
-        let busy =
-            format!("Initializing a git repository in {path_str} before adding the project...");
+        let busy = crate::status_text![
+            "Initializing a git repository in ",
+            n(path_str),
+            " before adding the project..."
+        ];
         let op = crate::engine::status_op(busy).resolve_in_handler(
             move |o: &crate::engine::WebAddProjectOutcome| {
                 use crate::engine::{Final, WebAddProjectOutcome};
@@ -3470,7 +4284,7 @@ impl Engine {
             let add_panic = add.clone();
             let op_id_panic = op_id.clone();
             if std::panic::catch_unwind(AssertUnwindSafe(|| {
-                crate::project_browser::run_init_repo_job(add, worker_tx, Some(op_id));
+                crate::project_browser::run_init_repo_job(add, &worker_tx, Some(op_id));
             }))
             .is_err()
             {
@@ -3500,7 +4314,9 @@ impl Engine {
         &mut self,
         project_id: &str,
         pr: &str,
-        name: String,
+        name: &str,
+        review_copy: crate::worker::ReviewCopyConsent,
+        ask_id: Option<String>,
     ) -> anyhow::Result<WireStatus> {
         // Mirror the TUI's `open_new_agent_from_pr_prompt` gating: the PR flow is
         // unavailable unless GitHub integration is on AND `gh` is installed and
@@ -3544,11 +4360,7 @@ impl Engine {
             None
         } else {
             if !crate::git::is_valid_agent_name(trimmed) {
-                anyhow::bail!(
-                    "Invalid agent name \"{trimmed}\". Use only letters, digits, dashes, \
-                     underscores and slashes; it must start with a letter or digit, must \
-                     not contain \"//\", and must not end with \"/\"."
-                );
+                anyhow::bail!("{}", crate::git::invalid_agent_name_refusal(trimmed));
             }
             Some(trimmed.to_string())
         };
@@ -3587,23 +4399,62 @@ impl Engine {
             if std::panic::catch_unwind(AssertUnwindSafe(|| {
                 crate::gh::run_pull_request_lookup_job(
                     project,
-                    raw_input,
+                    &raw_input,
                     custom_name,
-                    worker_tx,
+                    review_copy,
+                    ask_id,
+                    &worker_tx,
                     Some(op_id),
-                    policy,
+                    &policy,
                 );
             }))
             .is_err()
             {
                 let _ = tx_panic.send(crate::worker::WorkerEvent::PullRequestResolved {
-                    result: Err("the pull-request lookup worker panicked".to_string()),
+                    result: Err("the pull-request lookup worker panicked".into()),
                     purpose: crate::worker::PrLookupPurpose::CreateAgent,
                     status_op_id: Some(op_id_panic),
                 });
             }
         });
         Ok(pending)
+    }
+
+    /// The refusal of a pull request lookup whose head branch is not a usable agent
+    /// name, with the lookup's spinner cleared and its record finished.
+    fn refuse_unusable_head_branch(
+        &mut self,
+        pr: &crate::worker::ResolvedPullRequest,
+        status_op_id: Option<&str>,
+    ) -> WebFollowupStatuses {
+        let mut clear_keys = Vec::new();
+        if let Some(id) = status_op_id
+            && let Some(op) = self.pending_web_pr_lookup_ops.remove(id)
+        {
+            let resolved = op.resolve(&crate::engine::WebPrLookupOutcome::HandedOff);
+            if let EventReaction::ClearStatus(key) = resolved.into_reaction() {
+                clear_keys.push(key);
+            }
+        }
+        let refusal = WireStatus::new(
+            "error",
+            crate::status_text![
+                "PR ",
+                n(format!("#{}", pr.number)),
+                " has head branch ",
+                q(pr.head_ref_name),
+                ", which is not a usable agent \
+                 name. Create the agent again and type a name for it. ",
+                crate::git::AGENT_NAME_RULE
+            ],
+        );
+        if let Some(lookup) = status_op_id {
+            self.finish_pr_lookup_operation(lookup, Some(&refusal));
+        }
+        WebFollowupStatuses {
+            statuses: vec![refusal],
+            clear_keys,
+        }
     }
 
     /// Drive a PR-lookup follow-up to completion, returning user-facing statuses.
@@ -3615,10 +4466,11 @@ impl Engine {
     ///
     /// `use_existing_branch` is `false`, exactly as the TUI's PR path sets it:
     /// the create worker does its own last-mile
-    /// `use_existing_branch || branch_exists(...)` check, so a head branch that
-    /// already exists locally is attached rather than re-fetched, with no
-    /// pre-computation here. A lookup FAILURE instead produces an error `Status`;
-    /// other reactions return `[]`.
+    /// `use_existing_branch || local_branch_exists(...)` check, so a head branch
+    /// that already exists locally and contains the pull request's head commit
+    /// is attached rather than re-fetched, with no pre-computation here. A
+    /// lookup FAILURE instead produces an error `Status`; other reactions
+    /// return `[]`.
     pub fn drive_pr_lookup_followup(&mut self, reaction: &EventReaction) -> WebFollowupStatuses {
         match reaction {
             EventReaction::OpenNewAgentPromptForPr { pr, status_op_id } => {
@@ -3635,31 +4487,7 @@ impl Engine {
                         Some(pr.head_ref_name.clone())
                     }
                     None => {
-                        let mut clear_keys = Vec::new();
-                        if let Some(id) = status_op_id
-                            && let Some(op) = self.pending_web_pr_lookup_ops.remove(id)
-                        {
-                            let resolved =
-                                op.resolve(&crate::engine::WebPrLookupOutcome::HandedOff);
-                            if let EventReaction::ClearStatus(key) = resolved.into_reaction() {
-                                clear_keys.push(key);
-                            }
-                        }
-                        return WebFollowupStatuses {
-                            statuses: vec![WireStatus::new(
-                                "error",
-                                crate::status_text![
-                                    "PR ",
-                                    n(format!("#{}", pr.number)),
-                                    " has head branch ",
-                                    q(pr.head_ref_name),
-                                    ", which is not a usable agent \
-                                     name. Create the agent again and type a name using only \
-                                     letters, digits, dashes, underscores and slashes."
-                                ],
-                            )],
-                            clear_keys,
-                        };
+                        return self.refuse_unusable_head_branch(pr, status_op_id.as_deref());
                     }
                 };
                 let resolved_name = custom_name.clone().unwrap_or_default();
@@ -3684,6 +4512,10 @@ impl Engine {
                     head_branch: pr.head_ref_name.clone(),
                     custom_name,
                     use_existing_branch: false,
+                    review_copy: pr.review_copy.clone(),
+                    ask_id: pr.ask_id.clone(),
+                    agents: Vec::new(),
+                    cloned: None,
                 };
                 // The nested create dispatch mints its own busy from
                 // `current_origin`, but by now (a worker-completion tick) it has
@@ -3693,9 +4525,9 @@ impl Engine {
                 let origin = status_op_id
                     .as_ref()
                     .and_then(|id| self.pending_web_pr_lookup_ops.get(id))
-                    .map(|op| op.scope().clone())
-                    .unwrap_or(crate::statusline::StatusScope::All);
+                    .map_or(crate::statusline::StatusScope::All, |op| op.scope().clone());
                 self.current_origin = origin;
+                self.last_created_op_id = None;
                 let statuses = match self.apply(Command::DispatchCreateAgentRequest {
                     request: Box::new(request),
                     busy_message: busy_message.clone(),
@@ -3712,6 +4544,14 @@ impl Engine {
                     )],
                 };
                 self.current_origin = crate::statusline::StatusScope::All;
+                // A record following the lookup follows the create it handed off
+                // to, or ends on the status saying why no create started.
+                if let Some(lookup) = status_op_id {
+                    match self.last_created_op_id.take() {
+                        Some(create) => self.operations.hand_off(lookup, &create),
+                        None => self.finish_pr_lookup_operation(lookup, statuses.first()),
+                    }
+                }
                 // The lookup busy hands off to the create dispatch's busy (emitted
                 // above, keyed by the shared create op's opaque id), so resolve the
                 // PR-lookup op to a CLEAR so the `Resolving PR…` spinner is
@@ -3736,13 +4576,28 @@ impl Engine {
         }
     }
 
+    /// Drive a clone that is ready to become a project: add it and dispatch
+    /// its agent create ([`Engine::finish_clone`]), returning the statuses to
+    /// broadcast and the clone's key to dismiss once the create took over.
+    /// Other reactions return nothing.
+    pub fn drive_clone_followup(&mut self, reaction: &EventReaction) -> WebFollowupStatuses {
+        let EventReaction::AddProjectAfterClone(done) = reaction else {
+            return WebFollowupStatuses::default();
+        };
+        let finished = self.finish_clone(done);
+        WebFollowupStatuses {
+            statuses: wire_statuses_from_reaction(&finished),
+            clear_keys: cleared_keys(&finished),
+        }
+    }
+
     /// Drive an add-project follow-up to completion, returning user-facing
     /// statuses. When worker 2's `git switch` completes successfully,
     /// `process_worker_event` produces `AddProjectAfterBranchCheckout` and this
     /// applies the project-add INLINE (SQLite plus a config.toml write through
     /// the eager queue, with SQLite rollback on failure), so the new project is
     /// in the engine's in-memory list by the time this returns and appears in the
-    /// same ViewModel push.
+    /// same `ViewModel` push.
     ///
     /// On success it returns the combined "checked out X and added project Y"
     /// status; on a rolled-back add it relays the engine's error `Status`. A
@@ -3758,9 +4613,13 @@ impl Engine {
                 status_op_id,
             } => {
                 let display_name = display_project_name(name, path);
-                let status_message = format!(
-                    "Checked out \"{target_branch}\" and added project \"{display_name}\" to the workspace."
-                );
+                let status_message = crate::status_text![
+                    "Checked out ",
+                    q(target_branch),
+                    " and added project ",
+                    q(display_name),
+                    " to the workspace."
+                ];
                 let add_failed_prefix = crate::status_text![
                     "Checked out ",
                     q(target_branch),
@@ -3771,7 +4630,7 @@ impl Engine {
                     display_name,
                     current_branch: target_branch,
                     leading_branch,
-                    status_message: status_message.into(),
+                    status_message,
                     add_failed_prefix: &add_failed_prefix,
                     status_op_id,
                 })
@@ -3832,12 +4691,12 @@ impl Engine {
     }
 
     /// Shared tail of the "do git work, then register the project" web
-    /// followups: build the `Project`, apply the INLINE add (config write with
-    /// SQLite rollback), and resolve the keyed add-project op. Used by both the
-    /// checkout-default and initial-commit flows so the delicate status-op
-    /// correlation lives in one place. Args are a named-field struct so the two
-    /// adjacent branch strings can't be silently transposed.
-    fn finish_web_project_add(&mut self, args: WebProjectAdd) -> Vec<WireStatus> {
+    /// followups: add the project ([`Self::add_project_without_op`]) and
+    /// resolve the keyed add-project op. Used by both the checkout-default and
+    /// initial-commit flows so the delicate status-op correlation lives in one
+    /// place. Args are a named-field struct so the two adjacent branch strings
+    /// can't be silently transposed.
+    fn finish_web_project_add(&mut self, args: WebProjectAdd<'_>) -> Vec<WireStatus> {
         let WebProjectAdd {
             path,
             display_name,
@@ -3846,6 +4705,72 @@ impl Engine {
             status_message,
             add_failed_prefix,
             status_op_id,
+        } = args;
+        // The inline persist can mint a status from `current_origin`, so the
+        // add runs under the op's captured scope.
+        let origin = status_op_id
+            .as_ref()
+            .and_then(|id| self.pending_web_add_project_ops.get(id))
+            .map_or(crate::statusline::StatusScope::All, |op| op.scope().clone());
+        let added = self.add_project_without_op(
+            ProjectAdd {
+                path,
+                display_name,
+                current_branch,
+                leading_branch,
+                status_message: status_message.clone(),
+                add_failed_prefix,
+            },
+            origin,
+            status_op_id.as_deref(),
+        );
+
+        // Resolve the add-project op against the same outcome the
+        // `statuses` carry, keying the final to the op's id so it replaces
+        // the busy. The op's resolver re-emits the SAME message: a clean
+        // add → `Added` (info), any failure → `AddFailed` (the relayed
+        // error text). When no op is registered (id None, or already
+        // consumed by a switch-failure path), fall back to `statuses`.
+        if let Some(id) = status_op_id
+            && let Some(op) = self.pending_web_add_project_ops.remove(id)
+        {
+            let outcome = match &added.added {
+                Some((_, success_message)) => crate::engine::WebAddProjectOutcome::Added {
+                    status_message: success_message.clone(),
+                },
+                // Surface the same failure text the unkeyed `statuses` would
+                // have shown (the engine's rolled-back error or the apply
+                // error), now keyed so it replaces the busy.
+                None => crate::engine::WebAddProjectOutcome::AddFailed {
+                    message: added.failure(&status_message),
+                },
+            };
+            // The add-project op always resolves to a Message (never a
+            // Clear), so `into_reaction()` is a keyed `Status` that
+            // `wire_statuses_from_reaction` renders directly.
+            return wire_statuses_from_reaction(&op.resolve(&outcome).into_reaction());
+        }
+        added.statuses
+    }
+
+    /// Register a repository that git work has just prepared as a project,
+    /// with no operation of its own to resolve: build the `Project` and apply
+    /// the INLINE add (config write with SQLite rollback) under `origin`. A
+    /// project it created is noted on the operation record waiting on
+    /// `note_key`.
+    pub(crate) fn add_project_without_op(
+        &mut self,
+        args: ProjectAdd<'_>,
+        origin: crate::statusline::StatusScope,
+        note_key: Option<&str>,
+    ) -> ProjectAddResult {
+        let ProjectAdd {
+            path,
+            display_name,
+            current_branch,
+            leading_branch,
+            status_message,
+            add_failed_prefix,
         } = args;
         let project = Project {
             id: uuid::Uuid::new_v4().to_string(),
@@ -3867,42 +4792,44 @@ impl Engine {
         // config-write or DB failure returns an error-toned `Status` that is
         // still a Rust `Ok`, so inspect the reaction and report a rolled-back
         // add as the failure it was rather than an optimistic success.
-        //
-        // When `status_op_id` is Some, which it always is for the web, the
-        // add-project op is ALSO resolved so its busy is replaced by the keyed
-        // final instead of separately cleared. The inline persist can mint a
-        // status from `current_origin`, so re-set that to the op's captured
-        // scope before dispatch and restore `All` afterward.
-        let origin = status_op_id
-            .as_ref()
-            .and_then(|id| self.pending_web_add_project_ops.get(id))
-            .map(|op| op.scope().clone())
-            .unwrap_or(crate::statusline::StatusScope::All);
         self.current_origin = origin;
+        // What was there before, so an add that found its project already
+        // registered (a race into the dedup) is not reported as creating it.
+        let existing: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
         // The engine's Added outcome carries the AUTHORITATIVE message, which is
         // the dedup chokepoint's honest "already in the workspace" text when a
-        // race hit that path, not this caller's optimistic narrative. Surface
-        // that (falling back to the caller's message only if the engine didn't
-        // provide one), for both the unkeyed status and the keyed op below.
-        let mut success_message: StatusText = status_message.clone();
+        // race hit that path, not this caller's optimistic narrative.
+        let mut added = None;
         let statuses = match self.apply(Command::PersistProject {
             action: Box::new(ProjectPersistenceAction::Add {
                 project,
-                status_message: status_message.clone(),
+                status_message,
             }),
             status_op_id: None,
         }) {
             Ok(EventReaction::ProjectPersistenceOutcome(outcome))
                 if matches!(outcome.view, ProjectPersistenceView::Added { .. }) =>
             {
-                if let ProjectPersistenceView::Added {
+                let ProjectPersistenceView::Added {
                     status_message: engine_message,
-                    ..
+                    project_id,
                 } = &outcome.view
+                else {
+                    unreachable!("matched as Added above")
+                };
+                if let Some(key) = note_key
+                    && !existing.contains(project_id)
                 {
-                    success_message = engine_message.clone();
+                    self.operations.note(
+                        key,
+                        &crate::operations::OperationNotes {
+                            created: vec![project_id.clone()],
+                            ..Default::default()
+                        },
+                    );
                 }
-                vec![WireStatus::new("info", success_message.clone())]
+                added = Some((project_id.clone(), engine_message.clone()));
+                vec![WireStatus::new("info", engine_message.clone())]
             }
             // A rolled-back add surfaces as an error-toned Status; relay it
             // verbatim so the user learns the add failed and was undone.
@@ -3913,38 +4840,7 @@ impl Engine {
             )],
         };
         self.current_origin = crate::statusline::StatusScope::All;
-
-        // Resolve the add-project op against the same outcome the
-        // `statuses` carry, keying the final to the op's id so it replaces
-        // the busy. The op's resolver re-emits the SAME message: a clean
-        // add → `Added` (info), any failure → `AddFailed` (the relayed
-        // error text). When no op is registered (id None, or already
-        // consumed by a switch-failure path), fall back to `statuses`.
-        if let Some(id) = status_op_id
-            && let Some(op) = self.pending_web_add_project_ops.remove(id)
-        {
-            let is_success = statuses.iter().any(|s| s.tone == "info");
-            let outcome = if is_success {
-                crate::engine::WebAddProjectOutcome::Added {
-                    status_message: success_message.clone(),
-                }
-            } else {
-                // Surface the same failure text the unkeyed `statuses`
-                // would have shown (the engine's rolled-back error or the
-                // apply error), now keyed so it replaces the busy.
-                let message = statuses
-                    .iter()
-                    .find(|s| s.tone == "error")
-                    .map(|s| StatusText::from_parts(s.message.clone(), s.segments.clone()))
-                    .unwrap_or_else(|| status_message.clone());
-                crate::engine::WebAddProjectOutcome::AddFailed { message }
-            };
-            // The add-project op always resolves to a Message (never a
-            // Clear), so `into_reaction()` is a keyed `Status` that
-            // `wire_statuses_from_reaction` renders directly.
-            return wire_statuses_from_reaction(&op.resolve(&outcome).into_reaction());
-        }
-        statuses
+        ProjectAddResult { statuses, added }
     }
 
     /// Drive a checkout-related reaction to completion, returning user-facing
@@ -3970,6 +4866,7 @@ impl Engine {
                 // `NonDefaultBranchCheckoutCompleted` resolves the right op.
                 let status_op_id = status_op_id.clone();
                 let worker_tx = self.worker_tx.clone();
+                let guard = self.checkout_move_guard();
                 // A panic in the switch still answers, or the repository's
                 // in-flight key and the keyed busy would never be released.
                 std::thread::spawn(move || {
@@ -3978,13 +4875,61 @@ impl Engine {
                         target_branch,
                         worker_tx,
                         status_op_id,
-                        crate::project_browser::run_add_project_checkout_job,
+                        |action, branch, tx, id| {
+                            crate::project_browser::run_add_project_checkout_job(
+                                action, branch, &tx, id, &guard,
+                            );
+                        },
                     );
                 });
                 vec![]
             }
             _ => vec![],
         }
+    }
+
+    /// Start a delete whose worktree removal runs on a worker: the busy keyed to its
+    /// final, the agent's facts kept for the report, and the session vanished now.
+    fn start_async_delete(
+        &mut self,
+        session_id: &str,
+        busy_message: &crate::status_text::StatusText,
+    ) -> Vec<WireStatus> {
+        // Mint a keyed HandlerStatusOp whose opaque id correlates
+        // this busy to the final resolved when the git-removal
+        // worker reports back, and stash it keyed by session id.
+        // The resolver picks the tone for every terminal
+        // `WebDeleteOutcome`; the words come from the core formatter.
+        let op = crate::engine::status_op(busy_message.clone())
+            .resolve_in_handler(|o: &crate::engine::WebDeleteOutcome| delete_final(o));
+        let op = op.with_scope(self.current_origin.clone());
+        let pending = WireStatus::from_update(&self.begin_status_op(&op));
+        self.pending_delete_ops_web
+            .insert(session_id.to_string(), op);
+        // Snapshot the agent BEFORE it is vanished below: the
+        // completion authors the report from these facts, and by
+        // then there is no record left to read. The project is
+        // resolved here for the same reason.
+        if let Some(session) = self.sessions.iter().find(|s| s.id == session_id) {
+            let project_name = session
+                .project_id()
+                .and_then(|id| self.projects.iter().find(|p| p.id == id))
+                .map(|p| p.name.clone());
+            self.pending_delete_reports_web.insert(
+                session_id.to_string(),
+                DeleteReportFacts::from_session(session, project_name),
+            );
+        }
+        // Vanish the session now: its PTY and terminals are
+        // already SIGTERMed and held for a background reap.
+        //
+        // The engine method, not `Command::FinishDeleteSession`,
+        // because that command carries a `WorktreeRemoval`
+        // describing what happened to the branches and nothing
+        // has happened to them yet; the real report arrives with
+        // the deferred removal, which authors the final message.
+        let _ = self.finish_delete_session(session_id);
+        vec![pending]
     }
 
     /// Drive a delete-related reaction to completion, returning user-facing
@@ -4012,79 +4957,7 @@ impl Engine {
                         vec![WireStatus::new("error", message.clone())]
                     }
                     BeginDeleteSessionOutcome::AsyncStarted { busy_message } => {
-                        // Mint a keyed HandlerStatusOp whose opaque id correlates
-                        // this busy to the final resolved when the git-removal
-                        // worker reports back, and stash it keyed by session id.
-                        // The resolver picks the tone for every terminal
-                        // `WebDeleteOutcome`; the words come from the core formatter.
-                        let op = crate::engine::status_op(busy_message.clone()).resolve_in_handler(
-                            |o: &crate::engine::WebDeleteOutcome| {
-                                use crate::engine::{Final, WebDeleteOutcome};
-                                match o {
-                                    // STICKY: a branch git refused to delete is
-                                    // still on disk and only the user can clear
-                                    // it, and the worktree that named it is gone,
-                                    // so a toast that timed out would take the
-                                    // last mention of it with it.
-                                    WebDeleteOutcome::Succeeded {
-                                        message,
-                                        refused: true,
-                                    } => Final::warning(message.clone()).sticky(),
-                                    WebDeleteOutcome::Succeeded { message, .. } => {
-                                        Final::info(message.clone())
-                                    }
-                                    WebDeleteOutcome::SucceededGone => {
-                                        Final::info("Agent and worktree removed.")
-                                    }
-                                    // STICKY: the agent row is already gone from
-                                    // the UI but its worktree is still on disk, so
-                                    // the user is left with an orphaned directory
-                                    // only `git worktree remove` will clear. The
-                                    // sentence is authored at the call site, which
-                                    // is the side that still holds the snapshot.
-                                    WebDeleteOutcome::Failed { message } => {
-                                        Final::error(message.clone()).sticky()
-                                    }
-                                    // STICKY: same half-done delete from the other
-                                    // side, the worktree went but the records did
-                                    // not, so the agent can come back on restart.
-                                    WebDeleteOutcome::CleanupFailed { message } => {
-                                        Final::error(format!("Session cleanup failed: {message}"))
-                                            .sticky()
-                                    }
-                                }
-                            },
-                        );
-                        let op = op.with_scope(self.current_origin.clone());
-                        let pending = WireStatus::from_update(&self.begin_status_op(&op));
-                        self.pending_delete_ops_web
-                            .insert(view.session_id.clone(), op);
-                        // Snapshot the agent BEFORE it is vanished below: the
-                        // completion authors the report from these facts, and by
-                        // then there is no record left to read. The project is
-                        // resolved here for the same reason.
-                        if let Some(session) =
-                            self.sessions.iter().find(|s| s.id == view.session_id)
-                        {
-                            let project_name = session
-                                .project_id()
-                                .and_then(|id| self.projects.iter().find(|p| p.id == id))
-                                .map(|p| p.name.clone());
-                            self.pending_delete_reports_web.insert(
-                                view.session_id.clone(),
-                                DeleteReportFacts::from_session(session, project_name),
-                            );
-                        }
-                        // Vanish the session now: its PTY and terminals are
-                        // already SIGTERMed and held for a background reap.
-                        //
-                        // The engine method, not `Command::FinishDeleteSession`,
-                        // because that command carries a `WorktreeRemoval`
-                        // describing what happened to the branches and nothing
-                        // has happened to them yet; the real report arrives with
-                        // the deferred removal, which authors the final message.
-                        let _ = self.finish_delete_session(&view.session_id);
-                        vec![pending]
+                        self.start_async_delete(&view.session_id, busy_message)
                     }
                     BeginDeleteSessionOutcome::Inline { removal } => {
                         let removal = removal.clone();
@@ -4119,6 +4992,15 @@ impl Engine {
                             let removal = WorktreeRemoval::Performed {
                                 branches: branches.clone(),
                             };
+                            self.note_delete_parts(
+                                session_id,
+                                crate::operations::agent_delete_parts(
+                                    &facts.directory,
+                                    &facts.branch_name,
+                                    &facts.initial_branch,
+                                    &removal,
+                                ),
+                            );
                             crate::engine::WebDeleteOutcome::Succeeded {
                                 message: delete_session_status_message(&facts, &removal),
                                 refused: removal.refused_a_branch(),
@@ -4129,6 +5011,16 @@ impl Engine {
                     self.resolve_web_delete_op(session_id, &outcome)
                 }
             }
+            EventReaction::WorktreeRemoveWaiting {
+                session_id,
+                message,
+            } => match self.pending_delete_ops_web.get(session_id) {
+                // The delete's own toast says what the removal is waiting for.
+                Some(op) => wire_statuses_from_reaction(&EventReaction::Status(
+                    op.progress(message.clone()),
+                )),
+                None => vec![],
+            },
             EventReaction::WorktreeRemoveFailed {
                 session_id,
                 message,
@@ -4136,6 +5028,16 @@ impl Engine {
                 // Read the snapshot before resolving, which consumes it: the
                 // failure names the agent whose worktree is still on disk.
                 let facts = self.pending_delete_reports_web.get(session_id).cloned();
+                if let Some(facts) = &facts {
+                    self.note_delete_parts(
+                        session_id,
+                        crate::operations::agent_delete_failure_parts(
+                            &facts.directory,
+                            &facts.branch_name,
+                            message,
+                        ),
+                    );
+                }
                 self.resolve_web_delete_op(
                     session_id,
                     &crate::engine::WebDeleteOutcome::Failed {
@@ -4147,8 +5049,39 @@ impl Engine {
         }
     }
 
+    /// End the records following a from-PR create's lookup on the keyless status
+    /// that says why no create started; the lookup's own key is only ever cleared.
+    fn finish_pr_lookup_operation(&self, lookup: &str, status: Option<&WireStatus>) {
+        let (tone, message, segments) = match status {
+            Some(status) => (
+                crate::statusline::StatusTone::from_wire(&status.tone),
+                status.message.as_str(),
+                status.segments.as_deref(),
+            ),
+            None => (crate::statusline::StatusTone::Error, "", None),
+        };
+        self.operations
+            .finish_by_key(lookup, tone, message, segments, std::time::Instant::now());
+    }
+
+    /// Tell the record following this agent's delete, if any, what became of its
+    /// worktree and branches.
+    fn note_delete_parts(&self, session_id: &str, parts: Vec<crate::operations::OperationPart>) {
+        let key = self
+            .pending_delete_ops_web
+            .get(session_id)
+            .map(|op| op.id().to_string());
+        self.note_operation(
+            key.as_deref(),
+            &crate::operations::OperationNotes {
+                parts,
+                ..Default::default()
+            },
+        );
+    }
+
     /// Pop the web delete op for `session_id` and resolve it into its keyed final
-    /// WireStatus. Returns `[]` when no op is stashed (the TUI path, or a
+    /// `WireStatus`. Returns `[]` when no op is stashed (the TUI path, or a
     /// synthetic completion event with no preceding `AsyncStarted`).
     fn resolve_web_delete_op(
         &mut self,
@@ -4162,30 +5095,45 @@ impl Engine {
         }
     }
 
-    /// Drive the web reconnect / force-restart launch follow-up to completion.
-    /// When a launch reports back, its `AgentLaunchReadyView` /
-    /// `AgentLaunchFailedView` reaction resolves the web launch op
-    /// (`Engine::pending_web_launch_ops`) stashed by `reconnect_session`,
-    /// replacing its busy with the same-key final. This is the web counterpart to
-    /// the TUI's `resolve_reconnect_op_or`.
-    ///
-    /// When no op is stashed (a resume-fallback retry or a startup auto-reopen,
-    /// neither of which goes through `reconnect_session`), the same final is
-    /// emitted UNKEYED, byte-identical, since no web busy precedes those.
-    /// Create-kind launches are resolved engine-side, never here.
-    ///
-    /// Slot-ness is read from the outcome's SESSION SNAPSHOT, deliberately, and
-    /// this is the one place that must not be changed to ask the live session:
-    /// the question is which arm requested this launch, not which tab is the slot
-    /// now, and a `Kind::Tab` launch collapses into the `Reconnect` view. A live
-    /// read would send a tab promoted mid-launch down the session-keyed branch
-    /// and strand its `tab-launch-<id>` busy toast forever.
+    /// Resolve a launch report into the web launch op's final (unkeyed when none
+    /// is stashed), and finish the records of a tab a route created or started.
+    /// Slot-ness comes from the outcome's session snapshot, not the live session.
     pub fn drive_web_launch_followup(&mut self, reaction: &EventReaction) -> WebFollowupStatuses {
+        let followup = self.web_launch_followup_statuses(reaction);
+        if let Some(report) = launch_report(reaction) {
+            let first = followup.statuses.first();
+            self.finish_launch_operations(
+                &report.key,
+                report.tab_id.as_deref(),
+                if report.launched {
+                    crate::operations::LaunchEnded::Launched
+                } else {
+                    crate::operations::LaunchEnded::Failed
+                },
+                first.map_or("", |s| s.message.as_str()),
+                first.and_then(|s| s.segments.as_deref()),
+            );
+        }
+        followup
+    }
+
+    fn web_launch_followup_statuses(&mut self, reaction: &EventReaction) -> WebFollowupStatuses {
         match reaction {
             EventReaction::AgentLaunchReadyView(outcome) => match &outcome.view {
                 AgentLaunchReadyView::Reconnect { status_message }
                 | AgentLaunchReadyView::ResumeFallback { status_message, .. } => {
-                    if !self.is_slot_tab(&outcome.session, TabIdRef::new(&outcome.tab_id)) {
+                    if self.is_slot_tab(&outcome.session, TabIdRef::new(&outcome.tab_id)) {
+                        // The session-slot tab: resolve its pending reconnect
+                        // op, which `reconnect_session` stashed under the
+                        // SESSION id, not the tab id.
+                        self.resolve_web_launch_op_or(
+                            &outcome.session.id,
+                            &crate::engine::LaunchOutcome::Ready {
+                                status_message: status_message.clone(),
+                                quiet_on: outcome.status_quiet,
+                            },
+                        )
+                    } else {
                         // Support-tab launch success: no op is stashed under a tab
                         // id, so emit a status KEYED `tab-launch-<tab_id>` (matching
                         // the failure path) rather than an unkeyed one; otherwise an
@@ -4198,22 +5146,11 @@ impl Engine {
                             }],
                             clear_keys: Vec::new(),
                         }
-                    } else {
-                        // The session-slot tab: resolve its pending reconnect
-                        // op, which `reconnect_session` stashed under the
-                        // SESSION id, not the tab id.
-                        self.resolve_web_launch_op_or(
-                            &outcome.session.id,
-                            crate::engine::LaunchOutcome::Ready {
-                                status_message: status_message.clone(),
-                                quiet_on: outcome.status_quiet,
-                            },
-                        )
                     }
                 }
                 AgentLaunchReadyView::SessionMissing => self.resolve_web_launch_op_or(
                     &outcome.session.id,
-                    crate::engine::LaunchOutcome::Missing,
+                    &crate::engine::LaunchOutcome::Missing,
                 ),
                 // StartupAutoReopen success is silent (mirrors the TUI). A create
                 // commit/persist-fail final is resolved engine-side, not here.
@@ -4230,7 +5167,7 @@ impl Engine {
                     message,
                 } => self.resolve_web_launch_op_or(
                     session_id,
-                    crate::engine::LaunchOutcome::ReconnectFailed {
+                    &crate::engine::LaunchOutcome::ReconnectFailed {
                         branch_name: agent_label.clone(),
                         message: message.clone(),
                     },
@@ -4241,7 +5178,7 @@ impl Engine {
                     message,
                 } => self.resolve_web_launch_op_or(
                     session_id,
-                    crate::engine::LaunchOutcome::ForceReconnectFailed {
+                    &crate::engine::LaunchOutcome::ForceReconnectFailed {
                         branch_name: agent_label.clone(),
                         message: message.clone(),
                     },
@@ -4310,10 +5247,10 @@ impl Engine {
     fn resolve_web_launch_op_or(
         &mut self,
         session_id: &str,
-        outcome: crate::engine::LaunchOutcome,
+        outcome: &crate::engine::LaunchOutcome,
     ) -> WebFollowupStatuses {
         match self.pending_web_launch_ops.remove(session_id) {
-            Some(op) => match op.resolve(&outcome).into_reaction() {
+            Some(op) => match op.resolve(outcome).into_reaction() {
                 EventReaction::Status(update) => WebFollowupStatuses {
                     statuses: vec![WireStatus::from_update(&update)],
                     clear_keys: Vec::new(),
@@ -4324,17 +5261,19 @@ impl Engine {
                 },
                 _ => WebFollowupStatuses::default(),
             },
-            None => match crate::engine::launch_outcome_final(&outcome) {
+            None => match crate::engine::launch_outcome_final(outcome) {
                 crate::engine::Final::Message {
                     tone,
                     text,
                     segments,
+                    ask,
                     sticky,
                     quiet_on,
                 } => WebFollowupStatuses {
                     statuses: vec![{
                         let s =
                             WireStatus::new(tone.as_wire(), StatusText::from_parts(text, segments));
+                        let s = WireStatus { ask, ..s };
                         let s = if sticky { s.sticky() } else { s };
                         // The outcome decided its own per-surface answer; this
                         // path carries the web half rather than re-deciding it.
@@ -4369,9 +5308,16 @@ impl Engine {
             update_status: true,
         }) {
             Ok(EventReaction::FinishDeleteSessionView(view)) => {
-                let message = delete_session_status_message(
-                    &DeleteReportFacts::from_finish_outcome(&view.outcome),
-                    &view.removal,
+                let facts = DeleteReportFacts::from_finish_outcome(&view.outcome);
+                let message = delete_session_status_message(&facts, &view.removal);
+                self.note_delete_parts(
+                    session_id,
+                    crate::operations::agent_delete_parts(
+                        &facts.directory,
+                        &facts.branch_name,
+                        &facts.initial_branch,
+                        &view.removal,
+                    ),
                 );
                 match self.pending_delete_ops_web.remove(session_id) {
                     Some(op) => wire_statuses_from_reaction(
@@ -4415,11 +5361,24 @@ impl Engine {
             },
             WireCommand::DiscardFile { session_id, path } => {
                 let worktree_path = self.changes_worktree(&session_id)?;
-                let is_untracked = crate::git::discard_classify(&worktree_path, &path)?;
-                Command::DiscardFile {
+                // Refused here, with no git: a path that is not plain inside
+                // the worktree (`node_modules/..` is the whole worktree) never
+                // becomes a discard.
+                if !crate::model::is_lexically_normal_path(&path) {
+                    anyhow::bail!(
+                        "refusing to discard {path:?}: it is not a plain path inside the worktree"
+                    );
+                }
+                // The wire names no kind, so it is a file's discard: a plain
+                // file is deleted or restored as it always was, and a folder
+                // (which only the confirmed routes may delete) is refused.
+                // Tracked or untracked is decided against live git status on
+                // the discard's worker, and its refusals ("unstage the file
+                // first", "nothing to discard") are the final, before anything
+                // is touched.
+                Command::DiscardFileLive {
                     worktree_path,
                     path,
-                    is_untracked,
                 }
             }
             WireCommand::CommitChanges {
@@ -4469,37 +5428,137 @@ impl Engine {
         Ok(WireCommandMapping::Mapped(mapped))
     }
 
+    /// A pull of the project's source checkout, refused when the project is unknown or its path is gone.
+    fn pull_project_command(&self, project_id: &str) -> anyhow::Result<Command> {
+        let project = self
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown project: {project_id}"))?;
+        if project.path_missing {
+            anyhow::bail!("Cannot refresh: path not found for \"{}\"", project.name);
+        }
+        Ok(Command::Pull {
+            repo_path: PathBuf::from(&project.path),
+            target: PullTarget::Project {
+                project_id: project.id,
+                project_name: project.name.clone(),
+                leading_branch: project.leading_branch.clone(),
+            },
+            busy_message: crate::status_text![
+                "Refreshing project ",
+                q(project.name),
+                " from remote\u{2026}"
+            ],
+            already_running_message: crate::status_text![
+                "Project refresh already in progress for ",
+                q(project.name),
+                ". Wait for the current pull to finish."
+            ],
+        })
+    }
+
+    /// Registering the repository at `path` as a project, refused when the path is not a usable
+    /// repository or has no commits yet.
+    fn add_project_command(
+        &self,
+        path: &str,
+        name: &str,
+        checked: Option<crate::route_checks::AddProjectChecked>,
+    ) -> anyhow::Result<Command> {
+        let checked = match checked {
+            Some(checked) => {
+                self.refuse_registered(&checked.validated)?;
+                checked
+            }
+            None => crate::route_checks::check_add_project(path, &self.project_paths())?,
+        };
+        let crate::route_checks::AddProjectChecked {
+            validated,
+            branch,
+            base: leading_branch,
+        } = checked;
+        let path_str = validated.to_string_lossy().to_string();
+        let display_name = if name.trim().is_empty() {
+            validated
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("project")
+                .to_string()
+        } else {
+            name.trim().to_string()
+        };
+        let project = Project {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: display_name.clone(),
+            path: path_str,
+            explicit_default_provider: None,
+            default_provider: self.config.default_provider(),
+            leading_branch: Some(leading_branch),
+            auto_reopen_agents: None,
+            startup_command: None,
+            env: std::collections::BTreeMap::new(),
+            current_branch: branch.unwrap_or_default(),
+            branch_status: ProjectBranchStatus::Unknown,
+            path_missing: false,
+            created_at: Some(chrono::Utc::now()),
+        };
+        let status_message =
+            crate::status_text!["Added project ", q(display_name), " to the workspace."];
+        Ok(Command::PersistProject {
+            action: Box::new(ProjectPersistenceAction::Add {
+                project,
+                status_message,
+            }),
+            status_op_id: None,
+        })
+    }
+
+    /// Hand one project setting a client asked for (a default provider, an
+    /// auto-reopen choice, a startup command or an environment) to the
+    /// project-persistence worker the terminal UI saves the same settings
+    /// through, and answer the id its `ProjectPersistenceCompleted` will
+    /// carry, so the caller can wait for the write and answer with how it went.
+    /// A change a config reload holds back keeps that id and is saved when the
+    /// reload lands.
+    ///
+    /// # Errors
+    ///
+    /// Refuses any other command, an unknown project, and a change refused
+    /// before it was handed to the worker; nothing was saved.
+    pub fn dispatch_project_setting(&mut self, command: WireCommand) -> anyhow::Result<String> {
+        if !matches!(
+            command,
+            WireCommand::UpdateProjectProvider { .. }
+                | WireCommand::UpdateProjectAutoReopen { .. }
+                | WireCommand::UpdateProjectStartupCommand { .. }
+                | WireCommand::UpdateProjectEnv { .. }
+        ) {
+            anyhow::bail!("only a project setting is saved this way");
+        }
+        let WireCommandMapping::Mapped(Command::PersistProject { action, .. }) =
+            self.map_project_command(command)?
+        else {
+            anyhow::bail!("a project setting did not map to a project change");
+        };
+        let save_id = crate::operations::mint_operation_id();
+        // Registered before the change is handed over, so the completion can
+        // never be routed before the web layer is known to be waiting on it.
+        self.pending_web_project_saves.insert(save_id.clone());
+        if let Err(error) = self.apply(Command::PersistProject {
+            action,
+            status_op_id: Some(save_id.clone()),
+        }) {
+            self.pending_web_project_saves.remove(&save_id);
+            return Err(error);
+        }
+        Ok(save_id)
+    }
+
     fn map_project_command(&self, command: WireCommand) -> anyhow::Result<WireCommandMapping> {
         let mapped = match command {
-            WireCommand::PullProject { project_id } => {
-                let project = self
-                    .projects
-                    .iter()
-                    .find(|p| p.id == project_id)
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("unknown project: {project_id}"))?;
-                if project.path_missing {
-                    anyhow::bail!("Cannot refresh: path not found for \"{}\"", project.name);
-                }
-                Command::Pull {
-                    repo_path: PathBuf::from(&project.path),
-                    target: PullTarget::Project {
-                        project_id: project.id,
-                        project_name: project.name.clone(),
-                        leading_branch: project.leading_branch.clone(),
-                    },
-                    busy_message: crate::status_text![
-                        "Refreshing project ",
-                        q(project.name),
-                        " from remote\u{2026}"
-                    ],
-                    already_running_message: crate::status_text![
-                        "Project refresh already in progress for ",
-                        q(project.name),
-                        ". Wait for the current pull to finish."
-                    ],
-                }
-            }
+            WireCommand::PullProject { project_id } => self.pull_project_command(&project_id)?,
             WireCommand::ToggleAgentAutoReopen {
                 session_id,
                 enabled,
@@ -4570,76 +5629,17 @@ impl Engine {
                     status_op_id: None,
                 }
             }
-            WireCommand::AddProject { path, name } => {
-                let validated = self
-                    .validate_project_add_path(&path)
-                    .map_err(|e| anyhow::anyhow!(e))?;
-                if crate::git::repo_commit_state(&validated) == crate::git::CommitState::Unborn {
-                    anyhow::bail!(
-                        "\"{}\" has no commits yet, so it can't back a worktree. Create an initial commit first (the app offers to do this for you when adding the project).",
-                        validated.display()
-                    );
-                }
-                let branch = crate::git::current_branch_opt(&validated)?;
-                // A plain add is the dialog's unticked box: the folder stays
-                // where it is and new worktrees branch from it.
-                let leading_branch = crate::project_browser::project_base_for_add(
-                    &validated,
-                    branch.as_deref(),
-                    false,
-                )
-                .into_branch();
-                let path_str = validated.to_string_lossy().to_string();
-                let display_name = if name.trim().is_empty() {
-                    validated
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("project")
-                        .to_string()
-                } else {
-                    name.trim().to_string()
-                };
-                let project = Project {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    name: display_name.clone(),
-                    path: path_str,
-                    explicit_default_provider: None,
-                    default_provider: self.config.default_provider(),
-                    leading_branch: Some(leading_branch),
-                    auto_reopen_agents: None,
-                    startup_command: None,
-                    env: std::collections::BTreeMap::new(),
-                    current_branch: branch.unwrap_or_default(),
-                    branch_status: ProjectBranchStatus::Unknown,
-                    path_missing: false,
-                    created_at: Some(chrono::Utc::now()),
-                };
-                let status_message =
-                    crate::status_text!["Added project ", q(display_name), " to the workspace."];
-                Command::PersistProject {
-                    action: Box::new(ProjectPersistenceAction::Add {
-                        project,
-                        status_message,
-                    }),
-                    status_op_id: None,
-                }
-            }
+            WireCommand::AddProject {
+                path,
+                name,
+                checked,
+            } => self.add_project_command(&path, &name, checked)?,
             WireCommand::RemoveProject { project_id } => Command::RemoveProject {
-                project_name: self
-                    .projects
-                    .iter()
-                    .find(|p| p.id == project_id)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| crate::sidebar::short_project_id(&project_id)),
+                project_name: self.project_label(&project_id),
                 project_id,
             },
             WireCommand::DeleteProject { project_id } => Command::DeleteProject {
-                project_name: self
-                    .projects
-                    .iter()
-                    .find(|p| p.id == project_id)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_else(|| crate::sidebar::short_project_id(&project_id)),
+                project_name: self.project_label(&project_id),
                 project_id,
             },
             command => return Ok(WireCommandMapping::Unhandled(command)),
@@ -4647,13 +5647,26 @@ impl Engine {
         Ok(WireCommandMapping::Mapped(mapped))
     }
 
+    /// The project's name, or its short id when no project has `project_id`.
+    fn project_label(&self, project_id: &str) -> String {
+        self.projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map_or_else(
+                || crate::sidebar::short_project_id(project_id),
+                |p| p.name.clone(),
+            )
+    }
+
     fn create_agent_command(
         &self,
-        project_id: String,
-        name: String,
+        project_id: &str,
+        name: &str,
         copy_uncommitted_changes: Option<bool>,
-        use_existing_branch: bool,
+        existing_branch: ExistingBranch,
+        name_checked: Option<&str>,
     ) -> anyhow::Result<Command> {
+        let use_existing_branch = existing_branch == ExistingBranch::Attach;
         let project = self
             .projects
             .iter()
@@ -4665,11 +5678,7 @@ impl Engine {
             None
         } else {
             if !crate::git::is_valid_agent_name(trimmed) {
-                anyhow::bail!(
-                    "Invalid agent name \"{trimmed}\". Use only letters, digits, dashes, \
-                     underscores and slashes; it must start with a letter or digit, must \
-                     not contain \"//\", and must not end with \"/\"."
-                );
+                anyhow::bail!("{}", crate::git::invalid_agent_name_refusal(trimmed));
             }
             Some(trimmed.to_string())
         };
@@ -4696,8 +5705,13 @@ impl Engine {
                 term_size: (80, 24),
             });
         }
+        // The route asks git about the name on the blocking pool and says which
+        // name it found free; only a name nobody asked about is asked here.
+        // A branch made between that answer and the create is the same race
+        // as one made between this check and the worker that creates it.
         if !use_existing_branch
             && let Some(name) = &custom_name
+            && name_checked != Some(name.as_str())
             && matches!(
                 crate::git::create_agent_branch_preflight(
                     std::path::Path::new(&project.path),
@@ -4706,10 +5720,7 @@ impl Engine {
                 crate::git::CreateAgentBranchPlan::ExistingBranch { .. }
             )
         {
-            anyhow::bail!(
-                "A branch named \"{name}\" already exists. Creating this agent would \
-                 attach to that branch's history. Confirm to attach, or pick a different name."
-            );
+            anyhow::bail!("{}", crate::agent_job::existing_branch_refusal(name));
         }
         let request = CreateAgentRequest::NewProject {
             project,
@@ -4718,6 +5729,7 @@ impl Engine {
             pull_before_create: self.config.defaults.pull_before_creating_agent_by_default,
             copy_uncommitted_changes: copy_uncommitted_changes
                 .unwrap_or(self.config.defaults.copy_uncommitted_changes_by_default),
+            cloned: None,
         };
         Ok(Command::DispatchCreateAgentRequest {
             request: Box::new(request),
@@ -4726,10 +5738,10 @@ impl Engine {
         })
     }
 
-    fn fork_session_command(&self, session_id: String, name: String) -> anyhow::Result<Command> {
+    fn fork_session_command(&self, session_id: &str, name: &str) -> anyhow::Result<Command> {
         let managed = self
             .branch_git_workspace(
-                &session_id,
+                session_id,
                 "fork",
                 crate::engine::STANDALONE_ADD_AS_PROJECT_REMEDY,
             )?
@@ -4752,11 +5764,7 @@ impl Engine {
             anyhow::bail!("Agent name cannot be empty.");
         }
         if !crate::git::is_valid_agent_name(trimmed) {
-            anyhow::bail!(
-                "Invalid agent name \"{trimmed}\". Use only letters, digits, dashes, \
-                 underscores and slashes; it must start with a letter or digit, must \
-                 not contain \"//\", and must not end with \"/\"."
-            );
+            anyhow::bail!("{}", crate::git::invalid_agent_name_refusal(trimmed));
         }
         let name = trimmed.to_string();
         let busy_message = crate::status_text![
@@ -4782,9 +5790,10 @@ impl Engine {
 
     fn adopt_worktree_command(
         &self,
-        project_id: String,
-        worktree_path: String,
-        name: String,
+        project_id: &str,
+        worktree_path: &str,
+        name: &str,
+        checked: Option<crate::route_checks::AdoptChecked>,
     ) -> anyhow::Result<Command> {
         let project = self
             .projects
@@ -4792,29 +5801,35 @@ impl Engine {
             .find(|p| p.id == project_id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("unknown project: {project_id}"))?;
-        let requested =
-            crate::project_browser::canonical_or_original(std::path::Path::new(&worktree_path));
-        let entry = self
-            .adoptable_managed_worktrees(&project)?
-            .into_iter()
-            .find(|entry| entry.path == requested)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Worktree \"{worktree_path}\" is not an adoptable managed worktree for \
-                     project \"{}\". Refresh the list and pick a worktree that has no agent yet.",
-                    project.name
-                )
-            })?;
+        let entry = match checked {
+            // The route listed the worktrees on the blocking pool; what can
+            // have changed since is an agent taking the worktree, a standalone
+            // one pointed at it included, which the sessions in memory say,
+            // each by the real location the listing remembered.
+            Some(checked) => {
+                if self.sessions.iter().any(|session| {
+                    crate::project_browser::known_path_key(session.directory()) == checked.path
+                }) {
+                    return Err(crate::route_checks::not_adoptable(
+                        worktree_path,
+                        &project.name,
+                    ));
+                }
+                checked
+            }
+            None => crate::route_checks::check_adopt_worktree(
+                &project,
+                &self.paths,
+                &self.sessions,
+                worktree_path,
+            )?,
+        };
         let trimmed = name.trim();
         if trimmed.is_empty() {
             anyhow::bail!("Agent name cannot be empty.");
         }
         if !crate::git::is_valid_agent_name(trimmed) {
-            anyhow::bail!(
-                "Invalid agent name \"{trimmed}\". Use only letters, digits, dashes, \
-                 underscores and slashes; it must start with a letter or digit, must \
-                 not contain \"//\", and must not end with \"/\"."
-            );
+            anyhow::bail!("{}", crate::git::invalid_agent_name_refusal(trimmed));
         }
         let display_name = trimmed.to_string();
         let busy_message = crate::status_text![
@@ -4859,20 +5874,27 @@ impl Engine {
                 name,
                 copy_uncommitted_changes,
                 use_existing_branch,
+                name_checked,
             } => self.create_agent_command(
-                project_id,
-                name,
+                &project_id,
+                &name,
                 copy_uncommitted_changes,
-                use_existing_branch,
+                if use_existing_branch {
+                    ExistingBranch::Attach
+                } else {
+                    ExistingBranch::Refuse
+                },
+                name_checked.as_deref(),
             )?,
             WireCommand::ForkSession { session_id, name } => {
-                self.fork_session_command(session_id, name)?
+                self.fork_session_command(&session_id, &name)?
             }
             WireCommand::CreateAgentFromWorktree {
                 project_id,
                 worktree_path,
                 name,
-            } => self.adopt_worktree_command(project_id, worktree_path, name)?,
+                checked,
+            } => self.adopt_worktree_command(&project_id, &worktree_path, &name, checked)?,
             command => return Ok(WireCommandMapping::Unhandled(command)),
         };
         Ok(WireCommandMapping::Mapped(mapped))
@@ -4881,44 +5903,127 @@ impl Engine {
     fn update_macros_command(entries: Vec<WireMacroEntry>) -> anyhow::Result<Command> {
         let mut macros = crate::config::MacrosConfig::default();
         for entry in entries {
-            let name = entry.name.trim().to_string();
-            if name.is_empty() {
-                anyhow::bail!("Macro name cannot be empty.");
-            }
+            let (name, checked) =
+                crate::config::checked_macro(&entry.name, entry.text, &entry.surface)?;
             if macros.entries.contains_key(&name) {
                 anyhow::bail!("Name \"{name}\" is already in use. Choose another.");
             }
-            if entry.text.is_empty() {
-                anyhow::bail!("Macro \"{name}\" has no text. Enter the text to send.");
-            }
-            let surface = crate::config::MacroSurface::from_config_str(&entry.surface)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Macro \"{name}\" has an unknown surface \"{}\". Use \"agent\", \"terminal\", or \"both\".",
-                        entry.surface
-                    )
-                })?;
-            macros.entries.insert(
-                name,
-                crate::config::MacroEntry {
-                    text: entry.text,
-                    surface,
-                },
-            );
+            macros.entries.insert(name, checked);
         }
         Ok(Command::UpdateMacros { macros })
     }
 
-    pub(crate) fn wire_to_command(&self, command: WireCommand) -> anyhow::Result<Command> {
+    /// The commands that reload or recover the config, reorder the sidebar, point
+    /// the changed-files watch, run a macro, or change the macro list or the
+    /// global environment.
+    fn map_config_set_command(command: WireCommand) -> anyhow::Result<WireCommandMapping> {
+        Ok(WireCommandMapping::Mapped(match command {
+            WireCommand::PersistGlobalEnv { env, version } => {
+                Command::ChangeConfigSet(ConfigSetChange::ReplaceEnv {
+                    env,
+                    read_at: version,
+                })
+            }
+            WireCommand::ReloadConfig {} => Command::ReloadConfig,
+            WireCommand::RecoverConfig {} => Command::RecoverConfig,
+            WireCommand::ReorderAgents { session_ids } => Command::ReorderAgents { session_ids },
+            WireCommand::ReorderProjects { project_ids } => {
+                Command::ReorderProjects { project_ids }
+            }
+            WireCommand::ReorderTerminals { terminal_ids } => {
+                Command::ReorderTerminals { terminal_ids }
+            }
+            WireCommand::PlaceTerminalInList {
+                terminal_id,
+                after_agent,
+            } => Command::PlaceTerminalInList {
+                terminal_id,
+                after_agent,
+            },
+            WireCommand::ReorderAgentTabs {
+                session_id,
+                tab_ids,
+            } => Command::ReorderAgentTabs {
+                session_id,
+                tab_ids,
+            },
+            WireCommand::WatchChangedFiles { session_id } => {
+                Command::WatchChangedFiles { session_id }
+            }
+            WireCommand::UpdateMacros { entries, version } => {
+                let Command::UpdateMacros { macros } = Self::update_macros_command(entries)? else {
+                    unreachable!("update_macros_command builds an UpdateMacros")
+                };
+                Command::ChangeConfigSet(ConfigSetChange::ReplaceMacros {
+                    macros,
+                    read_at: version,
+                })
+            }
+            // The request is checked here; its effect on the set is decided when
+            // it runs, against the config then (a reload may have deferred it).
+            WireCommand::SetMacro {
+                name,
+                text,
+                surface,
+            } => {
+                let Command::UpdateMacros { macros } =
+                    Self::update_macros_command(vec![WireMacroEntry {
+                        name,
+                        text,
+                        surface,
+                    }])?
+                else {
+                    unreachable!("update_macros_command builds an UpdateMacros")
+                };
+                let (name, entry) = macros
+                    .entries
+                    .into_iter()
+                    .next()
+                    .expect("one entry in, one entry out");
+                Command::ChangeConfigSet(ConfigSetChange::SetMacro { name, entry })
+            }
+            WireCommand::RemoveMacro { name } => {
+                Command::ChangeConfigSet(ConfigSetChange::RemoveMacro { name })
+            }
+            WireCommand::SetGlobalEnvVar { name, value } => {
+                crate::config::check_global_env_var(&name, &value)?;
+                Command::ChangeConfigSet(ConfigSetChange::SetEnvVar { name, value })
+            }
+            WireCommand::RemoveGlobalEnvVar { name } => {
+                Command::ChangeConfigSet(ConfigSetChange::RemoveEnvVar { name })
+            }
+            WireCommand::SetSessionSettings {
+                session_id,
+                settings,
+            } => Command::SetSessionSettings {
+                session_id,
+                settings: Box::new(settings),
+                title: None,
+            },
+            other => return Ok(WireCommandMapping::Unhandled(other)),
+        }))
+    }
+
+    /// Offer `command` to each group of mappings in turn; what none of them
+    /// claims comes back unhandled.
+    fn map_grouped_command(&self, command: WireCommand) -> anyhow::Result<WireCommandMapping> {
         let command = match self.map_changes_command(command)? {
-            WireCommandMapping::Mapped(command) => return Ok(command),
             WireCommandMapping::Unhandled(command) => command,
+            mapped @ WireCommandMapping::Mapped(_) => return Ok(mapped),
         };
         let command = match self.map_project_command(command)? {
-            WireCommandMapping::Mapped(command) => return Ok(command),
             WireCommandMapping::Unhandled(command) => command,
+            mapped @ WireCommandMapping::Mapped(_) => return Ok(mapped),
         };
         let command = match self.map_agent_command(command)? {
+            WireCommandMapping::Unhandled(command) => command,
+            mapped @ WireCommandMapping::Mapped(_) => return Ok(mapped),
+        };
+        Self::map_config_set_command(command)
+    }
+
+    pub(crate) fn wire_to_command(&self, command: WireCommand) -> anyhow::Result<Command> {
+        let command = match self.map_grouped_command(command)? {
             WireCommandMapping::Mapped(command) => return Ok(command),
             WireCommandMapping::Unhandled(command) => command,
         };
@@ -4928,14 +6033,13 @@ impl Engine {
                 session_id,
                 delete_worktree,
                 delete_branch,
+                branches,
             } => Command::BeginDeleteSession {
                 session_id,
                 delete_worktree,
                 delete_branch,
+                branches,
             },
-            WireCommand::PersistGlobalEnv { env } => Command::PersistGlobalEnv { env },
-            WireCommand::ReloadConfig {} => Command::ReloadConfig,
-            WireCommand::RecoverConfig {} => Command::RecoverConfig,
             // Rename, Reconnect, CheckoutProjectDefaultBranch and
             // ChangeAgentProvider are NOT reconstructible into a single
             // `Command`: each needs `&mut self`. `apply_wire` intercepts them
@@ -4964,14 +6068,20 @@ impl Engine {
             | WireCommand::ReconnectSession { .. }
             | WireCommand::RerunStartupCommand { .. }
             | WireCommand::CheckoutProjectDefaultBranch { .. }
+            | WireCommand::ChangeProjectBaseBranch { .. }
             | WireCommand::AddProjectCheckoutDefault { .. }
             | WireCommand::AddProjectCreateInitialCommit { .. }
             | WireCommand::AddProjectInitRepo { .. }
+            | WireCommand::CloneProject { .. }
             | WireCommand::ChangeAgentProvider { .. }
             | WireCommand::CreateAgentFromPr { .. }
             | WireCommand::AttachPullRequest { .. }
-            | WireCommand::ClearPullRequestOverride { .. }
-            | WireCommand::ResumePullRequestAutodetection { .. }
+            | WireCommand::DetachPullRequest { .. }
+            | WireCommand::HidePullRequest { .. }
+            | WireCommand::ShowPullRequest { .. }
+            | WireCommand::SetPullRequestSort { .. }
+            | WireCommand::MovePullRequest { .. }
+            | WireCommand::ReorderPullRequests { .. }
             | WireCommand::SetChangesPaneVisible { .. }
             | WireCommand::SetInstanceIdentity { .. }
             | WireCommand::SetSettings(..)
@@ -4989,39 +6099,28 @@ impl Engine {
             | WireCommand::DetachAgent { .. }
             | WireCommand::RecreateWorkingCopy { .. }
             | WireCommand::CloseAgentTab { .. }
+            | WireCommand::StopAgentTab { .. }
             | WireCommand::ChangeAgentTabProvider { .. }
-            | WireCommand::SetLastFocusedTab { .. } => {
+            | WireCommand::SetLastFocusedTab { .. }
+            | WireCommand::PersistGlobalEnv { .. }
+            | WireCommand::ReloadConfig {}
+            | WireCommand::RecoverConfig {}
+            | WireCommand::UpdateMacros { .. }
+            | WireCommand::SetMacro { .. }
+            | WireCommand::RemoveMacro { .. }
+            | WireCommand::SetGlobalEnvVar { .. }
+            | WireCommand::RemoveGlobalEnvVar { .. }
+            | WireCommand::ReorderAgents { .. }
+            | WireCommand::ReorderProjects { .. }
+            | WireCommand::ReorderTerminals { .. }
+            | WireCommand::PlaceTerminalInList { .. }
+            | WireCommand::ReorderAgentTabs { .. }
+            | WireCommand::WatchChangedFiles { .. }
+            | WireCommand::SetSessionSettings { .. } => {
                 unreachable!(
-                    "changes commands are mapped before the remaining wire_to_command dispatch; rename/reconnect/rerun-startup-command/checkout-default-branch/add-project-checkout-default/change-provider/create-agent-from-pr/set-changes-pane-visible/set-instance-identity/set-settings/toggle-randomized-pet-name-default/toggle-pr-banner-position/set-agent-sort/toggle-copy-on-select/toggle-github-integration/toggle-always-show-tab-strip/toggle-tab-reaches-agent/kill-session-pty/detach-agent/recreate-working-copy/close-agent-tab/change-agent-tab-provider/set-last-focused-tab are handled in apply_wire before wire_to_command"
+                    "changes commands are mapped before the remaining wire_to_command dispatch; rename/reconnect/rerun-startup-command/checkout-default-branch/add-project-checkout-default/change-provider/create-agent-from-pr/set-changes-pane-visible/set-instance-identity/set-settings/toggle-randomized-pet-name-default/toggle-pr-banner-position/set-agent-sort/toggle-copy-on-select/toggle-github-integration/toggle-always-show-tab-strip/toggle-tab-reaches-agent/kill-session-pty/detach-agent/recreate-working-copy/close-agent-tab/stop-agent-tab/change-agent-tab-provider/set-last-focused-tab are handled in apply_wire before wire_to_command"
                 )
             }
-            WireCommand::ReorderSessions {
-                project_id,
-                session_ids,
-            } => Command::ReorderSessions {
-                project_id,
-                session_ids,
-            },
-            WireCommand::ReorderAgents { session_ids } => Command::ReorderAgents { session_ids },
-            WireCommand::ReorderProjects { project_ids } => {
-                Command::ReorderProjects { project_ids }
-            }
-            WireCommand::ReorderTerminals { terminal_ids } => {
-                Command::ReorderTerminals { terminal_ids }
-            }
-            WireCommand::RunMacro { target_id, name } => Command::RunMacro { target_id, name },
-            WireCommand::UpdateMacros { entries } => Self::update_macros_command(entries)?,
-            WireCommand::WatchChangedFiles { session_id } => {
-                Command::WatchChangedFiles { session_id }
-            }
-            WireCommand::SetSessionSettings {
-                session_id,
-                settings,
-            } => Command::SetSessionSettings {
-                session_id,
-                settings: Box::new(settings),
-                title: None,
-            },
         })
     }
 
@@ -5068,20 +6167,22 @@ impl Engine {
     /// no working-tree writes) and is the single source of truth shared by the
     /// listing handler and the wire re-validation, so the client's path is always
     /// checked against a fresh classification rather than a stale snapshot.
-    pub fn adoptable_managed_worktrees(
-        &self,
-        project: &Project,
-    ) -> anyhow::Result<Vec<crate::worker::ProjectWorktreeEntry>> {
-        let worktrees = crate::git::list_worktrees(std::path::Path::new(&project.path))?;
-        Ok(crate::project_browser::classify_project_worktrees(
-            project,
-            &self.paths,
-            &self.sessions,
-            worktrees,
-        )
-        .into_iter()
-        .filter(|entry| entry.is_selectable && entry.is_managed_by_yaran)
-        .collect())
+    /// Refuse `validated` when a project already has it. Each project is
+    /// compared by the real location remembered when it was loaded or
+    /// checked (see [`crate::project_browser::known_path_key`]), so a
+    /// symlinked spelling is caught without touching the filesystem here.
+    fn refuse_registered(&self, validated: &std::path::Path) -> anyhow::Result<()> {
+        if self
+            .projects
+            .iter()
+            .any(|project| crate::project_browser::known_path_key(&project.path) == validated)
+        {
+            anyhow::bail!(
+                "\"{}\" is already registered as a project.",
+                validated.display()
+            );
+        }
+        Ok(())
     }
 }
 
@@ -5281,11 +6382,7 @@ mod tests {
         // No session exists yet: the folder refusal has nothing to find.
         assert!(engine.sessions.is_empty());
         let second = engine.apply_wire(create()).expect("the second is answered");
-        let message = second
-            .status
-            .as_ref()
-            .map(|s| s.message.clone())
-            .unwrap_or_default();
+        let message = second.status.as_ref().map_or_default(|s| s.message.clone());
         assert_eq!(
             second.status.as_ref().map(|s| s.tone.as_str()),
             Some("error"),
@@ -5327,44 +6424,49 @@ mod tests {
     #[test]
     fn a_standalone_agent_without_a_typed_name_is_named_after_its_folder() {
         let name = crate::git::standalone_agent_title("", Path::new("/home/ada/My Notes! (2026)"));
-        assert!(!name.is_empty(), "a standalone agent always has a name");
-        assert!(
-            name.contains("Notes"),
-            "and it comes from the folder, got {name:?}"
-        );
+        assert_eq!(name, "My-Notes-2026", "it comes from the folder");
+        assert!(crate::git::is_valid_agent_name(&name), "{name:?}");
     }
 
-    /// A folder whose name sanitizes away to nothing still yields a name: the
-    /// invariant is non-empty, not "whatever the sanitizer produced".
+    /// A folder whose name converts away to nothing still yields a valid name:
+    /// the invariant is a valid, non-empty name, not "whatever the conversion
+    /// produced".
     #[test]
     fn a_folder_whose_name_sanitizes_to_nothing_still_gets_a_name() {
-        for path in ["/home/ada/!!!", "/", "/home/ada/   "] {
+        for path in ["/home/ada/!!!", "/", "/home/ada/   ", "/home/ada/日本"] {
             let name = crate::git::standalone_agent_title("", Path::new(path));
-            assert!(!name.is_empty(), "{path} produced an empty name");
+            assert!(
+                crate::git::is_valid_agent_name(&name),
+                "{path} produced {name:?}"
+            );
         }
     }
 
-    /// Folder names legally contain characters a branch name cannot, and a
-    /// standalone agent has no branch, so the branch validator must not be
-    /// applied to a typed name here.
+    /// A standalone agent creates no branch, but its name follows the same
+    /// rules as every other agent's, and the server holds it to them, so a
+    /// client that skips the input field's rules (the command line) cannot
+    /// create one with a name the field would never let through.
     #[test]
-    fn a_typed_name_is_not_held_to_the_branch_naming_rules() {
+    fn a_typed_name_is_held_to_the_agent_naming_rules() {
         let (mut engine, _tmp) = test_engine();
         let folder = tempfile::tempdir().unwrap();
-        let outcome = engine.apply_wire(WireCommand::CreateStandaloneAgent {
+        let create = |name: &str| WireCommand::CreateStandaloneAgent {
             folder: folder.path().to_string_lossy().to_string(),
-            name: "Sort the downloads!".to_string(),
+            name: name.to_string(),
             provider: None,
-        });
-        assert!(
-            outcome.is_ok(),
-            "no branch is created, so no branch rule applies: {:?}",
-            outcome.err().map(|e| e.to_string())
-        );
+        };
+        let message = match engine.apply_wire(create("Sort the downloads!")) {
+            Ok(_) => panic!("an invalid name must be refused"),
+            Err(err) => err.to_string(),
+        };
         assert_eq!(
-            crate::git::standalone_agent_title("Sort the downloads!", Path::new("/anywhere")),
-            "Sort the downloads!",
-            "a typed name is used verbatim once trimmed"
+            message,
+            crate::git::invalid_agent_name_refusal("Sort the downloads!"),
+            "with the sentence every other create refuses an invalid name with"
+        );
+        assert!(
+            engine.apply_wire(create("sort-downloads")).is_ok(),
+            "a valid name is accepted"
         );
     }
 
@@ -5478,7 +6580,12 @@ mod tests {
             .sessions
             .push(sample_standalone_session("sa1", &link.to_string_lossy()));
 
-        let outcome = match engine.do_delete_session("s1", true, None) {
+        let outcome = match crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "s1",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        ) {
             Ok(Some(outcome)) => outcome,
             other => panic!("the delete must proceed, got {:?}", other.is_ok()),
         };
@@ -5505,7 +6612,12 @@ mod tests {
             .sessions
             .push(sample_standalone_session("sa1", &folder_path));
 
-        let outcome = match engine.do_delete_session("sa1", false, None) {
+        let outcome = match crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "sa1",
+            crate::engine::WorktreeOnDelete::Keep,
+            None,
+        ) {
             Ok(Some(outcome)) => outcome,
             Ok(None) => panic!("the session existed"),
             Err(err) => panic!("delete must succeed: {err}"),
@@ -5519,14 +6631,19 @@ mod tests {
             message.contains("folder"),
             "the message must name what was left alone, got {message:?}"
         );
+        // The words are judged with the folder's own path taken out: the
+        // temporary directory may live anywhere, a path naming a worktree
+        // included.
+        let words = message
+            .to_string()
+            .replace(&folder_path, "")
+            .replace(&crate::home_path::shorten_home(folder.path()), "")
+            .to_lowercase();
         assert!(
-            !message.to_lowercase().contains("worktree"),
+            !words.contains("worktree"),
             "a standalone agent has no worktree to mention, got {message:?}"
         );
-        assert!(
-            !message.to_lowercase().contains("branch"),
-            "nor a branch, got {message:?}"
-        );
+        assert!(!words.contains("branch"), "nor a branch, got {message:?}");
         assert!(
             folder.path().exists(),
             "and the folder itself must still be there"
@@ -5546,7 +6663,12 @@ mod tests {
             .sessions
             .push(sample_standalone_session("sa1", &folder_path));
 
-        let message = match engine.do_delete_session("sa1", true, None) {
+        let message = match crate::engine::test_support::delete_through_pipeline(
+            &mut engine,
+            "sa1",
+            crate::engine::WorktreeOnDelete::Remove,
+            None,
+        ) {
             Err(err) => err.to_string(),
             Ok(_) => panic!("a destructive request yaran will not honour must be refused"),
         };
@@ -5767,7 +6889,10 @@ mod tests {
             "a status quiet on the web still reaches the status line"
         );
         let json = serde_json::to_value(&web_only).expect("serialize");
-        assert_eq!(json.get("quiet").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            json.get("quiet").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
 
         let round_tripped: WireStatus = serde_json::from_value(json).expect("deserialize");
         assert_eq!(round_tripped, web_only);
@@ -5865,56 +6990,112 @@ mod tests {
         s
     }
 
+    /// Drive a wire discard to its final: the command, the keyed busy it
+    /// answers with, and the final the worker sends.
+    fn wire_discard(engine: &mut Engine, path: &str) -> StatusUpdate {
+        let command = engine
+            .wire_to_command(WireCommand::DiscardFile {
+                session_id: "s1".to_string(),
+                path: path.to_string(),
+            })
+            .expect("reconstruct");
+        assert!(matches!(command, Command::DiscardFileLive { .. }));
+        let crate::engine::EventReaction::Status(busy) = engine.apply(command).expect("apply")
+        else {
+            panic!("expected a busy status")
+        };
+        assert_eq!(busy.tone, crate::statusline::StatusTone::Busy);
+        loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the discard reports");
+            let done = matches!(event, crate::worker::WorkerEvent::StatusOpCompleted { .. });
+            let reaction = engine.process_worker_event(event);
+            if done {
+                match reaction {
+                    crate::engine::EventReaction::Status(update) => return update,
+                    _ => panic!("expected the discard's final"),
+                }
+            }
+        }
+    }
+
     #[test]
-    fn wire_to_command_discard_derives_untracked_for_untracked_file() {
+    fn wire_discard_deletes_an_untracked_file_classified_on_the_worker() {
         // init_repo leaves a.txt untracked (never committed).
         let repo = init_repo();
         let (mut engine, _tmp) = test_engine();
         engine.sessions.push(session_in_repo("s1", repo.path()));
-        let cmd = engine
-            .wire_to_command(WireCommand::DiscardFile {
-                session_id: "s1".to_string(),
-                path: "a.txt".to_string(),
-            })
-            .expect("reconstruct");
-        match cmd {
-            Command::DiscardFile {
-                worktree_path,
-                path,
-                is_untracked,
-            } => {
-                assert_eq!(worktree_path, repo.path());
-                assert_eq!(path, "a.txt");
-                assert!(is_untracked, "untracked file must be classified untracked");
-            }
-            _ => panic!("expected Command::DiscardFile variant"),
+        let done = wire_discard(&mut engine, "a.txt");
+        assert_eq!(
+            done.tone,
+            crate::statusline::StatusTone::Info,
+            "{}",
+            done.message
+        );
+        assert!(
+            done.message.contains("Deleted untracked file"),
+            "{}",
+            done.message
+        );
+        assert!(!repo.path().join("a.txt").exists());
+    }
+
+    /// A path that climbs out of an untracked folder is not a file inside it,
+    /// so the wire never turns it into a discard: `node_modules/..` would have
+    /// been the whole worktree.
+    #[test]
+    fn wire_to_command_discard_refuses_a_path_climbing_out_of_a_folder() {
+        let repo = init_repo_with_commit();
+        std::fs::create_dir_all(repo.path().join("node_modules")).expect("folder");
+        std::fs::write(repo.path().join("node_modules/x.js"), "x\n").expect("file");
+        let (mut engine, _tmp) = test_engine();
+        engine.sessions.push(session_in_repo("s1", repo.path()));
+        for path in [
+            "node_modules/..",
+            "node_modules/../a.txt",
+            "node_modules/./x.js",
+        ] {
+            assert!(
+                engine
+                    .wire_to_command(WireCommand::DiscardFile {
+                        session_id: "s1".to_string(),
+                        path: path.to_string(),
+                    })
+                    .is_err(),
+                "{path:?} must be refused"
+            );
         }
+        assert!(repo.path().join("a.txt").exists());
+        assert!(repo.path().join(".git").exists());
     }
 
     #[test]
-    fn wire_to_command_discard_derives_tracked_for_modified_file() {
+    fn wire_discard_restores_a_modified_tracked_file() {
         // init_repo_with_commit commits a.txt; modify it so it has an unstaged
         // (tracked) change.
         let repo = init_repo_with_commit();
+        let committed = std::fs::read_to_string(repo.path().join("a.txt")).expect("read");
         std::fs::write(repo.path().join("a.txt"), "changed\n").expect("modify file");
         let (mut engine, _tmp) = test_engine();
         engine.sessions.push(session_in_repo("s1", repo.path()));
-        let cmd = engine
-            .wire_to_command(WireCommand::DiscardFile {
-                session_id: "s1".to_string(),
-                path: "a.txt".to_string(),
-            })
-            .expect("reconstruct");
-        match cmd {
-            Command::DiscardFile { is_untracked, .. } => {
-                assert!(!is_untracked, "modified tracked file must not be untracked");
-            }
-            _ => panic!("expected Command::DiscardFile variant"),
-        }
+        let done = wire_discard(&mut engine, "a.txt");
+        assert_eq!(
+            done.tone,
+            crate::statusline::StatusTone::Info,
+            "{}",
+            done.message
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.txt")).expect("read"),
+            committed,
+            "a modified tracked file is restored, never deleted"
+        );
     }
 
     #[test]
-    fn wire_to_command_discard_rejects_staged_file() {
+    fn wire_discard_refuses_a_staged_file_in_its_final() {
         // Commit a.txt, modify it, then STAGE the modification: it is now purely
         // staged with no remaining working-tree change. The TUI blocks this.
         let repo = init_repo_with_commit();
@@ -5928,38 +7109,36 @@ mod tests {
         assert!(ok, "git add failed");
         let (mut engine, _tmp) = test_engine();
         engine.sessions.push(session_in_repo("s1", repo.path()));
-        let err = engine
-            .wire_to_command(WireCommand::DiscardFile {
-                session_id: "s1".to_string(),
-                path: "a.txt".to_string(),
-            })
-            .map(|_| ())
-            .unwrap_err();
+        let done = wire_discard(&mut engine, "a.txt");
         // Mirrors the TUI's "Unstage the file first to discard changes." copy.
+        assert_eq!(done.tone, crate::statusline::StatusTone::Error);
         assert!(
-            err.to_string()
+            done.message
                 .contains("Unstage the file first to discard changes."),
-            "got: {err}"
+            "got: {}",
+            done.message
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.txt")).expect("read"),
+            "staged change\n",
+            "nothing was touched"
         );
     }
 
     #[test]
-    fn wire_to_command_discard_rejects_unchanged_file() {
+    fn wire_discard_refuses_an_unchanged_file_in_its_final() {
         // a.txt is committed and clean: nothing to discard.
         let repo = init_repo_with_commit();
         let (mut engine, _tmp) = test_engine();
         engine.sessions.push(session_in_repo("s1", repo.path()));
-        let err = engine
-            .wire_to_command(WireCommand::DiscardFile {
-                session_id: "s1".to_string(),
-                path: "a.txt".to_string(),
-            })
-            .map(|_| ())
-            .unwrap_err();
+        let done = wire_discard(&mut engine, "a.txt");
+        assert_eq!(done.tone, crate::statusline::StatusTone::Error);
         assert!(
-            err.to_string().contains("No unstaged changes to discard"),
-            "got: {err}"
+            done.message.contains("No unstaged changes to discard"),
+            "got: {}",
+            done.message
         );
+        assert!(repo.path().join("a.txt").exists());
     }
 
     #[test]
@@ -6047,6 +7226,81 @@ mod tests {
             err.to_string().contains("does not have a startup command"),
             "err: {err}"
         );
+    }
+
+    /// A rerun while the previous run is still going is refused with a
+    /// sentence instead of running the same provisioning twice in one worktree,
+    /// and the claim is taken on the engine thread, so no second request can
+    /// slip in before the first run's worker starts.
+    #[test]
+    fn wire_rerun_startup_command_refuses_a_second_run_while_one_is_going() {
+        let (mut engine, _tmp) = test_engine();
+        let worktree = tempfile::tempdir().expect("worktree dir");
+        let mut project = sample_project("p1", "/repo");
+        project.startup_command = Some("touch started; sleep 1".to_string());
+        engine.projects.push(project);
+        let mut session = sample_session("s1", "p1", "feat");
+        session
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .worktree_path = worktree.path().to_string_lossy().into_owned();
+        engine.sessions.push(session);
+        let rerun = WireCommand::RerunStartupCommand {
+            session_id: "s1".to_string(),
+        };
+
+        engine
+            .apply_wire(rerun.clone())
+            .expect("the first run starts");
+        let err = engine
+            .apply_wire(rerun.clone())
+            .map(|_| ())
+            .expect_err("a second run is refused while the first is going");
+        assert!(err.to_string().contains("is still running"), "err: {err}");
+
+        // Once the first has finished, a rerun is accepted again.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while engine.process_registry.startup_running("s1") {
+            assert!(std::time::Instant::now() < deadline, "the run never ended");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        engine.apply_wire(rerun).expect("a later run starts");
+    }
+
+    /// A rerun whose environment cannot be resolved is refused before
+    /// anything is claimed or started.
+    #[test]
+    fn wire_rerun_startup_command_refuses_an_environment_it_cannot_resolve() {
+        let (mut engine, _tmp) = test_engine();
+        let worktree = tempfile::tempdir().expect("worktree dir");
+        let mut project = sample_project("p1", "/repo");
+        project.startup_command = Some("touch started".to_string());
+        project.env.insert("BROKEN".to_string(), "x$".to_string());
+        engine.projects.push(project);
+        let mut session = sample_session("s1", "p1", "feat");
+        session
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .worktree_path = worktree.path().to_string_lossy().into_owned();
+        engine.sessions.push(session);
+
+        let err = engine
+            .apply_wire(WireCommand::RerunStartupCommand {
+                session_id: "s1".to_string(),
+            })
+            .map(|_| ())
+            .expect_err("the rerun is refused");
+
+        assert!(
+            err.to_string().starts_with(
+                "yaran did not rerun the startup command: environment variable BROKEN"
+            ),
+            "{err}"
+        );
+        assert!(!engine.process_registry.startup_running("s1"));
+        assert!(!worktree.path().join("started").exists());
     }
 
     #[test]
@@ -6176,12 +7430,12 @@ mod tests {
         );
     }
 
+    /// A project pull takes the project folder's lock, shared with "Check out
+    /// default branch" and "Change base branch": while it runs, each of the
+    /// three is refused with an ordinary warning naming the pull, and the
+    /// pull's completion hands the folder back.
     #[test]
-    fn apply_wire_pull_project_blocks_repeat_while_running() {
-        // First dispatch spawns the pull worker (busy arrives on the async
-        // status stream, so the synchronous outcome is empty); the second
-        // dispatch hits the in-flight guard and surfaces the TUI's
-        // already-running warning synchronously.
+    fn apply_wire_pull_project_holds_the_folder_against_the_other_folder_switches() {
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/repo"));
 
@@ -6195,19 +7449,56 @@ mod tests {
             "first pull busy is async, not a synchronous outcome: {:?}",
             first.status
         );
-        assert!(engine.is_in_flight(&InFlightKey::Pull("/repo".to_string())));
+        assert_eq!(
+            engine.project_folder_action("/repo"),
+            Some(crate::engine::ProjectFolderAction::Pull)
+        );
 
-        let second = engine
-            .apply_wire(WireCommand::PullProject {
+        for command in [
+            WireCommand::PullProject {
                 project_id: "p1".to_string(),
-            })
-            .expect("repeat project pull should not error");
-        let status = second.status.expect("in-flight warning status");
-        assert_eq!(status.tone, "warning");
+            },
+            WireCommand::CheckoutProjectDefaultBranch {
+                project_id: "p1".to_string(),
+            },
+            WireCommand::ChangeProjectBaseBranch {
+                project_id: "p1".to_string(),
+                branch: "develop".to_string(),
+            },
+        ] {
+            let refused = engine
+                .apply_wire(command.clone())
+                .expect("a refusal is a status, not an error");
+            let status = refused.status.expect("the refusal");
+            assert_eq!(status.tone, "warning", "{command:?}");
+            assert_eq!(
+                status.message,
+                "yaran is already pulling for project \"p1-name\". Wait for it to finish; its \
+                 result will say where the project's worktrees branch from.",
+                "{command:?}"
+            );
+        }
         assert!(
-            status.message.contains("already in progress"),
-            "unexpected message: {}",
-            status.message
+            engine.pending_web_checkout_ops.is_empty(),
+            "the refused checkout must not start its chain"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("the pull worker answers");
+            let done = matches!(event, WorkerEvent::PullCompleted { .. });
+            engine.process_worker_event(event);
+            if done {
+                break;
+            }
+        }
+        assert_eq!(
+            engine.project_folder_action("/repo"),
+            None,
+            "the pull's completion releases the folder"
         );
     }
 
@@ -6256,6 +7547,7 @@ mod tests {
         assert_eq!(
             cmd,
             WireCommand::DeleteSession {
+                branches: None,
                 session_id: "s1".to_string(),
                 delete_worktree: true,
                 delete_branch: None,
@@ -6275,6 +7567,7 @@ mod tests {
             assert_eq!(
                 cmd,
                 WireCommand::DeleteSession {
+                    branches: None,
                     session_id: "s1".to_string(),
                     delete_worktree: true,
                     delete_branch: expected,
@@ -6288,7 +7581,7 @@ mod tests {
         let json = r#"{"command":"persist_global_env","args":{"env":{"FOO":"bar"}}}"#;
         let cmd: WireCommand = serde_json::from_str(json).expect("deserialize");
         match cmd {
-            WireCommand::PersistGlobalEnv { env } => {
+            WireCommand::PersistGlobalEnv { env, .. } => {
                 assert_eq!(env.get("FOO").map(String::as_str), Some("bar"));
             }
             _ => panic!("expected WireCommand::PersistGlobalEnv variant"),
@@ -6865,7 +8158,8 @@ mod tests {
         for outcome in [
             crate::gh::GhProbe::Decided {
                 available: false,
-                policy: crate::gh::GithubHostPolicy::Hosts(Default::default()),
+                policy: crate::gh::GithubHostPolicy::Hosts(std::collections::BTreeSet::default()),
+                protocols: BTreeMap::default(),
             },
             crate::gh::GhProbe::NotInstalled,
         ] {
@@ -6878,6 +8172,7 @@ mod tests {
                     policy: crate::gh::GithubHostPolicy::Hosts(
                         ["github.com".to_string()].into_iter().collect(),
                     ),
+                    protocols: BTreeMap::default(),
                 },
             });
             assert!(engine.pr_sync.is_armed(), "a success arms the work");
@@ -6913,6 +8208,7 @@ mod tests {
                 policy: crate::gh::GithubHostPolicy::Hosts(
                     ["github.com".to_string()].into_iter().collect(),
                 ),
+                protocols: BTreeMap::default(),
             },
         });
         assert!(engine.pr_sync.is_armed());
@@ -7031,7 +8327,7 @@ mod tests {
             !engine.pr_sync.is_armed(),
             "disabling must disarm PR sync and clear cached PR statuses"
         );
-        assert!(engine.pr_statuses.is_empty());
+        assert!(engine.agent_prs.is_empty());
     }
 
     #[test]
@@ -7188,6 +8484,91 @@ mod tests {
         );
     }
 
+    /// Stopping a tab ends its process and keeps the tab: the agent detaches
+    /// only when no other tab of it is running, a tab that is not running says
+    /// so, and a tab of another agent is unknown here.
+    #[test]
+    fn apply_wire_stop_agent_tab_ends_the_process_and_keeps_the_tab() {
+        let (mut engine, _tmp) = test_engine();
+        let worktree = tempfile::tempdir().expect("worktree dir");
+        engine.projects.push(sample_project(
+            "p1",
+            worktree.path().to_string_lossy().as_ref(),
+        ));
+        for id in ["s1", "s2"] {
+            let mut session = sample_session(id, "p1", id);
+            session
+                .workspace
+                .as_managed_mut()
+                .expect("managed test session")
+                .worktree_path = worktree.path().to_string_lossy().to_string();
+            engine.session_store.upsert_session(&session).unwrap();
+            engine.sessions.push(session);
+        }
+        let tab = crate::model::AgentTab {
+            id: "t2".to_string(),
+            session_id: "s1".to_string(),
+            provider: crate::model::ProviderKind::new("codex"),
+            sort_order: 1,
+            created_at: chrono::Utc::now(),
+        };
+        engine.session_store.insert_agent_tab(&tab).unwrap();
+        engine.agent_tabs.insert(TabId::new("t2"), tab);
+        for tab in ["s1-slot", "t2"] {
+            let client = crate::pty::PtyClient::spawn_with_env(
+                "cat",
+                &[],
+                worktree.path(),
+                24,
+                80,
+                engine.config.ui.agent_scrollback_lines,
+                &[],
+            )
+            .expect("spawn cat provider");
+            engine.providers.insert(TabId::new(tab), client);
+        }
+        engine.mark_session_status("s1", crate::model::SessionStatus::Active);
+        let stop = |engine: &mut Engine, session: &str, tab: &str| {
+            engine.apply_wire(WireCommand::StopAgentTab {
+                session_id: session.to_string(),
+                tab_id: tab.to_string(),
+            })
+        };
+
+        let outcome = stop(&mut engine, "s1", "t2").expect("stop the extra tab");
+        assert_eq!(outcome.detached, Some(false));
+        assert_eq!(
+            outcome.status.expect("a status").message,
+            "Stopped the Codex tab. Its other tabs are still running."
+        );
+        assert!(!engine.providers.contains_key(TabIdRef::new("t2")));
+        assert!(
+            engine.agent_tabs.contains_key(TabIdRef::new("t2")),
+            "a stopped tab stays in the strip"
+        );
+
+        let again = stop(&mut engine, "s1", "t2").expect("stop it again");
+        assert_eq!(
+            again.status.expect("a status").message,
+            "The Codex tab is not running, so there was nothing to stop."
+        );
+
+        let last = stop(&mut engine, "s1", "s1-slot").expect("stop the last running tab");
+        assert_eq!(last.detached, Some(true));
+        assert_eq!(
+            last.status.expect("a status").message,
+            "Stopped the Claude tab. It was the agent's last running tab, so the agent is \
+             detached now; start it again from its menu."
+        );
+        assert_eq!(
+            engine.sessions[0].status,
+            crate::model::SessionStatus::Detached
+        );
+
+        let refused = stop(&mut engine, "s2", "t2").unwrap_err();
+        assert!(refused.to_string().contains("unknown tab"), "{refused}");
+    }
+
     #[test]
     fn apply_wire_kill_session_pty_not_running_is_idempotent_noop() {
         let (mut engine, _tmp) = test_engine();
@@ -7244,7 +8625,7 @@ mod tests {
         .expect("spawn cat provider");
         engine.providers.insert(TabId::new("s1-slot"), client);
         engine.mark_session_status("s1", crate::model::SessionStatus::Active);
-        engine.mark_session_desired_running("s1", true);
+        engine.mark_session_desired_running("s1", crate::model::DesiredRunning::Running);
         // Seed an auxiliary resume-state map the kill must also clear.
         engine
             .pty_input
@@ -7426,7 +8807,7 @@ mod tests {
         engine.providers.insert(TabId::new("s1-slot"), spawn("cat"));
         engine.providers.insert(TabId::new("tab-2"), spawn("cat"));
         engine.mark_session_status("s1", crate::model::SessionStatus::Active);
-        engine.mark_session_desired_running("s1", true);
+        engine.mark_session_desired_running("s1", crate::model::DesiredRunning::Running);
 
         let outcome = engine
             .apply_wire(WireCommand::DetachAgent {
@@ -7593,13 +8974,21 @@ mod tests {
             forced.key, busy.key,
             "the forced final must retire the spinner the polite detach raised"
         );
-        assert!(engine.terminating_ptys.is_empty());
+        // The overtaken PTY was killed on the spot and is left for the reaper,
+        // due now: the reaper is the one place a terminating PTY leaves.
+        assert!(
+            engine
+                .terminating_ptys
+                .iter()
+                .all(|entry| entry.deadline <= std::time::Instant::now())
+        );
         assert!(engine.pending_detachments.is_empty());
         // No second outcome is owed: the barrier went with the spinner.
         assert!(
             engine.reap_terminating_ptys().detach_finals.is_empty(),
             "an overtaken detach must not also emit its own final"
         );
+        assert!(engine.terminating_ptys.is_empty(), "one reap takes it");
     }
 
     /// The whole round trip, spinner AND answer. Every other test here stops at
@@ -7780,8 +9169,9 @@ mod tests {
             .expect("the project")
             .path
             .clone();
-        assert!(
-            !engine.is_in_flight(&InFlightKey::CheckoutDefaultBranch(path)),
+        assert_eq!(
+            engine.project_folder_action(&path),
+            None,
             "the checkout's ending must release the repository"
         );
     }
@@ -7868,7 +9258,10 @@ mod tests {
             .next()
             .cloned()
             .expect("the web op");
-        assert!(engine.is_in_flight(&InFlightKey::CheckoutDefaultBranch(project.path.clone())));
+        assert_eq!(
+            engine.project_folder_action(&project.path),
+            Some(crate::engine::ProjectFolderAction::CheckoutDefaultBranch)
+        );
 
         engine.process_worker_event(WorkerEvent::NonDefaultBranchCheckoutCompleted {
             action: NonDefaultBranchAction::CheckoutProjectDefault { project },
@@ -8233,6 +9626,357 @@ mod tests {
             engine.pending_web_checkout_ops.contains_key(key),
             "the checkout op must be registered under its busy key"
         );
+
+        // The checkout holds the project folder: a pull of the same project,
+        // which would switch the folder back to its base, and a change of its
+        // base are refused and told which operation they are waiting for.
+        for command in [
+            WireCommand::PullProject {
+                project_id: "p1".into(),
+            },
+            WireCommand::ChangeProjectBaseBranch {
+                project_id: "p1".into(),
+                branch: "develop".into(),
+            },
+        ] {
+            let refused = engine
+                .apply_wire(command.clone())
+                .expect("a refusal is a status, not an error");
+            let refusal = refused.status.expect("the refusal");
+            assert_eq!(refusal.tone, "warning", "{command:?}");
+            assert_eq!(
+                refusal.message,
+                "yaran is already checking out the default branch for project \"p1-name\". Wait \
+                 for it to finish; its result will say where the project's worktrees branch from.",
+                "{command:?}"
+            );
+        }
+        assert!(engine.pending_change_base_ops.is_empty());
+    }
+
+    // ── Change base branch ───────────────────────────────────────────────
+
+    #[test]
+    fn wire_change_project_base_branch_deserializes() {
+        let json = r#"{"command":"change_project_base_branch","args":{"project_id":"p1","branch":"develop"}}"#;
+        let cmd: WireCommand = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(
+            cmd,
+            WireCommand::ChangeProjectBaseBranch {
+                project_id: "p1".to_string(),
+                branch: "develop".to_string(),
+            }
+        );
+    }
+
+    /// A project on `feature` in a repository whose other branch is `trunk`,
+    /// stored in SQLite the way an add leaves it.
+    fn change_base_fixture() -> (tempfile::TempDir, Engine, crate::test_scratch::ScratchDir) {
+        let (repo, engine, tmp) = unstored_change_base_fixture();
+        let project = &engine.projects[0];
+        engine
+            .session_store
+            .upsert_project(&crate::config::ProjectConfig {
+                id: project.id.clone(),
+                path: project.path.clone(),
+                name: Some(project.name.clone()),
+                default_provider: None,
+                leading_branch: Some("feature".to_string()),
+                auto_reopen_agents: None,
+                startup_command: None,
+                env: BTreeMap::default(),
+                workspace_mode: None,
+            })
+            .expect("seed the project row");
+        (repo, engine, tmp)
+    }
+
+    /// [`change_base_fixture`]'s project, with no SQLite row.
+    fn unstored_change_base_fixture() -> (tempfile::TempDir, Engine, crate::test_scratch::ScratchDir)
+    {
+        let repo = init_repo_on_feature_branch("trunk");
+        let (mut engine, tmp) = test_engine();
+        let mut project = sample_project("p1", repo.path().to_string_lossy().as_ref());
+        project.leading_branch = Some("feature".to_string());
+        project.current_branch = "feature".to_string();
+        project.branch_status = ProjectBranchStatus::Leading;
+        engine.projects.push(project);
+        (repo, engine, tmp)
+    }
+
+    /// Wait for the change worker and hand its answer to the engine, the way
+    /// either surface's drain does; returns the statuses it produced.
+    fn drive_change_base(engine: &mut Engine) -> Vec<WireStatus> {
+        loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the change worker answers");
+            let done = matches!(event, WorkerEvent::ProjectBaseBranchChanged { .. });
+            let reaction = engine.process_worker_event(event);
+            if done {
+                return wire_statuses_from_reaction(&reaction);
+            }
+        }
+    }
+
+    fn change_base(engine: &mut Engine, branch: &str) -> WireStatus {
+        engine
+            .apply_wire(WireCommand::ChangeProjectBaseBranch {
+                project_id: "p1".to_string(),
+                branch: branch.to_string(),
+            })
+            .expect("the change is taken")
+            .status
+            .expect("a synchronous status")
+    }
+
+    /// The change answers with a keyed busy, holds the project folder against
+    /// the other two operations that switch it (each refused with a sentence
+    /// naming the change), and its final replaces the busy, saves the base and
+    /// releases the folder.
+    #[test]
+    fn change_base_branch_busy_is_keyed_and_holds_the_folder_until_it_finishes() {
+        let (repo, mut engine, _tmp) = change_base_fixture();
+
+        let busy = change_base(&mut engine, "trunk");
+        assert_eq!(busy.tone, "busy");
+        assert_eq!(
+            busy.message,
+            "Changing the base branch of project \"p1-name\" to \"trunk\"..."
+        );
+        let key = busy.key.clone().expect("the busy is keyed");
+        assert!(key.starts_with("op-"), "{key}");
+        assert!(engine.pending_change_base_ops.contains_key(&key));
+        let path = repo.path().to_string_lossy().into_owned();
+        assert_eq!(
+            engine.project_folder_action(&path),
+            Some(crate::engine::ProjectFolderAction::ChangeBaseBranch)
+        );
+
+        for command in [
+            WireCommand::PullProject {
+                project_id: "p1".to_string(),
+            },
+            WireCommand::CheckoutProjectDefaultBranch {
+                project_id: "p1".to_string(),
+            },
+            WireCommand::ChangeProjectBaseBranch {
+                project_id: "p1".to_string(),
+                branch: "trunk".to_string(),
+            },
+        ] {
+            let refusal = engine
+                .apply_wire(command.clone())
+                .expect("a refusal is a status")
+                .status
+                .expect("the refusal");
+            assert_eq!(refusal.tone, "warning", "{command:?}");
+            assert_eq!(
+                refusal.message,
+                "yaran is already changing the base branch for project \"p1-name\". Wait for it \
+                 to finish; its result will say where the project's worktrees branch from.",
+                "{command:?}"
+            );
+        }
+
+        let statuses = drive_change_base(&mut engine);
+        let done = statuses.last().expect("the final");
+        assert_eq!(done.tone, "info");
+        assert_eq!(
+            done.key.as_deref(),
+            Some(key.as_str()),
+            "it replaces the busy"
+        );
+        assert_eq!(
+            done.message,
+            "Checked out \"trunk\" for project \"p1-name\". New worktrees branch from \"trunk\" now."
+        );
+        assert!(engine.pending_change_base_ops.is_empty());
+        assert_eq!(engine.project_folder_action(&path), None);
+        assert_eq!(current_git_branch(repo.path()), "trunk");
+        assert_eq!(
+            engine.projects[0].leading_branch.as_deref(),
+            Some("trunk"),
+            "the base moved in memory"
+        );
+        let stored = engine
+            .session_store
+            .load_projects()
+            .expect("load")
+            .into_iter()
+            .find(|p| p.id == "p1")
+            .and_then(|p| p.leading_branch);
+        assert_eq!(stored.as_deref(), Some("trunk"), "and in SQLite");
+    }
+
+    /// While a checkout or a pull holds the folder, a change is refused and
+    /// told which one it is waiting for, and nothing is registered for it.
+    #[test]
+    fn change_base_branch_is_refused_while_a_checkout_or_a_pull_holds_the_folder() {
+        for (running, phrase) in [
+            (
+                crate::engine::ProjectFolderAction::CheckoutDefaultBranch,
+                "checking out the default branch",
+            ),
+            (crate::engine::ProjectFolderAction::Pull, "pulling"),
+        ] {
+            let (repo, mut engine, _tmp) = change_base_fixture();
+            let path = repo.path().to_string_lossy().into_owned();
+            engine
+                .begin_project_folder_action(&path, "p1-name", running)
+                .expect("the folder is free");
+
+            let refusal = change_base(&mut engine, "trunk");
+
+            assert_eq!(refusal.tone, "warning");
+            assert_eq!(
+                refusal.message,
+                format!(
+                    "yaran is already {phrase} for project \"p1-name\". Wait for it to finish; its \
+                     result will say where the project's worktrees branch from."
+                )
+            );
+            assert!(engine.pending_change_base_ops.is_empty());
+            assert_eq!(engine.project_folder_action(&path), Some(running));
+            assert_eq!(current_git_branch(repo.path()), "feature");
+        }
+    }
+
+    #[test]
+    fn apply_wire_change_project_base_branch_refuses_what_it_can_answer_without_git() {
+        let (mut engine, _tmp) = test_engine();
+        let mut missing = sample_project("gone", "/nonexistent/yaran-project");
+        missing.path_missing = true;
+        engine.projects.push(missing);
+        engine
+            .projects
+            .push(sample_project("p1", "/nonexistent/yaran-p1"));
+
+        let unknown = engine
+            .apply_wire(WireCommand::ChangeProjectBaseBranch {
+                project_id: "ghost".to_string(),
+                branch: "main".to_string(),
+            })
+            .map(|_| ())
+            .unwrap_err();
+        assert!(unknown.to_string().contains("unknown project"), "{unknown}");
+
+        let gone = engine
+            .apply_wire(WireCommand::ChangeProjectBaseBranch {
+                project_id: "gone".to_string(),
+                branch: "main".to_string(),
+            })
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(
+            gone.to_string(),
+            "Cannot change base branch: path not found for \"gone-name\""
+        );
+
+        let empty = engine
+            .apply_wire(WireCommand::ChangeProjectBaseBranch {
+                project_id: "p1".to_string(),
+                branch: "  ".to_string(),
+            })
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(
+            empty.to_string(),
+            "Choose a branch to change the base of project \"p1-name\" to."
+        );
+        assert!(engine.pending_change_base_ops.is_empty());
+        assert_eq!(engine.project_folder_action("/nonexistent/yaran-p1"), None);
+    }
+
+    /// The worker checks the branch against the listing, so a name that is no
+    /// longer a branch (or never was one git accepts) is refused there, and
+    /// the folder and the base stay where they were.
+    #[test]
+    fn a_change_to_a_branch_that_is_not_listed_is_refused_and_keeps_the_base() {
+        for branch in ["nope", "--detach"] {
+            let (repo, mut engine, _tmp) = change_base_fixture();
+            change_base(&mut engine, branch);
+
+            let statuses = drive_change_base(&mut engine);
+
+            let refusal = statuses.last().expect("the final");
+            assert_eq!(refusal.tone, "error");
+            assert!(
+                !refusal.sticky,
+                "picking again from a fresh list is the fix"
+            );
+            assert_eq!(
+                refusal.message,
+                format!(
+                    "Can't change the base branch of project \"p1-name\" to \"{branch}\": no local \
+                     branch or branch on origin has that name any more. Open the branch list \
+                     again and pick from what is there now."
+                )
+            );
+            assert_eq!(current_git_branch(repo.path()), "feature");
+            assert_eq!(
+                engine.projects[0].leading_branch.as_deref(),
+                Some("feature")
+            );
+            assert_eq!(
+                engine.project_folder_action(&repo.path().to_string_lossy()),
+                None
+            );
+        }
+    }
+
+    /// A change whose new base SQLite will not save ends with the sticky save
+    /// error, advising this action rather than the default-branch checkout, and
+    /// the base stays what it was.
+    #[test]
+    fn a_change_whose_base_cannot_be_saved_resolves_with_the_sticky_error() {
+        let (repo, mut engine, _tmp) = unstored_change_base_fixture();
+        change_base(&mut engine, "trunk");
+
+        let statuses = drive_change_base(&mut engine);
+
+        let status = statuses.last().expect("the final");
+        assert_eq!(status.tone, "error");
+        assert!(status.sticky);
+        assert!(
+            status.message.starts_with(
+                "The folder of project \"p1-name\" is on \"trunk\", but new worktrees still \
+                 branch from \"feature\" because yaran could not save the new base ("
+            ),
+            "{}",
+            status.message
+        );
+        assert!(
+            status
+                .message
+                .ends_with(" Change the base branch again once the problem is fixed."),
+            "{}",
+            status.message
+        );
+        assert_eq!(current_git_branch(repo.path()), "trunk");
+        assert_eq!(
+            engine.projects[0].leading_branch.as_deref(),
+            Some("feature")
+        );
+    }
+
+    /// Picking the branch the folder is already on, which already is the base,
+    /// changes nothing and says so rather than claiming a checkout.
+    #[test]
+    fn a_change_to_the_current_base_and_folder_branch_says_nothing_needed_to_change() {
+        let (repo, mut engine, _tmp) = change_base_fixture();
+        change_base(&mut engine, "feature");
+
+        let statuses = drive_change_base(&mut engine);
+
+        let status = statuses.last().expect("the final");
+        assert_eq!(status.tone, "info");
+        assert_eq!(
+            status.message,
+            "Project \"p1-name\" already branches from \"feature\", and its folder is on it."
+        );
+        assert_eq!(current_git_branch(repo.path()), "feature");
     }
 
     #[test]
@@ -8258,7 +10002,7 @@ mod tests {
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: BTreeMap::default(),
                 workspace_mode: None,
             })
             .expect("seed the project row");
@@ -8321,13 +10065,25 @@ mod tests {
         engine.projects.push(project);
 
         let outcome = engine
-            .apply_wire(WireCommand::CreateAgent {
-                project_id: "p1".to_string(),
-                name: "my-agent".to_string(),
-                copy_uncommitted_changes: None,
-                use_existing_branch: false,
-            })
+            .apply_wire_operation(
+                WireCommand::CreateAgent {
+                    project_id: "p1".to_string(),
+                    name: "my-agent".to_string(),
+                    copy_uncommitted_changes: None,
+                    use_existing_branch: false,
+                    name_checked: None,
+                },
+                crate::operations::OperationKind::AgentCreate,
+            )
             .expect("dispatch create");
+
+        // The record following this create is the one that holds the guard
+        // against the next create, until the guard clears.
+        assert_eq!(
+            engine.operations.create_guard_record(),
+            outcome.operation_id
+        );
+        assert!(outcome.operation_id.is_some());
 
         let op_id = outcome
             .created_op_id
@@ -8338,6 +10094,9 @@ mod tests {
             "the create op must be registered under the surfaced id"
         );
 
+        engine.clear_in_flight(&crate::engine::InFlightKey::CreateAgent);
+        assert_eq!(engine.operations.create_guard_record(), None);
+
         // A non-create command surfaces no create op id, so the handler never
         // mistakes a plain command's outcome for a create to correlate.
         let other = engine
@@ -8346,8 +10105,10 @@ mod tests {
         assert_eq!(other.created_op_id, None);
     }
 
+    /// Attaching adds beside what the agent has, and every pull-request
+    /// change answers with exactly one status, read from its wire shape.
     #[test]
-    fn attach_pull_request_pins_and_clear_override_unpins() {
+    fn attaching_adds_and_every_pull_request_change_answers_once() {
         let (mut engine, _tmp) = test_engine();
         enable_gh(&mut engine);
         let session = sample_session("s1", "p1", "feat");
@@ -8357,86 +10118,102 @@ mod tests {
             .expect("persist session");
         engine.sessions.push(session);
 
-        let outcome = engine
-            .apply_wire(WireCommand::AttachPullRequest {
-                session_id: "s1".to_string(),
-                host: "GitHub.com".to_string(),
-                owner_repo: "fork/r".to_string(),
-                number: 12,
-                title: "Pinned".to_string(),
-                state: "OPEN".to_string(),
-                url: "https://github.com/fork/r/pull/12".to_string(),
-            })
-            .expect("attach");
-        let status = outcome.status.expect("attach confirmation");
-        assert_eq!(status.tone, "info");
-        assert!(status.message.contains("#12"), "got {:?}", status.message);
-
-        // The pin is persisted, mirrored in memory, and drives the badge.
-        let stored = engine.session_store.load_pr_overrides().expect("load");
-        assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].pr_number, 12);
-        assert_eq!(
-            stored[0].host, "github.com",
+        for (owner_repo, number) in [("fork/r", 12), ("o/r", 13)] {
+            let outcome = engine
+                .apply_wire(WireCommand::AttachPullRequest {
+                    session_id: "s1".to_string(),
+                    host: "GitHub.com".to_string(),
+                    owner_repo: owner_repo.to_string(),
+                    number,
+                    title: "Pinned".to_string(),
+                    state: "OPEN".to_string(),
+                    url: format!("https://github.com/{owner_repo}/pull/{number}"),
+                })
+                .expect("attach");
+            let status = outcome.status.expect("attach confirmation");
+            assert_eq!(status.tone, "info");
+            assert!(
+                status.message.contains(&format!("#{number}")),
+                "got {:?}",
+                status.message
+            );
+        }
+        let stored = engine.session_store.attached_prs_for_tests();
+        let mut numbers: Vec<u64> = stored.iter().map(|pr| pr.pr_number).collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, vec![12, 13], "the second attach adds");
+        assert!(
+            stored.iter().all(|pr| pr.host == "github.com"),
             "hosts are lowercased at the boundary"
         );
-        assert_eq!(engine.pr_overrides.get("s1").map(|p| p.pr_number), Some(12));
-        assert_eq!(engine.pr_statuses.get("s1").map(|p| p.number), Some(12));
-        // The sync snapshot now carries the pin for the worker.
-        let entries = engine.pr_sync_sessions.lock().unwrap().clone();
-        let pin = entries[0].pinned.as_ref().expect("pinned sync entry");
-        assert_eq!(pin.number, 12);
-        assert_eq!(pin.owner_repo, "fork/r");
 
-        // Detach: the row and the map entry go, the badge goes WITH them (a
-        // detach means "no pull request", now, not at the next cycle), and the
-        // session drops out of the sync plan entirely.
-        let outcome = engine
-            .apply_wire(WireCommand::ClearPullRequestOverride {
-                session_id: "s1".to_string(),
-            })
-            .expect("detach");
-        assert_eq!(outcome.status.expect("detach confirmation").tone, "info");
-        assert!(engine.session_store.load_pr_overrides().unwrap().is_empty());
-        assert!(engine.pr_overrides.is_empty());
-        assert!(
-            !engine.pr_statuses.contains_key("s1"),
-            "the badge disappears with the detach"
+        let commands = [
+            r#"{"command":"detach_pull_request","args":{"session_id":"s1","pr":{"host":"github.com","owner_repo":"fork/r","number":12}}}"#,
+            r#"{"command":"hide_pull_request","args":{"session_id":"s1","pr":{"host":"github.com","owner_repo":"o/r","number":13}}}"#,
+            r#"{"command":"show_pull_request","args":{"session_id":"s1","pr":{"host":"github.com","owner_repo":"o/r","number":13}}}"#,
+            r#"{"command":"set_pull_request_sort","args":{"session_id":"s1","mode":"manual"}}"#,
+            r#"{"command":"set_pull_request_sort","args":{"session_id":"s1","mode":"auto"}}"#,
+            r#"{"command":"move_pull_request","args":{"session_id":"s1","pr":{"host":"github.com","owner_repo":"o/r","number":13},"to":"top"}}"#,
+            r#"{"command":"move_pull_request","args":{"session_id":"s1","pr":{"host":"github.com","owner_repo":"o/r","number":13},"to":1}}"#,
+            r#"{"command":"reorder_pull_requests","args":{"session_id":"s1","order":[{"host":"github.com","owner_repo":"o/r","number":13}]}}"#,
+        ];
+        for json in commands {
+            let command: WireCommand = serde_json::from_str(json).expect(json);
+            let outcome = engine.apply_wire(command).expect(json);
+            let status = outcome.status.expect(json);
+            assert_eq!(status.tone, "info", "{json}: {}", status.message);
+        }
+        assert_eq!(
+            engine
+                .agent_prs
+                .get("s1")
+                .map(|rows| rows.iter().map(|row| row.number).collect::<Vec<_>>()),
+            Some(vec![13]),
+            "the detach took the attached-only one off"
         );
-        assert!(
-            engine.pr_sync_sessions.lock().unwrap().is_empty(),
-            "a detached session is not planned for at all"
+        assert_eq!(
+            engine.pr_sort_mode("s1"),
+            crate::pr_list::PrSortMode::Automatic
         );
-
-        // Resume: the session rejoins the plan, and the confirmation says so.
-        let outcome = engine
-            .apply_wire(WireCommand::ResumePullRequestAutodetection {
-                session_id: "s1".to_string(),
-            })
-            .expect("resume");
-        let status = outcome.status.expect("resume confirmation");
-        assert_eq!(status.tone, "info");
-        assert!(
-            status.message.contains("Resumed"),
-            "got {:?}",
-            status.message
-        );
-        assert!(engine.pr_suppressions.is_empty());
-        assert_eq!(engine.pr_sync_sessions.lock().unwrap().len(), 1);
     }
 
-    /// Both PR-detachment commands refuse a session that is not there, so the
+    /// Every pull-request change refuses a session that is not there, so the
     /// REST layer can map the message onto a 404 the way its siblings do.
     #[test]
-    fn detach_and_resume_refuse_an_unknown_session() {
+    fn every_pull_request_change_refuses_an_unknown_session() {
         let (mut engine, _tmp) = test_engine();
         enable_gh(&mut engine);
+        let pr = crate::viewmodel::PrKeyView {
+            host: "github.com".to_string(),
+            owner_repo: "o/r".to_string(),
+            number: 1,
+        };
+        let session_id = || "ghost".to_string();
         for command in [
-            WireCommand::ClearPullRequestOverride {
-                session_id: "ghost".to_string(),
+            WireCommand::DetachPullRequest {
+                session_id: session_id(),
+                pr: pr.clone(),
             },
-            WireCommand::ResumePullRequestAutodetection {
-                session_id: "ghost".to_string(),
+            WireCommand::HidePullRequest {
+                session_id: session_id(),
+                pr: pr.clone(),
+            },
+            WireCommand::ShowPullRequest {
+                session_id: session_id(),
+                pr: pr.clone(),
+            },
+            WireCommand::SetPullRequestSort {
+                session_id: session_id(),
+                mode: PullRequestSort::Manual,
+            },
+            WireCommand::MovePullRequest {
+                session_id: session_id(),
+                pr: pr.clone(),
+                to: PullRequestMove::Named(PullRequestMoveNamed::Top),
+            },
+            WireCommand::ReorderPullRequests {
+                session_id: session_id(),
+                order: vec![pr.clone()],
             },
         ] {
             let err = engine
@@ -8463,7 +10240,7 @@ mod tests {
             .apply_pr_attach("s1", "", "o/r", 1, "", "OPEN", "")
             .expect("attach with an empty host");
         assert_eq!(
-            engine.pr_overrides.get("s1").map(|p| p.host.as_str()),
+            engine.attached_pr("s1").map(|p| p.host.as_str()),
             Some("github.com"),
             "an empty host stores as github.com"
         );
@@ -8472,7 +10249,11 @@ mod tests {
             .apply_pr_attach("s1", "GitHub.Example.COM ".trim(), "o/r", 2, "", "OPEN", "")
             .expect("attach with a capitalised host");
         assert_eq!(
-            engine.pr_overrides.get("s1").map(|p| p.host.as_str()),
+            engine
+                .agent_prs
+                .get("s1")
+                .and_then(|rows| rows.iter().find(|row| row.number == 2))
+                .map(|p| p.host.as_str()),
             Some("github.example.com"),
             "hosts store lowercased"
         );
@@ -8513,7 +10294,7 @@ mod tests {
             })
             .expect_err("only OPEN/MERGED/CLOSED are storable states");
         assert!(err.to_string().contains("DRAFT"), "got {err:#}");
-        assert!(engine.pr_overrides.is_empty());
+        assert!(engine.agent_prs.values().flatten().all(|row| !row.attached));
     }
 
     #[test]
@@ -8553,11 +10334,39 @@ mod tests {
         assert!(err.to_string().contains("gh CLI"), "got {err:#}");
     }
 
-    /// The headline of the mutual-blocking ruling: while an attach is
-    /// resolving, a detach for the same agent is refused outright with an
-    /// honest message instead of racing the attach's own write.
+    /// An attach whose lookup worker cannot start ends its busy with the
+    /// reason and lets the agent's pull-request actions run again.
     #[test]
-    fn a_pending_attach_blocks_detach_and_resume_for_the_same_session() {
+    fn an_attach_whose_worker_cannot_start_ends_with_the_reason() {
+        let (mut engine, _tmp) = test_engine();
+        enable_gh(&mut engine);
+        engine.projects.push(sample_project("p1", "/tmp/p1"));
+        let session = sample_session("s1", "p1", "feat");
+        engine.session_store.upsert_session(&session).unwrap();
+        engine.sessions.push(session);
+        crate::engine::fail_next_worker_spawn();
+        let (op_id, _pending) = engine
+            .dispatch_attach_pull_request("s1", "#42")
+            .expect("dispatch");
+        let event = engine.worker_rx.try_recv().expect("the failure is queued");
+        let reaction = engine.process_worker_event(event);
+        let crate::engine::EventReaction::Status(status) = reaction else {
+            panic!("expected a final, got {reaction:?}");
+        };
+        assert_eq!(status.key.as_deref(), Some(op_id.as_str()));
+        assert_eq!(status.tone, StatusTone::Error, "{status:?}");
+        assert!(
+            status.message.contains("injected test failure"),
+            "{status:?}"
+        );
+        assert!(!engine.is_in_flight(&crate::engine::InFlightKey::PrAttach("s1".to_string())));
+    }
+
+    /// While an attach is resolving, a change to the same agent's pull
+    /// requests is refused outright with an honest message instead of racing
+    /// the attach's own write.
+    #[test]
+    fn a_pending_attach_blocks_the_other_pull_request_changes_for_the_same_session() {
         let (mut engine, _tmp) = test_engine();
         enable_gh(&mut engine);
         engine.projects.push(sample_project("p1", "/tmp/p1"));
@@ -8574,31 +10383,23 @@ mod tests {
         assert!(engine.is_in_flight(&crate::engine::InFlightKey::PrAttach("s1".to_string())));
 
         let err = engine
-            .clear_pull_request_override("s1")
-            .expect_err("a detach must not race a resolving attach");
+            .set_pull_request_sort("s1", crate::pr_list::PrSortMode::Manual)
+            .expect_err("a change must not race a resolving attach");
         assert!(
             err.to_string()
                 .contains(crate::engine::PR_ATTACH_IN_FLIGHT_MARKER),
             "got {err:#}",
         );
-        assert!(
-            !engine.pr_suppressions.contains("s1"),
-            "the refused detach must not have written the suppression"
-        );
-
-        let err = engine
-            .resume_pr_autodetection("s1")
-            .expect_err("a resume must not race a resolving attach either");
-        assert!(
-            err.to_string()
-                .contains(crate::engine::PR_ATTACH_IN_FLIGHT_MARKER),
-            "got {err:#}",
+        assert_eq!(
+            engine.pr_sort_mode("s1"),
+            crate::pr_list::PrSortMode::Automatic,
+            "the refused change wrote nothing"
         );
 
         // The block is per session: another agent's PR operations are untouched.
         engine
-            .clear_pull_request_override("s2")
-            .expect("an unrelated agent still detaches");
+            .set_pull_request_sort("s2", crate::pr_list::PrSortMode::Manual)
+            .expect("an unrelated agent still changes");
     }
 
     /// Every attach dispatch ends in exactly one `PullRequestResolved`, and
@@ -8626,6 +10427,9 @@ mod tests {
                 state: "OPEN".to_string(),
                 head_ref_name: "feat".to_string(),
                 custom_name: None,
+                review_copy: crate::worker::ReviewCopyConsent::default(),
+                ask_id: None,
+                project_remote: None,
             }),
             purpose: crate::worker::PrLookupPurpose::Attach {
                 session_id: "s1".to_string(),
@@ -8637,11 +10441,8 @@ mod tests {
             "a landed attach unblocks the session"
         );
         engine
-            .clear_pull_request_override("s1")
+            .detach_pull_request("s1", &crate::model::PrKey::new("github.com", "o/r", 12))
             .expect("detach works again once the attach has landed");
-        engine
-            .resume_pr_autodetection("s1")
-            .expect("and so does resume");
 
         // The failure path: a lookup that never found a PR must unblock too,
         // and the user's very next act is typically the detach they were
@@ -8650,7 +10451,7 @@ mod tests {
             .dispatch_attach_pull_request("s1", "#99")
             .expect("dispatch");
         engine.process_worker_event(crate::worker::WorkerEvent::PullRequestResolved {
-            result: Err("no such pull request".to_string()),
+            result: Err("no such pull request".into()),
             purpose: crate::worker::PrLookupPurpose::Attach {
                 session_id: "s1".to_string(),
             },
@@ -8661,8 +10462,8 @@ mod tests {
             "a failed attach unblocks the session as surely as a successful one"
         );
         engine
-            .clear_pull_request_override("s1")
-            .expect("detach immediately after a failed attach");
+            .set_pull_request_sort("s1", crate::pr_list::PrSortMode::Manual)
+            .expect("a change immediately after a failed attach");
     }
 
     /// The fallback resolution path (no keyed op id, or an op id the map no
@@ -8682,7 +10483,7 @@ mod tests {
             .expect("dispatch");
         engine.pending_pr_attach_ops.remove(&op_id);
         engine.process_worker_event(crate::worker::WorkerEvent::PullRequestResolved {
-            result: Err("no such pull request".to_string()),
+            result: Err("no such pull request".into()),
             purpose: crate::worker::PrLookupPurpose::Attach {
                 session_id: "s1".to_string(),
             },
@@ -8718,6 +10519,12 @@ mod tests {
             state: "OPEN".to_string(),
             head_ref_name: "feat".to_string(),
             custom_name: None,
+            review_copy: crate::worker::ReviewCopyConsent::default(),
+            ask_id: None,
+            project_remote: Some(crate::git::GitHubRemote {
+                host: "GitHub.com".to_string(),
+                owner_repo: "Forker/hello-world".to_string(),
+            }),
         };
         let reaction =
             engine.process_worker_event(crate::worker::WorkerEvent::PullRequestResolved {
@@ -8731,19 +10538,26 @@ mod tests {
         let final_status = statuses.last().expect("keyed final");
         assert_eq!(final_status.tone, "info");
         assert_eq!(final_status.key.as_deref(), Some(op_id.as_str()));
-        assert!(final_status.message.contains("#12"), "{final_status:?}");
+        assert!(
+            final_status.message.starts_with("Attached #12 to "),
+            "the agent with nothing found learns its own repository from the lookup: \
+             {final_status:?}"
+        );
+        assert!(engine.spine().sessions[0].prs[0].own_repo);
         assert!(!engine.pending_pr_attach_ops.contains_key(&op_id));
-        assert_eq!(engine.pr_overrides.get("s1").map(|p| p.pr_number), Some(12));
-        assert_eq!(engine.pr_statuses.get("s1").map(|p| p.number), Some(12));
-        assert_eq!(engine.session_store.load_pr_overrides().unwrap().len(), 1);
+        assert_eq!(engine.attached_pr("s1").map(|p| p.number), Some(12));
+        assert_eq!(engine.shown_pr("s1").map(|p| p.number), Some(12));
+        assert_eq!(engine.session_store.attached_prs_for_tests().len(), 1);
 
         // Session deleted mid-lookup: nothing is attached, the operation ends
         // with its spinner retired and no sentence (an answer about an agent
         // that is gone is nobody's news), and no orphan row is written for the
         // dead id.
-        engine.pr_overrides.clear();
-        engine.pr_statuses.clear();
-        engine.session_store.delete_pr_override("s1").unwrap();
+        engine.clear_agent_prs();
+        engine
+            .session_store
+            .replace_agent_prs("s1", &[], &crate::model::PrPrefs::default())
+            .unwrap();
         let (op_id, _) = engine
             .dispatch_attach_pull_request("s1", "#12")
             .expect("dispatch");
@@ -8765,9 +10579,9 @@ mod tests {
             crate::engine::EventReaction::ClearStatus(ref key) if key == &op_id
         ));
         assert!(!engine.pending_pr_attach_ops.contains_key(&op_id));
-        assert!(engine.pr_overrides.is_empty());
+        assert!(engine.agent_prs.values().flatten().all(|row| !row.attached));
         assert!(
-            engine.session_store.load_pr_overrides().unwrap().is_empty(),
+            engine.session_store.attached_prs_for_tests().is_empty(),
             "no override row is written for a dead session id"
         );
     }
@@ -8788,6 +10602,10 @@ mod tests {
                 project_id: "p1".to_string(),
                 pr: "#42".to_string(),
                 name: "my-agent".to_string(),
+                review_copy: false,
+                review_copy_warned: None,
+                review_copy_by_flag: false,
+                ask_id: None,
             })
             .expect("dispatch lookup");
         let status = outcome.status.expect("synchronous busy status");
@@ -8823,6 +10641,10 @@ mod tests {
                 project_id: "p1".to_string(),
                 pr: "#42".to_string(),
                 name: "my-agent".to_string(),
+                review_copy: false,
+                review_copy_warned: None,
+                review_copy_by_flag: false,
+                ask_id: None,
             })
             .expect("dispatch")
             .status
@@ -8834,7 +10656,7 @@ mod tests {
         // real worker forwards the id it was spawned with).
         let reaction =
             engine.process_worker_event(crate::worker::WorkerEvent::PullRequestResolved {
-                result: Err("gh pr view failed".to_string()),
+                result: Err("gh pr view failed".into()),
                 purpose: crate::worker::PrLookupPurpose::CreateAgent,
                 status_op_id: Some(busy_key.clone()),
             });
@@ -8907,6 +10729,269 @@ mod tests {
         statuses
     }
 
+    fn clone_command(url: &Path, path: &Path, agent_name: &str) -> WireCommand {
+        WireCommand::CloneProject {
+            url: url.to_string_lossy().into_owned(),
+            path: path.to_string_lossy().into_owned(),
+            agent_name: Some(agent_name.to_string()),
+            random_name: false,
+            pull_request: None,
+            add_existing: false,
+            review_copy: crate::clone_project::UpfrontReviewCopy::default(),
+        }
+    }
+
+    /// Drive a clone the way the web actor does: the worker's event, the
+    /// follow-up that adds the project and dispatches the agent, and, when one
+    /// was dispatched, the create to its end.
+    fn drive_clone_chain(engine: &mut Engine) -> WebFollowupStatuses {
+        drive_clone_chain_with(engine, |_| {})
+    }
+
+    /// [`drive_clone_chain`], letting `edit` change the worker's reaction
+    /// before the follow-up runs, to stand in for the world moving between them.
+    fn drive_clone_chain_with(
+        engine: &mut Engine,
+        edit: impl FnOnce(&mut EventReaction),
+    ) -> WebFollowupStatuses {
+        // Whatever an earlier agent still reports is processed on the way, as a
+        // surface would.
+        let event = loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("the clone worker's event");
+            if matches!(event, WorkerEvent::RepositoryCloned { .. }) {
+                break event;
+            }
+            engine.process_worker_event(event);
+        };
+        let mut reaction = engine.process_worker_event(event);
+        edit(&mut reaction);
+        let mut chain = engine.drive_clone_followup(&reaction);
+        chain
+            .statuses
+            .extend(wire_statuses_from_reaction(&reaction));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !engine.pending_create_ops.is_empty() {
+            let event = engine
+                .worker_rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("the create settles in time");
+            let reaction = engine.process_worker_event(event);
+            chain
+                .statuses
+                .extend(wire_statuses_from_reaction(&reaction));
+        }
+        chain
+    }
+
+    /// The statuses that end something, not the spinners.
+    fn finals(chain: &WebFollowupStatuses) -> Vec<&WireStatus> {
+        chain.statuses.iter().filter(|s| s.tone != "busy").collect()
+    }
+
+    /// What a `gh pr view` of pull request 7 prints for a branch.
+    fn pull_request_json(head_branch: &str) -> String {
+        format!(
+            r#"{{"number":7,"title":"Add the thing","state":"OPEN","headRefName":"{head_branch}"}}"#
+        )
+    }
+
+    /// A pull request clone of `owner_repo` into `path`; any address a client
+    /// sends is ignored, so this one is deliberately wrong.
+    fn pull_request_clone_command(
+        owner_repo: &str,
+        path: &Path,
+        name: Option<&str>,
+    ) -> WireCommand {
+        WireCommand::CloneProject {
+            url: "https://example.invalid/not-this.git".to_string(),
+            path: path.to_string_lossy().into_owned(),
+            agent_name: name.map(str::to_string),
+            random_name: false,
+            pull_request: Some(crate::pr_reference::PullRequestCloneTarget {
+                host: "github.com".to_string(),
+                owner_repo: owner_repo.to_string(),
+                number: 7,
+            }),
+            add_existing: false,
+            review_copy: crate::clone_project::UpfrontReviewCopy::default(),
+        }
+    }
+
+    /// `command` with the agreement to a review copy of `reason` given before
+    /// the clone, as a dialog that showed the warning sends it.
+    fn agreeing_to_a_copy_for(
+        mut command: WireCommand,
+        reason: &str,
+        branch: Option<&str>,
+    ) -> WireCommand {
+        if let WireCommand::CloneProject { review_copy, .. } = &mut command {
+            *review_copy = crate::clone_project::UpfrontReviewCopy {
+                agreed: true,
+                reason: Some(reason.to_string()),
+                branch: branch.map(str::to_string),
+                by_flag: false,
+            };
+        }
+        command
+    }
+
+    /// A `gh` whose pull request has head branch `head_branch` and whose
+    /// repository's default branch is `default_branch`.
+    fn gh_with_default_branch(dir: &Path, head_branch: &str, default_branch: &str) -> PathBuf {
+        crate::gh::probe_test_support::stand_in_gh(
+            dir,
+            &format!(
+                "case \"$1\" in\n  repo) {} ;;\n  *) {} ;;\nesac",
+                gh_prints(&format!(
+                    r#"{{"defaultBranchRef":{{"name":"{default_branch}"}}}}"#
+                )),
+                gh_prints(&pull_request_json(head_branch)),
+            ),
+        )
+    }
+
+    /// [`pull_request_clone_command`] for a folder that already holds a
+    /// checkout of the repository, which becomes the project.
+    fn pull_request_add_command(owner_repo: &str, path: &Path, name: Option<&str>) -> WireCommand {
+        match pull_request_clone_command(owner_repo, path, name) {
+            WireCommand::CloneProject {
+                url,
+                path,
+                agent_name,
+                random_name,
+                pull_request,
+                ..
+            } => WireCommand::CloneProject {
+                url,
+                path,
+                agent_name,
+                random_name,
+                pull_request,
+                add_existing: true,
+                review_copy: crate::clone_project::UpfrontReviewCopy::default(),
+            },
+            other => other,
+        }
+    }
+
+    /// A working copy of acme/widget at `root/name`, made from `remote` and
+    /// told its origin is the GitHub address, left on a branch of its own with
+    /// an untracked file, the way a user's hand-made checkout is. `shape` is
+    /// space-separated words that change it: `no-head` removes the record of
+    /// the remote's default branch, `single-branch` clones only `feature`,
+    /// `detached` leaves HEAD on no branch, `no-main` deletes the local `main`,
+    /// and `unborn` is a fresh repository with that origin and no commits.
+    fn checkout_of_widget(root: &Path, name: &str, remote: &Path, shape: &str) -> PathBuf {
+        let dir = root.join(name);
+        let has = |word: &str| shape.split(' ').any(|w| w == word);
+        let git = |args: &[&str]| {
+            let out = crate::git::test_support::git_command()
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        let path = dir.to_string_lossy().into_owned();
+        let source = remote.to_string_lossy().into_owned();
+        if has("unborn") {
+            git(&["init", "-q", "-b", "feature", &path]);
+            git(&["-C", &path, "remote", "add", "origin", "x"]);
+        } else if has("single-branch") {
+            git(&[
+                "clone",
+                "-q",
+                "--single-branch",
+                "-b",
+                "feature",
+                &source,
+                &path,
+            ]);
+        } else {
+            git(&["clone", "-q", &source, &path]);
+        }
+        let in_dir = |args: &[&str]| {
+            let mut all = vec!["-C", path.as_str()];
+            all.extend_from_slice(args);
+            git(&all);
+        };
+        in_dir(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/acme/widget.git",
+        ]);
+        if has("detached") {
+            in_dir(&["switch", "-q", "--detach"]);
+        } else if !has("single-branch") && !has("unborn") {
+            in_dir(&["switch", "-q", "-c", "feature"]);
+        }
+        if has("no-main") {
+            in_dir(&["branch", "-q", "-D", "main"]);
+        }
+        if has("no-head") {
+            in_dir(&["remote", "set-head", "origin", "-d"]);
+        }
+        std::fs::write(dir.join("notes.txt"), "mine").unwrap();
+        dir
+    }
+
+    /// Let `engine` clone pull requests of acme/widget: `gh` is signed in to
+    /// github.com and is the stand-in script `gh`, and git reaches `remote`
+    /// for the address yaran builds.
+    fn serve_pull_requests(engine: &mut Engine, gh: &Path, remote: &Path) {
+        enable_gh(engine);
+        engine.set_github_host_policy(crate::gh::GithubHostPolicy::Hosts(
+            ["github.com".to_string()].into(),
+        ));
+        engine.gh_probe.program = gh.into();
+        engine.clones.git_env = vec![
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+            (
+                "GIT_CONFIG_KEY_0".to_string(),
+                format!("url.{}.insteadOf", remote.display()),
+            ),
+            (
+                "GIT_CONFIG_VALUE_0".to_string(),
+                "https://github.com/acme/widget.git".to_string(),
+            ),
+        ];
+    }
+
+    /// A shell fragment printing `json` as `gh pr view` does.
+    fn gh_prints(json: &str) -> String {
+        format!("printf '%s' '{json}'")
+    }
+
+    /// [`bare_remote_with_commit`] plus a pull request 7 on a commit of its
+    /// own, which no branch of the remote has. Returns the remote and that
+    /// commit.
+    fn remote_with_pull_request(dir: &Path) -> (PathBuf, String) {
+        let remote = crate::git::test_support::bare_remote_with_commit(dir);
+        let seed = dir.join("seed");
+        let git = |args: &[&str]| {
+            let out = crate::git::test_support::git_command()
+                .arg("-C")
+                .arg(&seed)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["commit", "-q", "--allow-empty", "-m", "pull request work"]);
+        git(&[
+            "push",
+            "-q",
+            &remote.to_string_lossy(),
+            "HEAD:refs/pull/7/head",
+        ]);
+        let commit = git(&["rev-parse", "HEAD"]);
+        (remote, commit)
+    }
+
     #[test]
     fn wire_add_project_checkout_default_deserializes() {
         let json = r#"{"command":"add_project_checkout_default","args":{"path":"/repo","name":"My Project"}}"#;
@@ -8916,6 +11001,7 @@ mod tests {
             WireCommand::AddProjectCheckoutDefault {
                 path: "/repo".to_string(),
                 name: "My Project".to_string(),
+                checked: None,
             }
         );
     }
@@ -8950,6 +11036,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCreateInitialCommit {
                 path: path.clone(),
                 name: "Demo".to_string(),
+                checked: None,
             })
             .expect("dispatch initial-commit add");
         // Drive the worker chain (InitialCommitCreated → AddProjectAfterInitialCommit
@@ -8986,6 +11073,7 @@ mod tests {
         let res = engine.apply_wire(WireCommand::AddProjectCreateInitialCommit {
             path: repo.path().to_string_lossy().into_owned(),
             name: "Demo".to_string(),
+            checked: None,
         });
         assert!(
             res.is_err(),
@@ -8994,6 +11082,44 @@ mod tests {
         assert!(
             !crate::git::repo_has_commits(repo.path()),
             "the rejected request must not have committed"
+        );
+
+        // A clone holds its destination however it is spelled: a second clone
+        // through a symlinked parent with a trailing slash is refused, and so
+        // is an init there. A clone into the folder the commit holds is too.
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = std::fs::canonicalize(tmp.path()).unwrap();
+        let link = parent.join("link");
+        std::os::unix::fs::symlink(&parent, &link).unwrap();
+        let dest = parent.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        assert!(engine.mark_in_flight(InFlightKey::Clone(dest.clone())));
+        let refusal = engine
+            .apply_wire(clone_command(
+                Path::new("/srv/remote.git"),
+                Path::new(&format!("{}/dest/", link.display())),
+                "agent",
+            ))
+            .map(|_| ())
+            .expect_err("a second clone into the destination");
+        assert!(refusal.to_string().contains("already cloning"), "{refusal}");
+        let init = engine.apply_wire(WireCommand::AddProjectInitRepo {
+            path: dest.to_string_lossy().into_owned(),
+            name: String::new(),
+        });
+        let init = init
+            .map(|_| ())
+            .expect_err("an init where a clone runs went ahead");
+        assert!(init.to_string().contains("cloning"), "{init}");
+        assert!(!dest.join(".git").exists());
+        let into_commit = engine.apply_wire(clone_command(
+            Path::new("/srv/remote.git"),
+            repo.path(),
+            "agent",
+        ));
+        assert!(
+            into_commit.is_err(),
+            "a clone where an initial commit runs went ahead"
         );
     }
 
@@ -9032,6 +11158,7 @@ mod tests {
         let res = engine.apply_wire(WireCommand::AddProjectCreateInitialCommit {
             path: unborn.path().to_string_lossy().into_owned(),
             name: "Demo".to_string(),
+            checked: None,
         });
         assert!(
             res.is_err(),
@@ -9078,6 +11205,468 @@ mod tests {
             engine.mark_in_flight(crate::engine::InFlightKey::InitialCommit(canonical)),
             "the in-flight gate must be cleared after the worker completes"
         );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = crate::git::test_support::bare_remote_with_commit(tmp.path());
+        check_a_clone_adds_its_project_and_agent(&mut engine, tmp.path(), &remote);
+        check_a_blank_agent_name_is_a_random_one(&mut engine, tmp.path(), &remote);
+        let tools = tempfile::tempdir().unwrap();
+        let (pr_remote, pr_commit) = remote_with_pull_request(tools.path());
+        check_a_pull_request_clone_runs_on_its_commit(
+            &mut engine,
+            tmp.path(),
+            tools.path(),
+            &pr_remote,
+            &pr_commit,
+        );
+
+        // A folder that already holds a checkout, on a branch of its own,
+        // becomes the project with no download: the project leads with the
+        // remote's default branch, found in the folder, else asked of the
+        // remote, and the agent runs on the pull request's commit while the
+        // folder keeps its branch and its files. When neither can say, the
+        // folder's branch leads and a warning says it was a guess.
+        let gh_dir = tools.path().join("add-gh");
+        std::fs::create_dir(&gh_dir).unwrap();
+        let gh = crate::gh::probe_test_support::stand_in_gh(
+            &gh_dir,
+            &gh_prints(&pull_request_json("pr-branch")),
+        );
+        let nowhere = tools.path().join("nowhere.git");
+        let fixture = AddFixture {
+            root: std::fs::canonicalize(tmp.path()).unwrap(),
+            gh,
+            pr_remote,
+            pr_commit,
+            nowhere,
+        };
+        for case in [
+            ("added-with-head", "", true, "main"),
+            ("added-asking-the-remote", "no-head", true, "main"),
+            ("added-guessing", "no-head", false, "feature"),
+        ] {
+            check_an_added_checkout(&fixture, case);
+        }
+
+        check_the_branch_an_added_checkout_leads_with(&fixture);
+
+        check_a_stuck_agent_after_a_clone(&mut engine, tmp.path(), &remote);
+    }
+
+    /// What the pull request adds in [`apply_wire_init_repo_clears_the_gate_and_resolves_the_op`]
+    /// share: the folder the checkouts are made in, the stand-in `gh`, the
+    /// remote with the pull request and its commit, and a remote that is not
+    /// there.
+    struct AddFixture {
+        root: PathBuf,
+        gh: PathBuf,
+        pr_remote: PathBuf,
+        pr_commit: String,
+        nowhere: PathBuf,
+    }
+
+    /// A clone of the local repository `remote` into `tmp` with a commit adds
+    /// the project on the remote's default branch and starts the named agent
+    /// there, with one final, the create's, and nothing left open.
+    fn check_a_clone_adds_its_project_and_agent(engine: &mut Engine, tmp: &Path, remote: &Path) {
+        let dest = std::fs::canonicalize(tmp).unwrap().join("cloned");
+        let busy = engine
+            .apply_wire(clone_command(remote, &dest, "first-agent"))
+            .expect("dispatch the clone")
+            .status
+            .expect("a keyed busy");
+        assert_eq!(busy.tone, "busy");
+        let chain = drive_clone_chain(engine);
+        let project = engine
+            .projects
+            .iter()
+            .find(|p| Path::new(&p.path) == dest)
+            .expect("the clone is a project")
+            .clone();
+        assert_eq!(project.current_branch, "main");
+        assert_eq!(project.leading_branch.as_deref(), Some("main"));
+        assert_eq!(project.name, "cloned");
+        let agents: Vec<_> = engine
+            .sessions
+            .iter()
+            .filter(|s| s.project_id() == Some(project.id.as_str()))
+            .collect();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].branch_name(), Some("first-agent"));
+        let finals = finals(&chain);
+        assert_eq!(finals.len(), 1, "{finals:?}");
+        assert_eq!(finals[0].tone, "info", "{finals:?}");
+        assert_eq!(chain.clear_keys, vec![busy.key.unwrap()]);
+        assert!(engine.clones.pending.is_empty());
+        assert!(engine.pending_create_ops.is_empty());
+        assert!(
+            engine.mark_in_flight(InFlightKey::Clone(dest)),
+            "the clone's gate must be cleared"
+        );
+    }
+
+    /// A blank agent name is a random one, as in the New agent dialog,
+    /// whether or not a random name was asked for.
+    fn check_a_blank_agent_name_is_a_random_one(engine: &mut Engine, tmp: &Path, remote: &Path) {
+        let blank = std::fs::canonicalize(tmp).unwrap().join("blank");
+        engine
+            .apply_wire(WireCommand::CloneProject {
+                url: remote.to_string_lossy().into_owned(),
+                path: blank.to_string_lossy().into_owned(),
+                agent_name: Some("  ".to_string()),
+                random_name: false,
+                pull_request: None,
+                add_existing: false,
+                review_copy: crate::clone_project::UpfrontReviewCopy::default(),
+            })
+            .expect("a blank name is not refused");
+        drive_clone_chain(engine);
+        let project = engine
+            .projects
+            .iter()
+            .find(|p| Path::new(&p.path) == blank)
+            .expect("the clone is a project");
+        let names: Vec<&str> = engine
+            .sessions
+            .iter()
+            .filter(|s| s.project_id() == Some(project.id.as_str()))
+            .filter_map(|s| s.branch_name())
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        assert!(crate::git::is_valid_agent_name(names[0]), "{names:?}");
+    }
+
+    /// A clone for a pull request ends in an agent on the pull request's own
+    /// commit, not on the remote's branch of the same name, and the project
+    /// still leads with the remote's default branch.
+    fn check_a_pull_request_clone_runs_on_its_commit(
+        engine: &mut Engine,
+        tmp: &Path,
+        tools: &Path,
+        pr_remote: &Path,
+        pr_commit: &str,
+    ) {
+        let gh = crate::gh::probe_test_support::stand_in_gh(
+            tools,
+            &gh_prints(&pull_request_json("feature")),
+        );
+        serve_pull_requests(engine, &gh, pr_remote);
+        let pr_dest = std::fs::canonicalize(tmp).unwrap().join("pr-dest");
+        let busy = engine
+            .apply_wire(pull_request_clone_command("acme/widget", &pr_dest, None))
+            .expect("dispatch the pull request clone")
+            .status
+            .expect("a keyed busy");
+        let chain = drive_clone_chain(engine);
+        let project = engine
+            .projects
+            .iter()
+            .find(|p| Path::new(&p.path) == pr_dest)
+            .expect("the clone is a project")
+            .clone();
+        assert_eq!(project.leading_branch.as_deref(), Some("main"));
+        let agents: Vec<_> = engine
+            .sessions
+            .iter()
+            .filter(|s| s.project_id() == Some(project.id.as_str()))
+            .collect();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].branch_name(), Some("feature"));
+        let head = crate::git::test_support::git_command()
+            .arg("-C")
+            .arg(agents[0].directory())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), pr_commit);
+        assert_eq!(chain.clear_keys, vec![busy.key.unwrap()]);
+        assert!(engine.clones.pending.is_empty());
+        assert!(engine.pending_create_ops.is_empty());
+    }
+
+    /// One case of adding a checkout for the pull request: its folder name,
+    /// its shape, whether the remote answers, and the branch the project
+    /// must then lead with.
+    fn check_an_added_checkout(fixture: &AddFixture, case: (&str, &str, bool, &str)) {
+        let (name, shape, reaches_remote, leads_with) = case;
+        let (mut engine, _engine_dir) = test_engine();
+        let folder = checkout_of_widget(&fixture.root, name, &fixture.pr_remote, shape);
+        serve_pull_requests(
+            &mut engine,
+            &fixture.gh,
+            if reaches_remote {
+                &fixture.pr_remote
+            } else {
+                &fixture.nowhere
+            },
+        );
+        let busy = engine
+            .apply_wire(pull_request_add_command("acme/widget", &folder, None))
+            .unwrap_or_else(|refused| panic!("{name}: {refused}"))
+            .status
+            .expect("a keyed busy");
+        assert_eq!(
+            busy.message,
+            format!(
+                "Adding {} as a project for pull request #7...",
+                folder.display()
+            ),
+            "{name}"
+        );
+        let chain = drive_clone_chain(&mut engine);
+        let project = engine
+            .projects
+            .iter()
+            .find(|p| Path::new(&p.path) == folder)
+            .unwrap_or_else(|| panic!("{name}: the folder is not a project"))
+            .clone();
+        assert_eq!(project.current_branch, "feature", "{name}");
+        assert_eq!(
+            project.leading_branch.as_deref(),
+            Some(leads_with),
+            "{name}"
+        );
+        let said: Vec<&str> = chain.statuses.iter().map(|s| s.message.as_str()).collect();
+        assert!(
+            said.iter().all(|message| !message.starts_with("Cloned")),
+            "{name}: an add said it cloned: {said:?}"
+        );
+        let guessed: Vec<_> = chain
+            .statuses
+            .iter()
+            .filter(|s| s.tone == "warning")
+            .collect();
+        let agents: Vec<_> = engine
+            .sessions
+            .iter()
+            .filter(|s| s.project_id() == Some(project.id.as_str()))
+            .collect();
+        if reaches_remote {
+            assert!(guessed.is_empty(), "{name}: {guessed:?}");
+            assert_eq!(agents.len(), 1, "{name}");
+            assert_eq!(agents[0].branch_name(), Some("pr-branch"), "{name}");
+            let head = crate::git::test_support::git_command()
+                .arg("-C")
+                .arg(agents[0].directory())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&head.stdout).trim(),
+                fixture.pr_commit,
+                "{name}"
+            );
+            assert_eq!(chain.clear_keys, vec![busy.key.clone().unwrap()], "{name}");
+        } else {
+            assert_eq!(guessed.len(), 1, "{name}: {guessed:?}");
+            assert_eq!(
+                guessed[0].message,
+                "yaran could not learn the default branch of github.com/acme/widget from \
+                 its remote, so project \"added-guessing\" leads with \"feature\", the \
+                 branch the folder has checked out."
+            );
+            // The remote that could not answer cannot serve the pull
+            // request either: the project stays and says what was done.
+            assert!(agents.is_empty(), "{name}");
+            let ended = self::finals(&chain);
+            let missing = ended.iter().find(|s| s.tone == "error").expect(name);
+            assert!(
+                missing.message.starts_with(&format!(
+                    "Added {} as project \"added-guessing\", but didn't create agent \
+                     \"pr-branch\":",
+                    folder.display()
+                )),
+                "{name}: {}",
+                missing.message
+            );
+        }
+        assert_the_added_folder_is_kept(&engine, &folder, name);
+    }
+
+    /// The checkout `folder` an add for case `name` made a project of keeps its
+    /// branch and its files, and nothing about the add is left held in
+    /// `engine`.
+    fn assert_the_added_folder_is_kept(engine: &Engine, folder: &Path, name: &str) {
+        let branch = crate::git::test_support::git_command()
+            .arg("-C")
+            .arg(folder)
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&branch.stdout).trim(),
+            "feature",
+            "{name}: the folder's branch moved"
+        );
+        assert_eq!(
+            std::fs::read_to_string(folder.join("notes.txt")).unwrap(),
+            "mine",
+            "{name}"
+        );
+        assert!(engine.clones.pending.is_empty(), "{name}");
+        assert!(
+            !engine.is_in_flight(&InFlightKey::CloneRepository(
+                "github.com/acme/widget".to_string()
+            )),
+            "{name}: the repository stayed held"
+        );
+    }
+
+    /// What an add of a checkout must lead with: (folder name, shape, remote
+    /// reachable, project's current branch and leading branch when it is added,
+    /// the warning when one is raised, else the end of the refusal).
+    type AddedLeading = Result<(&'static str, &'static str, Option<String>), &'static str>;
+
+    /// The cases [`check_the_branch_an_added_checkout_leads_with`] adds, for the
+    /// repository `widget`.
+    fn added_checkout_leading_branches(
+        widget: &str,
+    ) -> Vec<(&'static str, &'static str, bool, AddedLeading)> {
+        vec![
+            (
+                "added-single-branch",
+                "single-branch",
+                true,
+                Ok((
+                    "feature",
+                    "feature",
+                    Some(format!(
+                        "yaran learned that the default branch of {widget} is \"main\", but the \
+                         folder has no local branch of that name, so project \
+                         \"added-single-branch\" leads with \"feature\", the branch the folder \
+                         has checked out."
+                    )),
+                )),
+            ),
+            ("added-detached", "detached", true, Ok(("", "main", None))),
+            (
+                "added-detached-and-guessing",
+                "detached no-head",
+                false,
+                Ok((
+                    "",
+                    "main",
+                    Some(format!(
+                        "yaran could not learn the default branch of {widget} from its remote, \
+                         so project \"added-detached-and-guessing\" leads with \"main\", \
+                         because the folder has no branch checked out."
+                    )),
+                )),
+            ),
+            (
+                "added-detached-with-no-branch-to-lead",
+                "detached no-main",
+                true,
+                Err(
+                    "has no branch to lead a project with: HEAD is detached and the folder has \
+                     no local branch named main, the remote's default. Check a branch out in \
+                     it, then use New agent from PR again. Nothing was added.",
+                ),
+            ),
+            (
+                "added-unborn",
+                "unborn",
+                true,
+                Err(
+                    "has no commits yet, so there is no branch to lead a project with. Make a \
+                     first commit in it, then use New agent from PR again. Nothing was added.",
+                ),
+            ),
+        ]
+    }
+
+    /// The project must lead with a branch the folder really has: the
+    /// remote's default only when it exists there, else the branch checked
+    /// out, else `main` when that exists, else nothing is added. A folder
+    /// with no commits has no branch to lead with at all.
+    fn check_the_branch_an_added_checkout_leads_with(fixture: &AddFixture) {
+        let widget = "github.com/acme/widget";
+        let cases = added_checkout_leading_branches(widget);
+        for (name, shape, reaches_remote, outcome) in cases {
+            let (mut engine, _engine_dir) = test_engine();
+            let folder = checkout_of_widget(&fixture.root, name, &fixture.pr_remote, shape);
+            serve_pull_requests(
+                &mut engine,
+                &fixture.gh,
+                if reaches_remote {
+                    &fixture.pr_remote
+                } else {
+                    &fixture.nowhere
+                },
+            );
+            engine
+                .apply_wire(pull_request_add_command("acme/widget", &folder, None))
+                .unwrap_or_else(|refused| panic!("{name}: {refused}"));
+            let chain = drive_clone_chain(&mut engine);
+            let warnings: Vec<&str> = chain
+                .statuses
+                .iter()
+                .filter(|s| s.tone == "warning")
+                .map(|s| s.message.as_str())
+                .collect();
+            match outcome {
+                Ok((current, leading, warning)) => {
+                    let project = engine
+                        .projects
+                        .iter()
+                        .find(|p| Path::new(&p.path) == folder)
+                        .unwrap_or_else(|| panic!("{name}: not added: {:?}", chain.statuses));
+                    assert_eq!(project.current_branch, current, "{name}");
+                    assert_eq!(project.leading_branch.as_deref(), Some(leading), "{name}");
+                    assert_eq!(
+                        warnings,
+                        warning.iter().map(String::as_str).collect::<Vec<_>>()
+                    );
+                }
+                Err(ending) => {
+                    let ended = self::finals(&chain);
+                    assert_eq!(ended.len(), 1, "{name}: {ended:?}");
+                    assert_eq!(ended[0].tone, "error", "{name}");
+                    assert!(
+                        ended[0].message.starts_with(&folder.display().to_string())
+                            && ended[0].message.ends_with(ending),
+                        "{name}: {}",
+                        ended[0].message
+                    );
+                    assert!(engine.projects.is_empty(), "{name}");
+                    assert!(
+                        !engine.is_in_flight(&InFlightKey::CloneRepository(widget.to_string())),
+                        "{name}: the repository stayed held"
+                    );
+                }
+            }
+            assert_eq!(
+                std::fs::read_to_string(folder.join("notes.txt")).unwrap(),
+                "mine",
+                "{name}"
+            );
+        }
+    }
+
+    /// An agent that cannot start after the clone and the add: the one
+    /// final says the clone is on disk, the project was added, and why the
+    /// agent is missing.
+    fn check_a_stuck_agent_after_a_clone(engine: &mut Engine, tmp: &Path, remote: &Path) {
+        let provider = engine.config.default_provider();
+        engine
+            .config
+            .providers
+            .commands
+            .get_mut(provider.as_str())
+            .expect("the default provider is configured")
+            .command = "no-such-provider".to_string();
+        let broken = std::fs::canonicalize(tmp).unwrap().join("broken");
+        engine
+            .apply_wire(clone_command(remote, &broken, "stuck-agent"))
+            .expect("dispatch the clone");
+        let chain = drive_clone_chain(engine);
+        let ended = self::finals(&chain);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0].tone, "error", "{}", ended[0].message);
+        for needle in ["Cloned", "added project \"broken\"", "\"stuck-agent\""] {
+            assert!(ended[0].message.contains(needle), "{}", ended[0].message);
+        }
+        assert!(engine.projects.iter().any(|p| Path::new(&p.path) == broken));
     }
 
     #[test]
@@ -9116,6 +11705,73 @@ mod tests {
                 .any(|s| s.tone == "error" && s.message.contains("no identity")),
             "the error final must still be emitted, got {statuses:?}"
         );
+    }
+
+    /// The names in a status's parts, in order.
+    fn chipped_names(status: &WireStatus) -> Vec<&str> {
+        status
+            .segments
+            .iter()
+            .flatten()
+            .filter_map(|segment| match segment {
+                ProseSegment::Name { name, .. } => Some(name.as_str()),
+                ProseSegment::Text(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_add_after_checkout_success_chips_the_branch_and_the_project() {
+        let (mut engine, _tmp) = test_engine();
+        let statuses =
+            engine.drive_add_project_followup(&EventReaction::AddProjectAfterBranchCheckout {
+                path: "/checked".to_string(),
+                name: "Checked".to_string(),
+                target_branch: "develop".to_string(),
+                leading_branch: "develop".to_string(),
+                status_op_id: None,
+            });
+        let info = statuses.iter().find(|s| s.tone == "info").expect("info");
+        assert_eq!(
+            info.message,
+            "Checked out \"develop\" and added project \"Checked\" to the workspace."
+        );
+        assert_eq!(chipped_names(info), ["develop", "Checked"]);
+    }
+
+    #[test]
+    fn the_add_project_busy_texts_chip_the_path() {
+        let plain = tempfile::tempdir().expect("tempdir");
+        let path = plain.path().to_string_lossy().into_owned();
+        let (mut engine, _tmp) = test_engine();
+        let busy = engine
+            .apply_wire(WireCommand::AddProjectInitRepo {
+                path: path.clone(),
+                name: "Adopted".to_string(),
+            })
+            .expect("dispatch init-repo add")
+            .status
+            .expect("a keyed busy status");
+        assert_eq!(chipped_names(&busy).len(), 1, "{busy:?}");
+        assert!(
+            busy.message
+                .starts_with("Initializing a git repository in /")
+        );
+        let _ = drive_add_project_chain(&mut engine);
+
+        let repo = init_unborn_repo_dir();
+        let busy = engine
+            .apply_wire(WireCommand::AddProjectCreateInitialCommit {
+                path: repo.path().to_string_lossy().into_owned(),
+                name: "Demo".to_string(),
+                checked: None,
+            })
+            .expect("dispatch initial-commit add")
+            .status
+            .expect("a keyed busy status");
+        assert_eq!(chipped_names(&busy).len(), 1, "{busy:?}");
+        assert!(busy.message.starts_with("Creating an initial commit in /"));
+        let _ = drive_add_project_chain(&mut engine);
     }
 
     #[test]
@@ -9210,6 +11866,15 @@ mod tests {
         // registered, the status must carry the engine's honest "already in the
         // workspace" text, not the losing caller's fabricated success narrative.
         let (mut engine, _tmp) = test_engine();
+        engine.operations.open(
+            "op-add",
+            crate::operations::OperationKind::ProjectAdd,
+            crate::operations::OperationPolicy {
+                unknown_after: std::time::Duration::from_secs(60),
+                retention: std::time::Duration::from_secs(60),
+            },
+            std::time::Instant::now(),
+        );
         engine
             .apply(Command::PersistProject {
                 action: Box::new(crate::worker::ProjectPersistenceAction::Add {
@@ -9230,10 +11895,19 @@ mod tests {
                     .to_string()
                     .into(),
             add_failed_prefix: "Created the initial commit but couldn't add the project",
-            status_op_id: &None,
+            status_op_id: &Some("op-add".to_string()),
         });
 
         assert_eq!(engine.projects.len(), 1, "no duplicate project");
+        assert_eq!(
+            engine
+                .operations
+                .view("op-add", std::time::Instant::now())
+                .unwrap()
+                .created,
+            Vec::<String>::new(),
+            "an add that found the project already there created nothing"
+        );
         let msg = &statuses.last().expect("a status").message;
         assert!(
             msg.contains("already in the workspace"),
@@ -9262,6 +11936,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCreateInitialCommit {
                 path: repo.path().to_string_lossy().into_owned(),
                 name: "Demo".to_string(),
+                checked: None,
             })
             .expect("dispatch");
         assert!(
@@ -9293,12 +11968,13 @@ mod tests {
         let res = engine.apply_wire(WireCommand::AddProjectCheckoutDefault {
             path: repo.path().to_string_lossy().into_owned(),
             name: "Demo".to_string(),
+            checked: None,
         });
         assert!(
             res.is_err(),
             "checkout-default of a commit-less repo must be rejected, not registered"
         );
-        assert!(engine.projects.is_empty());
+        assert_eq!(engine.projects, []);
     }
 
     /// The web half of fork
@@ -9319,6 +11995,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCheckoutDefault {
                 path: work.to_string_lossy().into_owned(),
                 name: "Demo".to_string(),
+                checked: None,
             })
             .expect_err("a shared registration never switches the checkout");
         assert!(format!("{err:#}").contains("shared mode"), "{err:#}");
@@ -9338,6 +12015,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCheckoutDefault {
                 path: work.to_string_lossy().into_owned(),
                 name: "Demo".to_string(),
+                checked: None,
             })
             .expect("add-checkout");
         let busy = outcome.status.expect("busy status");
@@ -9387,9 +12065,8 @@ mod tests {
         // optimistic "added project" success. A dead writer fails every save.
         let (_origin, _clone, work) = clone_repo_on_feature_branch("main");
         let (mut engine, _tmp) = test_engine();
-        engine.config_writer = crate::config_queue::ConfigWriteQueue::with_dead_writer(
-            engine.paths.config_path.clone(),
-        );
+        engine.config_writer =
+            crate::config_queue::ConfigWriteQueue::with_dead_writer(&engine.paths.config_path);
 
         // The switch worker still runs (it does not touch config), so the
         // checkout busy status is produced as usual.
@@ -9397,6 +12074,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCheckoutDefault {
                 path: work.to_string_lossy().into_owned(),
                 name: "Demo".to_string(),
+                checked: None,
             })
             .expect("add-checkout");
 
@@ -9423,14 +12101,1228 @@ mod tests {
         );
         // The inline rollback undid both the in-memory list and the SQLite row,
         // so nothing persisted.
-        assert!(engine.projects.is_empty());
-        assert!(
-            engine
-                .session_store
-                .load_projects()
-                .expect("load projects")
-                .is_empty()
+        assert_eq!(engine.projects, []);
+        assert_eq!(
+            engine.session_store.load_projects().expect("load projects"),
+            Vec::<crate::config::ProjectConfig>::new()
         );
+
+        // A clone whose add fails keeps the clone, creates no agent, and says so.
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = crate::git::test_support::bare_remote_with_commit(tmp.path());
+        let dest = std::fs::canonicalize(tmp.path()).unwrap().join("cloned");
+        engine
+            .apply_wire(clone_command(&remote, &dest, "agent"))
+            .expect("dispatch the clone");
+        let chain = drive_clone_chain(&mut engine);
+        let finals = finals(&chain);
+        assert_eq!(finals.len(), 1, "{finals:?}");
+        assert_eq!(finals[0].tone, "warning");
+        for needle in [
+            "couldn't add it as a project",
+            "was rolled back",
+            "still there",
+        ] {
+            assert!(finals[0].message.contains(needle), "{}", finals[0].message);
+        }
+        assert!(dest.join(".git").exists(), "the clone was not kept");
+        assert_eq!(engine.projects, []);
+        assert!(engine.sessions.is_empty());
+    }
+
+    #[test]
+    fn each_clone_check_refuses_with_its_own_sentence_before_git_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let fixture = refusal_fixture(&root);
+        for case in plain_clone_refusals(&fixture)
+            .into_iter()
+            .chain(pull_request_clone_refusals(&fixture))
+            .chain(pull_request_add_refusals(&fixture))
+            .chain(unagreed_review_copy_refusals(&fixture))
+        {
+            check_a_refused_clone(&fixture, case);
+        }
+        check_a_second_pull_request_clone_is_refused(&fixture);
+        check_a_pull_request_clone_needs_github(&fixture);
+    }
+
+    /// The folders, remote and stand-in `gh` the clone refusals are judged
+    /// against: a project that is already a checkout of acme/matched, and a
+    /// `gh` that finds a pull request in every repository but acme/gone, whose
+    /// pull request names a branch no agent can be called in acme/odd.
+    struct RefusalFixture {
+        root: PathBuf,
+        remote: PathBuf,
+        url: String,
+        dest: PathBuf,
+        full: PathBuf,
+        linked: PathBuf,
+        project: PathBuf,
+        spelled: PathBuf,
+        checkout: PathBuf,
+        gh: PathBuf,
+        pr_dest: PathBuf,
+    }
+
+    /// The [`RefusalFixture`] made in `root`.
+    fn refusal_fixture(root: &Path) -> RefusalFixture {
+        let remote = crate::git::test_support::bare_remote_with_commit(root);
+        let dest = root.join("dest");
+        let full = root.join("full");
+        std::fs::create_dir(&full).unwrap();
+        std::fs::write(full.join("left-behind"), "x").unwrap();
+        let linked = root.join("linked");
+        std::fs::create_dir(root.join("empty")).unwrap();
+        std::os::unix::fs::symlink(root.join("empty"), &linked).unwrap();
+        let project = root.join("project");
+        let spelled = root.join("spelled");
+        std::fs::create_dir(&spelled).unwrap();
+        std::fs::write(spelled.join("README"), "x").unwrap();
+        std::os::unix::fs::symlink(root, root.join("alias")).unwrap();
+        let url = remote.to_string_lossy().into_owned();
+        let checkout = root.join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/matched.git",
+            ],
+        ] {
+            let out = crate::git::test_support::git_command()
+                .arg("-C")
+                .arg(&checkout)
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        }
+        let gh = crate::gh::probe_test_support::stand_in_gh(
+            root,
+            &format!(
+                "case \"$*\" in\n  \"repo view\"*) {} ;;\n  \
+                 *acme/gone*) echo 'no pull requests found' >&2; exit 1 ;;\n  \
+                 *acme/odd*) {} ;;\n  *) {} ;;\nesac",
+                gh_prints(r#"{"defaultBranchRef":{"name":"feature"}}"#),
+                gh_prints(&pull_request_json("not a name")),
+                gh_prints(&pull_request_json("feature")),
+            ),
+        );
+        let pr_dest = root.join("pr-dest");
+        RefusalFixture {
+            root: root.to_path_buf(),
+            remote,
+            url,
+            dest,
+            full,
+            linked,
+            project,
+            spelled,
+            checkout,
+            gh,
+            pr_dest,
+        }
+    }
+
+    /// A plain clone of `url` into `path` for the agent `name`.
+    fn clone_request(url: &str, path: &Path, name: Option<&str>) -> WireCommand {
+        WireCommand::CloneProject {
+            url: url.to_string(),
+            path: path.to_string_lossy().into_owned(),
+            agent_name: name.map(str::to_string),
+            random_name: false,
+            pull_request: None,
+            add_existing: false,
+            review_copy: crate::clone_project::UpfrontReviewCopy::default(),
+        }
+    }
+
+    /// The plain clones refused before git runs: (what, request, destination it
+    /// must leave without a clone, words the refusal carries).
+    fn plain_clone_refusals(
+        fixture: &RefusalFixture,
+    ) -> Vec<(&'static str, WireCommand, &Path, &'static [&'static str])> {
+        let RefusalFixture {
+            root,
+            url,
+            dest,
+            full,
+            linked,
+            project,
+            spelled,
+            ..
+        } = fixture;
+        vec![
+            (
+                "an empty address",
+                clone_request("  ", dest, Some("a")),
+                dest,
+                &["address"],
+            ),
+            (
+                "an agent name git will not take",
+                clone_request(url, dest, Some("not a name")),
+                dest,
+                &["Invalid agent name", "not a name"],
+            ),
+            (
+                "a name only git's branch form refuses",
+                clone_request(url, dest, Some("HEAD")),
+                dest,
+                &["Invalid agent name", "HEAD"],
+            ),
+            (
+                "a relative destination",
+                clone_request(url, Path::new("relative/dest"), Some("a")),
+                dest,
+                &["isn't an absolute path"],
+            ),
+            (
+                "a destination whose parent is missing",
+                clone_request(url, &root.join("missing/dest"), Some("a")),
+                dest,
+                &["doesn't exist"],
+            ),
+            (
+                "a destination that is not an empty folder",
+                clone_request(url, full, Some("a")),
+                full,
+                &["isn't an empty folder", "interrupted"],
+            ),
+            (
+                "a destination that is a symbolic link",
+                clone_request(url, linked, Some("a")),
+                linked,
+                &["symbolic link"],
+            ),
+            (
+                "a destination that is already a project",
+                clone_request(url, project, Some("a")),
+                project,
+                &["already a project"],
+            ),
+            (
+                "a destination that is a project saved under another spelling",
+                clone_request(url, spelled, Some("a")),
+                spelled,
+                &["already a project"],
+            ),
+        ]
+    }
+
+    /// The pull request clones refused before git runs, as
+    /// [`plain_clone_refusals`] lists them.
+    fn pull_request_clone_refusals(
+        fixture: &RefusalFixture,
+    ) -> Vec<(&'static str, WireCommand, &Path, &'static [&'static str])> {
+        let pr_dest = &fixture.pr_dest;
+        vec![
+            (
+                "a pull request gh cannot find",
+                pull_request_clone_command("acme/gone", pr_dest, None),
+                pr_dest,
+                &["no pull requests found", "Nothing was cloned"],
+            ),
+            (
+                "a head branch that is no agent name, with no name typed",
+                pull_request_clone_command("acme/odd", pr_dest, None),
+                pr_dest,
+                &[
+                    "not a name",
+                    "not a usable agent name",
+                    "Nothing was cloned",
+                ],
+            ),
+            (
+                "a project that became a checkout of the repository",
+                pull_request_clone_command("acme/matched", pr_dest, None),
+                pr_dest,
+                &[
+                    "p3-name",
+                    "is already a checkout of",
+                    "github.com/acme/matched",
+                    "did not clone it again",
+                ],
+            ),
+        ]
+    }
+
+    /// The adds of a checkout for a pull request refused before git runs, as
+    /// [`plain_clone_refusals`] lists them.
+    fn pull_request_add_refusals(
+        fixture: &RefusalFixture,
+    ) -> Vec<(&'static str, WireCommand, &Path, &'static [&'static str])> {
+        let RefusalFixture {
+            url, dest, full, ..
+        } = fixture;
+        vec![
+            (
+                "an add with no pull request",
+                WireCommand::CloneProject {
+                    url: url.clone(),
+                    path: dest.to_string_lossy().into_owned(),
+                    agent_name: Some("a".to_string()),
+                    random_name: false,
+                    pull_request: None,
+                    add_existing: true,
+                    review_copy: crate::clone_project::UpfrontReviewCopy::default(),
+                },
+                dest,
+                &["add_existing needs a pull request."],
+            ),
+            (
+                "an add of a pull request gh cannot find",
+                pull_request_add_command("acme/gone", full, None),
+                full,
+                &["no pull requests found", "Nothing was added"],
+            ),
+            (
+                "an add of a project that became a checkout of the repository",
+                pull_request_add_command("acme/matched", full, None),
+                full,
+                &[
+                    "p3-name",
+                    "is already a checkout of",
+                    "did not add it again",
+                ],
+            ),
+            (
+                "an add of a folder that holds something else",
+                pull_request_add_command("acme/widget", full, None),
+                full,
+                &[
+                    "already holds something that isn't a checkout of github.com/acme/widget",
+                    "Nothing was added",
+                ],
+            ),
+        ]
+    }
+
+    /// The pull request clones refused before git runs for a review copy
+    /// nobody agreed to, as [`plain_clone_refusals`] lists them.
+    fn unagreed_review_copy_refusals(
+        fixture: &RefusalFixture,
+    ) -> Vec<(&'static str, WireCommand, &Path, &'static [&'static str])> {
+        let pr_dest = &fixture.pr_dest;
+        vec![
+            // The branch the clone would check out in the project folder is
+            // the pull request's own, so the agent needs a copy: refused before
+            // anything is cloned unless the agreement was for that reason.
+            (
+                "a clone that needs a review copy nobody agreed to",
+                pull_request_clone_command("acme/widget", pr_dest, None),
+                pr_dest,
+                &[
+                    "Branch \"feature\" will be checked out in the project folder yaran clones into.",
+                    "pushes from this agent would land on \"feature-review\"",
+                    "tick Create a review copy and press Clone and create again.",
+                    "Nothing was cloned.",
+                ],
+            ),
+            // A name spelled like a review copy of the branch is a copy all
+            // the same, and only an agreement for that reason covers it.
+            (
+                "a clone named like a review copy of the pull request's branch",
+                pull_request_clone_command("acme/widget", pr_dest, Some("feature-review-2")),
+                pr_dest,
+                &[
+                    "The name \"feature-review-2\" is a review copy of branch \"feature\".",
+                    "Nothing was cloned.",
+                ],
+            ),
+            (
+                "a clone that needs a review copy, agreed to for another copy name",
+                agreeing_to_a_copy_for(
+                    pull_request_clone_command("acme/widget", pr_dest, None),
+                    "busy",
+                    Some("elsewhere-review"),
+                ),
+                pr_dest,
+                &["on \"feature-review\"", "Nothing was cloned."],
+            ),
+            (
+                "a clone that needs a review copy, agreed to for another reason",
+                agreeing_to_a_copy_for(
+                    pull_request_clone_command("acme/widget", pr_dest, None),
+                    "diverged",
+                    None,
+                ),
+                pr_dest,
+                &[
+                    "will be checked out in the project folder",
+                    "Nothing was cloned.",
+                ],
+            ),
+        ]
+    }
+
+    /// One refused clone: it is refused with its words, before git runs and
+    /// before any folder appears.
+    fn check_a_refused_clone(fixture: &RefusalFixture, case: (&str, WireCommand, &Path, &[&str])) {
+        let (what, command, untouched, needles) = case;
+        let existed = untouched.exists();
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, &fixture.gh, &fixture.remote);
+        engine
+            .projects
+            .push(crate::engine::test_support::sample_project(
+                "p3",
+                &fixture.checkout.to_string_lossy(),
+            ));
+        engine
+            .projects
+            .push(crate::engine::test_support::sample_project(
+                "p1",
+                &fixture.project.to_string_lossy(),
+            ));
+        engine
+            .projects
+            .push(crate::engine::test_support::sample_project(
+                "p2",
+                &fixture.root.join("alias/spelled").to_string_lossy(),
+            ));
+        // Refused at once, or by the worker before it runs git.
+        let mut asked = None;
+        let sentence = if let Err(refused) = engine.apply_wire(command) {
+            refused.to_string()
+        } else {
+            let chain = drive_clone_chain(&mut engine);
+            let finals = finals(&chain);
+            assert_eq!(finals.len(), 1, "{what}: {finals:?}");
+            assert_eq!(finals[0].tone, "error", "{what}");
+            asked = finals[0].ask.clone();
+            finals[0].message.clone()
+        };
+        for needle in needles {
+            assert!(sentence.contains(needle), "{what}: {sentence}");
+        }
+        // A review copy nobody agreed to puts its question to the surface,
+        // which has no project to name yet.
+        let question = match what {
+            "a clone that needs a review copy nobody agreed to"
+            | "a clone that needs a review copy, agreed to for another copy name"
+            | "a clone that needs a review copy, agreed to for another reason" => {
+                Some("busy:feature-review")
+            }
+            "a clone named like a review copy of the pull request's branch" => {
+                Some("typed:feature-review-2")
+            }
+            _ => None,
+        };
+        match (question, asked) {
+            (Some(warned), Some(crate::status_text::StatusAsk::ReviewCopy(ask))) => {
+                assert_eq!(ask.warned, warned, "{what}");
+                assert_eq!(ask.project_id, None, "{what}");
+                assert_eq!(
+                    ask.pull_request.map(|t| (t.owner_repo, t.number)),
+                    Some(("acme/widget".to_string(), 7)),
+                    "{what}"
+                );
+            }
+            (None, None) => {}
+            (question, asked) => panic!("{what}: wanted {question:?}, got {asked:?}"),
+        }
+        assert!(!untouched.join(".git").exists(), "{what}: git ran");
+        assert_eq!(untouched.exists(), existed, "{what}: a folder appeared");
+        assert_eq!(engine.projects.len(), 3, "{what}");
+        assert!(engine.clones.pending.is_empty(), "{what}");
+    }
+
+    /// A second pull request clone of the repository while one runs is
+    /// refused at once, and leaves the first one's keys alone.
+    fn check_a_second_pull_request_clone_is_refused(fixture: &RefusalFixture) {
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, &fixture.gh, &fixture.remote);
+        let first = fixture.root.join("first");
+        let second = fixture.root.join("second");
+        engine
+            .apply_wire(pull_request_clone_command("acme/widget", &first, None))
+            .expect("the first clone is accepted");
+        let refused = engine
+            .apply_wire(pull_request_clone_command("Acme/Widget", &second, None))
+            .expect_err("a second clone of the repository is refused")
+            .to_string();
+        for needle in [
+            "already cloning",
+            "github.com/acme/widget",
+            "for a new agent",
+            "New agent from PR",
+        ] {
+            assert!(refused.contains(needle), "{refused}");
+        }
+        assert!(!second.exists());
+        assert!(engine.is_in_flight(&InFlightKey::Clone(first.clone())));
+        assert!(engine.is_in_flight(&InFlightKey::CloneRepository(
+            "github.com/acme/widget".to_string()
+        )));
+        assert!(!engine.is_in_flight(&InFlightKey::Clone(second)));
+        drive_clone_chain(&mut engine);
+    }
+
+    /// A pull request clone needs GitHub integration and a host gh is signed
+    /// in to; an ordinary clone needs neither.
+    fn check_a_pull_request_clone_needs_github(fixture: &RefusalFixture) {
+        let first = fixture.root.join("first");
+        let (mut engine, _engine_dir) = test_engine();
+        let refused = engine
+            .apply_wire(pull_request_clone_command("acme/widget", &first, None))
+            .expect_err("integration is off")
+            .to_string();
+        assert!(refused.contains("requires GitHub integration"), "{refused}");
+        serve_pull_requests(&mut engine, &fixture.gh, &fixture.remote);
+        engine.set_github_host_policy(crate::gh::GithubHostPolicy::DenyAll);
+        let refused = engine
+            .apply_wire(pull_request_clone_command("acme/widget", &first, None))
+            .expect_err("gh is signed in to no host")
+            .to_string();
+        assert!(refused.contains("not signed in to github.com"), "{refused}");
+        assert!(!engine.is_in_flight(&InFlightKey::Clone(first)));
+    }
+
+    #[test]
+    fn a_clone_that_stops_short_of_a_project_adds_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let empty = crate::git::test_support::empty_bare_remote(&root);
+        let broken_root = root.join("broken");
+        std::fs::create_dir(&broken_root).unwrap();
+        let broken = crate::git::test_support::bare_remote_with_missing_head(&broken_root);
+        // (what, remote, whether the clone stays, tone, words the final carries)
+        let cases: Vec<(&str, PathBuf, bool, &str, &[&str])> = vec![
+            (
+                "an address that does not exist",
+                root.join("nothing-here.git"),
+                false,
+                "error",
+                &["Couldn't clone", "Nothing was added"],
+            ),
+            (
+                "an empty remote",
+                empty,
+                true,
+                "warning",
+                &["no commits yet", "still there", "Add project"],
+            ),
+            (
+                "a remote whose default branch is broken",
+                broken,
+                true,
+                "warning",
+                &[
+                    "default branch could not be checked out",
+                    "still there",
+                    "Add project",
+                ],
+            ),
+        ];
+        for (index, (what, remote, kept, tone, needles)) in cases.into_iter().enumerate() {
+            let (mut engine, _engine_dir) = test_engine();
+            let dest = root.join(format!("dest-{index}"));
+            engine
+                .apply_wire(clone_command(&remote, &dest, "agent"))
+                .expect("dispatch the clone");
+            assert_eq!(
+                engine.worktree_ops().holders(&dest),
+                vec![crate::worktree_ops::WorktreeOpKind::CloneRepository],
+                "{what}: the clone does not hold its destination"
+            );
+            let chain = drive_clone_chain(&mut engine);
+            assert!(
+                engine.worktree_ops().holders(&dest).is_empty(),
+                "{what}: the clone still holds its destination"
+            );
+            let finals = finals(&chain);
+            assert_eq!(finals.len(), 1, "{what}: {finals:?}");
+            assert_eq!(finals[0].tone, tone, "{what}: {}", finals[0].message);
+            for needle in needles {
+                assert!(
+                    finals[0].message.contains(needle),
+                    "{what}: {}",
+                    finals[0].message
+                );
+            }
+            assert_eq!(dest.join(".git").exists(), kept, "{what}");
+            if !kept {
+                assert!(!dest.exists(), "{what}: a folder was left behind");
+            }
+            assert!(engine.projects.is_empty(), "{what}");
+            assert!(engine.sessions.is_empty(), "{what}");
+        }
+
+        check_a_panicked_clone_frees_its_destination(&root);
+        check_an_ssh_clone_says_how_to_reach_the_host(&root);
+    }
+
+    /// A worker that panicked sends the failure its guard builds; that frees
+    /// the destination the same way.
+    fn check_a_panicked_clone_frees_its_destination(root: &Path) {
+        let (mut engine, _engine_dir) = test_engine();
+        let dest = root.join("dest-panicked");
+        let key = InFlightKey::Clone(dest.clone());
+        assert!(engine.mark_in_flight(key.clone()));
+        engine
+            .hold_path_for_in_flight(
+                &key,
+                &dest,
+                crate::worktree_ops::WorktreeOpKind::CloneRepository,
+            )
+            .unwrap();
+        engine.process_worker_event(WorkerEvent::RepositoryCloned {
+            status_op_id: None,
+            path: dest.clone(),
+            agent_name: "agent".to_string(),
+            repository_key: None,
+            mode: crate::clone_project::CloneMode::Clone,
+            result: Err(crate::clone_project::CloneOutcome::Failed(
+                "the worker stopped".into(),
+            )),
+        });
+        assert_eq!(
+            engine.worktree_ops().holders(&dest),
+            Vec::<crate::worktree_ops::WorktreeOpKind>::new()
+        );
+        assert!(!engine.is_in_flight(&key));
+    }
+
+    /// A pull request clone over ssh that git cannot finish also says how
+    /// to make the first contact with the host from a terminal.
+    fn check_an_ssh_clone_says_how_to_reach_the_host(root: &Path) {
+        let (mut engine, _engine_dir) = test_engine();
+        let gh = crate::gh::probe_test_support::stand_in_gh(
+            root,
+            &gh_prints(&pull_request_json("feature")),
+        );
+        serve_pull_requests(&mut engine, &gh, &root.join("nothing-here.git"));
+        engine.clones.git_env[2].1 = "git@github.com:acme/widget.git".to_string();
+        engine.set_github_git_protocols(
+            [("github.com".to_string(), crate::gh::GitProtocol::Ssh)].into(),
+        );
+        let dest = root.join("dest-ssh");
+        engine
+            .apply_wire(pull_request_clone_command("acme/widget", &dest, None))
+            .expect("dispatch the pull request clone");
+        let chain = drive_clone_chain(&mut engine);
+        let ended = self::finals(&chain);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        for needle in [
+            "Couldn't clone git@github.com:acme/widget.git",
+            "first time this machine talks to github.com over SSH",
+            "(ssh -T git@github.com)",
+        ] {
+            assert!(ended[0].message.contains(needle), "{}", ended[0].message);
+        }
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn an_agent_name_taken_in_the_clone_adds_the_project_and_no_agent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let remote = crate::git::test_support::bare_remote_with_commit(&root);
+        for name in ["feature", "main"] {
+            let (mut engine, _engine_dir) = test_engine();
+            let dest = root.join(format!("dest-{name}"));
+            engine
+                .apply_wire(clone_command(&remote, &dest, name))
+                .expect("dispatch the clone");
+            let chain = drive_clone_chain(&mut engine);
+            let finals = finals(&chain);
+            assert_eq!(finals.len(), 1, "{name}: {finals:?}");
+            assert_eq!(finals[0].tone, "warning", "{name}");
+            for needle in [name, "already exists", "New agent"] {
+                assert!(
+                    finals[0].message.contains(needle),
+                    "{name}: {}",
+                    finals[0].message
+                );
+            }
+            assert_eq!(engine.projects.len(), 1, "{name}");
+            assert!(engine.sessions.is_empty(), "{name}");
+        }
+
+        check_a_late_branch_is_refused_by_the_create(&root, &remote);
+        check_a_pull_request_head_nobody_serves(&root, &remote);
+        let gh = crate::gh::probe_test_support::stand_in_gh(
+            &root,
+            &gh_prints(&pull_request_json("main")),
+        );
+        let (pr_remote, _) = remote_with_pull_request(&root.join("with-pr"));
+        check_a_checked_out_pull_request_branch_asks_for_a_copy(&root, &gh, &pr_remote);
+        std::fs::create_dir(root.join("with-default")).unwrap();
+        let gh_default = gh_with_default_branch(&root.join("with-default"), "main", "main");
+        check_an_agreed_copy_with_a_known_default(&root, &gh_default, &pr_remote);
+        check_a_held_checkout_needs_a_copy(&root, &pr_remote);
+        let gh_dir = root.join("add-gh");
+        std::fs::create_dir(&gh_dir).unwrap();
+        let gh_add = crate::gh::probe_test_support::stand_in_gh(
+            &gh_dir,
+            &gh_prints(&pull_request_json("pr-branch")),
+        );
+        check_a_folder_that_cannot_be_a_project(&root, &gh_add, &remote);
+        check_a_plain_and_a_pull_request_clone_race(&root, &gh_default, &pr_remote);
+        check_an_add_race_names_the_add(&root, &gh_add, &remote);
+    }
+
+    /// A branch that appears in the clone after the clone's own look is
+    /// refused by the create itself, never attached to, in the clone's words.
+    fn check_a_late_branch_is_refused_by_the_create(root: &Path, remote: &Path) {
+        let (mut engine, _engine_dir) = test_engine();
+        let dest = root.join("dest-late");
+        engine
+            .apply_wire(clone_command(remote, &dest, "feature"))
+            .expect("dispatch the clone");
+        let chain = drive_clone_chain_with(&mut engine, |reaction| {
+            if let EventReaction::AddProjectAfterClone(done) = reaction {
+                done.cloned.name_taken = false;
+            }
+        });
+        let finals = finals(&chain);
+        assert_eq!(finals.len(), 1, "{finals:?}");
+        assert_eq!(finals[0].tone, "error", "{}", finals[0].message);
+        for needle in ["Cloned", "\"feature\"", "already exists", "New agent"] {
+            assert!(finals[0].message.contains(needle), "{}", finals[0].message);
+        }
+        assert_eq!(engine.projects.len(), 1);
+        assert!(
+            engine.sessions.is_empty(),
+            "the create attached to the branch"
+        );
+    }
+
+    /// A pull request whose head branch the clone does not have and whose
+    /// head the remote does not serve: the clone and the project stay, no
+    /// agent is made, the final names the project and the agent, and the
+    /// repository is free for the next request.
+    fn check_a_pull_request_head_nobody_serves(root: &Path, remote: &Path) {
+        let (mut engine, _engine_dir) = test_engine();
+        let gh = crate::gh::probe_test_support::stand_in_gh(
+            root,
+            &gh_prints(&pull_request_json("ghost-branch")),
+        );
+        serve_pull_requests(&mut engine, &gh, remote);
+        let dest = root.join("dest-pull-request");
+        engine
+            .apply_wire(pull_request_clone_command("acme/widget", &dest, None))
+            .expect("dispatch the pull request clone");
+        let chain = drive_clone_chain(&mut engine);
+        let ended = self::finals(&chain);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0].tone, "error", "{}", ended[0].message);
+        assert!(
+            ended[0].message.starts_with("Cloned"),
+            "{}",
+            ended[0].message
+        );
+        for needle in ["\"dest-pull-request\"", "\"ghost-branch\"", "PR #7"] {
+            assert!(ended[0].message.contains(needle), "{}", ended[0].message);
+        }
+        assert_eq!(engine.projects.len(), 1);
+        assert!(engine.sessions.is_empty());
+        assert!(dest.join(".git").exists(), "the clone was not kept");
+        assert!(!engine.is_in_flight(&InFlightKey::CloneRepository(
+            "github.com/acme/widget".to_string()
+        )));
+    }
+
+    /// A pull request whose branch is the one the clone has checked out
+    /// needs a review copy, and nothing before the clone could say so (this
+    /// `gh` cannot name the default branch), so the create refuses and asks
+    /// once the project exists. The project stays, the sentence says the
+    /// agent still needs an answer rather than naming a box the user cannot
+    /// see, and the question carries what a surface needs to reopen New
+    /// agent from PR for that project. An agreement given for another
+    /// reason does not cover this copy.
+    fn check_a_checked_out_pull_request_branch_asks_for_a_copy(
+        root: &Path,
+        gh: &Path,
+        pr_remote: &Path,
+    ) {
+        for (index, command) in [
+            pull_request_clone_command("acme/widget", &root.join("dest-checked-out-0"), None),
+            agreeing_to_a_copy_for(
+                pull_request_clone_command("acme/widget", &root.join("dest-checked-out-1"), None),
+                "diverged",
+                None,
+            ),
+            agreeing_to_a_copy_for(
+                pull_request_clone_command("acme/widget", &root.join("dest-checked-out-2"), None),
+                "busy",
+                Some("wrong-review"),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (mut engine, _engine_dir) = test_engine();
+            serve_pull_requests(&mut engine, gh, pr_remote);
+            let dest = root.join(format!("dest-checked-out-{index}"));
+            engine
+                .apply_wire(command)
+                .expect("dispatch the pull request clone");
+            let chain = drive_clone_chain(&mut engine);
+            let ended = self::finals(&chain);
+            assert_eq!(ended.len(), 1, "{ended:?}");
+            let Some(crate::status_text::StatusAsk::ReviewCopy(ask)) = &ended[0].ask else {
+                panic!("the question was lost: {:?}", ended[0]);
+            };
+            assert_eq!(engine.projects.len(), 1, "the project stays");
+            assert_eq!(
+                ask.project_id.as_deref(),
+                Some(engine.projects[0].id.as_str())
+            );
+            assert_eq!(
+                ask.pull_request,
+                Some(crate::pr_reference::PullRequestCloneTarget {
+                    host: "github.com".to_string(),
+                    owner_repo: "acme/widget".to_string(),
+                    number: 7,
+                })
+            );
+            assert!(
+                ask.warned.starts_with("busy:#7:main-review:"),
+                "{}",
+                ask.warned
+            );
+            assert_eq!(
+                ended[0].message,
+                format!(
+                    "Cloned https://github.com/acme/widget.git into {dest} and added project \
+                     \"dest-checked-out-{index}\". Agent \"main\" still needs your answer on a \
+                     review copy: Branch \"main\" is checked out in the project folder \"{dest}\". \
+                     Creating this agent from PR #7 needs a separate review copy on \
+                     \"main-review\", and pushes from this agent would land on \"main-review\", \
+                     not on the pull request. To go ahead anyway, use New agent from PR in \
+                     project \"dest-checked-out-{index}\" and tick Create a review copy.",
+                    dest = dest.display()
+                )
+            );
+            assert!(engine.sessions.is_empty());
+        }
+    }
+
+    /// The same pull request, with the default branch known before the
+    /// clone: the agreement that was asked for lets the clone end in the
+    /// agent on the copy, and the project still leads with the default.
+    fn check_an_agreed_copy_with_a_known_default(root: &Path, gh: &Path, pr_remote: &Path) {
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, gh, pr_remote);
+        let dest = root.join("dest-agreed");
+        engine
+            .apply_wire(agreeing_to_a_copy_for(
+                pull_request_clone_command("acme/widget", &dest, None),
+                "busy",
+                Some("main-review"),
+            ))
+            .expect("dispatch the agreed pull request clone");
+        drive_clone_chain(&mut engine);
+        assert_eq!(engine.projects.len(), 1);
+        assert_eq!(engine.projects[0].leading_branch.as_deref(), Some("main"));
+        let branches: Vec<_> = engine
+            .sessions
+            .iter()
+            .filter_map(|s| s.branch_name())
+            .collect();
+        assert_eq!(branches, vec!["main-review"]);
+    }
+
+    /// A checkout that has the pull request's branch out needs a copy, and
+    /// the folder says so before anything is added: refused without the
+    /// agreement, and with it the agent goes on the copy while the folder
+    /// keeps its branch.
+    fn check_a_held_checkout_needs_a_copy(root: &Path, pr_remote: &Path) {
+        let held_gh_dir = root.join("held-gh");
+        std::fs::create_dir(&held_gh_dir).unwrap();
+        let held_gh = crate::gh::probe_test_support::stand_in_gh(
+            &held_gh_dir,
+            &gh_prints(&pull_request_json("feature")),
+        );
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, &held_gh, pr_remote);
+        let folder = checkout_of_widget(root, "held-refused", pr_remote, "");
+        engine
+            .apply_wire(pull_request_add_command("acme/widget", &folder, None))
+            .expect("dispatch the add");
+        let chain = drive_clone_chain(&mut engine);
+        let ended = self::finals(&chain);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert!(
+            ended[0].message.starts_with(&format!(
+                "Branch \"feature\" is checked out in the project folder \"{}\".",
+                folder.display()
+            )) && ended[0].message.ends_with(
+                " To go ahead anyway, tick Create a review copy and press Add this folder as a \
+                 project again. Nothing was added.",
+            ),
+            "{}",
+            ended[0].message
+        );
+        assert!(engine.projects.is_empty() && engine.sessions.is_empty());
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, &held_gh, pr_remote);
+        let crowded = checkout_of_widget(root, "held-crowded", pr_remote, "");
+        for n in 1..=20 {
+            let name = if n == 1 {
+                "feature-review".to_string()
+            } else {
+                format!("feature-review-{n}")
+            };
+            let out = crate::git::test_support::git_command()
+                .arg("-C")
+                .arg(&crowded)
+                .args(["branch", &name])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
+        engine
+            .apply_wire(agreeing_to_a_copy_for(
+                pull_request_add_command("acme/widget", &crowded, None),
+                "busy",
+                Some("feature-review"),
+            ))
+            .expect("dispatch the add");
+        let chain = drive_clone_chain(&mut engine);
+        let ended = self::finals(&chain);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(
+            ended[0].message,
+            format!(
+                "Branch \"feature\" is checked out at \"{}\" and every name up to \
+                 \"feature-review-20\" is taken. Type another name for the agent from PR #7. \
+                 Nothing was added.",
+                crowded.display()
+            )
+        );
+        assert_eq!(engine.projects, []);
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, &held_gh, pr_remote);
+        let folder = checkout_of_widget(root, "held-agreed", pr_remote, "");
+        engine
+            .apply_wire(agreeing_to_a_copy_for(
+                pull_request_add_command("acme/widget", &folder, None),
+                "busy",
+                Some("feature-review"),
+            ))
+            .expect("dispatch the agreed add");
+        drive_clone_chain(&mut engine);
+        let branches: Vec<_> = engine
+            .sessions
+            .iter()
+            .filter_map(|s| s.branch_name())
+            .collect();
+        assert_eq!(branches, vec!["feature-review"]);
+        assert_eq!(engine.projects[0].current_branch, "feature");
+    }
+
+    /// A folder that cannot be registered as a project stays exactly as it
+    /// was, and the final says so without claiming a clone.
+    fn check_a_folder_that_cannot_be_a_project(root: &Path, gh_add: &Path, remote: &Path) {
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, gh_add, remote);
+        engine.config_writer =
+            crate::config_queue::ConfigWriteQueue::with_dead_writer(&engine.paths.config_path);
+        let folder = checkout_of_widget(root, "dest-add-fails", remote, "");
+        engine
+            .apply_wire(pull_request_add_command("acme/widget", &folder, None))
+            .expect("dispatch the add");
+        let chain = drive_clone_chain(&mut engine);
+        let ended = self::finals(&chain);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0].tone, "warning", "{}", ended[0].message);
+        assert!(ended[0].sticky, "{}", ended[0].message);
+        assert!(
+            ended[0]
+                .message
+                .starts_with(&format!("Couldn't add {} as a project: ", folder.display()))
+                && ended[0]
+                    .message
+                    .ends_with(" The folder is untouched, and no agent was created."),
+            "{}",
+            ended[0].message
+        );
+        assert!(engine.projects.is_empty() && engine.sessions.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(folder.join("notes.txt")).unwrap(),
+            "mine"
+        );
+        assert!(!engine.is_in_flight(&InFlightKey::CloneRepository(
+            "github.com/acme/widget".to_string()
+        )));
+    }
+
+    /// A plain clone of the same repository is refused while a pull request
+    /// clone of it runs, and the other way round.
+    fn check_a_plain_and_a_pull_request_clone_race(root: &Path, gh: &Path, pr_remote: &Path) {
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, gh, pr_remote);
+        let plain = |path: &Path| WireCommand::CloneProject {
+            url: "https://github.com/acme/widget.git".to_string(),
+            path: path.to_string_lossy().into_owned(),
+            agent_name: Some("agent".to_string()),
+            random_name: false,
+            pull_request: None,
+            add_existing: false,
+            review_copy: crate::clone_project::UpfrontReviewCopy::default(),
+        };
+        let (one, two) = (root.join("race-one"), root.join("race-two"));
+        engine
+            .apply_wire(pull_request_clone_command("acme/widget", &one, None))
+            .expect("the pull request clone is accepted");
+        let refused = engine
+            .apply_wire(plain(&two))
+            .expect_err("a plain clone of the same repository is refused")
+            .to_string();
+        assert_eq!(
+            refused,
+            "yaran is already cloning github.com/acme/widget for a new agent. Wait for it to \
+             finish, then try the clone again.",
+            "a plain clone is not told to use New agent from PR"
+        );
+        drive_clone_chain(&mut engine);
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, gh, pr_remote);
+        engine.apply_wire(plain(&one)).expect("accepted");
+        let refused = engine
+            .apply_wire(pull_request_clone_command("acme/widget", &two, None))
+            .expect_err("a pull request clone is refused while a plain one runs")
+            .to_string();
+        assert!(refused.contains("already cloning"), "{refused}");
+        drive_clone_chain(&mut engine);
+    }
+
+    /// While an add runs, what refuses a second request says it is an add
+    /// that holds the folder or the repository, never a clone.
+    fn check_an_add_race_names_the_add(root: &Path, gh_add: &Path, remote: &Path) {
+        let (mut engine, _engine_dir) = test_engine();
+        serve_pull_requests(&mut engine, gh_add, remote);
+        let one = checkout_of_widget(root, "race-add-one", remote, "");
+        let two = checkout_of_widget(root, "race-add-two", remote, "");
+        engine
+            .apply_wire(pull_request_add_command("acme/widget", &one, None))
+            .expect("the add is accepted");
+        let again = |engine: &mut Engine, command: WireCommand| {
+            engine
+                .apply_wire(command)
+                .expect_err("refused while the add runs")
+                .to_string()
+        };
+        assert_eq!(
+            again(
+                &mut engine,
+                pull_request_add_command("acme/widget", &two, None)
+            ),
+            "yaran is already adding a checkout of github.com/acme/widget for a new agent. Wait \
+             for it to finish, then use New agent from PR again."
+        );
+        assert_eq!(
+            again(
+                &mut engine,
+                pull_request_add_command("acme/widget", &one, None)
+            ),
+            format!(
+                "yaran is already adding {} as a project. Wait for it to finish, or pick \
+                 another folder.",
+                one.display()
+            )
+        );
+        // The routes that would write a repository into the same folder word
+        // their refusal the same way.
+        assert_eq!(
+            engine.clone_running_refusal(&one).as_deref(),
+            Some(
+                format!(
+                    "yaran is adding \"{}\" as a project for a pull request. Please wait for it \
+                     to finish.",
+                    one.display()
+                )
+                .as_str()
+            )
+        );
+        drive_clone_chain(&mut engine);
+    }
+
+    /// The next clone worker's event `engine` receives, every other worker
+    /// event on the way processed.
+    fn next_cloned_event(engine: &mut Engine) -> WorkerEvent {
+        loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("the clone worker's event");
+            if matches!(event, WorkerEvent::RepositoryCloned { .. }) {
+                break event;
+            }
+            engine.process_worker_event(event);
+        }
+    }
+
+    /// The failure a clone worker that stopped unexpectedly sends for the clone
+    /// of the repository `key` into `path`, under `status_op_id`.
+    fn stopped_clone_event(status_op_id: Option<String>, path: &Path, key: &str) -> WorkerEvent {
+        WorkerEvent::RepositoryCloned {
+            status_op_id,
+            path: path.to_path_buf(),
+            agent_name: String::new(),
+            repository_key: Some(key.to_string()),
+            mode: crate::clone_project::CloneMode::Clone,
+            result: Err(crate::clone_project::CloneOutcome::Failed(
+                "The clone worker stopped unexpectedly.".into(),
+            )),
+        }
+    }
+
+    #[test]
+    fn a_repository_is_free_for_another_pull_request_clone_after_every_way_one_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let (remote, _) = remote_with_pull_request(&root);
+        let gh = |name: &str, body: String| {
+            let dir = root.join(name);
+            std::fs::create_dir(&dir).unwrap();
+            crate::gh::probe_test_support::stand_in_gh(&dir, &body)
+        };
+        let gh_ok = gh("gh-ok", gh_prints(&pull_request_json("feature")));
+        let gh_ghost = gh("gh-ghost", gh_prints(&pull_request_json("ghost-branch")));
+        let gh_gone = gh(
+            "gh-gone",
+            "echo 'no pull requests found' >&2; exit 1".to_string(),
+        );
+        let missing_remote = root.join("missing.git");
+        let key = "github.com/acme/widget".to_string();
+        for (index, what) in [
+            "a worker refusal",
+            "a git failure",
+            "a worker that panicked",
+            "a project that could not be added",
+            "an agent that could not be created",
+            "an agent that was created",
+            "a clone whose operation is no longer pending",
+            "a failure whose operation is no longer pending",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (mut engine, _engine_dir) = test_engine();
+            let (program, from) = match what {
+                "a worker refusal" => (&gh_gone, &remote),
+                "a git failure" => (&gh_ok, &missing_remote),
+                "an agent that could not be created" => (&gh_ghost, &remote),
+                _ => (&gh_ok, &remote),
+            };
+            serve_pull_requests(&mut engine, program, from);
+            if what == "a project that could not be added" {
+                engine.config_writer = crate::config_queue::ConfigWriteQueue::with_dead_writer(
+                    &engine.paths.config_path,
+                );
+            }
+            let first = root.join(format!("first-{index}"));
+            let busy = engine
+                .apply_wire(pull_request_clone_command("acme/widget", &first, None))
+                .unwrap_or_else(|refused| panic!("{what}: {refused}"))
+                .status
+                .and_then(|status| status.key)
+                .expect("a keyed busy");
+            match what {
+                "a worker that panicked" => {
+                    let WorkerEvent::RepositoryCloned { status_op_id, .. } =
+                        next_cloned_event(&mut engine)
+                    else {
+                        unreachable!()
+                    };
+                    engine.process_worker_event(stopped_clone_event(status_op_id, &first, &key));
+                }
+                "a clone whose operation is no longer pending" => {
+                    let event = next_cloned_event(&mut engine);
+                    engine.clones.pending.clear();
+                    let reaction = engine.process_worker_event(event);
+                    let followup = engine.drive_clone_followup(&reaction);
+                    assert_eq!(followup.clear_keys, vec![busy.clone()], "{what}");
+                }
+                "a failure whose operation is no longer pending" => {
+                    next_cloned_event(&mut engine);
+                    engine.clones.pending.clear();
+                    let reaction = engine.process_worker_event(stopped_clone_event(
+                        Some(busy.clone()),
+                        &first,
+                        &key,
+                    ));
+                    // The final replaces the busy that is still on screen.
+                    let ended = wire_statuses_from_reaction(&reaction);
+                    assert_eq!(ended.len(), 1, "{what}: {ended:?}");
+                    assert_eq!(ended[0].tone, "error", "{what}");
+                    assert_eq!(ended[0].key.as_deref(), Some(busy.as_str()), "{what}");
+                }
+                _ => {
+                    drive_clone_chain(&mut engine);
+                }
+            }
+            let second = root.join(format!("second-{index}"));
+            engine
+                .apply_wire(pull_request_clone_command("acme/widget", &second, None))
+                .unwrap_or_else(|refused| panic!("{what}: the repository stayed held: {refused}"));
+            drive_clone_chain(&mut engine);
+        }
+    }
+
+    #[test]
+    fn a_user_and_token_in_the_address_reach_no_status_or_log_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = std::fs::canonicalize(tmp.path()).unwrap().join("dest");
+        // A transport git has no helper for, so it fails without the network.
+        let url = "nohelper://me:ghp_secret@example.invalid/repo.git";
+        let (mut engine, _engine_dir) = test_engine();
+        let (outcome, mut logged) = crate::logger::capture_for_test(|| {
+            engine.apply_wire(clone_command(Path::new(url), &dest, "agent"))
+        });
+        let busy = outcome.expect("dispatch the clone").status.unwrap();
+        assert!(
+            busy.message.contains("nohelper://example.invalid/repo.git"),
+            "{}",
+            busy.message
+        );
+        let chain = drive_clone_chain(&mut engine);
+        // The worker logs on its own thread, so run its job here as well.
+        let (worker_tx, worker_rx) = std::sync::mpsc::channel();
+        let ((), worker_lines) = crate::logger::capture_for_test(|| {
+            crate::clone_project::run_clone_job(
+                crate::clone_project::CloneJob {
+                    status_op_id: "op-direct".to_string(),
+                    url: url.to_string(),
+                    destination: dest.clone(),
+                    agent_name: "agent".to_string(),
+                    stall: std::time::Duration::from_secs(60),
+                    processes: crate::git::CloneProcesses::default(),
+                    pull_request: None,
+                    repository_key: None,
+                    mode: crate::clone_project::CloneMode::Clone,
+                    git_env: Vec::new(),
+                },
+                &worker_tx,
+            );
+        });
+        logged.extend(worker_lines);
+        let reaction = engine.process_worker_event(worker_rx.recv().unwrap());
+        let mut said: Vec<String> = std::iter::once(&busy)
+            .chain(&chain.statuses)
+            .map(|status| format!("{status:?}"))
+            .collect();
+        said.extend(
+            wire_statuses_from_reaction(&reaction)
+                .iter()
+                .map(|status| format!("{status:?}")),
+        );
+        assert!(
+            logged.iter().any(|line| line.contains("example.invalid")),
+            "the worker logs the clone: {logged:?}"
+        );
+        assert_eq!(finals(&chain).len(), 1, "{:?}", chain.statuses);
+        for text in said.iter().chain(&logged) {
+            assert!(!text.contains("ghp_secret"), "a token got out: {text}");
+            assert!(!text.contains("//me"), "a user got out: {text}");
+        }
     }
 
     #[test]
@@ -9444,6 +13336,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCheckoutDefault {
                 path: repo.path().to_string_lossy().into_owned(),
                 name: String::new(),
+                checked: None,
             })
             .map(|_| ())
             .unwrap_err();
@@ -9454,7 +13347,7 @@ mod tests {
         );
         // HEAD untouched; no project added.
         assert_eq!(current_git_branch(repo.path()), "feature");
-        assert!(engine.projects.is_empty());
+        assert_eq!(engine.projects, []);
     }
 
     #[test]
@@ -9465,6 +13358,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCheckoutDefault {
                 path: dir.path().to_string_lossy().into_owned(),
                 name: String::new(),
+                checked: None,
             })
             .map(|_| ())
             .unwrap_err();
@@ -9488,6 +13382,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCheckoutDefault {
                 path: path_str.clone(),
                 name: "Demo".to_string(),
+                checked: None,
             })
             .expect("add-checkout");
         let status = outcome.status.expect("busy status");
@@ -9535,6 +13430,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCheckoutDefault {
                 path: work.to_string_lossy().into_owned(),
                 name: "Detached".to_string(),
+                checked: None,
             })
             .expect("should succeed: origin/HEAD resolves to main");
         let status = outcome.status.expect("busy status");
@@ -9549,8 +13445,7 @@ mod tests {
         let final_status = statuses.last().expect("final status");
         assert_eq!(
             final_status.tone, "info",
-            "expected success, got: {:?}",
-            final_status
+            "expected success, got: {final_status:?}"
         );
     }
 
@@ -9566,6 +13461,7 @@ mod tests {
             .apply_wire(WireCommand::AddProjectCheckoutDefault {
                 path: repo.path().to_string_lossy().into_owned(),
                 name: String::new(),
+                checked: None,
             })
             .map(|_| ())
             .unwrap_err();
@@ -9635,6 +13531,210 @@ mod tests {
         assert!(err.to_string().contains("unknown project"), "err: {err}");
     }
 
+    /// The project row `p1` (named `p1-name`) in the database and in memory.
+    fn engine_with_project_p1() -> (Engine, crate::test_scratch::ScratchDir) {
+        let (mut engine, tmp) = test_engine();
+        std::fs::write(&engine.paths.config_path, "# yaran config\n").expect("seed config");
+        engine
+            .session_store
+            .upsert_project(&crate::config::ProjectConfig {
+                id: "p1".to_string(),
+                path: "/repo".to_string(),
+                name: Some("p1-name".to_string()),
+                default_provider: None,
+                leading_branch: None,
+                auto_reopen_agents: None,
+                startup_command: None,
+                env: BTreeMap::new(),
+                workspace_mode: None,
+            })
+            .expect("seed the project row");
+        engine.projects.push(sample_project("p1", "/repo"));
+        (engine, tmp)
+    }
+
+    fn set_startup_command(engine: &mut Engine, command: &str) -> String {
+        engine
+            .dispatch_project_setting(WireCommand::UpdateProjectStartupCommand {
+                project_id: "p1".to_string(),
+                startup_command: Some(command.to_string()),
+            })
+            .expect("handed to the worker")
+    }
+
+    /// The next project-persistence completion, as the drain hands it on.
+    fn next_project_saved(engine: &mut Engine) -> crate::engine::ProjectPersistenceOutcome {
+        loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the save completes");
+            if let EventReaction::ProjectPersistenceOutcome(outcome) =
+                engine.process_worker_event(event)
+            {
+                return *outcome;
+            }
+        }
+    }
+
+    fn stored_startup_command(engine: &Engine) -> Option<String> {
+        engine.session_store.load_projects().expect("read back")[0]
+            .startup_command
+            .clone()
+    }
+
+    /// A project setting a client asked for completes under the id it was
+    /// handed, and only once the database holds it, so a caller waiting on
+    /// that id answers with the write's own outcome.
+    #[test]
+    fn a_project_setting_completes_under_its_id_once_it_is_in_the_database() {
+        let (mut engine, _tmp) = engine_with_project_p1();
+
+        let id = set_startup_command(&mut engine, "make setup");
+        let outcome = next_project_saved(&mut engine);
+
+        assert_eq!(outcome.status_op_id.as_deref(), Some(id.as_str()));
+        assert!(matches!(
+            outcome.view,
+            ProjectPersistenceView::StartupCommandUpdated { .. }
+        ));
+        assert_eq!(
+            stored_startup_command(&engine).as_deref(),
+            Some("make setup")
+        );
+        assert_eq!(
+            engine.projects[0].startup_command.as_deref(),
+            Some("make setup")
+        );
+    }
+
+    /// A save whose database write fails completes as that failure under its
+    /// id, and changes nothing in memory.
+    #[test]
+    fn a_project_setting_whose_database_write_fails_completes_as_a_failure() {
+        let (mut engine, _tmp) = engine_with_project_p1();
+        rusqlite::Connection::open(&engine.paths.sessions_db_path)
+            .unwrap()
+            .execute("DROP TABLE projects", [])
+            .unwrap();
+
+        let id = set_startup_command(&mut engine, "make setup");
+        let outcome = next_project_saved(&mut engine);
+
+        assert_eq!(outcome.status_op_id.as_deref(), Some(id.as_str()));
+        assert!(
+            matches!(
+                outcome.view,
+                ProjectPersistenceView::PersistenceFailed { .. }
+            ),
+            "{:?}",
+            outcome.view
+        );
+        assert_eq!(engine.projects[0].startup_command, None);
+    }
+
+    /// Project saves wait their turn in one lane and complete in the order
+    /// they were asked for, so an older save can never land after a newer
+    /// one, in the database or in the memory its completion mirrors.
+    #[test]
+    fn an_older_project_save_cannot_land_after_a_newer_one() {
+        let (mut engine, _tmp) = engine_with_project_p1();
+        let held = crate::changes_lane::ticket(&crate::engine::project_persistence_lane(
+            &engine.paths.sessions_db_path,
+        ))
+        .wait();
+
+        let older = set_startup_command(&mut engine, "older");
+        let newer = set_startup_command(&mut engine, "newer");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(
+            stored_startup_command(&engine),
+            None,
+            "neither save may write while an earlier one holds the lane"
+        );
+        drop(held);
+
+        let first = next_project_saved(&mut engine);
+        let second = next_project_saved(&mut engine);
+        assert_eq!(first.status_op_id.as_deref(), Some(older.as_str()));
+        assert_eq!(second.status_op_id.as_deref(), Some(newer.as_str()));
+        assert_eq!(stored_startup_command(&engine).as_deref(), Some("newer"));
+        assert_eq!(engine.projects[0].startup_command.as_deref(), Some("newer"));
+    }
+
+    /// `apply_wire` cannot answer a project setting before it is written: it
+    /// refuses one, naming the call that waits for the write, and nothing is
+    /// handed to the worker.
+    #[test]
+    fn apply_wire_refuses_a_project_setting_it_would_answer_before_the_write() {
+        let (mut engine, _tmp) = engine_with_project_p1();
+
+        let err = engine
+            .apply_wire(WireCommand::UpdateProjectStartupCommand {
+                project_id: "p1".to_string(),
+                startup_command: Some("make setup".to_string()),
+            })
+            .expect_err("answering before the write is refused");
+
+        assert!(
+            err.to_string().contains("dispatch_project_setting"),
+            "{err:#}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            engine.worker_rx.try_recv().is_err(),
+            "nothing was handed to the worker"
+        );
+        assert_eq!(stored_startup_command(&engine), None);
+    }
+
+    /// A browser's project setting is registered as the web's own until its
+    /// completion, so the drainer leaves its config.toml write and its report
+    /// to the web layer.
+    #[test]
+    fn a_dispatched_project_setting_routes_its_completion_to_the_web() {
+        let (mut engine, _tmp) = engine_with_project_p1();
+
+        let id = set_startup_command(&mut engine, "make setup");
+        assert!(engine.pending_web_project_saves.contains(&id));
+        let reaction =
+            EventReaction::ProjectPersistenceOutcome(Box::new(next_project_saved(&mut engine)));
+
+        assert_eq!(
+            engine.followup_owner(&reaction),
+            crate::engine::FollowupOwner::Web
+        );
+        // Once the web has answered it, the same id is nobody's to skip.
+        engine.pending_web_project_saves.remove(&id);
+        assert_eq!(
+            engine.followup_owner(&reaction),
+            crate::engine::FollowupOwner::Drainer
+        );
+    }
+
+    #[test]
+    fn a_project_deletion_that_ends_inside_the_call_answers_its_final_beside_its_busy() {
+        let (mut engine, _tmp) = test_engine();
+        engine.projects.push(sample_project("p1", "/tmp/p1"));
+
+        let outcome = engine
+            .apply_wire(WireCommand::DeleteProject {
+                project_id: "p1".to_string(),
+            })
+            .expect("apply_wire");
+
+        let busy = outcome.status.expect("the deletion's busy");
+        assert_eq!(busy.tone, "busy");
+        let settled = outcome.settled.expect("the deletion's final");
+        assert_eq!(settled.key, busy.key);
+        assert_eq!(settled.tone, "info");
+        assert!(
+            settled.message.starts_with("Deleted project "),
+            "{}",
+            settled.message
+        );
+    }
+
     #[test]
     fn apply_wire_delete_session_inline_removes_session() {
         let (mut engine, _tmp) = test_engine();
@@ -9651,6 +13751,7 @@ mod tests {
 
         let outcome = engine
             .apply_wire(WireCommand::DeleteSession {
+                branches: None,
                 session_id: "s1".to_string(),
                 delete_worktree: false,
                 delete_branch: None,
@@ -9689,7 +13790,7 @@ mod tests {
                 agent_label: "feat".to_string(),
                 message: "nope".to_string(),
             }));
-        assert!(wire_statuses_from_reaction(&r).is_empty());
+        assert_eq!(wire_statuses_from_reaction(&r), Vec::<WireStatus>::new());
     }
 
     #[test]
@@ -9697,7 +13798,7 @@ mod tests {
         let r = EventReaction::AgentLaunchFailedView(Box::new(
             AgentLaunchFailedOutcome::ResumeFallback,
         ));
-        assert!(wire_statuses_from_reaction(&r).is_empty());
+        assert_eq!(wire_statuses_from_reaction(&r), Vec::<WireStatus>::new());
     }
 
     #[test]
@@ -9720,9 +13821,9 @@ mod tests {
                 startup_result_error: None,
             },
         };
-        assert!(
-            wire_statuses_from_reaction(&EventReaction::AgentLaunchReadyView(Box::new(committed)))
-                .is_empty()
+        assert_eq!(
+            wire_statuses_from_reaction(&EventReaction::AgentLaunchReadyView(Box::new(committed))),
+            Vec::<WireStatus>::new()
         );
 
         let startup_failed = crate::engine::AgentLaunchReadyOutcome {
@@ -9736,11 +13837,11 @@ mod tests {
                 error: "db error".to_string(),
             },
         };
-        assert!(
+        assert_eq!(
             wire_statuses_from_reaction(&EventReaction::AgentLaunchReadyView(Box::new(
                 startup_failed
-            )))
-            .is_empty()
+            ))),
+            Vec::<WireStatus>::new()
         );
     }
 
@@ -9772,8 +13873,18 @@ mod tests {
                 path: "a.txt".to_string(),
             })
             .expect("apply_wire");
-        // StageFile dispatches to EventReaction::Nothing -> no status.
-        assert!(outcome.status.is_none());
+        // The stage runs on a worker: the outcome is its busy, and the index
+        // changes once the worker reports.
+        assert_eq!(outcome.status.expect("a busy").tone, "busy");
+        loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("the stage reports");
+            if matches!(event, crate::worker::WorkerEvent::StatusOpCompleted { .. }) {
+                break;
+            }
+        }
 
         let staged = crate::git::test_support::git_command()
             .args(["diff", "--cached", "--name-only"])
@@ -10008,6 +14119,7 @@ mod tests {
             WireCommand::AddProject {
                 path: "/repo".to_string(),
                 name: "My Project".to_string(),
+                checked: None,
             }
         );
     }
@@ -10032,6 +14144,7 @@ mod tests {
             .wire_to_command(WireCommand::AddProject {
                 path: repo.path().to_string_lossy().into_owned(),
                 name: String::new(),
+                checked: None,
             })
             .expect("reconstruct");
         // canonicalize so the assertion survives symlinked temp dirs (e.g. /tmp -> /private/tmp).
@@ -10060,11 +14173,91 @@ mod tests {
         let result = engine.wire_to_command(WireCommand::AddProject {
             path: dir.path().to_string_lossy().into_owned(),
             name: String::new(),
+            checked: None,
         });
         let err = result.map(|_| ()).unwrap_err();
         assert!(
             err.to_string().contains("not a git repository"),
             "err: {err}"
+        );
+    }
+
+    /// With the route's check attached, the engine adds what the check read
+    /// and asks git nothing: the path here is one git would refuse outright.
+    #[test]
+    fn apply_wire_add_project_uses_the_routes_check_without_git() {
+        let (mut engine, tmp) = test_engine();
+        let unread = tmp.path().join("never-looked-at");
+        engine
+            .apply_wire(WireCommand::AddProject {
+                path: "ignored".to_string(),
+                name: "Demo".to_string(),
+                checked: Some(crate::route_checks::AddProjectChecked {
+                    validated: unread.clone(),
+                    branch: Some("from-the-check".to_string()),
+                    base: "trunk".to_string(),
+                }),
+            })
+            .expect("add");
+        let project = engine.projects.first().expect("added");
+        assert_eq!(std::path::PathBuf::from(&project.path), unread);
+        assert_eq!(project.current_branch, "from-the-check");
+        assert_eq!(project.leading_branch.as_deref(), Some("trunk"));
+    }
+
+    /// A project registered through a symlinked spelling (a hand edit, a
+    /// reload) is still the same folder: the engine refuses the add by the
+    /// real location remembered when the project was loaded, not by spelling.
+    #[test]
+    fn apply_wire_add_project_refuses_a_symlinked_spelling_of_a_project() {
+        let (mut engine, tmp) = test_engine();
+        let real = tmp.path().join("real-repo");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("linked-repo");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let stored = link.to_string_lossy().into_owned();
+        crate::project_browser::resolve_path_key(&stored);
+        engine.projects.push(sample_project("p1", &stored));
+        let canonical = std::fs::canonicalize(&real).unwrap();
+
+        let refused = engine
+            .apply_wire(WireCommand::AddProject {
+                path: canonical.to_string_lossy().into_owned(),
+                name: String::new(),
+                checked: Some(crate::route_checks::AddProjectChecked {
+                    validated: canonical.clone(),
+                    branch: Some("main".to_string()),
+                    base: "main".to_string(),
+                }),
+            })
+            .expect_err("the same folder");
+        assert!(
+            refused.to_string().contains("already registered"),
+            "{refused}"
+        );
+        assert_eq!(engine.projects.len(), 1);
+    }
+
+    /// A project registered between the route's check and the apply is still
+    /// refused, synchronously and in the same words, without asking git.
+    #[test]
+    fn apply_wire_add_project_rechecks_the_registered_projects() {
+        let (mut engine, _tmp) = test_engine();
+        engine.projects.push(sample_project("p1", "/srv/repo"));
+        let refused = engine
+            .apply_wire(WireCommand::AddProject {
+                path: "/srv/repo".to_string(),
+                name: String::new(),
+                checked: Some(crate::route_checks::AddProjectChecked {
+                    validated: PathBuf::from("/srv/repo"),
+                    branch: Some("main".to_string()),
+                    base: "main".to_string(),
+                }),
+            })
+            .expect_err("already a project");
+        assert_eq!(
+            refused.to_string(),
+            "\"/srv/repo\" is already registered as a project."
         );
     }
 
@@ -10080,6 +14273,7 @@ mod tests {
             .apply_wire(WireCommand::AddProject {
                 path: repo.path().to_string_lossy().into_owned(),
                 name: "Demo".to_string(),
+                checked: None,
             })
             .expect("add");
         let status = outcome
@@ -10100,13 +14294,13 @@ mod tests {
         // an error Status; apply_wire must surface THAT, not the optimistic success.
         let repo = init_repo_with_commit();
         let (mut engine, _tmp) = test_engine();
-        engine.config_writer = crate::config_queue::ConfigWriteQueue::with_dead_writer(
-            engine.paths.config_path.clone(),
-        );
+        engine.config_writer =
+            crate::config_queue::ConfigWriteQueue::with_dead_writer(&engine.paths.config_path);
         let outcome = engine
             .apply_wire(WireCommand::AddProject {
                 path: repo.path().to_string_lossy().into_owned(),
                 name: "Demo".to_string(),
+                checked: None,
             })
             .expect("add");
         let status = outcome
@@ -10118,7 +14312,7 @@ mod tests {
             "the optimistic success message leaked: {}",
             status.message
         );
-        assert!(engine.projects.is_empty());
+        assert_eq!(engine.projects, []);
     }
 
     #[test]
@@ -10193,6 +14387,7 @@ mod tests {
                 name: "feature-x".to_string(),
                 copy_uncommitted_changes: None,
                 use_existing_branch: false,
+                name_checked: None,
             }
         );
     }
@@ -10209,6 +14404,7 @@ mod tests {
                 name: "feature-x".to_string(),
                 copy_uncommitted_changes: None,
                 use_existing_branch: false,
+                name_checked: None,
             })
             .expect("reconstruct");
         match cmd {
@@ -10235,6 +14431,7 @@ mod tests {
                 name: String::new(),
                 copy_uncommitted_changes: None,
                 use_existing_branch: false,
+                name_checked: None,
             })
             .expect("reconstruct");
         match cmd {
@@ -10284,6 +14481,7 @@ mod tests {
                 name: String::new(),
                 copy_uncommitted_changes: Some(false),
                 use_existing_branch: false,
+                name_checked: None,
             })
             .expect("reconstruct");
         match cmd {
@@ -10306,6 +14504,7 @@ mod tests {
             name: "feature-x".to_string(),
             copy_uncommitted_changes: None,
             use_existing_branch: false,
+            name_checked: None,
         });
         let err = result.map(|_| ()).unwrap_err();
         assert!(err.to_string().contains("unknown project"), "err: {err}");
@@ -10324,15 +14523,16 @@ mod tests {
             "a//b",      // no consecutive slashes
             "trailing/", // can't end with a slash
             "/leading",  // can't start with a slash
-            "naïve",     // non-ASCII dropped
-            "emoji😀",   // non-ASCII dropped
-            "with.dot",  // '.' isn't whitelisted
+            "a..b",      // no ".."
+            "x.lock",    // can't end with ".lock"
+            "trailing.", // can't end with a dot
         ] {
             let result = engine.wire_to_command(WireCommand::CreateAgent {
                 project_id: "p1".to_string(),
                 name: bad.to_string(),
                 copy_uncommitted_changes: None,
                 use_existing_branch: false,
+                name_checked: None,
             });
             let err = result.map(|_| ()).unwrap_err();
             let msg = err.to_string();
@@ -10341,6 +14541,54 @@ mod tests {
                 "expected rejection for {bad:?}, got: {msg}"
             );
         }
+    }
+
+    /// A name the route found free is not asked about again on the engine
+    /// thread; one nobody asked about still is, and a taken one is refused.
+    #[test]
+    fn wire_to_command_create_agent_asks_git_only_about_an_unchecked_name() {
+        let repo = init_repo_with_commit();
+        crate::git::test_support::git_command()
+            .args(["branch", "taken"])
+            .current_dir(repo.path())
+            .status()
+            .expect("git branch");
+        let (mut engine, _tmp) = test_engine();
+        engine
+            .projects
+            .push(sample_project("p1", repo.path().to_str().unwrap()));
+        let create = |name_checked: Option<String>| WireCommand::CreateAgent {
+            project_id: "p1".to_string(),
+            name: "taken".to_string(),
+            copy_uncommitted_changes: None,
+            use_existing_branch: false,
+            name_checked,
+        };
+
+        let refused = engine
+            .wire_to_command(create(None))
+            .map(|_| ())
+            .expect_err("asked here, the name is taken");
+        assert!(refused.to_string().contains("already exists"), "{refused}");
+        engine
+            .wire_to_command(create(Some("taken".to_string())))
+            .expect("the route's answer is taken as given");
+    }
+
+    /// A client cannot hand the engine a check of its own: the field is not
+    /// read from what it sends.
+    #[test]
+    fn a_route_check_is_never_read_from_a_client() {
+        let json = r#"{"command":"add_project","args":{"path":"/x","name":"","checked":{"validated":"/x","branch":null,"base":"main"}}}"#;
+        let command: WireCommand = serde_json::from_str(json).expect("parses");
+        assert_eq!(
+            command,
+            WireCommand::AddProject {
+                path: "/x".to_string(),
+                name: String::new(),
+                checked: None,
+            }
+        );
     }
 
     #[test]
@@ -10355,6 +14603,7 @@ mod tests {
                     name: good.to_string(),
                     copy_uncommitted_changes: None,
                     use_existing_branch: false,
+                    name_checked: None,
                 })
                 .unwrap_or_else(|e| panic!("expected {good:?} to be accepted, got: {e}"));
             match cmd {
@@ -10382,6 +14631,7 @@ mod tests {
                 name: "   ".to_string(),
                 copy_uncommitted_changes: None,
                 use_existing_branch: false,
+                name_checked: None,
             })
             .expect("whitespace-only name should reconstruct");
         match cmd {
@@ -10396,20 +14646,6 @@ mod tests {
     }
 
     #[test]
-    fn wire_reorder_sessions_deserializes() {
-        let json =
-            r#"{"command":"reorder_sessions","args":{"project_id":"p1","session_ids":["b","a"]}}"#;
-        let cmd: WireCommand = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(
-            cmd,
-            WireCommand::ReorderSessions {
-                project_id: "p1".to_string(),
-                session_ids: vec!["b".to_string(), "a".to_string()],
-            }
-        );
-    }
-
-    #[test]
     fn wire_reorder_projects_deserializes() {
         let json = r#"{"command":"reorder_projects","args":{"project_ids":["c","a","b"]}}"#;
         let cmd: WireCommand = serde_json::from_str(json).expect("deserialize");
@@ -10419,27 +14655,6 @@ mod tests {
                 project_ids: vec!["c".to_string(), "a".to_string(), "b".to_string()],
             }
         );
-    }
-
-    #[test]
-    fn wire_to_command_reorder_sessions_maps_to_command() {
-        let (engine, _tmp) = test_engine();
-        let cmd = engine
-            .wire_to_command(WireCommand::ReorderSessions {
-                project_id: "p1".to_string(),
-                session_ids: vec!["b".to_string(), "a".to_string()],
-            })
-            .expect("reconstruct");
-        match cmd {
-            Command::ReorderSessions {
-                project_id,
-                session_ids,
-            } => {
-                assert_eq!(project_id, "p1");
-                assert_eq!(session_ids, vec!["b".to_string(), "a".to_string()]);
-            }
-            _ => panic!("expected Command::ReorderSessions variant"),
-        }
     }
 
     #[test]
@@ -10459,7 +14674,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_wire_reorder_sessions_reorders_and_is_silent() {
+    fn apply_wire_reorder_agents_reorders_and_is_silent() {
         let (mut engine, _tmp) = test_engine();
         for id in ["a", "b"] {
             let session = sample_session(id, "p1", id);
@@ -10467,8 +14682,7 @@ mod tests {
             engine.sessions.push(session);
         }
         let outcome = engine
-            .apply_wire(WireCommand::ReorderSessions {
-                project_id: "p1".to_string(),
+            .apply_wire(WireCommand::ReorderAgents {
                 session_ids: vec!["b".to_string(), "a".to_string()],
             })
             .expect("apply_wire");
@@ -10479,12 +14693,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_wire_reorder_sessions_invalid_set_errors() {
+    fn apply_wire_reorder_agents_invalid_set_errors() {
         let (mut engine, _tmp) = test_engine();
         engine.sessions.push(sample_session("a", "p1", "a"));
         engine.sessions.push(sample_session("b", "p1", "b"));
-        let res = engine.apply_wire(WireCommand::ReorderSessions {
-            project_id: "p1".to_string(),
+        let res = engine.apply_wire(WireCommand::ReorderAgents {
             session_ids: vec!["a".to_string()],
         });
         assert!(res.is_err());
@@ -10544,6 +14757,13 @@ mod tests {
         );
         let op_id = op.id().to_string();
         engine.pending_web_launch_ops.insert("s1".into(), op);
+        // A promotion while the launch was in flight moved the live slot to
+        // another tab. The question is which arm requested this launch, which
+        // only the outcome's snapshot answers: asking the live session would
+        // send it down the tab-keyed branch and strand the op's busy forever.
+        let mut promoted = session.clone();
+        promoted.slot_tab_id = "promoted-tab".to_string();
+        engine.sessions.push(promoted);
 
         let reaction = EventReaction::AgentLaunchReadyView(Box::new(AgentLaunchReadyOutcome {
             tab_id: session.slot_tab_id().to_string(),
@@ -10633,7 +14853,7 @@ mod tests {
             view: AgentLaunchReadyView::SessionMissing,
         }));
         let followup = engine.drive_web_launch_followup(&reaction);
-        assert!(followup.statuses.is_empty());
+        assert_eq!(followup.statuses, Vec::<WireStatus>::new());
         assert_eq!(followup.clear_keys, vec![op_id]);
         assert!(engine.pending_web_launch_ops.is_empty());
     }
@@ -11054,7 +15274,7 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/repo"));
         engine.sessions.push(sample_session("s1", "p1", "feat"));
-        for bad in ["-leading", "a//b", "trailing/", "with.dot"] {
+        for bad in ["-leading", "a//b", "trailing/", "trailing."] {
             let err = engine
                 .wire_to_command(WireCommand::ForkSession {
                     session_id: "s1".to_string(),
@@ -11080,6 +15300,7 @@ mod tests {
             WireCommand::RenameSession {
                 session_id: "s1".to_string(),
                 title: "My agent".to_string(),
+                rename_branch: false,
             }
         );
     }
@@ -11096,6 +15317,7 @@ mod tests {
             .apply_wire(WireCommand::RenameSession {
                 session_id: "s1".to_string(),
                 title: "  My-agent  ".to_string(),
+                rename_branch: false,
             })
             .expect("apply_wire");
         // Trimmed and stored in memory.
@@ -11137,6 +15359,7 @@ mod tests {
             .apply_wire(WireCommand::RenameSession {
                 session_id: "s1".to_string(),
                 title: "   ".to_string(),
+                rename_branch: false,
             })
             .expect("apply_wire");
         // Cleared back to None -> row shows the branch name again.
@@ -11168,47 +15391,147 @@ mod tests {
             .apply_wire(WireCommand::RenameSession {
                 session_id: "s1".to_string(),
                 title: "bad name!".to_string(),
+                rename_branch: false,
             })
             .map(|_| ())
             .unwrap_err();
-        assert!(err.to_string().contains("Invalid agent name"), "err: {err}");
+        assert_eq!(
+            err.to_string(),
+            crate::engine::branch_rename_refusal(
+                &crate::engine::BranchRenameRejection::MalformedName
+            ),
+            "the same refusal the terminal UI shows"
+        );
     }
 
-    /// A STANDALONE agent's title is a label, not a refname, so the wire
-    /// rename is not held to the refname rules either.
-    ///
-    /// The asymmetry this pins was a one-way door: creation takes a standalone
-    /// title verbatim (folder names legally contain spaces and punctuation a
-    /// ref cannot), so a title yaran itself minted from a folder called
-    /// `My Notes` could not be typed back over the wire.
+    /// A title the database cannot keep is an error on the wire, not a
+    /// success, and the agent keeps its old name.
     #[test]
-    fn apply_wire_rename_session_takes_a_standalone_title_verbatim() {
+    fn apply_wire_rename_session_reports_a_title_that_could_not_be_saved() {
         let (mut engine, _tmp) = test_engine();
-        let session = sample_standalone_session("sa1", "/home/someone/My Notes");
+        let session = sample_session("s1", "p1", "feat");
+        engine.session_store.upsert_session(&session).unwrap();
+        engine.sessions.push(session);
+        rusqlite::Connection::open(&engine.paths.sessions_db_path)
+            .unwrap()
+            .execute_batch(
+                "create trigger refuse_session_update before update on agent_sessions \
+                 begin select raise(abort, 'disk is full'); end",
+            )
+            .unwrap();
+        let err = engine
+            .apply_wire(WireCommand::RenameSession {
+                session_id: "s1".to_string(),
+                title: "renamed".to_string(),
+                rename_branch: false,
+            })
+            .map(|_| ())
+            .unwrap_err();
+        assert!(err.to_string().contains("disk is full"), "{err}");
+        assert_eq!(engine.sessions[0].title.as_deref(), Some("s1-title"));
+    }
+
+    /// The branch flag is optional on the wire and means "title only" when
+    /// absent, so a client that never sends it renames exactly as before.
+    #[test]
+    fn wire_rename_session_branch_flag_round_trips_and_defaults_off() {
+        let with = WireCommand::RenameSession {
+            session_id: "s1".to_string(),
+            title: "next".to_string(),
+            rename_branch: true,
+        };
+        let json = serde_json::to_string(&with).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<WireCommand>(&json).expect("deserialize"),
+            with
+        );
+        let json = r#"{"command":"rename_session","args":{"session_id":"s1","title":"x"}}"#;
+        let WireCommand::RenameSession { rename_branch, .. } =
+            serde_json::from_str(json).expect("deserialize")
+        else {
+            panic!("a rename");
+        };
+        assert!(!rename_branch);
+    }
+
+    /// Ticking the branch box with an empty name is refused over the wire with
+    /// the terminal UI's sentence, and changes nothing.
+    #[test]
+    fn apply_wire_rename_session_refuses_a_branch_rename_to_nothing() {
+        let (mut engine, _tmp) = test_engine();
+        engine.sessions.push(sample_session("s1", "p1", "feat"));
+        let err = engine
+            .apply_wire(WireCommand::RenameSession {
+                session_id: "s1".to_string(),
+                title: "  ".to_string(),
+                rename_branch: true,
+            })
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            crate::engine::branch_rename_refusal(&crate::engine::BranchRenameRejection::EmptyName)
+        );
+        assert_eq!(engine.sessions[0].title.as_deref(), Some("s1-title"));
+    }
+
+    /// With the box ticked the wire rename starts the branch rename and answers
+    /// with its keyed busy; the worker's completion carries the final.
+    #[test]
+    fn apply_wire_rename_session_with_the_branch_answers_a_keyed_busy() {
+        let (mut engine, _tmp) = test_engine();
+        engine.sessions.push(sample_session("s1", "p1", "feat"));
+        let outcome = engine
+            .apply_wire(WireCommand::RenameSession {
+                session_id: "s1".to_string(),
+                title: "renamed".to_string(),
+                rename_branch: true,
+            })
+            .expect("apply_wire");
+        let status = outcome.status.expect("a busy");
+        assert_eq!(status.tone, "busy");
+        assert!(status.key.is_some(), "the final replaces it by key");
+        assert!(
+            engine.is_in_flight(&crate::engine::InFlightKey::BranchRename("s1".into())),
+            "the worker runs"
+        );
+        // The fixture worktree does not exist, so git fails and the completion
+        // puts the name back.
+        let event = engine
+            .worker_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the worker answers");
+        engine.process_worker_event(event);
+        assert_eq!(engine.sessions[0].title.as_deref(), Some("s1-title"));
+        assert_eq!(engine.sessions[0].branch_name(), Some("feat"));
+    }
+
+    /// A STANDALONE agent renames no branch, but its name follows the same
+    /// rules as every other agent's, so the wire refuses an invalid one with
+    /// the same sentence and leaves the name alone.
+    #[test]
+    fn apply_wire_rename_session_holds_a_standalone_title_to_the_agent_naming_rules() {
+        let (mut engine, _tmp) = test_engine();
+        let mut session = sample_standalone_session("sa1", "/home/someone/My Notes");
+        session.title = Some("My-Notes".to_string());
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        engine
+        let err = engine
             .apply_wire(WireCommand::RenameSession {
                 session_id: "sa1".to_string(),
                 title: "  My Notes (2026)  ".to_string(),
+                rename_branch: false,
             })
-            .expect("a standalone rename is not a refname");
+            .map(|_| ())
+            .unwrap_err();
         assert_eq!(
-            engine.sessions[0].title.as_deref(),
-            Some("My Notes (2026)"),
-            "trimmed, and otherwise taken verbatim"
+            err.to_string(),
+            crate::engine::branch_rename_refusal(
+                &crate::engine::BranchRenameRejection::MalformedName
+            ),
         );
-        let reloaded = engine.session_store.load_sessions().expect("reload");
-        assert_eq!(
-            reloaded
-                .iter()
-                .find(|s| s.id == "sa1")
-                .expect("row")
-                .title
-                .as_deref(),
-            Some("My Notes (2026)")
-        );
+        assert_eq!(engine.sessions[0].title.as_deref(), Some("My-Notes"));
     }
 
     #[test]
@@ -11218,6 +15541,7 @@ mod tests {
             .apply_wire(WireCommand::RenameSession {
                 session_id: "ghost".to_string(),
                 title: "x".to_string(),
+                rename_branch: false,
             })
             .map(|_| ())
             .unwrap_err();
@@ -11539,7 +15863,7 @@ mod tests {
             engine
                 .running_provider_pins
                 .get(TabIdRef::new("s1-slot"))
-                .map(|p| p.as_str()),
+                .map(super::super::model::ProviderKind::as_str),
             Some("claude")
         );
 
@@ -11609,6 +15933,7 @@ mod tests {
                 project_id: "p1".to_string(),
                 worktree_path: "/wt/feat".to_string(),
                 name: "my-agent".to_string(),
+                checked: None,
             }
         );
     }
@@ -11624,6 +15949,7 @@ mod tests {
                 project_id: "p1".to_string(),
                 worktree_path: worktree_path.to_string_lossy().to_string(),
                 name: "Display Name".replace(' ', "-"),
+                checked: None,
             })
             .expect("reconstruct");
         match cmd {
@@ -11656,6 +15982,75 @@ mod tests {
         }
     }
 
+    /// With the route's listing attached, the engine adopts the worktree it
+    /// names without listing git's worktrees again.
+    #[test]
+    fn wire_to_command_create_agent_from_worktree_uses_the_routes_check() {
+        let (mut engine, tmp) = test_engine();
+        engine
+            .projects
+            .push(sample_project("p1", tmp.path().to_str().unwrap()));
+        let listed = tmp.path().join("not-a-worktree-git-knows");
+        let cmd = engine
+            .wire_to_command(WireCommand::CreateAgentFromWorktree {
+                project_id: "p1".to_string(),
+                worktree_path: listed.to_string_lossy().into_owned(),
+                name: "adopted".to_string(),
+                checked: Some(crate::route_checks::AdoptChecked {
+                    path: listed.clone(),
+                    branch_name: "from-the-check".to_string(),
+                }),
+            })
+            .expect("the route's check is taken");
+        let Command::DispatchCreateAgentRequest { request, .. } = cmd else {
+            panic!("expected a create");
+        };
+        let CreateAgentRequest::ExistingManagedWorktree {
+            worktree_path,
+            branch_name,
+            ..
+        } = *request
+        else {
+            panic!("expected an adopt");
+        };
+        assert_eq!(worktree_path, listed);
+        assert_eq!(branch_name, "from-the-check");
+    }
+
+    /// A standalone agent started in the worktree after the route listed it
+    /// takes it: the adopt is refused, as an agent's managed worktree is.
+    #[test]
+    fn wire_to_command_create_agent_from_worktree_rechecks_standalone_agents() {
+        let (mut engine, tmp) = test_engine();
+        engine
+            .projects
+            .push(sample_project("p1", tmp.path().to_str().unwrap()));
+        let listed = tmp.path().join("the-worktree");
+        let mut standalone = sample_session("s9", "", "notes");
+        standalone.workspace =
+            crate::model::AgentWorkspace::Folder(crate::model::FolderWorkspace {
+                folder_path: listed.to_string_lossy().into_owned(),
+            });
+        engine.sessions.push(standalone);
+
+        let refused = engine
+            .wire_to_command(WireCommand::CreateAgentFromWorktree {
+                project_id: "p1".to_string(),
+                worktree_path: listed.to_string_lossy().into_owned(),
+                name: "adopted".to_string(),
+                checked: Some(crate::route_checks::AdoptChecked {
+                    path: listed,
+                    branch_name: "b".to_string(),
+                }),
+            })
+            .map(|_| ())
+            .expect_err("an agent holds it now");
+        assert!(
+            refused.to_string().contains("not an adoptable"),
+            "{refused}"
+        );
+    }
+
     #[test]
     fn wire_to_command_create_agent_from_worktree_unknown_project_errors() {
         let (engine, _tmp) = test_engine();
@@ -11664,6 +16059,7 @@ mod tests {
                 project_id: "ghost".to_string(),
                 worktree_path: "/wt/feat".to_string(),
                 name: "my-agent".to_string(),
+                checked: None,
             })
             .map(|_| ())
             .unwrap_err();
@@ -11685,6 +16081,7 @@ mod tests {
                 project_id: "p1".to_string(),
                 worktree_path: repo_path,
                 name: "my-agent".to_string(),
+                checked: None,
             })
             .map(|_| ())
             .unwrap_err();
@@ -11717,6 +16114,7 @@ mod tests {
                 project_id: "p1".to_string(),
                 worktree_path: managed.to_string_lossy().to_string(),
                 name: "my-agent".to_string(),
+                checked: None,
             })
             .map(|_| ())
             .unwrap_err();
@@ -11742,6 +16140,7 @@ mod tests {
                     project_id: "p1".to_string(),
                     worktree_path: path.clone(),
                     name: blank.to_string(),
+                    checked: None,
                 })
                 .map(|_| ())
                 .unwrap_err();
@@ -11752,12 +16151,13 @@ mod tests {
         }
 
         // And rejects names git's agent-name rules refuse, same as the prompt.
-        for bad in ["-leading", "a//b", "trailing/", "with.dot"] {
+        for bad in ["-leading", "a//b", "trailing/", "trailing."] {
             let err = engine
                 .wire_to_command(WireCommand::CreateAgentFromWorktree {
                     project_id: "p1".to_string(),
                     worktree_path: path.clone(),
                     name: bad.to_string(),
+                    checked: None,
                 })
                 .map(|_| ())
                 .unwrap_err();
@@ -11793,6 +16193,7 @@ mod tests {
                 project_id: "p1".to_string(),
                 worktree_path: path.clone(),
                 name: "adopted".to_string(),
+                checked: None,
             })
             .expect("first attach");
         assert!(
@@ -11810,6 +16211,7 @@ mod tests {
                 project_id: "p1".to_string(),
                 worktree_path: path,
                 name: "adopted-again".to_string(),
+                checked: None,
             })
             .expect("second attach");
         let status = second.status.expect("repeat surfaces the in-flight guard");
@@ -11839,6 +16241,10 @@ mod tests {
                 project_id: "p1".to_string(),
                 pr: "#42".to_string(),
                 name: "fix".to_string(),
+                review_copy: false,
+                review_copy_warned: None,
+                review_copy_by_flag: false,
+                ask_id: None,
             }
         );
     }
@@ -11855,6 +16261,10 @@ mod tests {
                 project_id: "p1".to_string(),
                 pr: "#42".to_string(),
                 name: String::new(),
+                review_copy: false,
+                review_copy_warned: None,
+                review_copy_by_flag: false,
+                ask_id: None,
             })
             .expect_err("gh unavailable");
         assert!(
@@ -11872,6 +16282,10 @@ mod tests {
                 project_id: "missing".to_string(),
                 pr: "#42".to_string(),
                 name: String::new(),
+                review_copy: false,
+                review_copy_warned: None,
+                review_copy_by_flag: false,
+                ask_id: None,
             })
             .expect_err("unknown project");
         assert!(err.to_string().contains("unknown project"), "msg: {err}");
@@ -11887,6 +16301,10 @@ mod tests {
                 project_id: "p1".to_string(),
                 pr: "   ".to_string(),
                 name: String::new(),
+                review_copy: false,
+                review_copy_warned: None,
+                review_copy_by_flag: false,
+                ask_id: None,
             })
             .expect_err("empty pr");
         assert!(
@@ -11906,6 +16324,10 @@ mod tests {
                 project_id: "p1".to_string(),
                 pr: "#42".to_string(),
                 name: "/bad//name".to_string(),
+                review_copy: false,
+                review_copy_warned: None,
+                review_copy_by_flag: false,
+                ask_id: None,
             })
             .expect_err("invalid name");
         assert!(err.to_string().contains("Invalid agent name"), "msg: {err}");
@@ -11942,6 +16364,10 @@ mod tests {
                 project_id: "p1".to_string(),
                 pr: "#42".to_string(),
                 name: "my-agent".to_string(),
+                review_copy: false,
+                review_copy_warned: None,
+                review_copy_by_flag: false,
+                ask_id: None,
             })
             .expect("dispatch lookup");
         let status = outcome.status.expect("synchronous busy status");
@@ -11984,12 +16410,77 @@ mod tests {
         None
     }
 
+    /// A repository with a commit, and the origin it names, which carries the
+    /// head of pull request 42, so a create's fetch resolves without a network
+    /// and the create can run to its end.
+    fn repo_with_pull_request_42_on_origin() -> (tempfile::TempDir, tempfile::TempDir) {
+        let repo = init_repo_with_commit();
+        let origin = init_repo_with_commit();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let ok = crate::git::test_support::git_command()
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .expect("spawn git")
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        git(origin.path(), &["update-ref", "refs/pull/42/head", "HEAD"]);
+        git(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin.path().to_string_lossy().as_ref(),
+            ],
+        );
+        (repo, origin)
+    }
+
+    /// Process `engine`'s worker events until the operation `record` reads is
+    /// no longer running, raising their finals the way the web's status emitter
+    /// does.
+    fn run_until_the_record_ends(
+        engine: &mut Engine,
+        record: &dyn Fn(&Engine) -> crate::operations::OperationView,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while record(engine).state == crate::operations::OperationState::Running {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the create never finished"
+            );
+            let Ok(event) = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+            else {
+                continue;
+            };
+            let reaction = engine.process_worker_event(event);
+            for status in wire_statuses_from_reaction(&reaction) {
+                let tone = crate::statusline::StatusTone::from_wire(&status.tone);
+                if let Some(key) = &status.key
+                    && tone != crate::statusline::StatusTone::Busy
+                {
+                    engine.operations.finish_by_key(
+                        key,
+                        tone,
+                        &status.message,
+                        None,
+                        std::time::Instant::now(),
+                    );
+                }
+            }
+        }
+    }
+
     /// A resolved PR with a `custom_name` drives the create dispatch directly
     /// (no name prompt), building a `CreateAgentRequest::PullRequest` with
     /// `use_existing_branch: false` and the carried name.
     #[test]
     fn drive_pr_lookup_followup_dispatches_create_with_carried_name() {
-        let repo = init_repo_with_commit();
+        let (repo, _origin) = repo_with_pull_request_42_on_origin();
         let (mut engine, _tmp) = test_engine();
         let mut project = sample_project("p1", &repo.path().to_string_lossy());
         project.path_missing = false;
@@ -12005,11 +16496,26 @@ mod tests {
                 state: "OPEN".to_string(),
                 head_ref_name: "feature/pr-42".to_string(),
                 custom_name: Some("my-agent".to_string()),
+                review_copy: crate::worker::ReviewCopyConsent::default(),
+                ask_id: None,
+                project_remote: None,
             }),
-            // No registered op (id None), so the followup returns no clear key and
-            // resolves nothing: the create busy flows through the worker channel.
-            status_op_id: None,
+            // An id with no registered lookup op, so the followup returns no
+            // clear key and resolves nothing: the create busy flows through the
+            // worker channel. A client's operation record follows the id.
+            status_op_id: Some("op-lookup".to_string()),
         };
+        let policy = crate::operations::OperationPolicy {
+            unknown_after: std::time::Duration::from_secs(60),
+            retention: std::time::Duration::from_secs(60),
+        };
+        let now = std::time::Instant::now();
+        engine.operations.open(
+            "op-lookup",
+            crate::operations::OperationKind::AgentCreate,
+            policy,
+            now,
+        );
         // The followup dispatches the create worker; the busy status is posted on
         // the worker channel (CommandWorkerStarted), so the followup itself
         // returns no synchronous status on the happy path.
@@ -12029,6 +16535,129 @@ mod tests {
                 && busy.contains("from PR #42")
                 && busy.contains("launching a fresh session"),
             "msg: {busy}"
+        );
+        // The record now follows the create the lookup handed off to: the
+        // lookup's own key ending does not end it, the create's final does.
+        let create = engine
+            .pending_create_ops
+            .keys()
+            .next()
+            .cloned()
+            .expect("the create op");
+        let tone = crate::statusline::StatusTone::Info;
+        engine
+            .operations
+            .finish_by_key("op-lookup", tone, "", None, now);
+        let record = |engine: &Engine| engine.operations.view("op-lookup", now).unwrap();
+        assert_eq!(
+            record(&engine).state,
+            crate::operations::OperationState::Running
+        );
+        // Run the create to its end, raising its finals the way the web's
+        // status emitter does, and the record resolves to the agent it made.
+        run_until_the_record_ends(&mut engine, &record);
+        let record = record(&engine);
+        assert_eq!(
+            record.state,
+            crate::operations::OperationState::Succeeded,
+            "{}",
+            record.message
+        );
+        let created = engine
+            .created_session_for_op(&create)
+            .expect("the create made an agent");
+        assert_eq!(record.created, vec![created]);
+    }
+
+    /// A pull request whose own branch has gone its own way is not turned into
+    /// a review copy nobody asked for: the create ends in a status that carries
+    /// the question, which is what lets a browser put it to the user.
+    #[test]
+    fn a_from_pr_create_that_needs_a_review_copy_ends_in_a_status_that_asks() {
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let ok = crate::git::test_support::git_command()
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .expect("spawn git")
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        let origin = init_repo_with_commit();
+        git(origin.path(), &["commit", "--allow-empty", "-m", "pr work"]);
+        git(origin.path(), &["update-ref", "refs/pull/42/head", "HEAD"]);
+        let repo = init_repo_with_commit();
+        git(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                origin.path().to_string_lossy().as_ref(),
+            ],
+        );
+        let own_branch = "feature/pr-42";
+        git(repo.path(), &["checkout", "-b", own_branch]);
+        git(repo.path(), &["commit", "--allow-empty", "-m", "mine"]);
+        git(repo.path(), &["checkout", "-"]);
+
+        let (mut engine, _tmp) = test_engine();
+        let mut project = sample_project("p1", &repo.path().to_string_lossy());
+        project.path_missing = false;
+        engine.projects.push(project.clone());
+        let reaction = EventReaction::OpenNewAgentPromptForPr {
+            pr: Box::new(crate::worker::ResolvedPullRequest {
+                project,
+                host: "github.com".to_string(),
+                owner_repo: "octocat/Hello-World".to_string(),
+                number: 42,
+                title: "Fix bug".to_string(),
+                state: "OPEN".to_string(),
+                head_ref_name: own_branch.to_string(),
+                custom_name: Some(own_branch.to_string()),
+                review_copy: crate::worker::ReviewCopyConsent::default(),
+                ask_id: Some("req-7".to_string()),
+                project_remote: None,
+            }),
+            status_op_id: None,
+        };
+        engine.drive_pr_lookup_followup(&reaction);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let asked = loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the create never finished"
+            );
+            let Ok(event) = engine
+                .worker_rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+            else {
+                continue;
+            };
+            let reaction = engine.process_worker_event(event);
+            if let Some(status) = wire_statuses_from_reaction(&reaction)
+                .into_iter()
+                .find(|status| status.tone == "error")
+            {
+                break status;
+            }
+        };
+        let Some(crate::status_text::StatusAsk::ReviewCopy(ask)) = &asked.ask else {
+            panic!("the refusal carries the question: {asked:?}");
+        };
+        assert_eq!(ask.warned, "diverged:#42:feature/pr-42-review:");
+        assert_eq!(ask.request.as_deref(), Some("req-7"));
+        assert!(
+            asked
+                .message
+                .contains("pushes from this agent would land on \"feature/pr-42-review\""),
+            "{}",
+            asked.message
+        );
+        assert!(
+            !crate::git::local_branch_exists(repo.path(), "feature/pr-42-review"),
+            "nothing was made"
         );
     }
 
@@ -12059,6 +16688,9 @@ mod tests {
                 state: "OPEN".to_string(),
                 head_ref_name: "feature/head".to_string(),
                 custom_name: None,
+                review_copy: crate::worker::ReviewCopyConsent::default(),
+                ask_id: None,
+                project_remote: None,
             }),
             status_op_id: None,
         };
@@ -12096,9 +16728,22 @@ mod tests {
                 // Legal on the remote, not a legal agent name here.
                 head_ref_name: "feature/add colons: & spaces".to_string(),
                 custom_name: None,
+                review_copy: crate::worker::ReviewCopyConsent::default(),
+                ask_id: None,
+                project_remote: None,
             }),
-            status_op_id: None,
+            status_op_id: Some("op-lookup".to_string()),
         };
+        let now = std::time::Instant::now();
+        engine.operations.open(
+            "op-lookup",
+            crate::operations::OperationKind::AgentCreate,
+            crate::operations::OperationPolicy {
+                unknown_after: std::time::Duration::from_secs(60),
+                retention: std::time::Duration::from_secs(60),
+            },
+            now,
+        );
         let followup = engine.drive_pr_lookup_followup(&reaction);
 
         let error = followup
@@ -12120,6 +16765,11 @@ mod tests {
             first_command_busy_message_opt(&engine).is_none(),
             "no create should have been dispatched"
         );
+        // A client's record of the create ends on the refusal, which carries no
+        // key of its own.
+        let record = engine.operations.view("op-lookup", now).unwrap();
+        assert_eq!(record.state, crate::operations::OperationState::Failed);
+        assert_eq!(record.message, error.message);
     }
 
     /// The refusal quotes the head branch, which is somebody else's text: the
@@ -12142,6 +16792,9 @@ mod tests {
                 state: "OPEN".to_string(),
                 head_ref_name: "feat\u{202E}txt.exe".to_string(),
                 custom_name: None,
+                review_copy: crate::worker::ReviewCopyConsent::default(),
+                ask_id: None,
+                project_remote: None,
             }),
             status_op_id: None,
         };
@@ -12168,20 +16821,7 @@ mod tests {
         assert!(followup.statuses.is_empty() && followup.clear_keys.is_empty());
     }
 
-    // ── RunMacro / UpdateMacros wire mapping ────────────────────────────────
-
-    #[test]
-    fn wire_run_macro_deserializes() {
-        let json = r#"{"command":"run_macro","args":{"target_id":"sess-1","name":"greet"}}"#;
-        let cmd: WireCommand = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(
-            cmd,
-            WireCommand::RunMacro {
-                target_id: "sess-1".to_string(),
-                name: "greet".to_string(),
-            }
-        );
-    }
+    // ── UpdateMacros wire mapping ───────────────────────────────────────────
 
     #[test]
     fn wire_update_macros_deserializes() {
@@ -12195,6 +16835,7 @@ mod tests {
                     text: "hi".to_string(),
                     surface: "both".to_string(),
                 }],
+                version: None,
             }
         );
     }
@@ -12261,10 +16902,17 @@ mod tests {
     fn mutates_config_static_flags_only_bootstrap_config_writes() {
         // The eager-save config mutations that have no disk-reload to drive a
         // `config.changed` signal: the web actor fires it for these.
-        assert!(WireCommand::UpdateMacros { entries: vec![] }.mutates_config_static());
+        assert!(
+            WireCommand::UpdateMacros {
+                entries: vec![],
+                version: None,
+            }
+            .mutates_config_static()
+        );
         assert!(
             WireCommand::PersistGlobalEnv {
                 env: std::collections::BTreeMap::new(),
+                version: None,
             }
             .mutates_config_static()
         );
@@ -12413,7 +17061,7 @@ mod tests {
             "[ui]\nupload_directory = \"tmp/drops\"\nupload_write_gitignore = false\n",
         )
         .expect("seed config");
-        engine.config = crate::config::load_config(&engine.paths);
+        engine.config = crate::config::load_config(&engine.paths).expect("config loads");
         assert_eq!(engine.config.ui.upload_directory, "tmp/drops");
         assert!(!engine.config.ui.upload_write_gitignore);
 
@@ -12446,7 +17094,7 @@ mod tests {
             disk.contains("upload_write_gitignore = false"),
             "a settings PATCH must not reset a [ui] field it never named:\n{disk}"
         );
-        let reloaded = crate::config::load_config(&engine.paths);
+        let reloaded = crate::config::load_config(&engine.paths).expect("config loads");
         assert_eq!(reloaded.ui.upload_directory, "tmp/drops");
         assert!(!reloaded.ui.upload_write_gitignore);
     }
@@ -12475,21 +17123,6 @@ mod tests {
         assert!(err.to_string().contains("not-a-real-provider"), "{err}");
         assert!(err.to_string().contains("not configured"), "{err}");
         assert_eq!(engine.config.defaults.provider, before);
-    }
-
-    #[test]
-    fn normalize_pr_banner_position_accepts_known_values() {
-        assert_eq!(normalize_pr_banner_position("top"), Some("top".to_string()));
-        assert_eq!(
-            normalize_pr_banner_position("  Bottom "),
-            Some("bottom".to_string())
-        );
-    }
-
-    #[test]
-    fn normalize_pr_banner_position_rejects_unknown() {
-        assert_eq!(normalize_pr_banner_position("left"), None);
-        assert_eq!(normalize_pr_banner_position(""), None);
     }
 
     #[test]
@@ -12570,10 +17203,9 @@ mod tests {
                 ..Default::default()
             }))
             .expect("dispatch ok");
-        assert_eq!(
-            engine.config.ui.terminal_font_family,
-            "Fira Code; color: red"
-        );
+        // Stored as the web terminal uses it (`effective_terminal_font_family`):
+        // only the safe class survives, the declaration's punctuation included.
+        assert_eq!(engine.config.ui.terminal_font_family, "Fira Code color red");
     }
 
     #[test]
@@ -12822,6 +17454,14 @@ mod tests {
     /// destructure in `set_settings`, and the length assertion below is what
     /// tells a contributor adding a field that a row is owed here too.
     fn settings_field_rows() -> Vec<SettingsFieldRow> {
+        let mut rows = layout_and_input_setting_rows();
+        rows.extend(timing_attention_and_identity_setting_rows());
+        rows
+    }
+
+    /// The rows of [`settings_field_rows`] for the layout, the input surfaces,
+    /// uploads and the icons.
+    fn layout_and_input_setting_rows() -> Vec<SettingsFieldRow> {
         vec![
             SettingsFieldRow {
                 key: "copy_on_select",
@@ -12893,6 +17533,27 @@ mod tests {
                 read: |c| c.ui.tab_reaches_agent.to_string(),
                 expect: "true",
             },
+            SettingsFieldRow {
+                key: "extended_keys",
+                seed: |c| c.ui.extended_keys = "auto".to_string(),
+                sent: serde_json::json!("off"),
+                read: |c| c.ui.extended_keys.clone(),
+                expect: "off",
+            },
+            SettingsFieldRow {
+                key: "nerd_font_icons",
+                seed: |c| c.ui.nerd_font_icons = false,
+                sent: serde_json::json!(true),
+                read: |c| c.ui.nerd_font_icons.to_string(),
+                expect: "true",
+            },
+        ]
+    }
+
+    /// The rows of [`settings_field_rows`] for status timing, attention, the
+    /// welcome screens, the banner, links, names, the provider and the font.
+    fn timing_attention_and_identity_setting_rows() -> Vec<SettingsFieldRow> {
+        vec![
             SettingsFieldRow {
                 key: "status_clear_seconds",
                 seed: |c| c.ui.status_clear_seconds = 6,
@@ -12991,11 +17652,40 @@ mod tests {
     /// The patch is built from the wire JSON rather than a Rust literal so the
     /// row exercises the same envelope a client sends.
     #[test]
+    fn set_settings_refuses_an_unknown_extended_keys_mode_and_normalizes_a_known_one() {
+        let (mut engine, _tmp) = test_engine();
+        let refused: WireCommand = serde_json::from_value(serde_json::json!({
+            "command": "set_settings",
+            "args": { "extended_keys": "kitty" },
+        }))
+        .expect("build wire command");
+        let err = engine
+            .apply_wire(refused)
+            .expect_err("an unknown mode must be refused");
+        assert!(
+            err.to_string()
+                .contains("unknown extended keys mode \"kitty\""),
+            "{err}"
+        );
+        assert_eq!(engine.config.ui.extended_keys, "auto");
+
+        let accepted: WireCommand = serde_json::from_value(serde_json::json!({
+            "command": "set_settings",
+            "args": { "extended_keys": " OFF " },
+        }))
+        .expect("build wire command");
+        engine
+            .apply_wire(accepted)
+            .expect("a known mode is accepted");
+        assert_eq!(engine.config.ui.extended_keys, "off");
+    }
+
+    #[test]
     fn set_settings_applies_every_field_when_sent_alone() {
         let rows = settings_field_rows();
         assert_eq!(
             rows.len(),
-            22,
+            24,
             "add a row when you add a field to SettingsPatch"
         );
         for row in rows {
@@ -13024,19 +17714,11 @@ mod tests {
         }
     }
 
-    /// ENFORCEMENT TEST. Every field, in one patch, must land in the RUNNING
-    /// config AND on disk, and the two must agree. The existing suite asserted
-    /// disk content only, which is how a field missing from the copy-back
-    /// shipped: the file updated while the engine kept serving the stale value
-    /// until the next reload. The patch is an exhaustive literal with no `..`,
-    /// so adding a field fails to COMPILE here rather than silently skipping it.
-    #[test]
-    fn set_settings_round_trips_every_field_into_the_running_config() {
-        let (mut engine, _tmp) = test_engine();
-        let before = engine.config.clone();
+    /// A patch of every setting, each changed from what `before` holds.
+    fn every_setting_changed_from(before: &crate::config::Config) -> WireCommand {
         // Every value is derived from the current config, so no field can pass
         // by accidentally already holding the value we send.
-        let patch = WireCommand::SetSettings(SettingsPatch {
+        WireCommand::SetSettings(SettingsPatch {
             copy_on_select: Some(!before.ui.copy_on_select),
             compose_bar: Some(if before.ui.compose_bar == "never" {
                 "always".to_string()
@@ -13051,6 +17733,12 @@ mod tests {
             web_notifications: Some(!before.capabilities.web_notifications),
             always_show_tab_strip: Some(!before.ui.always_show_tab_strip),
             tab_reaches_agent: Some(!before.ui.tab_reaches_agent),
+            extended_keys: Some(if before.ui.extended_keys == "off" {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            }),
+            nerd_font_icons: Some(!before.ui.nerd_font_icons),
             status_clear_seconds: Some(before.ui.status_clear_seconds + 1),
             attention_grace_seconds: Some(before.ui.attention_grace_seconds + 1),
             attention_indicator: Some(!before.ui.attention_indicator),
@@ -13074,7 +17762,63 @@ mod tests {
             // Presentation flag, maps to no config field; false keeps this
             // full-patch round trip on the normal (status-emitting) path.
             quiet: false,
-        });
+        })
+    }
+
+    /// Every setting a full patch wrote holds the same value on disk as in
+    /// memory.
+    fn assert_disk_agrees_with_memory(disk: &crate::config::Config, after: &crate::config::Config) {
+        assert_eq!(disk.ui.copy_on_select, after.ui.copy_on_select);
+        assert_eq!(disk.ui.compose_bar, after.ui.compose_bar);
+        assert_eq!(disk.ui.extended_keys, after.ui.extended_keys);
+        assert_eq!(disk.ui.mobile_accessory_bar, after.ui.mobile_accessory_bar);
+        assert_eq!(disk.ui.auto_reopen_agents, after.ui.auto_reopen_agents);
+        assert_eq!(disk.ui.show_changes_pane, after.ui.show_changes_pane);
+        assert_eq!(
+            disk.capabilities.web_notifications,
+            after.capabilities.web_notifications
+        );
+        assert_eq!(
+            disk.ui.always_show_tab_strip,
+            after.ui.always_show_tab_strip
+        );
+        assert_eq!(disk.ui.status_clear_seconds, after.ui.status_clear_seconds);
+        assert_eq!(
+            disk.ui.attention_grace_seconds,
+            after.ui.attention_grace_seconds
+        );
+        assert_eq!(disk.ui.attention_indicator, after.ui.attention_indicator);
+        assert_eq!(disk.ui.attention_on_bell, after.ui.attention_on_bell);
+        assert_eq!(disk.ui.pr_banner_position, after.ui.pr_banner_position);
+        assert_eq!(disk.capabilities.hyperlinks, after.capabilities.hyperlinks);
+        assert_eq!(
+            disk.defaults.enable_randomized_pet_name_by_default,
+            after.defaults.enable_randomized_pet_name_by_default
+        );
+        assert_eq!(disk.defaults.provider, after.defaults.provider);
+        assert_eq!(
+            disk.ui.disable_automated_welcome_screen,
+            after.ui.disable_automated_welcome_screen
+        );
+        assert_eq!(
+            disk.ui.disable_release_notes,
+            after.ui.disable_release_notes
+        );
+        assert_eq!(disk.ui.terminal_font_family, after.ui.terminal_font_family);
+        assert_eq!(disk.ui.terminal_font_size, after.ui.terminal_font_size);
+    }
+
+    /// ENFORCEMENT TEST. Every field, in one patch, must land in the RUNNING
+    /// config AND on disk, and the two must agree. The existing suite asserted
+    /// disk content only, which is how a field missing from the copy-back
+    /// shipped: the file updated while the engine kept serving the stale value
+    /// until the next reload. The patch is an exhaustive literal with no `..`,
+    /// so adding a field fails to COMPILE here rather than silently skipping it.
+    #[test]
+    fn set_settings_round_trips_every_field_into_the_running_config() {
+        let (mut engine, _tmp) = test_engine();
+        let before = engine.config.clone();
+        let patch = every_setting_changed_from(&before);
         engine.apply_wire(patch).expect("dispatch ok");
 
         let after = &engine.config;
@@ -13099,6 +17843,8 @@ mod tests {
             !before.ui.always_show_tab_strip
         );
         assert_eq!(after.ui.tab_reaches_agent, !before.ui.tab_reaches_agent);
+        assert_eq!(after.ui.extended_keys, "off");
+        assert_eq!(after.ui.nerd_font_icons, !before.ui.nerd_font_icons);
         assert_eq!(
             after.ui.status_clear_seconds,
             before.ui.status_clear_seconds + 1
@@ -13141,197 +17887,7 @@ mod tests {
         engine.config_writer.flush();
         let raw = std::fs::read_to_string(&engine.paths.config_path).expect("read config");
         let disk: crate::config::Config = toml::from_str(&raw).expect("parse config");
-        assert_eq!(disk.ui.copy_on_select, after.ui.copy_on_select);
-        assert_eq!(disk.ui.compose_bar, after.ui.compose_bar);
-        assert_eq!(disk.ui.mobile_accessory_bar, after.ui.mobile_accessory_bar);
-        assert_eq!(disk.ui.auto_reopen_agents, after.ui.auto_reopen_agents);
-        assert_eq!(disk.ui.show_changes_pane, after.ui.show_changes_pane);
-        assert_eq!(
-            disk.capabilities.web_notifications,
-            after.capabilities.web_notifications
-        );
-        assert_eq!(
-            disk.ui.always_show_tab_strip,
-            after.ui.always_show_tab_strip
-        );
-        assert_eq!(disk.ui.status_clear_seconds, after.ui.status_clear_seconds);
-        assert_eq!(
-            disk.ui.attention_grace_seconds,
-            after.ui.attention_grace_seconds
-        );
-        assert_eq!(disk.ui.attention_indicator, after.ui.attention_indicator);
-        assert_eq!(disk.ui.attention_on_bell, after.ui.attention_on_bell);
-        assert_eq!(disk.ui.pr_banner_position, after.ui.pr_banner_position);
-        assert_eq!(disk.capabilities.hyperlinks, after.capabilities.hyperlinks);
-        assert_eq!(
-            disk.defaults.enable_randomized_pet_name_by_default,
-            after.defaults.enable_randomized_pet_name_by_default
-        );
-        assert_eq!(disk.defaults.provider, after.defaults.provider);
-        assert_eq!(
-            disk.ui.disable_automated_welcome_screen,
-            after.ui.disable_automated_welcome_screen
-        );
-        assert_eq!(
-            disk.ui.disable_release_notes,
-            after.ui.disable_release_notes
-        );
-        assert_eq!(disk.ui.terminal_font_family, after.ui.terminal_font_family);
-        assert_eq!(disk.ui.terminal_font_size, after.ui.terminal_font_size);
-    }
-
-    /// CROSS-LANGUAGE PIN: the curated favicon color names live twice, here in
-    /// `CURATED_FAVICON_COLORS` and in the TS `FAVICON_COLORS` map that drives the
-    /// customize-webapp dialog and the tinted-duck SVG. A recolor/rename dialog that
-    /// offered a color the server rejects (or vice versa) would degrade silently, so
-    /// this parses the TS map's keys out of `favicon.ts` and asserts the two sets
-    /// are identical. Skips (rather than fails) when the web tree isn't present, e.g.
-    /// a published crate build outside the workspace. Copies the file-reading and
-    /// relative-path approach from `palette::tests::web_pin_matches_the_typescript_pin`.
-    #[test]
-    fn curated_favicon_colors_match_the_typescript_list() {
-        let ts_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../yaran-web/web/src/lib/favicon.ts");
-        let Ok(source) = std::fs::read_to_string(&ts_path) else {
-            eprintln!("skipping: {} not present", ts_path.display());
-            return;
-        };
-        // Isolate the `FAVICON_COLORS` object body, then read the `name: "#hex",`
-        // key off each line (the identifier before the first colon).
-        let body = source
-            .split("export const FAVICON_COLORS: Record<string, string> = {")
-            .nth(1)
-            .and_then(|rest| rest.split('}').next())
-            .expect("FAVICON_COLORS object not found in favicon.ts");
-        let mut ts_names: Vec<String> = body
-            .lines()
-            .filter_map(|line| line.trim().split(':').next())
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .collect();
-        ts_names.sort();
-        let mut rust_names: Vec<String> = CURATED_FAVICON_COLORS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        rust_names.sort();
-        assert_eq!(
-            rust_names, ts_names,
-            "the curated favicon colors drifted between Rust CURATED_FAVICON_COLORS \
-             (wire.rs) and the TS FAVICON_COLORS map (favicon.ts). Update BOTH lists \
-             together so the dialog and the server agree on the accepted colors."
-        );
-    }
-
-    #[test]
-    fn normalize_instance_favicon_accepts_curated_names() {
-        assert_eq!(normalize_instance_favicon("amber"), Some("amber".into()));
-        // Trimmed and lowercased.
-        assert_eq!(
-            normalize_instance_favicon("  VIOLET  "),
-            Some("violet".into())
-        );
-        // Every curated name round-trips.
-        for name in CURATED_FAVICON_COLORS {
-            assert_eq!(normalize_instance_favicon(name), Some((*name).to_string()));
-        }
-    }
-
-    #[test]
-    fn normalize_instance_favicon_empty_resets_to_default() {
-        assert_eq!(normalize_instance_favicon(""), Some(String::new()));
-        assert_eq!(normalize_instance_favicon("   "), Some(String::new()));
-    }
-
-    #[test]
-    fn normalize_instance_favicon_rejects_unknown() {
-        // Dropped legacy names, hex, and URLs are all invalid now. `yellow` is the
-        // default (empty), not a tint, so it is rejected as an explicit value.
-        assert_eq!(normalize_instance_favicon("mauve"), None);
-        assert_eq!(normalize_instance_favicon("yellow"), None);
-        assert_eq!(normalize_instance_favicon("purple"), None);
-        assert_eq!(normalize_instance_favicon("#863bff"), None);
-        assert_eq!(normalize_instance_favicon("https://x/y.png"), None);
-    }
-
-    #[test]
-    fn normalize_instance_title_strips_controls_and_collapses_whitespace() {
-        assert_eq!(
-            normalize_instance_title("  yaran\t\n  prod \r\n "),
-            "yaran prod"
-        );
-        // A bare control character becomes nothing meaningful → default.
-        assert_eq!(normalize_instance_title("\u{0007}\u{0000}"), "yaran");
-        // Bidi/format characters (Cf) are neutralized too, not just controls (Cc),
-        // so a right-to-left override can't spoof the rendered title.
-        assert_eq!(
-            normalize_instance_title("invoice\u{202E}cod.exe"),
-            "invoice cod.exe"
-        );
-        assert_eq!(normalize_instance_title("a\u{200D}\u{FEFF}b"), "a b");
-    }
-
-    #[test]
-    fn normalize_instance_title_empty_resets_to_yaran() {
-        assert_eq!(normalize_instance_title(""), "yaran");
-        assert_eq!(normalize_instance_title("     "), "yaran");
-    }
-
-    #[test]
-    fn normalize_instance_title_caps_length_by_chars_not_bytes() {
-        // Multi-byte glyphs: 300 of them must cap to 200 chars, never panic on a
-        // byte boundary inside a codepoint.
-        let input: String = "é".repeat(300);
-        let out = normalize_instance_title(&input);
-        assert_eq!(out.chars().count(), 200);
-        assert!(out.chars().all(|c| c == 'é'));
-    }
-
-    #[test]
-    fn sanitize_terminal_font_family_drops_ascii_control_characters() {
-        assert_eq!(
-            sanitize_terminal_font_family("Fira Code\n; color: red"),
-            "Fira Code; color: red"
-        );
-        assert_eq!(sanitize_terminal_font_family("\u{0007}\u{0000}"), "");
-        assert_eq!(sanitize_terminal_font_family("a\tb\rc"), "abc");
-    }
-
-    #[test]
-    fn sanitize_terminal_font_family_leaves_ordinary_values_untouched() {
-        assert_eq!(sanitize_terminal_font_family("Fira Code"), "Fira Code");
-        assert_eq!(
-            sanitize_terminal_font_family("\"Cascadia Code\", Consolas"),
-            "\"Cascadia Code\", Consolas"
-        );
-        assert_eq!(sanitize_terminal_font_family(""), "");
-    }
-
-    #[test]
-    fn sanitize_terminal_font_family_caps_length_by_chars_not_bytes() {
-        let input: String = "é".repeat(300);
-        let out = sanitize_terminal_font_family(&input);
-        assert_eq!(out.chars().count(), 200);
-        assert!(out.chars().all(|c| c == 'é'));
-    }
-
-    #[test]
-    fn wire_to_command_run_macro_passes_through() {
-        let (engine, _tmp) = test_engine();
-        let cmd = engine
-            .wire_to_command(WireCommand::RunMacro {
-                target_id: "sess-1".to_string(),
-                name: "greet".to_string(),
-            })
-            .expect("reconstruct");
-        match cmd {
-            Command::RunMacro { target_id, name } => {
-                assert_eq!(target_id, "sess-1");
-                assert_eq!(name, "greet");
-            }
-            _ => panic!("expected Command::RunMacro"),
-        }
+        assert_disk_agrees_with_memory(&disk, after);
     }
 
     #[test]
@@ -13351,18 +17907,20 @@ mod tests {
                         surface: "terminal".to_string(),
                     },
                 ],
+                version: None,
             })
             .expect("reconstruct");
         match cmd {
-            Command::UpdateMacros { macros } => {
+            Command::ChangeConfigSet(ConfigSetChange::ReplaceMacros { macros, read_at }) => {
                 let names: Vec<&String> = macros.entries.keys().collect();
                 assert_eq!(names, vec!["zebra", "alpha"]);
                 assert_eq!(
                     macros.entries["alpha"].surface,
                     crate::config::MacroSurface::Terminal
                 );
+                assert_eq!(read_at, None);
             }
-            _ => panic!("expected Command::UpdateMacros"),
+            _ => panic!("expected the whole-list replacement"),
         }
     }
 
@@ -13370,7 +17928,10 @@ mod tests {
     /// `Err` arm directly rather than using `expect_err`/`unwrap_err` (which
     /// require the `Ok` type to be `Debug`).
     fn update_macros_err(engine: &Engine, entries: Vec<WireMacroEntry>) -> String {
-        match engine.wire_to_command(WireCommand::UpdateMacros { entries }) {
+        match engine.wire_to_command(WireCommand::UpdateMacros {
+            entries,
+            version: None,
+        }) {
             Err(e) => e.to_string(),
             Ok(_) => panic!("expected an error"),
         }
@@ -13458,6 +18019,7 @@ mod tests {
                     text: "hello\nworld".to_string(),
                     surface: "agent".to_string(),
                 }],
+                version: None,
             })
             .expect("apply_wire");
         // The eager save reports success synchronously.
@@ -13660,11 +18222,11 @@ mod tests {
                 status_quiet: QuietSurfaces::LOUD,
                 view,
             };
-            assert!(
+            assert_eq!(
                 wire_statuses_from_reaction(&EventReaction::AgentLaunchReadyView(Box::new(
                     outcome
-                )))
-                .is_empty()
+                ))),
+                Vec::<WireStatus>::new()
             );
         }
 
@@ -13690,11 +18252,11 @@ mod tests {
             },
             AgentLaunchFailedOutcome::ResumeFallback,
         ] {
-            assert!(
+            assert_eq!(
                 wire_statuses_from_reaction(&EventReaction::AgentLaunchFailedView(Box::new(
                     outcome
-                )))
-                .is_empty()
+                ))),
+                Vec::<WireStatus>::new()
             );
         }
     }
@@ -13803,7 +18365,7 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         let op = crate::engine::status_op("Creating a new agent\u{2026}").resolve_in_handler(
             |o: &crate::engine::CreateLaunchOutcome| match o {
-                crate::engine::CreateLaunchOutcome::Failed { message } => {
+                crate::engine::CreateLaunchOutcome::Failed { message, .. } => {
                     crate::engine::Final::error(message.clone())
                 }
                 _ => crate::engine::Final::clear(),
@@ -13814,6 +18376,7 @@ mod tests {
 
         let reaction = engine.process_worker_event(WorkerEvent::CreateAgentFailed {
             status_op_id: op_id.clone(),
+            attempted_name: None,
             message: "worker panicked".to_string().into(),
         });
         // Project the engine reaction through the wire to confirm the web sees the

@@ -8,21 +8,26 @@ edition = "2024"
 publish = false
 
 [features]
-# Exposes the stand-in `gh` builders (`gh::probe_test_support`) to other crates'
-# test targets. `yaran-tui` and `yaran-web` enable it as a DEV-dependency only, so it
-# is off in a normal build and none of it ships in a release binary.
+# Exposes the stand-in `gh` builders (`gh::probe_test_support`) and the shared
+# start-check fixtures (`start_check_fixtures`) to test targets. `yaran-tui`,
+# `yaran-web` and yaran-core's own integration tests enable it as a DEV-dependency
+# only, so it is off in a normal build and none of it ships in a release binary.
 test-support = []
 
 [dependencies]
-notify.workspace = true
 # Gzips a rotated log copy in the background; yaran-web already depends on it.
 flate2.workspace = true
 tracing.workspace = true
+notify.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 compact_str = "0.9"
 content_inspector.workspace = true
+# Decodes and encodes the web editor's non-UTF-8 files (yaran_core::text_encoding):
+# the WHATWG encodings, byte-order-mark sniffing, and an encoder that reports a
+# character the target encoding cannot hold instead of replacing it.
+encoding_rs = "0.8.42"
 home.workspace = true
 indexmap.workspace = true
 petname = { version = "3.0.0", default-features = false, features = ["default-rng", "default-words"] }
@@ -30,6 +35,7 @@ portable-pty = "0.9"
 rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "backup"] }
 libc.workspace = true
 rustix.workspace = true
+socket2.workspace = true
 serde.workspace = true
 # `preserve_order` is load-bearing: `[macros]` and `[providers]` are
 # order-meaningful flattened IndexMaps, and without it `toml::from_str` hands
@@ -45,6 +51,10 @@ url.workspace = true
 percent-encoding.workspace = true
 uuid.workspace = true
 walkdir = "2"
+# Cleans the name of a file saved into an agent's upload folder
+# (yaran_core::file_drop), so the pasted path carries no quote or backslash an
+# agent CLI would misread.
+slug = "0.1.6"
 alacritty_terminal = "0.26.0"
 ureq = "3.3.0"
 # Watch rules (`crate::watch`): linear-time regex with a size cap, plus a
@@ -54,20 +64,49 @@ rand = { version = "0.8", features = ["small_rng"] }
 # Cloud protocol crypto (Ed25519 signing, ECDH sealing, HMAC, HKDF); already in the
 # lockfile through ureq -> rustls, so this adds no crate.
 ring = "0.17.14"
-# Strict base64url for the cloud protocol; already in the lockfile through axum/ureq.
+# Strict base64url for the cloud protocol and the web login's session cookie;
+# already in the lockfile through axum/ureq.
 base64 = "0.22.1"
-# The add-org QR code (CLI, TUI, web). No default features: no image crates; `svg`
-# adds no dependency.
+# QR codes: the add-org code (yaran_core::cloud::qr; CLI, TUI, web) and the
+# tailnet addresses `yaran server` and the start-web-server flip show
+# (yaran_core::qr). No default features: they pull in the `image` crate for
+# raster output; `svg` adds no dependency.
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+# The web login's password hashing (yaran_core::auth): Argon2id, PHC strings.
+argon2 = { version = "0.6", features = ["zeroize"] }
+# Password strength estimation for the login's minimum checks (yaran_core::auth).
+# Default features off: the builder is only for custom dictionaries.
+zxcvbn = { version = "3.1", default-features = false }
+# Wipes a typed password from memory when the buffer holding it is dropped.
+zeroize = "1.9"
+# The SIGUSR1 "reload the config" flag (yaran_core::reload_signal), the same
+# registry yaran-tui and tokio already register their handlers through.
+signal-hook = "0.4"
+# The web login's sessions (yaran_core::web_sessions): a random token from the
+# operating system's generator, kept server-side only as its SHA-256 digest, and
+# carried in the cookie as unpadded URL-safe base64.
+getrandom = "0.3"
+sha2 = "0.10"
+# The built-in theme names (yaran_core::theme::discover_available), listed for the
+# terminal UI's picker, `yaran themes ls` and the web API alike. Default features
+# off: `ratatui` would pull ratatui-core into yaran-web, which must stay free of
+# terminal UI crates.
+opaline = { version = "0.4", default-features = false, features = ["builtin-themes"] }
 
 [dev-dependencies]
-# Integration tests (tests/cloud_*.rs) use the cloud mock Worker behind `test-support`.
+# The package itself with `test-support` on, so its own integration tests reach
+# the shared fixtures (`start_check_fixtures`, the cloud mock Worker in
+# tests/cloud_*.rs) through the library like every other crate's tests do.
 yaran-core = { path = ".", features = ["test-support"] }
 # AMQ queue expiry tests backdate file mtimes.
 filetime = "0.2"
 # An independent opener for the cloud handoff envelope tests (ring can seal, not open).
 p256 = { version = "0.14", features = ["ecdh"] }
 aes-gcm = "0.11"
+# Decodes the QR codes yaran_core::qr draws, so the tests prove a phone could read
+# them rather than only that the drawing did not change. Default features off:
+# the tests hand it greyscale pixels directly, with no image crate.
+rqrr = { version = "0.11", default-features = false }
 
 # The reload end-to-end test execs itself to play the second generation of a
 # reload, so it needs its own `main` instead of libtest's (which would just run
@@ -76,3 +115,6 @@ aes-gcm = "0.11"
 [[test]]
 name = "reload_handoff_e2e"
 harness = false
+
+[lints]
+workspace = true

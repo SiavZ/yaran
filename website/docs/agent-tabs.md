@@ -11,21 +11,40 @@ migration in another, both editing the *same* checkout.
 
 Tabs live in a strip at the top of the agent's terminal. A brand-new agent has exactly
 one tab, and the strip stays hidden until you add a second. Turn on **Always show tab
-strip** (Preferences on the web, or the palette in the terminal UI) if you would rather see
-it from the first tab on.
+strip** (a Preferences row on the web, `toggle-always-show-tabs` in the terminal UI's
+palette, or `always_show_tab_strip` under `[ui]`) if you would rather see it from the first
+tab on. An agent's terminal dock (in the browser, [the terminal dock](/docs/web-workspace#the-terminal-dock))
+has a strip of its own, and the two show and hide together on both surfaces: both appear
+once the agent has a second tab or a second terminal, or while the setting is on.
 
 > [!NOTE]
 > The browser's [theater mode](/docs/web-workspace#theater-mode-one-pane-no-chrome) takes
-> the strip away along with the rest of the chrome. The tabs are still running; what
-> they are doing is in the agents list, and one that needs you says so with a
-> notification. Leaving theater brings the strip back where you left it.
+> the strip away along with the rest of the chrome. The tabs keep running, and leaving
+> theater brings the strip back where you left it.
+>
+> While you are in it, a tab that needs you shows up like this:
+>
+> - **Agents list and the tab's pill:** both come back when you leave theater.
+> - **Desktop notification:** only if you turned them on and the yaran window is in the
+>   background.
+> - **On a computer:** the browser tab's title and favicon still count it.
+> - **On a phone:** nothing says so until you leave the mode.
 
 ## Every tab is equal
 
 There is no "main" tab and no "support" tab. Every tab is a provider session in the
 agent's shared worktree, and they all behave the same. This is the strip in the browser:
 
-![Three provider tabs on one agent, the first one active, with a plus button for adding another.](/screens/agent-tabs-strip.png)
+![Three provider tabs on one agent, the first one active and wearing a small pin, with a plus button for adding another.](/screens/agent-tabs-strip.png)
+
+The one difference is a small pin after the first tab's name, shown whenever the agent has
+two or more tabs. It marks the agent's first tab. On the web, selecting a stopped agent
+starts that tab, wherever it sits in the strip, and the pin's tooltip says so. The terminal
+UI draws the pin as `⚲`, and there nothing starts just because you looked at an agent, so
+the pin only says which tab is first. The pin moves only when the first tab closes and its
+place passes on.
+
+![The terminal UI tab strip with the first pill wearing the ⚲ pin after its name.](/screens/tui-tabs-strip-ordinals.png)
 
 - **On the web**, the `+` button on the strip adds a tab running the project's default
   provider immediately. The dropdown attached to it picks a different one.
@@ -36,22 +55,25 @@ agent's shared worktree, and they all behave the same. This is the strip in the 
   `change-agent-provider` palette command in the terminal UI.
 
 > [!NOTE]
-> A per-agent cap keeps the strip sane: 20 tabs by default, and configurable. Adding a
-> tab past the cap is refused.
+> A per-agent cap keeps the strip sane: 20 tabs by default. Change it with
+> `agent_tabs_max` under `[ui]` (`0` means the default, and values above 100 are held to
+> 100). Adding a tab past the cap is refused.
 
 ## How resume works
 
 A provider's "continue where we left off" flag is tied to the *directory* **and to that
-provider**, not to a specific conversation. Claude, Codex, and OpenCode (with a recent
-enough Codex build) each keep their own history scoped to the worktree, so a Claude tab
-and a Codex tab can both resume at once. Two tabs of the *same* provider would both
-reopen the identical conversation.
+provider**, not to a specific conversation. Claude, Codex (on a recent enough build), Grok (its `--continue` is per directory) and
+OpenCode each keep their own history scoped to the worktree, so a Claude tab and a Codex
+tab can both resume at once. Two tabs of the *same* provider would both reopen the
+identical conversation.
 
 So yaran hands the resume slot to a tab **only when it is the sole tab of its provider
-coming up**, meaning no other tab running that provider is already live or launching. A
-different-provider sibling never blocks it, and tab position has nothing to do with it.
-In practice: reopen an agent that was fully stopped and each provider picks up where it
-left off, but launch a *second* Claude tab on top of a running one and it starts clean.
+coming up**, meaning no other tab running that provider is already live or launching.
+
+- **A different-provider sibling** never blocks it.
+- **Tab position** has nothing to do with it.
+- **Reopening a fully stopped agent:** each provider picks up where it left off.
+- **A second Claude tab** launched on top of a running one starts clean.
 
 > [!NOTE]
 > A tab you **create** always starts fresh, whatever else is running. The resume slot is
@@ -69,11 +91,15 @@ yaran does not track which conversation belonged to which tab. When it hands a t
 resume slot, it passes the provider's own continue flag, and that flag grabs the
 **most-recent** conversation in the worktree.
 
-Walk it through. You have a Claude tab mid-conversation, and you quit yaran. Every tab
-comes back dormant, and you launch that Claude tab. It comes up alone for Claude, so yaran
-passes `--continue`, and Claude reopens the latest conversation in that folder, which is
-the one you were just in. It *looks* like yaran resumed that exact tab. It did not: a
-different Claude tab, launched first, would have taken the very same conversation.
+Walk it through:
+
+1. You have a Claude tab mid-conversation, and you quit yaran.
+2. Every tab comes back dormant, and you launch that Claude tab.
+3. It comes up alone for Claude, so yaran passes `--continue`.
+4. Claude reopens the latest conversation in that folder, which is the one you were just in.
+
+It *looks* like yaran resumed that exact tab. It did not: a different Claude tab, launched
+first, would have taken the very same conversation.
 
 > [!TIP]
 > yaran cannot target an **older** conversation for you. Start a fresh tab and use the
@@ -82,14 +108,30 @@ different Claude tab, launched first, would have taken the very same conversatio
 ## Switching between tabs
 
 On the web, click a pill. Tabs are deep-linkable, so the URL points right at one and a
-reload brings you back to it.
+reload brings you back to it. Each tab you switch to is a step in the browser's history,
+like a browser tab, so Back takes you to the tab you were on before.
 
-yaran remembers, per agent, whichever tab you had focused last. Jump to a different agent
-and back (on the web, a sidebar click or the plain `#/agent/<id>` link; in the terminal
-UI, reselecting the agent) and you land on that same tab. The memory survives restarts and is shared
-between the terminal UI and the web. A tab you closed is never resurrected by it; you
-land on the agent's first tab instead, and so does a deep link to a tab that has since
-been closed.
+### Reordering tabs
+
+Tabs sit in the order you give them, like tabs in a browser. Drag a pill along the strip and
+drop it where you want it: on the web with the mouse, or with a press and hold on a touch
+screen, and in the terminal UI with the mouse. The terminal UI also has the
+`move-tab-left` and `move-tab-right` palette commands, which move the focused tab one place
+and tell you when it is already at that end.
+
+- **New tabs** always join at the right-hand end.
+- **The order is kept** across restarts, and is shared between the terminal UI and the web.
+- **Order is only for looking at.** Moving the first tab does not change which tab is the
+  agent's first, and resume never depends on position.
+- **A strip reorders within itself.** A tab never moves to another agent.
+
+yaran also remembers, per agent, whichever tab you had focused last. Jump to a different
+agent and back (on the web, a sidebar click or the plain `#/agent/<id>` link; in the
+terminal UI, reselecting the agent) and you land on that same tab.
+
+- **The memory survives restarts** and is shared between the terminal UI and the web.
+- **A closed tab is never resurrected.** You land on the agent's first tab instead, and so
+  does a deep link to a tab that has since been closed.
 
 > [!NOTE]
 > An explicit deep link always wins over the remembered tab, and following one does not
@@ -97,35 +139,51 @@ been closed.
 > land on next time you reopen the agent yourself.
 
 In the terminal UI, switching is keyboard-driven and every key is yours to rebind; the
-in-app help overlay shows your current bindings. The defaults are modifier chords, and
-chords stay yaran's even while you type into the agent in the windowed pane, so you can
-hop tabs mid-sentence. Each pill carries its position number, so the switch-by-number
-keys have a visible address. A pill also reports what its own tab is up to, with the
-same cues the agent list uses: a spinner while that tab's provider is working, and a
-blinking dot when it wants you. The pill you are looking at is the highlighted one.
+in-app help overlay shows your current bindings.
 
-That is the terminal UI strip: each pill leads with its position number, and the first one
-is highlighted because it is the tab on screen.
+- **Chords:** the defaults are modifier chords, and chords stay yaran's even while you type
+  into the agent in the windowed pane, so you can hop tabs mid-sentence.
+- **Numbers:** each pill carries its position number, so the switch-by-number keys have a
+  visible address.
+- **Activity:** a pill reports what its own tab is up to, with the same cues the agent
+  list uses: a spinner while that tab's provider is working, and a blinking dot when it
+  wants you.
+- **Highlight:** the pill you are looking at is the highlighted one.
+- **The dock:** while an agent's [terminal dock](/docs/ordering-the-sidebar#terminals-beside-their-agent)
+  has focus, the next and previous tab keys, the switch-by-number keys and the move-tab
+  commands act on its terminals instead, whose pills are numbered the same way.
 
-![The terminal UI tab strip above an agent's terminal, three numbered pills for the same provider with the first one highlighted.](/screens/tui-tabs-strip-ordinals.png)
+This is the terminal UI strip: the third pill is highlighted because it is the tab on
+screen.
+
+![The terminal UI tab strip above an agent's terminal, three numbered pills for the same provider with the third one highlighted.](/screens/tui-tabs-strip-ordinals.png)
 
 > [!IMPORTANT]
-> Fullscreen gives every key to the agent verbatim and does not draw the strip at all.
+> Fullscreen gives every key straight to the agent and does not draw the strip at all.
 > Minimize first to hop between tabs.
 
-Switch-to-tab-4 ships with no default key, because most terminals send the same byte for
-`Ctrl-4` and `Ctrl-\` and yaran gives that byte to the macro bar. Step to it with the
-next and previous tab keys, or bind your own key to `select_tab_4`, which the config
-file carries as a commented-out row ready to fill in.
+Only tabs 6 and 7 ship with a switch-by-number key. Most terminals send the other
+`Ctrl`-digit chords as something else: `Ctrl-1` and `Ctrl-9` as a plain digit, `Ctrl-2`
+as `Ctrl-Space`, `Ctrl-3` as Escape, `Ctrl-8` as Backspace, and `Ctrl-4` and `Ctrl-5` as
+`Ctrl-\` and `Ctrl-]`, which yaran already uses for other actions. Step to those tabs with
+the next and previous tab keys, or bind your own key to `select_tab_1` through
+`select_tab_9`. A new config file carries each unbound one as a commented-out row ready to
+fill in, and the help overlay names the tab numbers that still have no key.
+
+An older config file may still hold rows such as `select_tab_5 = ["ctrl-5"]`, written when
+those were the defaults. yaran reads a row that is exactly its old default as unbound and
+says nothing about it; a key you chose yourself is kept.
 
 ## Closing tabs
 
 Every tab closes, the **first** one included, as long as the agent has another tab to
-fall back on. Closing one ends that session, so yaran asks you to confirm. Closing the
+fall back on. Closing one ends that session, so yaran asks you to confirm. Like a browser
+tab, closing the tab you are looking at lands you on the tab to its right, or the one to its
+left when it was the last. Closing the
 agent's **last running** tab detaches the whole agent: it leaves the sidebar's active list
-but stays in Projects, ready to reopen.
+(unless one of its terminals is still running) but stays in Projects, ready to reopen.
 
-![A tab's menu open over the tab strip, offering Change provider and Close tab.](/screens/agent-tab-actions-menu.png)
+![A running tab's menu open over the tab strip, offering Change provider, Stop tab and Close tab.](/screens/agent-tab-actions-menu.png)
 
 A separate **Detach agent** action stops every one of the agent's tabs at once and parks
 it in Projects. Deleting the agent takes every tab with it. See
@@ -134,17 +192,32 @@ long it waits.
 
 ### Closing the first tab hands its place on
 
-Closing an agent's first tab promotes the **next tab** to first, and the confirmation
-names it before you commit. The promoted tab is untouched otherwise: same conversation,
+Closing an agent's first tab promotes the **leftmost remaining tab** to first, and the
+confirmation names it before you commit. The promoted tab is untouched otherwise: same conversation,
 same process if it was running, same link. It simply becomes the tab the agent opens on.
 
 > [!IMPORTANT]
 > An agent always has a first tab, so its **only** tab cannot be closed. yaran says so
 > rather than closing it, in the same words on both surfaces: on the web the *Close tab*
 > entry is greyed out with the reason above it, and in the terminal UI the close key
-> answers with that note instead of a confirmation. Add another tab first, or detach the
-> agent to stop everything it is running (the Task Manager's **Force stop** on the agent's
-> row does the same, without the shutdown wait).
+> answers with that note instead of a confirmation.
+>
+> Add another tab first, or detach the agent to stop everything it is running (the Task
+> Manager's **Force stop** on the agent's row does the same, without the shutdown wait).
+
+### Stopping a tab keeps it
+
+To end a tab's session without throwing the tab away, stop it instead. yaran asks first,
+then ends the tab's process; the pill stays in the strip, dormant, ready to start again.
+
+- **On the web:** **Stop tab** in a running tab's menu.
+- **In the terminal UI:** the `stop-agent-tab` palette command, which acts on the focused
+  tab.
+- **From the command line:** `yaran agents tabs stop <agent> <tab>`.
+
+Stopping the agent's **last running** tab detaches the agent, the same as closing it
+would. Any tab can be stopped, an agent's only tab included. A tab that is not running has
+nothing to stop, so the web menu leaves the entry out for it.
 
 ### Closing a tab is one-way
 
@@ -161,47 +234,73 @@ Tabs come back **dormant**: the pills are there and no processes are running. A 
 comes up alone for its provider resumes automatically, per the rule above, which again
 means the newest conversation in the worktree rather than a specific tab's.
 
-On the web, selecting the agent starts its **first tab** right there: that is the tab the
-agent is, and asking for the agent is asking for it. Extra tabs wait: each says it isn't
-running until you click *Start session*, so a tab you added deliberately does not spring
-back to life just because you looked at it.
+### Normal restart
 
-The terminal UI never starts anything just because you looked at it, the first tab
-included. A dormant extra tab shows a *Tab not running* card naming the key that launches
-it, and a detached agent comes back through the reconnect action.
+- **On the web,** selecting the agent starts its **first tab** right there: that is the
+  tab the agent is, and asking for the agent is asking for it. Extra tabs wait: each says
+  it isn't running until you click *Start session*, so a tab you added deliberately does
+  not spring back to life just because you looked at it.
+- **If the agent's only tab stops while you are looking at it** (you quit the provider, or
+  stopped the tab), the web stays on the agent rather than sending you home, and the tab
+  shows the idle screen described below. It does not start again until you click *Start
+  session* or click the agent's row again.
+- **In the terminal UI,** nothing starts just because you looked at it, the first tab
+  included. A dormant extra tab shows a *Tab not running* card naming the key that
+  launches it, and a detached agent comes back through the reconnect action.
 
-There is one exception, and it is the useful one. If a tab's **last run ended badly** (it
-failed to launch, or the provider exited with an error), that tab waits for you too, first
-tab included. It says it isn't running and only *Start session* launches it. Without that,
-a tab that cannot come up would try again every single time you selected the agent, and
-there would be no way to look at the agent without restarting the thing that keeps
-failing. Once a run succeeds, or you stop the tab yourself, or you restart yaran, the tab is
-back to starting on selection.
+### When the last run ended badly
 
-So a dormant tab shows one of two things, and it is the same on both the terminal UI and
-the web UI. A tab that is simply not running shows the yaran idle screen, logo and rotating
-tip and all, with a *Start session* button under it. A tab whose last run ended badly shows
-a card instead: how the run ended and how long ago (a failed launch and the error it gave,
-an exit status, or a run that was over in under five seconds), and, under *Last output*, the
-last few lines the run had on screen. That is usually where the answer is: a provider
-refusing to resume a conversation that is already open somewhere else says so on its way
-out.
+There is one exception, and it is the useful one. If a tab's **last run ended badly**, that
+tab waits for you too, first tab included. It says it isn't running and only *Start
+session* launches it. A run ended badly when:
 
-You do not have to open the agent to find that out. When a resume is refused, and the run
-was over in seconds, the notice yaran raises says the agent could not resume its previous
+- **it failed to launch,**
+- **the provider exited with an error,** or
+- **it was over in under five seconds,** whatever status it exited with, because a provider
+  that quits that fast usually never came up.
+
+The five-second rule only applies when nobody used the run. Anything you send it counts: a
+keystroke, a paste, a dropped file, a click or scroll in the pane, or a macro. So opening
+an agent and quitting it straight away, even with a macro that types `/exit` for you, is
+you ending the run rather than the run failing, and the tab goes on starting when you
+select it.
+
+Without this gate, a tab that cannot come up would try again every single time you
+selected the agent, and there would be no way to look at the agent without restarting the
+thing that keeps failing. Once a run succeeds, or you stop the tab yourself, or you restart
+yaran, the tab is back to starting on selection.
+
+### What a dormant tab shows
+
+It is the same on the terminal UI and the web UI, and it is one of two things:
+
+- **A tab that is simply not running** shows the yaran idle screen, logo and rotating tip and
+  all, with a *Start session* button under it.
+- **A tab whose last run ended badly** shows a card instead: how the run ended and how
+  long ago (a failed launch and the error it gave, an exit status, or a run that was over
+  in under five seconds with nothing sent to it), and, under *Last output*, the last few
+  lines the run had on screen.
+
+That last output is usually where the answer is: a provider refusing to resume a
+conversation that is already open somewhere else says so on its way out.
+
+### When a resume is refused
+
+You do not have to open the agent to see why a resume failed. When a resume was over in
+seconds, nobody had a chance to send it anything, and it left something readable behind,
+however short, yaran raises a notice. It says the agent could not resume its previous
 session and quotes the provider's own last words, remedy and all: a toast in the browser,
-and in the terminal UI the status line, when that agent is the one on screen. Whatever the
-CLI told you to do about it is in the message; the card still has the full output.
+and in the terminal UI the status line when that agent is the one on screen.
 
-That is the notice you get whenever a resume was over in seconds, nobody had a chance to
-type into it, and it left something readable behind, however short. A single line saying
-*No conversation found to continue* is the provider telling you something, so yaran keeps
-the tab exactly as it ended, repeats those words, and waits for you to start a fresh
-session yourself. It makes no difference whether the CLI treated that as an error or not:
-plenty of them print their refusal and exit perfectly happily, and you get the message
-either way.
+The card still has the full output.
 
-The one resume yaran restarts on its own is one that ended with nothing readable on screen
-at all: a blank screen, or nothing but the control codes a CLI writes on its way in and
-out. There is no ending to read and nothing to quote, so yaran treats it as nothing to
-resume, starts a fresh session, and tells you it did.
+What happens to the tab depends on what the run left on screen:
+
+- **Something readable** (even a single line like *No conversation found to continue*):
+  yaran keeps the tab exactly as it ended, repeats those words, and waits for you to start a
+  fresh session yourself. It makes no difference whether the CLI treated that as an error:
+  plenty of them print their refusal and exit perfectly happily, and you get the message
+  either way.
+- **Nothing readable at all,** a blank screen or only the control codes a CLI writes on
+  its way in and out: there is nothing to quote, so yaran treats it as nothing to resume,
+  starts a fresh session on its own, and tells you it did.

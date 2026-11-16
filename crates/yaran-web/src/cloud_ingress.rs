@@ -81,43 +81,57 @@ pub const ACCESS_JWT_HEADER: &str = "cf-access-jwt-assertion";
 /// The pairing-derived inputs of a binding (from the credentials).
 #[derive(Debug, Clone)]
 pub struct CloudBindingInput {
+    /// The machine's tunnel hostname, as paired.
     pub hostname: String,
+    /// The org's Cloudflare Access team domain.
     pub team_domain: String,
+    /// The machine's Access application audience tag.
     pub aud: String,
+    /// The paired owner's email, the only identity admitted.
     pub owner_email: String,
 }
 
 /// A validated binding; `hostname` is normalized like the Host guard's.
 #[derive(Debug, Clone)]
 pub struct CloudBinding {
+    /// The tunnel hostname, normalized.
     pub hostname: String,
+    /// The validated Access team domain the keys come from.
     pub team: TeamDomain,
+    /// The Access application audience a token must carry.
     pub aud: String,
+    /// The paired owner's email, the only identity admitted.
     pub owner_email: String,
 }
 
+/// Why a binding was refused: the credentials carry something yaran cannot serve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindRefusal {
+    /// The hostname does not normalize to a valid hostname.
     InvalidHostname,
+    /// The team domain is not a `cloudflareaccess.com` domain.
     InvalidTeamDomain,
+    /// No Access application audience.
     EmptyAud,
+    /// No owner email.
     EmptyOwnerEmail,
 }
 
 impl BindRefusal {
+    /// The sentence shown to the user, naming what to do next.
     pub fn sentence(self) -> &'static str {
         match self {
             Self::InvalidHostname => {
-                "the cloud hostname in the credentials is not a valid hostname, so yaran will not serve it; run `yaran cloud login` again"
+                "the cloud hostname in the credentials is not a valid hostname, so yaran will not serve it; run \"yaran cloud login\" again"
             }
             Self::InvalidTeamDomain => {
-                "the Access team domain in the credentials is not a cloudflareaccess.com domain, so yaran cannot verify sign-ins; run `yaran cloud login` again"
+                "the Access team domain in the credentials is not a cloudflareaccess.com domain, so yaran cannot verify sign-ins; run \"yaran cloud login\" again"
             }
             Self::EmptyAud => {
-                "the credentials carry no Access application audience, so yaran cannot verify sign-ins; run `yaran cloud login` again"
+                "the credentials carry no Access application audience, so yaran cannot verify sign-ins; run \"yaran cloud login\" again"
             }
             Self::EmptyOwnerEmail => {
-                "the credentials name no owner email, so yaran cannot tell the owner's sign-in from anyone else's; run `yaran cloud login` again"
+                "the credentials name no owner email, so yaran cannot tell the owner's sign-in from anyone else's; run \"yaran cloud login\" again"
             }
         }
     }
@@ -126,11 +140,17 @@ impl BindRefusal {
 /// The live `[cloud]` settings the ingress reads per request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngressSettings {
+    /// `[cloud] access_clock_skew_seconds`.
     pub clock_skew: Duration,
+    /// `[cloud] access_jwks_refresh_seconds`.
     pub jwks_refresh_ceiling: Duration,
+    /// `[cloud] access_jwks_retry_cooldown_seconds`.
     pub jwks_retry_cooldown: Duration,
+    /// `[cloud] handoff_requests_per_minute`.
     pub handoff_per_minute: u32,
+    /// `[cloud] close_sockets_at_access_expiry`.
     pub close_sockets_at_access_expiry: bool,
+    /// `[cloud] app_callback_urls`, the handoff redirect allowlist.
     pub app_callback_urls: Vec<String>,
 }
 
@@ -157,7 +177,12 @@ impl Default for IngressSettings {
 /// The pre-warm result `bind` reports, for the cloud loop's keyed status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JwksOutcome {
-    Ready { keys: usize },
+    /// The keys were fetched.
+    Ready {
+        /// How many signing keys the team published.
+        keys: usize,
+    },
+    /// The keys could not be fetched; the sanitized reason.
     Unavailable(String),
 }
 
@@ -167,6 +192,7 @@ pub use yaran_core::cloud::credentials::HandoffConsentKey as ConsentKey;
 /// Where the D24 consent key comes from. BLOCKING; called per handoff on a blocking task,
 /// never cached. `Ok(None)` means unpaired. Production reads the credentials file.
 pub trait ConsentKeySource: Send + Sync + 'static {
+    /// The current consent key, `Ok(None)` when unpaired.
     fn read_handoff_consent_key(&self) -> Result<Option<ConsentKey>, String>;
 }
 
@@ -219,6 +245,8 @@ impl Default for CloudIngress {
 }
 
 impl CloudIngress {
+    /// An unbound ingress fetching Access keys over the network and reading the
+    /// consent key from `consent_keys`.
     pub fn new(consent_keys: Arc<dyn ConsentKeySource>) -> Self {
         Self::with_parts(
             Arc::new(UreqJwksSource),
@@ -291,10 +319,12 @@ impl CloudIngress {
     }
 
     /// Applies changed `[cloud]` keys live (both reload owners call this).
+    /// Adopt changed live `[cloud]` settings.
     pub fn update_settings(&self, settings: IngressSettings) {
         *self.0.settings.write().unwrap_or_else(|e| e.into_inner()) = settings;
     }
 
+    /// The binding in force, or `None` while the leg is not bound.
     pub fn binding(&self) -> Option<Arc<CloudBinding>> {
         self.0
             .binding
@@ -303,6 +333,7 @@ impl CloudIngress {
             .clone()
     }
 
+    /// The live settings as they are now.
     pub fn settings(&self) -> IngressSettings {
         self.0
             .settings

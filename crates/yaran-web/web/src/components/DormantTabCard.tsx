@@ -1,7 +1,8 @@
 import { Button } from "@yaran/ui-kit/button"
+import { useSecondTicks } from "@/hooks/use-second-ticks"
 import { DOCS_AGENT_TABS_RESUME } from "@/lib/docs"
 import { startDormantTab } from "@/lib/store"
-import { endingSentence, genericEndingSentence } from "@/lib/tabVerdict"
+import { genericEndingSentence, verdictSentenceNow } from "@/lib/tabVerdict"
 import type { TabRunVerdict } from "@/lib/types"
 
 // The center-pane surface for a dormant tab waiting to be asked: an extra tab
@@ -36,6 +37,7 @@ export function DormantTabCard({
   lastRunVerdict?: TabRunVerdict | null
 }) {
   const excerpt = lastRunVerdict?.excerpt ?? []
+  useSecondTicks(lastRunVerdict != null)
   return (
     <div className="flex h-full w-full select-none flex-col items-center justify-center gap-4 overflow-hidden px-6 text-center">
       <img
@@ -51,7 +53,7 @@ export function DormantTabCard({
         {lastRunFailed ? (
           <p className="text-sm text-muted-foreground">
             {lastRunVerdict
-              ? endingSentence(lastRunVerdict)
+              ? verdictSentenceNow(lastRunVerdict)
               : genericEndingSentence()}
           </p>
         ) : null}

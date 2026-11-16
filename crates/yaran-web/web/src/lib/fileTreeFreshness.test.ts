@@ -112,3 +112,79 @@ describe("changedPathsFrom", () => {
     ])
   })
 })
+
+// A folded folder is one row however many files are inside it, so a file an
+// agent adds inside an already-untracked folder moves no path. Its count moves
+// instead, and that is what has to reach the tree.
+describe("folded folders", () => {
+  function withFolder(count: number): ChangesSliceView {
+    return {
+      phase: "loaded",
+      unstaged: [{ ...row("node_modules"), kind: "directory", file_count: count }],
+      staged: [],
+    }
+  }
+
+  const LOADED_INSIDE = new Set(["", "node_modules", "node_modules/pkg", "src"])
+
+  it("refetches every loaded listing inside a folder whose count moved", () => {
+    const before = changedPathsFrom(withFolder(3))
+    const after = changedPathsFrom(withFolder(4))
+    expect(dirsToRefetch(before, after, LOADED_INSIDE)).toEqual([
+      "",
+      "node_modules",
+      "node_modules/pkg",
+    ])
+  })
+
+  // A content-only edit inside the folder moves its fingerprint, and that is
+  // the open buffer's business, not the tree's: no listing gained or lost an
+  // entry, so nothing is refetched.
+  it("leaves the tree alone when only the folder's fingerprint moved", () => {
+    const withPrint = (fingerprint: string): ChangesSliceView => ({
+      phase: "loaded",
+      unstaged: [
+        { ...row("node_modules"), kind: "directory", file_count: 3, fingerprint },
+      ],
+      staged: [],
+    })
+    expect(
+      dirsToRefetch(
+        changedPathsFrom(withPrint("aa")),
+        changedPathsFrom(withPrint("bb")),
+        LOADED_INSIDE,
+      ),
+    ).toEqual([])
+  })
+
+  it("refetches the listings inside a folder whose nested repositories changed", () => {
+    const withNested = (nested: number): ChangesSliceView => ({
+      phase: "loaded",
+      unstaged: [
+        {
+          ...row("node_modules"),
+          kind: "directory",
+          file_count: 3,
+          nested_repositories: nested,
+        },
+      ],
+      staged: [],
+    })
+    expect(
+      dirsToRefetch(
+        changedPathsFrom(withNested(0)),
+        changedPathsFrom(withNested(1)),
+        LOADED_INSIDE,
+      ),
+    ).toEqual(["", "node_modules", "node_modules/pkg"])
+  })
+
+  it("leaves the tree alone when the folder did not change", () => {
+    const paths = changedPathsFrom(withFolder(3))
+    expect(dirsToRefetch(paths, paths, LOADED_INSIDE)).toEqual([])
+  })
+
+  it("refetches the parent listing for a folder that appeared", () => {
+    expect(dirsToRefetch([], changedPathsFrom(withFolder(3)), LOADED)).toEqual([""])
+  })
+})

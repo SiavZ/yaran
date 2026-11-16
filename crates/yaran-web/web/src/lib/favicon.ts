@@ -7,6 +7,11 @@
 // a validated `#rrggbb` from the map below, so nothing untrusted is
 // interpolated into the markup.
 
+import {
+  createWakeTimer,
+  startAttentionBlink,
+  type AttentionBlink,
+} from "./faviconBlink"
 import { notifyInfo } from "./notify"
 import { chip, prose } from "./prose"
 
@@ -173,21 +178,40 @@ function setIconLink(href: string, type: string): void {
 const ATTENTION_DOT_FILL = "#cffafe"
 const ATTENTION_DOT_RIM = "#1a1a1a"
 
-// Composed "base icon + dot" data URLs, keyed by the base href, so a base is
-// drawn onto a canvas at most once.
-const dottedFaviconCache = new Map<string, string>()
+// The two frames the favicon blinks between: the dot at full strength, and the
+// icon with no dot at all, because a dot faded to the row dot's floor still
+// reads as a dot at favicon size. Both are PNG data URLs.
+type DotFrames = { on: string; dim: string }
+
+// Composed frame pairs, keyed by the base href, so a base is drawn onto a
+// canvas once and the blink only ever swaps finished URLs.
+const dotFramesCache = new Map<string, DotFrames>()
+// Bases whose frames are being composed, so the store's repeat calls during a
+// compose do not start another one.
+const composing = new Set<string>()
 // The base href whose dotted variant is wanted, or null for the clean icon. Set
 // synchronously, so an async compose resolving after a clear cannot stomp it.
 let wantedDotBase: string | null = null
-// The data URL currently on the `<link>` via the attention path, so a repeat
-// call with the same state doesn't touch the DOM.
+// The data URL currently on the `<link>` via the attention path, so a frame
+// that is already shown doesn't touch the DOM.
 let appliedDottedIcon: string | null = null
+// The running blink and the base it blinks, or null when none runs (no
+// attention, reduced motion, or frames not composed yet).
+let blink: { base: string; handle: AttentionBlink } | null = null
+// The reduced-motion query being listened to while a dot is wanted.
+let motionQuery: MediaQueryList | null = null
+
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
 
 /**
- * Composite the current favicon with a corner dot, or restore the clean icon.
- * Idempotent: each base is composed once and the DOM is touched only when the
- * shown icon changes. Without a DOM or a working `<canvas>` it leaves the clean
- * icon in place rather than throwing, and the browser-tab count still says it.
+ * Composite the current favicon with a corner dot that blinks on the row dot's
+ * period and two-dip shape (`attentionPulse.ts`, driven by `faviconBlink.ts`),
+ * or restore the clean icon. Reduced motion holds the dot steady, like the row dot. Idempotent:
+ * each base's frames are composed once, a repeat call while attention holds
+ * leaves the running blink alone, and clearing stops the blink and its clock
+ * before restoring the configured favicon. Without a DOM or a working
+ * `<canvas>` it leaves the clean icon in place rather than throwing, and the
+ * browser-tab count still says it.
  */
 export function applyAttentionFavicon(
   raw: string | null | undefined,
@@ -197,7 +221,8 @@ export function applyAttentionFavicon(
   if (typeof document.createElement !== "function" || !document.head) return
 
   if (!hasAttention) {
-    // Restore the clean base icon and forget any dotted state.
+    // Stop the blink and its clock, then restore the clean base icon.
+    stopAttentionMotion()
     wantedDotBase = null
     appliedDottedIcon = null
     applyFavicon(raw)
@@ -207,36 +232,128 @@ export function applyAttentionFavicon(
   const { href } = faviconHref(raw)
   wantedDotBase = href
 
-  const cached = dottedFaviconCache.get(href)
+  const cached = dotFramesCache.get(href)
   if (cached) {
-    if (appliedDottedIcon !== cached) {
-      setIconLink(cached, "image/png")
-      appliedDottedIcon = cached
-    }
+    showDottedFavicon(href, cached)
     return
   }
+  // The favicon changed and its frames are not drawn yet: the old tint's blink
+  // must not carry on meanwhile, nor forever if the drawing fails. Show the new
+  // plain favicon until its dotted frames are ready.
+  if (blink && blink.base !== href) stopBlink()
+  if (appliedDottedIcon !== null) {
+    appliedDottedIcon = null
+    applyFavicon(raw)
+  }
+  if (composing.has(href)) return
+  composing.add(href)
 
-  composeFaviconWithDot(href)
-    .then((composed) => {
-      if (!composed) return
-      dottedFaviconCache.set(href, composed)
+  composeDotFrames(href)
+    .then((frames) => {
+      if (!frames) return
+      dotFramesCache.set(href, frames)
       // Only apply while the dot is still wanted for this base: a clear or a
       // base change may have landed during the compositing.
-      if (wantedDotBase === href && appliedDottedIcon !== composed) {
-        setIconLink(composed, "image/png")
-        appliedDottedIcon = composed
-      }
+      if (wantedDotBase === href) showDottedFavicon(href, frames)
     })
     .catch((err) => {
       // Leave the clean icon in place on any compositing failure; the
       // browser-tab count still conveys the state.
       console.warn("[yaran] favicon attention dot failed; keeping clean icon", err)
     })
+    .finally(() => {
+      composing.delete(href)
+    })
 }
 
-/** Draw the base favicon plus a cyan corner dot onto a canvas and return a PNG
- * data URL, or `null` when canvas/image loading is unavailable (e.g. jsdom). */
-function composeFaviconWithDot(href: string): Promise<string | null> {
+/** Show `href`'s dotted frames: a steady dot under reduced motion, otherwise
+ * the blink (left running when it already blinks this base). */
+function showDottedFavicon(href: string, frames: DotFrames): void {
+  watchReducedMotion()
+  if (prefersReducedMotion()) {
+    stopBlink()
+    setDottedIcon(frames.on)
+    return
+  }
+  if (blink?.base === href) return
+  stopBlink()
+  blink = {
+    base: href,
+    handle: startAttentionBlink({
+      timer: createWakeTimer(),
+      show: (frame) => setDottedIcon(frames[frame]),
+      hidden: () => document.visibilityState === "hidden",
+    }),
+  }
+  document.addEventListener("visibilitychange", onVisibilityChange)
+}
+
+function setDottedIcon(url: string): void {
+  if (appliedDottedIcon === url) return
+  setIconLink(url, "image/png")
+  appliedDottedIcon = url
+}
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia(REDUCED_MOTION_QUERY).matches
+  )
+}
+
+// Follow the reduced-motion preference live while a dot is wanted, so turning
+// it on stills a running blink and turning it off starts one.
+function watchReducedMotion(): void {
+  if (motionQuery) return
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return
+  motionQuery = window.matchMedia(REDUCED_MOTION_QUERY)
+  if (typeof motionQuery.addEventListener === "function") {
+    motionQuery.addEventListener("change", onReducedMotionChange)
+  } else {
+    // Safari before 14 only has the deprecated MediaQueryList listener pair.
+    motionQuery.addListener?.(onReducedMotionChange)
+  }
+}
+
+function unwatchReducedMotion(): void {
+  if (!motionQuery) return
+  if (typeof motionQuery.removeEventListener === "function") {
+    motionQuery.removeEventListener("change", onReducedMotionChange)
+  } else {
+    motionQuery.removeListener?.(onReducedMotionChange)
+  }
+  motionQuery = null
+}
+
+function onReducedMotionChange(): void {
+  const base = wantedDotBase
+  const frames = base === null ? undefined : dotFramesCache.get(base)
+  if (base !== null && frames) showDottedFavicon(base, frames)
+}
+
+// A hidden page switches to the blink its throttled clock can keep, and a
+// page coming back plays the full rhythm again.
+function onVisibilityChange(): void {
+  blink?.handle.resync()
+}
+
+function stopBlink(): void {
+  if (!blink) return
+  blink.handle.stop()
+  blink = null
+  document.removeEventListener("visibilitychange", onVisibilityChange)
+}
+
+function stopAttentionMotion(): void {
+  stopBlink()
+  unwatchReducedMotion()
+}
+
+/** Draw the base favicon onto a canvas once with a cyan corner dot and once
+ * without, and return both as PNG data URLs, or
+ * `null` when canvas/image loading is unavailable (e.g. jsdom). */
+function composeDotFrames(href: string): Promise<DotFrames | null> {
   return new Promise((resolve) => {
     const size = 64
     const canvas = document.createElement("canvas")
@@ -251,23 +368,30 @@ function composeFaviconWithDot(href: string): Promise<string | null> {
       return
     }
     const img = new Image()
+    const draw = (withDot: boolean): string => {
+      ctx.clearRect(0, 0, size, size)
+      ctx.globalAlpha = 1
+      ctx.drawImage(img, 0, 0, size, size)
+      if (!withDot) return canvas.toDataURL("image/png")
+      const r = size * 0.26
+      const cx = size - r - size * 0.05
+      const cy = size - r - size * 0.05
+      // Dark rim first for contrast against the Yaran mark, then the cyan fill.
+      ctx.beginPath()
+      ctx.arc(cx, cy, r + size * 0.06, 0, Math.PI * 2)
+      ctx.fillStyle = ATTENTION_DOT_RIM
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, 0, Math.PI * 2)
+      ctx.fillStyle = ATTENTION_DOT_FILL
+      ctx.fill()
+      return canvas.toDataURL("image/png")
+    }
     img.onload = () => {
       try {
-        ctx.clearRect(0, 0, size, size)
-        ctx.drawImage(img, 0, 0, size, size)
-        const r = size * 0.26
-        const cx = size - r - size * 0.05
-        const cy = size - r - size * 0.05
-        // Dark rim first for contrast against the Yaran mark, then the cyan fill.
-        ctx.beginPath()
-        ctx.arc(cx, cy, r + size * 0.06, 0, Math.PI * 2)
-        ctx.fillStyle = ATTENTION_DOT_RIM
-        ctx.fill()
-        ctx.beginPath()
-        ctx.arc(cx, cy, r, 0, Math.PI * 2)
-        ctx.fillStyle = ATTENTION_DOT_FILL
-        ctx.fill()
-        resolve(canvas.toDataURL("image/png"))
+        const on = draw(true)
+        const dim = draw(false)
+        resolve({ on, dim })
       } catch (err) {
         console.warn("[yaran] favicon dot compositing failed", err)
         resolve(null)

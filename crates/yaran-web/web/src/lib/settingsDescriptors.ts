@@ -34,7 +34,9 @@ import type { Bootstrap } from "./bootstrapApi";
 import { CLOUD_MODE_SETTING } from "./settingsDescriptorsCloud";
 import { MAX_TERMINAL_FONT_SIZE, MIN_TERMINAL_FONT_SIZE } from "./terminalFont";
 
-export type SettingSurface = "web" | "both" | "tui";
+/** Which surface a row affects. `signin` is the web login every browser goes
+ * through, which is neither this browser's preference nor the terminal app's. */
+export type SettingSurface = "signin" | "web" | "both" | "tui";
 
 export type SettingControl =
   | { kind: "bool" }
@@ -50,7 +52,11 @@ export type SettingControl =
    * field, so the client cannot offer a provider the server has not configured. */
   | { kind: "enum-dynamic"; source: "available_providers" }
   | { kind: "favicon" }
-  | { kind: "text"; maxLen: number };
+  | { kind: "text"; maxLen: number }
+  /** The password fields and their strength meter. Its value never lives in
+   * the generic form state: the dialog holds the typed passwords separately and
+   * sends them only through the `"password"` write target. */
+  | { kind: "password" };
 
 export type SettingValue = boolean | number | string;
 
@@ -77,22 +83,29 @@ export interface SettingDescriptor {
    *   the serve loop can do. It carries an explicit value, so skipping an
    *   unchanged row is an optimization here rather than correctness.
    * - `"cloudMode"`: the same shape for `[cloud] mode`, whose second half starts or
-   *   stops the Cloudflare tunnel (`settingsDescriptorsCloud.ts`). */
+   *   stops the Cloudflare tunnel (`settingsDescriptorsCloud.ts`).
+   * - `"password"`: the server hashes it, checks it against the minimums,
+   *   needs the current one to change it, and signs every browser out, so it
+   *   goes to the auth endpoint and is never part of the settings PATCH or a
+   *   section reset. */
   writeTarget:
     | "settings"
     | "identity"
     | "changesPane"
     | "github"
     | "tailscale"
-    | "cloudMode";
+    | "cloudMode"
+    | "password";
   /** True when the config field is the negative of what this row shows, so that
    * every row can be phrased positively. `read` returns the value as shown and
    * `buildWrites` flips it back once, immediately before the wire, so the
    * unchanged-row skip compares shown value to shown value. Bool rows only. */
   inverted?: boolean;
   /** Why this run of the server cannot honour the value until it restarts, or
-   * `null` when it can. A locked row renders disabled and shows this sentence
-   * instead of `description`. */
+   * `null` when it can. A locked row stays editable and shows this sentence
+   * instead of `description`, so the user knows a change only applies on the
+   * next run. The server saves a value for a locked row for the next run and
+   * says so in its reply, and a section reset writes it like any other row. */
   lockedBy?: (b: Bootstrap) => string | null;
   /** Reads the current value out of the live Bootstrap document, falling back
    * to `default` when an older server omits the field. For the `"changesPane"`
@@ -120,6 +133,24 @@ const MIN_UPLOAD_PASTED_TEXT_CHARS = 200;
 const DEFAULT_UPLOAD_PASTED_TEXT_CHARS = 4_000;
 
 export const SETTING_GROUPS: SettingGroup[] = [
+  {
+    surface: "signin",
+    caption: "Signing in. The password every browser signs in to this yaran with.",
+    settings: [
+      {
+        key: "server.auth.password",
+        label: "Password",
+        description:
+          "Asked of every browser that reaches yaran from where `[server.auth] require` says it applies. yaran keeps only an Argon2 hash in `config.toml`; anyone who can read that file can still try to guess the password offline, so use a long one you use nowhere else. Changing it signs every browser out, this one included. The first password can only be set from this machine, your tailnet, or with `yaran config set server.auth.password`.",
+        surface: "signin",
+        control: { kind: "password" },
+        default: "",
+        writeTarget: "password",
+        // Write-only: the server never sends a password back, not even its hash.
+        read: () => "",
+      },
+    ],
+  },
   {
     surface: "web",
     caption: "This browser (Web). These affect the web UI you're looking at.",
@@ -218,7 +249,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
         // the copy says touch: the keys follow the pointer, not the layout.
         label: "Touch terminal keys",
         description:
-          "On a touch device, shows the terminal-keys bar (Esc, Tab, Ctrl, Alt and the arrows) above the compose box, in the wide layout as well as on a phone. Hide it to give those rows to the terminal; bring it back from the input ⋯ menu beside the message box, from the terminal's own ⋯ menu when there is no typing bar left to hold one, or from this Preferences dialog.",
+          "On a touch device, shows the terminal-keys bar (Esc, Tab, Ctrl, Alt and the arrows) above the compose box, in the wide layout as well as on a phone. Hide it to give those rows to the terminal; bring it back from the keys button in a phone's action cluster, from the Input group of the pane's ⋯ menu on a computer, or from this Preferences dialog.",
         surface: "web",
         control: { kind: "bool" },
         default: true,
@@ -344,7 +375,7 @@ export const SETTING_GROUPS: SettingGroup[] = [
         key: "ui.always_show_tab_strip",
         label: "Always show tab strip",
         description:
-          "Always shows the agent tab strip, even when a session has only one tab. Off shows the strip only once a session has two or more tabs.",
+          "Always shows the agent tab strip and its terminal dock's strip, even when a session has only one tab. Off shows them only once the agent has two or more tabs or two or more terminals.",
         surface: "both",
         control: { kind: "bool" },
         default: false,
@@ -411,7 +442,8 @@ export const SETTING_GROUPS: SettingGroup[] = [
         // only half of it; the other half moves a live listener.
         writeTarget: "tailscale",
         // `--no-tailscale` wins over the config for as long as the run lasts,
-        // so the listener would refuse every value but "no".
+        // so the listener would refuse every value but "no" this run. The row stays
+        // editable: the value is saved for the next run.
         lockedBy: (b) =>
           b.tailscale_forced_no
             ? "This run of yaran was started with `--no-tailscale`, so the Tailscale address stays unbound however this is set. Your choice is saved and used the next time yaran starts without that flag."
@@ -485,6 +517,35 @@ export const SETTING_GROUPS: SettingGroup[] = [
         default: false,
         writeTarget: "settings",
         read: (b) => b.tab_reaches_agent ?? false,
+      },
+      {
+        key: "ui.nerd_font_icons",
+        label: "Nerd Font icons",
+        description:
+          "In the terminal app, draw icons (the project mark, the standalone star, the pull-request mark, warnings, the header chips) from a Nerd Font instead of plain Unicode. Off by default. It needs a Nerd Font set as your terminal's font, or the icons show as empty boxes. The web UI draws its own icons and is unaffected.",
+        surface: "tui",
+        control: { kind: "bool" },
+        default: false,
+        writeTarget: "settings",
+        read: (b) => b.nerd_font_icons ?? false,
+      },
+      {
+        key: "ui.extended_keys",
+        label: "Extended keys",
+        description:
+          "In the terminal app, ask your terminal for the Kitty keyboard protocol (inside tmux, tmux's extended keys) so yaran can tell apart keys such as Shift-Enter and Enter, or Ctrl-i and Tab, and Shift-Enter gives agents a new line. Agents and shells still receive classic keys. Automatic asks your terminal first; On skips the question; Off reads keys exactly as a classic terminal sends them. Takes effect the next time the terminal app starts. The web terminal is unaffected.",
+        surface: "tui",
+        control: {
+          kind: "enum",
+          options: [
+            { value: "auto", label: "Automatic" },
+            { value: "on", label: "On" },
+            { value: "off", label: "Off" },
+          ],
+        },
+        default: "auto",
+        writeTarget: "settings",
+        read: (b) => b.extended_keys ?? "auto",
       },
     ],
   },

@@ -1,4 +1,5 @@
 import { useRef, useState } from "react"
+import type * as React from "react"
 import { SquarePen, SquareSlash } from "lucide-react"
 
 import {
@@ -15,18 +16,29 @@ import {
   PopoverTrigger,
 } from "@yaran/ui-kit/popover"
 import { Button } from "@yaran/ui-kit/button"
-import { getComposeInsertSink } from "@/lib/composeInsert"
+import { MatchHighlight } from "@/components/MatchHighlight"
+import { SimpleTooltip } from "@/components/SimpleTooltip"
+import { targetPtyId, targetTabDormant } from "@/components/terminalAreaModel"
+import { useIsCoarsePointer } from "@/hooks/use-coarse-pointer"
 import { useIsMobile } from "@yaran/ui-kit/use-mobile"
+import { FOCUS_RING } from "@yaran/ui-kit/focusRing"
 import { macrosForTarget } from "@/lib/macros"
-import { openMacrosDialog, runMacro, useYaran } from "@/lib/store"
-import { getTerminalFocusElement } from "@/lib/terminalFocus"
+import { cmdkMatchRanges } from "@/lib/searchMatch"
+import { usePaneMacroTarget } from "@/lib/paneMacroTarget"
+import { cn } from "@yaran/ui-kit/cn"
+import { openMacrosDialog, runMacro, useYaran, useYaranSelector } from "@/lib/store"
 import type { SelectedTarget } from "@/lib/store"
+import type { MacroView } from "@/lib/types"
 
-// A quick-picker for sending a text macro to the focused target: a filterable
-// list restricted to that target's surface, run by Enter or click. There is
-// deliberately no confirmation and no status; `runMacro` writes the payload
-// straight to the focused PTY socket, or splices it into the compose draft
+// A quick-picker for sending a text macro to the pane it belongs to: a
+// filterable list restricted to that target's surface, run by Enter or click.
+// There is deliberately no confirmation and no status; `runMacro` writes the
+// payload down that pane's own socket, or splices it into its compose draft
 // while that is the typing surface, and the feedback is the text appearing.
+//
+// While the take-over card covers that pane the trigger is disabled: this tab is
+// not driving the pty, and a macro is not a way to start. So is it while the
+// tab is not running, when there is no pane at all to carry the macro.
 //
 // The trigger is rendered as an absolutely-positioned sibling of the xterm
 // host, never inside the unpadded container xterm opens into, so it cannot
@@ -47,52 +59,70 @@ export function MacroPopover({
   // This intentionally overrides the usual "return focus to the trigger" popover
   // convention because the trigger floats over a live terminal the user drives.
   finalFocus?: () => HTMLElement | null
-  // "labeled" is the desktop trigger; "icon" is the phone header's icon button,
-  // which passes no finalFocus so a dismissal returns focus to the trigger
-  // rather than popping the soft keyboard (a pick landing in the compose draft
-  // is the exception, in `resolveFinalFocus`); "pill" is the theater pill's
-  // round ghost button, since a square outline button inside that one rounded
-  // control would read as a second surface.
+  // "labeled" is the desktop trigger; "icon" is the phone header's icon button;
+  // "pill" is the round ghost button of the phone flap and the theater pill,
+  // since a square outline button inside that one rounded control would read
+  // as a second surface. The last two pass no finalFocus, so a dismissal
+  // returns focus to the trigger; where a pick lands is in `resolveFinalFocus`.
   variant?: "labeled" | "icon" | "pill"
 }) {
   const { bootstrap } = useYaran()
+  const dormant = useYaranSelector((s) => targetTabDormant(target, s))
   const [open, setOpen] = useState(false)
   const isMobile = useIsMobile()
+  const coarsePointer = useIsCoarsePointer()
   // Set when the LAST pick landed in the mobile compose draft rather than the
   // PTY, consumed by the close-focus resolver below. A ref, not state: it is
   // read during Base UI's close-focus pass, never rendered.
   const pickedIntoComposeRef = useRef(false)
+  // Set when the LAST pick was written straight to the pty, read the same way.
+  const pickedIntoPtyRef = useRef(false)
 
   const allMacros = bootstrap?.macros ?? []
   const macros = macrosForTarget(allMacros, target)
+  const pane = usePaneMacroTarget(targetPtyId(target))
 
   function handleRun(name: string) {
-    // The payload goes to the focused PTY socket, or into the compose draft
-    // while that bar is the typing surface. The returned destination says which
+    // The payload goes to this target's pane, or into its compose draft while
+    // that bar is the typing surface. The returned destination says which
     // happened, which steers the close focus below.
-    pickedIntoComposeRef.current = runMacro(name) === "compose"
+    const destination = runMacro(name, target)
+    pickedIntoComposeRef.current = destination === "compose"
+    pickedIntoPtyRef.current = destination === "pty"
     setOpen(false)
   }
 
   // Where focus lands when the popover closes: into the compose draft for a
   // pick that landed there, because Base UI owns focus during a close and would
   // otherwise yank the keyboard back to the trigger. Otherwise the caller's
-  // finalFocus, else the mounted terminal pane's typing surface for the desktop
-  // labelled trigger, else Base UI's return-to-trigger.
+  // finalFocus, else this target's pane's typing surface for the desktop
+  // labelled trigger on any close and for every other variant after a pick
+  // sent to the pty, else Base UI's return-to-trigger.
   //
-  // The desktop trigger sits in the header outside `TerminalPane` and has no
-  // ref to hand in, so the pane registers its surface on the module-scope
-  // `terminalFocus` hand-off. That fallback is not applied to the `icon`
-  // variant, where focusing a terminal textarea pops the soft keyboard.
+  // Every trigger sits outside `TerminalPane` and has no ref to hand in, so it
+  // reads the surface the pane published under its own pty id. The icon and
+  // pill variants skip that on a coarse pointer, where focusing a terminal
+  // textarea pops a soft keyboard nobody asked for.
   function resolveFinalFocus(): HTMLElement | boolean | null {
+    const pickedIntoPty = pickedIntoPtyRef.current
+    pickedIntoPtyRef.current = false
     if (pickedIntoComposeRef.current) {
       pickedIntoComposeRef.current = false
-      const composeTarget = getComposeInsertSink()?.target() ?? null
+      const composeTarget = pane?.compose?.target() ?? null
       if (composeTarget) return composeTarget
     }
     if (finalFocus) return finalFocus()
-    if (variant === "labeled") return getTerminalFocusElement() ?? true
+    if (variant === "labeled" || (pickedIntoPty && !coarsePointer)) {
+      return pane?.typingSurface() ?? true
+    }
     return true
+  }
+
+  if (dormant) {
+    return <DisabledTrigger variant={variant} hint="Start the tab to send macros" />
+  }
+  if (pane?.takeoverCard) {
+    return <DisabledTrigger variant={variant} hint="Take over to send macros" />
   }
 
   return (
@@ -112,29 +142,8 @@ export function MacroPopover({
           cannot drift from the `±N` and `⋯` buttons it sits between: all
           outline, all sized from `size="lg"`, all on the same 44px width
           floor. */}
-      <PopoverTrigger
-        render={
-          variant === "pill" ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-10 shrink-0 rounded-full"
-              aria-label="Run a macro"
-            />
-          ) : variant === "icon" ? (
-            <Button
-              variant="outline"
-              size="lg"
-              className="min-w-11 shrink-0"
-              aria-label="Run a macro"
-            />
-          ) : (
-            <Button variant="outline" aria-label="Run a macro" />
-          )
-        }
-      >
-        <SquareSlash />
-        {variant === "labeled" ? <>Macros…</> : null}
+      <PopoverTrigger render={<TriggerButton shape={variant} />}>
+        <TriggerFace variant={variant} />
       </PopoverTrigger>
       <PopoverContent
         align="end"
@@ -162,43 +171,7 @@ export function MacroPopover({
             No macros for this target kind. Add one via Edit macros below.
           </div>
         ) : (
-          // min-h-0 lets the Command column shrink when the popup hits its
-          // viewport cap, so the list below scrolls instead of pushing the
-          // Edit-macros footer off screen.
-          <Command className="min-h-0">
-            {/* No autofocus in the sheet: menus never pop the soft keyboard
-                on open, and this now presents as one of them; tapping the
-                field summons the keyboard. Desktop keeps type-immediately
-                (the filters-are-type-immediately convention). */}
-            <CommandInput placeholder="Search macros…" autoFocus={!isMobile} />
-            {/* CommandGroup's padding puts breathing room between the search
-                field and the first result, matching the gap above the Edit
-                macros footer below. */}
-            {/* max-h-[none]: the primitive's fixed cap would hold this list
-                at 288px with a whole screen free below it. Like every other
-                menu, the bound is the popup's max-h-(--available-height) (see
-                popover.tsx); min-h-0 makes the list the flex child that
-                shrinks, which is what engages its own overflow-y scroll. The
-                arbitrary-value form is deliberate: the installed
-                tailwind-merge does not recognize bare max-h-none as a max-h
-                conflict, so the primitive's max-h-72 would survive beside it
-                and which one wins would be stylesheet-order luck. */}
-            <CommandList className="max-h-[none] min-h-0">
-              <CommandEmpty>No matching macros.</CommandEmpty>
-              <CommandGroup>
-                {macros.map((macro) => (
-                  <CommandItem
-                    key={macro.name}
-                    value={macro.name}
-                    className="cursor-pointer"
-                    onSelect={() => handleRun(macro.name)}
-                  >
-                    {macro.name}
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </CommandList>
-          </Command>
+          <MacroCommand macros={macros} autoFocus={!isMobile} onRun={handleRun} />
         )}
         <button
           type="button"
@@ -215,5 +188,153 @@ export function MacroPopover({
         </button>
       </PopoverContent>
     </Popover>
+  )
+}
+
+// The macro list and its search. Mounted inside the popup, so the search starts
+// empty on every open. The search is held here rather than left to cmdk so a
+// row can light the letters cmdk's loose match found; cmdk still does the
+// filtering, against the row's value, which is the name it shows.
+function MacroCommand({
+  macros,
+  autoFocus,
+  onRun,
+}: {
+  macros: MacroView[]
+  autoFocus: boolean
+  onRun: (name: string) => void
+}) {
+  const [search, setSearch] = useState("")
+  return (
+    // min-h-0 lets the Command column shrink when the popup hits its
+    // viewport cap, so the list below scrolls instead of pushing the
+    // Edit-macros footer off screen.
+    <Command className="min-h-0">
+      {/* No autofocus in the sheet: menus never pop the soft keyboard
+          on open, and this now presents as one of them; tapping the
+          field summons the keyboard. Desktop keeps type-immediately
+          (the filters-are-type-immediately convention). */}
+      <CommandInput
+        placeholder="Search macros…"
+        autoFocus={autoFocus}
+        value={search}
+        onValueChange={setSearch}
+      />
+      {/* CommandGroup's padding puts breathing room between the search
+          field and the first result, matching the gap above the Edit
+          macros footer below. */}
+      {/* max-h-[none]: the primitive's fixed cap would hold this list
+          at 288px with a whole screen free below it. Like every other
+          menu, the bound is the popup's max-h-(--available-height) (see
+          popover.tsx); min-h-0 makes the list the flex child that
+          shrinks, which is what engages its own overflow-y scroll. The
+          arbitrary-value form is deliberate: the installed
+          tailwind-merge does not recognize bare max-h-none as a max-h
+          conflict, so the primitive's max-h-72 would survive beside it
+          and which one wins would be stylesheet-order luck. */}
+      <CommandList className="max-h-[none] min-h-0">
+        <CommandEmpty>No matching macros.</CommandEmpty>
+        <CommandGroup>
+          {macros.map((macro) => (
+            <CommandItem
+              key={macro.name}
+              value={macro.name}
+              className="cursor-pointer"
+              onSelect={() => onRun(macro.name)}
+            >
+              <span>
+                <MatchHighlight
+                  text={macro.name}
+                  ranges={cmdkMatchRanges(macro.name, search)}
+                />
+              </span>
+            </CommandItem>
+          ))}
+        </CommandGroup>
+      </CommandList>
+    </Command>
+  )
+}
+
+type TriggerVariant = "labeled" | "icon" | "pill"
+
+// The trigger's one shape, shared by the live and the disabled control so the
+// cluster does not move when the take-over card comes or goes.
+function TriggerButton({
+  shape,
+  className,
+  ...props
+}: { shape: TriggerVariant } & Omit<
+  React.ComponentProps<typeof Button>,
+  "variant" | "size"
+>) {
+  if (shape === "pill") {
+    return (
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="Run a macro"
+        {...props}
+        className={cn("size-10 shrink-0 rounded-full", className)}
+      />
+    )
+  }
+  if (shape === "icon") {
+    return (
+      <Button
+        variant="outline"
+        size="lg"
+        aria-label="Run a macro"
+        {...props}
+        className={cn("min-w-11 shrink-0", className)}
+      />
+    )
+  }
+  return (
+    <Button
+      variant="outline"
+      aria-label="Run a macro"
+      {...props}
+      className={className}
+    />
+  )
+}
+
+function TriggerFace({ variant }: { variant: TriggerVariant }) {
+  return (
+    <>
+      <SquareSlash />
+      {variant === "labeled" ? <>Macros…</> : null}
+    </>
+  )
+}
+
+// A disabled button takes no pointer events, so the hint hangs off a focusable
+// wrapper around it, through the shared tooltip; the wrapper wears the focus
+// ring the disabled button cannot. The button keeps its full size, so the touch
+// floor and the cluster's height token hold while it is disabled.
+function DisabledTrigger({
+  variant,
+  hint,
+}: {
+  variant: TriggerVariant
+  hint: string
+}) {
+  return (
+    <SimpleTooltip content={hint}>
+      <span
+        tabIndex={0}
+        data-testid="macros-disabled"
+        className={cn(
+          "inline-flex shrink-0",
+          variant === "pill" ? "rounded-full" : "rounded-lg",
+          FOCUS_RING,
+        )}
+      >
+        <TriggerButton shape={variant} disabled>
+          <TriggerFace variant={variant} />
+        </TriggerButton>
+      </span>
+    </SimpleTooltip>
   )
 }

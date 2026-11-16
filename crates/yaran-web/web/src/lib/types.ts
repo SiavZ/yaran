@@ -40,15 +40,69 @@ export interface ProjectView {
   created_at: string
 }
 
+/** One branch "Change base branch" could move a project to
+ * (`GET /api/v1/projects/{id}/branches`). */
+export interface BranchChoiceView {
+  name: string
+  /** `"remote"` is a branch only origin has: choosing it creates the local
+   * branch, tracking origin's, before the switch. */
+  location: "local" | "remote"
+  /** The folder of another worktree (an agent's, typically) that has the
+   * branch checked out. Git refuses to check a branch out twice, so it cannot
+   * be chosen. Null for a free branch. */
+  held_by: string | null
+}
+
 export interface PrView {
   number: number
-  state: "open" | "merged" | "closed"
+  state: "open" | "draft" | "merged" | "closed"
   title: string
   url: string
-  /** True when this PR was manually attached rather than autodetected from the
-   * branch name. Drives the agent menu's attach-label flip; detach is offered on
-   * any association, so it is gated on the PR's presence rather than on this. */
+  /** The same as `attached`, under its older name. */
   overridden: boolean
+  host?: string
+  owner_repo?: string
+  /** Whether it lives in the agent's own repository, so it can be named `#418`
+   * rather than `acme/infra#77`. */
+  own_repo?: boolean
+  /** The branch it merges from, once GitHub has said. */
+  head_branch?: string
+  /** yaran found it on one of the agent's branches. */
+  found?: boolean
+  /** The user attached it; detach is offered only for one of these. */
+  attached?: boolean
+  created_at?: string
+  updated_at?: string
+  closed_at?: string
+  merged_at?: string
+}
+
+/** Which pull request a change names. */
+export interface PrKeyView {
+  host: string
+  owner_repo: string
+  number: number
+}
+
+/** One branch the agent's worktree has been on, with its pull requests. */
+export interface PrBranchView {
+  name: string
+  /** The names a rename moved it away from, oldest first. */
+  former_names: string[]
+  current: boolean
+  /** When yaran first saw the agent on it; absent for one not recorded yet. */
+  first_seen_at?: string | null
+  /** Its pull requests, shown ones first in the agent's order, then hidden ones. */
+  prs: PrKeyView[]
+}
+
+/** The branches read behind the Pull requests dialog's Branches view. */
+export interface PrBranchesView {
+  /** Newest first. */
+  branches: PrBranchView[]
+  /** Every other pull request, shown or hidden: attached ones, and found ones
+   * whose head is a branch the list leaves out or is not known yet. */
+  on_no_listed_branch: PrKeyView[]
 }
 
 /** How a tab's last run ended, recorded at the moment it ended. An unrecognised
@@ -60,11 +114,12 @@ export interface TabRunVerdict {
   status?: number | null
   /** The spawn error, for `launch_failed` only. */
   error?: string | null
-  ended_seconds_ago: number
+  /** When the run ended, on the server's run clock: aged by `lib/serverClock.ts`. */
+  ended_at: number
   excerpt: string[]
 }
 
-// One provider tab of an agent, in creation order, sharing the agent's worktree.
+// One provider tab of an agent, sharing the agent's worktree.
 // Which tab holds the session slot is named by `SessionView.slot_tab_id`, read
 // through `isFirstTab`: never a position or a session id, and resume eligibility
 // is likewise decided at launch rather than by position. A dormant tab
@@ -74,6 +129,9 @@ export interface AgentTabView {
   id: string
   provider: string
   order: number
+  /** When the tab was created (ms since the epoch). Duplicate provider labels are
+   * numbered by it, so a tab keeps its name when dragged. Missing reads as `0`. */
+  created_at_ms?: number
   working: boolean
   /** This tab is streaming keystroke-level input, a finer cue than `working`.
    * Rolled up any-tab into `SessionView.typing`; missing normalizes to `false`. */
@@ -130,10 +188,11 @@ export interface TerminalView {
    * itself is idle; refreshed by the engine at most every ~2s. The displayed
    * title follows it when present, falling back to `label` (`terminalTitle`). */
   foreground_cmd: string | null
-  /** The terminal's manual (drag) display position within the flat Terminals
-   * section, ascending. Stamped at spawn so the default equals creation order,
-   * rewritten only by a reorder. Runtime only: never persisted, and it resets to
-   * creation order on restart. Missing normalizes to `0`. */
+  /** The terminal's manual (drag) position among all terminals, ascending: it
+   * orders an agent's own terminals, and list terminals sharing a
+   * `list_after`. Stamped at spawn so the default equals creation order,
+   * rewritten only by a reorder. Runtime only: never persisted, and it resets
+   * to creation order on restart. Missing normalizes to `0`. */
   sort_order: number
   /** RFC 3339 spawn time, immutable after spawn, in the same representation as
    * `SessionView`'s timestamps. Missing normalizes to "". */
@@ -141,6 +200,11 @@ export interface TerminalView {
   /** RFC 3339 timestamp of the terminal's last PTY activity, falling back to the
    * spawn time when there has been none. Missing normalizes to "". */
   updated_at: string
+  /** A project or standalone terminal's manual place in the agents list: the
+   * agent its row sits right after in the stored agent order, null for the top
+   * (and for an agent's own terminal, which is not a list row). Runtime only.
+   * Missing normalizes to null. */
+  list_after: string | null
 }
 
 export interface SessionView {
@@ -155,14 +219,22 @@ export interface SessionView {
   workspace: AgentWorkspaceWire
   status: SessionStatus
   auto_reopen_enabled: boolean
+  /** The pull request the agent shows: the first of `prs`. */
   pr?: PrView
-  /** True while the user has detached this agent's pull request, which stops yaran
-   * looking for one until they attach a PR by hand or resume detection. Lives on
-   * the session rather than on `pr` because it describes the state where there is
-   * no PR. Absent reads as false. */
-  pr_autodetect_suppressed?: boolean
+  /** Every pull request the agent shows, in its order. Absent when none. */
+  prs?: PrView[]
+  /** The pull requests the user hid. Absent when none. */
+  prs_hidden?: PrView[]
+  /** The open or draft pull request that would keep the branch's old name if
+   * the branch were renamed. Absent when none. */
+  rename_warning_pr?: number
+  /** How the pull requests are ordered. */
+  pr_sort?: "automatic" | "manual"
+  /** Moves whenever the agent's pull requests, their order or its branch list
+   * change. */
+  pr_revision?: number
   /** The id of this agent's session-slot tab. Closing it hands the slot to the
-   * next tab in strip order, so this pointer moves; an agent's only tab cannot be
+   * leftmost other tab, so this pointer moves; an agent's only tab cannot be
    * closed. Read it through `isFirstTab` in `lib/agentTabs.ts` rather than
    * comparing a tab id against the session id. Missing is filled with the session
    * id, the placeholder for "the first tab, whichever it is". */
@@ -173,7 +245,8 @@ export interface SessionView {
    * `lib/detachAgent.ts`, never by scanning `tabs` again. An older server omits
    * it and that helper falls back to the tab scan. */
   detachable?: boolean
-  /** The agent's provider tabs in creation order; a session always has at least
+  /** The agent's provider tabs in strip order, left to right, with the slot tab
+   * (`slot_tab_id`) wherever the user placed it; a session always has at least
    * one, and the strip renders only when there are two or more. Missing coerces
    * to `[]` at ingestion. */
   tabs: AgentTabView[]
@@ -246,6 +319,71 @@ export interface ProjectWorktreeEntryView {
   // The agent holding a non-adoptable worktree; its display name is resolved
   // client-side from the spine (`title || branch_name`).
   agent_id: string | null
+  // Its removal has already begun: the agent that owned it was just deleted
+  // and is still exiting, or git is removing it now. Neither adoptable nor
+  // removable a second time.
+  being_removed: boolean
+  // What, other than the agent holding it, is using the worktree, as a
+  // sentence, or null. A row its agent holds keeps its place under that agent
+  // and shows this beside it.
+  in_use?: string | null
+}
+
+// A left-over folder in the Worktrees manager: a worktree folder whose delete
+// git finished (it no longer lists the worktree) but whose directory could not
+// be removed, because something was still writing into it.
+// The store builds it from the wire through `normalizeLeftover`, which fills
+// the fields an older server does not send.
+export interface LeftoverFolderView {
+  path: string
+  // The kept branches a delete can remove, by name.
+  branches: string[]
+  // The kept branches a delete would keep, each with why.
+  undeletable: UndeletableBranchView[]
+  // The provenance of the agent's branch, or null when the worktree manager's
+  // own removal left the folder (its branch is then one yaran created).
+  branch_provenance: "created" | "attached" | "adopted" | "unknown" | null
+  // What left the folder behind: an agent's delete, or the worktree
+  // manager's own removal.
+  left_by: "agent" | "manager"
+  // Whether the row offers a delete: a folder to delete, or a kept branch a
+  // delete can remove.
+  offers_delete: boolean
+  // What is using the folder now, as yaran-core's sentence for both surfaces
+  // ("In use: <reason>. Delete it once that has stopped."), or null. A row
+  // with one offers no delete.
+  in_use: string | null
+  // False once the folder itself is gone (deleted by hand, or replaced by
+  // something else) while a kept branch is still there: the row is then about
+  // the branch, and a delete removes nothing at the path.
+  folder_present: boolean
+}
+
+// A kept branch yaran will not delete, and why: it has no recorded commit, it
+// is checked out in the worktree at `path`, it moved since the folder was
+// left behind, or git could not check it (`reason` is git's own words).
+export interface UndeletableBranchView {
+  name: string
+  why: "no_commit" | "checked_out" | "moved" | "unchecked"
+  path?: string
+  reason?: string
+}
+
+// A left-over folder as the server sends it. An older server sends no
+// `undeletable`, `left_by` or `offers_delete`.
+export type LeftoverFolderWire = Omit<
+  LeftoverFolderView,
+  "undeletable" | "left_by" | "offers_delete"
+> &
+  Partial<Pick<LeftoverFolderView, "undeletable" | "left_by" | "offers_delete">>
+
+// The answer to a left-over folder delete. Every decided outcome, refusals
+// included, arrives this way; `segments` carries the names in `message`.
+export interface DeleteLeftoverFolderReply {
+  removed: boolean
+  warning: boolean
+  message: string
+  segments: unknown
 }
 
 // The branch-warning classification for a candidate project path. `known` names
@@ -275,6 +413,42 @@ export interface ChangedFileView {
   /** Where a rename came from. Absent for every other status: the source
    * directory's listing lost an entry and nothing else on the wire says so. */
   renamed_from?: string
+  /** Present only on a row standing for a whole folder: `"directory"` for a
+   * folder with nothing tracked inside it (or, staged, one added whole), and
+   * `"nested_repository"` for an untracked repository of its own. The row's
+   * `path` is the folder with no trailing slash. Absent on a file row. */
+  kind?: "directory" | "nested_repository" | "linked_worktree"
+  /** How many files a `"directory"` row stands for, at any depth. Files
+   * only: repositories of their own inside it are `nested_repositories`. */
+  file_count?: number
+  /** How many repositories of their own a `"directory"` row holds, which
+   * deleting the folder keeps. Absent when there are none. */
+  nested_repositories?: number
+  /** How many worktrees of this same repository a `"directory"` row holds,
+   * counted apart from repositories of their own. Absent when there are none. */
+  linked_worktrees?: number
+  /** A fingerprint of the files inside a `"directory"` row (their sizes and
+   * modification times), which moves when a file inside is edited. Absent for
+   * a folder too large to fingerprint. A staged folder's is taken from the
+   * index (each entry's path, mode and object id). Opaque text. */
+  fingerprint?: string
+  /** Staged side only: repositories of their own inside a `"directory"` row
+   * that staging the folder left out, so they are not in the index. They do
+   * not keep the folder from folding. Absent when there are none. */
+  nested_repositories_not_staged?: number
+  /** Staged side only: the same, for worktrees of this repository. */
+  linked_worktrees_not_staged?: number
+  /** The bare repositories inside a `"directory"` row (worktree-relative
+   * paths; the folder itself when it is one). To git their contents are
+   * ordinary files, counted in `file_count`; a folder delete keeps them.
+   * Absent when there are none. */
+  bare_repositories?: string[]
+  /** How many of `file_count` sit inside those bare repositories. */
+  files_in_bare_repositories?: number
+  /** Repositories of their own and worktrees of this repository inside a
+   * `"directory"` row (on the staged side, the ones its stage left out), as
+   * worktree-relative paths. Absent when there are none. */
+  repositories_inside?: string[]
 }
 
 export interface ChangedFiles {
@@ -350,6 +524,9 @@ export interface EventsServerMessage {
    *  `GET /api/v1/workspace` returns. Typed as `unknown` because the shape check
    *  belongs at the one ingestion boundary, `normalizeWorkspace`. */
   workspace?: unknown
+  /** The server's run clock as the `workspace` frame was sent, which the
+   *  document's verdicts are aged against (`lib/serverClock.ts`). */
+  clock?: number
   /** The claiming connection's id on a `pty.owner` handover. A client compares it
    *  against its own PTY-socket connection id to decide ownership: own id = owner,
    *  foreign id = read-only placeholder. */
@@ -377,6 +554,10 @@ export interface EventsServerMessage {
    *  Absent reads as `false`, never as "unknown, better keep it on screen". What
    *  earns it is documented on `NotifyOptions.sticky` in `lib/notify.ts`. */
   sticky?: boolean
+  /** The question a status puts to the user (`status`), when it is one. Typed
+   *  `unknown` because it is checked at the one reader, `readReviewCopyAsk` in
+   *  `lib/store.ts`. */
+  ask?: unknown
   /** Status scope (`status`): the literal `"all"` for a workspace broadcast, or
    *  `{connection: "<id>"}` for one addressed to a single connection (the
    *  serialized shape, so this is not a plain string). Read in
@@ -413,4 +594,14 @@ export interface EventsClientMessage {
 // never named.
 export interface AcceptedOperation {
   op_id: string | null
+}
+
+// `GET /api/v1/operations/{id}`: the record of a change, as it stands. Only the
+// fields a reader here acts on. `state` is "running" or "unknown" while the
+// change has no outcome yet, and "succeeded", "failed" or "partial" once it
+// has; `created` names the ids the change made (projects and agents alike).
+export interface OperationView {
+  id: string
+  state: string
+  created: string[]
 }

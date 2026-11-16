@@ -3,22 +3,16 @@
 //! its code no longer matches the server, so it hard reloads instead of
 //! reconnecting a tab into a build that may disagree about the wire shape.
 //!
-//! Both fields are needed. `version` is the literal `development` for every
-//! untagged build, so a rebuild-and-restart never moves it; `process` moves on
-//! every restart, and `version` is the half a human recognises and the half that
-//! names what changed in a release. Matching fields mean a network blip returned
-//! to the same process, so the client keeps its tab rather than reloading.
-//!
-//! Deliberately narrow: this identifies the server run, and must not grow into a
-//! schema or data-shape version. The interface ships inside the server binary, so
-//! a shape change cannot reach a client without a restart this already catches.
+//! It identifies the server run and is not a schema version: the body is exactly
+//! `version`, `process`, `instance` (which yaran this is, across its restarts)
+//! and `api`, the REST API version the separately shipped command line checks.
 //!
 //! Always 200: it answers from process-local data with no engine round-trip, so
-//! it is available while the engine is still coming up, which is exactly when a
-//! reconnecting client asks.
+//! it is available while the engine is still coming up.
 
 use axum::{
     Json, Router,
+    extract::State,
     http::header,
     response::{IntoResponse, Response},
     routing::get,
@@ -27,9 +21,8 @@ use serde::Serialize;
 
 use crate::server::AppState;
 
-/// What this server reports about itself. Both fields together are the identity
-/// the client compares; either one moving means "not the server this tab loaded
-/// against".
+/// What this server reports about itself. The browser reads a change in
+/// `version` or `process` as a different server run.
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct BuildIdentity {
     /// The binary's display version, the same string shown under the logo
@@ -39,6 +32,9 @@ pub struct BuildIdentity {
     /// life of the process, so it is stable across every request a client makes
     /// and different on the other side of a restart.
     pub process: String,
+    /// The REST API version, which the command line checks before anything
+    /// else; the browser ignores it.
+    pub api: u64,
 }
 
 /// This process's run id, minted once per process: a per-request value would make
@@ -52,6 +48,7 @@ pub fn build_identity() -> &'static BuildIdentity {
         std::sync::LazyLock::new(|| BuildIdentity {
             version: yaran_core::display_version().to_string(),
             process: PROCESS_ID.clone(),
+            api: yaran_core::client::API_VERSION,
         });
     &IDENTITY
 }
@@ -61,13 +58,26 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/api/v1/build", get(get_build))
 }
 
-async fn get_build() -> Response {
+/// The route's body: the run, and which yaran it is a run of.
+#[derive(Serialize)]
+struct BuildDoc<'a> {
+    #[serde(flatten)]
+    identity: &'a BuildIdentity,
+    /// This yaran's instance id, which a restart keeps; `null` when it could not
+    /// be read. A consistency check only, never an auth or trust input.
+    instance: Option<&'a str>,
+}
+
+async fn get_build(State(state): State<AppState>) -> Response {
     // `no-store`, not `no-cache`: this is the probe a reconnecting client uses to
     // decide whether its own code is stale, so a cached answer would report what
     // the tab already believes and defeat the check entirely.
     (
         [(header::CACHE_CONTROL, "no-store")],
-        Json(build_identity()),
+        Json(BuildDoc {
+            identity: build_identity(),
+            instance: state.engine.instance_id(),
+        }),
     )
         .into_response()
 }
@@ -102,19 +112,24 @@ mod tests {
         assert_eq!(build_identity().version, yaran_core::display_version());
     }
 
-    /// The wire shape is exactly two keys, and no more. The client compares the
-    /// whole document, so a field added here changes what every open tab believes
-    /// about the server.
+    /// The wire shape is exactly these keys, and no more. The browser compares
+    /// the instance, the version and the run, and the command line refuses a
+    /// yaran whose `api` differs from its own.
     #[test]
-    fn the_body_carries_exactly_version_and_process() {
-        let json = serde_json::to_value(build_identity()).unwrap();
+    fn the_body_carries_exactly_version_process_instance_and_api_one() {
+        let json = serde_json::to_value(BuildDoc {
+            identity: build_identity(),
+            instance: Some("i"),
+        })
+        .unwrap();
         let mut keys: Vec<&str> = json
             .as_object()
             .expect("a JSON object")
             .keys()
-            .map(|k| k.as_str())
+            .map(std::string::String::as_str)
             .collect();
         keys.sort_unstable();
-        assert_eq!(keys, vec!["process", "version"]);
+        assert_eq!(keys, vec!["api", "instance", "process", "version"]);
+        assert_eq!(json["api"], 1);
     }
 }

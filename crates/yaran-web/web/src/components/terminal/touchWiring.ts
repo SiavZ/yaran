@@ -1,6 +1,7 @@
 import type { RefObject } from "react"
 import type { Terminal } from "@xterm/xterm"
 
+import { notifyInfo } from "@/lib/notify"
 import { copyTermSelection } from "@/lib/termClipboard"
 import { copyOnSelectAction } from "@/lib/termkeys"
 import { dragScrollLines, dragWheelReport } from "@/lib/viewport"
@@ -19,7 +20,7 @@ import type { LiveSettings } from "./liveValues"
 import type { LinkPress } from "./linkPress"
 import { mouseCaptureHintShown } from "./pageSessionHints"
 import type { ResizeCoordinator } from "./resizeCoordinator"
-import { createSelectionDrag } from "./selectionDrag"
+import { createSelectionDrag, type SelectionDrag } from "./selectionDrag"
 import {
   createTouchGesture,
   type TouchGestureOutcome,
@@ -155,11 +156,28 @@ function handleTap(
 
 function handleLift(
   options: TerminalTouchWiringOptions,
+  selection: SelectionDrag,
   outcome: TouchGestureOutcome,
   event: TouchEvent,
 ): void {
   if (outcome.wasSelecting) {
     event.preventDefault()
+    // Both notices are asked of the gesture rather than read off the
+    // selection, and neither is sticky: nothing is lost, and the next press
+    // is the fix. A gesture the terminal cut short (a resize, the app
+    // switching screens, the pressed line leaving the buffer) copies nothing,
+    // and a silent lift would read as a copy that happened.
+    if (selection.liftWasCutShort()) {
+      notifyInfo("Nothing copied: the terminal changed while you were selecting. Try again.")
+      return
+    }
+    // The drag paints nothing over blank cells, so a press that found only
+    // blanks ends with no highlight, and a silent lift would read as a copy
+    // that failed.
+    if (selection.liftFoundOnlyBlanks()) {
+      notifyInfo("Nothing to copy there: that spot is blank.")
+      return
+    }
     copyTouchSelection(options)
     return
   }
@@ -185,7 +203,7 @@ export function registerTerminalTouchWiring(
       options.composeInputRef.current?.blur()
     },
     onScrollMove: (pixels, touch) => moveScroll(options, pixels, touch),
-    onLift: (outcome, event) => handleLift(options, outcome, event),
+    onLift: (outcome, event) => handleLift(options, selection, outcome, event),
   })
   gesture.attach(options.container)
   return { dispose: () => gesture.dispose() }

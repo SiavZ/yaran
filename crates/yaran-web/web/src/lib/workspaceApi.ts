@@ -2,10 +2,12 @@
 // the core-computed sidebar model in one GET. The `projects.changed` /
 // `sessions.changed` events over `/ws/events` tell the client when to re-GET,
 // and a non-2xx throws a `WorkspaceFetchError` carrying the HTTP status.
+import { apiFetch, rethrowAuthInterruption } from "./apiFetch"
 import type { AgentWorkspaceWire } from "@/lib/agentWorkspace"
 import { stripBidiControls } from "@/lib/bidi"
 import type {
   AgentTabView,
+  PrView,
   ProjectView,
   SessionView,
   SidebarModel,
@@ -20,6 +22,11 @@ export interface Spine {
    * the client applies such a document rather than guessing. Meaningless across
    * server restarts. */
   rev?: number
+  /** Not part of the document: the server's run clock as this delivery of it
+   * was sent (a header on the fetch, a field beside the pushed frame's body).
+   * Recorded only by the apply that accepts the document, so a stale delivery
+   * cannot put back an older reading (`lib/serverClock.ts`). */
+  clock?: number
   /** Every known project, in display order. */
   projects: ProjectView[]
   /** Every agent session, in display order. */
@@ -48,8 +55,9 @@ export class WorkspaceFetchError extends Error {
 export async function fetchWorkspace(): Promise<Spine> {
   let resp: Response
   try {
-    resp = await fetch("/api/v1/workspace", { credentials: "same-origin" })
-  } catch {
+    resp = await apiFetch("/api/v1/workspace", { credentials: "same-origin" })
+  } catch (e) {
+    rethrowAuthInterruption(e)
     // The request never reached the server (offline, DNS, CORS).
     throw new WorkspaceFetchError("Could not reach the server.", 0)
   }
@@ -60,8 +68,19 @@ export async function fetchWorkspace(): Promise<Spine> {
       resp.status,
     )
   }
-  return normalizeWorkspace((await resp.json()) as RawWorkspace)
+  const workspace = normalizeWorkspace((await resp.json()) as RawWorkspace)
+  return withClock(workspace, Number(resp.headers.get(RUN_CLOCK_HEADER) ?? Number.NaN))
 }
+
+/** `workspace` with the run clock its delivery carried, when it carried one. */
+export function withClock(workspace: Spine, clock: unknown): Spine {
+  return typeof clock === "number" && Number.isFinite(clock)
+    ? { ...workspace, clock }
+    : workspace
+}
+
+/** The header the workspace GET carries the server's run clock in. */
+const RUN_CLOCK_HEADER = "x-yaran-run-clock"
 
 /** The workspace document as it arrives on the wire, from any server version:
  * optional fields still optional, terminals possibly still nested inside their
@@ -149,6 +168,10 @@ function normalizeSessionWorkspace(
   }
 }
 
+function cleanPrTitle(pr: PrView): PrView {
+  return { ...pr, title: stripBidiControls(pr.title) }
+}
+
 // Turn a wire document into the shape every consumer downstream assumes.
 //
 // The one ingestion boundary, shared by both delivery paths (the boot fetch and
@@ -178,8 +201,10 @@ export function normalizeWorkspace(raw: RawWorkspace): Spine {
       return {
         ...s,
         // Someone else's text, cleaned once here for every screen that draws it
-        // (see `./bidi`).
-        ...(s.pr ? { pr: { ...s.pr, title: stripBidiControls(s.pr.title) } } : {}),
+        // (see `./bidi`), in every list it rides in.
+        ...(s.pr ? { pr: cleanPrTitle(s.pr) } : {}),
+        ...(s.prs ? { prs: s.prs.map(cleanPrTitle) } : {}),
+        ...(s.prs_hidden ? { prs_hidden: s.prs_hidden.map(cleanPrTitle) } : {}),
         workspace: normalizeSessionWorkspace(rawSession),
         tabs: (s.tabs ?? []).map(normalizeTab),
         // An older server that predates attention omits the field; treat missing
@@ -206,8 +231,9 @@ type RawTab = Omit<AgentTabView, "typing"> & { typing?: boolean }
 // the pure sort treats as epoch 0.
 type RawTerminal = Omit<
   TerminalView,
-  "working" | "typing" | "sort_order" | "created_at" | "updated_at"
+  "working" | "typing" | "sort_order" | "created_at" | "updated_at" | "list_after"
 > & {
+  list_after?: string | null
   working?: boolean
   typing?: boolean
   sort_order?: number
@@ -222,8 +248,8 @@ type LegacyTerminal = Omit<RawTerminal, "owner">
 // The flat, owner-bearing collection, from either shape the server may send. A
 // newer server sends `terminals` at the top level, each entry tagged with its
 // owner; an older one nests them inside the owning session or project, and those
-// are lifted and tagged here rather than discarded, which would show an empty
-// Terminals section while every terminal is still running.
+// are lifted and tagged here rather than discarded, which would list no terminal
+// while every terminal is still running.
 //
 // The flat field wins whenever it is present, even when empty: a server with no
 // terminals sends `[]` and means it.
@@ -272,5 +298,6 @@ function normalizeTerminal(t: RawTerminal): TerminalView {
     sort_order: t.sort_order ?? 0,
     created_at: t.created_at ?? "",
     updated_at: t.updated_at ?? "",
+    list_after: t.list_after ?? null,
   }
 }

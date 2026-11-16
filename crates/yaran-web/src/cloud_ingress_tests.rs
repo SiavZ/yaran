@@ -14,7 +14,7 @@
 //! ├── yaran-core::cloud::protocol
 //! ├── yaran-core::cloud::test_support
 //! └── yaran-core::test_scratch
-//! External: axum, futures_util, std, tokio, tokio_tungstenite
+//! External: axum, std, tokio
 //!
 //! Used by:
 //! cloud_ingress_tests.rs
@@ -22,7 +22,6 @@
 //! <module-headers:end>
 
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
@@ -218,73 +217,16 @@ fn every_refusal_yaran_emits_is_registered_and_the_sets_are_equal() {
     assert_eq!(emitted, registered);
 }
 
-/// Serves the harness on loopback and opens a WebSocket to `path` as `host`.
-async fn ws(
-    h: &Harness,
-    path: &str,
-    host: &str,
-    jwt: &str,
-) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let app = h.app.clone();
-    tokio::spawn(async move {
-        let _ = axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await;
-    });
-    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let request = Request::builder()
-        .uri(format!("ws://{host}{path}"))
-        .header("Host", host)
-        .header("Cf-Access-Jwt-Assertion", jwt)
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
-        .header("Sec-WebSocket-Version", "13")
-        .header(
-            "Sec-WebSocket-Key",
-            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-        )
-        .body(())
-        .unwrap();
-    tokio_tungstenite::client_async(request, stream)
-        .await
-        .unwrap()
-        .0
-}
-
-/// The close code the socket ends with within `wait`, or `None` if it stays open.
-async fn close_code(
-    socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-    wait: Duration,
-) -> Option<u16> {
-    use futures_util::StreamExt;
-    use tokio_tungstenite::tungstenite::Message;
-    let read = async {
-        while let Some(Ok(message)) = socket.next().await {
-            if let Message::Close(frame) = message {
-                return frame.map(|f| u16::from(f.code));
-            }
-        }
-        None
-    };
-    tokio::time::timeout(wait, read).await.ok().flatten()
-}
-
 /// Puts the clock one second before the valid token's `exp + skew`.
 fn near_expiry(h: &Harness) {
-    let skew = IngressSettings::default().clock_skew.as_secs() as i64;
-    h.clock
-        .store(fixture_now() + 3600 + skew - 1, Ordering::SeqCst);
+    before_expiry(h, 1);
 }
 
 #[tokio::test]
 async fn an_events_socket_closes_with_4401_when_its_token_expires() {
     let h = harness();
     near_expiry(&h);
-    let mut socket = ws(&h, "/ws/events", HOST, &token("valid")).await;
+    let mut socket = ws(&h.app, "/ws/events", HOST, &token("valid")).await;
     assert_eq!(
         close_code(&mut socket, Duration::from_secs(5)).await,
         Some(4401)
@@ -299,7 +241,7 @@ async fn with_the_setting_off_the_socket_stays_open() {
         ..h.ingress.settings()
     });
     near_expiry(&h);
-    let mut socket = ws(&h, "/ws/events", HOST, &token("valid")).await;
+    let mut socket = ws(&h.app, "/ws/events", HOST, &token("valid")).await;
     assert_eq!(
         close_code(&mut socket, Duration::from_millis(1500)).await,
         None

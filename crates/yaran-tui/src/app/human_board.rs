@@ -811,7 +811,7 @@ impl App {
                     result: Err(reason.clone()),
                 });
                 self.set_warning(format!(
-                    "The shared board is not syncing: {reason}. Run `yaran board sync` to sync \
+                    "The shared board is not syncing: {reason}. Run \"yaran board sync\" to sync \
                      it by hand."
                 ));
             }
@@ -844,7 +844,7 @@ impl App {
                         .unwrap_or_default();
                     self.set_warning(format!(
                         "The shared board did not sync: {err}. Your board changes are kept here \
-                         and it tries again every {every}s; `yaran board sync` runs one by hand."
+                         and it tries again every {every}s; \"yaran board sync\" runs one by hand."
                     ));
                 }
             }
@@ -930,7 +930,7 @@ impl App {
             self.set_ui_hint(format!(
                 "The right column now shows Tasks for Human, with a tab per queue and a Changes \
                  tab for the changed files ({next_tab} switches tabs). Agents post to it with \
-                 `yaran board post`. Run toggle-human-board from the palette ({palette_key}) to \
+                 \"yaran board post\". Run toggle-human-board from the palette ({palette_key}) to \
                  switch back."
             ));
         } else {
@@ -1101,7 +1101,7 @@ impl App {
             return Some(ReplyTarget {
                 session_id: session.id.clone(),
                 tab_id,
-                label: self.session_label(session),
+                label: session.display_label(),
                 is_poster: true,
             });
         }
@@ -1110,7 +1110,7 @@ impl App {
         Some(ReplyTarget {
             session_id: session.id.clone(),
             tab_id,
-            label: self.session_label(session),
+            label: session.display_label(),
             is_poster: false,
         })
     }
@@ -1679,7 +1679,7 @@ impl App {
             )),
             (BoardJob::Resolve { label, .. }, Ok(true)) => self.set_info(format!(
                 "Marked card {label} done. It moves under Done on the board, and the agent \
-                 that posted it sees it resolved by {RESOLVED_BY} in `yaran board list --all`."
+                 that posted it sees it resolved by {RESOLVED_BY} in \"yaran board list --all\"."
             )),
             (BoardJob::Resolve { label, .. }, Ok(false)) => {
                 self.set_info(format!("Card {label} was already done; nothing changed."))

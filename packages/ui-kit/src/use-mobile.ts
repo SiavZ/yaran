@@ -18,17 +18,22 @@
  * ├── src/popover.tsx
  * ├── src/sonner.tsx
  * ├── web:src/App.tsx
+ * ├── web:src/components/AttachPullRequestDialog.tsx
  * ├── web:src/components/ChangedFiles.tsx
+ * ├── web:src/components/CustomizeWebappDialog.tsx
  * ├── web:src/components/EditorBody.tsx
  * ├── web:src/components/EditorOverlay.tsx
  * ├── web:src/components/FirstLoadDialog.tsx
  * ├── web:src/components/MacroPopover.tsx
+ * ├── web:src/components/NewLauncherDialog.tsx
+ * ├── web:src/components/PaneActionCluster.tsx
+ * ├── web:src/components/PaneInputGroup.tsx
+ * ├── web:src/components/PullRequestsDialog.tsx
  * ├── web:src/components/StandaloneEditor.tsx
  * ├── web:src/components/TaskManagerDialog.tsx
- * ├── web:src/components/TerminalPane.tsx
+ * ├── web:src/components/terminal/partSetup.tsx
  * ├── web:src/components/ui/sidebar.tsx
- * ├── web:src/lib/store.ts
- * └── web:src/lib/typingSurface.ts
+ * └── web:src/lib/store.ts
  * <module-headers:end>
  */
 import * as React from "react"

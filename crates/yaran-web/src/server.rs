@@ -3,8 +3,10 @@
 //! REST (`/api/v1/*`); the sockets carry only change events + status (events) and
 //! terminal byte streams (PTY).
 //!
-//! There is no login gate: static assets, `/healthz`, every `/api/v1/*` route and
-//! every WS upgrade are served plainly.
+//! Every request passes the auth layer (`crate::auth`): the blocklist always,
+//! and, once a password is set, a session check on everything but the declared
+//! public routes (the page and its assets, `/healthz`, the auth status and the
+//! login). With no password every route is served plainly, as it always was.
 //!
 //! Every WS upgrade still runs an Origin check against cross-site WebSocket
 //! hijacking, allowing same-host origins only. A client that sends no `Origin` is
@@ -14,6 +16,11 @@
 //! <module-headers:begin>
 //! Uses:
 //! server.rs
+//! ├── auth
+//! ├── auth::middleware
+//! ├── auth::provenance
+//! ├── auth::routes
+//! ├── auth::socket
 //! ├── bootstrap_routes
 //! ├── browse_routes
 //! ├── build_routes
@@ -27,15 +34,18 @@
 //! ├── cloud_routes
 //! ├── config_routes
 //! ├── console
+//! ├── control_socket
 //! ├── crate
 //! ├── engine_actor
 //! ├── event_bus
 //! ├── events_beat
+//! ├── exposure
 //! ├── file_drop_routes
 //! ├── file_routes
 //! ├── first_load_routes
 //! ├── git_routes
 //! ├── host_guard
+//! ├── operation_routes
 //! ├── origin_match
 //! ├── ownership_publish
 //! ├── project_actions
@@ -45,29 +55,38 @@
 //! ├── resource_routes
 //! ├── rest_common
 //! ├── serve_legs
+//! ├── server_inspect_routes
 //! ├── session_actions
 //! ├── startup_logs
 //! ├── tab_actions
 //! ├── terminal_actions
 //! ├── test_support
-//! ├── web_assets
 //! ├── workspace_routes
 //! ├── yaran-core::activity
+//! ├── yaran-core::attachments
 //! ├── yaran-core::background_serve
 //! ├── yaran-core::config
+//! ├── yaran-core::config_effective
+//! ├── yaran-core::config_resources
 //! ├── yaran-core::logger
 //! ├── yaran-core::model
 //! ├── yaran-core::prose
+//! ├── yaran-core::pty
+//! ├── yaran-core::pty_owners
 //! ├── yaran-core::status_text
 //! ├── yaran-core::statusline
 //! ├── yaran-core::storage
 //! ├── yaran-core::test_scratch
 //! ├── yaran-core::urls
 //! └── yaran-core::wire
-//! External: axum, chrono, futures_util, serde, serde_json, std, tempfile, tokio, tower, uuid
+//! External: axum, chrono, futures_util, rusqlite, serde, serde_json, std, tempfile, tokio, tower, uuid
 //!
 //! Used by:
 //! server.rs
+//! ├── auth::middleware
+//! ├── auth::routes
+//! ├── auth::socket
+//! ├── background
 //! ├── bootstrap_routes
 //! ├── browse_routes
 //! ├── build_routes
@@ -78,14 +97,18 @@
 //! ├── cloud_test_support
 //! ├── config_routes
 //! ├── crate
+//! ├── engine_actor
 //! ├── file_drop_routes
 //! ├── file_routes
 //! ├── first_load_routes
 //! ├── git_routes
+//! ├── operation_routes
 //! ├── ownership_publish
 //! ├── project_actions
 //! ├── project_reads
 //! ├── resource_routes
+//! ├── rest_common
+//! ├── server_inspect_routes
 //! ├── session_actions
 //! ├── startup_logs
 //! ├── tab_actions
@@ -93,6 +116,7 @@
 //! ├── test_support
 //! ├── workspace_routes
 //! ├── yaran-web[test add_project_base_branch]
+//! ├── yaran-web[test auth_router]
 //! ├── yaran-web[test changes_events]
 //! ├── yaran-web[test file_move_and_info_routes]
 //! ├── yaran-web[test file_tree_routes]
@@ -101,6 +125,10 @@
 //! ├── yaran-web[test missing_working_copy]
 //! ├── yaran-web[test project_worktrees_routes]
 //! ├── yaran-web[test pull_request_resolution]
+//! ├── yaran-web[test races_review2_editor_hold]
+//! ├── yaran-web[test races_review5_editor_delete]
+//! ├── yaran-web[test review11_symlink_folder]
+//! ├── yaran-web[test review9_nested_destructive]
 //! ├── yaran-web[test session_branch_routes]
 //! ├── yaran-web[test static_serving]
 //! ├── yaran-web[test tab_routes]
@@ -125,79 +153,83 @@ use yaran_core::statusline::{KeyedWireStatus, StatusScope};
 use yaran_core::wire::WireStatus;
 
 use crate::changes::ChangesService;
+use crate::cloud_mode_routes::spawn_cloud_changed_forwarder;
 use crate::console::Console;
 use crate::engine_actor::{EngineHandle, SpineChange, WorkspaceDoc};
 use crate::event_bus::{self, Event, EventBus};
 use crate::pty_owners::PtySizeOwners;
 
+/// The shared state every route and socket handler of one router reads.
 #[derive(Clone)]
 pub struct AppState {
+    /// The handle every handler talks to the engine thread through.
     pub engine: EngineHandle,
-    /// The `yaran server` terminal console. A real (stdout) console on the CLI
-    /// serve paths; a [`Console::noop`] for the TUI flip (which owns the
-    /// terminal) and every test that does not assert console output. WS handlers
+    /// The server's console. A real (stdout) console for `yaran server`; a
+    /// capturing console for the TUI flip, whose status screen shows the same
+    /// lines; a [`Console::noop`] for the background server and every test that
+    /// does not assert console output. WS handlers
     /// emit life events through it; the access middleware reads it too.
-    pub console: Console,
+    pub(crate) console: Console,
     /// The `[server]` settings a config reload can move on a listener that is
     /// already bound: `access_log` and `search_index_max_files`. Seeded from
     /// [`RouterParams`] here and rewritten by the engine actor on every reload,
     /// so the routes read the current value per request rather than one frozen
     /// at bind time.
-    pub live_limits: Arc<crate::engine_actor::LiveServerLimits>,
+    pub(crate) live_limits: Arc<crate::engine_actor::LiveServerLimits>,
     /// Caps concurrent EVENTS WebSocket connections
     /// (`[server] max_websocket_events_connections`). An upgrade takes a permit
     /// before upgrading and holds it for the socket's lifetime, and is refused with
     /// a 503 when none are free. Sized and exhausted independently of the agent and
     /// terminal PTY classes.
-    pub ws_events_semaphore: Arc<tokio::sync::Semaphore>,
+    pub(crate) ws_events_semaphore: Arc<tokio::sync::Semaphore>,
     /// Caps concurrent AGENT-PTY WebSocket connections
     /// (`[server] max_websocket_agent_connections`). The embedded-terminal stream
     /// for an agent session. Sized and exhausted INDEPENDENTLY of the events and
     /// terminal classes.
-    pub ws_agent_semaphore: Arc<tokio::sync::Semaphore>,
+    pub(crate) ws_agent_semaphore: Arc<tokio::sync::Semaphore>,
     /// Caps concurrent TERMINAL-PTY WebSocket connections
     /// (`[server] max_websocket_terminal_connections`). The standalone
     /// scratch-terminal stream. Sized and exhausted INDEPENDENTLY of the events and
     /// agent classes.
-    pub ws_terminal_semaphore: Arc<tokio::sync::Semaphore>,
+    pub(crate) ws_terminal_semaphore: Arc<tokio::sync::Semaphore>,
     /// Caps concurrent PER-TAB-ADDRESSED PTY WebSocket connections across all
     /// agents (`[server] max_websocket_tab_connections`). Every socket dialled at
     /// `/ws/sessions/:id/tabs/:tab/pty` draws from THIS pool, the session-slot tab
     /// included, and not from `ws_agent_semaphore`, so the per-tab address can
     /// never starve the bare per-agent one.
-    pub ws_tab_semaphore: Arc<tokio::sync::Semaphore>,
+    pub(crate) ws_tab_semaphore: Arc<tokio::sync::Semaphore>,
     /// Live per-tab-addressed sockets keyed by owning session id, the per-agent
     /// fairness sub-quota on top of `ws_tab_semaphore`. `ws_tab_pty_upgrade` refuses
     /// a session already at `max_ws_tabs_per_agent` BEFORE taking a tab-pool permit,
     /// so one agent cannot monopolize the shared pool. A [`TabWsGuard`] increments on
     /// connect and decrements on drop, every early return included.
-    pub tab_ws_counts: Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
+    pub(crate) tab_ws_counts: Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
     /// The per-agent live-tab-socket ceiling (`[server] max_websocket_tabs_per_agent`).
     /// `0` permanently blocks all tab sockets (matching the WS-connection-cap family).
-    pub max_ws_tabs_per_agent: u32,
-    /// Bounds concurrent `/files/tree` listings across all sessions
-    /// (`[server] tree_list_max_concurrency`), so a burst cannot exhaust the
+    pub(crate) max_ws_tabs_per_agent: u32,
+    /// Bounds concurrent `/files/tree` listings, search walks and `/files/raw` reads
+    /// across all sessions (`[server] tree_list_max_concurrency`), so a burst cannot exhaust the
     /// blocking-thread pool and starve other blocking work. `None` when the value is
     /// `0`, unlimited, and the route takes no permit. A request beyond the limit
     /// waits rather than being rejected, unlike the `ws_*_semaphore` connection caps:
     /// this bounds small, fast background work, not a long-lived connection.
-    pub tree_list_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    pub(crate) tree_list_semaphore: Option<Arc<tokio::sync::Semaphore>>,
     /// Bounds concurrent release-notes fetches
     /// (`[server] release_notes_max_concurrency`), same shape and reason as
     /// [`tree_list_semaphore`]: the fetch is a blocking HTTPS round trip and every
     /// browser tab can ask for it. A waiter usually answers from the notes cache.
-    pub release_notes_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    pub(crate) release_notes_semaphore: Option<Arc<tokio::sync::Semaphore>>,
     /// Per-file size cap for a dropped file (`[server] file_drop_max_bytes`),
     /// applied to the upload route as an explicit body limit. `0` disables file
     /// drop entirely and the route refuses every upload.
-    pub file_drop_max_bytes: usize,
+    pub(crate) file_drop_max_bytes: usize,
     /// Bounds how many dropped-file uploads are in flight
     /// (`[server] file_drop_max_concurrency`). Never `None`, unlike
     /// [`tree_list_semaphore`]: a configured `0` clamps to one permit, because this
     /// bounds total buffered-upload MEMORY and unlimited would bound nothing. The
     /// permit is taken in a layer around the handler, since a request body is
     /// buffered in full before the handler's first line runs.
-    pub file_drop_semaphore: Arc<tokio::sync::Semaphore>,
+    pub(crate) file_drop_semaphore: Arc<tokio::sync::Semaphore>,
     /// The web-layer event bus: resource-change signals (`/ws/events`) plus the
     /// per-topic interest refcount that drives the changed-files poller.
     pub event_bus: Arc<EventBus>,
@@ -205,14 +237,14 @@ pub struct AppState {
     /// `GET /api/v1/sessions/:id/changes` and the `session.changes` event. The git
     /// mutation handlers call `state.changes.invalidate(id)` after a successful
     /// stage/unstage/discard/commit/write so the pane refreshes immediately.
-    pub changes: Arc<ChangesService>,
+    pub(crate) changes: Arc<ChangesService>,
     /// The resource-monitor sampler + single-flight TTL cache behind
     /// `GET /api/v1/resources`, which the web Task Manager polls while open.
-    pub resources: Arc<crate::resource_routes::ResourceService>,
+    pub(crate) resources: Arc<crate::resource_routes::ResourceService>,
     /// `Idempotency-Key -> created resource id` cache (TTL-bounded) so a retried
     /// `POST /api/v1/sessions` or `/projects` after a lost response returns the
     /// same resource instead of creating a duplicate worktree/project.
-    pub idempotency: Arc<crate::rest_common::IdempotencyCache>,
+    pub(crate) idempotency: Arc<crate::rest_common::IdempotencyCache>,
     /// Per-PTY sizing ownership so two viewers of one PTY don't thrash its size.
     /// The most recently attached per-PTY socket owns sizing; a non-owner's resize
     /// frame is ignored (see [`PtySizeOwners`]).
@@ -227,22 +259,22 @@ pub struct AppState {
     /// it on disconnect. Read by `scope_from_headers` to validate an inbound
     /// `X-Connection-Id` (unknown id → broadcast) and by `count` for a later task's
     /// per-class caps. A cheap `Arc` clone so every request/socket shares one map.
-    pub connections: Arc<crate::rest_common::ConnectionRegistry>,
+    pub(crate) connections: Arc<crate::rest_common::ConnectionRegistry>,
     /// This launch's pending first-load screen (welcome / what's-new), decided
     /// ONCE by the resolver task spawned in [`build_app`] and injected into the
     /// bootstrap document per request. See [`crate::first_load_routes`] for why
     /// it is not computed per request and why the version is stamped on
     /// dismissal rather than at startup.
-    pub first_load: Arc<crate::first_load_routes::FirstLoadState>,
+    pub(crate) first_load: Arc<crate::first_load_routes::FirstLoadState>,
     /// This serve's live Tailscale-mode handle, or `None` when nothing is serving
     /// behind this router (tests, and any path with no serve loop). The route
     /// answers "the choice is saved and applies when a listener starts" for
     /// `None` rather than pretending the listener moved.
-    pub tailscale_mode: Option<crate::serve_legs::TailscaleModeControl>,
+    pub(crate) tailscale_mode: Option<crate::serve_legs::TailscaleModeControl>,
     /// Whether this run was started with `--no-tailscale`. Projected into the
     /// bootstrap document so the Preferences row can say the flag outranks the
     /// saved value for as long as this run lasts.
-    pub tailscale_forced_no: bool,
+    pub(crate) tailscale_forced_no: crate::serve_legs::NoTailscaleFlag,
     /// This serve's live `[cloud] mode` lane (view snapshot, ingress reader for
     /// Phase 11), or `None` when nothing serves behind this router.
     pub cloud: Option<crate::cloud_mode::CloudModeControl>,
@@ -251,7 +283,23 @@ pub struct AppState {
     /// [`crate::rest_common::CREATE_AWAIT_TIMEOUT`] and
     /// [`crate::rest_common::FROM_PR_CREATE_AWAIT_TIMEOUT`]; a test sets a short
     /// window so the deferred reply is exercised without waiting out the real one.
-    pub create_await_timeout: Option<std::time::Duration>,
+    pub(crate) create_await_timeout: Option<std::time::Duration>,
+    /// The web login: who each request is, the sessions, the blocklist and the
+    /// password checks. Every request passes its layer; every open socket
+    /// holds a watch on it (see [`crate::auth`]).
+    pub(crate) auth: Arc<crate::auth::AuthState>,
+    /// Flips to `true` when the core serving this router starts handing the
+    /// engine to the next one; a long operation wait then answers at once.
+    pub(crate) hand_over: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("max_ws_tabs_per_agent", &self.max_ws_tabs_per_agent)
+            .field("file_drop_max_bytes", &self.file_drop_max_bytes)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AppState {
@@ -262,10 +310,7 @@ impl AppState {
     ///
     /// An unowned pty is not denied, matching `may_write`: the first write claims it.
     pub(crate) fn input_held_by_someone_else(&self, pty_id: &str, conn_id: u64) -> bool {
-        matches!(
-            self.pty_size_owners.owners.lock().unwrap().map.get(pty_id),
-            Some(record) if record.conn_id != conn_id
-        )
+        self.pty_size_owners.held_by_another(pty_id, conn_id)
     }
 
     /// Hand input ownership of `pty_id` to `conn_id`, for tests that need the
@@ -320,8 +365,8 @@ fn captured_user_agent(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.chars().take(MAX_CAPTURED_USER_AGENT_CHARS).collect())
 }
 
-/// Build the router. yaran is trusted-local with no login gate, so every route is
-/// plain. The single-argument entry the test harnesses and any caller use.
+/// Build the router with the plain defaults. The single-argument entry the test
+/// harnesses and any caller use.
 pub fn router(engine: EngineHandle) -> Router {
     build_app(engine, Router::new(), RouterParams::plain_http())
 }
@@ -332,30 +377,173 @@ pub fn router(engine: EngineHandle) -> Router {
 /// Pong at the protocol layer, so the ping both keeps an idle connection from being
 /// reaped by a NAT/proxy and surfaces a dead peer.
 ///
-/// LIVENESS APPROACH (deliberately the smallest correct one, see the task brief's
-/// YAGNI note): this is a SEND-FAILURE reap, not a pong-deadline reap. A ping that
-/// fails to send (the TCP send buffer has backed up against a dead/half-open peer,
-/// or the socket is already closed) breaks the socket's loop, which drops the
-/// connection-cap permit and the `ConnectionGuard` (deregistering the id), freeing
-/// the slot. We do NOT track pong receipt against a grace window: doing so would
-/// add per-socket pong-timestamp state for marginal benefit on a trusted,
-/// single-tenant tool, and the brief explicitly permits the send-failure reap. The
-/// reuse of each socket's existing per-socket `select!` loop keeps sinks out of the
-/// registry and avoids any lock-across-await. Upgradeable to a true pong-deadline
-/// reaper later if a half-open connection that still accepts buffered writes proves
-/// to be a problem in practice.
+/// LIVENESS: two reaps, both inside each socket's own `select!` loop (which keeps
+/// sinks out of the registry and avoids any lock-across-await). A ping that fails
+/// to send (the TCP send buffer has backed up against a dead peer, or the socket is
+/// already closed) breaks the loop at once. And a peer that has sent nothing, not
+/// even the pong every browser answers a ping with, for [`PONG_DEADLINE`] is closed
+/// as half-open: a socket like that still accepts buffered writes, and with a
+/// password set an open socket is what keeps a signed-in session from going idle,
+/// so it must not hold one for long. Either way the loop's end drops the
+/// connection-cap permit, the `ConnectionGuard` and the session's lease.
 const WS_LIVENESS_PING_PERIOD: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a socket's peer may send nothing at all, not even the pong a
+/// browser answers every ping with, before the socket is closed as half-open:
+/// two missed pings and some slack. It bounds how long a dead connection can
+/// keep holding a connection slot and, with a password set, keep a signed-in
+/// session from going idle.
+///
+/// It applies to every socket, with or without a password (decided, not an
+/// oversight): a half-open connection holds a slot of the per-class caps
+/// either way, every browser answers pings by protocol, and one liveness rule
+/// for all sockets is one rule to reason about rather than two.
+const PONG_DEADLINE: std::time::Duration = yaran_core::attachments::QUIET_DEADLINE;
+
+/// Whether a peer last heard at `heard` has been quiet past [`PONG_DEADLINE`].
+fn peer_went_quiet(heard: &yaran_core::attachments::Heard) -> bool {
+    heard.quiet_for(std::time::Instant::now()) > PONG_DEADLINE
+}
+
+/// How long a liveness ping or closing frame may take to send: the peer may be
+/// gone, and an unbounded send holds the socket's loop while the kernel retries.
+const LIVENESS_SEND_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Who a socket's opening request says it is: the browser tab's events
+/// connection (`?events=`), the lost one it succeeds (`?after=`), and its address.
+pub(crate) struct SocketClient {
+    link: Option<String>,
+    after: Option<String>,
+    /// The browser profile it says it belongs to (`?browser=`), for counting
+    /// only: malformed is the same as absent.
+    browser: Option<yaran_core::attachments::BrowserId>,
+    /// The page a terminal socket says it belongs to (`?page=`): every socket
+    /// of one page drives a row as ONE driver. Malformed is the same as
+    /// absent, which makes the socket a driver of its own.
+    page: Option<yaran_core::pty_owners::PageId>,
+    /// Whether a terminal socket's pane is on screen as it opens (`?viewed=`).
+    /// Absent is on screen, so an older page behaves as it always has.
+    viewed: crate::engine_actor::PaneVisibility,
+    address: Option<IpAddr>,
+    verified: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct SocketLinkQuery {
+    events: Option<String>,
+    after: Option<String>,
+    browser: Option<String>,
+    page: Option<String>,
+    viewed: Option<String>,
+}
+
+impl axum::extract::FromRequestParts<AppState> for SocketClient {
+    type Rejection = std::convert::Infallible;
+
+    fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &AppState,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(Ok(Self::from_parts(parts)))
+    }
+}
+
+impl SocketClient {
+    /// What the socket's query and the request's extensions say about its client.
+    fn from_parts(parts: &axum::http::request::Parts) -> Self {
+        let query = axum::extract::Query::<SocketLinkQuery>::try_from_uri(&parts.uri)
+            .ok()
+            .map(|axum::extract::Query(query)| query);
+        let bounded = |id: Option<String>| id.filter(|id| crate::rest_common::id_within_bound(id));
+        let (link, after, browser, page, viewed) = match query {
+            Some(query) => (
+                bounded(query.events),
+                bounded(query.after),
+                query
+                    .browser
+                    .as_deref()
+                    .and_then(yaran_core::attachments::BrowserId::parse),
+                query
+                    .page
+                    .as_deref()
+                    .and_then(yaran_core::pty_owners::PageId::parse),
+                if query.viewed.as_deref() == Some("0") {
+                    crate::engine_actor::PaneVisibility::OffScreen
+                } else {
+                    crate::engine_actor::PaneVisibility::OnScreen
+                },
+            ),
+            None => (
+                None,
+                None,
+                None,
+                None,
+                crate::engine_actor::PaneVisibility::OnScreen,
+            ),
+        };
+        let verified = parts
+            .extensions
+            .get::<crate::auth::RequestAuth>()
+            .and_then(|auth| auth.0.classification.verified_ip);
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(peer)| peer.ip());
+        Self {
+            link,
+            after,
+            browser,
+            page,
+            viewed,
+            address: verified.or(peer),
+            verified: verified.is_some(),
+        }
+    }
+
+    /// The client's address, the verified one when there is one.
+    pub(crate) fn address(&self) -> Option<IpAddr> {
+        self.address
+    }
+
+    /// What an events socket from this client registers as.
+    fn events_facts(&self, device: Option<String>) -> yaran_core::attachments::ConnectionFacts {
+        yaran_core::attachments::ConnectionFacts {
+            events: true,
+            ..self.pty_facts(device)
+        }
+    }
+
+    /// What a terminal socket from this client registers as.
+    fn pty_facts(&self, device: Option<String>) -> yaran_core::attachments::ConnectionFacts {
+        yaran_core::attachments::ConnectionFacts {
+            surface: yaran_core::attachments::Surface::Browser,
+            device,
+            address: self.address,
+            verified: self.verified,
+            events: false,
+            browser: self.browser.clone(),
+        }
+    }
+}
+
+/// The close frame for an auth close code (see [`crate::auth::socket`]).
+fn auth_close(code: u16) -> Message {
+    Message::Close(Some(CloseFrame {
+        code,
+        reason: crate::auth::socket::close_reason(code).into(),
+    }))
+}
 
 /// Knobs for the serve paths.
 #[derive(Clone)]
 pub struct RouterParams {
     /// The console handler events (and the access middleware) emit through.
-    /// Defaults to [`Console::noop`] so the flip and tests stay silent; the CLI
-    /// serve paths replace it with a real stdout console via [`with_console`].
+    /// Defaults to [`Console::noop`] so tests stay silent; `yaran server` and the
+    /// flip replace it via [`with_console`].
     pub console: Console,
     /// Whether the per-request access log is on (`[server] access_log`). Off by
-    /// default; the CLI serve paths set it from config.
-    pub access_log: bool,
+    /// default; `yaran server` and the flip set it from config.
+    pub access_log: AccessLog,
     /// Cap on concurrent EVENTS `/ws/events` connections
     /// (`[server] max_websocket_events_connections`). Defaults to
     /// [`yaran_core::config::DEFAULT_MAX_WEBSOCKET_EVENTS_CONNECTIONS`]; the serve
@@ -395,7 +583,7 @@ pub struct RouterParams {
     /// time itself by it; it bounds the send that ANSWERS a beat, which must not
     /// outlive the window the client is waiting in.
     pub heartbeat_deadline_seconds: u32,
-    /// Cap on concurrent `/files/tree` directory listings
+    /// Cap on concurrent `/files/tree` listings, search walks and `/files/raw` reads
     /// (`[server] tree_list_max_concurrency`). Defaults to
     /// [`yaran_core::config::DEFAULT_TREE_LIST_MAX_CONCURRENCY`]; the serve
     /// paths override it from config via
@@ -427,18 +615,35 @@ pub struct RouterParams {
     /// Whether the allowlist accepts IP literals in Tailscale's own ranges
     /// (`[server] tailscale` is not `"no"`). Only meaningful when the host guard
     /// is active (see [`bound_ips`]).
-    pub tailscale_host_literals: bool,
+    pub tailscale_host_literals: crate::host_guard::TailscaleLiteralRule,
     /// The serve's Tailscale-mode cell, when a serve is behind this router. The
     /// Host guard reads rule 5 from it per request, so a mode change applied
     /// while yaran serves moves the guard with the listener. `None` in tests and on
     /// any path with no live mode control.
     pub live_tailscale_host_literals: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The set the serve loop writes this machine's own `MagicDNS` name into, when
+    /// a serve is behind this router. The Host guard admits that one name while
+    /// the Tailscale mode is not `no` (rule 6). `None` admits no tailnet name.
+    pub live_own_magicdns_name: Option<crate::host_guard::LiveHostNames>,
+    /// What the serve knows about a Funnel or forward to yaran, which decides
+    /// how a loopback request is classified and whether a Funnel withdraws the
+    /// `MagicDNS` name. `None` in tests and on any path with no serve loop behind
+    /// it, which reads as nothing published.
+    pub live_exposure: Option<crate::exposure::ExposureCell>,
+    /// What the auth layer calls after yaran wrote `config.toml` itself (a password,
+    /// a ban), so the running config catches up. `None` asks the engine to reload.
+    pub auth_reload: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Test seam: awaited by a PTY or events socket right before it checks its
+    /// session for its opening frames, so a test can revoke the session in
+    /// exactly that window. `None` everywhere else.
+    #[doc(hidden)]
+    pub socket_opening_hook: Option<crate::auth::OpeningHook>,
     /// The handle the Tailscale-mode route changes `[server] tailscale` through
     /// while yaran serves. `None` on any path with no serve loop behind it, and in
     /// tests.
     pub tailscale_mode_control: Option<crate::serve_legs::TailscaleModeControl>,
     /// Whether this run was started with `--no-tailscale`.
-    pub tailscale_forced_no: bool,
+    pub tailscale_forced_no: crate::serve_legs::NoTailscaleFlag,
     /// The handle the cloud-mode route and bootstrap read; `None` with no serve loop.
     pub cloud_mode_control: Option<crate::cloud_mode::CloudModeControl>,
     /// How long a create handler waits for its resource before answering `202`.
@@ -466,9 +671,41 @@ pub struct RouterParams {
     /// anything connects. `None` for every serve path but the background one,
     /// which is the only one with a terminal UI beside it to show the count on.
     pub(crate) connections_gauge: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// The hand-over signal of the core that serves this router (see
+    /// [`AppState::hand_over`]). A router nobody hands over gets its own.
+    pub(crate) hand_over: Option<Arc<tokio::sync::watch::Sender<bool>>>,
     /// The cloud leg's ingress handle (Phase 11): the live tunnel-hostname rule and
     /// the Access check. `None` in tests that do not exercise it.
     pub cloud_ingress: Option<crate::cloud_ingress::CloudIngress>,
+}
+
+impl std::fmt::Debug for RouterParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RouterParams")
+            .field("access_log", &self.access_log)
+            .field("search_index_max_files", &self.search_index_max_files)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Whether the per-request access log prints (`[server] access_log`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessLog {
+    /// Print a line per request.
+    On,
+    /// Print none.
+    Off,
+}
+
+impl AccessLog {
+    /// What `[server] access_log` says.
+    pub fn of(server: &yaran_core::config::ServerConfig) -> Self {
+        if server.access_log {
+            Self::On
+        } else {
+            Self::Off
+        }
+    }
 }
 
 impl RouterParams {
@@ -479,7 +716,7 @@ impl RouterParams {
     pub fn plain_http() -> Self {
         Self {
             console: Console::noop(),
-            access_log: false,
+            access_log: AccessLog::Off,
             max_websocket_events_connections:
                 yaran_core::config::DEFAULT_MAX_WEBSOCKET_EVENTS_CONNECTIONS,
             max_websocket_agent_connections:
@@ -499,25 +736,35 @@ impl RouterParams {
             file_drop_max_concurrency: yaran_core::config::DEFAULT_FILE_DROP_MAX_CONCURRENCY,
             bound_ips: Vec::new(),
             configured_hosts: Vec::new(),
-            tailscale_host_literals: false,
+            tailscale_host_literals: crate::host_guard::TailscaleLiteralRule::Refuse,
             live_tailscale_host_literals: None,
+            live_own_magicdns_name: None,
+            live_exposure: None,
+            auth_reload: None,
+            socket_opening_hook: None,
             tailscale_mode_control: None,
-            tailscale_forced_no: false,
+            tailscale_forced_no: crate::serve_legs::NoTailscaleFlag::Absent,
             cloud_mode_control: None,
             create_await_timeout: None,
             release_notes_api_base: yaran_core::urls::GITHUB_API_BASE.to_string(),
             ownership_publisher: None,
             connections_gauge: None,
+            hand_over: None,
             cloud_ingress: None,
         }
     }
 
-    /// Ask `build_app`'s connection registry to keep its live browser-tab count in
-    /// `gauge`, so the terminal UI's serving chip can read it.
-    ///
-    /// Only the background serve calls this, for the same reason as
-    /// [`Self::with_ownership_publisher`]: it is the one path with a second surface
-    /// that has somewhere to show the number.
+    /// Answer the router's operation waits when `hand_over` flips.
+    pub(crate) fn with_hand_over(
+        mut self,
+        hand_over: Arc<tokio::sync::watch::Sender<bool>>,
+    ) -> Self {
+        self.hand_over = Some(hand_over);
+        self
+    }
+
+    /// Ask `build_app`'s connection registry to keep its live browser count in
+    /// `gauge`, for the terminal UI's serving chip or the flip's status screen.
     pub(crate) fn with_connections_gauge(
         mut self,
         gauge: Arc<std::sync::atomic::AtomicUsize>,
@@ -544,6 +791,7 @@ impl RouterParams {
     /// suite serves a canned release payload from a local listener and passes its
     /// base here. Production never calls this and keeps
     /// `yaran_core::urls::GITHUB_API_BASE`.
+    #[must_use]
     pub fn with_release_notes_api_base(mut self, base: impl Into<String>) -> Self {
         self.release_notes_api_base = base.into();
         self
@@ -553,6 +801,7 @@ impl RouterParams {
     /// Exists for tests: the real windows are tens of seconds, and a test that
     /// wants the deferred reply would otherwise have to sit through one.
     /// Production never calls this and keeps the real windows.
+    #[must_use]
     pub fn with_create_await_timeout(mut self, window: std::time::Duration) -> Self {
         self.create_await_timeout = Some(window);
         self
@@ -561,6 +810,7 @@ impl RouterParams {
     /// Set the file-search index cap from `[server] search_index_max_files`.
     /// The serve paths call this so the configured value (not just the default)
     /// bounds the flat walk behind `/files/list`.
+    #[must_use]
     pub fn with_search_index_max_files(mut self, max_files: usize) -> Self {
         self.search_index_max_files = max_files;
         self
@@ -569,6 +819,7 @@ impl RouterParams {
     /// Set the opening-send deadline from `[server] pty_send_timeout_seconds`.
     /// The serve paths call this so the configured value (not just the default)
     /// bounds the handshake and the scrollback replay.
+    #[must_use]
     pub fn with_pty_send_timeout_seconds(mut self, seconds: u32) -> Self {
         self.pty_send_timeout_seconds = seconds;
         self
@@ -577,6 +828,7 @@ impl RouterParams {
     /// Set the browser's beat-answer deadline from
     /// `[server] heartbeat_deadline_seconds`. The serve paths call this so the
     /// beat echo's own bound follows the window the client actually waits in.
+    #[must_use]
     pub fn with_heartbeat_deadline_seconds(mut self, seconds: u32) -> Self {
         self.heartbeat_deadline_seconds = seconds;
         self
@@ -585,6 +837,7 @@ impl RouterParams {
     /// Set the concurrent tree-listing cap from `[server]
     /// tree_list_max_concurrency`. The serve paths call this so the
     /// configured value (not just the default) bounds `/files/tree`.
+    #[must_use]
     pub fn with_tree_list_max_concurrency(mut self, max_concurrency: u32) -> Self {
         self.tree_list_max_concurrency = max_concurrency;
         self
@@ -593,6 +846,7 @@ impl RouterParams {
     /// Set the concurrent release-notes-fetch cap from `[server]
     /// release_notes_max_concurrency`. The serve paths call this so the
     /// configured value (not just the default) bounds `/api/v1/release-notes`.
+    #[must_use]
     pub fn with_release_notes_max_concurrency(mut self, max_concurrency: u32) -> Self {
         self.release_notes_max_concurrency = max_concurrency;
         self
@@ -603,6 +857,7 @@ impl RouterParams {
     /// this so the configured values (not just the defaults) bound
     /// `/api/v1/file-drop`. Both are read here, at startup, which is why the
     /// documentation says changing either needs a restart.
+    #[must_use]
     pub fn with_file_drop_limits(mut self, max_bytes: usize, max_concurrency: u32) -> Self {
         self.file_drop_max_bytes = max_bytes;
         self.file_drop_max_concurrency = max_concurrency;
@@ -612,7 +867,8 @@ impl RouterParams {
     /// Attach a real console + the access-log toggle. The CLI serve paths call
     /// this so handler events and the access middleware reach stdout; the flip
     /// leaves the no-op console in place.
-    pub fn with_console(mut self, console: Console, access_log: bool) -> Self {
+    #[must_use]
+    pub fn with_console(mut self, console: Console, access_log: AccessLog) -> Self {
         self.console = console;
         self.access_log = access_log;
         self
@@ -622,6 +878,7 @@ impl RouterParams {
     /// `[server] max_websocket_*_connections` settings. The serve paths call this
     /// so the configured values (not just the defaults) bound live sockets, each
     /// class independently.
+    #[must_use]
     pub fn with_max_websocket_connections(
         mut self,
         events: u32,
@@ -649,11 +906,12 @@ impl RouterParams {
     /// bound: on `auto` the Tailscale leg comes and goes behind this one
     /// immutable allowlist, and a rule derived from the startup bind set would
     /// 403 every tailnet device the moment the leg was re-bound.
+    #[must_use]
     pub fn with_host_allowlist(
         mut self,
         bound_ips: Vec<IpAddr>,
         configured: Vec<String>,
-        tailscale_host_literals: bool,
+        tailscale_host_literals: crate::host_guard::TailscaleLiteralRule,
     ) -> Self {
         self.bound_ips = bound_ips;
         self.configured_hosts = configured;
@@ -664,32 +922,48 @@ impl RouterParams {
     /// Set rule 5's constructed value on its own, for a caller whose EFFECTIVE
     /// mode differs from the configured one that [`crate::router_params`]
     /// derived (a run started with `--no-tailscale`).
-    pub fn with_tailscale_host_literals(mut self, allowed: bool) -> Self {
-        self.tailscale_host_literals = allowed;
+    #[must_use]
+    pub fn with_tailscale_host_literals(
+        mut self,
+        rule: crate::host_guard::TailscaleLiteralRule,
+    ) -> Self {
+        self.tailscale_host_literals = rule;
         self
     }
 
     /// Give the routes the handle that changes `[server] tailscale` while yaran
     /// serves. Absent on any path with no serve loop behind it, which is what
     /// makes the route answer "nothing is serving" rather than hanging.
+    #[must_use]
     pub fn with_tailscale_mode_control(
         mut self,
         control: crate::serve_legs::TailscaleModeControl,
-        forced_no: bool,
+        no_tailscale: crate::serve_legs::NoTailscaleFlag,
     ) -> Self {
         self.tailscale_mode_control = Some(control);
-        self.tailscale_forced_no = forced_no;
+        self.tailscale_forced_no = no_tailscale;
         self
     }
 
     /// Give the routes this serve's live `[cloud] mode` lane.
+    #[must_use]
     pub fn with_cloud_mode_control(mut self, control: crate::cloud_mode::CloudModeControl) -> Self {
         self.cloud_mode_control = Some(control);
         self
     }
 
+    /// Give the routes this serve's live `[cloud] mode` lane, and put its ingress
+    /// in front of the router: [`Self::with_cloud_mode_control`] and
+    /// [`Self::with_cloud_ingress`] together, as every serve wants them.
+    #[must_use]
+    pub fn with_cloud(self, control: crate::cloud_mode::CloudModeControl) -> Self {
+        self.with_cloud_ingress(control.ingress().clone())
+            .with_cloud_mode_control(control)
+    }
+
     /// Put the cloud ingress in front of the router and let the Host guard admit its
     /// tunnel hostname while it is bound.
+    #[must_use]
     pub fn with_cloud_ingress(mut self, ingress: crate::cloud_ingress::CloudIngress) -> Self {
         self.cloud_ingress = Some(ingress);
         self
@@ -697,6 +971,7 @@ impl RouterParams {
 
     /// Let the Host guard read rule 5 from the serve's live Tailscale-mode cell,
     /// so a mode change applied while yaran serves moves the guard with it.
+    #[must_use]
     pub fn with_live_tailscale_host_literals(
         mut self,
         cell: Arc<std::sync::atomic::AtomicBool>,
@@ -704,39 +979,68 @@ impl RouterParams {
         self.live_tailscale_host_literals = Some(cell);
         self
     }
+
+    /// Let the Host guard admit this machine's own `MagicDNS` name from the set the
+    /// serve loop keeps up to date, so a tailnet rename applies with no restart.
+    #[must_use]
+    pub fn with_live_own_magicdns_name(mut self, names: crate::host_guard::LiveHostNames) -> Self {
+        self.live_own_magicdns_name = Some(names);
+        self
+    }
+
+    /// Classify requests and admit the `MagicDNS` name by the serve's live
+    /// exposure.
+    #[must_use]
+    pub fn with_live_exposure(mut self, cell: crate::exposure::ExposureCell) -> Self {
+        self.live_exposure = Some(cell);
+        self
+    }
+
+    /// See [`RouterParams::socket_opening_hook`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_socket_opening_hook(mut self, hook: crate::auth::OpeningHook) -> Self {
+        self.socket_opening_hook = Some(hook);
+        self
+    }
+
+    /// Replace what the auth layer calls after it writes `config.toml`.
+    #[must_use]
+    pub fn with_auth_reload(mut self, reload: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.auth_reload = Some(reload);
+        self
+    }
 }
 
-/// Build the yaran web router. yaran is trusted-local: there is no login gate, so
-/// every route is served plainly. `extra_gated` is merged into the router as-is
-/// (a test seam for an injected probe route); production callers pass an empty
-/// router.
+/// Ask the engine to reload after yaran wrote `config.toml` itself, as
+/// `POST /api/v1/config/reload` does, so each serving mode's reload owner
+/// handles it, but as yaran's own reload, which is not announced.
+pub(crate) fn reload_through_the_engine(engine: EngineHandle) -> Arc<dyn Fn() + Send + Sync> {
+    Arc::new(move || {
+        let engine = engine.clone();
+        let ask = async move {
+            let _ = engine.reload_after_own_config_write().await;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(ask);
+            }
+            Err(_) => yaran_core::logger::warn(
+                "yaran wrote config.toml but could not ask the engine to reload it: no runtime \
+                 is running here. Use Reload config in yaran to apply it.",
+            ),
+        }
+    })
+}
+
+/// Warn loudly about every connection cap set to zero.
 ///
-/// ## Middleware stack (outermost to innermost)
-///
-/// 1. **Host allowlist** (DNS-rebinding defense): when `params.bound_ips` is
-///    non-empty, the outermost layer rejects any request whose `Host` header is
-///    not in the allowlist with `403`. Foreign-Host probes are rejected before
-///    the access log runs, so they are never logged.
-/// 2. **Access log**: logs every request (method, path, status, latency) when
-///    the console is active and `access_log` is on. Sees the final status
-///    produced by every inner layer, including the REST mutation check's 403.
-/// 3. **REST mutation origin check**: rejects cross-origin POST/PATCH/PUT/DELETE
-///    requests (cross-site request forgery defense). A missing `Origin` (curl,
-///    CLI clients) is allowed; a present but unparseable `Origin` (including the
-///    literal `"null"` from sandboxed iframes) is treated as a mismatch and
-///    rejected. Shares the `same_origin_allowed` helper with the WS upgrade
-///    handlers so REST and WS use one authority-comparison implementation.
-/// 4. **Handlers**: the actual route logic.
-pub fn build_app(
-    engine: EngineHandle,
-    extra_gated: Router<AppState>,
-    params: RouterParams,
-) -> Router {
-    // A zero cap is a valid-but-drastic per-class setting ("refuse all new
-    // connections of this class until restart"). Warn loudly at startup so an
-    // accidental 0 isn't a silent lock-out: every upgrade of that class would 503
-    // with no other clue (explicit failure over silence). The events class at 0
-    // makes the web UI unreachable; the PTY classes at 0 block only their stream.
+/// A zero cap is a valid-but-drastic per-class setting ("refuse all new
+/// connections of this class until restart"). Warn loudly at startup so an
+/// accidental 0 isn't a silent lock-out: every upgrade of that class would 503
+/// with no other clue (explicit failure over silence). The events class at 0
+/// makes the web UI unreachable; the PTY classes at 0 block only their stream.
+fn warn_about_zero_connection_caps(params: &RouterParams) {
     if params.max_websocket_events_connections == 0 {
         yaran_core::logger::warn(
             "[server] max_websocket_events_connections = 0: every events WebSocket \
@@ -768,140 +1072,88 @@ pub fn build_app(
              WebSocket upgrade will be refused with HTTP 503 until the server restarts",
         );
     }
-    // The event bus and changed-files service are web-layer concerns built here.
-    // `ChangesService::new` spawns its supervised poller, so this must run inside a
-    // tokio runtime context -- the CLI serve paths build inside `block_on`, and the
-    // flip wraps its `build_app` in `runtime.enter()` (see `serve_with_engine`).
-    let event_bus = Arc::new(EventBus::new());
-    let changes = ChangesService::new(engine.clone(), Arc::clone(&event_bus));
-    let resources = crate::resource_routes::ResourceService::new(engine.clone());
-    // Config-reload -> `config.changed` forwarder. The engine actor fires `()` on
-    // its config-reload broadcast after a successful reload; we turn each into a
-    // coarse `config.changed` event so clients on the `config` topic refetch
-    // `/api/v1/bootstrap`. The engine thread is spawned before this builder runs,
-    // so the bus cannot live on the engine; the forwarder bridges the two. Runs for
-    // the server lifetime (like the ChangesService poller) and exits when the engine
-    // is gone. Requires a tokio runtime context, which every `build_app` caller
-    // provides (the CLI serve paths build inside `block_on`; the flip enters it).
-    spawn_config_changed_forwarder(engine.subscribe_config_reloads(), Arc::clone(&event_bus));
-    // Spine-change -> `projects.changed` / `sessions.changed` forwarder. The engine
-    // loop fires a `SpineChange` whenever the projected projects- or
-    // sessions+sidebar-portion changes; we turn each into the matching coarse event
-    // so clients on the `projects` / `sessions` topics know the document moved.
-    // Those clients are also PUSHED the new document itself, on a separate watch
-    // channel read by the socket; this signal is what an older page refetches on.
-    // Same lifetime/teardown story as the config forwarder above.
-    spawn_spine_changed_forwarder(engine.subscribe_spine_changes(), Arc::clone(&event_bus));
-    crate::cloud_mode_routes::spawn_cloud_changed_forwarder(
-        params.cloud_mode_control.as_ref(),
-        Arc::clone(&event_bus),
-    );
-    // Run the first-load gate ONCE for this launch, off every request path. The
-    // resolver parks the screen (if any) in this state and emits `config.changed`
-    // so already-connected clients refetch bootstrap and find it; clients that
-    // connect later just read it out of their first bootstrap. Same lifetime and
-    // runtime-context story as the forwarders above.
-    let first_load = Arc::new(crate::first_load_routes::FirstLoadState::new(
-        params.release_notes_api_base,
+}
+
+/// Seed the shared reloadable `[server]` cells from the router's bind-time values.
+fn seed_live_limits(live_limits: &crate::engine_actor::LiveServerLimits, params: &RouterParams) {
+    live_limits.set_access_log(params.access_log);
+    live_limits.set_allowed_hosts(&params.configured_hosts);
+    live_limits.set_search_index_max_files(params.search_index_max_files);
+    live_limits.set_pty_send_timeout_seconds(crate::rest_common::usize_from_u32(
+        params.pty_send_timeout_seconds,
     ));
-    crate::first_load_routes::spawn_first_load_resolver(
-        engine.clone(),
-        Arc::clone(&event_bus),
-        Arc::clone(&first_load),
-    );
-    // Clone the shared input-ownership registry out of the handle before the
-    // handle itself moves into the state literal below.
-    let engine_pty_owners = engine.pty_input_owners();
-    // Both buses exist by now, so a caller that asked for the ownership publisher
-    // can have it. Built here rather than returned, because the state literal
-    // below moves everything into the router. `set` rather than an assignment:
-    // one publisher per serve, and a second `build_app` on the same slot is a bug
-    // worth ignoring rather than one worth overwriting silently.
+    live_limits.set_heartbeat_deadline_seconds(crate::rest_common::usize_from_u32(
+        params.heartbeat_deadline_seconds,
+    ));
+}
+
+/// Start this router's auth layer over the live `[server.auth]` section.
+fn start_auth(
+    engine: &EngineHandle,
+    params: &RouterParams,
+    live_auth: &Arc<crate::auth::LiveAuth>,
+) -> Arc<crate::auth::AuthState> {
+    let paths = engine.paths();
+    crate::auth::AuthState::start(crate::auth::AuthSetup {
+        live: Arc::clone(live_auth),
+        exposure: params.live_exposure.clone(),
+        bound_ips: params.bound_ips.clone(),
+        tailscale_leg: params
+            .tailscale_mode_control
+            .as_ref()
+            .map(crate::serve_legs::TailscaleModeControl::bound_leg),
+        config_path: Some(paths.config_path.clone()),
+        sessions_db: Some(paths.sessions_db_path.clone()),
+        console: params.console.clone(),
+        engine: Some(engine.clone()),
+        reload: params
+            .auth_reload
+            .clone()
+            .unwrap_or_else(|| reload_through_the_engine(engine.clone())),
+        opening_hook: params.socket_opening_hook.clone(),
+    })
+}
+
+/// The router's grid-change bus, handing the ownership publisher both buses when
+/// the caller asked for one.
+fn grid_bus_with_publisher(
+    params: &RouterParams,
+    event_bus: &Arc<EventBus>,
+) -> Arc<crate::pty_sizes::PtyGridBus> {
     let pty_grid_bus = Arc::new(crate::pty_sizes::PtyGridBus::default());
     if let Some(slot) = params.ownership_publisher.as_ref() {
         let _ = slot.set(crate::ownership_publish::OwnershipPublisher::new(
-            Arc::clone(&event_bus),
+            Arc::clone(event_bus),
             Arc::clone(&pty_grid_bus),
         ));
     }
-    // The router's bind-time values seed the shared cells; a later reload
-    // overwrites them through the actor. Seeded from the params rather than the
-    // engine's config because a serve path or a test may pass either.
-    let live_limits = engine.live_limits();
-    live_limits.set_access_log(params.access_log);
-    live_limits.set_search_index_max_files(params.search_index_max_files);
-    live_limits.set_pty_send_timeout_seconds(params.pty_send_timeout_seconds as usize);
-    live_limits.set_heartbeat_deadline_seconds(params.heartbeat_deadline_seconds as usize);
-    let state = AppState {
-        engine,
-        console: params.console,
-        live_limits,
-        ws_events_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            params.max_websocket_events_connections as usize,
-        )),
-        ws_agent_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            params.max_websocket_agent_connections as usize,
-        )),
-        ws_terminal_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            params.max_websocket_terminal_connections as usize,
-        )),
-        ws_tab_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            params.max_websocket_tab_connections as usize,
-        )),
-        tab_ws_counts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        max_ws_tabs_per_agent: params.max_websocket_tabs_per_agent,
-        // `0` means unlimited: skip the semaphore entirely rather than build a
-        // zero-permit one, which would block every request forever (the
-        // opposite of the ws_*_semaphore "0 = block all" convention).
-        tree_list_semaphore: if params.tree_list_max_concurrency == 0 {
-            None
-        } else {
-            Some(Arc::new(tokio::sync::Semaphore::new(
-                params.tree_list_max_concurrency as usize,
-            )))
-        },
-        // Same `0 = unlimited` convention as `tree_list_semaphore` above.
-        release_notes_semaphore: if params.release_notes_max_concurrency == 0 {
-            None
-        } else {
-            Some(Arc::new(tokio::sync::Semaphore::new(
-                params.release_notes_max_concurrency as usize,
-            )))
-        },
-        file_drop_max_bytes: params.file_drop_max_bytes,
-        // Deliberately NOT the `0 = unlimited` convention of the two semaphores
-        // above. This one bounds how much upload is held in MEMORY at once, so
-        // "unlimited" would defeat its only purpose; `0` clamps to one permit
-        // instead. Switching file drop off is what `file_drop_max_bytes = 0` is
-        // for.
-        file_drop_semaphore: Arc::new(tokio::sync::Semaphore::new(
-            params.file_drop_max_concurrency.max(1) as usize,
-        )),
-        event_bus,
-        changes,
-        resources,
-        idempotency: Arc::new(crate::rest_common::IdempotencyCache::new()),
-        create_await_timeout: params.create_await_timeout,
-        // Shared with the engine actor loop (see `build_actor_channels`), which
-        // overlays the owner map onto the spine so every client learns which
-        // connection is driving each agent PTY without attaching to it.
-        pty_size_owners: engine_pty_owners,
-        pty_grid_bus: Arc::clone(&pty_grid_bus),
-        connections: Arc::new(match params.connections_gauge {
-            Some(gauge) => crate::rest_common::ConnectionRegistry::with_events_gauge(gauge),
-            None => crate::rest_common::ConnectionRegistry::new(),
-        }),
-        first_load,
-        tailscale_mode: params.tailscale_mode_control.clone(),
-        tailscale_forced_no: params.tailscale_forced_no,
-        cloud: params.cloud_mode_control.clone(),
-    };
+    pty_grid_bus
+}
 
-    // Every route is served plainly (trusted-local: no login gate). `extra_gated`
-    // is merged as-is so a test can inject a probe route.
-    let cloud_present = params.cloud_ingress.is_some();
-    let cloud = params.cloud_ingress.clone().unwrap_or_default();
-    let router = Router::new()
+/// A semaphore with `limit` permits, or none at all for a limit of `0`, which
+/// means unlimited.
+fn optional_semaphore(limit: u32) -> Option<Arc<tokio::sync::Semaphore>> {
+    if limit == 0 {
+        None
+    } else {
+        Some(Arc::new(tokio::sync::Semaphore::new(
+            crate::rest_common::usize_from_u32(limit),
+        )))
+    }
+}
+
+/// Every route of the inner app behind the REST mutation check, the auth layer
+/// and the access log, with `state` attached.
+fn gated_routes(
+    state: AppState,
+    extra_gated: Router<AppState>,
+    cloud: Option<crate::cloud_ingress::CloudIngress>,
+) -> Router {
+    // A router with no cloud lane gets an ingress that is never bound.
+    let cloud = cloud.unwrap_or_default();
+    // Every route sits behind the auth layer added below. `extra_gated` is
+    // merged as-is so a test can inject a probe route.
+    Router::new()
         .route("/ws/events", get(ws_events_upgrade))
         // Nested per-PTY byte-stream sockets. One socket per attached PTY: the
         // agent session's main provider PTY and a companion terminal's PTY. Each
@@ -927,6 +1179,7 @@ pub fn build_app(
         .merge(crate::bootstrap_routes::routes())
         .merge(crate::cloud_mode_routes::routes())
         .merge(crate::build_routes::routes())
+        .merge(crate::peer_routes::routes())
         .merge(crate::workspace_routes::routes())
         .merge(crate::session_actions::routes())
         .merge(crate::project_actions::routes())
@@ -936,14 +1189,20 @@ pub fn build_app(
         .merge(crate::file_drop_routes::routes(&state))
         .merge(crate::cloud_routes::routes(&state))
         .merge(crate::tab_actions::routes())
+        .merge(crate::operation_routes::routes())
+        .merge(crate::server_inspect_routes::routes())
         .merge(crate::browse_routes::routes())
         .merge(crate::config_routes::routes())
         .merge(crate::first_load_routes::routes())
+        .merge(crate::auth::routes::routes())
+        // The phone handoff and consent routes answer 404 unless the cloud
+        // ingress verified an owner's Access assertion on the bound tunnel Host;
+        // the auth layer then counts that owner as signed in (`auth::provenance`).
         .merge(crate::cloud_handoff::cloud_routes(cloud.clone()))
         .merge(crate::cloud_phone_routes::routes())
         .merge(extra_gated)
         .route("/healthz", get(|| async { "ok" }))
-        .fallback(crate::web_assets::static_handler)
+        .fallback(crate::control_socket::fallback)
         // REST mutation same-origin check (cross-site request forgery defense).
         // Rejects POST/PATCH/PUT/DELETE when an `Origin` header is present but
         // its `host:port` authority does not match the `Host` header. A missing
@@ -951,37 +1210,218 @@ pub fn build_app(
         // with the WS upgrade handlers for one authority-comparison path.
         // Sits INSIDE the access-log layer so 403s are access-logged.
         .layer(middleware::from_fn(rest_mutation_origin_check))
+        // The ONE auth layer: classification, the blocklist (with or without a
+        // password), and the session check with its declared public routes.
+        // Inside the access log, so its refusals are logged like any other
+        // answer, and inside the Host guard, so a foreign Host never reaches it.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::middleware::auth_layer,
+        ))
         // The access log is the OUTERMOST layer OF THIS inner app, so it sees the
         // final status every layer it wraps produced (including the mutation 403).
-        // It is gated inside on `access_log && console.is_active`, so the flip
-        // and disabled-console paths pay nothing. Stamped via
+        // It is gated inside on `access_log && console.is_recording`, so a
+        // disabled console pays nothing. Stamped via
         // `from_fn_with_state` so it reads the console/toggle off `AppState`.
         //
         // The host allowlist (see below) is applied OUTSIDE this layer, so
         // foreign-Host probes are rejected before reaching the access log.
         .layer(middleware::from_fn_with_state(state.clone(), access_log))
         .with_state(state)
-        // Cloud Access check (Phase 11 §5): inside the Host guard, outside the access
-        // log, so an unauthenticated tunnel request is never access-logged.
+        // The Cloud Access check (Phase 11 §5): inside the Host guard, outside the
+        // access log and the auth layer, so an unauthenticated tunnel request is
+        // never access-logged and a verified owner reaches the auth layer marked
+        // as one. Every Host but the bound tunnel hostname passes untouched.
         .layer(middleware::from_fn_with_state(
-            cloud.clone(),
+            cloud,
             crate::cloud_ingress::cloud_access_middleware,
-        ));
+        ))
+}
+
+/// Build the yaran web router. `extra_gated` is merged into the router as-is (a
+/// test seam for an injected probe route); production callers pass an empty
+/// router. It is "gated" by the same auth layer as every other route.
+///
+/// ## Middleware stack (outermost to innermost)
+///
+/// 1. **Host allowlist** (DNS-rebinding defense): when `params.bound_ips` is
+///    non-empty, the outermost layer rejects any request whose `Host` header is
+///    not in the allowlist with `403`. Foreign-Host probes are rejected before
+///    the access log runs, so they are never logged.
+/// 2. **Access log**: logs every request (method, path, status, latency) when
+///    the console records and `access_log` is on. Sees the final status
+///    produced by every inner layer, including the auth layer's refusals and
+///    the REST mutation check's 403.
+/// 3. **Auth** (`crate::auth::middleware`): the blocklist, and with a password
+///    set the session check, for HTTP and WebSocket upgrades alike.
+/// 4. **REST mutation origin check**: rejects cross-origin POST/PATCH/PUT/DELETE
+///    requests (cross-site request forgery defense). A missing `Origin` (curl,
+///    CLI clients) is allowed; a present but unparseable `Origin` (including the
+///    literal `"null"` from sandboxed iframes) is treated as a mismatch and
+///    rejected. Shares the `same_origin_allowed` helper with the WS upgrade
+///    handlers so REST and WS use one authority-comparison implementation.
+/// 5. **Handlers**: the actual route logic.
+pub fn build_app(
+    engine: EngineHandle,
+    extra_gated: Router<AppState>,
+    params: RouterParams,
+) -> Router {
+    warn_about_zero_connection_caps(&params);
+    // The event bus and changed-files service are web-layer concerns built here.
+    // `ChangesService::new` spawns its supervised poller, so this must run inside a
+    // tokio runtime context -- the CLI serve paths build inside `block_on`, and the
+    // flip wraps its `build_app` in `runtime.enter()` (see `serve_with_engine`).
+    let event_bus = Arc::new(EventBus::new());
+    let changes = ChangesService::new(engine.clone(), Arc::clone(&event_bus));
+    let resources = crate::resource_routes::ResourceService::new(engine.clone());
+    // Config-reload -> `config.changed` forwarder. The engine actor fires `()` on
+    // its config-reload broadcast after a successful reload; we turn each into a
+    // coarse `config.changed` event so clients on the `config` topic refetch
+    // `/api/v1/bootstrap`. The engine thread is spawned before this builder runs,
+    // so the bus cannot live on the engine; the forwarder bridges the two. Runs for
+    // the server lifetime (like the ChangesService poller) and exits when the engine
+    // is gone. Requires a tokio runtime context, which every `build_app` caller
+    // provides (the CLI serve paths build inside `block_on`; the flip enters it).
+    spawn_config_changed_forwarder(engine.subscribe_config_reloads(), Arc::clone(&event_bus));
+    // Spine-change -> `projects.changed` / `sessions.changed` forwarder. The engine
+    // loop fires a `SpineChange` whenever the projected projects- or
+    // sessions+sidebar-portion changes; we turn each into the matching coarse event
+    // so clients on the `projects` / `sessions` topics know the document moved.
+    // Those clients are also PUSHED the new document itself, on a separate watch
+    // channel read by the socket; this signal is what an older page refetches on.
+    // Same lifetime/teardown story as the config forwarder above.
+    spawn_spine_changed_forwarder(engine.subscribe_spine_changes(), Arc::clone(&event_bus));
+    spawn_cloud_changed_forwarder(params.cloud_mode_control.as_ref(), Arc::clone(&event_bus));
+    // Run the first-load gate ONCE for this launch, off every request path. The
+    // resolver parks the screen (if any) in this state and emits `config.changed`
+    // so already-connected clients refetch bootstrap and find it; clients that
+    // connect later just read it out of their first bootstrap. Same lifetime and
+    // runtime-context story as the forwarders above.
+    let first_load = Arc::new(crate::first_load_routes::FirstLoadState::new(
+        params.release_notes_api_base.clone(),
+    ));
+    crate::first_load_routes::spawn_first_load_resolver(
+        engine.clone(),
+        Arc::clone(&event_bus),
+        Arc::clone(&first_load),
+    );
+    // Clone the shared input-ownership registry out of the handle before the
+    // handle itself moves into the state literal below.
+    let engine_pty_owners = engine.pty_input_owners();
+    // Both buses exist by now, so a caller that asked for the ownership publisher
+    // can have it. Built here rather than returned, because the state literal
+    // below moves everything into the router. `set` rather than an assignment:
+    // one publisher per serve, and a second `build_app` on the same slot is a bug
+    // worth ignoring rather than one worth overwriting silently.
+    let pty_grid_bus = grid_bus_with_publisher(&params, &event_bus);
+    // The router's bind-time values seed the shared cells; a later reload
+    // overwrites them through the actor. Seeded from the params rather than the
+    // engine's config because a serve path or a test may pass either.
+    let live_limits = engine.live_limits();
+    seed_live_limits(&live_limits, &params);
+    let guard_allowed_hosts = live_limits.allowed_hosts();
+    let live_auth = live_limits.auth();
+    let auth = start_auth(&engine, &params, &live_auth);
+    let state = AppState {
+        engine,
+        console: params.console,
+        live_limits,
+        ws_events_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            crate::rest_common::usize_from_u32(params.max_websocket_events_connections),
+        )),
+        ws_agent_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            crate::rest_common::usize_from_u32(params.max_websocket_agent_connections),
+        )),
+        ws_terminal_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            crate::rest_common::usize_from_u32(params.max_websocket_terminal_connections),
+        )),
+        ws_tab_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            crate::rest_common::usize_from_u32(params.max_websocket_tab_connections),
+        )),
+        tab_ws_counts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        max_ws_tabs_per_agent: params.max_websocket_tabs_per_agent,
+        // `0` means unlimited: skip the semaphore entirely rather than build a
+        // zero-permit one, which would block every request forever (the
+        // opposite of the ws_*_semaphore "0 = block all" convention).
+        tree_list_semaphore: optional_semaphore(params.tree_list_max_concurrency),
+        // Same `0 = unlimited` convention as `tree_list_semaphore` above.
+        release_notes_semaphore: optional_semaphore(params.release_notes_max_concurrency),
+        file_drop_max_bytes: params.file_drop_max_bytes,
+        // Deliberately NOT the `0 = unlimited` convention of the two semaphores
+        // above. This one bounds how much upload is held in MEMORY at once, so
+        // "unlimited" would defeat its only purpose; `0` clamps to one permit
+        // instead. Switching file drop off is what `file_drop_max_bytes = 0` is
+        // for.
+        file_drop_semaphore: Arc::new(tokio::sync::Semaphore::new(
+            crate::rest_common::usize_from_u32(
+                yaran_core::config_effective::effective_file_drop_max_concurrency(
+                    params.file_drop_max_concurrency,
+                ),
+            ),
+        )),
+        event_bus,
+        changes,
+        resources,
+        idempotency: Arc::new(crate::rest_common::IdempotencyCache::new()),
+        create_await_timeout: params.create_await_timeout,
+        // Shared with the engine actor loop (see `build_actor_channels`), which
+        // overlays the owner map onto the spine so every client learns which
+        // connection is driving each agent PTY without attaching to it.
+        pty_size_owners: engine_pty_owners,
+        pty_grid_bus: Arc::clone(&pty_grid_bus),
+        connections: Arc::new(match params.connections_gauge {
+            Some(gauge) => crate::rest_common::ConnectionRegistry::with_events_gauge(gauge),
+            None => crate::rest_common::ConnectionRegistry::new(),
+        }),
+        first_load,
+        tailscale_mode: params.tailscale_mode_control.clone(),
+        tailscale_forced_no: params.tailscale_forced_no,
+        cloud: params.cloud_mode_control.clone(),
+        auth,
+        hand_over: params
+            .hand_over
+            .clone()
+            .unwrap_or_else(|| Arc::new(tokio::sync::watch::Sender::new(false))),
+    };
+
+    let router = gated_routes(state, extra_gated, params.cloud_ingress.clone());
 
     // Host allowlist (DNS-rebinding defense): outermost layer so it runs before
     // the access log. Active when bound_ips is non-empty; tests that do not
     // exercise the host guard leave bound_ips empty, keeping the guard off.
-    if !params.bound_ips.is_empty() || !params.configured_hosts.is_empty() || cloud_present {
-        crate::host_guard::host_allowlist_layer(
-            router,
-            params.bound_ips,
-            params.configured_hosts,
+    // Installed on every router. The Host rules need a bound address to mean
+    // anything, and every serve path passes its own; a router built with
+    // neither bound addresses nor configured hosts (the in-crate test routers)
+    // skips the Host rules.
+    let host_rules = !params.bound_ips.is_empty() || !params.configured_hosts.is_empty();
+    {
+        // Rule 4 reads the live limits' set rather than the list handed in, so
+        // a config reload rewrites `allowed_hosts` under this router.
+        let mut allowlist = crate::host_guard::HostAllowlist::new(
+            &params.bound_ips,
+            &[],
             params.tailscale_host_literals,
-            params.live_tailscale_host_literals,
-            cloud_present.then_some(cloud),
         )
-    } else {
-        router
+        .with_live_configured_hosts(guard_allowed_hosts)
+        .with_cloud_ingress(params.cloud_ingress);
+        if let Some(cell) = params.live_tailscale_host_literals {
+            allowlist = allowlist.with_live_tailscale_literals(cell);
+        }
+        if let Some(names) = params.live_own_magicdns_name {
+            allowlist = allowlist.with_live_own_magicdns_name(names);
+        }
+        if let Some(cell) = params.live_exposure {
+            allowlist = allowlist.with_exposure(cell, Arc::new(move || live_auth.has_password()));
+        }
+        if !host_rules {
+            allowlist = allowlist.without_host_rules();
+        }
+        crate::host_guard::host_allowlist_layer(router, allowlist)
+            // Outermost of all: the control socket's route set is decided
+            // before anything else reads the request.
+            .layer(middleware::from_fn(
+                crate::control_socket::control_socket_routes,
+            ))
     }
 }
 
@@ -990,49 +1430,37 @@ pub fn build_app(
 /// response. Reads the console + toggle off [`AppState`] and delegates to the
 /// shared [`log_request`] core.
 async fn access_log(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    log_request(
-        &state.console,
-        state.live_limits.access_log(),
-        request,
-        next,
-    )
-    .await
+    log_request(&state.console, &state.live_limits, request, next).await
 }
 
-/// The shared access-log core. CONSOLE-ONLY (never `yaran.log`: piping
-/// `yaran server`'s stdout IS the access log). Skips `/healthz` so a health checker
-/// does not flood the log, and is gated on `access_log && console.is_active()` so
-/// the flip/disabled paths emit nothing.
-///
-/// The path is printed WITHOUT its query string. Query parameters can carry
-/// sensitive values (`GET /api/v1/sessions/<id>/files/raw?path=…` puts a
-/// worktree-relative filesystem path in the query), and this log is the
-/// `yaran server` stdout an operator may forward to a file or aggregator, so the
-/// query is dropped to avoid leaking secrets. The session id is an opaque `:id`
-/// path segment (not a query parameter) and so still appears in the logged path.
+/// The shared access-log core, written to the console only and never to `yaran.log`.
 async fn log_request(
     console: &Console,
-    access_log: bool,
+    limits: &crate::engine_actor::LiveServerLimits,
     request: Request,
     next: Next,
 ) -> Response {
     // Check the cheap gates BEFORE allocating anything: a disabled access log or a
     // no-op console pays nothing per request. /healthz is intentionally never
     // logged (probe noise). Compared against the borrowed path, no allocation.
-    let log = access_log && console.is_active() && request.uri().path() != "/healthz";
+    let log = limits.access_log() && console.is_recording() && request.uri().path() != "/healthz";
     if !log {
         return next.run(request).await;
     }
     let method = request.method().as_str().to_string();
-    // Log the PATH ONLY, never the query string. Query params can carry secrets
-    // (e.g. /api/v1/sessions/<id>/files/raw?path=…), and this log is stdout an
-    // operator may persist, so dropping the query avoids leaking them. The session
-    // id is an opaque path segment now, so it still appears in the logged path.
-    let path = request.uri().path().to_string();
+    // The path only: a query can carry secrets (`files/raw?path=…`), and a config
+    // entry name that breaks its table's rule may be a pasted token, so it is masked.
+    let path = yaran_core::config_resources::logged_path(request.uri().path()).into_owned();
+    let over_socket = crate::auth::provenance::over_control_socket(&request);
     let started = std::time::Instant::now();
     let response = next.run(request).await;
     let latency_ms = started.elapsed().as_millis();
-    console.access(&method, &path, response.status().as_u16(), latency_ms);
+    let status = response.status().as_u16();
+    if over_socket {
+        console.access_over_control_socket(&method, &path, status, latency_ms);
+    } else {
+        console.access(&method, &path, status, latency_ms);
+    }
     response
 }
 
@@ -1047,18 +1475,21 @@ async fn log_request(
 // controlled hostname at this server's IP (the browser then sends a matching
 // Origin/Host pair). The host allowlist (see `host_guard::host_allowlist_layer`)
 // runs AHEAD of the whole app on every serve path and pins the accepted `Host`
-// values to loopback, the addresses yaran actually bound, and any configured
-// `allowed_hosts`, returning 403 for a mismatched Host and closing that gap. This
+// values to loopback, the addresses yaran actually bound, this machine's own
+// MagicDNS name, and any configured `allowed_hosts`, returning 403 for a
+// mismatched Host and closing that gap. A `tailscale serve` route forwards the
+// Host and the `https` Origin unchanged, so the authority comparison below holds
+// for it as it does for a direct request. This
 // same-origin check remains the WS-specific defense layered on top.
-fn same_origin_allowed(headers: &HeaderMap) -> bool {
+pub(crate) fn same_origin_allowed(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
         // No Origin: a non-browser client. Allowed (documented tradeoff).
         return true;
     };
     let host = headers
         .get(axum::http::header::HOST)
-        .and_then(|h| h.to_str().ok());
-    match (origin.to_str().ok(), host) {
+        .and_then(crate::auth::provenance::header_text);
+    match (crate::auth::provenance::header_text(origin), host) {
         (Some(o), Some(h)) => crate::origin_match::same_origin(o, h),
         _ => false,
     }
@@ -1072,8 +1503,9 @@ fn same_origin_allowed(headers: &HeaderMap) -> bool {
 ///   clients do not send `Origin`, and the tradeoff is documented.
 /// - `Origin` present and authority matches `Host` (same-origin browser): allowed.
 /// - `Origin: null` (sandboxed iframe / `data:` document): it has no `"://"`
-///   separator, which `same_origin_allowed` treats as a mismatch -- rejected with 403. Do NOT fall through to the no-Origin allow
-///   path when the value is present but unparseable.
+///   separator, which `same_origin_allowed` treats as a mismatch -- rejected with
+///   403. Do NOT fall through to the no-Origin allow path when the value is
+///   present but unparseable.
 /// - `Origin` present and authority does not match `Host`: rejected with 403.
 ///
 /// Shares `same_origin_allowed` with the WS upgrade handlers so one authority-
@@ -1084,7 +1516,11 @@ async fn rest_mutation_origin_check(request: Request, next: Next) -> Response {
         *request.method(),
         Method::POST | Method::PATCH | Method::PUT | Method::DELETE
     );
-    if is_mutation && !same_origin_allowed(request.headers()) {
+    // No browser reaches the control socket, so no other site can either.
+    if is_mutation
+        && !crate::auth::provenance::over_control_socket(&request)
+        && !same_origin_allowed(request.headers())
+    {
         return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
     }
     next.run(request).await
@@ -1108,7 +1544,7 @@ const FORWARDER_POLL: std::time::Duration = std::time::Duration::from_millis(250
 /// prunes that stale subscriber on its next read.
 ///
 /// The blocking reader parks on a bounded `recv_timeout` rather than `recv` so it can also exit on
-/// `shutdown`: the std-mpsc `Sender` lives in the `PtyClient` reader thread and, on a ReturnToTui
+/// `shutdown`: the std-mpsc `Sender` lives in the `PtyClient` reader thread and, on a `ReturnToTui`
 /// flip, the engine (and thus that `Sender`) stays alive, so `recv` would never return Disconnected
 /// and would wedge the tokio blocking pool, hanging the runtime teardown. Polling `shutdown` every
 /// `FORWARDER_POLL` lets the task exit within one window of any teardown even with the engine alive.
@@ -1142,12 +1578,21 @@ fn provider_gone_close() -> Message {
 /// forwarder ended because the PTY was torn down (the provider crashed/exited, or
 /// a tab/agent was closed), which is a provider-gone close so the client does not
 /// relaunch it.
-fn forwarder_end_close(shutting_down: bool) -> Message {
-    if shutting_down {
-        Message::Close(None)
-    } else {
-        provider_gone_close()
+fn forwarder_end_close(why: ForwarderEnd) -> Message {
+    match why {
+        ForwarderEnd::ServerShutdown => Message::Close(None),
+        ForwarderEnd::PtyGone => provider_gone_close(),
     }
+}
+
+/// Why a PTY forwarder ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForwarderEnd {
+    /// The server is shutting down.
+    ServerShutdown,
+    /// The PTY was torn down: the provider crashed or exited, or a tab or agent
+    /// was closed.
+    PtyGone,
 }
 
 fn spawn_pty_forwarder(
@@ -1198,15 +1643,14 @@ fn acquire_ws_permit(
     route: &str,
     cap_setting: &str,
 ) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    match Arc::clone(semaphore).try_acquire_owned() {
-        Ok(permit) => Some(permit),
-        Err(_) => {
-            yaran_core::logger::warn(&format!(
-                "[server] {route} upgrade refused for {peer_ip}: connection cap reached \
-                 ({cap_setting})"
-            ));
-            None
-        }
+    if let Ok(permit) = Arc::clone(semaphore).try_acquire_owned() {
+        Some(permit)
+    } else {
+        yaran_core::logger::warn(&format!(
+            "[server] {route} upgrade refused for {peer_ip}: connection cap reached \
+             ({cap_setting})"
+        ));
+        None
     }
 }
 
@@ -1227,6 +1671,29 @@ enum PtyTarget {
 }
 
 impl PtyTarget {
+    /// The live-connection class a socket streaming this PTY registers as.
+    fn conn_class(&self) -> crate::rest_common::ConnClass {
+        match self {
+            // extra tabs run provider CLIs, so they count as agent-PTY connections.
+            PtyTarget::Agent(_) | PtyTarget::Tab(_) => crate::rest_common::ConnClass::AgentPty,
+            PtyTarget::Terminal(_) => crate::rest_common::ConnClass::TerminalPty,
+        }
+    }
+
+    /// This PTY as the attachment registry names it, with the agent it
+    /// belongs to (`None` for a project or standalone terminal).
+    fn attachment_target(&self, agent: Option<&str>) -> yaran_core::attachments::Target {
+        let kind = match self {
+            PtyTarget::Agent(_) | PtyTarget::Tab(_) => yaran_core::attachments::TargetKind::Tab,
+            PtyTarget::Terminal(_) => yaran_core::attachments::TargetKind::Terminal,
+        };
+        yaran_core::attachments::Target {
+            kind,
+            id: self.pty_id().to_string(),
+            agent: agent.map(str::to_owned),
+        }
+    }
+
     /// The id used to route stdin writes and resizes (the session-slot tab id for
     /// an agent, the terminal id for a companion terminal, the tab id for an extra
     /// tab). The engine's `pty_for` accepts any of these keyspaces.
@@ -1338,46 +1805,113 @@ struct PtyBeatFrame {
     /// unreachable endpoint as no evidence of a change.
     #[serde(default)]
     beat: Option<u64>,
+    /// Whether the page is being looked at, acted on only when present: a
+    /// `shown` frame says nothing about it and must leave the attachment's
+    /// viewed state as it was.
     #[serde(default)]
-    viewed: bool,
+    viewed: Option<bool>,
+    /// The pane came on screen (it was mounted off screen, or hidden since):
+    /// the same "looking at it" a subscribe from a pane on screen is, sent
+    /// whoever owns the pty.
+    #[serde(default)]
+    shown: bool,
+}
+
+/// What a terminal socket's upgrade handler extracted from its request.
+struct PtyUpgrade<'a> {
+    ws: WebSocketUpgrade,
+    client: SocketClient,
+    socket_auth: crate::auth::SocketAuth,
+    peer_ip: IpAddr,
+    headers: &'a HeaderMap,
+    /// When the Access session behind this socket expires (Phase 11 §6), or `None`.
+    deadline: Option<tokio::time::Instant>,
 }
 
 fn upgrade_pty_socket(
-    ws: WebSocketUpgrade,
+    upgrade: PtyUpgrade<'_>,
     state: &AppState,
     target: PtyTarget,
-    peer_ip: IpAddr,
+    agent: Option<&str>,
     permit: tokio::sync::OwnedSemaphorePermit,
-    headers: &HeaderMap,
-    deadline: Option<tokio::time::Instant>,
 ) -> Response {
-    let engine = state.engine.clone();
-    let console = state.console.clone();
-    let pty_size_owners = Arc::clone(&state.pty_size_owners);
-    let pty_grid_bus = Arc::clone(&state.pty_grid_bus);
-    let bus = Arc::clone(&state.event_bus);
-    let connections = Arc::clone(&state.connections);
-    let live_limits = Arc::clone(&state.live_limits);
-    let user_agent = captured_user_agent(headers);
+    let PtyUpgrade {
+        ws,
+        client,
+        socket_auth,
+        peer_ip,
+        headers,
+        deadline,
+    } = upgrade;
+    let attach = PtyAttach {
+        target: target.attachment_target(agent),
+        client,
+    };
+    let context = PtySocketContext::of(state, peer_ip, permit, headers, deadline);
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
-        .on_upgrade(move |socket| {
-            handle_pty_socket(
-                socket,
-                engine,
-                target,
-                console,
-                peer_ip,
-                permit,
-                pty_size_owners,
-                pty_grid_bus,
-                bus,
-                connections,
-                user_agent,
-                live_limits,
-                deadline,
-            )
-        })
+        .on_upgrade(move |socket| handle_pty_socket(socket, target, attach, context, socket_auth))
         .into_response()
+}
+
+/// What a terminal socket's handler takes from the router and from its upgrade
+/// request, for the socket's whole life.
+struct PtySocketContext {
+    engine: EngineHandle,
+    console: Console,
+    peer_ip: IpAddr,
+    /// Held for the socket's lifetime purely for its Drop (frees a connection-cap
+    /// slot when the handler returns). Never read.
+    permit: tokio::sync::OwnedSemaphorePermit,
+    pty_size_owners: Arc<PtySizeOwners>,
+    /// The grid-change bus. The socket both PUBLISHES to it (when its own
+    /// resize is granted) and LISTENS on it (for every other connection's), so
+    /// a viewer of this PTY is told the authoritative grid it is not rendering
+    /// at.
+    pty_grid_bus: Arc<crate::pty_sizes::PtyGridBus>,
+    bus: Arc<EventBus>,
+    connections: Arc<crate::rest_common::ConnectionRegistry>,
+    /// The claiming connection's raw `User-Agent`, captured at the upgrade before the
+    /// socket split. This connection IS the claimer at both `pty.owner` emit sites, so
+    /// the value is a plain local (no per-conn map needed); it rides the handover so a
+    /// client on another device can name this one ("Chrome on macOS").
+    user_agent: Option<String>,
+    /// The reloadable `[server]` scalars. Exactly one is read by the handler, at
+    /// open: `pty_send_timeout_seconds`, which bounds the two opening sends. Read
+    /// per socket rather than frozen at bind, so a config reload retimes the next
+    /// connection.
+    live_limits: Arc<crate::engine_actor::LiveServerLimits>,
+    /// When the Access session behind this socket expires (Phase 11 §6), or `None`.
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl PtySocketContext {
+    fn of(
+        state: &AppState,
+        peer_ip: IpAddr,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        headers: &HeaderMap,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Self {
+        Self {
+            engine: state.engine.clone(),
+            console: state.console.clone(),
+            peer_ip,
+            permit,
+            pty_size_owners: Arc::clone(&state.pty_size_owners),
+            pty_grid_bus: Arc::clone(&state.pty_grid_bus),
+            bus: Arc::clone(&state.event_bus),
+            connections: Arc::clone(&state.connections),
+            user_agent: captured_user_agent(headers),
+            live_limits: Arc::clone(&state.live_limits),
+            deadline,
+        }
+    }
+}
+
+/// Who a terminal socket attaches as, and to what.
+struct PtyAttach {
+    target: yaran_core::attachments::Target,
+    client: SocketClient,
 }
 
 /// Upgrade handler for `GET /ws/sessions/:id/pty`: stream the agent session's main
@@ -1387,10 +1921,15 @@ fn upgrade_pty_socket(
 async fn ws_session_pty_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    socket_auth: crate::auth::SocketAuth,
+    client: SocketClient,
     Path(id): Path<String>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    // Paired so the Access session deadline (Phase 11 §6) adds no argument.
+    (ConnectInfo(peer), deadline): (
+        ConnectInfo<SocketAddr>,
+        crate::cloud_ingress::SessionDeadline,
+    ),
     headers: HeaderMap,
-    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1412,29 +1951,31 @@ async fn ws_session_pty_upgrade(
     let Some(slot_tab_id) = state.engine.slot_tab_id(id.clone()).await else {
         return (StatusCode::NOT_FOUND, "unknown session").into_response();
     };
-    let permit = match acquire_ws_permit(
+    let Some(permit) = acquire_ws_permit(
         &state.ws_agent_semaphore,
         peer.ip(),
         "/ws/sessions/:id/pty",
         "max_websocket_agent_connections",
-    ) {
-        Some(permit) => permit,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "too many WebSocket connections; try again shortly",
-            )
-                .into_response();
-        }
+    ) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many WebSocket connections; try again shortly",
+        )
+            .into_response();
     };
     upgrade_pty_socket(
-        ws,
+        PtyUpgrade {
+            ws,
+            client,
+            socket_auth,
+            peer_ip: peer.ip(),
+            headers: &headers,
+            deadline: deadline.0,
+        },
         &state,
         PtyTarget::Agent(slot_tab_id),
-        peer.ip(),
+        Some(&id),
         permit,
-        &headers,
-        deadline.0,
     )
 }
 
@@ -1446,10 +1987,15 @@ async fn ws_session_pty_upgrade(
 async fn ws_terminal_pty_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    socket_auth: crate::auth::SocketAuth,
+    client: SocketClient,
     Path((id, tid)): Path<(String, String)>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    // Paired so the Access session deadline (Phase 11 §6) adds no argument.
+    (ConnectInfo(peer), deadline): (
+        ConnectInfo<SocketAddr>,
+        crate::cloud_ingress::SessionDeadline,
+    ),
     headers: HeaderMap,
-    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1471,29 +2017,31 @@ async fn ws_terminal_pty_upgrade(
         Some(owner) if owner.is_at_route(yaran_core::model::TerminalRoute::Session(&id)) => {}
         _ => return (StatusCode::NOT_FOUND, "unknown terminal").into_response(),
     }
-    let permit = match acquire_ws_permit(
+    let Some(permit) = acquire_ws_permit(
         &state.ws_terminal_semaphore,
         peer.ip(),
         "/ws/sessions/:id/terminals/:tid/pty",
         "max_websocket_terminal_connections",
-    ) {
-        Some(permit) => permit,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "too many WebSocket connections; try again shortly",
-            )
-                .into_response();
-        }
+    ) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many WebSocket connections; try again shortly",
+        )
+            .into_response();
     };
     upgrade_pty_socket(
-        ws,
+        PtyUpgrade {
+            ws,
+            client,
+            socket_auth,
+            peer_ip: peer.ip(),
+            headers: &headers,
+            deadline: deadline.0,
+        },
         &state,
         PtyTarget::Terminal(tid),
-        peer.ip(),
+        Some(&id),
         permit,
-        &headers,
-        deadline.0,
     )
 }
 
@@ -1505,10 +2053,15 @@ async fn ws_terminal_pty_upgrade(
 async fn ws_project_terminal_pty_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    socket_auth: crate::auth::SocketAuth,
+    client: SocketClient,
     Path((id, tid)): Path<(String, String)>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    // Paired so the Access session deadline (Phase 11 §6) adds no argument.
+    (ConnectInfo(peer), deadline): (
+        ConnectInfo<SocketAddr>,
+        crate::cloud_ingress::SessionDeadline,
+    ),
     headers: HeaderMap,
-    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1530,29 +2083,31 @@ async fn ws_project_terminal_pty_upgrade(
         Some(owner) if owner.is_at_route(yaran_core::model::TerminalRoute::Project(&id)) => {}
         _ => return (StatusCode::NOT_FOUND, "unknown terminal").into_response(),
     }
-    let permit = match acquire_ws_permit(
+    let Some(permit) = acquire_ws_permit(
         &state.ws_terminal_semaphore,
         peer.ip(),
         "/ws/projects/:id/terminals/:tid/pty",
         "max_websocket_terminal_connections",
-    ) {
-        Some(permit) => permit,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "too many WebSocket connections; try again shortly",
-            )
-                .into_response();
-        }
+    ) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many WebSocket connections; try again shortly",
+        )
+            .into_response();
     };
     upgrade_pty_socket(
-        ws,
+        PtyUpgrade {
+            ws,
+            client,
+            socket_auth,
+            peer_ip: peer.ip(),
+            headers: &headers,
+            deadline: deadline.0,
+        },
         &state,
         PtyTarget::Terminal(tid),
-        peer.ip(),
+        None,
         permit,
-        &headers,
-        deadline.0,
     )
 }
 
@@ -1565,10 +2120,15 @@ async fn ws_project_terminal_pty_upgrade(
 async fn ws_standalone_terminal_pty_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    socket_auth: crate::auth::SocketAuth,
+    client: SocketClient,
     Path(tid): Path<String>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    // Paired so the Access session deadline (Phase 11 §6) adds no argument.
+    (ConnectInfo(peer), deadline): (
+        ConnectInfo<SocketAddr>,
+        crate::cloud_ingress::SessionDeadline,
+    ),
     headers: HeaderMap,
-    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1584,29 +2144,31 @@ async fn ws_standalone_terminal_pty_upgrade(
         Some(owner) if owner.is_at_route(yaran_core::model::TerminalRoute::Standalone) => {}
         _ => return (StatusCode::NOT_FOUND, "unknown terminal").into_response(),
     }
-    let permit = match acquire_ws_permit(
+    let Some(permit) = acquire_ws_permit(
         &state.ws_terminal_semaphore,
         peer.ip(),
         "/ws/terminals/:tid/pty",
         "max_websocket_terminal_connections",
-    ) {
-        Some(permit) => permit,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "too many WebSocket connections; try again shortly",
-            )
-                .into_response();
-        }
+    ) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many WebSocket connections; try again shortly",
+        )
+            .into_response();
     };
     upgrade_pty_socket(
-        ws,
+        PtyUpgrade {
+            ws,
+            client,
+            socket_auth,
+            peer_ip: peer.ip(),
+            headers: &headers,
+            deadline: deadline.0,
+        },
         &state,
         PtyTarget::Terminal(tid),
-        peer.ip(),
+        None,
         permit,
-        &headers,
-        deadline.0,
     )
 }
 
@@ -1628,9 +2190,11 @@ impl TabWsGuard {
         max_per_agent: u32,
     ) -> Option<Self> {
         {
-            let mut map = counts.lock().unwrap_or_else(|e| e.into_inner());
+            let mut map = counts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let n = map.entry(session_id.clone()).or_insert(0);
-            if *n as u32 >= max_per_agent {
+            if *n >= crate::rest_common::usize_from_u32(max_per_agent) {
                 // At/over the cap (or `max_per_agent == 0` blocks all). Don't leave
                 // a freshly-created zero entry lingering in the map.
                 if *n == 0 {
@@ -1646,7 +2210,10 @@ impl TabWsGuard {
 
 impl Drop for TabWsGuard {
     fn drop(&mut self) {
-        let mut map = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(n) = map.get_mut(&self.session_id) {
             *n = n.saturating_sub(1);
             if *n == 0 {
@@ -1676,10 +2243,15 @@ impl Drop for TabWsGuard {
 async fn ws_tab_pty_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    socket_auth: crate::auth::SocketAuth,
+    client: SocketClient,
     Path((id, tab)): Path<(String, String)>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    // Paired so the Access session deadline (Phase 11 §6) adds no argument.
+    (ConnectInfo(peer), deadline): (
+        ConnectInfo<SocketAddr>,
+        crate::cloud_ingress::SessionDeadline,
+    ),
     headers: HeaderMap,
-    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -1712,65 +2284,41 @@ async fn ws_tab_pty_upgrade(
     // at `max_ws_tabs_per_agent` BEFORE taking a shared tab-pool permit, so one
     // agent's tabs can't monopolize that pool. The guard decrements on drop, so a
     // failed permit acquisition below (early return) also releases the slot.
-    let tab_guard = match TabWsGuard::acquire(
+    let Some(tab_guard) = TabWsGuard::acquire(
         Arc::clone(&state.tab_ws_counts),
         id.clone(),
         state.max_ws_tabs_per_agent,
-    ) {
-        Some(guard) => guard,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "too many tab connections for this agent; try again shortly",
-            )
-                .into_response();
-        }
+    ) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many tab connections for this agent; try again shortly",
+        )
+            .into_response();
     };
-    let permit = match acquire_ws_permit(
+    let Some(permit) = acquire_ws_permit(
         &state.ws_tab_semaphore,
         peer.ip(),
         "/ws/sessions/:id/tabs/:tab/pty",
         "max_websocket_tab_connections",
-    ) {
-        Some(permit) => permit,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "too many WebSocket connections; try again shortly",
-            )
-                .into_response();
-        }
+    ) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many WebSocket connections; try again shortly",
+        )
+            .into_response();
     };
-    let engine = state.engine.clone();
-    let console = state.console.clone();
-    let pty_size_owners = Arc::clone(&state.pty_size_owners);
-    let pty_grid_bus = Arc::clone(&state.pty_grid_bus);
-    let bus = Arc::clone(&state.event_bus);
-    let connections = Arc::clone(&state.connections);
-    let live_limits = Arc::clone(&state.live_limits);
-    let peer_ip = peer.ip();
-    let user_agent = captured_user_agent(&headers);
+    let context = PtySocketContext::of(&state, peer.ip(), permit, &headers, deadline.0);
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
         .on_upgrade(move |socket| async move {
             // Hold the per-agent sub-quota guard for the socket's lifetime; it
             // decrements the agent's tab-socket count when this future is dropped.
             let _tab_guard = tab_guard;
-            handle_pty_socket(
-                socket,
-                engine,
-                PtyTarget::Tab(tab),
-                console,
-                peer_ip,
-                permit,
-                pty_size_owners,
-                pty_grid_bus,
-                bus,
-                connections,
-                user_agent,
-                live_limits,
-                deadline.0,
-            )
-            .await
+            let target = PtyTarget::Tab(tab);
+            let attach = PtyAttach {
+                target: target.attachment_target(Some(&id)),
+                client,
+            };
+            handle_pty_socket(socket, target, attach, context, socket_auth).await;
         })
         .into_response()
 }
@@ -1783,36 +2331,26 @@ async fn ws_tab_pty_upgrade(
 /// only while this connection owns sizing (see [`PtySizeOwners`]). Close (or any
 /// stream end) detaches by dropping the subscription/forwarder and releasing
 /// sizing ownership.
-#[allow(clippy::too_many_arguments)]
 async fn handle_pty_socket(
     socket: WebSocket,
-    engine: EngineHandle,
     target: PtyTarget,
-    console: Console,
-    peer_ip: std::net::IpAddr,
-    // Held for the socket's lifetime purely for its Drop (frees a connection-cap
-    // slot when this returns). Never read.
-    _permit: tokio::sync::OwnedSemaphorePermit,
-    pty_size_owners: Arc<PtySizeOwners>,
-    // The grid-change bus. This socket both PUBLISHES to it (when its own
-    // resize is granted) and LISTENS on it (for every other connection's), so
-    // a viewer of this PTY is told the authoritative grid it is not rendering
-    // at.
-    pty_grid_bus: Arc<crate::pty_sizes::PtyGridBus>,
-    bus: Arc<EventBus>,
-    connections: Arc<crate::rest_common::ConnectionRegistry>,
-    // The claiming connection's raw `User-Agent`, captured at the upgrade before the
-    // socket split. This connection IS the claimer at both `pty.owner` emit sites, so
-    // the value is a plain local (no per-conn map needed); it rides the handover so a
-    // client on another device can name this one ("Chrome on macOS").
-    user_agent: Option<String>,
-    // The reloadable `[server]` scalars. Exactly one is read here, at open:
-    // `pty_send_timeout_seconds`, which bounds the two opening sends. Read per
-    // socket rather than frozen at bind, so a config reload retimes the next
-    // connection.
-    live_limits: Arc<crate::engine_actor::LiveServerLimits>,
-    // When an Access session behind this socket expires (Phase 11 §6), or `None`.
-    deadline: Option<tokio::time::Instant>,
+    attach: PtyAttach,
+    PtySocketContext {
+        engine,
+        console,
+        peer_ip,
+        permit: _permit,
+        pty_size_owners,
+        pty_grid_bus,
+        bus,
+        connections,
+        user_agent,
+        live_limits,
+        deadline,
+    }: PtySocketContext,
+    // Closes the socket the moment its session ends or its client stops being
+    // allowed, and holds the session's lease while it is open.
+    socket_auth: crate::auth::SocketAuth,
 ) {
     console.client_connected(peer_ip);
     // Register this PTY socket as a live connection (its class depends on which PTY
@@ -1820,14 +2358,9 @@ async fn handle_pty_socket(
     // id is a fresh server UUID (PTY sockets carry no client-facing id of their
     // own); the guard deregisters on every exit path.
     let registry_id = uuid::Uuid::new_v4().to_string();
-    let conn_class = match &target {
-        // extra tabs run provider CLIs, so they count as agent-PTY connections.
-        PtyTarget::Agent(_) | PtyTarget::Tab(_) => crate::rest_common::ConnClass::AgentPty,
-        PtyTarget::Terminal(_) => crate::rest_common::ConnClass::TerminalPty,
-    };
-    connections.insert(registry_id.clone(), conn_class);
+    connections.insert(registry_id.clone(), target.conn_class());
     let _conn_guard = ConnectionGuard {
-        id: registry_id,
+        id: registry_id.clone(),
         registry: Arc::clone(&connections),
         watchers: None,
     };
@@ -1841,20 +2374,157 @@ async fn handle_pty_socket(
     let (sink, stream) = socket.split();
     let sink: SharedSink = Arc::new(tokio::sync::Mutex::new(sink));
 
-    // Subscribe to the target PTY. An agent subscribe also launches/resumes the
-    // provider if it isn't running yet (the same flow the legacy Subscribe uses);
-    // a terminal subscribe attaches to an already-created companion terminal.
-    let subscription = match &target {
+    // The session is judged before anything is subscribed: subscribing to an
+    // agent's pty can launch its provider, and a signed-out socket must never
+    // start one, nor be told the provider is gone (4001) when the truth is
+    // that it is signed out (4401). Judged again before each opening send.
+    if let Some(code) = socket_auth.opening_verdict().await {
+        let _ = sink.lock().await.send(auth_close(code)).await;
+        return;
+    }
+
+    let seat = seat_pty_socket(&pty_size_owners, &target, &attach);
+    let conn_id = seat.id();
+    let viewed = attach.client.viewed;
+    // The release, on EVERY exit path. A socket that gave up on its opening
+    // sends has to let go of the pty too (it may have claimed it at the
+    // handshake), and so does one a panic unwinds through: leaving it held wedges
+    // the pty behind a client that can never see it. `PtyOwnershipGuard` also
+    // broadcasts the owner-cleared `pty.owner`, without which every other
+    // device's card keeps naming a browser tab that closed.
+    let _ownership_guard = PtyOwnershipGuard::new(&seat, &pty_size_owners, &bus);
+    // Attached before the subscribe, which can launch the provider: a PTY that a
+    // change has reserved turns the socket away instead of relaunching it.
+    let heard = yaran_core::attachments::Heard::now();
+    let Some(attachment) = AttachmentGuard::attach(
+        &engine,
+        attach,
+        &registry_id,
+        user_agent.clone(),
+        &heard,
+        conn_id,
+        Arc::clone(&live_limits),
+    ) else {
+        send_close(&sink, provider_gone_close()).await;
+        return;
+    };
+    // Its own timer, started once the receive loop runs, revokes the attachment
+    // and its input rights past the deadline whatever the loop is stuck on.
+    let expired = Arc::new(tokio::sync::Notify::new());
+    let quiet_watch = QuietWatch {
+        heard: heard.clone(),
+        deadline: PONG_DEADLINE,
+        attachments: engine.attachments().clone(),
+        token: attachment.token,
+        owners: Arc::clone(&pty_size_owners),
+        seat: Arc::clone(&seat),
+        bus: Arc::clone(&bus),
+        expired: Arc::clone(&expired),
+        live_limits: Arc::clone(&live_limits),
+    };
+
+    // Bind the guard for the socket's full lifetime. Dropping it when this
+    // function returns removes the subscriber immediately on disconnect.
+    let Some((_viewer_guard, repaint, rx)) =
+        subscribe_or_close(&engine, &target, viewed, &sink, peer_ip).await
+    else {
+        // The console's count is decremented by `_client_count_guard` above,
+        // on this return like any other; saying so again here would count
+        // this socket out twice.
+        return;
+    };
+    let (handshake, grid_changes) = read_pty_handshake(
+        &engine,
+        &pty_size_owners,
+        &pty_grid_bus,
+        target.pty_id(),
+        conn_id,
+    )
+    .await;
+    let handshake_grid_seq = handshake.grid_seq;
+    // Read ONCE per socket, before the two sends it bounds, so both halves of an
+    // attach share one deadline even if a reload lands between them.
+    let opening_send_deadline = pty_opening_send_timeout(&live_limits);
+    if send_pty_opening(
+        &sink,
+        &socket_auth,
+        opening_send_deadline,
+        handshake,
+        repaint,
+        target.pty_id(),
+    )
+    .await
+    {
+        AttachedPtySocket {
+            engine: &engine,
+            target: &target,
+            conn_id,
+            sink: &sink,
+            owners: &pty_size_owners,
+            grid_bus: &pty_grid_bus,
+            event_bus: &bus,
+            user_agent: user_agent.as_deref(),
+            live_limits: &live_limits,
+            attachment: &attachment,
+            heard: &heard,
+            deadline,
+        }
+        .run(
+            stream,
+            rx,
+            grid_changes,
+            handshake_grid_seq,
+            socket_auth,
+            quiet_watch,
+        )
+        .await;
+    }
+
+    // The guards above release ownership and connection accounting on every exit.
+}
+
+/// Place a terminal socket's pty in its row and seat the socket at its page's
+/// seat for that row.
+///
+/// Placed in its row before anything is asked about it, so the handshake's
+/// owner, every claim and every release are the row's: a terminal opened in a
+/// row another device drives is that device's from here on. Seated before the
+/// subscribe so the attachment can carry the driver id, and not a claim: only a
+/// resize of an unowned row or a flagged take-over claims. Every socket its
+/// page has open on this row shares the id, so the page drives the row as one
+/// driver however many of its panes are mounted.
+fn seat_pty_socket(
+    owners: &PtySizeOwners,
+    target: &PtyTarget,
+    attach: &PtyAttach,
+) -> Arc<yaran_core::pty_owners::Seat> {
+    owners.join_row(
+        target.pty_id(),
+        yaran_core::pty_owners::RowKey::of(target.pty_id(), attach.target.agent.as_deref()),
+    );
+    Arc::new(owners.take_seat(attach.client.page.as_ref(), target.pty_id()))
+}
+
+/// Subscribe a terminal socket to its PTY. An agent subscribe also
+/// launches/resumes the provider if it isn't running yet (the same flow the
+/// legacy Subscribe uses); a terminal subscribe attaches to an already-created
+/// companion terminal. A failure closes the socket with the provider-gone code.
+async fn subscribe_or_close(
+    engine: &EngineHandle,
+    target: &PtyTarget,
+    viewed: crate::engine_actor::PaneVisibility,
+    sink: &SharedSink,
+    peer_ip: IpAddr,
+) -> Option<crate::engine_actor::PtySubscription> {
+    let subscription = match target {
         // A tab subscribe resolves through the same tab-keyed `subscribe_pty`; for a
         // dormant extra tab this launches it via `launch_agent`, which resolves
         // resume vs. fresh dynamically per `tab_resume_decision` (not always fresh).
-        PtyTarget::Agent(id) | PtyTarget::Tab(id) => engine.subscribe_pty(id.clone()).await,
+        PtyTarget::Agent(id) | PtyTarget::Tab(id) => engine.subscribe_pty(id.clone(), viewed).await,
         PtyTarget::Terminal(id) => engine.subscribe_terminal(id.clone()).await,
     };
-    // Bind the guard for the socket's full lifetime. Dropping it when this
-    // function returns removes the subscriber immediately on disconnect.
-    let (_viewer_guard, repaint, rx) = match subscription {
-        Ok(sub) => sub,
+    match subscription {
+        Ok(sub) => Some(sub),
         Err(e) => {
             // Subscribe failed after the upgrade (e.g. the agent failed to launch,
             // or the terminal vanished in the gap). Close with the provider-gone
@@ -1868,31 +2538,23 @@ async fn handle_pty_socket(
                 let mut guard = sink.lock().await;
                 let _ = guard.send(provider_gone_close()).await;
             }
-            // The console's count is decremented by `_client_count_guard` above,
-            // on this return like any other; saying so again here would count
-            // this socket out twice.
-            return;
+            None
         }
-    };
-    // Allocate this connection's id, but do NOT claim ownership: attaching is not
-    // taking over, and now the server means it. A connection becomes the owner
-    // only by resizing an UNOWNED pty or by sending a resize explicitly flagged
-    // as a take-over (see the resize arm below), so no attach of any kind can
-    // steal the device that is actually being typed on. Ownership is released on
-    // disconnect, through the guard declared immediately below.
-    let conn_id = pty_size_owners.next_conn_id();
-    // The release, on EVERY exit path. A socket that gave up on its opening
-    // sends has to let go of the pty too (it may have claimed it at the
-    // handshake), and so does one a panic unwinds through: leaving it held wedges
-    // the pty behind a client that can never see it. `PtyOwnershipGuard` also
-    // broadcasts the owner-cleared `pty.owner`, without which every other
-    // device's card keeps naming a browser tab that closed.
-    let _ownership_guard = PtyOwnershipGuard {
-        pty_id: target.pty_id().to_string(),
-        conn_id,
-        owners: Arc::clone(&pty_size_owners),
-        bus: Arc::clone(&bus),
-    };
+    }
+}
+
+/// Read what a terminal socket's `connected` handshake carries, subscribing to
+/// the grid-change bus at the one point that leaves no hole.
+async fn read_pty_handshake(
+    engine: &EngineHandle,
+    owners: &PtySizeOwners,
+    grid_bus: &crate::pty_sizes::PtyGridBus,
+    pty_id: &str,
+    conn_id: u64,
+) -> (
+    PtyHandshake,
+    tokio::sync::broadcast::Receiver<crate::pty_sizes::PtyGridChange>,
+) {
     // Who is driving right now, read once for the handshake frame. This is what
     // stops a foregrounded arrival from wedging itself as a phantom owner: with
     // a plain claim now refused SILENTLY, the client's optimistic "I am
@@ -1913,7 +2575,7 @@ async fn handle_pty_socket(
     // since when, and from what device. A mere attach broadcasts no `pty.owner`,
     // so the handshake is the only frame that can name the driving device to a
     // watcher that simply opened the pane.
-    let owner_snapshot = pty_size_owners.current_owner(target.pty_id());
+    let owner_snapshot = owners.current_owner(pty_id);
     // The seq of the last resize that actually REACHED the child, read BEFORE the
     // actor-queued grid read below, which makes it a valid LOWER bound for the
     // grid the handshake carries: the grid read is enqueued behind every resize
@@ -1930,7 +2592,7 @@ async fn handle_pty_socket(
     // is still the pre-N geometry; the apply's own broadcast then arrives stamped
     // N, is dropped as "not newer", and nothing ever re-announces it: that viewer
     // sits on a stale grid for the life of the socket.
-    let handshake_grid_seq = pty_size_owners.applied_grid_seq(target.pty_id());
+    let handshake_grid_seq = owners.applied_grid_seq(pty_id);
     // Hand the client this PTY socket's connection id as the first frame (a Text
     // frame, distinct from the Binary PTY-byte frames), mirroring how `/ws/events`
     // opens with a `connected` frame. The client records it and compares it against
@@ -1954,78 +2616,111 @@ async fn handle_pty_socket(
     // read would leave a hole: a resize landing between the read and the
     // subscribe would be reported to nobody on this socket and its viewer would
     // sit on a stale grid until the next change.
-    let grid_changes = pty_grid_bus.subscribe();
+    let grid_changes = grid_bus.subscribe();
     // The grid the child is actually drawing for, read once for the handshake.
     // A viewer compares it against its own xterm's grid: one PTY has one
     // authoritative grid (the owner's), and every other attached browser is
     // rendering the same byte stream into a differently sized terminal without,
     // until this frame, any way to know it.
-    let grid = engine.pty_grid_size(target.pty_id().to_string()).await;
-    // Read ONCE per socket, before the two sends it bounds, so both halves of an
-    // attach share one deadline even if a reload lands between them.
-    let opening_send_deadline = pty_opening_send_timeout(&live_limits);
-    'attached: {
-        // A client that never receives its handshake or its replay sees a
-        // permanently blank terminal pane on a connection that looks alive from both
-        // ends, so both sends are BOUNDED and CHECKED. Either one giving up leaves
-        // this block, which drops straight into the ordinary teardown below: the pty
-        // ownership is released and the connection permit is freed, exactly as a
-        // clean disconnect would. Proceeding into the select loop instead would park
-        // a socket nobody can ever see anything on.
-        if with_send_deadline(
-            opening_send_deadline,
-            send_pty_connected(
-                &sink,
-                conn_id,
-                replay_generation,
-                owner_snapshot,
-                grid,
-                handshake_grid_seq,
-            ),
-        )
+    let grid = engine.pty_grid_size(pty_id.to_string()).await;
+    (
+        PtyHandshake {
+            conn_id,
+            replay_generation,
+            owner_snapshot,
+            grid,
+            grid_seq: handshake_grid_seq,
+        },
+        grid_changes,
+    )
+}
+
+/// What a terminal socket's `connected` handshake carries.
+struct PtyHandshake {
+    conn_id: u64,
+    replay_generation: u64,
+    owner_snapshot: (Option<u64>, u64, Option<String>),
+    grid: Option<(u16, u16)>,
+    grid_seq: u64,
+}
+
+/// Send a terminal socket's two opening frames, the `connected` handshake and
+/// the scrollback replay, and answer whether the socket may go on to stream.
+///
+/// A client that never receives its handshake or its replay sees a
+/// permanently blank terminal pane on a connection that looks alive from both
+/// ends, so both sends are BOUNDED and CHECKED. Either one giving up answers
+/// `false`, and the socket drops straight into the ordinary teardown: the pty
+/// ownership is released and the connection permit is freed, exactly as a
+/// clean disconnect would. Proceeding into the select loop instead would park
+/// a socket nobody can ever see anything on.
+///
+/// The session is judged again before the handshake, and again before the replay:
+/// `subscribe_pty` can take a while (it may launch the provider), and a
+/// session revoked meanwhile must get its close and not one byte of the
+/// terminal (decided, after review: the loop's own watch only starts
+/// after both opening sends).
+async fn send_pty_opening(
+    sink: &SharedSink,
+    socket_auth: &crate::auth::SocketAuth,
+    deadline: std::time::Duration,
+    handshake: PtyHandshake,
+    repaint: Vec<u8>,
+    pty_id: &str,
+) -> bool {
+    let PtyHandshake {
+        conn_id,
+        replay_generation,
+        owner_snapshot,
+        grid,
+        grid_seq,
+    } = handshake;
+    if let Some(code) = socket_auth.verdict_now() {
+        let _ = sink.lock().await.send(auth_close(code)).await;
+        return false;
+    }
+    if with_send_deadline(
+        deadline,
+        send_pty_connected(
+            sink,
+            conn_id,
+            replay_generation,
+            owner_snapshot,
+            grid,
+            grid_seq,
+        ),
+    )
+    .await
+    .is_err()
+    {
+        yaran_core::logger::info(&crate::pty_log::describe_connection_reaped(
+            conn_id,
+            crate::pty_log::FailedSend::ConnectedHandshake,
+        ));
+        return false;
+    }
+    if let Some(code) = socket_auth.verdict_now() {
+        let _ = sink.lock().await.send(auth_close(code)).await;
+        return false;
+    }
+    // Replay the buffered scrollback/repaint before streaming live bytes.
+    let replay_bytes = repaint.len();
+    if with_send_deadline(deadline, send_binary(sink, repaint))
         .await
         .is_err()
-        {
-            yaran_core::logger::info(&crate::pty_log::describe_connection_reaped(
-                conn_id,
-                crate::pty_log::FailedSend::ConnectedHandshake,
-            ));
-            break 'attached;
-        }
-        // Replay the buffered scrollback/repaint before streaming live bytes.
-        let replay_bytes = repaint.len();
-        if with_send_deadline(opening_send_deadline, send_binary(&sink, repaint))
-            .await
-            .is_err()
-        {
-            yaran_core::logger::info(&crate::pty_log::describe_connection_reaped(
-                conn_id,
-                crate::pty_log::FailedSend::ScrollbackReplay,
-            ));
-            break 'attached;
-        }
-        yaran_core::logger::debug(&crate::pty_log::describe_replay_sent(
-            target.pty_id(),
-            replay_generation,
-            replay_bytes,
-        ));
-        AttachedPtySocket {
-            engine: &engine,
-            target: &target,
+    {
+        yaran_core::logger::info(&crate::pty_log::describe_connection_reaped(
             conn_id,
-            sink: &sink,
-            owners: &pty_size_owners,
-            grid_bus: &pty_grid_bus,
-            event_bus: &bus,
-            user_agent: user_agent.as_deref(),
-            live_limits: &live_limits,
-            deadline,
-        }
-        .run(stream, rx, grid_changes, handshake_grid_seq)
-        .await;
+            crate::pty_log::FailedSend::ScrollbackReplay,
+        ));
+        return false;
     }
-
-    // The guards above release ownership and connection accounting on every exit.
+    yaran_core::logger::debug(&crate::pty_log::describe_replay_sent(
+        pty_id,
+        replay_generation,
+        replay_bytes,
+    ));
+    true
 }
 
 enum PtyLoopAction {
@@ -2043,19 +2738,57 @@ struct AttachedPtySocket<'a> {
     event_bus: &'a EventBus,
     user_agent: Option<&'a str>,
     live_limits: &'a crate::engine_actor::LiveServerLimits,
+    attachment: &'a AttachmentGuard,
+    /// When the peer last sent anything, a pong included; shared with the
+    /// attachment registry and the quiet watchdog.
+    heard: &'a yaran_core::attachments::Heard,
+    /// When the Access session behind this socket expires (Phase 11 §6), or `None`.
     deadline: Option<tokio::time::Instant>,
 }
 
 impl AttachedPtySocket<'_> {
     async fn run(
         &self,
-        mut stream: futures_util::stream::SplitStream<WebSocket>,
+        stream: futures_util::stream::SplitStream<WebSocket>,
         rx: std::sync::mpsc::Receiver<Vec<u8>>,
+        grid_changes: tokio::sync::broadcast::Receiver<crate::pty_sizes::PtyGridChange>,
+        last_grid_seq: u64,
+        socket_auth: crate::auth::SocketAuth,
+        quiet_watch: QuietWatch,
+    ) {
+        let expired = Arc::clone(&quiet_watch.expired);
+        let _watchdog = start_quiet_watch(quiet_watch);
+        let pty_forwarder = AbortOnDrop(spawn_pty_forwarder(
+            Arc::clone(self.sink),
+            rx,
+            self.engine.shutdown_flag(),
+        ));
+        if until_expired(
+            self.receive(
+                stream,
+                pty_forwarder,
+                grid_changes,
+                last_grid_seq,
+                socket_auth,
+            ),
+            &expired,
+        )
+        .await
+        {
+            self.close_quiet_peer().await;
+        }
+    }
+
+    /// The receive loop, which owns the output forwarder: whatever ends it,
+    /// expiry included, ends the forwarder too.
+    async fn receive(
+        &self,
+        mut stream: futures_util::stream::SplitStream<WebSocket>,
+        mut pty_forwarder: AbortOnDrop,
         mut grid_changes: tokio::sync::broadcast::Receiver<crate::pty_sizes::PtyGridChange>,
         mut last_grid_seq: u64,
+        mut socket_auth: crate::auth::SocketAuth,
     ) {
-        let mut pty_forwarder =
-            spawn_pty_forwarder(Arc::clone(self.sink), rx, self.engine.shutdown_flag());
         let mut ping = tokio::time::interval(WS_LIVENESS_PING_PERIOD);
         ping.tick().await;
         let expiry = crate::cloud_ingress::session_deadline(self.deadline);
@@ -2064,19 +2797,39 @@ impl AttachedPtySocket<'_> {
         loop {
             // Handle each received value inside its selected branch. A combined
             // receive-and-handle future could consume a value and then be cancelled.
+            // Biased, with the revocation first: once this socket's session has
+            // ended, no queued keystroke may reach the PTY and no further frame
+            // may be sent.
             let action = tokio::select! {
-                _ = ping.tick() => self.send_liveness_ping().await,
+                biased;
+                code = socket_auth.revoked() => {
+                    // The forwarder writes output on its own task, so it is
+                    // stopped before the close rather than after the loop.
+                    pty_forwarder.0.abort();
+                    self.close_for_auth(code).await
+                }
+                _ = ping.tick() => {
+                    if peer_went_quiet(self.heard) {
+                        self.close_quiet_peer().await
+                    } else {
+                        self.send_liveness_ping().await
+                    }
+                }
                 change = grid_changes.recv() => {
                     self.handle_grid_change(change, &mut last_grid_seq).await
                 }
-                _ = &mut pty_forwarder => self.close_after_forwarder_end().await,
-                _ = &mut expiry => {
+                _ = &mut pty_forwarder.0 => self.close_after_forwarder_end().await,
+                () = &mut expiry => {
+                    pty_forwarder.0.abort();
                     let close = crate::cloud_ingress::session_expired_close();
                     let _ = self.sink.lock().await.send(close).await;
                     PtyLoopAction::Break
                 }
                 next = stream.next() => match next {
-                    Some(Ok(message)) => self.handle_client_message(message).await,
+                    Some(Ok(message)) => {
+                        self.heard.touch();
+                        self.handle_client_message(message).await
+                    }
                     _ => PtyLoopAction::Break,
                 },
             };
@@ -2084,14 +2837,15 @@ impl AttachedPtySocket<'_> {
                 break;
             }
         }
-
-        pty_forwarder.abort();
     }
 
     /// A send-only liveness ping. Its failure is how a socket whose peer is gone
     /// without a close frame is reaped, so it ends the loop.
     async fn send_liveness_ping(&self) -> PtyLoopAction {
-        if send_ping(self.sink).await.is_ok() {
+        if with_send_deadline(LIVENESS_SEND_DEADLINE, send_ping(self.sink))
+            .await
+            .is_ok()
+        {
             return PtyLoopAction::Continue;
         }
         yaran_core::logger::info(&crate::pty_log::describe_connection_reaped(
@@ -2101,16 +2855,42 @@ impl AttachedPtySocket<'_> {
         PtyLoopAction::Break
     }
 
-    /// The forwarder has ended, so no more PTY bytes can arrive on this socket.
+    /// The socket's session ended or its client stopped being allowed (see
+    /// [`crate::auth::socket`]), so it must not keep driving this PTY. Closed with
+    /// the auth code the browser recognizes.
+    async fn close_for_auth(&self, code: u16) -> PtyLoopAction {
+        self.attachment.end_deliberately();
+        send_close(self.sink, auth_close(code)).await;
+        PtyLoopAction::Break
+    }
+
+    /// The peer has sent nothing, not even a pong, for longer than
+    /// [`PONG_DEADLINE`]: a half-open connection. Ended so it stops holding a
+    /// connection slot and the session's lease.
+    async fn close_quiet_peer(&self) -> PtyLoopAction {
+        yaran_core::logger::info(&crate::pty_log::describe_connection_reaped(
+            self.conn_id,
+            crate::pty_log::FailedSend::LivenessPing,
+        ));
+        send_close(self.sink, Message::Close(None)).await;
+        PtyLoopAction::Break
+    }
+
     /// Close with the code that tells the client whether to reconnect: the server
     /// shutting down is a different answer from the provider going away.
     async fn close_after_forwarder_end(&self) -> PtyLoopAction {
-        let shutting_down = self
+        let why = if self
             .engine
             .shutdown_flag()
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let mut guard = self.sink.lock().await;
-        let _ = guard.send(forwarder_end_close(shutting_down)).await;
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            ForwarderEnd::ServerShutdown
+        } else {
+            ForwarderEnd::PtyGone
+        };
+        // The terminal is gone (or yaran is): there is nothing left to protect.
+        self.attachment.end_deliberately();
+        send_close(self.sink, forwarder_end_close(why)).await;
         PtyLoopAction::Break
     }
 
@@ -2145,7 +2925,10 @@ impl AttachedPtySocket<'_> {
         match message {
             Message::Binary(bytes) => self.handle_input(&bytes),
             Message::Text(text) => self.handle_text_frame(text.as_str()).await,
-            Message::Close(_) => return PtyLoopAction::Break,
+            Message::Close(_) => {
+                self.attachment.end_deliberately();
+                return PtyLoopAction::Break;
+            }
             _ => {}
         }
         PtyLoopAction::Continue
@@ -2182,21 +2965,22 @@ impl AttachedPtySocket<'_> {
                 pty_id,
                 self.conn_id,
                 self.user_agent,
-                false,
-                None,
+                yaran_core::pty_owners::ResizeIntent::Plain,
             ));
-            self.event_bus.emit(pty_owner_event(
+            emit_row_owner(
+                self.event_bus,
+                self.owners,
                 pty_id,
                 self.conn_id,
                 epoch,
                 self.user_agent,
-            ));
+            );
         }
     }
 
     async fn handle_text_frame(&self, text: &str) {
         if let Ok(frame) = serde_json::from_str::<PtyResizeFrame>(text) {
-            self.handle_resize_frame(frame);
+            self.handle_resize_frame(&frame);
             return;
         }
         if let Ok(frame) = serde_json::from_str::<PtyBeatFrame>(text) {
@@ -2204,34 +2988,47 @@ impl AttachedPtySocket<'_> {
         }
     }
 
-    fn handle_resize_frame(&self, frame: PtyResizeFrame) {
+    fn handle_resize_frame(&self, frame: &PtyResizeFrame) {
         let pty_id = self.target.pty_id();
+        // A grid no terminal can have is a client bug, never a window: refused
+        // before the claim, so it neither resizes nor takes the pty, and
+        // silently, like every other refused resize.
+        if !yaran_core::pty::grid_in_bounds(frame.rows, frame.cols) {
+            yaran_core::logger::info(&crate::pty_log::describe_resize_out_of_bounds(
+                pty_id,
+                self.conn_id,
+                frame.rows,
+                frame.cols,
+            ));
+            return;
+        }
         let expected_owner = parse_expected_owner(frame.expected_owner.as_deref());
-        let outcome = self.owners.claim_for_resize(
-            pty_id,
-            self.conn_id,
-            frame.takeover,
-            expected_owner,
-            self.user_agent,
-            |seq| {
-                self.engine
-                    .resize_pty(pty_id.to_string(), frame.rows, frame.cols, seq);
-            },
-        );
+        let intent = if frame.takeover {
+            yaran_core::pty_owners::ResizeIntent::TakeOver { expected_owner }
+        } else {
+            yaran_core::pty_owners::ResizeIntent::Plain
+        };
+        let outcome =
+            self.owners
+                .claim_for_resize(pty_id, self.conn_id, intent, self.user_agent, |seq| {
+                    self.engine
+                        .resize_pty(pty_id.to_string(), frame.rows, frame.cols, seq);
+                });
         if let Some(epoch) = outcome.epoch {
             yaran_core::logger::info(&crate::pty_log::describe_claim_granted(
                 pty_id,
                 self.conn_id,
                 self.user_agent,
-                frame.takeover,
-                expected_owner,
+                intent,
             ));
-            self.event_bus.emit(pty_owner_event(
+            emit_row_owner(
+                self.event_bus,
+                self.owners,
                 pty_id,
                 self.conn_id,
                 epoch,
                 self.user_agent,
-            ));
+            );
         }
         if let Some(seq) = outcome.seq {
             self.grid_bus.publish(pty_id, frame.rows, frame.cols, seq);
@@ -2253,8 +3050,11 @@ impl AttachedPtySocket<'_> {
     }
 
     async fn handle_beat_frame(&self, frame: PtyBeatFrame) {
-        if frame.viewed {
+        if self.attachment.note_beat_viewed(frame.viewed) {
             self.engine.note_viewed(self.target.pty_id().to_string());
+        }
+        if frame.shown {
+            self.engine.pty_shown(self.target.pty_id().to_string());
         }
         if let Some(n) = frame.beat {
             let _ = with_send_deadline(
@@ -2298,6 +3098,29 @@ pub(crate) fn pty_owner_event(
         owner: Some(owner_conn_id.to_string()),
         epoch: Some(epoch),
         device: device.map(str::to_owned),
+    }
+}
+
+/// Announce `owner_conn_id` as the driver of every pty in `pty_id`'s row: an
+/// ownership change through one pty is a change for all of them, and a pane
+/// listens only for its own pty's `pty.owner`.
+fn emit_row_owner(
+    bus: &EventBus,
+    owners: &PtySizeOwners,
+    pty_id: &str,
+    owner_conn_id: u64,
+    epoch: u64,
+    device: Option<&str>,
+) {
+    for member in owners.row_members(pty_id) {
+        bus.emit(pty_owner_event(&member, owner_conn_id, epoch, device));
+    }
+}
+
+/// Announce that nobody drives `pty_id`'s row any more, for every pty in it.
+fn emit_row_owner_cleared(bus: &EventBus, owners: &PtySizeOwners, pty_id: &str, epoch: u64) {
+    for member in owners.row_members(pty_id) {
+        bus.emit(pty_owner_cleared_event(&member, epoch));
     }
 }
 
@@ -2356,7 +3179,7 @@ fn spawn_config_changed_forwarder(
             match reload_rx.recv().await {
                 Ok(()) => bus.emit(config_changed_event()),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    bus.emit(config_changed_event())
+                    bus.emit(config_changed_event());
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -2402,7 +3225,7 @@ fn sessions_changed_event() -> Event {
 }
 
 /// The pushed workspace-document frame:
-/// `{"event":"workspace","rev":N,"workspace":{…}}`.
+/// `{"event":"workspace","rev":N,"clock":C,"workspace":{…}}`.
 ///
 /// Built by splicing the cached serialization into a string rather than by
 /// serializing a struct. The document is already JSON in the engine's cache and
@@ -2411,10 +3234,17 @@ fn sessions_changed_event() -> Event {
 /// appears twice on purpose: once at the top level, where a client reads it
 /// without touching the body, and once inside the document, where a client that
 /// FETCHED the same bytes over REST finds it.
+///
+/// `clock` is the server's run clock as the frame is sent
+/// ([`yaran_core::tab_verdict::run_clock_seconds`]), which the browser ages the
+/// document's verdicts against. It sits outside the document so the cached
+/// bytes stay the same until something in them changes.
 fn workspace_frame_text(doc: &WorkspaceDoc) -> String {
     format!(
-        r#"{{"event":"workspace","rev":{},"workspace":{}}}"#,
-        doc.rev, doc.json
+        r#"{{"event":"workspace","rev":{},"clock":{},"workspace":{}}}"#,
+        doc.rev,
+        yaran_core::tab_verdict::run_clock_seconds(),
+        doc.json
     )
 }
 
@@ -2501,6 +3331,21 @@ struct WireEvent {
     /// other event and when the claimer sent no `User-Agent`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     device: Option<String>,
+}
+
+impl WireEvent {
+    /// The first frame of an events socket, handing the client its connection
+    /// id (the `X-Connection-Id` REST mutations echo back).
+    fn connected(connection_id: &str) -> Self {
+        Self {
+            event: "connected".to_string(),
+            id: Some(connection_id.to_string()),
+            rev: None,
+            owner: None,
+            epoch: None,
+            device: None,
+        }
+    }
 }
 
 /// Process-monotonic id stamped on every PTY scrollback replay (see the
@@ -2693,6 +3538,10 @@ struct WireStatusEvent {
     /// chip; left out for a plain sentence. See [`yaran_core::status_text`].
     #[serde(skip_serializing_if = "Option::is_none")]
     segments: Option<Vec<yaran_core::prose::ProseSegment>>,
+    /// The question the status puts to the user, when it is one. A replayed
+    /// snapshot carries none: the sentence still says it all in words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ask: Option<yaran_core::status_text::StatusAsk>,
     scope: StatusScope,
     sticky: bool,
 }
@@ -2715,9 +3564,14 @@ struct WireStatusClearedEvent {
 async fn ws_events_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    socket_auth: crate::auth::SocketAuth,
+    client: SocketClient,
+    // Paired so the Access session deadline (Phase 11 §6) adds no argument.
+    (ConnectInfo(peer), deadline): (
+        ConnectInfo<SocketAddr>,
+        crate::cloud_ingress::SessionDeadline,
+    ),
     headers: HeaderMap,
-    deadline: crate::cloud_ingress::SessionDeadline,
 ) -> impl IntoResponse {
     if !same_origin_allowed(&headers) {
         return (
@@ -2726,42 +3580,69 @@ async fn ws_events_upgrade(
         )
             .into_response();
     }
-    let permit = match acquire_ws_permit(
+    let Some(permit) = acquire_ws_permit(
         &state.ws_events_semaphore,
         peer.ip(),
         "/ws/events",
         "max_websocket_events_connections",
-    ) {
-        Some(permit) => permit,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "too many WebSocket connections; try again shortly",
-            )
-                .into_response();
-        }
+    ) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many WebSocket connections; try again shortly",
+        )
+            .into_response();
     };
-    let console = state.console.clone();
-    let engine = state.engine.clone();
-    let bus = Arc::clone(&state.event_bus);
-    let changes = Arc::clone(&state.changes);
-    let connections = Arc::clone(&state.connections);
-    let peer_ip = peer.ip();
+    let context = EventsSocketContext {
+        engine: state.engine.clone(),
+        bus: Arc::clone(&state.event_bus),
+        changes: Arc::clone(&state.changes),
+        console: state.console.clone(),
+        peer_ip: peer.ip(),
+        permit,
+        connections: Arc::clone(&state.connections),
+        facts: client.events_facts(captured_user_agent(&headers)),
+        after: client.after,
+        deadline: deadline.0,
+    };
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
-        .on_upgrade(move |socket| {
-            handle_events_socket(
-                socket,
-                engine,
-                bus,
-                changes,
-                console,
-                peer_ip,
-                permit,
-                connections,
-                deadline.0,
-            )
-        })
+        .on_upgrade(move |socket| handle_events_socket(socket, context, socket_auth))
         .into_response()
+}
+
+/// What an events socket's handler takes from the router and from its upgrade
+/// request, for the socket's whole life.
+struct EventsSocketContext {
+    engine: EngineHandle,
+    bus: Arc<EventBus>,
+    changes: Arc<ChangesService>,
+    console: Console,
+    peer_ip: IpAddr,
+    /// Held for the socket's lifetime purely for its Drop (frees a connection-cap
+    /// slot when the handler returns). Never read.
+    permit: tokio::sync::OwnedSemaphorePermit,
+    connections: Arc<crate::rest_common::ConnectionRegistry>,
+    /// Who this browser tab is, for the attachment registry: the tab's
+    /// terminal sockets link themselves to this connection.
+    facts: yaran_core::attachments::ConnectionFacts,
+    /// The lost events connection this tab had before, whose terminals this
+    /// one takes over (`?after=<id>`).
+    after: Option<String>,
+    /// When the Access session behind this socket expires (Phase 11 §6), or `None`.
+    deadline: Option<tokio::time::Instant>,
+}
+
+/// Close an events socket whose session ended before its opening frames were
+/// all sent: the tab's presence ends deliberately and the console counts it out.
+async fn close_signed_out_events_socket(
+    presence: &TabPresenceGuard,
+    sink: &SharedSink,
+    console: &Console,
+    peer_ip: IpAddr,
+    code: u16,
+) {
+    presence.end_deliberately();
+    send_close(sink, auth_close(code)).await;
+    console.client_disconnected(peer_ip);
 }
 
 /// Drive one `/ws/events` connection as a single `tokio::select!` loop owning the
@@ -2773,17 +3654,24 @@ async fn ws_events_upgrade(
 /// live status broadcast, the status-clear broadcast, and the on-connect status
 /// snapshot, all filtered by the per-connection scope rule ([`scope_delivers`])
 /// so one client's operation toasts never leak to another.
-#[allow(clippy::too_many_arguments)]
 async fn handle_events_socket(
     socket: WebSocket,
-    engine: EngineHandle,
-    bus: Arc<EventBus>,
-    changes: Arc<ChangesService>,
-    console: Console,
-    peer_ip: std::net::IpAddr,
-    _permit: tokio::sync::OwnedSemaphorePermit,
-    connections: Arc<crate::rest_common::ConnectionRegistry>,
-    deadline: Option<tokio::time::Instant>,
+    EventsSocketContext {
+        engine,
+        bus,
+        changes,
+        console,
+        peer_ip,
+        permit: _permit,
+        connections,
+        facts,
+        after,
+        deadline,
+    }: EventsSocketContext,
+    // Closes the socket the moment its session ends or its client stops being
+    // allowed, and holds the session's lease while it is open: an open tab is
+    // what keeps a signed-in browser from going idle.
+    socket_auth: crate::auth::SocketAuth,
 ) {
     console.client_connected(peer_ip);
     // A server-assigned random id correlating REST actions with the statuses they
@@ -2794,7 +3682,11 @@ async fn handle_events_socket(
     // Register this id as a live connection so `scope_from_headers` validates the
     // echoed `X-Connection-Id` against it. The guard deregisters on EVERY exit path
     // (loop break or task cancellation), freeing the slot.
-    connections.insert(connection_id.clone(), crate::rest_common::ConnClass::Events);
+    connections.insert_events(
+        connection_id.clone(),
+        facts.browser.as_ref(),
+        after.as_deref(),
+    );
     // Bumped beside the registry insert and dropped by the same guard, so the
     // status emitter's "was anybody watching" answer cannot drift from the
     // registry. It is what decides whether a warning or an error raised now is
@@ -2806,24 +3698,31 @@ async fn handle_events_socket(
         registry: Arc::clone(&connections),
         watchers: Some(watchers),
     };
+    let heard = yaran_core::attachments::Heard::now();
+    let engine_attachments = engine.attachments().clone();
+    let presence = TabPresenceGuard::register(
+        engine_attachments.clone(),
+        &connection_id,
+        facts,
+        heard.clone(),
+    );
     let (sink, stream) = socket.split();
     let sink: SharedSink = Arc::new(tokio::sync::Mutex::new(sink));
     let bus_rx = bus.subscribe();
 
+    // The session is judged again before any opening frame, and again before
+    // each of the snapshot and the late warnings (decided, after review): the
+    // loop's own watch starts only after them, and a socket signed out in the
+    // meantime must get its close and nothing else. Checked before the late
+    // warnings are TAKEN, too, so a refused socket cannot consume them.
+    if let Some(code) = socket_auth.opening_verdict().await {
+        close_signed_out_events_socket(&presence, &sink, &console, peer_ip, code).await;
+        return;
+    }
+
     // First frame: hand the client its connection id (the `X-Connection-Id` REST
     // mutations echo back so their status toasts scope to this connection only).
-    let _ = send_json(
-        &sink,
-        &WireEvent {
-            event: "connected".to_string(),
-            id: Some(connection_id.clone()),
-            rev: None,
-            owner: None,
-            epoch: None,
-            device: None,
-        },
-    )
-    .await;
+    let _ = send_json(&sink, &WireEvent::connected(&connection_id)).await;
 
     // Subscribe to the live status + status-clear broadcasts BEFORE reading the
     // snapshot: the broadcast does not replay to a receiver created after a send,
@@ -2844,6 +3743,11 @@ async fn handle_events_socket(
     let workspace_rx = engine.workspace_docs();
     let workspace_alive = true;
 
+    if let Some(code) = socket_auth.verdict_now() {
+        close_signed_out_events_socket(&presence, &sink, &console, peer_ip, code).await;
+        return;
+    }
+
     // Initial statuses: a client connecting mid-operation sees ALL active toasts
     // (keyed and anonymous) immediately, scoped to itself. An empty/fully-filtered
     // snapshot sends nothing.
@@ -2852,6 +3756,11 @@ async fn handle_events_socket(
             console.client_disconnected(peer_ip);
             return;
         }
+    }
+
+    if let Some(code) = socket_auth.verdict_now() {
+        close_signed_out_events_socket(&presence, &sink, &console, peer_ip, code).await;
+        return;
     }
 
     // The warning and the error that were raised while NO browser was
@@ -2897,8 +3806,16 @@ async fn handle_events_socket(
         connection_id,
         connections,
         peer_ip,
+        socket_auth,
+        heard,
+        deliberate: Arc::clone(&presence.deliberate),
         deadline,
     };
+    // A tab whose events connection was lost takes over what the lost one
+    // still counted as attached to, once it is past its opening checks.
+    if let Some(after) = &after {
+        engine_attachments.inherit(after, &connection.connection_id);
+    }
     let _ = connection.run().await;
     drop(connection);
     console.client_disconnected(peer_ip);
@@ -2921,12 +3838,22 @@ struct EventsSocketLoop {
     /// has gone can fall back to a broadcast instead of reaching nobody.
     connections: Arc<crate::rest_common::ConnectionRegistry>,
     peer_ip: IpAddr,
+    socket_auth: crate::auth::SocketAuth,
+    /// When the peer last sent anything, a pong included; shared with the
+    /// attachment registry, which stops counting this tab once it goes quiet.
+    heard: yaran_core::attachments::Heard,
+    /// Set when the tab ends this connection on purpose (a clean close, a
+    /// sign-out), which ends at once what it still counted as attached to.
+    deliberate: Arc<std::sync::atomic::AtomicBool>,
     /// When the Access session behind this socket expires (Phase 11 §6), or `None`.
     deadline: Option<tokio::time::Instant>,
 }
 
 enum EventsLoopInput {
     Ping,
+    /// This socket's session ended or its client stopped being allowed; the
+    /// close code says which.
+    Revoked(u16),
     Workspace(Result<(), tokio::sync::watch::error::RecvError>),
     Resource(Result<Event, tokio::sync::broadcast::error::RecvError>),
     Status(Result<WireStatus, tokio::sync::broadcast::error::RecvError>),
@@ -2938,7 +3865,21 @@ enum EventsLoopInput {
 impl EventsLoopInput {
     async fn apply(self, connection: &mut EventsSocketLoop) -> Result<(), ()> {
         match self {
-            Self::Ping => send_ping(&connection.sink).await,
+            Self::Ping => {
+                if peer_went_quiet(&connection.heard) {
+                    // Half-open: nothing, not even a pong, for too long.
+                    send_close(&connection.sink, Message::Close(None)).await;
+                    return Err(());
+                }
+                with_send_deadline(LIVENESS_SEND_DEADLINE, send_ping(&connection.sink)).await
+            }
+            Self::Revoked(code) => {
+                connection
+                    .deliberate
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                send_close(&connection.sink, auth_close(code)).await;
+                Err(())
+            }
             Self::Workspace(changed) => connection.handle_workspace_change(changed).await,
             Self::Resource(event) => connection.handle_resource_event(event).await,
             Self::Status(status) => connection.handle_status(status).await,
@@ -2961,9 +3902,14 @@ impl EventsSocketLoop {
         tokio::pin!(expiry);
 
         loop {
+            // Biased, with the revocation first: once this socket's session has
+            // ended, no queued frame is sent and no queued client message is
+            // acted on.
             let input = tokio::select! {
+                biased;
+                code = self.socket_auth.revoked() => EventsLoopInput::Revoked(code),
+                () = &mut expiry => EventsLoopInput::SessionExpired,
                 _ = ping.tick() => EventsLoopInput::Ping,
-                _ = &mut expiry => EventsLoopInput::SessionExpired,
                 changed = self.workspace_rx.changed(), if self.workspace_alive => {
                     EventsLoopInput::Workspace(changed)
                 }
@@ -2972,7 +3918,10 @@ impl EventsSocketLoop {
                 cleared = self.status_clear_rx.recv() => {
                     EventsLoopInput::StatusCleared(cleared)
                 }
-                next = self.stream.next() => EventsLoopInput::Client(next),
+                next = self.stream.next() => {
+                    self.heard.touch();
+                    EventsLoopInput::Client(next)
+                }
             };
 
             input.apply(self).await?;
@@ -3042,6 +3991,7 @@ impl EventsSocketLoop {
                         tone: status.tone,
                         message: status.message,
                         segments: status.segments,
+                        ask: status.ask,
                         scope: status.scope,
                         sticky: status.sticky,
                     },
@@ -3122,7 +4072,12 @@ impl EventsSocketLoop {
                 .await;
                 self.replay_new_subscriptions(new).await
             }
-            Some(Ok(Message::Close(_))) | None | Some(Err(_)) => Err(()),
+            Some(Ok(Message::Close(_))) => {
+                self.deliberate
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                Err(())
+            }
+            None | Some(Err(_)) => Err(()),
             Some(Ok(_)) => Ok(()),
         }
     }
@@ -3407,10 +4362,43 @@ fn lagged_catchup_texts(
     texts
 }
 
-/// Send one already-serialized `/ws/events` text frame.
+/// How long one text frame may take to send, the wait for the sink lock
+/// included. A peer that stops reading fills the TCP send buffer, and an
+/// unbounded send then parks the socket's whole loop, holding its connection
+/// slot and its session's lease and never seeing a sign-out, while the kernel
+/// retries for many minutes. It is the window after which a silent peer is
+/// already judged half-open, which a workspace frame on a live but slow link
+/// fits inside many times over.
+const FRAME_SEND_DEADLINE: std::time::Duration = PONG_DEADLINE;
+
+/// Send one already-serialized text frame, giving up after
+/// [`FRAME_SEND_DEADLINE`].
 async fn send_text(sink: &SharedSink, text: String) -> Result<(), ()> {
-    let mut guard = sink.lock().await;
-    guard.send(Message::Text(text.into())).await.map_err(|_| ())
+    send_text_on(sink, text).await
+}
+
+/// [`send_text`] on any sink, so the deadline can be tested against one that
+/// never accepts a frame.
+async fn send_text_on<S>(sink: &tokio::sync::Mutex<S>, text: String) -> Result<(), ()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    send_bounded(sink, Message::Text(text.into()), FRAME_SEND_DEADLINE).await
+}
+
+/// Send `frame` on `sink`, giving up after `deadline`, the lock wait included.
+async fn send_bounded<S>(
+    sink: &tokio::sync::Mutex<S>,
+    frame: Message,
+    deadline: std::time::Duration,
+) -> Result<(), ()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    with_send_deadline(deadline, async {
+        sink.lock().await.send(frame).await.map_err(|_| ())
+    })
+    .await
 }
 
 /// Serialize and send one `/ws/events` frame as a text message.
@@ -3500,6 +4488,7 @@ fn status_events(
             tone: e.tone.clone(),
             message: e.message.clone(),
             segments: e.segments.clone(),
+            ask: None,
             scope: e.scope.clone(),
             sticky: e.sticky,
         })
@@ -3539,16 +4528,17 @@ async fn send_binary(sink: &SharedSink, bytes: Vec<u8>) -> Result<(), ()> {
 /// needs and still far shorter than forever, and a user on a genuinely slow link
 /// can raise it.
 ///
-/// A zero or missing value falls back to the compiled default rather than
-/// removing the bound: no bound is the one answer this must not give.
+/// The stored value is the effective one, so a zero means not seeded yet, and
+/// it falls back to the compiled default rather than removing the bound: no
+/// bound is the one answer this must not give.
 fn pty_opening_send_timeout(limits: &crate::engine_actor::LiveServerLimits) -> std::time::Duration {
     let seconds = limits.pty_send_timeout_seconds();
     let seconds = if seconds == 0 {
-        yaran_core::config::DEFAULT_PTY_SEND_TIMEOUT_SECONDS as usize
+        crate::rest_common::usize_from_u32(yaran_core::config::DEFAULT_PTY_SEND_TIMEOUT_SECONDS)
     } else {
         seconds
     };
-    std::time::Duration::from_secs(seconds as u64)
+    std::time::Duration::from_secs(crate::rest_common::u64_from_usize(seconds))
 }
 
 /// The deadline for the BEAT ECHO, and the reason it is not the one above.
@@ -3584,18 +4574,19 @@ const PTY_BEAT_ECHO_CEILING: std::time::Duration = std::time::Duration::from_sec
 /// `min(ceiling, deadline)`: never longer than the client's own patience, and
 /// never longer than a twenty-five byte write can honestly need.
 ///
-/// A `0` deadline is "not seeded yet" (or a config that means it), so it falls
-/// back to the compiled default rather than collapsing the bound to nothing.
+/// The stored deadline is the effective one, so a `0` means not seeded yet,
+/// and it falls back to the compiled default rather than collapsing the bound
+/// to nothing.
 fn pty_beat_echo_timeout(limits: &crate::engine_actor::LiveServerLimits) -> std::time::Duration {
     let seconds = limits.heartbeat_deadline_seconds();
     let seconds = if seconds == 0 {
-        yaran_core::config::DEFAULT_HEARTBEAT_DEADLINE_SECONDS as usize
+        crate::rest_common::usize_from_u32(yaran_core::config::DEFAULT_HEARTBEAT_DEADLINE_SECONDS)
     } else {
         seconds
     };
     std::cmp::min(
         PTY_BEAT_ECHO_CEILING,
-        std::time::Duration::from_secs(seconds as u64),
+        std::time::Duration::from_secs(crate::rest_common::u64_from_usize(seconds)),
     )
 }
 
@@ -3611,6 +4602,12 @@ where
         Ok(result) => result,
         Err(_) => Err(()),
     }
+}
+
+/// Send a closing frame on a live socket's `sink`, giving up after
+/// [`LIVENESS_SEND_DEADLINE`]: the peer it closes may already be gone.
+async fn send_close(sink: &SharedSink, frame: Message) {
+    let _ = send_bounded(sink, frame, LIVENESS_SEND_DEADLINE).await;
 }
 
 /// Send one WebSocket Ping frame on `sink` for the liveness reaper. `Err(())` when
@@ -3665,30 +4662,262 @@ impl Drop for ConnectionGuard {
 /// pressed Take over. Nobody claims the freed pty passively; the broadcast only
 /// re-titles the card.
 struct PtyOwnershipGuard {
-    pty_id: String,
-    conn_id: u64,
+    seat: Arc<yaran_core::pty_owners::Seat>,
     owners: Arc<PtySizeOwners>,
     bus: Arc<EventBus>,
 }
 
-impl Drop for PtyOwnershipGuard {
-    fn drop(&mut self) {
-        let Some(epoch) = self.owners.release(&self.pty_id, self.conn_id) else {
-            return;
-        };
-        yaran_core::logger::info(&crate::pty_log::describe_ownership_released(
-            &self.pty_id,
-            self.conn_id,
-            epoch,
-        ));
-        self.bus.emit(pty_owner_cleared_event(&self.pty_id, epoch));
+impl PtyOwnershipGuard {
+    fn new(
+        seat: &Arc<yaran_core::pty_owners::Seat>,
+        owners: &Arc<PtySizeOwners>,
+        bus: &Arc<EventBus>,
+    ) -> Self {
+        Self {
+            seat: Arc::clone(seat),
+            owners: Arc::clone(owners),
+            bus: Arc::clone(bus),
+        }
     }
 }
 
-/// Decrements the console's live-client count on Drop, so the number a serving
-/// yaran prints cannot drift upwards over a process's life. Same reasoning as its
-/// two siblings above: the increment happens on one line at the top of the
-/// handler, and every exit path owes the matching decrement.
+impl Drop for PtyOwnershipGuard {
+    fn drop(&mut self) {
+        leave_seat_announcing(&self.owners, &self.bus, &self.seat);
+    }
+}
+
+/// Count a terminal socket out of its page's seat and, when that let go of
+/// the row, log it and announce the owner-cleared `pty.owner` for every pty
+/// of the row. Once per socket, however many exit paths reach it.
+fn leave_seat_announcing(
+    owners: &Arc<PtySizeOwners>,
+    bus: &Arc<EventBus>,
+    seat: &yaran_core::pty_owners::Seat,
+) {
+    let Some(epoch) = owners.leave_seat(seat) else {
+        return;
+    };
+    let pty_id = seat.pty_id();
+    yaran_core::logger::info(&crate::pty_log::describe_ownership_released(
+        pty_id,
+        seat.id(),
+        epoch,
+    ));
+    emit_row_owner_cleared(bus, owners, pty_id, epoch);
+}
+
+/// A terminal socket's place in the attachment registry while it lives: part of the
+/// tab it named when that tab is live from the same address, else its own connection.
+struct AttachmentGuard {
+    attachments: yaran_core::attachments::Attachments,
+    token: u64,
+    own_connection: Option<String>,
+    live_limits: Arc<crate::engine_actor::LiveServerLimits>,
+    /// Set when the socket ends on purpose (a clean close, a sign-out, the PTY gone);
+    /// otherwise its end is a loss, and its terminal keeps counting for the grace.
+    deliberate: std::sync::atomic::AtomicBool,
+}
+
+impl AttachmentGuard {
+    /// Attach, or `None` when a change ending this PTY has reserved it.
+    fn attach(
+        engine: &EngineHandle,
+        attach: PtyAttach,
+        registry_id: &str,
+        device: Option<String>,
+        heard: &yaran_core::attachments::Heard,
+        conn_id: u64,
+        live_limits: Arc<crate::engine_actor::LiveServerLimits>,
+    ) -> Option<Self> {
+        let attachments = engine.attachments().clone();
+        let PtyAttach { target, client } = attach;
+        let (token, own_connection) = attachments
+            .attach_terminal(
+                client.link.as_deref(),
+                registry_id,
+                client.pty_facts(device),
+                target,
+                heard.clone(),
+                conn_id,
+            )
+            .ok()?;
+        Some(Self {
+            attachments,
+            token,
+            own_connection,
+            live_limits,
+            deliberate: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    fn note_viewed(&self) {
+        self.attachments
+            .note_viewed(self.token, std::time::Instant::now());
+    }
+
+    fn note_unviewed(&self) {
+        self.attachments.note_unviewed(self.token);
+    }
+
+    fn end_deliberately(&self) {
+        self.deliberate
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record what a beat frame said about being looked at, and answer whether
+    /// it said "looked at" (so the engine is told too). A frame that says
+    /// nothing (a `shown` frame) leaves the attachment's viewed state as it was.
+    fn note_beat_viewed(&self, viewed: Option<bool>) -> bool {
+        match viewed {
+            Some(true) => self.note_viewed(),
+            Some(false) => self.note_unviewed(),
+            None => {}
+        }
+        viewed == Some(true)
+    }
+}
+
+impl Drop for AttachmentGuard {
+    fn drop(&mut self) {
+        let ending = ending_of(&self.deliberate);
+        self.attachments.detach(
+            self.token,
+            ending,
+            std::time::Instant::now(),
+            self.live_limits.presence_grace(),
+        );
+        if let Some(own) = &self.own_connection {
+            self.attachments.deregister(own, ending);
+        }
+    }
+}
+
+fn ending_of(deliberate: &std::sync::atomic::AtomicBool) -> yaran_core::attachments::Ending {
+    if deliberate.load(std::sync::atomic::Ordering::Relaxed) {
+        yaran_core::attachments::Ending::Deliberate
+    } else {
+        yaran_core::attachments::Ending::Lost
+    }
+}
+
+/// A browser tab's events connection in the attachment registry, forgotten when the
+/// socket ends: its attachments end with it if deliberate, else wait out their grace.
+struct TabPresenceGuard {
+    attachments: yaran_core::attachments::Attachments,
+    id: String,
+    deliberate: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl TabPresenceGuard {
+    fn register(
+        attachments: yaran_core::attachments::Attachments,
+        id: &str,
+        facts: yaran_core::attachments::ConnectionFacts,
+        heard: yaran_core::attachments::Heard,
+    ) -> Self {
+        attachments.register(id, facts, Some(heard));
+        Self {
+            attachments,
+            id: id.to_string(),
+            deliberate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    fn end_deliberately(&self) {
+        self.deliberate
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Drop for TabPresenceGuard {
+    fn drop(&mut self) {
+        self.attachments
+            .deregister(&self.id, ending_of(&self.deliberate));
+    }
+}
+
+/// What the quiet watchdog watches, and what it revokes when the peer has
+/// been silent past `deadline`.
+struct QuietWatch {
+    heard: yaran_core::attachments::Heard,
+    deadline: std::time::Duration,
+    attachments: yaran_core::attachments::Attachments,
+    token: u64,
+    owners: Arc<PtySizeOwners>,
+    seat: Arc<yaran_core::pty_owners::Seat>,
+    bus: Arc<EventBus>,
+    expired: Arc<tokio::sync::Notify>,
+    live_limits: Arc<crate::engine_actor::LiveServerLimits>,
+}
+
+/// A terminal socket's quiet-deadline timer, independent of whatever its loop waits
+/// on: past the deadline it expires the socket as lost. Aborted on drop.
+struct QuietWatchdog(tokio::task::JoinHandle<()>);
+
+impl QuietWatchdog {
+    fn spawn(watch: QuietWatch) -> Self {
+        Self(tokio::spawn(async move {
+            loop {
+                let quiet = watch.heard.quiet_for(std::time::Instant::now());
+                if quiet > watch.deadline {
+                    break;
+                }
+                // The check above leaves `quiet` at most the deadline, so this
+                // never saturates.
+                tokio::time::sleep(
+                    watch.deadline.saturating_sub(quiet) + std::time::Duration::from_millis(5),
+                )
+                .await;
+            }
+            watch.attachments.detach(
+                watch.token,
+                yaran_core::attachments::Ending::Lost,
+                std::time::Instant::now(),
+                watch.live_limits.presence_grace(),
+            );
+            leave_seat_announcing(&watch.owners, &watch.bus, &watch.seat);
+            watch.expired.notify_one();
+        }))
+    }
+}
+
+/// Start a socket's quiet clock once its receive loop runs: the opening (handshake
+/// and scrollback replay) reads nothing from the peer and is not silence.
+fn start_quiet_watch(watch: QuietWatch) -> QuietWatchdog {
+    watch.heard.touch();
+    QuietWatchdog::spawn(watch)
+}
+
+/// A task that ends with the future holding it: dropping the handle aborts it,
+/// so a socket cancelled anywhere also stops the task writing to it.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Run a socket's loop until it ends or its quiet watchdog expires it, answering
+/// whether it expired; expiry cancels the loop with every guard and task it owns.
+async fn until_expired<F: std::future::Future>(socket: F, expired: &tokio::sync::Notify) -> bool {
+    tokio::select! {
+        _ = socket => false,
+        () = expired.notified() => true,
+    }
+}
+
+impl Drop for QuietWatchdog {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Logs the client's leaving on Drop, so every connect line a serving yaran
+/// prints gets its disconnect line. Same reasoning as its two siblings above:
+/// the connect is logged on one line at the top of the handler, and every exit
+/// path owes the matching disconnect.
 struct ClientCountGuard {
     console: Console,
     peer_ip: std::net::IpAddr,
@@ -3750,11 +4979,11 @@ mod tests {
     fn forwarder_end_close_is_provider_gone_unless_shutting_down() {
         // A provider crash/exit (not shutting down) must tell the client to stop;
         // a shutdown must be a plain close so the client reconnects on restart.
-        match forwarder_end_close(false) {
+        match forwarder_end_close(ForwarderEnd::PtyGone) {
             Message::Close(Some(frame)) => assert_eq!(frame.code, PROVIDER_GONE_CLOSE_CODE),
             other => panic!("expected provider-gone close, got {other:?}"),
         }
-        match forwarder_end_close(true) {
+        match forwarder_end_close(ForwarderEnd::ServerShutdown) {
             Message::Close(None) => {}
             other => panic!("expected a plain close on shutdown, got {other:?}"),
         }
@@ -3770,7 +4999,8 @@ mod tests {
             config_path: tmp.join("config.toml"),
             sessions_db_path: tmp.join("sessions.sqlite3"),
             worktrees_root: tmp.join("worktrees"),
-            lock_path: tmp.join("yaran.lock"),
+            lock_path: tmp.join("dux.lock"),
+            socket_path: tmp.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         let engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
@@ -3827,6 +5057,98 @@ mod tests {
             ok.status(),
             StatusCode::OK,
             "a configured provider must be accepted"
+        );
+    }
+
+    async fn patch_project_p1(app: Router, body: &'static str) -> (StatusCode, String) {
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/projects/p1")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// A project PATCH answers 200 only once the worker has written the field:
+    /// the database holds it the moment the answer arrives.
+    #[tokio::test]
+    async fn project_patch_answers_once_the_field_is_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = router(seeded_engine_handle(tmp.path()));
+
+        let (status, message) = patch_project_p1(app, r#"{"startup_command":"make setup"}"#).await;
+
+        assert_eq!(status, StatusCode::OK, "{message}");
+        let stored = yaran_core::storage::SessionStore::open(&tmp.path().join("sessions.sqlite3"))
+            .unwrap()
+            .load_projects()
+            .unwrap();
+        assert_eq!(stored[0].startup_command.as_deref(), Some("make setup"));
+    }
+
+    /// A field whose write fails is a refusal naming it, the fields saved
+    /// before it and the ones never tried, rather than a 200 for a change that
+    /// never landed.
+    #[tokio::test]
+    async fn project_patch_reports_a_field_whose_write_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handle = seeded_engine_handle(tmp.path());
+        rusqlite::Connection::open(tmp.path().join("sessions.sqlite3"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_startup BEFORE UPDATE OF startup_command ON projects \
+                 BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+            )
+            .unwrap();
+
+        let (status, message) = patch_project_p1(
+            router(handle),
+            r#"{"provider":"claude","startup_command":"make","env":{"A":"1"}}"#,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            message.starts_with("The startup command for project \"p1\" was not saved")
+                && message.contains("disk full")
+                && message.ends_with(
+                    "Already saved before that: the default provider. \
+                     Not attempted: the environment."
+                ),
+            "{message}"
+        );
+    }
+
+    /// A field saved to the database whose config.toml write failed is told
+    /// apart from one that was not saved, by its own status.
+    #[tokio::test]
+    async fn project_patch_tells_a_half_saved_field_apart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handle = seeded_engine_handle(tmp.path());
+        let config = tmp.path().join("config.toml");
+        let _ = std::fs::remove_file(&config);
+        std::fs::create_dir(&config).unwrap();
+
+        let (status, message) =
+            patch_project_p1(router(handle), r#"{"startup_command":"make"}"#).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{message}");
+        assert!(
+            message.starts_with(
+                "The startup command for project \"p1\" was saved to the database, but \
+                 config.toml could not be updated"
+            ),
+            "{message}"
         );
     }
 
@@ -3935,6 +5257,57 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "the seeded worktree is not a git repo, so the changed-file guard rejects it as 400"
         );
+    }
+
+    /// The image proxy shares the tree listing's bound: with the only permit
+    /// taken, a raw read waits, and it answers once the permit comes free.
+    #[tokio::test]
+    async fn a_raw_read_waits_for_a_tree_list_permit() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("logo.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        let handle = seeded_engine_handle(tmp.path());
+        let slot: Arc<std::sync::Mutex<Option<AppState>>> = Arc::default();
+        let captured = Arc::clone(&slot);
+        let probe = Router::new().route(
+            "/test/state",
+            axum::routing::get(move |State(state): State<AppState>| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    *captured.lock().unwrap() = Some(state);
+                    "ok"
+                }
+            }),
+        );
+        let app = build_app(
+            handle,
+            probe,
+            RouterParams::plain_http().with_tree_list_max_concurrency(1),
+        );
+        let status = oneshot_status(&app, "GET", "/test/state", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let state = slot.lock().unwrap().take().unwrap();
+        let held = Arc::clone(state.tree_list_semaphore.as_ref().unwrap())
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        let read = tokio::spawn(async move {
+            oneshot_status(
+                &app,
+                "GET",
+                "/api/v1/sessions/s1/files/raw?path=logo.png",
+                None,
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !read.is_finished(),
+            "a raw read must wait for a free permit"
+        );
+
+        drop(held);
+        assert_eq!(read.await.unwrap(), StatusCode::OK);
     }
 
     /// An oversized `:id` (longer than `MAX_ID_LEN`) is rejected with 404 by the
@@ -4085,7 +5458,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         {
@@ -4099,7 +5473,7 @@ mod tests {
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::new(),
                     workspace_mode: None,
                 })
                 .unwrap();
@@ -4107,7 +5481,7 @@ mod tests {
             store
                 .create_session(&yaran_core::model::AgentSession {
                     id: "s1".to_string(),
-                    agent_handle: "s1".to_string(),
+                    agent_handle: yaran_core::model::normalize_agent_handle("s1"),
                     shared_workspace: false,
                     deleted_at: None,
                     slot_tab_id: "s1-slot".to_string(),
@@ -4206,6 +5580,27 @@ mod tests {
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
     }
 
+    /// [`oneshot_status`]'s request, answering the body instead.
+    async fn oneshot_body(app: &Router, method: &str, uri: &str, body: Option<&str>) -> String {
+        let mut builder = axum::http::Request::builder().method(method).uri(uri);
+        let body = match body {
+            Some(b) => {
+                builder = builder.header("content-type", "application/json");
+                axum::body::Body::from(b.to_string())
+            }
+            None => axum::body::Body::empty(),
+        };
+        let response = app
+            .clone()
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
     /// Helper: issue a request through the real router and return the status.
     async fn oneshot_status(
         app: &Router,
@@ -4232,14 +5627,14 @@ mod tests {
     /// `/api/v1/git/checkout-default`) were removed in favor of the path-keyed
     /// `/api/v1/projects/:id/{pull,checkout-default}` actions, so they must no
     /// longer reach the git handler. Like any unregistered `/api/v1/git/*` path,
-    /// they now fall through to the SPA static fallback.
+    /// they now fall through to the API's not-found answer.
     #[tokio::test]
     async fn removed_project_git_routes_are_gone() {
         let tmp = yaran_core::test_scratch::ScratchDir::new();
         let handle = test_engine_handle(tmp.path());
         let app = build_app(handle, Router::new(), RouterParams::plain_http());
 
-        // A path under /api/v1/git that was never a route hits the SPA fallback.
+        // A path under /api/v1/git that was never a route hits the fallback.
         // The removed project endpoints must now behave identically.
         let fallback = oneshot_status(
             &app,
@@ -4310,6 +5705,12 @@ mod tests {
             ),
             ("POST", "/api/v1/projects/nope/pull", None),
             ("POST", "/api/v1/projects/nope/checkout-default", None),
+            (
+                "POST",
+                "/api/v1/projects/nope/base-branch",
+                Some(r#"{"branch":"main"}"#),
+            ),
+            ("GET", "/api/v1/projects/nope/branches", None),
         ];
         for (method, uri, body) in cases {
             assert_eq!(
@@ -4366,7 +5767,7 @@ mod tests {
     /// The session-nested git/file routes reach their handlers: an unknown session
     /// resolves to 404 (auth off so the gate passes). Body-keyed
     /// `/api/v1/git/*` and `/api/v1/file/*` paths do not exist: they fall through
-    /// to the SPA fallback, which never returns the handler's 404.
+    /// to the fallback's `{"error":"not_found"}`, never a handler's answer.
     #[tokio::test]
     async fn nested_git_and_file_routes_reach_handlers() {
         let tmp = yaran_core::test_scratch::ScratchDir::new();
@@ -4396,26 +5797,26 @@ mod tests {
             "the nested file route must reach the file handler and 404 the unknown session"
         );
         // Body-keyed paths must not reach the handler (no 404 from it).
-        assert_ne!(
-            oneshot_status(
+        assert_eq!(
+            oneshot_body(
                 &app,
                 "POST",
                 "/api/v1/git/stage",
                 Some(r#"{"session_id":"nope","path":"a.txt"}"#)
             )
             .await,
-            StatusCode::NOT_FOUND,
+            r#"{"error":"not_found"}"#,
             "the old body-keyed /api/v1/git/* path must be gone"
         );
-        assert_ne!(
-            oneshot_status(
+        assert_eq!(
+            oneshot_body(
                 &app,
                 "POST",
                 "/api/v1/file/read",
                 Some(r#"{"session_id":"nope","path":"a.txt"}"#)
             )
             .await,
-            StatusCode::NOT_FOUND,
+            r#"{"error":"not_found"}"#,
             "the old body-keyed /api/v1/file/* path must be gone"
         );
     }
@@ -4429,14 +5830,14 @@ mod tests {
         let handle = seeded_engine_handle(tmp.path());
         let app = build_app(handle, Router::new(), RouterParams::plain_http());
 
-        // `/reorder` is its own route, not `:id`. The seeded project p1 has exactly
-        // session s1, so reordering to [s1] is accepted (200).
+        // `/reorder-global` is its own route, not `:id`. The seeded workspace has
+        // exactly session s1, so reordering to [s1] is accepted (200).
         assert_eq!(
             oneshot_status(
                 &app,
                 "POST",
-                "/api/v1/sessions/reorder",
-                Some(r#"{"project_id":"p1","session_ids":["s1"]}"#)
+                "/api/v1/sessions/reorder-global",
+                Some(r#"{"session_ids":["s1"]}"#)
             )
             .await,
             StatusCode::OK,
@@ -4456,7 +5857,7 @@ mod tests {
         let driver = owners.next_conn_id();
         let viewer = owners.next_conn_id();
 
-        let denied = |conn: u64| matches!(owners.owners.lock().unwrap().map.get(pty), Some(o) if o.conn_id != conn);
+        let denied = |conn: u64| owners.held_by_another(pty, conn);
 
         assert!(
             !denied(viewer),
@@ -4789,6 +6190,221 @@ mod tests {
         );
     }
 
+    /// A terminal socket whose peer has gone quiet is revoked by its own
+    /// timer, with no socket loop running at all (as when every send it
+    /// attempts is stalled on a dead peer): its attachment stops blocking, its
+    /// input rights are released and announced, and the loop is told to end.
+    #[tokio::test]
+    async fn a_quiet_terminal_socket_is_revoked_on_its_own_timer() {
+        use yaran_core::attachments::{
+            Attachments, ConnectionFacts, Heard, Scope, Surface, Target, TargetKind,
+        };
+        let attachments = Attachments::default();
+        attachments.register(
+            "e1",
+            ConnectionFacts {
+                surface: Surface::Browser,
+                device: None,
+                address: None,
+                verified: false,
+                events: true,
+                browser: None,
+            },
+            None,
+        );
+        let heard = Heard::now();
+        let token = attachments
+            .attach(
+                "e1",
+                Target {
+                    kind: TargetKind::Tab,
+                    id: "s1-slot".to_string(),
+                    agent: Some("s1".to_string()),
+                },
+                Some(heard.clone()),
+                Some(9),
+            )
+            .unwrap();
+        let owners = Arc::new(PtySizeOwners::default());
+        let seat = Arc::new(owners.take_seat(None, "s1-slot"));
+        owners.claim("s1-slot", seat.id());
+        let bus = Arc::new(EventBus::new());
+        let mut events = bus.subscribe();
+        let expired = Arc::new(tokio::sync::Notify::new());
+        let _watchdog = QuietWatchdog::spawn(QuietWatch {
+            heard,
+            deadline: std::time::Duration::from_millis(100),
+            attachments: attachments.clone(),
+            token,
+            owners: Arc::clone(&owners),
+            seat,
+            bus: Arc::clone(&bus),
+            expired: Arc::clone(&expired),
+            live_limits: Arc::new(crate::engine_actor::LiveServerLimits::default()),
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), expired.notified())
+            .await
+            .expect("the watchdog fires within the bound");
+        let scope = Scope {
+            ptys: ["s1-slot".to_string()].into(),
+            agents: std::collections::BTreeSet::new(),
+        };
+        // Read with the registry's own clock far from the deadline: only the
+        // revocation, not the registry's own quiet rule, can empty it here.
+        assert_eq!(
+            attachments.blockers(&scope, None, std::time::Instant::now()),
+            Vec::<yaran_core::attachments::Blocker>::new()
+        );
+        assert_eq!(owners.current_owner("s1-slot").0, None);
+        let cleared = events.try_recv().expect("the cleared owner is announced");
+        assert!(matches!(
+            cleared,
+            Event::Resource { ref event, owner: None, .. } if event == "pty.owner"
+        ));
+    }
+
+    /// A `shown` frame carries no `viewed`, and an owner sending one must not
+    /// lose the "looked at" its last beat recorded: losing the socket afterwards
+    /// still keeps the row protected for the grace. A frame that does say
+    /// unviewed is what drops it.
+    #[test]
+    fn a_shown_frame_leaves_the_attachments_viewed_state_alone() {
+        use yaran_core::attachments::{
+            Attachments, ConnectionFacts, Scope, Surface, Target, TargetKind,
+        };
+        for (frames, protected) in [
+            (vec![Some(true), None], true),
+            (vec![Some(true), Some(false)], false),
+        ] {
+            let attachments = Attachments::default();
+            attachments.register(
+                "e1",
+                ConnectionFacts {
+                    surface: Surface::Browser,
+                    device: None,
+                    address: None,
+                    verified: false,
+                    events: true,
+                    browser: None,
+                },
+                None,
+            );
+            let token = attachments
+                .attach(
+                    "e1",
+                    Target {
+                        kind: TargetKind::Tab,
+                        id: "s1-slot".to_string(),
+                        agent: Some("s1".to_string()),
+                    },
+                    None,
+                    Some(9),
+                )
+                .unwrap();
+            let guard = AttachmentGuard {
+                attachments: attachments.clone(),
+                token,
+                own_connection: None,
+                live_limits: Arc::new(crate::engine_actor::LiveServerLimits::default()),
+                deliberate: std::sync::atomic::AtomicBool::new(false),
+            };
+            for viewed in frames.iter().copied() {
+                guard.note_beat_viewed(viewed);
+            }
+            // The socket is lost, with a grace long enough to read the answer.
+            attachments.detach(
+                token,
+                yaran_core::attachments::Ending::Lost,
+                std::time::Instant::now(),
+                std::time::Duration::from_secs(300),
+            );
+            drop(guard);
+            let scope = Scope {
+                ptys: std::collections::BTreeSet::new(),
+                agents: ["s1".to_string()].into(),
+            };
+            assert_eq!(
+                !attachments
+                    .blockers(&scope, None, std::time::Instant::now())
+                    .is_empty(),
+                protected,
+                "{frames:?}"
+            );
+        }
+    }
+
+    /// The quiet clock starts when the socket's receive loop does: a socket
+    /// whose opening (a long scrollback replay) took longer than the deadline
+    /// is not revoked the moment its loop begins.
+    #[tokio::test]
+    async fn the_quiet_clock_starts_with_the_receive_loop() {
+        let attachments = yaran_core::attachments::Attachments::default();
+        let expired = Arc::new(tokio::sync::Notify::new());
+        let opened_long_ago = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(80))
+            .expect("a clock that has run for 80 seconds");
+        let _watchdog = start_quiet_watch(QuietWatch {
+            heard: yaran_core::attachments::Heard::at(opened_long_ago),
+            deadline: std::time::Duration::from_millis(300),
+            attachments,
+            token: 1,
+            seat: Arc::new(PtySizeOwners::default().take_seat(None, "s1-slot")),
+            owners: Arc::new(PtySizeOwners::default()),
+            bus: Arc::new(EventBus::new()),
+            expired: Arc::clone(&expired),
+            live_limits: Arc::new(crate::engine_actor::LiveServerLimits::default()),
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), expired.notified())
+                .await
+                .is_err(),
+            "revoked before the loop had a chance to hear anything"
+        );
+    }
+
+    /// Expiry ends the whole socket, whatever it is stuck on: a loop parked
+    /// on a send that never completes is cancelled, and the forwarder task it
+    /// owns is aborted with it, so every guard it holds drops.
+    #[tokio::test]
+    async fn expiry_cancels_a_socket_stuck_on_a_send_and_aborts_its_forwarder() {
+        struct Dropped(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let forwarder_gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let held = Dropped(Arc::clone(&forwarder_gone));
+        let forwarder = AbortOnDrop(tokio::spawn(async move {
+            let _held = held;
+            std::future::pending::<()>().await;
+        }));
+        let expired = Arc::new(tokio::sync::Notify::new());
+        let stuck = async move {
+            let _forwarder = forwarder;
+            std::future::pending::<()>().await;
+        };
+        let fire = Arc::clone(&expired);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            fire.notify_one();
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            until_expired(stuck, &expired),
+        )
+        .await
+        .expect("expiry ended the socket");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !forwarder_gone.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the forwarder was aborted");
+    }
+
     /// The spine-change forwarder maps each [`SpineChange`] onto the matching coarse
     /// event on the bus: a sessions change emits `sessions.changed`, a projects
     /// change emits `projects.changed`. This is the "a change emits X on the bus"
@@ -4845,8 +6461,8 @@ mod tests {
     async fn access_log_emits_request_lines_and_skips_healthz() {
         let tmp = yaran_core::test_scratch::ScratchDir::new();
         let handle = test_engine_handle(tmp.path());
-        let (console, sink) = Console::test_capture(false);
-        let params = RouterParams::plain_http().with_console(console, true);
+        let (console, sink) = Console::test_capture(crate::console::Coloring::Plain);
+        let params = RouterParams::plain_http().with_console(console, AccessLog::On);
         let app = build_app(handle, Router::new(), params);
 
         // A 200 on an open route is logged.
@@ -4854,7 +6470,7 @@ mod tests {
             .clone()
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/api/me")
+                    .uri("/api/v1/build")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -4881,6 +6497,7 @@ mod tests {
         // the fallback catches everything, so assert on whatever status the
         // fallback returns for a bogus asset path.
         let missing = app
+            .clone()
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/definitely-not-a-real-asset.zzz")
@@ -4891,9 +6508,38 @@ mod tests {
             .unwrap();
         let missing_status = missing.status().as_u16();
 
+        // A config entry's name is logged only where its table's rule allows
+        // it: one that breaks the rule may be a token pasted where a name goes.
+        for uri in [
+            "/api/v1/global-env/API_KEY",
+            "/api/v1/global-env/zzLEAK%20one.x",
+            "/api/v1/macros/zzLEAK%2Etwo%20x?operation=1",
+        ] {
+            app.clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("DELETE")
+                        .uri(uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+
         let out = sink.contents();
+        assert!(out.contains("/api/v1/global-env/API_KEY 404"), "{out}");
         assert!(
-            out.contains("/api/me 200"),
+            !out.contains("zzLEAK"),
+            "a rule-breaking name was logged: {out}"
+        );
+        assert!(
+            out.contains("DELETE /api/v1/global-env/(name not shown) 404")
+                && out.contains("DELETE /api/v1/macros/(name not shown) 404"),
+            "{out}"
+        );
+        assert!(
+            out.contains("/api/v1/build 200"),
             "the 200 request must be logged: {out}"
         );
         assert!(!out.contains("/healthz"), "/healthz must be skipped: {out}");
@@ -4911,15 +6557,15 @@ mod tests {
     async fn access_log_toggle_off_emits_nothing() {
         let tmp = yaran_core::test_scratch::ScratchDir::new();
         let handle = test_engine_handle(tmp.path());
-        let (console, sink) = Console::test_capture(false);
+        let (console, sink) = Console::test_capture(crate::console::Coloring::Plain);
         // access_log = false.
-        let params = RouterParams::plain_http().with_console(console, false);
+        let params = RouterParams::plain_http().with_console(console, AccessLog::Off);
         let app = build_app(handle, Router::new(), params);
 
         let _ = app
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/api/me")
+                    .uri("/api/v1/build")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -4940,15 +6586,15 @@ mod tests {
         let tmp = yaran_core::test_scratch::ScratchDir::new();
         let handle = test_engine_handle(tmp.path());
         let limits = handle.live_limits();
-        let (console, sink) = Console::test_capture(false);
-        let params = RouterParams::plain_http().with_console(console, false);
+        let (console, sink) = Console::test_capture(crate::console::Coloring::Plain);
+        let params = RouterParams::plain_http().with_console(console, AccessLog::Off);
         let app = build_app(handle, Router::new(), params);
 
         let _ = app
             .clone()
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/api/me")
+                    .uri("/api/v1/build")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -4956,11 +6602,11 @@ mod tests {
             .unwrap();
         assert!(sink.contents().is_empty(), "bound with the log off");
 
-        limits.set_access_log(true);
+        limits.set_access_log(AccessLog::On);
         let _ = app
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/api/me")
+                    .uri("/api/v1/build")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -4968,14 +6614,15 @@ mod tests {
             .unwrap();
         let out = sink.contents();
         assert!(
-            out.contains("/api/me 200"),
+            out.contains("/api/v1/build 200"),
             "turning it on must not need a restart: {out}"
         );
     }
 
-    /// A no-op console (the flip default) emits nothing even with `access_log`
-    /// nominally on: the middleware's `console.is_active()` gate short-circuits.
-    /// This is the flip zero-stdout regression guard at the middleware layer.
+    /// A no-op console (the background server's) emits nothing even with
+    /// `access_log` nominally on: the middleware's `console.is_recording()` gate
+    /// short-circuits.
+    /// This is the silent-console guard at the middleware layer.
     #[tokio::test]
     async fn access_log_noop_console_emits_nothing() {
         let tmp = yaran_core::test_scratch::ScratchDir::new();
@@ -4984,7 +6631,7 @@ mod tests {
         // to prove the console-activity gate (not just the toggle) suppresses it.
         let params = RouterParams {
             console: Console::noop(),
-            access_log: true,
+            access_log: AccessLog::On,
             ..RouterParams::plain_http()
         };
         // The router still builds; nothing should panic and nothing is observable
@@ -4993,7 +6640,7 @@ mod tests {
         let resp = app
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/api/me")
+                    .uri("/api/v1/build")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -5055,6 +6702,37 @@ mod tests {
         assert_eq!(
             json,
             r#"{"event":"status","key":"push","tone":"info","message":"Pushed \"main\".","segments":["Pushed ",{"name":"main","quoted":true},"."],"scope":"all","sticky":false}"#
+        );
+    }
+
+    /// The question a status puts rides the frame in the shape the browser
+    /// reads: the kind, what the warning was, and the warning in parts.
+    #[test]
+    fn a_status_event_carries_the_question_it_puts() {
+        let event = WireStatusEvent {
+            event: "status",
+            key: Some("op-1".into()),
+            tone: "error".into(),
+            message: "Pushes would land on the copy.".into(),
+            segments: None,
+            ask: Some(yaran_core::status_text::StatusAsk::ReviewCopy(Box::new(
+                yaran_core::status_text::ReviewCopyAsk {
+                    warned: "diverged:pr-head-review".into(),
+                    warning: vec![yaran_core::prose::ProseSegment::Text(
+                        "Pushes would land on the copy.".into(),
+                    )],
+                    request: Some("req-1".into()),
+                    by_flag: false,
+                    project_id: None,
+                    pull_request: None,
+                },
+            ))),
+            scope: StatusScope::All,
+            sticky: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"event":"status","key":"op-1","tone":"error","message":"Pushes would land on the copy.","ask":{"kind":"review_copy","warned":"diverged:pr-head-review","warning":["Pushes would land on the copy."],"request":"req-1"},"scope":"all","sticky":false}"#
         );
     }
 
@@ -5247,8 +6925,7 @@ mod tests {
             .claim_for_resize(
                 "s1",
                 tui,
-                false,
-                None,
+                yaran_core::pty_owners::ResizeIntent::Plain,
                 Some(yaran_core::background_serve::TUI_DEVICE_LABEL),
                 |_| {},
             )
@@ -5347,7 +7024,15 @@ mod tests {
         let owner = owners.next_conn_id();
         let stranger = owners.next_conn_id();
         owners.claim("p", owner);
-        let outcome = owners.claim_for_resize("p", stranger, true, parsed, None, |_| {});
+        let outcome = owners.claim_for_resize(
+            "p",
+            stranger,
+            yaran_core::pty_owners::ResizeIntent::TakeOver {
+                expected_owner: parsed,
+            },
+            None,
+            |_| {},
+        );
         assert!(
             !outcome.apply && outcome.epoch.is_none(),
             "a take-over whose expected owner could not be parsed must be refused whole"
@@ -5375,20 +7060,27 @@ mod tests {
         );
         let beat: PtyBeatFrame =
             serde_json::from_str(r#"{"beat":7,"viewed":true}"#).expect("a viewer's beat parses");
-        assert_eq!((beat.beat, beat.viewed), (Some(7), true));
+        assert_eq!(
+            (beat.beat, beat.viewed, beat.shown),
+            (Some(7), Some(true), false)
+        );
 
-        // A WATCHER sends the same frame with `viewed` false, and an older
-        // client that omits it entirely must not suppress attention for
-        // everybody.
+        // A frame that omits `viewed` says nothing about it, so an older client
+        // that omits it entirely must not suppress attention for everybody,
+        // and a `shown` frame must leave the attachment's viewed state as it
+        // was.
         let watcher: PtyBeatFrame =
             serde_json::from_str(r#"{"beat":8}"#).expect("a watcher's beat parses");
-        assert_eq!((watcher.beat, watcher.viewed), (Some(8), false));
+        assert_eq!((watcher.beat, watcher.viewed), (Some(8), None));
+        let shown: PtyBeatFrame =
+            serde_json::from_str(r#"{"shown":true}"#).expect("a shown frame parses");
+        assert_eq!((shown.beat, shown.viewed, shown.shown), (None, None, true));
 
         // The pre-fold viewed ping. Nothing to echo, and the attention stamp
         // still lands.
         let legacy: PtyBeatFrame =
             serde_json::from_str(r#"{"viewed":true}"#).expect("a pre-fold viewed ping parses");
-        assert_eq!((legacy.beat, legacy.viewed), (None, true));
+        assert_eq!((legacy.beat, legacy.viewed), (None, Some(true)));
 
         assert!(
             serde_json::from_str::<PtyBeatFrame>(r#"{"rows":24,"cols":80}"#).is_err(),
@@ -5406,7 +7098,8 @@ mod tests {
     fn a_panicking_socket_still_releases_its_pty_ownership() {
         let owners = Arc::new(PtySizeOwners::default());
         let bus = Arc::new(EventBus::new());
-        let conn_id = owners.next_conn_id();
+        let seat = Arc::new(owners.take_seat(None, "pty-1"));
+        let conn_id = seat.id();
         // Claim it the way a granted take-over does, so there is something to
         // release.
         assert!(owners.claim("pty-1", conn_id).is_some());
@@ -5416,12 +7109,7 @@ mod tests {
             let owners = Arc::clone(&owners);
             let bus = Arc::clone(&bus);
             move || {
-                let _guard = PtyOwnershipGuard {
-                    pty_id: "pty-1".to_string(),
-                    conn_id,
-                    owners,
-                    bus,
-                };
+                let _guard = PtyOwnershipGuard { seat, owners, bus };
                 panic!("the socket handler blew up");
             }
         });
@@ -5433,16 +7121,16 @@ mod tests {
         );
     }
 
-    /// And the console's live-client count comes back down on the same kind of
-    /// exit, for the same reason: the increment is one line at the top of the
-    /// handler and every path out owes the decrement.
+    /// And the console logs the client leaving on the same kind of exit, for the
+    /// same reason: the connect is one line at the top of the handler and every
+    /// path out owes the disconnect.
     #[test]
-    fn a_panicking_socket_still_counts_its_client_out() {
-        let ring = yaran_core::activity::ActivityRing::new();
+    fn a_panicking_socket_still_logs_its_client_out() {
+        let ring = yaran_core::activity::ActivityRing::new(10);
         let console = Console::capture(ring.clone());
         let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
         console.client_connected(ip);
-        assert_eq!(ring.connections(), 1);
+        assert_eq!(ring.snapshot().lines.len(), 1);
         let panicked = std::panic::catch_unwind({
             let console = console.clone();
             move || {
@@ -5454,10 +7142,13 @@ mod tests {
             }
         });
         assert!(panicked.is_err(), "the test's own panic must have happened");
-        assert_eq!(
-            ring.connections(),
-            0,
-            "an unwind must not leave the count permanently high"
+        let lines = ring.snapshot().lines;
+        assert!(
+            lines.len() == 2
+                && lines[1]
+                    .text()
+                    .contains("client disconnected from 127.0.0.1"),
+            "an unwind must still log the client out"
         );
     }
 
@@ -5489,6 +7180,48 @@ mod tests {
         );
     }
 
+    /// A sink that never accepts a frame, standing in for a peer that stopped
+    /// reading once the TCP send buffer is full.
+    struct StalledSink;
+
+    impl futures_util::Sink<Message> for StalledSink {
+        type Error = axum::Error;
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// An events frame sent to a peer that stopped reading gives up at the
+    /// deadline instead of parking the socket's loop.
+    #[tokio::test(start_paused = true)]
+    async fn a_frame_to_a_peer_that_stopped_reading_gives_up() {
+        let sink = tokio::sync::Mutex::new(StalledSink);
+        let sent = tokio::time::timeout(
+            FRAME_SEND_DEADLINE * 2,
+            send_text_on(&sink, "{}".to_string()),
+        )
+        .await;
+        assert_eq!(sent, Ok(Err(())));
+    }
+
     /// And the wrapper is transparent to a send that does complete, in both
     /// directions: it must not turn an ordinary failure into a success or add
     /// latency to a healthy one.
@@ -5516,17 +7249,17 @@ mod tests {
         let limits = crate::engine_actor::LiveServerLimits::default();
         assert_eq!(
             pty_opening_send_timeout(&limits),
-            std::time::Duration::from_secs(
-                yaran_core::config::DEFAULT_PTY_SEND_TIMEOUT_SECONDS as u64
-            ),
+            std::time::Duration::from_secs(u64::from(
+                yaran_core::config::DEFAULT_PTY_SEND_TIMEOUT_SECONDS
+            )),
             "an unseeded cell must fall back to the default, not to no bound"
         );
         limits.set_pty_send_timeout_seconds(0);
         assert_eq!(
             pty_opening_send_timeout(&limits),
-            std::time::Duration::from_secs(
-                yaran_core::config::DEFAULT_PTY_SEND_TIMEOUT_SECONDS as u64
-            ),
+            std::time::Duration::from_secs(u64::from(
+                yaran_core::config::DEFAULT_PTY_SEND_TIMEOUT_SECONDS
+            )),
             "zero must not mean no bound: that is the one answer this cannot give"
         );
         limits.set_pty_send_timeout_seconds(180);
@@ -5829,7 +7562,7 @@ mod tests {
 
     /// With auth off the gate passes; `GET /api/v1/bootstrap` returns 200 with a
     /// JSON object carrying EXACTLY the build-/config-static fields the frontend
-    /// expects (the 11 fields moved off the per-tick ViewModel).
+    /// expects (the 11 fields moved off the per-tick `ViewModel`).
     #[tokio::test]
     async fn bootstrap_route_returns_expected_fields() {
         let tmp = yaran_core::test_scratch::ScratchDir::new();
@@ -5916,9 +7649,15 @@ mod tests {
         let _h =
             spawn_config_changed_forwarder(handle.subscribe_config_reloads(), Arc::clone(&bus));
 
-        // Drive a real reload (read-only re-load of config.toml; defaults when
-        // absent). The actor completes it on a later tick and fires the reload
-        // broadcast, which the forwarder converts to `config.changed`.
+        // A real reload needs a file to read: with none, the reload is refused
+        // (the running config, password included, stays) and rightly emits
+        // nothing. The engine starts without one, so write it, as a user
+        // editing config.toml by hand would, then reload.
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            "[ui]\nleft_width_pct = 30\n",
+        )
+        .expect("write config.toml");
         handle
             .apply_wire(yaran_core::wire::WireCommand::ReloadConfig {})
             .await
@@ -5929,6 +7668,85 @@ mod tests {
             .expect("a config reload must emit config.changed")
             .expect("bus recv");
         assert_eq!(ev, config_changed_event());
+    }
+
+    /// After yaran writes `config.toml` itself (a password, a ban), the reload
+    /// it asks for is the engine's own `ReloadConfig`, the command the reload
+    /// route sends, handled by whichever surface owns the reload; it is not a
+    /// signal raised at the process. It is not announced; the same reload
+    /// asked for through the reload command is.
+    #[tokio::test]
+    async fn yaran_reloads_after_its_own_config_write_by_asking_the_engine() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let handle = test_engine_handle(tmp.path());
+        let mut reloads = handle.subscribe_config_reloads();
+        let mut statuses = handle.subscribe_status();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "[ui]\nleft_width_pct = 30\n").expect("write config.toml");
+        // The reload is applied on the engine loop after its worker has read
+        // the file, and the broadcast goes out midway through that apply. A
+        // request answered afterwards was drained after the whole apply, so
+        // every status the reload raised has been sent by then.
+        let mut reload_statuses = async |handle: &crate::engine_actor::EngineHandle| {
+            tokio::time::timeout(std::time::Duration::from_secs(30), reloads.recv())
+                .await
+                .expect("the engine reloaded")
+                .expect("config reload broadcast");
+            handle
+                .spine()
+                .await
+                .expect("the engine answers after the reload");
+            let mut messages = Vec::new();
+            while let Ok(status) = statuses.try_recv() {
+                messages.push(status.message);
+            }
+            messages
+        };
+
+        handle
+            .apply_wire(yaran_core::wire::WireCommand::ReloadConfig {})
+            .await
+            .expect("the reload is asked for");
+        assert_eq!(
+            reload_statuses(&handle).await,
+            vec!["Configuration reloaded. New settings are active now.".to_string()]
+        );
+
+        // A clone: the engine loop stops once every handle is gone, so giving
+        // it the test's own would let the loop exit before the reload's
+        // worker answered.
+        (reload_through_the_engine(handle.clone()))();
+        assert_eq!(reload_statuses(&handle).await, Vec::<String>::new());
+    }
+
+    /// A reload that is refused (here, config.toml does not exist) changes
+    /// nothing, so it tells no browser to refetch: it says why on the status
+    /// lane instead. The refusal is what this waits for, so nothing here
+    /// depends on how long the reload takes.
+    #[tokio::test]
+    async fn a_refused_config_reload_emits_no_config_changed() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let handle = test_engine_handle(tmp.path());
+        let mut reloads = handle.subscribe_config_reloads();
+        let mut statuses = handle.subscribe_status();
+        assert!(!tmp.path().join("config.toml").exists());
+        handle
+            .apply_wire(yaran_core::wire::WireCommand::ReloadConfig {})
+            .await
+            .expect("reload command");
+        loop {
+            let status = statuses.recv().await.expect("status");
+            if status.message.contains("no longer exists") {
+                break;
+            }
+        }
+        assert!(
+            matches!(
+                reloads.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "a refused reload must not tell browsers to refetch"
+        );
     }
 
     /// End-to-end regression: saving macros through the engine actor (the
@@ -5955,6 +7773,7 @@ mod tests {
                     text: "hi".to_string(),
                     surface: "agent".to_string(),
                 }],
+                version: None,
             })
             .await
             .expect("update macros command");
@@ -5981,7 +7800,7 @@ mod tests {
         let mut env = std::collections::BTreeMap::new();
         env.insert("FOO".to_string(), "bar".to_string());
         handle
-            .apply_wire(yaran_core::wire::WireCommand::PersistGlobalEnv { env })
+            .apply_wire(yaran_core::wire::WireCommand::PersistGlobalEnv { env, version: None })
             .await
             .expect("persist global env command");
 
@@ -5994,7 +7813,7 @@ mod tests {
 
     // ── Host guard serve-level tests ───────────────────────────────────────
 
-    /// When the host guard is active (bound_ips set), an unknown Host is rejected
+    /// When the host guard is active (`bound_ips` set), an unknown Host is rejected
     /// with 403 before reaching any handler; `localhost` passes through.
     #[tokio::test]
     async fn host_guard_rejects_unknown_host_and_allows_localhost() {
@@ -6006,7 +7825,7 @@ mod tests {
             RouterParams::plain_http().with_host_allowlist(
                 vec!["127.0.0.1".parse().unwrap()],
                 vec![],
-                false,
+                crate::host_guard::TailscaleLiteralRule::Refuse,
             ),
         );
 
@@ -6061,7 +7880,11 @@ mod tests {
             handle,
             Router::new(),
             RouterParams::plain_http()
-                .with_host_allowlist(vec!["127.0.0.1".parse().unwrap()], vec![], false)
+                .with_host_allowlist(
+                    vec!["127.0.0.1".parse().unwrap()],
+                    vec![],
+                    crate::host_guard::TailscaleLiteralRule::Refuse,
+                )
                 .with_live_tailscale_host_literals(Arc::clone(&literals)),
         );
         let tailnet_probe = || {
@@ -6089,6 +7912,176 @@ mod tests {
         );
     }
 
+    fn host_probe(
+        method: &str,
+        host: &str,
+        origin: Option<&str>,
+    ) -> axum::http::Request<axum::body::Body> {
+        let mut builder = axum::http::Request::builder()
+            .method(method)
+            .uri("/healthz")
+            .header("Host", host);
+        if let Some(origin) = origin {
+            builder = builder.header("Origin", origin);
+        }
+        builder.body(axum::body::Body::empty()).unwrap()
+    }
+
+    /// Rule 6 end to end, on one router for the whole journey: this machine's
+    /// own `MagicDNS` name is served, a sibling on the same tailnet is not, a
+    /// tailnet rename moves the allowed name under the running router, and a
+    /// mode change to `no` closes it with the literals.
+    #[tokio::test]
+    async fn host_guard_serves_this_machines_own_magicdns_name_and_follows_a_rename() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let handle = test_engine_handle(tmp.path());
+        let literals = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let own_name =
+            crate::host_guard::LiveHostNames::new(&["demo-box.old-tailnet.ts.net".to_string()]);
+        let app = build_app(
+            handle,
+            Router::new(),
+            RouterParams::plain_http()
+                .with_host_allowlist(
+                    vec!["127.0.0.1".parse().unwrap()],
+                    vec![],
+                    crate::host_guard::TailscaleLiteralRule::Admit,
+                )
+                .with_live_tailscale_host_literals(Arc::clone(&literals))
+                .with_live_own_magicdns_name(own_name.clone()),
+        );
+        let status = |host: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(host_probe("GET", host, None))
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+
+        assert_eq!(
+            status("demo-box.old-tailnet.ts.net:3890").await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status("laptop.old-tailnet.ts.net:3890").await,
+            StatusCode::FORBIDDEN,
+            "another machine's name on the same tailnet is still refused"
+        );
+
+        own_name.replace(&["demo-box.example-tailnet.ts.net".to_string()]);
+        assert_eq!(
+            status("demo-box.example-tailnet.ts.net:3890").await,
+            StatusCode::OK,
+            "the renamed tailnet's name is served with no restart"
+        );
+        assert_eq!(
+            status("demo-box.old-tailnet.ts.net:3890").await,
+            StatusCode::FORBIDDEN,
+            "and the old name is not"
+        );
+
+        literals.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            status("demo-box.example-tailnet.ts.net:3890").await,
+            StatusCode::FORBIDDEN,
+            "tailscale = \"no\" refuses the tailnet name with the tailnet literals"
+        );
+    }
+
+    /// What `tailscale serve` hands yaran, measured: the Host and the Origin both
+    /// keep the public name and the serve port, the Origin's scheme is https, and
+    /// the proxy adds forwarding headers. A mutation from that page must pass
+    /// both the Host guard and the same-origin check.
+    #[tokio::test]
+    async fn a_mutation_relayed_by_tailscale_serve_passes_the_host_guard_and_the_origin_check() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let handle = test_engine_handle(tmp.path());
+        let own_name =
+            crate::host_guard::LiveHostNames::new(&["demo-box.example.ts.net".to_string()]);
+        let app = build_app(
+            handle,
+            Router::new().route("/probe-mutation", axum::routing::post(|| async { "ok" })),
+            RouterParams::plain_http()
+                .with_host_allowlist(
+                    vec!["127.0.0.1".parse().unwrap()],
+                    vec![],
+                    crate::host_guard::TailscaleLiteralRule::Admit,
+                )
+                .with_live_own_magicdns_name(own_name),
+        );
+        let relayed = axum::http::Request::builder()
+            .method("POST")
+            .uri("/probe-mutation")
+            .header("Host", "demo-box.example.ts.net:8443")
+            .header("Origin", "https://demo-box.example.ts.net:8443")
+            .header("X-Forwarded-Host", "demo-box.example.ts.net:8443")
+            .header("X-Forwarded-Proto", "https")
+            .header("X-Forwarded-For", "100.101.102.104")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let answer = app.clone().oneshot(relayed).await.unwrap();
+        assert_eq!(answer.status(), StatusCode::OK);
+
+        // A page on another tailnet name posting at yaran is still cross-origin.
+        let foreign = axum::http::Request::builder()
+            .method("POST")
+            .uri("/probe-mutation")
+            .header("Host", "demo-box.example.ts.net:8443")
+            .header("Origin", "https://laptop.example.ts.net:8443")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(foreign).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    /// `[server] allowed_hosts` follows a config reload: the actor's reload arm
+    /// (and the terminal UI's, through the companion seam) write the reloaded
+    /// section into the live limits, and the router built before the reload
+    /// answers by the new list.
+    #[tokio::test]
+    async fn a_reloaded_allowed_hosts_list_applies_to_the_running_router() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let handle = test_engine_handle(tmp.path());
+        let limits = handle.live_limits();
+        let app = build_app(
+            handle,
+            Router::new(),
+            RouterParams::plain_http().with_host_allowlist(
+                vec!["127.0.0.1".parse().unwrap()],
+                vec!["old.example.com".to_string()],
+                crate::host_guard::TailscaleLiteralRule::Refuse,
+            ),
+        );
+        let status = |host: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(host_probe("GET", host, None))
+                    .await
+                    .unwrap()
+                    .status()
+            }
+        };
+        assert_eq!(status("old.example.com").await, StatusCode::OK);
+        assert_eq!(status("new.example.com").await, StatusCode::FORBIDDEN);
+
+        let reloaded = yaran_core::config::ServerConfig {
+            allowed_hosts: vec!["new.example.com".to_string()],
+            ..Default::default()
+        };
+        limits.store_from(&reloaded, None);
+
+        assert_eq!(status("new.example.com").await, StatusCode::OK);
+        assert_eq!(
+            status("old.example.com").await,
+            StatusCode::FORBIDDEN,
+            "a name taken out of the list stops being served at once"
+        );
+    }
+
     #[tokio::test]
     async fn host_guard_serves_a_tailnet_host_while_only_loopback_is_bound() {
         let tmp = yaran_core::test_scratch::ScratchDir::new();
@@ -6099,7 +8092,7 @@ mod tests {
             RouterParams::plain_http().with_host_allowlist(
                 vec!["127.0.0.1".parse().unwrap()],
                 vec![],
-                true,
+                crate::host_guard::TailscaleLiteralRule::Admit,
             ),
         );
 
@@ -6298,10 +8291,10 @@ mod tests {
 
     // --- subscribe catch-up ---
 
-    /// Subscribing to `session:<id>:changes` when the ChangesService cache is
+    /// Subscribing to `session:<id>:changes` when the `ChangesService` cache is
     /// warm (`peek_rev` returns `Some(N)`) causes `apply_events_frame` to return
     /// the newly-inserted fine topic, and `catchup_frames` (the REAL production
-    /// helper, not a manual WireEvent build) produces a frame carrying rev N.
+    /// helper, not a manual `WireEvent` build) produces a frame carrying rev N.
     /// This exercises the topic-parse + rev-read integration path.
     #[tokio::test]
     async fn subscribe_emits_catchup_with_current_rev() {
@@ -6369,12 +8362,17 @@ mod tests {
             texts.iter().any(|t| t == r#"{"event":"sessions.changed"}"#),
             "the coarse nudge stays, for a client that does not read the document: {texts:?}"
         );
-        assert!(
-            texts.iter().any(
-                |t| t == r#"{"event":"workspace","rev":7,"workspace":{"rev":7,"sessions":[]}}"#
-            ),
-            "and the document itself rides along: {texts:?}"
+        let frame = texts
+            .iter()
+            .filter_map(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+            .find(|v| v["event"] == "workspace")
+            .unwrap_or_else(|| panic!("and the document itself rides along: {texts:?}"));
+        assert_eq!(frame["rev"], 7);
+        assert_eq!(
+            frame["workspace"],
+            serde_json::json!({"rev": 7, "sessions": []})
         );
+        assert!(frame["clock"].is_u64(), "with the run clock it was sent at");
 
         // A connection holding neither coarse topic is caught up with neither.
         let other: std::collections::HashSet<String> = ["config".to_string()].into_iter().collect();
@@ -6454,7 +8452,7 @@ mod tests {
         };
         let new = apply_events_frame(&frame, &mut subscribed, &handle, &bus).await;
 
-        assert!(new.fine.is_empty());
+        assert_eq!(new.fine, Vec::<String>::new());
         assert!(!new.workspace);
         assert!(!subscribed.contains(&topic));
         assert!(!bus.has_interest(&topic));
@@ -6602,7 +8600,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         {
@@ -6616,7 +8615,7 @@ mod tests {
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::new(),
                     workspace_mode: None,
                 })
                 .unwrap();

@@ -1,3 +1,7 @@
+//! The keyed status controller: the one source of the engine's busy, info,
+//! warning and error messages, which the terminal UI shows as its status line
+//! and the web as toasts.
+
 use crate::prose::ProseSegment;
 use crate::status_text::StatusText;
 use indexmap::IndexMap;
@@ -81,7 +85,11 @@ impl QuietSurfaces {
     /// Whether the web shows this status. The wire omits the `quiet` field
     /// entirely when it does, so the shape a browser reads is what it was
     /// before the flag grew a second half.
-    pub fn shows_on_web(&self) -> bool {
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's skip_serializing_if hands the predicate a reference to the field"
+    )]
+    pub(crate) fn shows_on_web(&self) -> bool {
         !self.web
     }
 }
@@ -100,7 +108,7 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(20);
 /// Generous on purpose. It is a backstop for a bug, not a timeout: a value a
 /// slow clone or a long fetch could plausibly cross would reintroduce the false
 /// "timed out" this mechanism exists to remove.
-pub const BUSY_LIVE_CEILING: Duration = Duration::from_secs(30 * 60);
+pub(crate) const BUSY_LIVE_CEILING: Duration = Duration::from_mins(30);
 
 /// The keys of status operations the engine is still running.
 ///
@@ -141,6 +149,7 @@ impl LiveStatusKeys {
         });
     }
 
+    /// Whether an operation is registered as running behind `key`.
     pub fn is_live(&self, key: &str) -> bool {
         self.with(|set| set.contains(key))
     }
@@ -151,6 +160,7 @@ impl LiveStatusKeys {
         self.with(|set| set.len())
     }
 
+    /// Whether no operation is registered.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -159,7 +169,10 @@ impl LiveStatusKeys {
     /// optimisation over guessing, and a panic in an unrelated thread must not
     /// take the status line down with it.
     fn with<T>(&self, f: impl FnOnce(&mut HashSet<String>) -> T) -> T {
-        let mut guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f(&mut guard)
     }
 }
@@ -201,7 +214,7 @@ pub const FINAL_REPLAY_WINDOW: Duration = Duration::from_secs(30);
 /// `packages/ui-kit/src/toast-policy.ts` so the status line and the browser
 /// toast agree; `the_web_mirrors_the_warning_clear_factor` reads that file and
 /// fails if they drift.
-pub const WARNING_CLEAR_FACTOR: u32 = 3;
+pub(crate) const WARNING_CLEAR_FACTOR: u32 = 3;
 
 /// How many statuses may wait behind the one on the TUI's status line.
 ///
@@ -211,7 +224,7 @@ pub const WARNING_CLEAR_FACTOR: u32 = 3;
 ///
 /// When the queue is full the oldest waiting `Info` is dropped, not the newest
 /// arrival, because the newer message is the more current fact.
-pub const MAX_QUEUED_STATUSES: usize = 5;
+pub(crate) const MAX_QUEUED_STATUSES: usize = 5;
 
 /// The storage key of the `n`th anonymous entry under [`StatusRetention::Retain`].
 ///
@@ -223,11 +236,16 @@ fn anon_storage_key(n: u64) -> String {
     format!("\u{1}anon:{n}")
 }
 
+/// How a status reads: its severity, or that it is still in progress.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusTone {
+    /// A plain confirmation.
     Info,
+    /// An operation still running.
     Busy,
+    /// Something went partly wrong or needs the user.
     Warning,
+    /// Something failed.
     Error,
 }
 
@@ -273,14 +291,39 @@ const SPINNER_FRAMES: &[&str] = &["◜", "◠", "◝", "◞", "◡", "◟"];
 /// Return the arc spinner frame appropriate for the given wall-clock
 /// `since` instant (advances every 100 ms). Used by the TUI's `render_footer`
 /// when displaying a `Busy` status from the keyed controller.
-pub fn spinner_frame_for(since: Instant) -> &'static str {
-    let index = ((since.elapsed().as_millis() / 100) as usize) % SPINNER_FRAMES.len();
+pub(crate) fn spinner_frame_for(since: Instant) -> &'static str {
+    let frames = u128::from(crate::numeric::usize_to_u64(SPINNER_FRAMES.len()));
+    let index = usize::try_from((since.elapsed().as_millis() / 100) % frames)
+        .expect("a remainder of the frame count fits in a usize");
     SPINNER_FRAMES[index]
 }
 
 // ---------------------------------------------------------------------------
 // Keyed multi-status controller
 // ---------------------------------------------------------------------------
+
+/// The TUI status line's countdown; see
+/// [`KeyedStatusController::showing_countdown`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatusCountdown {
+    /// Whole seconds left, never zero.
+    pub left: u64,
+    /// The most this message's countdown can show, so a surface can reserve a
+    /// width that does not change as the number shrinks.
+    pub longest: u64,
+}
+
+/// One message as it stood on the TUI's line; see
+/// [`KeyedStatusController::showing`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShownStatus {
+    storage: String,
+    generation: Generation,
+}
+
+fn ceil_secs(duration: Duration) -> u64 {
+    duration.as_secs() + u64::from(duration.subsec_nanos() > 0)
+}
 
 /// A monotonic per-key generation token. A producer that re-emits on the same
 /// key bumps the token; a clear/success only removes the entry when the token it
@@ -289,9 +332,28 @@ pub fn spinner_frame_for(since: Instant) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Generation(pub u64);
 
+/// Whether a status waits for the user rather than leaving on the surface's
+/// own timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stickiness {
+    /// It stays until the user dismisses it.
+    Sticky,
+    /// It dismisses itself on its window.
+    Dismisses,
+}
+
+/// Which queued statuses a status line looks at when it must drop one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Waiters {
+    /// Infos only.
+    InfosOnly,
+    /// Any tone.
+    Any,
+}
+
 /// One open status, keyed or anonymous.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeyedStatus {
+pub(crate) struct KeyedStatus {
     /// `None` = the anonymous slot (unkeyed transients); `Some` = a keyed op.
     pub key: Option<String>,
     pub tone: StatusTone,
@@ -334,8 +396,11 @@ pub struct KeyedStatus {
 /// The wire-safe projection of one open keyed status (snapshot + broadcast).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyedWireStatus {
+    /// The status's key, or `None` for the anonymous slot.
     pub key: Option<String>,
+    /// The tone, as the wire spells it.
     pub tone: String, // StatusTone::as_wire()
+    /// The sentence shown.
     pub message: String,
     /// The parts `message` was built from, carried so a replayed status still
     /// draws its names as chips. `None` for a plain sentence.
@@ -357,12 +422,14 @@ pub struct KeyedWireStatus {
     pub sticky: bool,
 }
 
-/// What `tick` changed, so the web actor can broadcast precise StatusCleared /
+/// What `tick` changed, so the web actor can broadcast precise `StatusCleared` /
 /// status frames and the TUI can re-render.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatusTickChanges {
+    /// The keys whose statuses cleared; `None` for the anonymous slot.
     pub cleared_keys: Vec<Option<String>>, // None = the anonymous slot cleared
-    pub upgraded: Vec<KeyedWireStatus>,    // busy→warning replacements
+    /// The busy statuses replaced by a warning.
+    pub upgraded: Vec<KeyedWireStatus>, // busy→warning replacements
     /// Busy entries whose operation is still registered as running, re-stamped
     /// instead of upgraded. The caller must re-broadcast each one as a live
     /// `busy` status.
@@ -425,6 +492,7 @@ pub enum StatusRetention {
 /// moment it is shown; a warning or an error pre-empts and drops the infos still
 /// waiting behind it; a busy takes the line at once and drops nothing. See
 /// [`Self::store_queued`] and [`Self::advance`].
+#[derive(Debug)]
 pub struct KeyedStatusController {
     /// The anonymous slot; most-recent-wins. Written under
     /// [`StatusRetention::Emit`] only: the TUI's queue needs a per-message
@@ -577,6 +645,7 @@ impl KeyedStatusController {
     /// form). Every surface that renders engine statuses must call it: without
     /// it the controller is back to guessing that a silent operation is a
     /// stranded one.
+    #[must_use]
     pub fn with_live_keys(mut self, live: LiveStatusKeys) -> Self {
         self.live = live;
         self
@@ -612,6 +681,7 @@ impl KeyedStatusController {
         self.anon.as_ref()
     }
 
+    /// Sets the base window statuses clear after.
     pub fn set_clear_after(&mut self, clear_after: Duration) {
         self.clear_after = clear_after;
     }
@@ -639,7 +709,7 @@ impl KeyedStatusController {
             tone,
             StatusText::plain(message),
             StatusScope::All,
-            false,
+            Stickiness::Dismisses,
         )
     }
 
@@ -656,8 +726,9 @@ impl KeyedStatusController {
         tone: StatusTone,
         message: impl Into<StatusText>,
         scope: StatusScope,
-        sticky: bool,
+        stickiness: Stickiness,
     ) -> Generation {
+        let sticky = stickiness == Stickiness::Sticky;
         let (message, segments) = message.into().into_parts();
         let generation = Generation(self.next_gen);
         let seq = self.next_seq;
@@ -747,23 +818,19 @@ impl KeyedStatusController {
     /// key it already holds has produced none.
     fn store_queued(&mut self, now: Instant, key: Option<String>, entry: KeyedStatus) {
         let tone = entry.tone;
-        let storage = match key {
-            Some(k) => {
-                if tone != StatusTone::Busy {
-                    self.live.retire(&k);
-                }
-                k
+        let storage = if let Some(k) = key {
+            if tone != StatusTone::Busy {
+                self.live.retire(&k);
             }
-            None => {
-                // The pin always belonged to the message that was last set.
-                self.anon_pinned = false;
-                match self.anon_storage_for(&entry.message) {
-                    Some(k) => k,
-                    None => {
-                        self.drop_newest_anonymous();
-                        return;
-                    }
-                }
+            k
+        } else {
+            // The pin always belonged to the message that was last set.
+            self.anon_pinned = false;
+            if let Some(k) = self.anon_storage_for(&entry.message) {
+                k
+            } else {
+                self.drop_newest_anonymous();
+                return;
             }
         };
 
@@ -817,13 +884,12 @@ impl KeyedStatusController {
                     .is_some_and(|e| e.key.is_none() && e.message == message)
             })
             .cloned();
-        let key = match existing {
-            Some(k) => k,
-            None => {
-                let k = anon_storage_key(self.next_anon);
-                self.next_anon += 1;
-                k
-            }
+        let key = if let Some(k) = existing {
+            k
+        } else {
+            let k = anon_storage_key(self.next_anon);
+            self.next_anon += 1;
+            k
         };
         self.anon_key = Some(key.clone());
         Some(key)
@@ -994,8 +1060,8 @@ impl KeyedStatusController {
             // reader. Among the waiters the oldest `Info` goes first, and with
             // none left the oldest waiter of any tone.
             let Some(doomed) = self
-                .oldest_waiter(true)
-                .or_else(|| self.oldest_waiter(false))
+                .oldest_waiter(Waiters::InfosOnly)
+                .or_else(|| self.oldest_waiter(Waiters::Any))
             else {
                 return;
             };
@@ -1010,7 +1076,8 @@ impl KeyedStatusController {
     /// pre-empting tones are pushed to the front, so position 1 is the second
     /// newest of them, and evicting it would drop the freshest news while
     /// keeping a backlog of older warnings nobody can reach.
-    fn oldest_waiter(&self, only_infos: bool) -> Option<String> {
+    fn oldest_waiter(&self, waiters: Waiters) -> Option<String> {
+        let only_infos = waiters == Waiters::InfosOnly;
         self.queue
             .iter()
             .skip(1)
@@ -1096,10 +1163,7 @@ impl KeyedStatusController {
         let Some(entry) = self.entries.get(key) else {
             return true;
         };
-        if entry.sticky {
-            return false;
-        }
-        if self.anon_pinned && self.anon_key.as_deref() == Some(key) {
+        if self.waits_for_a_person(key, entry) {
             return false;
         }
         if self.clear_after.is_zero() {
@@ -1108,11 +1172,100 @@ impl KeyedStatusController {
             // covers what queued behind a `Busy`, which an arrival never touches.
             return entry.tone != StatusTone::Busy && self.queue.len() > 1;
         }
+        self.dwell_deadline(entry, shown_at)
+            .is_some_and(|deadline| now >= deadline)
+    }
+
+    /// A `sticky` entry and the pinned one leave only when somebody acts.
+    fn waits_for_a_person(&self, key: &str, entry: &KeyedStatus) -> bool {
+        entry.sticky || (self.anon_pinned && self.anon_key.as_deref() == Some(key))
+    }
+
+    /// The instant a timed entry on the line has had its time, for a nonzero
+    /// window. `None` for a tone with no dwell clock, and for a deadline too far
+    /// out to represent, which no clock can reach either.
+    fn dwell_deadline(&self, entry: &KeyedStatus, shown_at: Instant) -> Option<Instant> {
         match (entry.tone, entry.tone.clear_windows()) {
-            (_, None) => false,
-            (StatusTone::Info, Some(_)) => now.duration_since(shown_at) >= self.clear_after,
-            (_, Some(windows)) => now.duration_since(entry.since) >= self.clear_after * windows,
+            (_, None) => None,
+            (StatusTone::Info, Some(_)) => shown_at.checked_add(self.clear_after),
+            (_, Some(windows)) => entry
+                .since
+                .checked_add(self.clear_after.checked_mul(windows)?),
         }
+    }
+
+    /// The countdown for the message on the TUI's line: whole seconds until it
+    /// clears itself, rounded up, and the most it can ever show, which is its
+    /// whole retention. `None` when it will not clear on a timer or has no time
+    /// left.
+    ///
+    /// Read from the same deadline [`Self::advance`] retires the entry on, so a
+    /// countdown can never disagree with the moment the message actually goes.
+    pub fn showing_countdown(&self, now: Instant) -> Option<StatusCountdown> {
+        if self.retention != StatusRetention::Retain || self.clear_after.is_zero() {
+            return None;
+        }
+        let front = self.queue.front()?;
+        let entry = self.entries.get(front)?;
+        // Not yet stamped means the next tick shows it from then; there is no
+        // deadline to count down to until it does.
+        let (shown_key, shown_at) = self.shown.as_ref()?;
+        if shown_key != front || self.waits_for_a_person(front, entry) {
+            return None;
+        }
+        let left = ceil_secs(
+            self.dwell_deadline(entry, *shown_at)?
+                .saturating_duration_since(now),
+        );
+        let longest = ceil_secs(self.clear_after.checked_mul(entry.tone.clear_windows()?)?);
+        (left > 0).then_some(StatusCountdown { left, longest })
+    }
+
+    /// [`Self::showing_countdown`]'s seconds left alone.
+    pub fn showing_seconds_left(&self, now: Instant) -> Option<u64> {
+        self.showing_countdown(now).map(|countdown| countdown.left)
+    }
+
+    /// Which message is on the TUI's line right now, so a later
+    /// [`Self::clear_shown`] can take down exactly that one and nothing that
+    /// arrived after it.
+    pub fn showing(&self) -> Option<ShownStatus> {
+        if self.retention != StatusRetention::Retain {
+            return None;
+        }
+        let front = self.queue.iter().find(|k| self.entries.contains_key(*k))?;
+        Some(ShownStatus {
+            storage: front.clone(),
+            generation: self.entries[front].generation,
+        })
+    }
+
+    /// Take down the message [`Self::showing`] named, at the user's request,
+    /// wherever it now sits; the next one on the line gets a full window from
+    /// now. Nothing happens when that message has already gone or been
+    /// replaced, because what replaced it is something the user has not read.
+    ///
+    /// The user is the person a sticky or pinned message waits for, so neither
+    /// survives this. A `Busy` loses only its spinner: liveness is left alone
+    /// because the operation is still running, and its final lands on a key no
+    /// longer in the queue, so it takes the line like any new message.
+    ///
+    /// Returns `true` when something was taken down.
+    pub fn clear_shown(&mut self, shown: &ShownStatus, now: Instant) -> bool {
+        if self.retention != StatusRetention::Retain
+            || self
+                .entries
+                .get(&shown.storage)
+                .is_none_or(|entry| entry.generation != shown.generation)
+        {
+            return false;
+        }
+        if self.anon_key.as_deref() == Some(shown.storage.as_str()) {
+            self.anon_pinned = false;
+        }
+        self.remove_queued(&shown.storage);
+        self.advance(now, &mut StatusTickChanges::default());
+        true
     }
 
     /// Remove a keyed entry only if the carried generation matches the stored one
@@ -1156,7 +1309,7 @@ impl KeyedStatusController {
                     // entry was in it: on the line, the line moves on.
                     self.remove_queued(key);
                 } else {
-                    self.entries.swap_remove(key);
+                    self.entries.shift_remove(key);
                 }
                 return true;
             }
@@ -1227,36 +1380,23 @@ impl KeyedStatusController {
         changes: &mut StatusTickChanges,
     ) {
         if self.anonymous_final_expired(now) {
+            // Leaving the replay snapshot, not anybody's screen: nothing to
+            // report but the count.
             self.anon = None;
-            self.record_anonymous_expiry(changes);
+            changes.purged += 1;
         }
         if self.anonymous_busy_timed_out(now, busy_timeout) {
             self.upgrade_anonymous_busy(now, changes);
         }
     }
 
+    /// Whether the anonymous slot's final has left the replay window. The slot
+    /// is used under [`StatusRetention::Emit`] alone; `Retain` queues an
+    /// unkeyed message in `entries` like any other.
     fn anonymous_final_expired(&self, now: Instant) -> bool {
-        let Some(entry) = self.anon.as_ref() else {
-            return false;
-        };
-        if self.retention == StatusRetention::Emit {
-            return entry.tone != StatusTone::Busy
-                && now.duration_since(entry.since) >= FINAL_REPLAY_WINDOW;
-        }
-        !self.anon_pinned
-            && !entry.sticky
-            && !self.clear_after.is_zero()
-            && entry.tone.clear_windows().is_some_and(|windows| {
-                now.duration_since(entry.since) >= self.clear_after * windows
-            })
-    }
-
-    fn record_anonymous_expiry(&self, changes: &mut StatusTickChanges) {
-        if self.retention == StatusRetention::Emit {
-            changes.purged += 1;
-        } else {
-            changes.cleared_keys.push(None);
-        }
+        self.anon.as_ref().is_some_and(|entry| {
+            entry.tone != StatusTone::Busy && now.duration_since(entry.since) >= FINAL_REPLAY_WINDOW
+        })
     }
 
     fn anonymous_busy_timed_out(&self, now: Instant, busy_timeout: Duration) -> bool {
@@ -1438,7 +1578,10 @@ impl KeyedStatusController {
             // by the snapshot already and must not be told twice.
             .filter(|entry| match entry.key.as_deref() {
                 Some(key) => !self.entries.contains_key(key),
-                None => self.anon.is_none(),
+                None => self
+                    .anon
+                    .as_ref()
+                    .is_none_or(|anon| anon.generation != entry.generation),
             })
             .map(|entry| KeyedWireStatus {
                 key: entry.key,
@@ -1528,8 +1671,14 @@ impl KeyedStatusController {
         // ceiling would fire again on every tick for the rest of the process.
         self.live.retire(key);
         let entry = self.entries.get_mut(key)?;
+        // Named by the producer's key, never the storage key: an unkeyed
+        // message queued under `Retain` is stored under a synthetic id.
+        let named = entry.key.as_deref().map_or_else(
+            || "anonymous status".to_string(),
+            |key| format!("status key \"{key}\""),
+        );
         crate::logger::warn(&format!(
-            "status key \"{key}\" left Busy with no final (\"{}\"); upgrading to a {} warning",
+            "{named} left Busy with no final (\"{}\"); upgrading to a {} warning",
             entry.message,
             reason.log_word()
         ));
@@ -1660,16 +1809,14 @@ impl KeyedStatusController {
     /// The tone of the status on the line, or `Info` when nothing
     /// is open (mirrors the previous `StatusLine::tone()` API).
     pub fn tone(&self) -> StatusTone {
-        self.most_recent_tui()
-            .map(|(t, _)| t)
-            .unwrap_or(StatusTone::Info)
+        self.most_recent_tui().map_or(StatusTone::Info, |(t, _)| t)
     }
 
     /// The rendered text of the status on the line (spinner
     /// prepended for `Busy`), or an empty string when nothing is open.
     /// Mirrors the previous `StatusLine::text()` API.
     pub fn text(&self) -> String {
-        self.most_recent_tui().map(|(_, t)| t).unwrap_or_default()
+        self.most_recent_tui().map_or_default(|(_, t)| t)
     }
 
     /// The raw message of the status on the line without any
@@ -1677,8 +1824,7 @@ impl KeyedStatusController {
     /// previous `StatusLine::message()` API.
     pub fn message(&self) -> String {
         self.most_recent_entry()
-            .map(|winner| winner.message.clone())
-            .unwrap_or_default()
+            .map_or_default(|winner| winner.message.clone())
     }
 
     /// Whether no status is currently open. Mirrors the previous
@@ -1740,7 +1886,7 @@ mod tests {
             StatusTone::Info,
             poisoned,
             super::StatusScope::All,
-            false,
+            super::Stickiness::Dismisses,
         );
         let snapshot = status.snapshot();
         let entry = &snapshot[0];
@@ -1774,7 +1920,7 @@ mod tests {
             StatusTone::Info,
             clean,
             super::StatusScope::All,
-            false,
+            super::Stickiness::Dismisses,
         );
         let snapshot = status.snapshot();
         let held = snapshot
@@ -1815,7 +1961,7 @@ mod tests {
             StatusTone::Info,
             poisoned(),
             super::StatusScope::All,
-            false,
+            super::Stickiness::Dismisses,
         );
         expect_chip(status.snapshot()[0].segments.as_ref(), "status line");
 
@@ -1874,7 +2020,10 @@ mod tests {
         );
         // Before the bound: untouched.
         let changes = c.tick(t0 + Duration::from_secs(19), busy_timeout);
-        assert!(changes.upgraded.is_empty());
+        assert_eq!(
+            changes.upgraded,
+            Vec::<crate::statusline::KeyedWireStatus>::new()
+        );
         assert_eq!(c.most_recent().unwrap().tone, "busy");
         // After the bound: upgraded to warning IN PLACE, broadcast in `upgraded`.
         let changes = c.tick(t0 + Duration::from_secs(20), busy_timeout);
@@ -1894,7 +2043,10 @@ mod tests {
         c.set(t0, None, StatusTone::Busy, "Loading…");
         // Before the bound: still Busy (anonymous slot never auto-expires Busy).
         let changes = c.tick(t0 + Duration::from_secs(19), busy_timeout);
-        assert!(changes.upgraded.is_empty());
+        assert_eq!(
+            changes.upgraded,
+            Vec::<crate::statusline::KeyedWireStatus>::new()
+        );
         assert_eq!(c.most_recent().unwrap().tone, "busy");
         // After the bound: upgraded in place to a timed-out Warning, broadcast.
         let changes = c.tick(t0 + Duration::from_secs(20), busy_timeout);
@@ -1948,7 +2100,7 @@ mod tests {
             StatusTone::Busy,
             "anonymous busy",
             super::StatusScope::Connection("anon".into()),
-            true,
+            crate::statusline::Stickiness::Sticky,
         );
         c.set_scoped(
             t0,
@@ -1956,7 +2108,7 @@ mod tests {
             StatusTone::Busy,
             "keyed busy",
             super::StatusScope::Connection("keyed".into()),
-            true,
+            crate::statusline::Stickiness::Sticky,
         );
 
         let changes = c.tick(t0 + BUSY_TIMEOUT, BUSY_TIMEOUT);
@@ -1998,7 +2150,10 @@ mod tests {
             c.set(t0, None, StatusTone::Busy, "still running");
             c.pin();
             let changes = c.tick(t0 + Duration::from_secs(3600), BUSY_TIMEOUT);
-            assert!(changes.upgraded.is_empty());
+            assert_eq!(
+                changes.upgraded,
+                Vec::<crate::statusline::KeyedWireStatus>::new()
+            );
             assert_eq!(c.snapshot()[0].tone, "busy");
         }
     }
@@ -2019,14 +2174,22 @@ mod tests {
         assert_eq!(c.snapshot().len(), 1);
 
         // A second short of three windows still keeps it.
-        let changes = c.tick(t0 + window * 3 - Duration::from_secs(1), BUSY_TIMEOUT);
+        let changes = c.tick(
+            (t0 + window * 3)
+                .checked_sub(Duration::from_secs(1))
+                .unwrap(),
+            BUSY_TIMEOUT,
+        );
         assert!(changes.cleared_keys.is_empty(), "{changes:?}");
         assert_eq!(c.snapshot().len(), 1);
 
         // At three windows it goes, announced.
         let changes = c.tick(t0 + window * 3, BUSY_TIMEOUT);
         assert_eq!(changes.cleared_keys, vec![None]);
-        assert!(c.snapshot().is_empty());
+        assert_eq!(
+            c.snapshot(),
+            Vec::<crate::statusline::KeyedWireStatus>::new()
+        );
 
         // An error takes the line and is still there an hour later.
         c.set(
@@ -2073,7 +2236,7 @@ mod tests {
             StatusTone::Warning,
             "Saved the file but could not paste its path.",
             super::StatusScope::All,
-            true,
+            crate::statusline::Stickiness::Sticky,
         );
         c.set_scoped(
             t0,
@@ -2081,7 +2244,7 @@ mod tests {
             StatusTone::Info,
             "Saved the file but could not paste its path.",
             super::StatusScope::All,
-            true,
+            crate::statusline::Stickiness::Sticky,
         );
         let changes = c.tick(t0 + Duration::from_secs(3600), BUSY_TIMEOUT);
         assert!(changes.cleared_keys.is_empty(), "{changes:?}");
@@ -2356,13 +2519,15 @@ mod tests {
         // retired HERE, at the one door every finished operation passes through.
         // That is what makes liveness general instead of per registry: a plain
         // keyed `set`, a resolved op's message, and a bare clear all count.
+        type Finish<'a> = Box<dyn Fn(&mut KeyedStatusController) + 'a>;
+
         let t0 = Instant::now();
-        for (name, finish) in [
+        let finishes: [(&str, Finish<'_>); 3] = [
             (
                 "an info final",
                 Box::new(|c: &mut KeyedStatusController| {
                     c.set(t0, Some("k".into()), StatusTone::Info, "done");
-                }) as Box<dyn Fn(&mut KeyedStatusController)>,
+                }),
             ),
             (
                 "an error final",
@@ -2376,7 +2541,8 @@ mod tests {
                     c.clear("k", None);
                 }),
             ),
-        ] {
+        ];
+        for (name, finish) in finishes {
             let live = LiveStatusKeys::default();
             live.register("k");
             let mut c = KeyedStatusController::emitting_finals().with_live_keys(live.clone());
@@ -2417,7 +2583,7 @@ mod tests {
         // Just under the ceiling it is still a spinner, however many heartbeats
         // have gone by.
         let mut now = t0;
-        while now.duration_since(t0) < BUSY_LIVE_CEILING - BUSY_TIMEOUT {
+        while now.duration_since(t0) < BUSY_LIVE_CEILING.checked_sub(BUSY_TIMEOUT).unwrap() {
             now += BUSY_TIMEOUT;
             let _ = c.tick(now, BUSY_TIMEOUT);
         }
@@ -2436,7 +2602,10 @@ mod tests {
             "and where to look, got {:?}",
             changes.upgraded[0].message
         );
-        assert!(changes.refreshed.is_empty());
+        assert_eq!(
+            changes.refreshed,
+            Vec::<crate::statusline::KeyedWireStatus>::new()
+        );
         assert!(
             !live.is_live("leaked"),
             "the leaked registration is dropped, or the ceiling fires every tick forever"
@@ -2460,7 +2629,10 @@ mod tests {
         assert_eq!(changes.upgraded.len(), 1, "got {:?}", changes.upgraded);
         assert_eq!(changes.upgraded[0].tone, "warning");
         assert_eq!(changes.upgraded[0].message, "timed out, check yaran.log");
-        assert!(changes.refreshed.is_empty());
+        assert_eq!(
+            changes.refreshed,
+            Vec::<crate::statusline::KeyedWireStatus>::new()
+        );
     }
 
     #[test]
@@ -2488,10 +2660,10 @@ mod tests {
 
         let _ = c.tick(t0 + BUSY_TIMEOUT + Duration::from_secs(1), BUSY_TIMEOUT);
 
-        let line = c.most_recent().expect("a status is open");
+        let newest = c.most_recent().expect("a status is open");
         assert_eq!(
-            line.message, "Pushing\u{2026}",
-            "the heartbeat must not reorder the line, got {line:?}"
+            newest.message, "Pushing\u{2026}",
+            "the heartbeat must not reorder the line, got {newest:?}"
         );
     }
 
@@ -2505,7 +2677,9 @@ mod tests {
             c.set(t0, None, tone, "unkeyed final");
             // One tick just before the boundary leaves both in place...
             let _ = c.tick(
-                t0 + FINAL_REPLAY_WINDOW - Duration::from_millis(1),
+                (t0 + FINAL_REPLAY_WINDOW)
+                    .checked_sub(Duration::from_millis(1))
+                    .unwrap(),
                 BUSY_TIMEOUT,
             );
             assert_eq!(
@@ -2544,6 +2718,27 @@ mod tests {
         c.mark_unwatched(key);
     }
 
+    #[test]
+    fn a_held_unkeyed_warning_survives_a_newer_unkeyed_info_in_the_slot() {
+        // The info took the one unkeyed slot, so the snapshot no longer hands
+        // the warning to the joining page and nothing else will.
+        let t0 = Instant::now();
+        let mut c = KeyedStatusController::emitting_finals();
+        set_unwatched(
+            &mut c,
+            t0,
+            None,
+            StatusTone::Warning,
+            "the push was refused",
+        );
+        c.set(t0, None, StatusTone::Info, "copied the path");
+        let late = c.take_late_finals();
+        assert_eq!(
+            late.iter().map(|s| s.message.as_str()).collect::<Vec<_>>(),
+            ["the push was refused"]
+        );
+    }
+
     fn named() -> crate::status_text::StatusText {
         crate::status_text!["Checked out ", q("main"), " for project ", q("app"), "."]
     }
@@ -2558,7 +2753,7 @@ mod tests {
             StatusTone::Info,
             named(),
             super::StatusScope::All,
-            false,
+            crate::statusline::Stickiness::Dismisses,
         );
         c.set(t0, None, StatusTone::Warning, "plain words");
         let snapshot = c.snapshot();
@@ -2588,7 +2783,7 @@ mod tests {
             StatusTone::Busy,
             busy.clone(),
             super::StatusScope::All,
-            false,
+            crate::statusline::Stickiness::Dismisses,
         );
         let changes = c.tick(t0 + BUSY_TIMEOUT, BUSY_TIMEOUT);
         assert_eq!(changes.refreshed.len(), 1);
@@ -2606,7 +2801,7 @@ mod tests {
             StatusTone::Busy,
             busy,
             super::StatusScope::All,
-            false,
+            crate::statusline::Stickiness::Dismisses,
         );
         let changes = c.tick(t0 + BUSY_TIMEOUT, BUSY_TIMEOUT);
         assert_eq!(changes.upgraded[0].message, "timed out, check yaran.log");
@@ -2624,7 +2819,7 @@ mod tests {
             StatusTone::Error,
             named(),
             super::StatusScope::All,
-            false,
+            crate::statusline::Stickiness::Dismisses,
         );
         c.mark_unwatched(Some("pr"));
         let _ = c.tick(t0 + FINAL_REPLAY_WINDOW, BUSY_TIMEOUT);
@@ -2644,7 +2839,7 @@ mod tests {
             StatusTone::Info,
             named(),
             super::StatusScope::All,
-            false,
+            crate::statusline::Stickiness::Dismisses,
         );
         assert_eq!(
             c.text().as_bytes(),
@@ -2820,7 +3015,11 @@ mod tests {
                 StatusTone::Warning,
                 "final",
                 super::StatusScope::All,
-                sticky,
+                if sticky {
+                    crate::statusline::Stickiness::Sticky
+                } else {
+                    crate::statusline::Stickiness::Dismisses
+                },
             );
             if pinned {
                 c.pin();
@@ -2828,8 +3027,11 @@ mod tests {
 
             let changes = c.tick(t0 + FINAL_REPLAY_WINDOW, BUSY_TIMEOUT);
             assert_eq!(changes.purged, 1);
-            assert!(changes.cleared_keys.is_empty());
-            assert!(c.snapshot().is_empty());
+            assert_eq!(changes.cleared_keys, Vec::<Option<String>>::new());
+            assert_eq!(
+                c.snapshot(),
+                Vec::<crate::statusline::KeyedWireStatus>::new()
+            );
         }
     }
 
@@ -2937,7 +3139,7 @@ mod tests {
             T::Error,
             "Worktree delete failed.",
             StatusScope::All,
-            true,
+            crate::statusline::Stickiness::Sticky,
         );
         let snap = c.snapshot();
         let halfdone = snap
@@ -2968,7 +3170,7 @@ mod tests {
             StatusTone::Error,
             "Worktree delete failed.",
             super::StatusScope::All,
-            true,
+            crate::statusline::Stickiness::Sticky,
         );
         // Neither the generation-matched clear nor the unconditional one may
         // touch it, and both must SAY they did nothing so the caller does not
@@ -3004,7 +3206,7 @@ mod tests {
             StatusTone::Error,
             "Worktree delete failed.",
             super::StatusScope::All,
-            true,
+            crate::statusline::Stickiness::Sticky,
         );
         let changes = c.tick(t0 + FINAL_REPLAY_WINDOW, BUSY_TIMEOUT);
         assert!(
@@ -3030,6 +3232,19 @@ mod tests {
             3,
             "every open status must appear in the snapshot"
         );
+    }
+
+    /// A clear leaves the other open statuses in the order they were raised.
+    #[test]
+    fn a_clear_keeps_the_snapshot_in_order() {
+        let t0 = Instant::now();
+        let mut c = KeyedStatusController::emitting_finals();
+        for key in ["a", "b", "c"] {
+            c.set(t0, Some(key.into()), StatusTone::Busy, "Working…");
+        }
+        assert!(c.clear("a", None));
+        let keys: Vec<Option<String>> = c.snapshot().into_iter().map(|s| s.key).collect();
+        assert_eq!(keys, vec![Some("b".to_string()), Some("c".to_string())]);
     }
 
     // -----------------------------------------------------------------------
@@ -3063,12 +3278,15 @@ mod tests {
         c.set(t0, None, StatusTone::Info, "third");
 
         assert_eq!(line(&c).as_deref(), Some("first"));
-        assert_eq!(run(&mut c, t0 + WINDOW - TICK).as_deref(), Some("first"));
+        assert_eq!(
+            run(&mut c, (t0 + WINDOW).checked_sub(TICK).unwrap()).as_deref(),
+            Some("first")
+        );
         // The second Info's own window starts when it is SHOWN, not when it was
         // posted, so it is still up a whole window later.
         assert_eq!(run(&mut c, t0 + WINDOW).as_deref(), Some("second"));
         assert_eq!(
-            run(&mut c, t0 + WINDOW * 2 - TICK).as_deref(),
+            run(&mut c, (t0 + WINDOW * 2).checked_sub(TICK).unwrap()).as_deref(),
             Some("second")
         );
         assert_eq!(run(&mut c, t0 + WINDOW * 2).as_deref(), Some("third"));
@@ -3086,7 +3304,13 @@ mod tests {
         assert_eq!(line(&c).as_deref(), Some("careful"));
         // A warning keeps its three windows, and nothing stale follows it.
         assert_eq!(
-            run(&mut c, t0 + WINDOW * WARNING_CLEAR_FACTOR - TICK).as_deref(),
+            run(
+                &mut c,
+                (t0 + WINDOW * WARNING_CLEAR_FACTOR)
+                    .checked_sub(TICK)
+                    .unwrap()
+            )
+            .as_deref(),
             Some("careful")
         );
         assert_eq!(
@@ -3135,7 +3359,13 @@ mod tests {
             Some("older")
         );
         assert_eq!(
-            run(&mut c, t0 + WINDOW * WARNING_CLEAR_FACTOR - TICK).as_deref(),
+            run(
+                &mut c,
+                (t0 + WINDOW * WARNING_CLEAR_FACTOR)
+                    .checked_sub(TICK)
+                    .unwrap()
+            )
+            .as_deref(),
             Some("older")
         );
         assert_eq!(
@@ -3214,14 +3444,24 @@ mod tests {
 
         let mut seen = vec![line(&c).expect("a line")];
         for step in 1..=MAX_QUEUED_STATUSES {
-            seen.push(run(&mut c, t0 + WINDOW * step as u32).expect("a line"));
+            seen.push(
+                run(
+                    &mut c,
+                    t0 + WINDOW * u32::try_from(step).expect("a small step count"),
+                )
+                .expect("a line"),
+            );
         }
         let mut expected = vec!["showing".to_string()];
         expected.extend((1..MAX_QUEUED_STATUSES).map(|i| format!("q{i}")));
         expected.push("newest".to_string());
         assert_eq!(seen, expected);
         assert_eq!(
-            run(&mut c, t0 + WINDOW * (MAX_QUEUED_STATUSES as u32 + 1)),
+            run(
+                &mut c,
+                t0 + WINDOW
+                    * (u32::try_from(MAX_QUEUED_STATUSES).expect("a small queue bound") + 1)
+            ),
             None
         );
     }
@@ -3243,6 +3483,158 @@ mod tests {
         c.set(t0, None, StatusTone::Info, "behind");
         assert!(c.clear("k", None));
         assert_eq!(line(&c).as_deref(), Some("behind"));
+    }
+
+    #[test]
+    fn the_countdown_reaches_zero_exactly_when_the_line_moves_on() {
+        let t0 = Instant::now();
+        let mut c = tui();
+        c.set(t0, None, StatusTone::Info, "first");
+        c.set(t0, None, StatusTone::Info, "second");
+        assert_eq!(c.showing_seconds_left(t0), Some(6));
+        // Rounded up, so the last second on screen reads 1s and never 0s.
+        assert_eq!(
+            c.showing_seconds_left((t0 + WINDOW).checked_sub(TICK).unwrap()),
+            Some(1)
+        );
+        assert_eq!(
+            run(&mut c, (t0 + WINDOW).checked_sub(TICK).unwrap()).as_deref(),
+            Some("first")
+        );
+        // The info that waited counts its full window from when it is shown.
+        assert_eq!(run(&mut c, t0 + WINDOW).as_deref(), Some("second"));
+        assert_eq!(c.showing_seconds_left(t0 + WINDOW), Some(6));
+        assert_eq!(
+            c.showing_seconds_left((t0 + WINDOW * 2).checked_sub(TICK).unwrap()),
+            Some(1)
+        );
+        assert_eq!(run(&mut c, t0 + WINDOW * 2), None);
+        assert_eq!(c.showing_seconds_left(t0 + WINDOW * 2), None);
+    }
+
+    #[test]
+    fn a_warning_counts_down_from_when_it_was_posted() {
+        let t0 = Instant::now();
+        let mut c = tui();
+        c.set(t0, Some("w".into()), StatusTone::Warning, "warning");
+        c.set(t0 + WINDOW, Some("b".into()), StatusTone::Busy, "working");
+        assert_eq!(c.showing_seconds_left(t0 + WINDOW), None);
+        assert!(c.clear("b", None));
+        let back = t0 + WINDOW * 2;
+        assert_eq!(run(&mut c, back).as_deref(), Some("warning"));
+        let left = (WINDOW * WARNING_CLEAR_FACTOR)
+            .checked_sub(WINDOW * 2)
+            .unwrap();
+        let countdown = c.showing_countdown(back).expect("a warning counts down");
+        assert_eq!(countdown.left, left.as_secs());
+        // The widest it can read is the whole retention, however late it is shown.
+        assert_eq!(countdown.longest, (WINDOW * WARNING_CLEAR_FACTOR).as_secs());
+        assert_eq!(
+            run(
+                &mut c,
+                (t0 + WINDOW * WARNING_CLEAR_FACTOR)
+                    .checked_sub(TICK)
+                    .unwrap()
+            )
+            .as_deref(),
+            Some("warning")
+        );
+        assert_eq!(run(&mut c, t0 + WINDOW * WARNING_CLEAR_FACTOR), None);
+    }
+
+    #[test]
+    fn nothing_counts_down_that_does_not_clear_on_a_timer() {
+        type Post = fn(&mut KeyedStatusController, Instant);
+
+        let t0 = Instant::now();
+        let untimed: [(&str, Post); 5] = [
+            ("busy", |c, t| {
+                c.set(t, None, StatusTone::Busy, "busy");
+            }),
+            ("error", |c, t| {
+                c.set(t, None, StatusTone::Error, "error");
+            }),
+            ("sticky", |c, t| {
+                c.set_scoped(
+                    t,
+                    None,
+                    StatusTone::Info,
+                    "sticky",
+                    super::StatusScope::All,
+                    crate::statusline::Stickiness::Sticky,
+                );
+            }),
+            ("pinned", |c, t| {
+                c.set(t, None, StatusTone::Info, "hint");
+                c.pin();
+            }),
+            ("zero window", |c, t| {
+                c.set_clear_after(Duration::ZERO);
+                c.set(t, None, StatusTone::Info, "forever");
+            }),
+        ];
+        for (case, post) in untimed {
+            let mut c = tui();
+            post(&mut c, t0);
+            assert!(line(&c).is_some(), "{case}: something is on the line");
+            assert_eq!(c.showing_seconds_left(t0), None, "{case}");
+        }
+    }
+
+    #[test]
+    fn clearing_the_line_gives_the_next_message_a_full_window_from_then() {
+        let t0 = Instant::now();
+        let mut c = tui();
+        c.set(t0, None, StatusTone::Info, "showing");
+        c.set(t0, None, StatusTone::Info, "waiting");
+        let at = t0 + Duration::from_secs(4);
+        let shown = c.showing().expect("a message is on the line");
+        assert!(c.clear_shown(&shown, at));
+        assert_eq!(line(&c).as_deref(), Some("waiting"));
+        assert_eq!(c.showing_seconds_left(at), Some(6));
+        assert_eq!(
+            run(&mut c, (at + WINDOW).checked_sub(TICK).unwrap()).as_deref(),
+            Some("waiting")
+        );
+        assert_eq!(run(&mut c, at + WINDOW), None);
+        assert_eq!(c.showing(), None, "an empty line has nothing to clear");
+        assert!(
+            !c.clear_shown(&shown, at + WINDOW),
+            "a message that already went is not cleared twice"
+        );
+    }
+
+    #[test]
+    fn clearing_what_was_shown_leaves_a_replacement_on_the_same_key_alone() {
+        let t0 = Instant::now();
+        let mut c = tui();
+        c.set(t0, Some("hint".into()), StatusTone::Info, "seen");
+        let shown = c.showing().expect("a message is on the line");
+        c.set(t0, Some("hint".into()), StatusTone::Info, "never seen");
+        assert!(!c.clear_shown(&shown, t0));
+        assert_eq!(line(&c).as_deref(), Some("never seen"));
+    }
+
+    #[test]
+    fn clearing_a_spinner_leaves_its_operation_running_and_shows_its_final() {
+        let t0 = Instant::now();
+        let live = LiveStatusKeys::default();
+        let mut c = tui().with_live_keys(live.clone());
+        live.register("op");
+        c.set(t0, Some("op".into()), StatusTone::Busy, "working");
+        let shown = c.showing().expect("the spinner is on the line");
+        assert!(c.clear_shown(&shown, t0));
+        assert_eq!(line(&c), None);
+        assert!(live.is_live("op"), "the operation is still running");
+        // Nothing left behind times out into a warning while it runs.
+        assert_eq!(run(&mut c, t0 + BUSY_TIMEOUT * 2), None);
+        c.set(
+            t0 + BUSY_TIMEOUT * 2,
+            Some("op".into()),
+            StatusTone::Info,
+            "done",
+        );
+        assert_eq!(line(&c).as_deref(), Some("done"));
     }
 
     #[test]
@@ -3379,7 +3771,7 @@ mod tests {
             StatusTone::Error,
             "half-done, and you must act",
             super::StatusScope::All,
-            true,
+            crate::statusline::Stickiness::Sticky,
         );
         c.set(t0, None, StatusTone::Info, "something else happened");
         assert_eq!(
@@ -3467,7 +3859,9 @@ mod tests {
         );
         c.set(t0, None, StatusTone::Info, "still worth reading");
         // A newer busy takes the line, so the timing-out one is not on it.
-        let later = t0 + BUSY_TIMEOUT - Duration::from_secs(1);
+        let later = (t0 + BUSY_TIMEOUT)
+            .checked_sub(Duration::from_secs(1))
+            .unwrap();
         c.set(
             later,
             Some("foreground".into()),

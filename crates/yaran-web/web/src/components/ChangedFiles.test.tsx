@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { chip, proseText, type Prose } from "@/lib/prose"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   act,
@@ -6,6 +7,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react"
 
@@ -25,16 +27,38 @@ import { toastText } from "@/test/toastText"
 const forceRefreshChanges = vi.fn(() => Promise.resolve())
 const refreshChanges = vi.fn()
 const openEditor = vi.fn()
+const toggleChangesPane = vi.fn()
+const openCommit = vi.fn()
+const createTerminal = vi.fn()
 
 let mockState: YaranState
+// The pane subscribes selectively and is memoized, so a new state reaches it
+// the way the real store delivers one: through its subscribers, not through a
+// parent re-render.
+const mockListeners = new Set<() => void>()
+function publishMockState() {
+  act(() => {
+    for (const listener of mockListeners) listener()
+  })
+}
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
+  const { useSyncExternalStore } = await import("react")
+  const subscribe = (listener: () => void) => {
+    mockListeners.add(listener)
+    return () => void mockListeners.delete(listener)
+  }
   return {
     ...actual,
     useYaran: () => mockState,
+    useYaranSelector: <T,>(select: (state: YaranState) => T): T =>
+      useSyncExternalStore(subscribe, () => select(mockState)),
     forceRefreshChanges: () => forceRefreshChanges(),
     refreshChanges: () => refreshChanges(),
     openEditor: (...args: unknown[]) => openEditor(...args),
+    toggleChangesPane: (...args: unknown[]) => toggleChangesPane(...args),
+    openCommit: (...args: unknown[]) => openCommit(...args),
+    createTerminal: (...args: unknown[]) => createTerminal(...args),
   }
 })
 
@@ -46,6 +70,10 @@ const unstageMany = vi.fn(async (_id: string, paths: string[]) => ({
   done: paths,
   refused: [] as string[],
 }))
+const stageOne = vi.fn(async (_id: string, _path: string) => ({
+  left_out_repositories: 0,
+  left_out_worktrees: 0,
+}))
 const discardMany = vi.fn(async (_id: string, paths: string[]) => ({
   done: paths,
   failed: [] as { path: string; message: string }[],
@@ -56,6 +84,7 @@ vi.mock("@/lib/git", async (importOriginal) => {
     ...actual,
     git: {
       ...actual.git,
+      stage: (...args: [string, string]) => stageOne(...args),
       stageMany: (...args: [string, string[]]) => stageMany(...args),
       unstageMany: (...args: [string, string[]]) => unstageMany(...args),
       discardMany: (...args: [string, string[]]) => discardMany(...args),
@@ -83,6 +112,7 @@ vi.mock("@/components/SimpleTooltip", () => ({
 }))
 
 const notifySuccess = vi.fn()
+const notifyInfo = vi.fn()
 const notifyWarning = vi.fn()
 const notifyError = vi.fn()
 vi.mock("@/lib/notify", async (importOriginal) => {
@@ -90,6 +120,7 @@ vi.mock("@/lib/notify", async (importOriginal) => {
   return {
     ...actual,
     notifySuccess: (...args: unknown[]) => notifySuccess(...args),
+    notifyInfo: (...args: unknown[]) => notifyInfo(...args),
     notifyWarning: (...args: unknown[]) => notifyWarning(...args),
     notifyError: (...args: unknown[]) => notifyError(...args),
   }
@@ -137,6 +168,15 @@ const { ChangedFiles } = await import("./ChangedFiles")
 const { standaloneEditorHash } = await import("@/lib/store")
 const { agentRoot } = await import("@/lib/editorRoot")
 
+// The layout is chosen by width alone, below the md breakpoint for the phone.
+function setViewportWidth(width: number) {
+  Object.defineProperty(window, "innerWidth", {
+    value: width,
+    configurable: true,
+    writable: true,
+  })
+}
+
 function loadedChanges(): ChangesSlice {
   return {
     sessionId: "s1",
@@ -159,10 +199,14 @@ beforeEach(() => {
   forceRefreshChanges.mockClear()
   refreshChanges.mockClear()
   openEditor.mockClear()
+  toggleChangesPane.mockClear()
+  openCommit.mockClear()
+  createTerminal.mockClear()
   stageMany.mockClear()
   unstageMany.mockClear()
   discardMany.mockClear()
   notifySuccess.mockClear()
+  notifyInfo.mockClear()
   notifyWarning.mockClear()
   notifyError.mockClear()
   mockState = {
@@ -173,6 +217,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  setViewportWidth(1024)
+  window.location.hash = ""
   bootMedia?.restore()
   bootMedia = null
   vi.unstubAllGlobals()
@@ -197,6 +243,100 @@ describe("the Changes pane's Refresh changes action", () => {
     // A trailing "…" marks an item that opens a dialog or needs confirming.
     // This one does neither.
     expect(item!.textContent?.endsWith("…")).toBe(false)
+  })
+})
+
+describe("the Changes pane while no branch is checked out", () => {
+  function managedState(branch: string, noBranchCheckedOut: boolean | undefined) {
+    return {
+      selectedSessionId: "s1",
+      changes: {
+        ...loadedChanges(),
+        unstaged: [
+          {
+            path: "src/app.ts",
+            status: "M",
+            additions: 1,
+            deletions: 0,
+            binary: false,
+          },
+        ],
+      },
+      spine: {
+        projects: [],
+        terminals: [],
+        sessions: [
+          {
+            id: "s1",
+            slot_tab_id: "s1",
+            title: "",
+            provider: "claude",
+            status: "active",
+            tabs: [],
+            has_output: false,
+            working: false,
+            typing: false,
+            needs_attention: false,
+            created_at: "",
+            updated_at: "",
+            auto_reopen_enabled: false,
+            workspace: {
+              kind: "managed",
+              project_id: "p1",
+              branch_name: branch,
+              initial_branch: branch,
+              branch_provenance: "created",
+              source_branch: "main",
+              worktree_path: "/home/someone/wt",
+              ...(noBranchCheckedOut === undefined
+                ? {}
+                : { no_branch_checked_out: noBranchCheckedOut }),
+            },
+          },
+        ],
+      },
+    } as unknown as YaranState
+  }
+
+  it("heads the pane with a notice naming the branch yaran keeps showing", () => {
+    mockState = managedState("feat-login", true)
+    render(<ChangedFiles />)
+    const notice = screen.getByTestId("no-branch-checked-out")
+    expect(within(notice).getByText("No branch checked out")).toBeTruthy()
+    expect(notice.textContent).toContain(
+      "yaran keeps showing feat-login until one is checked out again.",
+    )
+    const chip = notice.querySelector('[data-slot="inline-code"]')
+    expect(chip?.textContent).toBe("feat-login")
+    // A long branch name must be free to wrap inside the strip.
+    expect(chip?.className).not.toContain("whitespace-nowrap")
+    // It sits above the filter, as the first thing under the header.
+    const filter = screen.getByLabelText("Filter changed files")
+    expect(
+      notice.compareDocumentPosition(filter) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it("is absent while a branch is checked out", () => {
+    mockState = managedState("feat-login", false)
+    render(<ChangedFiles />)
+    expect(screen.queryByTestId("no-branch-checked-out")).toBeNull()
+    expect(screen.queryByText("No branch checked out")).toBeNull()
+  })
+
+  it("is absent when a server that predates the fact says nothing", () => {
+    mockState = managedState("feat-login", undefined)
+    render(<ChangedFiles />)
+    expect(screen.queryByTestId("no-branch-checked-out")).toBeNull()
+  })
+
+  it("goes away once a branch is checked out again", () => {
+    mockState = managedState("feat-login", true)
+    render(<ChangedFiles />)
+    expect(screen.getByTestId("no-branch-checked-out")).toBeTruthy()
+    mockState = managedState("feat-login", false)
+    publishMockState()
+    expect(screen.queryByTestId("no-branch-checked-out")).toBeNull()
   })
 })
 
@@ -284,6 +424,219 @@ describe("ChangedFiles for a standalone agent", () => {
     expect(menu.getByText("Commit…")).toBeTruthy()
     expect(menu.queryByText("Push")).toBeNull()
     expect(menu.queryByText("Pull")).toBeNull()
+  })
+})
+
+// A quiet pane is still a pane: its title and its ⋯ stay, so it can be hidden
+// and the editor reached, and the git items stay on screen greyed out with the
+// reason, because they come back once the folder has a repository.
+describe("the Changes pane header in a quiet state", () => {
+  function sessionWith(workspace: Record<string, unknown>): YaranState {
+    return {
+      selectedSessionId: "q1",
+      changes: { ...loadedChanges(), sessionId: "q1" },
+      spine: {
+        projects: [],
+        terminals: [],
+        sessions: [
+          {
+            id: "q1",
+            slot_tab_id: "q1",
+            title: "quiet",
+            provider: "claude",
+            status: "active",
+            tabs: [],
+            has_output: false,
+            working: false,
+            typing: false,
+            needs_attention: false,
+            created_at: "",
+            updated_at: "",
+            auto_reopen_enabled: false,
+            workspace,
+          },
+        ],
+      },
+    } as unknown as YaranState
+  }
+  const folderAt = (repo_status: string, quiet_reason: string) =>
+    sessionWith({
+      kind: "folder",
+      folder_path: "/home/someone/src",
+      folder_label: "~/src",
+      repo_status,
+      quiet_reason,
+    })
+  const missingWorkingCopy = () =>
+    sessionWith({
+      kind: "managed",
+      project_id: "p1",
+      branch_name: "feature/x",
+      initial_branch: "feature/x",
+      branch_provenance: "created",
+      source_branch: "main",
+      worktree_path: "/managed/wt",
+      worktree_missing: true,
+      quiet_reason: "The working copy at /managed/wt no longer exists on disk.",
+    })
+
+  const folderStates = [
+    {
+      status: "no_repo",
+      sentence: "This folder has no git repository, so there are no changes to show.",
+      reason: "This folder has no git repository.",
+    },
+    {
+      status: "inside_repo_rooted_elsewhere",
+      sentence: "This folder sits inside a repository rooted elsewhere, so yaran shows no changes for it.",
+      reason: "This folder sits inside a repository rooted elsewhere.",
+    },
+    {
+      status: "indeterminate",
+      sentence: "yaran could not consult git about this folder, so it cannot say whether it has changes.",
+      reason: "yaran could not consult git about this folder.",
+    },
+    {
+      status: "unprobed",
+      sentence: "yaran is still looking at this folder to see whether it is a git repository.",
+      reason: "yaran is still looking at this folder.",
+    },
+    {
+      status: "missing",
+      sentence: "The folder ~/src no longer exists on disk.",
+      reason: "This folder no longer exists on disk.",
+    },
+  ]
+
+  async function openMenu() {
+    fireEvent.click(screen.getByLabelText("Changes actions"))
+    return within(await screen.findByRole("menu"))
+  }
+  const itemOf = (menu: ReturnType<typeof within>, text: string) =>
+    menu.getByText(text).closest('[role="menuitem"]') as HTMLElement
+  // A disabled item's reason is the element its aria-describedby names, so a
+  // screen reader hears why on the item itself.
+  const reasonOf = (item: HTMLElement) => {
+    const id = item.getAttribute("aria-describedby")
+    return id ? document.getElementById(id)?.textContent ?? null : null
+  }
+
+  for (const { status, sentence, reason } of folderStates) {
+    it(`keeps the title and the ⋯ above the quiet sentence (${status})`, () => {
+      mockState = folderAt(status, sentence)
+      render(<ChangedFiles />)
+      expect(screen.getByText("Changes")).toBeTruthy()
+      expect(screen.getByLabelText("Changes actions")).toBeTruthy()
+      expect(screen.getByText(sentence)).toBeTruthy()
+      expect(screen.getByText("~/src")).toBeTruthy()
+    })
+
+    it(`greys out the git items with the reason, and keeps Hide (${status})`, async () => {
+      mockState = folderAt(status, sentence)
+      render(<ChangedFiles />)
+      const menu = await openMenu()
+      for (const text of ["Commit…", "Refresh changes"]) {
+        const item = itemOf(menu, text)
+        expect(item.getAttribute("aria-disabled"), text).toBe("true")
+        expect(reasonOf(item), text).toBe(reason)
+      }
+      expect(menu.getByText(reason)).toBeTruthy()
+      // Branch identity stays absent for a standalone agent, quiet or not.
+      expect(menu.queryByText("Push")).toBeNull()
+      expect(menu.queryByText("Pull")).toBeNull()
+      const hide = itemOf(menu, "Hide Changes pane")
+      expect(hide.getAttribute("aria-disabled")).not.toBe("true")
+      fireEvent.click(hide)
+      expect(toggleChangesPane).toHaveBeenCalledTimes(1)
+    })
+  }
+
+  // The reason line is the menu primitive's own label, inside a real group.
+  it("puts the reason in the menu's label part", async () => {
+    mockState = folderAt("no_repo", folderStates[0]!.sentence)
+    render(<ChangedFiles />)
+    const menu = await openMenu()
+    const reason = menu.getByText("This folder has no git repository.")
+    expect(reason.getAttribute("data-slot")).toBe("dropdown-menu-label")
+    expect(itemOf(menu, "Commit…").getAttribute("aria-describedby")).toBe(reason.id)
+  })
+
+  // One verdict for the body and the menu: an empty sentence is not quiet in
+  // either, so the list renders and the menu stays live together.
+  it("treats an empty quiet sentence as not quiet in the body and the menu alike", async () => {
+    mockState = folderAt("no_repo", "")
+    render(<ChangedFiles />)
+    expect(screen.queryByText("No changes to show")).toBeNull()
+    expect(screen.getByText("No changes")).toBeTruthy()
+    const menu = await openMenu()
+    expect(itemOf(menu, "Refresh changes").getAttribute("aria-disabled")).not.toBe("true")
+  })
+
+  it("keeps the editor open to a folder that is there but has no repository", () => {
+    mockState = folderAt("no_repo", folderStates[0]!.sentence)
+    render(<ChangedFiles />)
+    const button = screen.getByLabelText("Open editor")
+    expect(button.hasAttribute("disabled")).toBe(false)
+    fireEvent.click(button)
+    expect(openEditor).toHaveBeenCalledWith({ kind: "agent", sessionId: "q1" })
+  })
+
+  it("greys out the editor, with the reason, once the folder is gone", () => {
+    mockState = folderAt("missing", folderStates[4]!.sentence)
+    render(<ChangedFiles />)
+    const button = screen.getByLabelText("Open editor")
+    expect(button.hasAttribute("disabled")).toBe(true)
+    const cell = button.closest("[data-slot=card-action]") as HTMLElement
+    expect(
+      within(cell)
+        .getAllByTestId("tooltip-content")
+        .some((node) => node.textContent === "This folder no longer exists on disk."),
+    ).toBe(true)
+  })
+
+  // A managed agent keeps its branch features, so its Push and Pull are on
+  // screen; with the working copy gone they are greyed out like the rest.
+  it("greys out Push and Pull too for a managed working copy that is gone", async () => {
+    mockState = missingWorkingCopy()
+    render(<ChangedFiles />)
+    expect(
+      screen.getByText("The working copy at /managed/wt no longer exists on disk."),
+    ).toBeTruthy()
+    const menu = await openMenu()
+    for (const text of ["Commit…", "Push", "Pull", "Refresh changes"]) {
+      const item = itemOf(menu, text)
+      expect(item.getAttribute("aria-disabled"), text).toBe("true")
+      expect(reasonOf(item), text).toBe("This working copy no longer exists on disk.")
+    }
+    expect(screen.getByLabelText("Open editor").hasAttribute("disabled")).toBe(true)
+    expect(screen.getByLabelText("New terminal").hasAttribute("disabled")).toBe(true)
+  })
+
+  it("keeps the header while the changes load and when they fail to", () => {
+    mockState = {
+      selectedSessionId: "s1",
+      changes: { ...loadedChanges(), phase: "loading" },
+    } as unknown as YaranState
+    render(<ChangedFiles />)
+    expect(screen.getByText("Loading changes…")).toBeTruthy()
+    expect(screen.getByLabelText("Changes actions")).toBeTruthy()
+    cleanup()
+
+    mockState = {
+      selectedSessionId: "s1",
+      changes: { ...loadedChanges(), phase: "error", error: "git exploded" },
+    } as unknown as YaranState
+    render(<ChangedFiles />)
+    expect(screen.getByText("git exploded")).toBeTruthy()
+    expect(screen.getByLabelText("Changes actions")).toBeTruthy()
+  })
+
+  it("keeps the header over the ordinary no-changes state, with every item live", async () => {
+    render(<ChangedFiles />)
+    expect(screen.getByText("No changes")).toBeTruthy()
+    const menu = await openMenu()
+    expect(itemOf(menu, "Refresh changes").getAttribute("aria-disabled")).not.toBe("true")
+    expect(itemOf(menu, "Refresh changes").getAttribute("aria-describedby")).toBeNull()
   })
 })
 
@@ -493,40 +846,37 @@ describe("the changes pane's multi-select", () => {
     expect(openEditor).not.toHaveBeenCalled()
   })
 
-  it("still opens the diff when the row is clicked", () => {
+  // A computer opens the in-page overlay. A phone has no overlay, so the
+  // same tab moves to the standalone editor's address, in diff mode.
+  it.each([
+    {
+      layout: "a computer",
+      width: 1024,
+      overlayCalls: [[{ kind: "agent", sessionId: "s1" }, "a.ts", "diff"]],
+      hash: "",
+    },
+    {
+      layout: "a phone",
+      width: 400,
+      overlayCalls: [],
+      hash: "#/editor/agent/s1/diff/a.ts",
+    },
+  ])("still opens the diff when the row is clicked, on $layout", ({ width, overlayCalls, hash }) => {
+    setViewportWidth(width)
     render(<ChangedFiles />)
     fireEvent.click(screen.getByText("a.ts"))
-    expect(openEditor).toHaveBeenCalledTimes(1)
+    expect(openEditor.mock.calls).toEqual(overlayCalls)
+    expect(window.location.hash).toBe(hash)
   })
 
-  it("opens the standalone diff on a phone where the overlay is unavailable", () => {
-    const oldWidth = window.innerWidth
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 })
-    const open = vi.spyOn(window, "open").mockReturnValue(null)
-    try {
-      render(<ChangedFiles />)
-      fireEvent.click(screen.getByRole("button", { name: "Open diff for a.ts" }))
-      expect(open).toHaveBeenCalledExactlyOnceWith(
-        standaloneEditorHash(agentRoot("s1"), { mode: "diff", path: "a.ts" }),
-        "_blank",
-        "noopener",
-      )
-      expect(openEditor).not.toHaveBeenCalled()
-      check("b.ts")
-      expect(open).toHaveBeenCalledTimes(1)
-    } finally {
-      Object.defineProperty(window, "innerWidth", { configurable: true, value: oldWidth })
-      open.mockRestore()
-    }
-  })
-
-  it("exposes a separate keyboard button to open each file's diff", () => {
+  // The row is the keyboard's way in: the list is a grid, so a focused row
+  // opens its diff on Enter, and that does not tick its checkbox.
+  it("opens a file's diff from its focused row on Enter", () => {
     render(<ChangedFiles />)
-    const openDiff = screen.getByRole("button", { name: "Open diff for a.ts" })
-    expect(openDiff.tagName).toBe("BUTTON")
-    openDiff.focus()
-    expect(document.activeElement).toBe(openDiff)
-    fireEvent.click(openDiff, { detail: 0 })
+    const row = screen.getByText("a.ts").closest('[data-file-row]') as HTMLElement
+    expect(row.getAttribute("role")).toBe("row")
+    row.focus()
+    fireEvent.keyDown(row, { key: "Enter" })
     expect(openEditor).toHaveBeenCalledExactlyOnceWith(agentRoot("s1"), "a.ts", "diff")
     expect(screen.getByLabelText("Select a.ts").getAttribute("aria-checked")).toBe("false")
   })
@@ -583,8 +933,8 @@ describe("the changes pane's multi-select", () => {
     render(<ChangedFiles />)
     const box = screen.getByLabelText("Select a.ts")
     expect(box.className).toContain("after:hidden")
-    expect(box.parentElement!.className).toContain("size-5")
-    expect(box.parentElement!.className).toContain("pointer-coarse:size-11")
+    expect(box.parentElement!.className).toContain("w-5")
+    expect(box.parentElement!.className).toContain("h-5")
   })
 
   // The reveal is keyed on KEYBOARD focus of the checkbox, never focus-within
@@ -652,12 +1002,12 @@ describe("the changes pane's multi-select", () => {
   })
 
   it("drops a checked path once a refresh moves it to the other section", () => {
-    const view = render(<ChangedFiles />)
+    render(<ChangedFiles />)
     check("a.ts")
     expect(bar().getByRole("button", { name: "Stage 1" })).toBeTruthy()
 
     mockState = withFiles([["staged.ts", "M"], ["a.ts", "M"]], [["b.ts", "??"]])
-    view.rerender(<ChangedFiles />)
+    publishMockState()
 
     expect(
       screen.queryByRole("toolbar", { name: "Actions for the selected files" }),
@@ -665,7 +1015,7 @@ describe("the changes pane's multi-select", () => {
   })
 
   it("scopes checked paths to their session and restores them on return", () => {
-    const view = render(<ChangedFiles />)
+    render(<ChangedFiles />)
     check("a.ts")
 
     const second = withFiles([], [["other.ts", "M"]])
@@ -674,7 +1024,7 @@ describe("the changes pane's multi-select", () => {
       selectedSessionId: "s2",
       changes: { ...second.changes, sessionId: "s2" },
     }
-    view.rerender(<ChangedFiles />)
+    publishMockState()
 
     expect(
       screen.queryByRole("toolbar", { name: "Actions for the selected files" }),
@@ -687,7 +1037,7 @@ describe("the changes pane's multi-select", () => {
       [["staged.ts", "M"]],
       [["a.ts", "M"], ["b.ts", "??"]],
     )
-    view.rerender(<ChangedFiles />)
+    publishMockState()
 
     expect(screen.getByLabelText("Select a.ts").getAttribute("aria-checked")).toBe(
       "true",
@@ -707,8 +1057,34 @@ describe("the changes pane's multi-select", () => {
     expect(
       screen.queryByRole("toolbar", { name: "Actions for the selected files" }),
     ).toBeNull()
-    expect(notifyWarning).toHaveBeenCalledWith(
+    // The path is a chip, not text spliced into a plain string.
+    const notice = notifyWarning.mock.calls[0]![0] as Prose
+    expect(proseText(notice)).toBe(
       "1 file staged. 1 file had already left the list, starting with b.ts.",
+    )
+    expect(notice).toContainEqual(chip("b.ts"))
+  })
+
+  // A path the server refused for a reason of its own (a folder holding only
+  // repositories) is explained with the server's sentence, not as a path that
+  // left the list.
+  it("says why the server refused a path in a bulk stage", async () => {
+    const reason =
+      'There is nothing in "b.ts/" to stage: it holds only repositories of their own.'
+    stageMany.mockResolvedValueOnce({
+      done: ["a.ts"],
+      refused: ["b.ts"],
+      reasons: { "b.ts": reason },
+    })
+    render(<ChangedFiles />)
+    check("a.ts")
+    check("b.ts")
+
+    fireEvent.click(bar().getByRole("button", { name: "Stage 2" }))
+    await act(() => stageMany.mock.results[0]!.value as Promise<unknown>)
+
+    expect(proseText(notifyWarning.mock.calls[0]![0] as Prose)).toBe(
+      `1 file staged. ${reason}`,
     )
   })
 
@@ -761,15 +1137,29 @@ describe("the changes pane's selection on a touch screen", () => {
     expect(openEditor).not.toHaveBeenCalled()
   })
 
-  // The 44px floor on BOTH axes, and the checkbox halo grown to fill it rather
-  // than suppressed the way the desktop one is. Class pins: the geometry they
-  // stand for is measured in the preview container.
-  it("gives coarse pointers a larger slot and halo without a React media subscription", () => {
+  // The 44px floor on BOTH axes, carried by the checkbox halo rather than by
+  // the slot's layout box: the slot keeps the desktop's 20px column, so the
+  // path and the section heading line up with the marker as they do on a
+  // mouse, and the halo reaches left across the list's empty gutter to the
+  // pane edge and right to where the path starts. Class pins: the geometry
+  // they stand for is measured in the preview container.
+  it("gives coarse pointers a 44px halo without widening the slot or a React media subscription", () => {
     render(<ChangedFiles />)
     const box = screen.getByLabelText("Select a.ts")
-    expect(box.parentElement!.className).toContain("pointer-coarse:size-11")
-    expect(box.className).toContain("pointer-coarse:after:-inset-[15px]")
+    expect(box.parentElement!.className).toContain("w-5")
+    expect(box.parentElement!.className).toContain("pointer-coarse:h-11")
+    expect(box.parentElement!.className).not.toContain("pointer-coarse:size-11")
+    expect(box.className).toContain("pointer-coarse:after:-inset-y-[15px]")
+    expect(box.className).toContain("pointer-coarse:after:-left-[17px]")
+    expect(box.className).toContain("pointer-coarse:after:-right-[11px]")
     expect(box.className).toContain("pointer-coarse:after:block")
+    // The halo stops short of the pane divider's grab zone, which reaches
+    // into the list's gutter and wins a tap there, so touch rows and the
+    // section heading both sit 8px further in, keeping them lined up.
+    const row = box.closest('[role="row"]') as HTMLElement
+    expect(row.className).toContain("pointer-coarse:[--row-pad:--spacing(3)]")
+    const heading = screen.getByText("Unstaged").closest("button") as HTMLElement
+    expect(heading.className).toContain("pointer-coarse:pl-3")
   })
 
   // The row's ⋯ answers the same question the slot above answers, and used to
@@ -832,6 +1222,8 @@ describe("the bulk bar's Select all toggle", () => {
     fireEvent.change(screen.getByLabelText("Filter changed files"), {
       target: { value: "a.ts" },
     })
+    // The part of the path the filter matched is lit.
+    expect(screen.getByText("a.ts").tagName).toBe("MARK")
 
     fireEvent.click(bar().getByRole("button", { name: "Select all" }))
 
@@ -970,31 +1362,31 @@ describe("the multi-file discard confirm", () => {
     )
     await act(() => discardMany.mock.results[0]!.value as Promise<unknown>)
 
-    expect(discardMany).toHaveBeenCalledWith("s1", ["a.ts", "gone.ts"])
+    expect(discardMany).toHaveBeenCalledWith("s1", ["a.ts", "gone.ts"], {})
     expect(notifySuccess).toHaveBeenCalledTimes(1)
   })
 
   // The dialog's copy and its target both come from the live unstaged list, so
   // a file that leaves the list while the dialog is open is not discarded.
   it("acts on the survivors when a checked path leaves the list", async () => {
-    const view = render(<ChangedFiles />)
+    render(<ChangedFiles />)
     check("a.ts")
     check("gone.ts")
     fireEvent.click(bar().getByRole("button", { name: "Discard 2…" }))
 
     mockState = withFiles([], [["a.ts", "M"]])
-    view.rerender(<ChangedFiles />)
+    publishMockState()
 
     const dialog = within(screen.getByRole("dialog"))
     expect(dialog.getByText(/1 file/)).toBeTruthy()
     fireEvent.click(dialog.getByRole("button", { name: "Discard" }))
     await act(() => discardMany.mock.results[0]!.value as Promise<unknown>)
 
-    expect(discardMany).toHaveBeenCalledWith("s1", ["a.ts"])
+    expect(discardMany).toHaveBeenCalledWith("s1", ["a.ts"], {})
   })
 
   it("closes itself once every checked path has left the list", async () => {
-    const view = render(<ChangedFiles />)
+    render(<ChangedFiles />)
     check("a.ts")
     check("gone.ts")
     fireEvent.click(bar().getByRole("button", { name: "Discard 2…" }))
@@ -1002,10 +1394,77 @@ describe("the multi-file discard confirm", () => {
 
     mockState = withFiles([["a.ts", "M"], ["gone.ts", "??"]], [])
     await act(async () => {
-      view.rerender(<ChangedFiles />)
+      publishMockState()
     })
 
     expect(screen.queryByRole("dialog")).toBeNull()
+  })
+
+  // The list it was asked about is gone from under it: confirming would only
+  // hit a refused write. It closes, and stays closed when the list returns.
+  it("closes itself when the working copy goes away while it is open", async () => {
+    render(<ChangedFiles />)
+    check("a.ts")
+    fireEvent.click(bar().getByRole("button", { name: "Discard 1…" }))
+    expect(screen.getByRole("dialog")).toBeTruthy()
+
+    const listed = withFiles([], [["a.ts", "M"], ["gone.ts", "??"]])
+    mockState = {
+      ...listed,
+      spine: {
+        projects: [],
+        terminals: [],
+        sessions: [
+          {
+            id: "s1",
+            slot_tab_id: "s1",
+            title: "s1",
+            provider: "claude",
+            status: "active",
+            tabs: [],
+            workspace: {
+              kind: "managed",
+              project_id: "p1",
+              branch_name: "b",
+              initial_branch: "b",
+              branch_provenance: "created",
+              source_branch: "main",
+              worktree_path: "/wt",
+              worktree_missing: true,
+              quiet_reason: "The working copy at /wt no longer exists on disk.",
+            },
+          },
+        ],
+      },
+    } as unknown as YaranState
+    await act(async () => {
+      publishMockState()
+    })
+    // Closed: the popup may linger for its exit transition, so wait it out.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+
+    mockState = listed
+    await act(async () => {
+      publishMockState()
+    })
+    expect(screen.queryByRole("dialog")).toBeNull()
+    expect(discardMany).not.toHaveBeenCalled()
+  })
+
+  it("closes itself when the listing goes back to loading", async () => {
+    render(<ChangedFiles />)
+    check("a.ts")
+    fireEvent.click(bar().getByRole("button", { name: "Discard 1…" }))
+    expect(screen.getByRole("dialog")).toBeTruthy()
+
+    mockState = {
+      ...mockState,
+      changes: { ...mockState.changes, phase: "loading" },
+    } as unknown as YaranState
+    await act(async () => {
+      publishMockState()
+    })
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
   })
 
   // The ladder is one toast whose severity is the outcome: a partial run warns,
@@ -1239,14 +1698,6 @@ describe("the changes pane's group recaps", () => {
 // standalone editor's address on a phone (where the overlay renders nothing at
 // all), with the new-tab variant left to the row menus.
 describe("the Changes pane header's Open editor button", () => {
-  function setViewportWidth(width: number) {
-    Object.defineProperty(window, "innerWidth", {
-      value: width,
-      configurable: true,
-      writable: true,
-    })
-  }
-
   const editorButton = () => screen.getByLabelText("Open editor")
   const actionsTrigger = () => screen.getByLabelText("Changes actions")
 
@@ -1303,20 +1754,20 @@ describe("the Changes pane header's Open editor button", () => {
     expect(button.parentElement!.className).toContain("gap-2")
   })
 
-  // Same geometry as the `⋯` (including the touch floor), quieter weight: this
-  // control navigates to another surface rather than acting on the changes.
-  it("matches the ⋯ on geometry and stays quieter than it", () => {
+  // One cluster, one look: the editor button wears the `⋯`'s outline variant at
+  // the same height token (including the touch floor), so it reads as a button
+  // rather than a bare glyph. jsdom cannot paint, so the shared Button's variant
+  // and size classes are what is pinned.
+  it("matches the ⋯ on variant and geometry", () => {
     render(<ChangedFiles />)
     const button = editorButton()
     const ellipsis = actionsTrigger()
 
-    expect(button.className).toContain("size-8")
-    expect(button.className).toContain("max-md:size-11")
-    expect(ellipsis.className).toContain("size-8")
-    expect(ellipsis.className).toContain("max-md:size-11")
-
-    expect(ellipsis.className).toContain("border-border")
-    expect(button.className).not.toContain("border-border")
+    for (const control of [button, ellipsis]) {
+      expect(control.className).toContain("size-8")
+      expect(control.className).toContain("max-md:size-11")
+      expect(control.className).toContain("border-border")
+    }
   })
 
   it("names itself for a screen reader and hints the same words on hover", () => {
@@ -1340,5 +1791,500 @@ describe("the Changes pane header's Open editor button", () => {
 
     expect(screen.queryByLabelText("Open editor")).toBeNull()
     expect(screen.getByText("No session selected")).toBeTruthy()
+  })
+})
+
+// The header's second door to the agent's New terminal: the same shared action
+// the agent menu and the dock strip's + run, for the agent on screen.
+describe("the Changes pane header's New terminal button", () => {
+  const terminalButton = () => screen.getByLabelText("New terminal")
+
+  it("opens a terminal for the selected agent, between the editor and the ⋯", () => {
+    render(<ChangedFiles />)
+    const button = terminalButton()
+    const editor = screen.getByLabelText("Open editor")
+    const ellipsis = screen.getByLabelText("Changes actions")
+    expect(button.parentElement).toBe(ellipsis.parentElement)
+    expect(editor.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(button.compareDocumentPosition(ellipsis) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    for (const token of ["size-8", "max-md:size-11", "border-border"]) {
+      expect(button.className).toContain(token)
+    }
+
+    fireEvent.click(button)
+    expect(createTerminal).toHaveBeenCalledTimes(1)
+    expect(createTerminal).toHaveBeenCalledWith("s1")
+  })
+
+  it("is absent when no agent is selected", () => {
+    mockState = {
+      selectedSessionId: null,
+      changes: loadedChanges(),
+    } as unknown as YaranState
+    render(<ChangedFiles />)
+    expect(screen.queryByLabelText("New terminal")).toBeNull()
+  })
+})
+
+// An agent whose worktree held an unignored node_modules (~29k untracked files)
+// once froze the whole browser tab on selection. Two measured causes lived in
+// this pane: every changed file mounted a full row (no windowing), and each
+// row's base-ui Checkbox read its hidden input's `labels` after EVERY commit,
+// which walks the whole document, so a mount or re-render of n rows cost
+// O(n^2). In the preview repro that lookup alone took 1.2 s at 1000 rows, 4.8 s
+// at 2000 and 13.2 s at 4000. These pin both fixes.
+describe("huge-changes repro: the pane with thousands of changed files", () => {
+  function manyUntracked(count: number): Array<[string, string]> {
+    return Array.from({ length: count }, (_, index): [string, string] => [
+      `web/node_modules/pkg${Math.floor(index / 50)}/lib/file${index % 50}.js`,
+      "?",
+    ])
+  }
+
+  it("mounts a bounded number of rows however long the list is", () => {
+    mockState = withFiles([], manyUntracked(2000))
+    render(<ChangedFiles />)
+    const rows = screen.getAllByRole("row").length
+    expect(rows, `2000 changed files mounted ${rows} rows`).toBeLessThanOrEqual(300)
+  })
+
+  it("does not look up a label per row on every commit", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "labels",
+    )
+    expect(descriptor?.get, "jsdom implements input.labels").toBeTruthy()
+    let reads = 0
+    Object.defineProperty(HTMLInputElement.prototype, "labels", {
+      configurable: true,
+      get(this: HTMLInputElement) {
+        reads += 1
+        return descriptor!.get!.call(this)
+      },
+    })
+    try {
+      mockState = withFiles([], manyUntracked(200))
+      const view = render(<ChangedFiles />)
+      const onMount = reads
+      reads = 0
+      // An unrelated store update hands the pane a new state object, as
+      // `useYaran` does on every setState anywhere in the app.
+      mockState = { ...mockState }
+      view.rerender(<ChangedFiles />)
+      const onRerender = reads
+      expect(
+        { onMount: onMount <= 10, onRerender: onRerender <= 10 },
+        `label lookups scale with rows: ${onMount} on mount, ${onRerender} on a re-render of 200 rows`,
+      ).toEqual({ onMount: true, onRerender: true })
+    } finally {
+      Object.defineProperty(HTMLInputElement.prototype, "labels", descriptor!)
+    }
+  })
+})
+
+// The windowed list has to keep every behaviour the full list had: the section
+// headings fold, the window follows the scroll, a focused row survives being
+// scrolled away, and a row's menu still opens.
+describe("the Changes pane's windowed list", () => {
+  function numbered(count: number): Array<[string, string]> {
+    return Array.from({ length: count }, (_, index): [string, string] => [
+      `src/file${index}.ts`,
+      "M",
+    ])
+  }
+
+  function scrollTo(top: number) {
+    const el = document.querySelector(
+      '[data-slot="scroll-area-viewport"]',
+    ) as HTMLElement
+    Object.defineProperty(el, "scrollTop", { configurable: true, value: top })
+    fireEvent.scroll(el)
+  }
+
+  // Default desktop heights: a 32px heading, then 42px rows.
+  const ROW_2500 = 32 + 2500 * 42
+
+  it("folds a section's rows away under its heading and brings them back", () => {
+    mockState = withFiles([["staged.ts", "M"]], [["a.ts", "M"]])
+    render(<ChangedFiles />)
+    const heading = screen.getByRole("button", { name: /^Staged/ })
+    expect(heading.getAttribute("aria-expanded")).toBe("true")
+
+    fireEvent.click(heading)
+
+    expect(heading.getAttribute("aria-expanded")).toBe("false")
+    expect(screen.queryByText("staged.ts")).toBeNull()
+    expect(screen.getByText("a.ts")).toBeTruthy()
+
+    fireEvent.click(heading)
+    expect(screen.getByText("staged.ts")).toBeTruthy()
+  })
+
+  it("points each heading at the container holding its own rows", () => {
+    mockState = withFiles([["staged.ts", "M"]], [["a.ts", "M"]])
+    render(<ChangedFiles />)
+    for (const [name, mine, theirs] of [
+      [/^Staged/, "staged.ts", "a.ts"],
+      [/^Unstaged/, "a.ts", "staged.ts"],
+    ] as const) {
+      const id = screen.getByRole("button", { name }).getAttribute("aria-controls")
+      expect(id).toBeTruthy()
+      const rows = document.getElementById(id!)
+      expect(rows).toBeTruthy()
+      expect(within(rows!).getByText(mine)).toBeTruthy()
+      expect(within(rows!).queryByText(theirs)).toBeNull()
+    }
+  })
+
+  it("mounts the rows the scroll position shows rather than the first screenful", () => {
+    mockState = withFiles([], numbered(5000))
+    render(<ChangedFiles />)
+    expect(screen.getByText("src/file0.ts")).toBeTruthy()
+    expect(screen.queryByText("src/file2500.ts")).toBeNull()
+
+    scrollTo(ROW_2500)
+
+    expect(screen.getByText("src/file2500.ts")).toBeTruthy()
+    expect(screen.queryByText("src/file0.ts")).toBeNull()
+    expect(screen.getAllByRole("row").length).toBeLessThanOrEqual(60)
+  })
+
+  it("keeps a focused row mounted when it is scrolled out of the window", () => {
+    mockState = withFiles([], numbered(5000))
+    render(<ChangedFiles />)
+    const box = screen.getByLabelText("Select src/file3.ts")
+    act(() => box.focus())
+    expect(document.activeElement).toBe(box)
+
+    scrollTo(ROW_2500)
+
+    expect(screen.getByText("src/file2500.ts")).toBeTruthy()
+    expect(box.isConnected).toBe(true)
+    expect(document.activeElement).toBe(box)
+  })
+
+  // The row's ⋯ menu is portaled out of the list, so focus moving into it
+  // looks like focus leaving the list. It has not: the menu is the row's own,
+  // and unmounting the row would take the open menu with it.
+  it("keeps the row pinned while focus is in that row's own menu", async () => {
+    mockState = withFiles([], numbered(5000))
+    render(<ChangedFiles />)
+    const trigger = screen.getByLabelText("Actions for src/file3.ts")
+    act(() => trigger.focus())
+    fireEvent.click(trigger)
+    const menu = await screen.findByRole("menu")
+    const item = within(menu).getByText("Stage").closest('[role="menuitem"]') as HTMLElement
+    act(() => item.focus())
+    expect(menu.contains(document.activeElement)).toBe(true)
+
+    scrollTo(ROW_2500)
+
+    expect(screen.getByText("src/file2500.ts")).toBeTruthy()
+    expect(trigger.isConnected).toBe(true)
+    expect(screen.getByRole("menu")).toBeTruthy()
+  })
+
+  it("releases the pin once focus leaves the list", () => {
+    mockState = withFiles([], numbered(5000))
+    render(<ChangedFiles />)
+    act(() => screen.getByLabelText("Select src/file3.ts").focus())
+    act(() => screen.getByLabelText("Filter changed files").focus())
+
+    scrollTo(ROW_2500)
+
+    expect(screen.queryByText("src/file3.ts")).toBeNull()
+  })
+
+  // Edit is offered on both layouts. A computer opens the in-page overlay; a
+  // phone moves this same tab to the standalone editor's address, in file mode.
+  it.each([
+    {
+      layout: "a computer",
+      width: 1024,
+      overlayCalls: [[{ kind: "agent", sessionId: "s1" }, "a.ts"]],
+      hash: "",
+    },
+    {
+      layout: "a phone",
+      width: 400,
+      overlayCalls: [],
+      hash: "#/editor/agent/s1/file/a.ts",
+    },
+  ])("mounts a row's menu only once it is opened, and it still opens, on $layout", async ({ width, overlayCalls, hash }) => {
+    setViewportWidth(width)
+    mockState = withFiles([], [["a.ts", "M"]])
+    render(<ChangedFiles />)
+    expect(document.querySelector('[data-slot="dropdown-menu-content"]')).toBeNull()
+
+    fireEvent.click(screen.getByLabelText("Actions for a.ts"))
+
+    const menu = within(await screen.findByRole("menu"))
+    expect(menu.getByText("Stage")).toBeTruthy()
+    expect(menu.getByText("Discard…")).toBeTruthy()
+    const edit = menu.getByRole("menuitem", { name: "Edit" })
+    // jsdom applies no stylesheet, so the class is what says it is shown.
+    expect(edit.className).not.toMatch(/(^|\s)hidden(\s|$)/)
+    expect(edit.querySelector("svg")).toBeTruthy()
+
+    fireEvent.click(edit)
+    expect(openEditor.mock.calls).toEqual(overlayCalls)
+    expect(window.location.hash).toBe(hash)
+  })
+})
+
+// Folding: a wholly untracked folder is ONE row on the wire. The browser's
+// expand control is a later change; until then a folder row must still read as
+// a folder (its path with a trailing slash and how many files it stands for)
+// and must never open a diff, which would try to read a directory as a file.
+describe("a folded folder row", () => {
+  function withFolder(): YaranState {
+    return {
+      selectedSessionId: "s1",
+      changes: {
+        ...loadedChanges(),
+        unstaged: [
+          {
+            path: "node_modules",
+            status: "??",
+            additions: 0,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            kind: "directory",
+            file_count: 28747,
+          },
+          {
+            path: "vendor/lib",
+            status: "??",
+            additions: 0,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            kind: "nested_repository",
+          },
+        ],
+      },
+    } as unknown as YaranState
+  }
+
+  it("shows the path with a trailing slash and the file count as text", () => {
+    mockState = withFolder()
+    render(<ChangedFiles />)
+    expect(screen.getByText("node_modules/")).toBeTruthy()
+    expect(screen.getByText("28,747 files")).toBeTruthy()
+    expect(screen.getByText("vendor/lib/")).toBeTruthy()
+    expect(screen.getByText("nested repository")).toBeTruthy()
+  })
+
+  it("counts the files inside the folder in the group's badge", () => {
+    mockState = withFolder()
+    render(<ChangedFiles />)
+    const heading = screen.getByText("Unstaged").closest("button") as HTMLElement
+    expect(within(heading).getByText("28,748")).toBeTruthy()
+  })
+
+  it("counts the files inside a checked folder on the bulk bar", () => {
+    mockState = withFolder()
+    render(<ChangedFiles />)
+    fireEvent.click(screen.getByLabelText("Select node_modules"))
+    const toolbar = within(
+      screen.getByRole("toolbar", { name: "Actions for the selected files" }),
+    )
+    expect(toolbar.getByText("Stage 28,747")).toBeTruthy()
+    expect(toolbar.getByText("Discard 28,747…")).toBeTruthy()
+  })
+
+  // The bulk discard names what the user confirmed for each folder, so the
+  // server can refuse one that changed kind since the dialog opened.
+  it("tells the server what each folder was when the bulk discard was confirmed", async () => {
+    mockState = withFolder()
+    render(<ChangedFiles />)
+    fireEvent.click(screen.getByLabelText("Select node_modules"))
+    fireEvent.click(bar().getByRole("button", { name: "Discard 28,747…" }))
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Discard" }),
+    )
+    await act(() => discardMany.mock.results[0]!.value as Promise<unknown>)
+    expect(discardMany).toHaveBeenCalledWith("s1", ["node_modules"], {
+      node_modules: { kind: "directory", files: 28747 },
+    })
+  })
+
+  it("does not open a diff when a folder row is clicked", () => {
+    mockState = withFolder()
+    render(<ChangedFiles />)
+    fireEvent.click(screen.getByText("node_modules/"))
+    expect(openEditor).not.toHaveBeenCalled()
+  })
+
+  function withWorktree(): YaranState {
+    const base = withFolder()
+    return {
+      ...base,
+      changes: {
+        ...base.changes,
+        unstaged: [
+          ...base.changes.unstaged,
+          {
+            path: "inner-wt",
+            status: "??",
+            additions: 0,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            kind: "linked_worktree",
+          },
+        ],
+      },
+    } as unknown as YaranState
+  }
+
+  // A verb with nothing to act on is not offered as a click that silently
+  // does nothing: it is disabled, and its tooltip says why.
+  it("disables a bulk verb whose count is zero and says why", () => {
+    mockState = withWorktree()
+    render(<ChangedFiles />)
+    fireEvent.click(screen.getByLabelText("Select inner-wt"))
+
+    const stage = bar().getByRole("button", { name: /Stage 0/ })
+    const discard = bar().getByRole("button", { name: /Discard 0/ })
+    expect((stage as HTMLButtonElement).disabled).toBe(true)
+    expect((discard as HTMLButtonElement).disabled).toBe(true)
+    const hints = bar()
+      .getAllByTestId("tooltip-content")
+      .map((el) => el.textContent ?? "")
+    expect(hints.some((text) => text.startsWith("Nothing selected can be staged"))).toBe(true)
+    expect(hints.some((text) => text.startsWith("Nothing selected can be discarded"))).toBe(true)
+  })
+
+  // In a mixed selection the rows a bulk stage leaves out are named with why,
+  // because they did not move and nothing on screen says so.
+  it("names the rows a mixed bulk stage left out", async () => {
+    mockState = withWorktree()
+    render(<ChangedFiles />)
+    fireEvent.click(screen.getByLabelText("Select node_modules"))
+    fireEvent.click(screen.getByLabelText("Select inner-wt"))
+
+    fireEvent.click(bar().getByRole("button", { name: /Stage 28,747/ }))
+    await act(() => stageMany.mock.results[0]!.value as Promise<unknown>)
+
+    expect(stageMany).toHaveBeenCalledWith("s1", ["node_modules"])
+    const notice = notifyInfo.mock.calls.map((call) => proseText(call[0] as Prose))
+    expect(notice).toContain(
+      "1 selected row was left out: inner-wt/ is a worktree of this repository, which staging would record as a link.",
+    )
+  })
+
+  it("names the rows a mixed bulk discard left out", async () => {
+    mockState = withWorktree()
+    render(<ChangedFiles />)
+    fireEvent.click(screen.getByLabelText("Select node_modules"))
+    fireEvent.click(screen.getByLabelText("Select inner-wt"))
+
+    fireEvent.click(bar().getByRole("button", { name: /Discard 28,747/ }))
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Discard" }))
+    await act(() => discardMany.mock.results[0]!.value as Promise<unknown>)
+
+    const notice = notifyInfo.mock.calls.map((call) => proseText(call[0] as Prose))
+    expect(notice).toContain(
+      "1 selected row was left out: inner-wt/ is a worktree of this repository, which the worktree manager removes.",
+    )
+  })
+
+  it("leaves a worktree of this repository out of the bar's counts", () => {
+    const base = withFolder()
+    mockState = {
+      ...base,
+      changes: {
+        ...base.changes,
+        unstaged: [
+          ...base.changes.unstaged,
+          {
+            path: "inner-wt",
+            status: "??",
+            additions: 0,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            kind: "linked_worktree",
+          },
+        ],
+      },
+    } as unknown as YaranState
+    render(<ChangedFiles />)
+    fireEvent.click(screen.getByLabelText("Select node_modules"))
+    fireEvent.click(screen.getByLabelText("Select inner-wt"))
+    const toolbar = within(
+      screen.getByRole("toolbar", { name: "Actions for the selected files" }),
+    )
+    expect(toolbar.getByText("Stage 28,747")).toBeTruthy()
+    expect(toolbar.getByText("Discard 28,747…")).toBeTruthy()
+  })
+
+  it("offers no menu for a row nothing acts on, and the row says what it is", async () => {
+    mockState = {
+      selectedSessionId: "s1",
+      changes: {
+        ...loadedChanges(),
+        unstaged: [
+          {
+            path: "vendor",
+            status: "??",
+            additions: 0,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            kind: "directory",
+            file_count: 0,
+            nested_repositories: 2,
+          },
+          {
+            path: "inner-wt",
+            status: "??",
+            additions: 0,
+            deletions: 0,
+            binary: false,
+            diff_excluded: false,
+            kind: "linked_worktree",
+          },
+        ],
+      },
+    } as unknown as YaranState
+    render(<ChangedFiles />)
+    // Neither is staged nor discarded: the server refuses a worktree of this
+    // repository, and a folder holding only repositories has nothing a stage
+    // or a delete would act on. A menu with nothing in it is no menu, so the
+    // rows carry no trigger; their labels say what they are.
+    expect(screen.getByText("worktree of this repository")).toBeTruthy()
+    expect(screen.getByText("2 nested repositories")).toBeTruthy()
+    for (const path of ["vendor", "inner-wt"]) {
+      expect(screen.queryByLabelText(`Actions for ${path}`)).toBeNull()
+    }
+  })
+
+  // Staging a folder stages its files and leaves the repositories inside it
+  // out; the rows moving says the stage happened, but only a message can say
+  // what was left behind.
+  it("says which repositories a folder stage left out", async () => {
+    mockState = withFolder()
+    stageOne.mockResolvedValueOnce({ left_out_repositories: 1, left_out_worktrees: 2 })
+    render(<ChangedFiles />)
+    fireEvent.click(screen.getByLabelText("Actions for node_modules"))
+    const menu = within(await screen.findByRole("menu"))
+    fireEvent.click(menu.getByText("Stage"))
+    await vi.waitFor(() => expect(notifyInfo).toHaveBeenCalledTimes(1))
+    expect(String(notifyInfo.mock.calls[0]![0])).toContain(
+      "left out 1 nested repository and 2 worktrees of this repository",
+    )
+  })
+
+  it("offers staging and discarding the folder but no editor", async () => {
+    mockState = withFolder()
+    render(<ChangedFiles />)
+    fireEvent.click(screen.getByLabelText("Actions for node_modules"))
+    const menu = within(await screen.findByRole("menu"))
+    expect(menu.getByText("Stage")).toBeTruthy()
+    expect(menu.getByText("Discard…")).toBeTruthy()
+    expect(menu.queryByText("Edit")).toBeNull()
   })
 })

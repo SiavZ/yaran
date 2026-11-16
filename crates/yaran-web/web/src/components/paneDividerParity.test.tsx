@@ -58,6 +58,7 @@ const { ResizableHandle, ResizablePanel, ResizablePanelGroup } = await import(
 const {
   DIVIDER_ACTIVE_PAINT,
   DIVIDER_CHROME,
+  DIVIDER_GRAB,
   DIVIDER_DRAG_THRESHOLD_PX,
   DIVIDER_HELD_ATTR,
   DIVIDER_HELD_OFF,
@@ -66,6 +67,8 @@ const {
   DIVIDER_TARGET_MIN,
 } = await import("@/lib/paneDivider")
 const { sidebarWidthToPx } = await import("@/lib/sidebarResize")
+const { DockDivider } = await import("./DockDivider")
+const { dividerRelease } = await import("./agentStackLayout")
 
 const mockState = {
   spine: null,
@@ -169,6 +172,46 @@ describe("the two workspace dividers", () => {
       expect(el.getAttribute("aria-orientation")).toBe("vertical")
       expect(el.tabIndex).toBe(0)
     }
+  })
+})
+
+// The third divider, between an agent and its terminal dock. It lies the other
+// way, so its band grows in height rather than width, but it is the Changes
+// divider's own handle and grabs the same way. It paints differently: its band
+// is 8px tall, so the band itself must stay clear and only its line and grip
+// light up, or it reads as a grey slab and covers the sidebar's edge line.
+describe("the terminal dock's divider", () => {
+  function dockDivider(): HTMLElement {
+    const { container } = render(
+      <ResizablePanelGroup orientation="vertical">
+        <ResizablePanel id="a" defaultSize="50%" />
+        <DockDivider disabled={false} />
+        <ResizablePanel id="b" defaultSize="50%" />
+      </ResizablePanelGroup>,
+    )
+    return container.querySelector('[data-slot="resizable-handle"]')!
+  }
+
+  it("grabs like the others and paints only its line and grip", () => {
+    const el = dockDivider()
+    const tokens = el.className.split(/\s+/)
+    for (const token of DIVIDER_GRAB.split(/\s+/)) expect(tokens).toContain(token)
+    expect(tokens).toContain(DIVIDER_STACKING)
+    expect(tokens).not.toContain("bg-border")
+    expect(tokens).not.toContain(DIVIDER_ACTIVE_PAINT)
+    const line = el.querySelector('[data-testid="dock-divider-line"]')!
+    const grip = el.querySelector('[data-testid="dock-divider-grip"]')!
+    expect(line.className).toContain("group-data-[yaran-held=true]/divider:")
+    expect(grip.className).toContain("group-data-[yaran-held=true]/divider:")
+    expect(el.getAttribute(DIVIDER_HELD_ATTR)).toBe(DIVIDER_HELD_OFF)
+    expect(el.getAttribute("role")).toBe("separator")
+    expect(el.getAttribute("aria-orientation")).toBe("horizontal")
+  })
+
+  it("remembers a release that left both parts open, and never one that folded a part", () => {
+    expect(dividerRelease(40, 60)).toEqual({ persist: 40 })
+    expect(dividerRelease(100, 0)).toEqual({ fold: "agent" })
+    expect(dividerRelease(0, 100)).toEqual({ fold: "terminal" })
   })
 })
 

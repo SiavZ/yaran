@@ -4,10 +4,11 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
 } from "@yaran/ui-kit/dropdown-menu"
+import { MENU_GROUP_LABELS } from "@/lib/menuGroupLabels"
 import { editorRootForTarget } from "@/lib/editorRoot"
-import { openDeleteTerminal, openEditor, standaloneEditorHash } from "@/lib/store"
+import { openDeleteTerminal, openEditor, standaloneEditorHash, useYaran } from "@/lib/store"
+import { spineListsTerminal } from "@/lib/terminals"
 import type { TerminalOwnerRef } from "@/lib/store"
 
 // The terminal's own actions, the twin of `AgentActionsMenu`. Never rendered on
@@ -24,26 +25,26 @@ import type { TerminalOwnerRef } from "@/lib/store"
 export function TerminalActionsMenu({
   terminalId,
   owner,
-  label,
 }: {
   terminalId: string
   owner: TerminalOwnerRef
-  /// A heading over the group, for the menu that carries these rows beside
-  /// somebody else's: an unlabelled Close… under an agent's actions reads as
-  /// closing the agent. Absent where the whole menu is the terminal's.
-  label?: string
 }) {
   // The editor's root is the directory this terminal was SPAWNED in, and a
   // terminal owned by an agent is sent to that agent's editor instead: same
   // worktree, and the agent's editor is the one with the git surface.
   // `editorRootForTarget` is what decides that.
   const editorRoot = editorRootForTarget({ kind: "terminal", terminalId, owner })
+  // A terminal just created is on screen before the workspace lists it, and
+  // its close confirm has nothing to confirm until then, so Close… waits.
+  const listed = spineListsTerminal(useYaran().spine?.terminals, terminalId)
   return (
     <DropdownMenuGroup>
       {/* Inside the group rather than above it: the primitive's label part reads
           its group from context, and the grouping is also what a screen reader
-          announces the heading as. */}
-      {label ? <DropdownMenuLabel>{label}</DropdownMenuLabel> : null}
+          announces the heading as. Always present: under an agent's actions an
+          unlabelled Close… reads as closing the agent, and a terminal's own menu
+          carries the same heading so the two cannot say different things. */}
+      <DropdownMenuLabel>{MENU_GROUP_LABELS.terminal}</DropdownMenuLabel>
       {/* The in-app overlay is desktop-only, so on a phone its item would be a
           dead no-op and the row is hidden rather than offered. */}
       <DropdownMenuItem
@@ -66,13 +67,14 @@ export function TerminalActionsMenu({
         <ExternalLink />
         Open editor in new tab
       </DropdownMenuItem>
-      <DropdownMenuSeparator />
       {/* Neutral color per the destructive convention: the `…` plus
           ConfirmDeleteTerminalDialog are the danger signal. */}
-      <DropdownMenuItem onClick={() => openDeleteTerminal(terminalId)}>
-        <X />
-        Close…
-      </DropdownMenuItem>
+      {listed ? (
+        <DropdownMenuItem onClick={() => openDeleteTerminal(terminalId)}>
+          <X />
+          Close…
+        </DropdownMenuItem>
+      ) : null}
     </DropdownMenuGroup>
   )
 }

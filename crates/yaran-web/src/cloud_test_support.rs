@@ -8,8 +8,13 @@
 //! <module-headers:begin>
 //! Uses:
 //! cloud_test_support.rs
+//! ├── auth
+//! ├── auth::provenance
 //! ├── cloud_ingress
 //! ├── cloud_jwks_cache
+//! ├── engine_actor
+//! ├── exposure
+//! ├── host_guard
 //! ├── server
 //! ├── test_support
 //! ├── yaran-core::cloud::access_jwks
@@ -17,7 +22,7 @@
 //! ├── yaran-core::cloud::protocol::handoff_consent
 //! ├── yaran-core::cloud::protocol::rules
 //! └── yaran-core::test_scratch
-//! External: axum, ring, serde_json, std, tower, tracing, tracing_subscriber
+//! External: axum, futures_util, ring, serde_json, std, tokio, tokio_tungstenite, tower, tracing, tracing_subscriber
 //!
 //! Used by:
 //! cloud_test_support.rs
@@ -90,6 +95,8 @@ impl ConsentKeySource for FakeConsent {
 pub(crate) struct Harness {
     _tmp: ScratchDir,
     pub app: Router,
+    /// The engine behind `app`, for a test that changes its live `[server.auth]`.
+    pub engine: crate::engine_actor::EngineHandle,
     pub ingress: CloudIngress,
     pub clock: Arc<AtomicI64>,
     pub consent: Arc<FakeConsent>,
@@ -124,16 +131,27 @@ pub(crate) fn harness_with(host: Option<&str>, jwks: Result<Jwks, String>) -> Ha
         ingress.bind(binding_input(host), Box::new(|_| {})).unwrap();
     }
     let probe = Router::new().route("/probe", axum::routing::post(|| async { "ok" }));
+    let engine = crate::test_support::test_engine_handle(tmp.path());
     let app = build_app(
-        crate::test_support::test_engine_handle(tmp.path()),
+        engine.clone(),
         probe,
         RouterParams::plain_http()
-            .with_host_allowlist(vec!["127.0.0.1".parse().unwrap()], vec![], false)
+            .with_host_allowlist(
+                vec!["127.0.0.1".parse().unwrap()],
+                vec![],
+                crate::host_guard::TailscaleLiteralRule::Refuse,
+            )
+            // A look at Tailscale that found nothing reaching yaran, so a plain
+            // loopback request reads as this machine, as on a real serve.
+            .with_live_exposure(crate::exposure::ExposureCell::new(
+                crate::exposure::FunnelState::Open,
+            ))
             .with_cloud_ingress(ingress.clone()),
     );
     Harness {
         _tmp: tmp,
         app,
+        engine,
         ingress,
         clock,
         consent,
@@ -172,6 +190,85 @@ pub(crate) fn request(
         Some(jwt) => b.header("Cf-Access-Jwt-Assertion", jwt),
         None => b,
     }
+}
+
+/// Serves `app` on loopback the way every serve leg does (both ends of each
+/// connection recorded) and opens a WebSocket to `path` as `host`.
+pub(crate) async fn ws(
+    app: &Router,
+    path: &str,
+    host: &str,
+    jwt: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+    ws_with(app, path, host, jwt, &[]).await
+}
+
+/// [`ws`] with `extra` headers on the upgrade request.
+pub(crate) async fn ws_with(
+    app: &Router,
+    path: &str,
+    host: &str,
+    jwt: &str,
+    extra: &[(&str, &str)],
+) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = app.clone();
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            crate::auth::provenance::Recorded(listener),
+            app.into_make_service_with_connect_info::<crate::auth::Arrival>(),
+        )
+        .await;
+    });
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let request = Request::builder()
+        .uri(format!("ws://{host}{path}"))
+        .header("Host", host)
+        .header("Cf-Access-Jwt-Assertion", jwt)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        );
+    let request = extra
+        .iter()
+        .fold(request, |request, (name, value)| {
+            request.header(*name, *value)
+        })
+        .body(())
+        .unwrap();
+    tokio_tungstenite::client_async(request, stream)
+        .await
+        .unwrap()
+        .0
+}
+
+/// The close code the socket ends with within `wait`, or `None` if it stays open.
+pub(crate) async fn close_code(
+    socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    wait: Duration,
+) -> Option<u16> {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let read = async {
+        while let Some(Ok(message)) = socket.next().await {
+            if let Message::Close(frame) = message {
+                return frame.map(|f| u16::from(f.code));
+            }
+        }
+        None
+    };
+    tokio::time::timeout(wait, read).await.ok().flatten()
+}
+
+/// Puts the clock `seconds` before the valid token's `exp + skew`.
+pub(crate) fn before_expiry(h: &Harness, seconds: i64) {
+    let skew = i64::try_from(IngressSettings::default().clock_skew.as_secs()).unwrap();
+    h.clock
+        .store(fixture_now() + 3600 + skew - seconds, Ordering::SeqCst);
 }
 
 pub(crate) async fn text(response: Response<Body>) -> String {

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 import type { Spine } from "./workspaceApi"
 
 // Deep-linking: a tiny hash router mirrors the selected target into
@@ -73,6 +80,13 @@ let loc: {
 }
 
 const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (u.includes("/api/v1/workspace")) {
     return {
@@ -117,30 +131,41 @@ beforeEach(() => {
   spineBody = makeSpine([])
   // Both writers mirror the new URL back into the fake `location`, the way a
   // browser does, so the router's next push-or-replace decision reads the hash
-  // it actually just wrote rather than a frozen boot value.
-  replaceStateMock = vi.fn((_s: unknown, _t: string, url: string) => {
+  // it actually just wrote rather than a frozen boot value. They keep the state
+  // they were handed too, as the entry a browser parks on does.
+  const fakeHistory = {
+    pushState: null as unknown,
+    replaceState: null as unknown,
+    state: null as unknown,
+  }
+  replaceStateMock = vi.fn((s: unknown, _t: string, url: string) => {
     loc.hash = url.startsWith("#") ? url : ""
+    fakeHistory.state = s
   })
-  pushStateMock = vi.fn((_s: unknown, _t: string, url: string) => {
+  pushStateMock = vi.fn((s: unknown, _t: string, url: string) => {
     loc.hash = url.startsWith("#") ? url : ""
+    fakeHistory.state = s
   })
+  fakeHistory.pushState = pushStateMock
+  fakeHistory.replaceState = replaceStateMock
   vi.stubGlobal("localStorage", {
     getItem: () => null,
     setItem: () => {},
     removeItem: () => {},
   })
   vi.stubGlobal("window", { addEventListener: () => {} })
-  vi.stubGlobal("history", {
-    pushState: pushStateMock,
-    replaceState: replaceStateMock,
-    state: null,
-  })
+  vi.stubGlobal("history", fakeHistory)
   vi.stubGlobal("WebSocket", FakeWebSocket)
   vi.stubGlobal("fetch", fetchMock)
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -274,14 +299,15 @@ describe("deep-link restore on load", () => {
     expect(mod.getSnapshot().selectedTarget).toBeNull()
   })
 
-  it("falls back to the agent when the terminal id is gone", async () => {
+  it("says the terminal is not found when its id is gone, never swapping in another", async () => {
     const mod = await loadStore("#/agent/s1/terminal/gone", [
       { id: "s1", project_id: "p1", terminals: ["t-other"] },
     ])
-    expect(mod.getSnapshot().selectedTarget).toEqual({
-      kind: "agent",
-      sessionId: "s1",
-      tabId: "s1",
+    expect(mod.getSnapshot().selectedTarget).toBeNull()
+    expect(mod.getSnapshot().routeNotFound).toEqual({
+      kind: "terminal",
+      terminalId: "gone",
+      owner: { kind: "session", sessionId: "s1" },
     })
   })
 
@@ -345,7 +371,7 @@ describe("selection writes the hash", () => {
     pushStateMock.mockClear()
     mod.selectSession("s1")
     expect(pushStateMock).toHaveBeenCalledWith(
-      { yaranRoute: "#/agent/s1" },
+      expect.objectContaining({ yaranRoute: "#/agent/s1" }),
       "",
       "#/agent/s1",
     )
@@ -362,7 +388,7 @@ describe("selection writes the hash", () => {
     mod.selectSession("s2")
     expect(replaceStateMock).not.toHaveBeenCalled()
     expect(pushStateMock).toHaveBeenCalledWith(
-      { yaranRoute: "#/agent/s2" },
+      expect.objectContaining({ yaranRoute: "#/agent/s2" }),
       "",
       "#/agent/s2",
     )
@@ -375,15 +401,19 @@ describe("selection writes the hash", () => {
     pushStateMock.mockClear()
     mod.selectTab("s1", "t2")
     expect(pushStateMock).toHaveBeenCalledWith(
-      { yaranRoute: "#/agent/s1/tab/t2" },
+      expect.objectContaining({ yaranRoute: "#/agent/s1/tab/t2" }),
       "",
       "#/agent/s1/tab/t2",
     )
-    replaceStateMock.mockClear()
+    pushStateMock.mockClear()
     // Focusing the first tab collapses back to the bare form (here spelled with
-    // the placeholder id), and stays on the same agent, so it replaces.
+    // the placeholder id). Another tab is another position, so it pushes.
     mod.selectTab("s1", "s1")
-    expect(replaceStateMock).toHaveBeenCalledWith(null, "", "#/agent/s1")
+    expect(pushStateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ yaranRoute: "#/agent/s1" }),
+      "",
+      "#/agent/s1",
+    )
   })
 
   it("selecting a terminal writes the terminal form", async () => {
@@ -393,7 +423,7 @@ describe("selection writes the hash", () => {
     pushStateMock.mockClear()
     mod.selectTerminal("t1", { kind: "session", sessionId: "s1" })
     expect(pushStateMock).toHaveBeenCalledWith(
-      { yaranRoute: "#/agent/s1/terminal/t1" },
+      expect.objectContaining({ yaranRoute: "#/agent/s1/terminal/t1" }),
       "",
       "#/agent/s1/terminal/t1",
     )
@@ -404,7 +434,7 @@ describe("selection writes the hash", () => {
     pushStateMock.mockClear()
     mod.selectTerminal("pt1", { kind: "project", projectId: "p1" })
     expect(pushStateMock).toHaveBeenCalledWith(
-      { yaranRoute: "#/project/p1/terminal/pt1" },
+      expect.objectContaining({ yaranRoute: "#/project/p1/terminal/pt1" }),
       "",
       "#/project/p1/terminal/pt1",
     )
@@ -414,6 +444,10 @@ describe("selection writes the hash", () => {
     const mod = await loadStore("#/agent/s1", [{ id: "s1", project_id: "p1" }])
     pushStateMock.mockClear()
     mod.selectSession(null)
-    expect(pushStateMock).toHaveBeenCalledWith({ yaranRoute: "" }, "", "/")
+    expect(pushStateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ yaranRoute: "" }),
+      "",
+      "/",
+    )
   })
 })

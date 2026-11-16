@@ -25,6 +25,11 @@ function installBootStubs() {
   )
 }
 installBootStubs()
+// Loaded at collection, where no test timeout applies: the first load of the
+// dialog and the store behind it is the slowest step in the file, and inside
+// a test it is charged to whichever case happens to run first.
+const { CreateAgentDialog } = await import("./CreateAgentDialog")
+const { getSnapshot } = await import("@/lib/store")
 
 const project = { id: "p1", name: "acme" }
 const session = {
@@ -51,6 +56,7 @@ function seed(target: CreateAgentTarget, overrides: Partial<YaranState> = {}) {
     createAgentPrInput: "",
     createAgentPrResolving: false,
     createAgentPrError: null,
+    createAgentReviewCopy: null,
     spine: { projects: [project], sessions: [session] },
     ...overrides,
   } as unknown as YaranState
@@ -84,7 +90,6 @@ describe("CreateAgentDialog", () => {
 
   it("renders new-agent controls for a project", async () => {
     seed({ kind: "new", projectId: "p1" })
-    const { CreateAgentDialog } = await import("./CreateAgentDialog")
     render(<CreateAgentDialog />)
 
     expect(screen.getByRole("heading").textContent).toBe("New agent in acme")
@@ -97,11 +102,17 @@ describe("CreateAgentDialog", () => {
     expect(
       screen.getByText("Copy uncommitted changes from the project checkout"),
     ).toBeTruthy()
+    expect(screen.getByText("Use randomized pet name")).toBeTruthy()
+
+    // The name field turns a space into a dash on its way into the store.
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "my agent" },
+    })
+    expect(getSnapshot().createAgentDraft).toBe("my-agent")
   })
 
   it("requires a branch name when forking", async () => {
     seed({ kind: "fork", sessionId: "s1" })
-    const { CreateAgentDialog } = await import("./CreateAgentDialog")
     render(<CreateAgentDialog />)
 
     expect(screen.getByRole("heading").textContent).toBe("Fork quacky-mallard")
@@ -120,7 +131,6 @@ describe("CreateAgentDialog", () => {
       { kind: "pr", projectId: null },
       { createAgentPrError: "That repository is not open." },
     )
-    const { CreateAgentDialog } = await import("./CreateAgentDialog")
     render(<CreateAgentDialog />)
 
     expect(screen.getByText("New agent from PR")).toBeTruthy()
@@ -129,5 +139,35 @@ describe("CreateAgentDialog", () => {
       "That repository is not open.",
     )
     expect(screen.getByText("or choose an existing project")).toBeTruthy()
+  })
+
+  it("holds Create back until the review copy box is ticked", async () => {
+    const reviewCopy = {
+      warned: "diverged:pr-head-review",
+      warning: ["Pushes would land on ", { name: "pr-head-review", quoted: true }, "."],
+      agreed: false,
+    }
+    seed(
+      { kind: "pr", projectId: "p1" },
+      { createAgentPrInput: "#42", createAgentReviewCopy: reviewCopy },
+    )
+    const { rerender } = render(<CreateAgentDialog />)
+
+    expect(screen.getByText("pr-head-review", { selector: "code" })).toBeTruthy()
+    const create = () =>
+      screen.getByRole("button", { name: "Create from PR" }) as HTMLButtonElement
+    expect(create().disabled).toBe(true)
+    const box = screen.getByRole("checkbox", { name: "Create a review copy" })
+    expect(box.getAttribute("aria-checked")).toBe("false")
+
+    seed(
+      { kind: "pr", projectId: "p1" },
+      {
+        createAgentPrInput: "#42",
+        createAgentReviewCopy: { ...reviewCopy, agreed: true },
+      },
+    )
+    rerender(<CreateAgentDialog />)
+    expect(create().disabled).toBe(false)
   })
 })

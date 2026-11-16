@@ -61,6 +61,8 @@ class TermStub {
     },
   }
   loadAddon() {}
+  // The pane selects its width table here; nothing in this file reads it.
+  unicode = { activeVersion: "6", register() {} }
   open(parent: HTMLElement) {
     parent.appendChild(this.textarea)
     this.textarea.addEventListener("paste", (e) => {
@@ -155,6 +157,7 @@ vi.mock("sonner", () => ({
     warning: vi.fn(),
     loading: vi.fn(),
     dismiss: vi.fn(),
+    getToasts: vi.fn(() => []),
   }),
 }))
 // Only the parser-handler installer is stubbed out (it needs a real xterm

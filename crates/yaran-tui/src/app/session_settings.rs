@@ -23,7 +23,9 @@ use ratatui::widgets::{Paragraph, Widget};
 use yaran_core::engine::Command;
 use yaran_core::session_settings::{ContextMode, SessionSettings};
 
+use super::components::button::resting_button_state;
 use super::components::button::{Button, ButtonKind, ButtonPressedTarget, button_state_for};
+use super::components::hint_bar::{Hint, modal_hint_line};
 use super::input::contains_point;
 use super::render::centered_rect_exact;
 use super::text_input::TextInput;
@@ -381,7 +383,7 @@ impl App {
         );
         // A focused single-line field owns plain characters and the
         // horizontal arrows, so they never reach the bindings.
-        let action = if line_field_focused && text_field_owns_key(key) {
+        let action = if line_field_focused && text_field_owns_key(key, self.extended_keys) {
             None
         } else {
             self.bindings
@@ -526,6 +528,8 @@ impl App {
         let modal = self.open_modal_frame(frame, &title, area);
         let inner = modal.inner;
         let bottom = inner.y + inner.height;
+        // The last row is the key line; a short screen clips the rows, not it.
+        let rows_bottom = bottom.saturating_sub(1);
         let mut y = inner.y;
         let mut rows: Vec<(Rect, SettingsFocus)> = Vec::new();
 
@@ -537,7 +541,7 @@ impl App {
         let focused_style = self.theme.selection_style();
 
         let line = |frame: &mut Frame, y: &mut u16, content: Line<'static>| -> Rect {
-            if *y >= bottom {
+            if *y >= rows_bottom {
                 return Rect::default();
             }
             let rect = Rect::new(inner.x + 1, *y, inner.width.saturating_sub(2), 1);
@@ -568,10 +572,13 @@ impl App {
                 if title_focused { focused_style } else { text },
             )
         };
-        if y < bottom {
+        if y < rows_bottom {
             Paragraph::new(Line::from(title_text)).render(title_rect, frame.buffer_mut());
             if title_focused {
-                let (_, col) = prompt.draft_title.cursor_display_position();
+                let (_, col) = prompt
+                    .draft_title
+                    .cursor_display_position()
+                    .unwrap_or_default();
                 frame.set_cursor_position((title_rect.x + col as u16, y));
             }
             y += 1;
@@ -653,7 +660,7 @@ impl App {
             ),
         );
         rows.push((r, SettingsFocus::SystemPrompt));
-        let editor_height = (SYSTEM_PROMPT_LINES as u16 + 2).min(bottom.saturating_sub(y));
+        let editor_height = (SYSTEM_PROMPT_LINES as u16 + 2).min(rows_bottom.saturating_sub(y));
         if editor_height > 2 {
             let field = Rect::new(inner.x + 3, y, inner.width.saturating_sub(6), editor_height);
             let exit_key = engaged.then(|| {
@@ -664,7 +671,7 @@ impl App {
             let text_area = self.render_modal_text_field_frame(
                 frame,
                 field,
-                f == SettingsFocus::SystemPrompt,
+                (f == SettingsFocus::SystemPrompt).into(),
                 exit_key,
             );
             let mut editor = prompt.draft_system_prompt.clone();
@@ -677,8 +684,8 @@ impl App {
                 let r = Rect::new(text_area.x, text_area.y + i as u16, text_area.width, 1);
                 Paragraph::new(row_text.as_str()).render(r, frame.buffer_mut());
             }
-            if engaged {
-                let (row, col) = editor.cursor_display_position();
+            // `None` while the caret is scrolled out of the field's view.
+            if engaged && let Some((row, col)) = editor.cursor_display_position() {
                 let (cx, cy) = (text_area.x + col as u16, text_area.y + row as u16);
                 if cx < text_area.x + text_area.width && cy < text_area.y + text_area.height {
                     frame.set_cursor_position((cx, cy));
@@ -748,7 +755,7 @@ impl App {
             inner.width.saturating_sub(2 + prefix.len() as u16),
             1,
         );
-        if y < bottom {
+        if y < rows_bottom {
             Paragraph::new(Line::from(Span::styled(prefix, dim))).render(
                 Rect::new(inner.x + 1, y, prefix.len() as u16, 1),
                 frame.buffer_mut(),
@@ -763,7 +770,10 @@ impl App {
             };
             Paragraph::new(Line::from(path_text)).render(path_rect, frame.buffer_mut());
             if path_focused {
-                let (_, col) = prompt.draft_compact_path.cursor_display_position();
+                let (_, col) = prompt
+                    .draft_compact_path
+                    .cursor_display_position()
+                    .unwrap_or_default();
                 frame.set_cursor_position((path_rect.x + col as u16, y));
             }
             rows.push((path_rect, SettingsFocus::CompactInstructionsPath));
@@ -822,8 +832,7 @@ impl App {
                 .state(button_state_for(
                     ButtonPressedTarget::SessionSettingsCancel,
                     self.pressed_button,
-                    f == SettingsFocus::CancelButton,
-                    true,
+                    resting_button_state(f == SettingsFocus::CancelButton, true),
                 ))
                 .render(frame, cancel, &self.theme);
             Button::new("Save")
@@ -831,33 +840,35 @@ impl App {
                 .state(button_state_for(
                     ButtonPressedTarget::SessionSettingsSave,
                     self.pressed_button,
-                    f == SettingsFocus::SaveButton,
-                    true,
+                    resting_button_state(f == SettingsFocus::SaveButton, true),
                 ))
                 .render(frame, save, &self.theme);
         }
 
-        // Footer: every key through the bindings.
-        let hint = if engaged {
-            format!(
-                "{} stop editing",
-                self.bindings.labels_for(Action::ExitCommitInput)
-            )
-        } else {
-            format!(
-                "{} move  Space/{} act  {} close",
-                self.bindings.labels_for(Action::ToggleSelection),
-                self.bindings.label_for(Action::Confirm),
-                self.bindings.label_for(Action::CloseOverlay),
-            )
-        };
+        // Footer: every key through the bindings, in the one hint style.
         let hint_rect = Rect::new(
             inner.x + 1,
             bottom.saturating_sub(1),
             inner.width.saturating_sub(2),
             1,
         );
-        Paragraph::new(Span::styled(hint, dim)).render(hint_rect, frame.buffer_mut());
+        let hints = if engaged {
+            vec![Hint::key(
+                self.bindings.labels_for(Action::ExitCommitInput),
+                "stop editing",
+            )]
+        } else {
+            vec![
+                Hint::key(
+                    self.bindings.labels_for(Action::ToggleSelection),
+                    "move focus",
+                ),
+                Hint::key(self.bindings.label_for(Action::Confirm), "press"),
+                Hint::key(self.bindings.label_for(Action::CloseOverlay), "close").pinned(),
+            ]
+        };
+        Paragraph::new(modal_hint_line(&self.theme, &hints, hint_rect.width))
+            .render(hint_rect, frame.buffer_mut());
 
         self.overlay_layout.active = OverlayMouseLayout::SessionSettings {
             title_input: title_rect,

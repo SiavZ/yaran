@@ -60,11 +60,21 @@ const QUOTE_BEFORE_NAME =
 // The ad hoc chip the shared component replaced: any monospace span.
 const HAND_ROLLED_CHIP = /<span\s+className="[^"]*\bfont-mono\b[^"]*"/g
 
+// The same chip one level up: StartTruncatedText renders its own span, so a
+// monospace class handed to it is a monospace span all the same. Its props may
+// span lines, so the element is matched up to its className, and the line
+// reported is the className's own.
+const MONO_START_TRUNCATED =
+  /<StartTruncatedText\b[^>]*?\bclassName="[^"]*\bfont-mono\b[^"]*"/g
+
 function nameDelimiterViolations(source: string): string[] {
   return [
-    ...[...source.matchAll(QUOTE_BEFORE_NAME)],
-    ...[...source.matchAll(HAND_ROLLED_CHIP)],
-  ].map((m) => lineAround(source, m.index ?? 0))
+    ...[...source.matchAll(QUOTE_BEFORE_NAME)].map((m) => m.index ?? 0),
+    ...[...source.matchAll(HAND_ROLLED_CHIP)].map((m) => m.index ?? 0),
+    ...[...source.matchAll(MONO_START_TRUNCATED)].map(
+      (m) => (m.index ?? 0) + m[0].lastIndexOf("className="),
+    ),
+  ].map((index) => lineAround(source, index))
 }
 
 function lineAround(source: string, index: number): string {
@@ -88,9 +98,9 @@ const ALLOWED: { file: string; line: string; reason: string }[] = [
     reason: "A release number in the heading's badge: a version, not a name in a sentence.",
   },
   {
-    file: "components/NewAgentPickerDialog.tsx",
-    line: '<span className="shrink-0 font-mono text-xs text-muted-foreground">',
-    reason: "The trailing label of a picker row, and a row is out of the chip rule's scope.",
+    file: "components/ChangeBaseBranchDialog.tsx",
+    line: '<span className="min-w-0 flex-1 truncate font-mono text-sm">',
+    reason: "A branch row that is only its branch: a list row, out of the chip rule's scope.",
   },
   {
     file: "components/TaskManagerDialog.tsx",
@@ -117,18 +127,45 @@ const ALLOWED: { file: string; line: string; reason: string }[] = [
     line: '<span className="truncate font-mono text-sm">{entry.branch_name}</span>',
     reason: "A worktree row that is only its branch: a list row, out of the chip rule's scope.",
   },
+  {
+    file: "components/WorktreesDialog.tsx",
+    line: '<span className="truncate font-mono text-sm">{pathTail(folder.path)}</span>',
+    reason: "A left-over folder row that is only its folder's name: a list row, out of the chip rule's scope.",
+  },
+  {
+    file: "components/CustomizeWebappDialog.tsx",
+    line: '<span className="font-mono text-xs break-all text-muted-foreground">',
+    reason:
+      "A setting row's config key, on a line of its own under the label while searching: part of the row, not a name in a sentence.",
+  },
+  {
+    file: "components/ProjectsDialog.tsx",
+    line: '<StartTruncatedText text={project.path} className="font-mono" tooltip />',
+    reason: "A project row's folder on its second line: part of a list row, not a name in a sentence.",
+  },
+  {
+    file: "components/NewLauncherDialog.tsx",
+    line: '<span className="min-w-0 truncate font-mono text-[11.5px]">',
+    reason: "An agent row's worktree on its second line: part of a list row, not a name in a sentence.",
+  },
+  {
+    file: "components/NewLauncherDialog.tsx",
+    line: '<span className="flex min-w-0 items-baseline gap-1 font-mono text-[11.5px] text-yaran-standalone">',
+    reason: "A standalone agent row's folder on its second line: part of a list row, not a name in a sentence.",
+  },
   // The files below are scanned because they build toast prose, not because
   // they are dialogs; each line is something other than a name in a sentence.
   {
     file: "components/EditorBody.tsx",
-    line: '<span className="min-w-0 flex-1 truncate text-left font-mono text-sm [direction:rtl]">',
+    line: 'className="flex-1 font-mono text-sm"',
     reason:
-      "The editor header's open path and a search result row: a path that is the whole element, not a name in a sentence.",
+      "A search result row: a path that is the whole element, not a name in a sentence.",
   },
   {
-    file: "components/EditorBody.tsx",
-    line: '<span className="max-w-full shrink-0 truncate font-mono text-xs text-muted-foreground">',
-    reason: "The caption under a previewed image: only the file's path, not a sentence.",
+    file: "components/EditorStatusBar.tsx",
+    line: 'className="min-w-0 font-mono text-foreground"',
+    reason:
+      "The status bar's path, which copies itself when pressed: the whole element, not a name in a sentence.",
   },
   {
     file: "lib/favicon.ts",
@@ -178,9 +215,30 @@ describe("the name-delimiter detector", () => {
       "Delete &#34;{name}&#34; now.",
       "Delete &#39;{name}&#39; now.",
       "Delete &apos;{name}&apos; now.",
+      // The start-ellipsizing text component renders a span of its own, so a
+      // monospace one is the same hand-rolled chip one level up.
+      '<StartTruncatedText text={path} className="font-mono" />',
+      '<StartTruncatedText text={path} className="flex-1 font-mono text-sm" />',
+      '<StartTruncatedText\n  text={path}\n  className="font-mono text-xs"\n/>',
     ]) {
       expect(nameDelimiterViolations(bad), bad).toHaveLength(1)
     }
+  })
+
+  // The line reported, and matched against the allowlist, is the one carrying
+  // the monospace class, so an exception names exactly what it excuses.
+  it("reports a multi-line StartTruncatedText by its className line", () => {
+    expect(
+      nameDelimiterViolations(
+        '<StartTruncatedText\n  text={path}\n  className="flex-1 font-mono text-sm"\n/>',
+      ),
+    ).toEqual(['className="flex-1 font-mono text-sm"'])
+  })
+
+  it("leaves a StartTruncatedText without a monospace class alone", () => {
+    expect(
+      nameDelimiterViolations('<StartTruncatedText text={name} className="text-sm" />'),
+    ).toEqual([])
   })
 
   it("leaves quoted UI words and the shared chip alone", () => {
@@ -208,6 +266,10 @@ describe("every name a modal shows is the shared chip", () => {
     // Found by the prose import, not by a list.
     expect(names).toContain("lib/addProjectWarning.ts")
     expect(names).toContain("components/createAgentDialogView.ts")
+    expect(names).toContain("components/CloneProjectDialog.tsx")
+    // Who a guarded dialog names, and the sentences it names them in.
+    expect(names).toContain("components/AttachedSection.tsx")
+    expect(names).toContain("lib/attached.ts")
   })
 
   it("finds dialogs and copy builders by rule", () => {
@@ -255,5 +317,80 @@ describe("every name a modal shows is the shared chip", () => {
       )
       expect(allowed.reason.length).toBeGreaterThan(0)
     }
+  })
+})
+
+// A path is a name, and a name in a dialog is a chip. The shape that slips past
+// the quote detector is a path interpolated into a plain template string that
+// a dialog then prints as text: nothing quotes it, and nothing chips it either.
+// This reads the dialogs and every lib/ module a dialog imports (where the
+// copy a dialog prints is often built), and flags a template literal that
+// interpolates a `.path` or a `path` into words: a template whose own text
+// reads as a sentence (two words in a row). A `prose` template, a `chip(...)`
+// argument and a template that is the child of an `<InlineCode>` are the chip
+// itself, and a template with no words (a URL, a key, a shell argument) is not
+// copy at all.
+const PLAIN_PATH_TEMPLATE =
+  /(?<!prose|chip\(|InlineCode>\{)`[^`]*\$\{[^}]*\bpath\b[^}]*\}[^`]*`/g
+
+function plainPathTemplates(source: string): string[] {
+  return [...source.matchAll(PLAIN_PATH_TEMPLATE)]
+    .filter((m) => /[A-Za-z]{2,} [A-Za-z]{2,}/.test(m[0].replace(/\$\{[^}]*\}/g, "")))
+    .map((m) => lineAround(source, m.index ?? 0))
+}
+
+// The lib modules the dialogs import, found from their import lines.
+function dialogLibModules(): { name: string; source: string }[] {
+  const dialogs = [...walk(join(srcDir, "components"))]
+    .map((path) => ({ name: relative(srcDir, path), source: readFileSync(path, "utf-8") }))
+    .filter(
+      ({ name, source }) =>
+        !name.includes(".test.") &&
+        ((/Dialog[^/]*\.tsx$/.test(name) && name.startsWith("components/")) ||
+          DIALOG_IMPORT.test(source)),
+    )
+  const imported = new Set<string>()
+  for (const { source } of dialogs) {
+    for (const m of source.matchAll(/from\s+["']@\/lib\/([\w./-]+)["']/g)) {
+      imported.add(m[1]!)
+    }
+  }
+  return [...imported].flatMap((module) => {
+    for (const ext of [".ts", ".tsx"]) {
+      try {
+        const name = `lib/${module}${ext}`
+        return [{ name, source: readFileSync(join(srcDir, name), "utf-8") }]
+      } catch {
+        // Not this extension.
+      }
+    }
+    return []
+  })
+}
+
+// Paths in templates that are not dialog copy: URLs, keys and file names
+// handed to APIs, never shown in a dialog body. Each names why.
+const PLAIN_PATH_ALLOWED: { file: string; line: string; reason: string }[] = [
+  {
+    file: "components/EditorStatusBar.tsx",
+    line: "aria-label={`Copy path ${path}`}",
+    reason: "An aria-label, which the chip rule leaves out: a screen reader hears no chip.",
+  },
+]
+
+describe("a path in dialog copy is a chip, not a plain template", () => {
+  it("flags a path interpolated into a plain template string", () => {
+    expect(plainPathTemplates("return `${file.path}/ is kept here`")).toHaveLength(1)
+    expect(plainPathTemplates("return prose`${chip(file.path)} is a worktree`")).toEqual([])
+    expect(plainPathTemplates("chip(`${row.path}/`)")).toEqual([])
+  })
+
+  it("finds none in the dialogs or the modules they import", () => {
+    const found = [...scannedFiles(), ...dialogLibModules()].flatMap(({ name, source }) =>
+      plainPathTemplates(source)
+        .filter((line) => !PLAIN_PATH_ALLOWED.some((a) => a.file === name && a.line === line))
+        .map((line) => `${name}: ${line}`),
+    )
+    expect([...new Set(found)]).toEqual([])
   })
 })

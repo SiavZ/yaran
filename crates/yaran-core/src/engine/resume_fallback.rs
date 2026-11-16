@@ -16,7 +16,7 @@ use crate::worker::{AgentLaunchKind, AgentLaunchRequest};
 /// purely from its observable state, so both detection windows (`--continue`
 /// exits empty, and a resume hangs past its timeout) live in one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResumeFallbackDecision {
+pub(crate) enum ResumeFallbackDecision {
     /// The resumed provider EXITED leaving NO READABLE TEXT on screen: it said
     /// nothing, so there was nothing to resume and nothing to report. Relaunch
     /// fresh (window a).
@@ -44,12 +44,15 @@ pub enum ResumeFallbackDecision {
 /// continue" in one line has told the user something, and yaran keeps that ending
 /// and repeats the words rather than silently starting over.
 pub(crate) fn resume_fallback_decision(
-    exited: bool,
-    readable: bool,
-    has_output: bool,
+    screen: ResumedScreen,
     timeout_ms: Option<u64>,
     elapsed: Duration,
 ) -> ResumeFallbackDecision {
+    let ResumedScreen {
+        exited,
+        readable,
+        has_output,
+    } = screen;
     if exited {
         return if readable {
             ResumeFallbackDecision::DropSpokenExit
@@ -65,8 +68,21 @@ pub(crate) fn resume_fallback_decision(
     }
 }
 
+/// What a resumed provider's pane shows, as [`resume_fallback_decision`]
+/// reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ResumedScreen {
+    /// The provider has exited.
+    pub(crate) exited: bool,
+    /// The screen holds a printable, non-whitespace character.
+    pub(crate) readable: bool,
+    /// The provider has written any output at all.
+    pub(crate) has_output: bool,
+}
+
 /// Outcome of an attempted resume-fallback retry. Three states because the
 /// caller must react differently to each: collapsing any two corrupts state.
+#[derive(Debug)]
 pub enum ResumeFallbackOutcome {
     /// Engine removed the candidate, provider and pin and dispatched a fresh
     /// `resume:false` launch. `reaction` is the `DispatchAgentLaunchView`
@@ -80,7 +96,10 @@ pub enum ResumeFallbackOutcome {
     ///
     /// `reaction` is boxed because `EventReaction` is large next to the unit
     /// variants beside it, and clippy's `large_enum_variant` is a CI gate.
-    Retried { reaction: Box<EventReaction> },
+    Retried {
+        /// The relaunch to apply.
+        reaction: Box<EventReaction>,
+    },
     /// A launch is already in flight for this session, so the engine left the
     /// candidate, provider and pin untouched. Treat the session as protected:
     /// skip the destructive exit cleanup and the post-exit UI and PR follow-ups
@@ -113,13 +132,13 @@ impl Engine {
     pub fn build_agent_launch_request(
         &self,
         session: AgentSession,
-        resume: bool,
+        start: crate::model::ConversationStart,
         pty_size: (u16, u16),
         kind: AgentLaunchKind,
     ) -> AgentLaunchRequest {
         // Session-slot launch: the slot tab id, provider == session.provider.
         let tab_id = session.slot_tab_id().to_owned();
-        self.build_tab_launch_request(tab_id, None, session, resume, pty_size, kind)
+        self.build_tab_launch_request(tab_id, None, session, start, pty_size, kind)
     }
 
     /// Tab-aware launch-request builder. `tab_provider = None` uses the
@@ -131,19 +150,21 @@ impl Engine {
     /// live provider or an in-flight launch. `--continue` is directory-scoped
     /// and always grabs the most recent conversation, so at most one tab may
     /// resume and every tab launched beside a live one starts fresh.
-    pub fn build_tab_launch_request(
+    pub(crate) fn build_tab_launch_request(
         &self,
         tab_id: TabId,
         tab_provider: Option<ProviderKind>,
         session: AgentSession,
-        resume: bool,
+        start: crate::model::ConversationStart,
         pty_size: (u16, u16),
         kind: AgentLaunchKind,
     ) -> AgentLaunchRequest {
         let provider = tab_provider.unwrap_or_else(|| session.provider.clone());
-        let requested = resume;
+        let requested = start.is_resume();
         // Resume is decided per-provider in one place; see `tab_resume_decision`.
-        let resume = self.tab_resume_decision(&session, &tab_id, &provider, resume);
+        let resume = self
+            .tab_resume_decision(&session, &tab_id, &provider, start)
+            .is_resume();
         // Resume by the provider's own conversation id when yaran knows it,
         // falling back to `resume` (see `provider_session_launch`).
         let provider_session =
@@ -202,15 +223,33 @@ impl Engine {
     ) -> Option<AgentLaunchRequest> {
         // Transport-facing (the web relaunches a dormant tab by id): named here.
         let tab_id = TabIdRef::new(tab_id);
+        let provider = self.agent_tabs.get(tab_id)?.provider.clone();
+        self.dormant_tab_launch_request_as(tab_id, &provider, pty_size)
+    }
+
+    /// [`Engine::dormant_tab_launch_request`] launching `provider` rather than
+    /// the provider the tab is set to: a tab restarted to continue the
+    /// conversation its process was running keeps that process's provider.
+    pub(crate) fn dormant_tab_launch_request_as(
+        &self,
+        tab_id: &TabIdRef,
+        provider: &ProviderKind,
+        pty_size: (u16, u16),
+    ) -> Option<AgentLaunchRequest> {
         let tab = self.agent_tabs.get(tab_id)?;
         let session = self
             .sessions
             .iter()
             .find(|s| s.id == tab.session_id)?
             .clone();
-        let provider = tab.provider.clone();
-        let resume = self.tab_resume_decision(&session, tab_id, &provider, true);
-        let status_message = if resume {
+        let provider = provider.clone();
+        let resume = self.tab_resume_decision(
+            &session,
+            tab_id,
+            &provider,
+            crate::model::ConversationStart::Resume,
+        );
+        let status_message = if resume.is_resume() {
             format!(
                 "Resumed the {} conversation in this tab.",
                 provider.as_str()
@@ -235,7 +274,7 @@ impl Engine {
                     status_message: status_message.into(),
                 },
             )
-            .quiet_status_on(if resume {
+            .quiet_status_on(if resume.is_resume() {
                 crate::statusline::QuietSurfaces::BOTH
             } else {
                 crate::statusline::QuietSurfaces::LOUD
@@ -247,7 +286,7 @@ impl Engine {
     /// state transition happens inside this one `&mut self` call, so no other
     /// `drain_events` tick observes a half-applied state. See
     /// `ResumeFallbackOutcome` for how the caller must treat each result.
-    pub fn retry_resume_fallback(
+    pub(crate) fn retry_resume_fallback(
         &mut self,
         tab_id: &str,
         pty_size: (u16, u16),
@@ -290,7 +329,7 @@ impl Engine {
         let request = if is_session_slot {
             self.build_agent_launch_request(
                 session,
-                false,
+                crate::model::ConversationStart::Fresh,
                 pty_size,
                 AgentLaunchKind::ResumeFallback { status_message },
             )
@@ -299,7 +338,7 @@ impl Engine {
                 tab_id.to_owned(),
                 Some(provider),
                 session,
-                false,
+                crate::model::ConversationStart::Fresh,
                 pty_size,
                 AgentLaunchKind::Tab {
                     is_fresh: false,
@@ -327,6 +366,14 @@ impl Engine {
         {
             self.update_pr_sync_sessions();
         }
+        self.note_restart_resume_fell_back(
+            tab_id,
+            if launched {
+                crate::engine::lifecycle::FreshLaunch::Started
+            } else {
+                crate::engine::lifecycle::FreshLaunch::Failed
+            },
+        );
         ResumeFallbackOutcome::Retried {
             reaction: Box::new(reaction),
         }
@@ -375,9 +422,11 @@ impl Engine {
             let timeout_ms =
                 crate::config::provider_config(&self.config, &provider).resume_wait_timeout_ms;
             let decision = resume_fallback_decision(
-                client.is_exited(),
-                client.has_readable_output(),
-                client.has_output(),
+                ResumedScreen {
+                    exited: client.is_exited(),
+                    readable: client.has_readable_output(),
+                    has_output: client.has_output(),
+                },
                 timeout_ms,
                 started_at.elapsed(),
             );
@@ -547,7 +596,15 @@ mod tests {
         // screen, so there is nothing for the user to read and nothing that was
         // resumed. Retry fresh.
         assert_eq!(
-            resume_fallback_decision(true, false, false, Some(3000), Duration::from_secs(1)),
+            resume_fallback_decision(
+                ResumedScreen {
+                    exited: true,
+                    readable: false,
+                    has_output: false
+                },
+                Some(3000),
+                Duration::from_secs(1)
+            ),
             D::RetryExitedSilent,
         );
     }
@@ -559,7 +616,15 @@ mod tests {
         // Either way the words are the answer: drop the candidate and let the
         // exit-prune path keep the dormant tab and quote them.
         assert_eq!(
-            resume_fallback_decision(true, true, true, Some(3000), Duration::from_secs(1)),
+            resume_fallback_decision(
+                ResumedScreen {
+                    exited: true,
+                    readable: true,
+                    has_output: true
+                },
+                Some(3000),
+                Duration::from_secs(1)
+            ),
             D::DropSpokenExit,
         );
     }
@@ -569,7 +634,15 @@ mod tests {
         // Window (b): still running, past `resume_wait_timeout_ms`, produced no
         // visible output => treat the resume as hung and retry fresh.
         assert_eq!(
-            resume_fallback_decision(false, false, false, Some(2000), Duration::from_millis(2500)),
+            resume_fallback_decision(
+                ResumedScreen {
+                    exited: false,
+                    readable: false,
+                    has_output: false
+                },
+                Some(2000),
+                Duration::from_millis(2500)
+            ),
             D::RetryHungTimeout,
         );
     }
@@ -612,7 +685,7 @@ mod tests {
         while !engine
             .providers
             .get(TabIdRef::new("s1-slot"))
-            .is_some_and(|c| c.is_exited())
+            .is_some_and(crate::pty::PtyClient::is_exited)
         {
             assert!(Instant::now() < deadline, "child never exited");
             std::thread::sleep(Duration::from_millis(20));
@@ -841,22 +914,54 @@ mod tests {
     fn a_healthy_resume_waits() {
         // Still running, within the timeout: leave it alone.
         assert_eq!(
-            resume_fallback_decision(false, false, false, Some(3000), Duration::from_millis(500)),
+            resume_fallback_decision(
+                ResumedScreen {
+                    exited: false,
+                    readable: false,
+                    has_output: false
+                },
+                Some(3000),
+                Duration::from_millis(500)
+            ),
             D::Wait,
         );
         // Still running, past the timeout but it HAS produced output: healthy.
         assert_eq!(
-            resume_fallback_decision(false, true, true, Some(2000), Duration::from_secs(5)),
+            resume_fallback_decision(
+                ResumedScreen {
+                    exited: false,
+                    readable: true,
+                    has_output: true
+                },
+                Some(2000),
+                Duration::from_secs(5)
+            ),
             D::Wait,
         );
         // Still running, no timeout configured: never treated as hung.
         assert_eq!(
-            resume_fallback_decision(false, false, false, None, Duration::from_secs(60)),
+            resume_fallback_decision(
+                ResumedScreen {
+                    exited: false,
+                    readable: false,
+                    has_output: false
+                },
+                None,
+                Duration::from_secs(60)
+            ),
             D::Wait,
         );
         // Still running, timeout of 0 disables the hung window.
         assert_eq!(
-            resume_fallback_decision(false, false, false, Some(0), Duration::from_secs(60)),
+            resume_fallback_decision(
+                ResumedScreen {
+                    exited: false,
+                    readable: false,
+                    has_output: false
+                },
+                Some(0),
+                Duration::from_secs(60)
+            ),
             D::Wait,
         );
     }
@@ -1036,6 +1141,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario walked in order on one engine, each step asserting on the state the previous step left"
+    )]
     fn a_failed_fallback_relaunch_leaves_no_tab_keyed_state_behind() {
         // The retry tears the stale attempt down BEFORE it dispatches the fresh
         // one, and the fresh one can fail (here: a provider binary that does not
@@ -1094,6 +1203,7 @@ mod tests {
         engine
             .pty_input
             .insert("s1-slot".to_string(), Instant::now());
+        engine.pty_used.insert("s1-slot".to_string());
         engine.needs_attention.insert(TabId::new("s1-slot"));
         engine.pty_progress.insert(
             TabId::new("s1-slot"),
@@ -1154,6 +1264,10 @@ mod tests {
         assert!(
             !engine.pty_input.contains_key("s1-slot"),
             "stale input would read as a typing tab with no process"
+        );
+        assert!(
+            !engine.pty_used.contains("s1-slot"),
+            "a stale use mark would exempt the next run from the rapid-exit rule"
         );
         assert!(!engine.needs_attention.contains(TabIdRef::new("s1-slot")));
         assert!(

@@ -33,11 +33,11 @@
 use crokey::{KeyCombination, KeyCombinationFormat, key};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-pub use yaran_core::action::Action;
+pub(crate) use yaran_core::action::Action;
 
 /// Where a binding's key combo is matched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BindingScope {
+pub(crate) enum BindingScope {
     Global,
     Left,
     Center,
@@ -49,6 +49,9 @@ pub enum BindingScope {
     RuntimeKill,
     StartupCommandLogs,
     MacroList,
+    /// The Pull requests modal. Its handler asks this scope first and then
+    /// `Palette`, the shared picker vocabulary (move, confirm, close).
+    PullRequestList,
     /// The "New agent in project" chooser. A scope of its own rather than a
     /// share of `Palette`, which every picker resolves through: an action put
     /// there would arm its key inside all of them.
@@ -56,11 +59,16 @@ pub enum BindingScope {
     Dialog,
     CommitInput,
     Help,
+    /// The `start-web-server` flip's status screen, whose log scrolls. Its own
+    /// return and quit keys (`q`/`Esc`, `Ctrl-c`) are answered before the
+    /// bindings are consulted, so a scroll binding on one of them never fires
+    /// there and is never advertised there.
+    ServerScreen,
 }
 
 impl BindingScope {
     /// All scope variants, for iteration in diagnostics.
-    pub const ALL: &[BindingScope] = &[
+    pub(crate) const ALL: &[BindingScope] = &[
         Self::Global,
         Self::Left,
         Self::Center,
@@ -72,14 +80,16 @@ impl BindingScope {
         Self::RuntimeKill,
         Self::StartupCommandLogs,
         Self::MacroList,
+        Self::PullRequestList,
         Self::ProjectChooser,
         Self::Dialog,
         Self::CommitInput,
         Self::Help,
+        Self::ServerScreen,
     ];
 
     /// Human-readable scope name for error messages and diagnostics.
-    pub fn display_name(self) -> &'static str {
+    pub(crate) fn display_name(self) -> &'static str {
         match self {
             Self::Global => "Global",
             Self::Left => "Projects pane",
@@ -92,17 +102,19 @@ impl BindingScope {
             Self::RuntimeKill => "Kill running modal",
             Self::StartupCommandLogs => "Startup command logs modal",
             Self::MacroList => "Text macros list",
+            Self::PullRequestList => "Pull requests modal",
             Self::ProjectChooser => "Project chooser",
             Self::Dialog => "Dialog",
             Self::CommitInput => "Commit input",
             Self::Help => "Help overlay",
+            Self::ServerScreen => SERVER_SCREEN_HELP_SECTION,
         }
     }
 }
 
 /// Where a binding's hint appears in the status bar cheatsheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum HintContext {
+pub(crate) enum HintContext {
     LeftProject,
     LeftSession,
     LeftTerminal,
@@ -113,7 +125,7 @@ pub enum HintContext {
     Board,
 }
 
-pub struct HelpEntry {
+pub(crate) struct HelpEntry {
     pub section: &'static str,
     pub description: &'static str,
 }
@@ -124,7 +136,7 @@ pub struct HelpEntry {
 /// [`RuntimeBindings`]. Palette command names and descriptions live in the
 /// surface-aware core registry ([`yaran_core::palette`]); the runtime palette
 /// listing joins them to bindings by [`Action`].
-pub struct BindingDef {
+pub(crate) struct BindingDef {
     pub action: Action,
     pub default_keys: &'static [KeyCombination],
     pub scopes: &'static [BindingScope],
@@ -157,7 +169,7 @@ pub struct BindingDef {
 //
 // `detect_conflicts()` runs at startup and rejects configs binding one
 // normalized key to two actions in overlapping scopes.
-pub const BINDING_DEFS: &[BindingDef] = &[
+pub(crate) const BINDING_DEFS: &[BindingDef] = &[
     // ── Navigation (Left / Files / Palette / Browser) ─────────────
     BindingDef {
         action: Action::MoveDown,
@@ -169,6 +181,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             BindingScope::Browser,
             BindingScope::RuntimeKill,
             BindingScope::StartupCommandLogs,
+            BindingScope::PullRequestList,
             BindingScope::Help,
         ],
         help: Some(HelpEntry {
@@ -193,6 +206,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             BindingScope::Browser,
             BindingScope::RuntimeKill,
             BindingScope::StartupCommandLogs,
+            BindingScope::PullRequestList,
             BindingScope::Help,
         ],
         help: None, // covered by MoveDown's combined label
@@ -255,8 +269,8 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         hint_contexts: &[],
     },
     BindingDef {
-        // Palette-only: opens the project chooser to pick a project that
-        // subsequent project-scoped palette commands act on. No default key.
+        // Palette-only: opens the project list, then the picked project's
+        // action list. No default key.
         action: Action::ManageProjects,
         default_keys: &[],
         scopes: &[],
@@ -353,6 +367,15 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         hint_contexts: &[],
     },
     BindingDef {
+        // No default key: cloning is an occasional start-of-project act, and
+        // the palette is where it lives.
+        action: Action::CloneProject,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
         action: Action::StartBackgroundServer,
         default_keys: &[],
         scopes: &[],
@@ -361,6 +384,13 @@ pub const BINDING_DEFS: &[BindingDef] = &[
     },
     BindingDef {
         action: Action::StopBackgroundServer,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::ViewServerLog,
         default_keys: &[],
         scopes: &[],
         help: None,
@@ -515,6 +545,13 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         hint_contexts: &[],
     },
     BindingDef {
+        action: Action::ChangeProjectBaseBranch,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
         action: Action::ReconnectAgent,
         default_keys: &[key!(r)],
         scopes: &[BindingScope::Center],
@@ -537,8 +574,18 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             (HintContext::Center, "Terminal"),
         ],
     },
+    BindingDef {
+        action: Action::CycleTerminalLayout,
+        default_keys: &[key!(ctrl - t)],
+        scopes: &[BindingScope::Center],
+        help: Some(HelpEntry {
+            section: "Agent pane",
+            description: "Cycle the agent, the split with its terminal dock, and the dock alone",
+        }),
+        hint_contexts: &[(HintContext::Center, "Layout")],
+    },
     // ── Agent tabs (Center-scope; never in fullscreen) ────────────
-    // Only the Ctrl arrows and Ctrl-1..9 are tab keys: the focused center pane
+    // Only Ctrl chords are tab keys: the focused center pane
     // types into a live agent, so a plain arrow must reach it as a caret move
     // ([`center_typing_owns_key`]) rather than switch tabs.
     BindingDef {
@@ -547,7 +594,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         scopes: &[BindingScope::Center],
         help: Some(HelpEntry {
             section: "Agent pane",
-            description: "Next tab",
+            description: "Next tab (the next terminal while the dock has focus)",
         }),
         hint_contexts: &[],
     },
@@ -557,39 +604,44 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         scopes: &[BindingScope::Center],
         help: Some(HelpEntry {
             section: "Agent pane",
-            description: "Previous tab",
+            description: "Previous tab (the previous terminal while the dock has focus)",
         }),
         hint_contexts: &[],
     },
+    // Tab numbers ship with a default key only where the chord reaches yaran as
+    // itself. A classic host sends Ctrl-digit in the legacy encoding: Ctrl-1
+    // and Ctrl-9 as the bare digit, Ctrl-2 as NUL (Ctrl-Space), Ctrl-3 as ESC,
+    // Ctrl-4 and Ctrl-5 as the bytes of Ctrl-\ and Ctrl-] (`normalize_ctrl_punct`
+    // folds them, and the macro bar and remove-git-pane hold those), Ctrl-8 as
+    // DEL (Backspace). Ctrl-6 and Ctrl-7 arrive as themselves. A host that
+    // sends extended keys sends each Ctrl-digit as itself, but the defaults
+    // must work on every host. The rest stay reachable through NextTab/PrevTab
+    // or a rebind.
     BindingDef {
         action: Action::SelectTab1,
-        default_keys: &[key!(ctrl - 1)],
+        default_keys: &[],
         scopes: &[BindingScope::Center],
         help: Some(HelpEntry {
             section: "Agent pane",
-            description: "Focus tab by number (tab 4 ships with no default key)",
+            description: "Focus tab by number (a dock terminal while the dock has focus)",
         }),
         hint_contexts: &[],
     },
     BindingDef {
         action: Action::SelectTab2,
-        default_keys: &[key!(ctrl - 2)],
+        default_keys: &[],
         scopes: &[BindingScope::Center],
         help: None,
         hint_contexts: &[],
     },
     BindingDef {
         action: Action::SelectTab3,
-        default_keys: &[key!(ctrl - 3)],
+        default_keys: &[],
         scopes: &[BindingScope::Center],
         help: None,
         hint_contexts: &[],
     },
     BindingDef {
-        // No default key: under the legacy terminal protocol Ctrl-4 arrives as
-        // byte 0x1c, the same as Ctrl-\ (`normalize_ctrl_punct` folds them),
-        // which `OpenMacroBar` holds in the Center scope. Tab 4 stays reachable
-        // via NextTab/PrevTab or a rebind.
         action: Action::SelectTab4,
         default_keys: &[],
         scopes: &[BindingScope::Center],
@@ -598,7 +650,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
     },
     BindingDef {
         action: Action::SelectTab5,
-        default_keys: &[key!(ctrl - 5)],
+        default_keys: &[],
         scopes: &[BindingScope::Center],
         help: None,
         hint_contexts: &[],
@@ -619,14 +671,14 @@ pub const BINDING_DEFS: &[BindingDef] = &[
     },
     BindingDef {
         action: Action::SelectTab8,
-        default_keys: &[key!(ctrl - 8)],
+        default_keys: &[],
         scopes: &[BindingScope::Center],
         help: None,
         hint_contexts: &[],
     },
     BindingDef {
         action: Action::SelectTab9,
-        default_keys: &[key!(ctrl - 9)],
+        default_keys: &[],
         scopes: &[BindingScope::Center],
         help: None,
         hint_contexts: &[],
@@ -646,12 +698,33 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         hint_contexts: &[],
     },
     BindingDef {
+        action: Action::StopTab,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::MoveTabLeft,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::MoveTabRight,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
         action: Action::DeleteSession,
         default_keys: &[key!(ctrl - d)],
         scopes: &[BindingScope::Left, BindingScope::Center],
         help: Some(HelpEntry {
             section: "Projects pane",
-            description: "Delete selected session/worktree",
+            description: "Delete selected session/worktree (close the terminal with the dock or a terminal row focused)",
         }),
         hint_contexts: &[
             (HintContext::LeftSession, "Delete"),
@@ -660,7 +733,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         ],
     },
     BindingDef {
-        action: Action::DeleteTerminal,
+        action: Action::CloseTerminal,
         default_keys: &[],
         scopes: &[],
         help: None,
@@ -673,7 +746,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         scopes: &[BindingScope::Left],
         help: Some(HelpEntry {
             section: "Projects pane",
-            description: "Open the selected agent fullscreen (keys go to it verbatim)",
+            description: "Open the selected agent fullscreen (keys go straight to it)",
         }),
         hint_contexts: &[],
     },
@@ -696,29 +769,26 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         scopes: &[BindingScope::Center],
         help: Some(HelpEntry {
             section: "Agent pane",
-            description: "Open current pull request in the default browser",
+            description: "Open the pull request the band shows in the default browser",
         }),
         hint_contexts: &[],
     },
     BindingDef {
-        // Palette-only: attach (pin) a GitHub PR to the selected agent.
-        action: Action::AttachPullRequest,
-        default_keys: &[],
-        scopes: &[],
-        help: None,
+        // A yaran chord only while the agent pane is not taking typing: typed
+        // at a live agent, windowed or fullscreen, it reaches the child, where
+        // Ctrl-n is readline's next-history. One of the `LATE_DEFAULTS`.
+        action: Action::NextPullRequest,
+        default_keys: &[key!(ctrl - n)],
+        scopes: &[BindingScope::Center],
+        help: Some(HelpEntry {
+            section: "Agent pane",
+            description: "Step the band to the agent's next pull request (not while typing to the agent)",
+        }),
         hint_contexts: &[],
     },
     BindingDef {
-        // Palette-only: detach the agent's pull request and stop looking.
-        action: Action::DetachPullRequest,
-        default_keys: &[],
-        scopes: &[],
-        help: None,
-        hint_contexts: &[],
-    },
-    BindingDef {
-        // Palette-only: the way back from a detach.
-        action: Action::ResumePullRequestAutodetection,
+        // Palette-only: opens the Pull requests modal.
+        action: Action::PullRequests,
         default_keys: &[],
         scopes: &[],
         help: None,
@@ -739,7 +809,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         ],
         help: Some(HelpEntry {
             section: "Agent pane",
-            description: "Toggle fullscreen (fullscreen keys go to the agent verbatim)",
+            description: "Toggle fullscreen for the focused agent or dock terminal (other keys go straight to it)",
         }),
         hint_contexts: &[(HintContext::Center, "Fullscreen")],
     },
@@ -750,6 +820,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             BindingScope::Center,
             BindingScope::Interactive,
             BindingScope::Help,
+            BindingScope::ServerScreen,
         ],
         help: Some(HelpEntry {
             section: "Agent pane",
@@ -764,6 +835,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             BindingScope::Center,
             BindingScope::Interactive,
             BindingScope::Help,
+            BindingScope::ServerScreen,
         ],
         help: Some(HelpEntry {
             section: "Agent pane",
@@ -774,7 +846,11 @@ pub const BINDING_DEFS: &[BindingDef] = &[
     BindingDef {
         action: Action::ScrollLineUp,
         default_keys: &[key!(Up)],
-        scopes: &[BindingScope::Interactive, BindingScope::Center],
+        scopes: &[
+            BindingScope::Interactive,
+            BindingScope::Center,
+            BindingScope::ServerScreen,
+        ],
         help: Some(HelpEntry {
             section: "Scrolling",
             description: "Scroll up one line (in a typing pane, only while scrolled back)",
@@ -784,7 +860,11 @@ pub const BINDING_DEFS: &[BindingDef] = &[
     BindingDef {
         action: Action::ScrollLineDown,
         default_keys: &[key!(Down), key!(space)],
-        scopes: &[BindingScope::Interactive, BindingScope::Center],
+        scopes: &[
+            BindingScope::Interactive,
+            BindingScope::Center,
+            BindingScope::ServerScreen,
+        ],
         help: Some(HelpEntry {
             section: "Scrolling",
             description: "Scroll down one line (in a typing pane, only while scrolled back)",
@@ -798,6 +878,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             BindingScope::Interactive,
             BindingScope::Center,
             BindingScope::Help,
+            BindingScope::ServerScreen,
         ],
         help: Some(HelpEntry {
             section: "Scrolling",
@@ -812,6 +893,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
             BindingScope::Interactive,
             BindingScope::Center,
             BindingScope::Help,
+            BindingScope::ServerScreen,
         ],
         help: Some(HelpEntry {
             section: "Scrolling",
@@ -826,7 +908,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         scopes: &[BindingScope::Files],
         help: Some(HelpEntry {
             section: "Files pane",
-            description: "Open selected file diff (on the human board: open the card)",
+            description: "Open selected file diff, or expand or collapse a folder (on the human board: open the card)",
         }),
         hint_contexts: &[
             (HintContext::Files, "Diff"),
@@ -839,7 +921,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         scopes: &[BindingScope::Files],
         help: Some(HelpEntry {
             section: "Files pane",
-            description: "Stage or unstage selected file (on the human board: mark done or reopen)",
+            description: "Stage or unstage selected file or whole folder (on the human board: mark done or reopen)",
         }),
         hint_contexts: &[
             (HintContext::Files, "Stage/Unstage"),
@@ -862,7 +944,7 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         scopes: &[BindingScope::Files],
         help: Some(HelpEntry {
             section: "Files pane",
-            description: "Discard changes to selected file",
+            description: "Discard changes to selected file, or delete an untracked folder",
         }),
         hint_contexts: &[(HintContext::Files, "Discard")],
     },
@@ -1244,6 +1326,13 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         hint_contexts: &[],
     },
     BindingDef {
+        action: Action::ClearStatusLine,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
         action: Action::DetachAgent,
         default_keys: &[],
         scopes: &[],
@@ -1422,6 +1511,86 @@ pub const BINDING_DEFS: &[BindingDef] = &[
         hint_contexts: &[],
     },
     BindingDef {
+        action: Action::PullRequestsAttach,
+        default_keys: &[key!(a)],
+        scopes: &[BindingScope::PullRequestList],
+        help: Some(HelpEntry {
+            section: "Overlays",
+            description: "Pull requests: attach a pull request",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::PullRequestHideOrDetach,
+        default_keys: &[key!(h)],
+        scopes: &[BindingScope::PullRequestList],
+        help: Some(HelpEntry {
+            section: "Overlays",
+            description: "Pull requests: hide, detach, or show again (the row decides)",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::PullRequestsToggleHidden,
+        default_keys: &[key!(s)],
+        scopes: &[BindingScope::PullRequestList],
+        help: Some(HelpEntry {
+            section: "Overlays",
+            description: "Pull requests: show or hide the hidden ones",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::PullRequestsToggleView,
+        default_keys: &[key!(b)],
+        scopes: &[BindingScope::PullRequestList],
+        help: Some(HelpEntry {
+            section: "Overlays",
+            description: "Pull requests: switch to the branches and back",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::PullRequestsToggleSort,
+        default_keys: &[key!(o)],
+        scopes: &[BindingScope::PullRequestList],
+        help: Some(HelpEntry {
+            section: "Overlays",
+            description: "Pull requests: switch between automatic order and yours",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::PullRequestMoveUp,
+        default_keys: &[key!(shift - k)],
+        scopes: &[BindingScope::PullRequestList],
+        help: Some(HelpEntry {
+            section: "Overlays",
+            description: "Pull requests: move the selected one up",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::PullRequestMoveDown,
+        default_keys: &[key!(shift - j)],
+        scopes: &[BindingScope::PullRequestList],
+        help: Some(HelpEntry {
+            section: "Overlays",
+            description: "Pull requests: move the selected one down",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::PullRequestMoveTop,
+        default_keys: &[key!(shift - t)],
+        scopes: &[BindingScope::PullRequestList],
+        help: Some(HelpEntry {
+            section: "Overlays",
+            description: "Pull requests: move the selected one to the top",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
         action: Action::ClearTextField,
         default_keys: &[key!(ctrl - d)],
         scopes: &[BindingScope::Dialog, BindingScope::CommitInput],
@@ -1525,6 +1694,13 @@ pub const BINDING_DEFS: &[BindingDef] = &[
     },
     BindingDef {
         action: Action::CloudPairPhone,
+        default_keys: &[],
+        scopes: &[],
+        help: None,
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::ToggleNerdFontIcons,
         default_keys: &[],
         scopes: &[],
         help: None,
@@ -1699,6 +1875,21 @@ pub const BINDING_DEFS: &[BindingDef] = &[
     },
 ];
 
+/// The help section, and the scope's display name, for the `start-web-server`
+/// flip's status screen.
+pub(crate) const SERVER_SCREEN_HELP_SECTION: &str = "Web server screen";
+
+/// Whether a key reaches the server status screen's bindings: its own return
+/// and quit keys are answered first, so a binding on one of them never fires
+/// there. The one predicate the screen routes with and labels its hints with.
+pub(crate) fn server_screen_reaches(key: KeyCombination) -> bool {
+    let event: KeyEvent = key.into();
+    let ctrl_c =
+        event.code == KeyCode::Char('c') && event.modifiers.contains(KeyModifiers::CONTROL);
+    let quit_or_back = matches!(event.code, KeyCode::Esc | KeyCode::Char('q' | 'Q'));
+    !(ctrl_c || quit_or_back)
+}
+
 const HELP_SECTION_ORDER: &[&str] = &[
     "Global",
     "Projects pane",
@@ -1726,13 +1917,24 @@ const HELP_SECTION_ORDER: &[&str] = &[
 /// [`RuntimeBindings::label_for_text_field_dialog`], so a hint cannot name a
 /// key the field swallows.
 ///
+/// With `extended_keys` on, a character held with Super, Hyper or Meta is a
+/// chord rather than typing, and is left to the bindings.
+///
 /// Accepts anything that converts into a [`KeyCombination`], so the input layer
 /// can hand it a raw crossterm `KeyEvent` and the renderer a stored binding key.
-pub fn text_field_owns_key(key: impl Into<KeyCombination>) -> bool {
+pub(crate) fn text_field_owns_key(
+    key: impl Into<KeyCombination>,
+    extended_keys: ExtendedKeys,
+) -> bool {
     let key: KeyCombination = key.into();
+    let chord_modifiers = if extended_keys == ExtendedKeys::On {
+        KeyModifiers::CONTROL | KeyModifiers::SUPER | KeyModifiers::HYPER | KeyModifiers::META
+    } else {
+        KeyModifiers::CONTROL
+    };
     match key.codes {
-        crokey::OneToThree::One(KeyCode::Char(_)) => !key.modifiers.contains(KeyModifiers::CONTROL),
-        crokey::OneToThree::One(KeyCode::Left) | crokey::OneToThree::One(KeyCode::Right) => true,
+        crokey::OneToThree::One(KeyCode::Char(_)) => !key.modifiers.intersects(chord_modifiers),
+        crokey::OneToThree::One(KeyCode::Left | KeyCode::Right) => true,
         _ => false,
     }
 }
@@ -1743,9 +1945,19 @@ pub fn text_field_owns_key(key: impl Into<KeyCombination>) -> bool {
 /// moves focus out of it. yaran warns rather than refusing (the mouse and the
 /// palette still work, and it does not overrule a user's bindings), so the
 /// sentence has to carry the fix with it.
-pub const NO_PANE_CHORD_ADVICE: &str = "no pane chord reaches yaran from the typeable center pane: \
+pub(crate) const NO_PANE_CHORD_ADVICE: &str = "no pane chord reaches yaran from the typeable center pane: \
      every key bound to focus_next and focus_prev types into the agent there. Rebind focus_next \
      under [keys] in config.toml (Ctrl-o is its default) to get a keyboard way out.";
+
+/// Where Tab and Shift-Tab go while the typeable center pane has the keyboard
+/// (`[ui] tab_reaches_agent`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabKey {
+    /// They reach the live agent.
+    ReachesAgent,
+    /// They move between panes, as everywhere else.
+    MovesPanes,
+}
 
 /// Keys the minimized, typeable center pane forwards to the agent's PTY
 /// instead of resolving as yaran bindings.
@@ -1765,17 +1977,34 @@ pub const NO_PANE_CHORD_ADVICE: &str = "no pane chord reaches yaran from the typ
 /// emits 0x03, SIGINT), and Quit stays reachable via `q` from a non-typeable
 /// pane and via the palette.
 ///
+/// With `extended_keys` on, Super, Hyper and Meta make a chord too, so it is
+/// yaran's like a Ctrl or Alt chord: only a host sending extended keys reports
+/// them.
+///
 /// The sibling of [`text_field_owns_key`]: `app::input::handle_key` suppresses
 /// the Global and Center binding lookups with it while the pane is typeable
 /// and at the live edge, so hints must not advertise a key it swallows.
-pub fn center_typing_owns_key(key: &KeyEvent, tab_reaches_agent: bool) -> bool {
+pub(crate) fn center_typing_owns_key(
+    key: &KeyEvent,
+    tab_key: TabKey,
+    extended_keys: ExtendedKeys,
+) -> bool {
     let mods = key.modifiers;
-    if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::ALT) {
+    let chord_modifiers = if extended_keys == ExtendedKeys::On {
+        KeyModifiers::CONTROL
+            | KeyModifiers::ALT
+            | KeyModifiers::SUPER
+            | KeyModifiers::HYPER
+            | KeyModifiers::META
+    } else {
+        KeyModifiers::CONTROL | KeyModifiers::ALT
+    };
+    if mods.intersects(chord_modifiers) {
         // Ctrl+c is the one chord the agent gets (see above). Any extra
         // modifier turns it back into a yaran-side chord.
         return key.code == KeyCode::Char('c') && mods == KeyModifiers::CONTROL;
     }
-    if tab_reaches_agent && matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+    if tab_key == TabKey::ReachesAgent && matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
         return true;
     }
     matches!(
@@ -1794,6 +2023,24 @@ pub fn center_typing_owns_key(key: &KeyEvent, tab_reaches_agent: bool) -> bool {
     )
 }
 
+/// A key event as the binding lookup compares it.
+fn normalized_combination(key: &KeyEvent) -> KeyCombination {
+    normalize_ctrl_punct(normalize_backtab(KeyCombination::from(*key).normalized()))
+}
+
+/// Whether the terminal UI reads extended keys this run: `CSI … u` keys are
+/// decoded and matched by meaning, and each key reaches a child as its classic
+/// bytes, with Shift-Enter as the soft newline. Decided once when the run
+/// starts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ExtendedKeys {
+    /// Keys are read and sent exactly as a classic terminal sends them.
+    #[default]
+    Off,
+    /// Extended keys are read, and every child gets classic keys.
+    On,
+}
+
 /// Normalize `BackTab` (sent by crossterm for shift-tab) into `Tab + SHIFT`
 /// so that `key!(shift-tab)` from crokey matches the actual terminal event.
 fn normalize_backtab(kc: KeyCombination) -> KeyCombination {
@@ -1802,6 +2049,69 @@ fn normalize_backtab(kc: KeyCombination) -> KeyCombination {
     } else {
         kc
     }
+}
+
+/// The tab-number actions, tab 1 first.
+const SELECT_TAB_ACTIONS: [Action; 9] = [
+    Action::SelectTab1,
+    Action::SelectTab2,
+    Action::SelectTab3,
+    Action::SelectTab4,
+    Action::SelectTab5,
+    Action::SelectTab6,
+    Action::SelectTab7,
+    Action::SelectTab8,
+    Action::SelectTab9,
+];
+
+/// The tab-number defaults an older yaran shipped, which every config file it
+/// wrote carries as live rows. None of them reached its tab on the legacy key
+/// encoding (see the tab-number `BindingDef`s), so a row that still says
+/// exactly that is read as the unbound default it would be today.
+const DROPPED_TAB_DEFAULTS: [(Action, &str); 6] = [
+    (Action::SelectTab1, "ctrl-1"),
+    (Action::SelectTab2, "ctrl-2"),
+    (Action::SelectTab3, "ctrl-3"),
+    (Action::SelectTab5, "ctrl-5"),
+    (Action::SelectTab8, "ctrl-8"),
+    (Action::SelectTab9, "ctrl-9"),
+];
+
+/// The keys `[keys]` gives `action`, or `None` where it takes the default:
+/// no row, or a row that is exactly one of the [`DROPPED_TAB_DEFAULTS`].
+pub(crate) fn configured_keys(
+    keys: &crate::config::KeysConfig,
+    action: Action,
+) -> Option<&Vec<String>> {
+    let configured = keys.bindings.get(action.config_name())?;
+    let parse = |text: &str| crokey::parse(&normalize_key_string(text)).ok();
+    let is_dropped_default = DROPPED_TAB_DEFAULTS.iter().any(|(dropped, old)| {
+        *dropped == action
+            && matches!(configured.as_slice(), [only] if parse(only).is_some() && parse(only) == parse(old))
+    });
+    (!is_dropped_default).then_some(configured)
+}
+
+/// Ascending numbers written with consecutive runs of three or more collapsed
+/// to a range: `[1, 2, 3, 5, 8, 9]` is `1-3, 5, 8, 9`.
+fn number_runs(numbers: &[u32]) -> String {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for &n in numbers {
+        match runs.last_mut() {
+            Some((_, end)) if end.checked_add(1) == Some(n) => *end = n,
+            _ => runs.push((n, n)),
+        }
+    }
+    runs.into_iter()
+        .flat_map(|(start, end)| {
+            if end - start >= 2 {
+                vec![format!("{start}-{end}")]
+            } else {
+                (start..=end).map(|n| n.to_string()).collect()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Crossterm maps Ctrl+punctuation bytes 0x1C..0x1F to Ctrl+'4'..'7' instead
@@ -1826,13 +2136,13 @@ fn normalize_ctrl_punct(kc: KeyCombination) -> KeyCombination {
 /// e.g. `ctrl-p`, `shift-tab`, `space`, `enter`.
 /// Format for UI display: title-case modifiers, natural key names.
 /// e.g. `Ctrl-p`, `Shift-Tab`, `PgDn`, `Enter`.
-pub fn display_format() -> KeyCombinationFormat {
+pub(crate) fn display_format() -> KeyCombinationFormat {
     KeyCombinationFormat::default()
 }
 
 /// Format a key combo for display in the UI.
 #[cfg(test)]
-pub fn format_key(kc: KeyCombination) -> String {
+pub(crate) fn format_key(kc: KeyCombination) -> String {
     display_format().to_string(kc)
 }
 
@@ -1843,7 +2153,7 @@ fn config_format() -> KeyCombinationFormat {
 }
 
 /// Format a key combo for config file serialization (all lowercase).
-pub fn format_key_for_config(kc: KeyCombination) -> String {
+pub(crate) fn format_key_for_config(kc: KeyCombination) -> String {
     config_format().to_string(kc).to_lowercase()
 }
 
@@ -1853,7 +2163,7 @@ pub fn format_key_for_config(kc: KeyCombination) -> String {
 /// `"P"` silently becomes lowercase `"p"`. This helper rewrites bare
 /// uppercase letters to the explicit shift form (`"P"` → `"shift-p"`) so
 /// that `crokey::parse` produces the correct `KeyCombination`.
-pub fn normalize_key_string(s: &str) -> String {
+pub(crate) fn normalize_key_string(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() == 1 && chars[0].is_ascii_uppercase() {
         format!("shift-{}", chars[0].to_ascii_lowercase())
@@ -1867,7 +2177,7 @@ pub fn normalize_key_string(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// A single runtime-resolved binding.
-pub struct RuntimeBinding {
+pub(crate) struct RuntimeBinding {
     pub action: Action,
     pub keys: Vec<KeyCombination>,
     pub scopes: &'static [BindingScope],
@@ -1878,40 +2188,31 @@ pub struct RuntimeBinding {
     pub palette_description: Option<&'static str>,
 }
 
-pub struct RuntimeBindings {
+pub(crate) struct RuntimeBindings {
     bindings: Vec<RuntimeBinding>,
-    #[allow(dead_code)] // Will be used to filter terminal-native hints
-    pub show_terminal_keys: bool,
     format: KeyCombinationFormat,
+    /// Whether the terminal UI reads extended keys this run; see
+    /// [`Self::set_extended_keys`].
+    extended_keys: ExtendedKeys,
 }
 
 impl RuntimeBindings {
     /// Build runtime bindings from a [`KeysConfig`].
     /// Parses key strings from the config, falling back to defaults for
     /// missing or unparseable entries.
-    pub fn from_keys_config(keys: &crate::config::KeysConfig) -> Self {
-        Self::new(
-            |action| {
-                let config_name = action.config_name();
-                match keys.bindings.get(config_name) {
-                    Some(key_strs) => key_strs
-                        .iter()
-                        .filter_map(|s| crokey::parse(&normalize_key_string(s)).ok())
-                        .collect(),
-                    None => BINDING_DEFS
-                        .iter()
-                        .find(|d| d.action == action)
-                        .map(|d| d.default_keys.to_vec())
-                        .unwrap_or_default(),
-                }
-            },
-            keys.show_terminal_keys,
-        )
+    pub(crate) fn from_keys_config(keys: &crate::config::KeysConfig) -> Self {
+        let resolved = resolve_keys(keys);
+        Self::new(|action| {
+            resolved
+                .iter()
+                .find(|(resolved_action, ..)| *resolved_action == action)
+                .map_or_default(|(_, keys, _)| keys.clone())
+        })
     }
 
     /// Build runtime bindings from parsed config keys.
     /// `keys_for` returns the parsed `KeyCombination`s for a given action.
-    pub fn new(keys_for: impl Fn(Action) -> Vec<KeyCombination>, show_terminal_keys: bool) -> Self {
+    pub(crate) fn new(keys_for: impl Fn(Action) -> Vec<KeyCombination>) -> Self {
         let format = display_format();
         let bindings = BINDING_DEFS
             .iter()
@@ -1938,17 +2239,64 @@ impl RuntimeBindings {
             .collect();
         Self {
             bindings,
-            show_terminal_keys,
             format,
+            extended_keys: ExtendedKeys::Off,
         }
+    }
+
+    /// Whether the terminal UI reads extended keys this run. With it on, a
+    /// plain binding on Enter, Esc or Backspace also takes the key with Shift
+    /// (see [`Self::lookup`]), because a classic terminal sends identical bytes
+    /// for those keys with and without Shift.
+    pub(crate) fn set_extended_keys(&mut self, extended_keys: ExtendedKeys) {
+        self.extended_keys = extended_keys;
+    }
+
+    /// Whether `key` is one of the keys bound to `action`, in any scope, with
+    /// exactly the modifiers it names: the decoded-key twin of
+    /// [`Self::byte_patterns_for`].
+    pub(crate) fn binds_exactly(&self, action: Action, key: &KeyEvent) -> bool {
+        let incoming = normalized_combination(key);
+        self.bindings
+            .iter()
+            .filter(|binding| binding.action == action)
+            .flat_map(|binding| binding.keys.iter())
+            .any(|bound| {
+                let bound = normalize_ctrl_punct(normalize_backtab(bound.normalized()));
+                bound.codes == incoming.codes && bound.modifiers == incoming.modifiers
+            })
+    }
+
+    /// Every action's binding, in declaration order.
+    pub(crate) fn bindings(&self) -> &[RuntimeBinding] {
+        &self.bindings
     }
 
     /// Find the action for a key event in the given scope.
     /// Plain bindings (no modifiers) reject Ctrl/Alt combos so that e.g.
-    /// Ctrl+d does not accidentally match a plain `d` binding.
-    pub fn lookup(&self, key: &KeyEvent, scope: BindingScope) -> Option<Action> {
-        let incoming =
-            normalize_ctrl_punct(normalize_backtab(KeyCombination::from(*key).normalized()));
+    /// Ctrl+d does not accidentally match a plain `d` binding. A modifier
+    /// binding also takes a chord holding MORE modifiers than it names, but a
+    /// binding naming exactly the modifiers held wins over it, so binding
+    /// `ctrl-alt-x` beside `ctrl-x` makes both reachable. Across scopes the
+    /// key handler applies the same rule through [`Self::lookup_exact`].
+    pub(crate) fn lookup(&self, key: &KeyEvent, scope: BindingScope) -> Option<Action> {
+        self.lookup_matching(key, scope, ModifierMatch::Exact)
+            .or_else(|| self.lookup_matching(key, scope, ModifierMatch::Extending))
+    }
+
+    /// The action in `scope` bound to exactly the key and modifiers of `key`,
+    /// never one a chord holding more modifiers merely extends.
+    pub(crate) fn lookup_exact(&self, key: &KeyEvent, scope: BindingScope) -> Option<Action> {
+        self.lookup_matching(key, scope, ModifierMatch::Exact)
+    }
+
+    fn lookup_matching(
+        &self,
+        key: &KeyEvent,
+        scope: BindingScope,
+        modifiers: ModifierMatch,
+    ) -> Option<Action> {
+        let incoming = normalized_combination(key);
         self.bindings
             .iter()
             .filter(|b| b.scopes.contains(&scope))
@@ -1958,9 +2306,21 @@ impl RuntimeBindings {
                     if norm.codes != incoming.codes {
                         return false;
                     }
-                    if norm.modifiers.is_empty() {
-                        // Plain binding: reject if any modifier is pressed
+                    if modifiers == ModifierMatch::Exact {
+                        incoming.modifiers == norm.modifiers
+                    } else if norm.modifiers.is_empty() {
+                        // Plain binding: reject if any modifier is pressed,
+                        // except Shift on a key a classic terminal sends the
+                        // same with and without it.
                         incoming.modifiers.is_empty()
+                            || (self.extended_keys == ExtendedKeys::On
+                                && incoming.modifiers == KeyModifiers::SHIFT
+                                && matches!(
+                                    norm.codes,
+                                    crokey::OneToThree::One(
+                                        KeyCode::Enter | KeyCode::Esc | KeyCode::Backspace
+                                    )
+                                ))
                     } else {
                         incoming.modifiers.contains(norm.modifiers)
                     }
@@ -1970,30 +2330,101 @@ impl RuntimeBindings {
     }
 
     /// Display label for the first key combo of an action.
-    /// Uses natural casing (e.g. "PgDn", "shift-Tab") suitable for UI display.
-    pub fn label_for(&self, action: Action) -> String {
+    /// Uses natural casing (e.g. "`PgDn`", "shift-Tab") suitable for UI display.
+    pub(crate) fn label_for(&self, action: Action) -> String {
         self.bindings
             .iter()
             .find(|b| b.action == action)
             .and_then(|b| b.keys.first())
-            .map(|k| self.format.to_string(*k))
-            .unwrap_or_default()
+            .map_or_default(|k| self.format.to_string(*k))
+    }
+
+    /// Display labels for all key combos of an action, one per key, for a
+    /// hint that names each key as its own badge.
+    pub(crate) fn labels_list_for(&self, action: Action) -> Vec<String> {
+        self.bindings
+            .iter()
+            .find(|b| b.action == action)
+            .map_or_default(|b| b.keys.iter().map(|k| self.format.to_string(*k)).collect())
     }
 
     /// Display labels for all key combos of an action, joined with `/`.
     /// Uses natural casing (e.g. "ctrl-f/PgDn") suitable for UI display.
-    pub fn labels_for(&self, action: Action) -> String {
+    pub(crate) fn labels_for(&self, action: Action) -> String {
         self.bindings
             .iter()
             .find(|b| b.action == action)
-            .map(|b| {
+            .map_or_default(|b| {
                 b.keys
                     .iter()
                     .map(|k| self.format.to_string(*k))
                     .collect::<Vec<_>>()
                     .join("/")
             })
-            .unwrap_or_default()
+    }
+
+    /// Display labels for every key of an action that satisfies `reachable`.
+    pub(crate) fn labels_reaching(
+        &self,
+        action: Action,
+        reachable: impl Fn(KeyCombination) -> bool,
+    ) -> Vec<String> {
+        self.bindings
+            .iter()
+            .find(|b| b.action == action)
+            .map_or_default(|b| {
+                b.keys
+                    .iter()
+                    .copied()
+                    .filter(|k| reachable(*k))
+                    .map(|k| self.format.to_string(k))
+                    .collect()
+            })
+    }
+
+    /// The server status screen's entries for the `?` help: its scroll keys,
+    /// read from the bindings and only those that reach the screen, then its own
+    /// return and quit keys, which are not bindings.
+    pub(crate) fn server_screen_help(&self) -> Vec<(String, &'static str)> {
+        let label = |action| {
+            self.labels_reaching(action, server_screen_reaches)
+                .join("/")
+        };
+        let first = |action| {
+            self.labels_reaching(action, server_screen_reaches)
+                .into_iter()
+                .next()
+                .unwrap_or_default()
+        };
+        let pair = |up: Action, down: Action| match (first(up), first(down)) {
+            (up, down) if !up.is_empty() && !down.is_empty() => format!("{up}/{down}"),
+            (up, down) => format!("{up}{down}"),
+        };
+        let mut entries = vec![
+            (
+                pair(Action::ScrollLineUp, Action::ScrollLineDown),
+                "Scroll the server log a line up or down",
+            ),
+            (
+                pair(Action::ScrollPageUp, Action::ScrollPageDown),
+                "Scroll the server log a page up or down",
+            ),
+            (
+                label(Action::ScrollToTop),
+                "Jump to the oldest line of the server log",
+            ),
+            (
+                label(Action::ScrollToBottom),
+                "Jump to the latest line of the server log and follow it again",
+            ),
+        ];
+        entries.retain(|(label, _)| !label.is_empty());
+        entries.push((
+            "q/Esc".to_string(),
+            "Stop the web server and return to yaran",
+        ));
+        entries.push(("Ctrl-c".to_string(), "Stop the web server and quit yaran"));
+        entries
     }
 
     /// First key combination of an action that satisfies `reachable`.
@@ -2002,7 +2433,7 @@ impl RuntimeBindings {
     /// bindings (see [`text_field_owns_key`]) must not advertise a key it
     /// swallows. Passing the surface's own suppression rule here keeps the
     /// hint and the routing reading from one predicate.
-    pub fn first_key_reaching(
+    pub(crate) fn first_key_reaching(
         &self,
         action: Action,
         reachable: impl Fn(KeyCombination) -> bool,
@@ -2015,7 +2446,7 @@ impl RuntimeBindings {
 
     /// Display label for the first key combination of an action that satisfies
     /// `reachable`, or `None` when the surface suppresses every one of them.
-    pub fn label_for_reaching(
+    pub(crate) fn label_for_reaching(
         &self,
         action: Action,
         reachable: impl Fn(KeyCombination) -> bool,
@@ -2030,8 +2461,8 @@ impl RuntimeBindings {
     /// `None` means the user has rebound the action so that every one of its
     /// keys is swallowed by the field there; a caller must then drop the hint
     /// rather than name a key that types a character.
-    pub fn label_for_text_field_dialog(&self, action: Action) -> Option<String> {
-        self.label_for_reaching(action, |k| !text_field_owns_key(k))
+    pub(crate) fn label_for_text_field_dialog(&self, action: Action) -> Option<String> {
+        self.label_for_reaching(action, |k| !text_field_owns_key(k, self.extended_keys))
     }
 
     /// Display label for an action's first key that still reaches the bindings
@@ -2041,14 +2472,14 @@ impl RuntimeBindings {
     /// so the hint must drop rather than name a key the pane swallows. This is
     /// what keeps the hint from naming Tab once `tab_reaches_agent` hands it
     /// over.
-    pub fn label_for_typeable_center(
+    pub(crate) fn label_for_typeable_center(
         &self,
         action: Action,
-        tab_reaches_agent: bool,
+        tab_key: TabKey,
     ) -> Option<String> {
         self.label_for_reaching(action, |k| {
             let event: KeyEvent = k.into();
-            !center_typing_owns_key(&event, tab_reaches_agent)
+            !center_typing_owns_key(&event, tab_key, self.extended_keys)
         })
     }
 
@@ -2057,19 +2488,19 @@ impl RuntimeBindings {
     /// `focus_prev` types into the agent there, so nothing on the keyboard
     /// moves focus off the pane. A user who rebinds both to Tab alone lands
     /// here, and the surfaces answer with [`NO_PANE_CHORD_ADVICE`].
-    pub fn typeable_center_traps_focus(&self, tab_reaches_agent: bool) -> bool {
-        tab_reaches_agent
+    pub(crate) fn typeable_center_traps_focus(&self, tab_key: TabKey) -> bool {
+        tab_key == TabKey::ReachesAgent
             && self
-                .label_for_typeable_center(Action::FocusNext, true)
+                .label_for_typeable_center(Action::FocusNext, TabKey::ReachesAgent)
                 .is_none()
             && self
-                .label_for_typeable_center(Action::FocusPrev, true)
+                .label_for_typeable_center(Action::FocusPrev, TabKey::ReachesAgent)
                 .is_none()
     }
 
-    /// Combined label for two related actions (e.g. MoveDown + MoveUp → "j/k").
+    /// Combined label for two related actions (e.g. `MoveDown` + `MoveUp` → "j/k").
     /// Takes the first key from each action.
-    pub fn combined_label(&self, a: Action, b: Action) -> String {
+    pub(crate) fn combined_label(&self, a: Action, b: Action) -> String {
         let la = self.label_for(a);
         let lb = self.label_for(b);
         if la.is_empty() && lb.is_empty() {
@@ -2084,7 +2515,7 @@ impl RuntimeBindings {
     }
 
     /// Status-bar hints for a given context, in display order.
-    pub fn hints_for(&self, ctx: HintContext) -> Vec<(String, &'static str)> {
+    pub(crate) fn hints_for(&self, ctx: HintContext) -> Vec<(String, &'static str)> {
         let mut result = Vec::new();
         for b in &self.bindings {
             for &(hint_ctx, desc) in b.hint_contexts {
@@ -2109,18 +2540,21 @@ impl RuntimeBindings {
     }
 
     /// Help overlay sections grouped by section name, in display order.
-    pub fn help_sections(&self) -> Vec<(&'static str, Vec<(String, &'static str)>)> {
-        let mut sections: Vec<(&str, Vec<(String, &str)>)> = HELP_SECTION_ORDER
+    pub(crate) fn help_sections(&self) -> Vec<(&'static str, Vec<(String, String)>)> {
+        let mut sections: Vec<(&str, Vec<(String, String)>)> = HELP_SECTION_ORDER
             .iter()
             .map(|&s| (s, Vec::new()))
             .collect();
         for b in &self.bindings {
             if let (Some(section), Some(description)) = (b.help_section, b.help_description) {
-                // For MoveDown, show combined "j/k" label
-                let label = if b.action == Action::MoveDown {
-                    self.combined_label(Action::MoveDown, Action::MoveUp)
-                } else {
-                    self.labels_for(b.action)
+                let (label, description) = match b.action {
+                    // For MoveDown, show combined "j/k" label
+                    Action::MoveDown => (
+                        self.combined_label(Action::MoveDown, Action::MoveUp),
+                        description.to_string(),
+                    ),
+                    Action::SelectTab1 => self.tab_number_help(description),
+                    _ => (self.labels_for(b.action), description.to_string()),
                 };
                 if label.is_empty() {
                     continue;
@@ -2133,8 +2567,46 @@ impl RuntimeBindings {
                 }
             }
         }
+        sections.push((
+            SERVER_SCREEN_HELP_SECTION,
+            self.server_screen_help()
+                .into_iter()
+                .map(|(label, description)| (label, description.to_string()))
+                .collect(),
+        ));
         sections.retain(|(_, entries)| !entries.is_empty());
         sections
+    }
+
+    /// The one help row for the nine tab-number actions: every key bound to any
+    /// of them, and which tab numbers have none and how to give them one.
+    fn tab_number_help(&self, description: &str) -> (String, String) {
+        let mut labels = Vec::new();
+        let mut unbound = Vec::new();
+        for (number, action) in (1..).zip(SELECT_TAB_ACTIONS) {
+            let label = self.labels_for(action);
+            if label.is_empty() {
+                unbound.push(number);
+            } else {
+                labels.push(label);
+            }
+        }
+        let description = if unbound.is_empty() {
+            description.to_string()
+        } else {
+            format!(
+                "{description} (no key for {}: bind select_tab_N in config)",
+                number_runs(&unbound)
+            )
+        };
+        // A row needs a key badge, and with no tab key bound the hint about
+        // binding one is the whole point of the row.
+        let label = if labels.is_empty() {
+            "unbound".to_string()
+        } else {
+            labels.join("/")
+        };
+        (label, description)
     }
 
     /// All palette-visible bindings matching a filter string, in two tiers.
@@ -2151,7 +2623,7 @@ impl RuntimeBindings {
     /// it too: the scorer strips apostrophes, so `agents` reaches a description
     /// saying `agent's` while the phrase tier, matching the text as written,
     /// does not.
-    pub fn palette_matches(&self, input: &str) -> PaletteMatches<'_> {
+    pub(crate) fn palette_matches(&self, input: &str) -> PaletteMatches<'_> {
         let direct = self.direct_palette_matches(input);
         let other = yaran_core::palette::search::ranked_matches(input)
             .into_iter()
@@ -2174,7 +2646,7 @@ impl RuntimeBindings {
     /// the direct hits first. That flat list is what the palette draws and
     /// what its cursor indexes; the tiers exist to fix the order, not to be
     /// shown apart.
-    pub fn filtered_palette(&self, input: &str) -> Vec<&RuntimeBinding> {
+    pub(crate) fn filtered_palette(&self, input: &str) -> Vec<&RuntimeBinding> {
         let matches = self.palette_matches(input);
         let mut flat = matches.direct;
         flat.extend(matches.other);
@@ -2213,7 +2685,7 @@ impl RuntimeBindings {
 /// because the looser hits are meant to sit BELOW the exact ones rather than
 /// be interleaved with them by a score. Nothing draws a boundary between
 /// them; the split is only how the flat list gets its order.
-pub struct PaletteMatches<'a> {
+pub(crate) struct PaletteMatches<'a> {
     /// Contiguous-phrase matches, in the palette's canonical table order.
     pub direct: Vec<&'a RuntimeBinding>,
     /// Looser matches (words in any order, partial words), best first, with
@@ -2250,49 +2722,157 @@ fn normalize_palette_match(s: &str) -> String {
 // Conflict detection: reject configs with duplicate keys in the same scope.
 // ---------------------------------------------------------------------------
 
+/// How two bindings of one key meet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConflictKind {
+    /// One lookup holds both, so which runs depends on declaration order.
+    Collision,
+    /// A global binding is answered before the pane's own: `action_a` is the
+    /// global action and `action_b` the pane action that never runs on that
+    /// key.
+    Shadowed,
+}
+
 /// A detected conflict: the same key is bound to two actions in a shared scope.
 #[derive(Debug, Clone)]
-pub struct KeyConflict {
+pub(crate) struct KeyConflict {
+    /// The key both bind, as config text. Kept for the tests that check
+    /// which key conflicted: no message prints it, since a binding is never
+    /// repeated in an error (see `config::key_binding_problems`).
+    #[cfg(test)]
     pub key_label: String,
     pub scope: BindingScope,
+    pub kind: ConflictKind,
     pub action_a: &'static str,
     pub action_b: &'static str,
 }
 
+/// How a binding's modifiers must match the modifiers a chord holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModifierMatch {
+    /// The chord holds exactly the binding's modifiers.
+    Exact,
+    /// The chord holds at least the binding's modifiers.
+    Extending,
+}
+
 /// Check whether two `KeyCombination` values would conflict in `lookup()`.
 ///
-/// Mirrors the matching semantics of `RuntimeBindings::lookup()`:
-/// - Plain bindings (no modifiers) only conflict with other plain bindings.
-/// - Any two modifier bindings on the same code conflict, not only identical
-///   ones: `lookup()` matches a binding whose modifiers are a SUBSET of the
-///   event's, so an event carrying the union (ctrl-alt-x against ctrl-x and
-///   ctrl-alt-x) matches both and the first one in table order silently wins.
+/// Mirrors the matching semantics of `RuntimeBindings::lookup()`: two bindings
+/// conflict only when they name the same key with the same modifiers. A plain
+/// binding never takes a modified chord, and a modifier binding takes a chord
+/// holding more modifiers only when no binding names that chord exactly, in
+/// its own scope or, for a global binding, in the focused pane (the key
+/// handler defers a global that only extends the chord to a pane binding that
+/// names it), so a binding is never shadowed by one it extends.
 fn keys_conflict(a: &KeyCombination, b: &KeyCombination) -> bool {
     let na = normalize_ctrl_punct(normalize_backtab(a.normalized()));
     let nb = normalize_ctrl_punct(normalize_backtab(b.normalized()));
-    if na.codes != nb.codes {
-        return false;
+    na.codes == nb.codes && na.modifiers == nb.modifiers
+}
+
+/// Defaults that shipped after configs already existed. A `[keys]` written
+/// before one of these could not have avoided it, so where its default key
+/// meets a key the file binds to another action on purpose, the default steps
+/// aside and the action starts unbound, with a warning saying how to bind it
+/// ([`late_default_warnings`]), rather than refusing a config that loaded the
+/// day before. Every other default keeps the old rule: a collision refuses.
+///
+/// The Pull requests modal's own keys are late too, and so is what a binding
+/// of the shared `move_up`/`move_down` there now meets: those two answer in
+/// the modal as well, so a file giving one of them a modal key (`shift-j`)
+/// keeps it and the modal's default steps aside.
+const LATE_DEFAULTS: &[Action] = &[
+    Action::NextPullRequest,
+    Action::CycleTerminalLayout,
+    Action::PullRequestsAttach,
+    Action::PullRequestHideOrDetach,
+    Action::PullRequestsToggleHidden,
+    Action::PullRequestsToggleView,
+    Action::PullRequestsToggleSort,
+    Action::PullRequestMoveUp,
+    Action::PullRequestMoveDown,
+    Action::PullRequestMoveTop,
+    // The fork's own defaults, which also shipped after configs existed: `o`
+    // took over from the retired open-worktree binding, and the sibling,
+    // reorder and right-tab keys came with the grouped sidebar and the board.
+    Action::NewTerminal,
+    Action::NextRightTab,
+    Action::PrevRightTab,
+    Action::NextSiblingAgent,
+    Action::PrevSiblingAgent,
+    Action::MoveProjectUp,
+    Action::MoveProjectDown,
+    Action::MoveAgentUp,
+    Action::MoveAgentDown,
+];
+
+fn parse_configured(key_strs: &[String]) -> Vec<KeyCombination> {
+    key_strs
+        .iter()
+        .filter_map(|s| crokey::parse(&normalize_key_string(s)).ok())
+        .collect()
+}
+
+/// The action whose explicit `[keys]` binding a late default steps aside
+/// for, when one does: the file leaves `def` out and binds one of its default
+/// keys to another action that a keystroke could reach beside it.
+fn late_default_holder(keys: &crate::config::KeysConfig, def: &BindingDef) -> Option<Action> {
+    if !LATE_DEFAULTS.contains(&def.action) || configured_keys(keys, def.action).is_some() {
+        return None;
     }
-    match (na.modifiers.is_empty(), nb.modifiers.is_empty()) {
-        (true, true) => true,
-        (true, false) | (false, true) => false,
-        (false, false) => true,
-    }
+    BINDING_DEFS.iter().find_map(|other| {
+        if other.action == def.action {
+            return None;
+        }
+        let bound = parse_configured(configured_keys(keys, other.action)?);
+        let collides = def
+            .default_keys
+            .iter()
+            .any(|ours| bound.iter().any(|theirs| keys_conflict(ours, theirs)));
+        let meets = def.scopes.iter().any(|ours| {
+            other.scopes.iter().any(|theirs| {
+                conflict_scope((def.action, *ours), (other.action, *theirs)).is_some()
+            })
+        });
+        (collides && meets).then_some(other.action)
+    })
+}
+
+/// One warning per late default that stepped aside, naming the action, the
+/// binding it gave way to, and how to bind it.
+pub(crate) fn late_default_warnings(keys: &crate::config::KeysConfig) -> Vec<String> {
+    BINDING_DEFS
+        .iter()
+        .filter_map(|def| {
+            let holder = late_default_holder(keys, def)?;
+            let key = def
+                .default_keys
+                .first()
+                .map_or_default(|key| display_format().to_string(*key));
+            Some(format!(
+                "[keys] {action} starts unbound: its default key, {key}, is already bound to \
+                 {holder} in your config. Add a {action} row under [keys] with a key of your own \
+                 to use it.",
+                action = def.action.config_name(),
+                holder = holder.config_name(),
+            ))
+        })
+        .collect()
 }
 
 /// Build the resolved key list for each action (config overrides, falling
-/// back to defaults), applying `normalize_key_string` to config values.
+/// back to defaults), applying `normalize_key_string` to config values. A
+/// late default that meets an explicit binding resolves to no key at all.
 fn resolve_keys(
     keys: &crate::config::KeysConfig,
 ) -> Vec<(Action, Vec<KeyCombination>, &'static [BindingScope])> {
     BINDING_DEFS
         .iter()
         .map(|def| {
-            let resolved = match keys.bindings.get(def.action.config_name()) {
-                Some(key_strs) => key_strs
-                    .iter()
-                    .filter_map(|s| crokey::parse(&normalize_key_string(s)).ok())
-                    .collect(),
+            let resolved = match configured_keys(keys, def.action) {
+                Some(key_strs) => parse_configured(key_strs),
+                None if late_default_holder(keys, def).is_some() => Vec::new(),
                 None => def.default_keys.to_vec(),
             };
             (def.action, resolved, def.scopes)
@@ -2309,19 +2889,95 @@ fn resolve_keys(
 /// the scope the user can see, not whichever was declared first.
 ///
 /// The project chooser is such a ladder: its handler asks `ProjectChooser` and
-/// then `Palette` (`app::input`). Add a rule here whenever a handler grows
-/// another fallback, or the shadowing goes unreported.
-fn conflict_scope(a: BindingScope, b: BindingScope) -> Option<BindingScope> {
+/// then `Palette` (`app::input`), and so is the Pull requests modal, which asks
+/// `PullRequestList` and then `Palette`. So is a dialog whose body scrolls (a Confirm
+/// dialog too tall for the screen, an error dialog's message): its own
+/// `Dialog` keys win and the `Help` scope's scroll keys are the fallback, so a
+/// key bound in both reports under `Dialog`. So is the main key handler, which
+/// asks `Global` before the focused pane or resize mode (see
+/// [`global_shadows`]), so a global action on a pane's key reports under the
+/// pane. Add a rule here whenever a handler grows another fallback, or the
+/// shadowing goes unreported.
+///
+/// The answer also says how the two meet: a collision inside one lookup, or a
+/// global binding shadowing a pane's, and for a shadow whether `b` is the
+/// global side (`true`), so the report can name the global action first.
+fn conflict_scope(
+    (action_a, a): (Action, BindingScope),
+    (action_b, b): (Action, BindingScope),
+) -> Option<(BindingScope, ConflictKind, bool)> {
     if a == b {
-        return Some(a);
+        return Some((a, ConflictKind::Collision, false));
     }
     match (a, b) {
+        (BindingScope::Global, pane) if global_shadows(action_a, pane) => {
+            Some((pane, ConflictKind::Shadowed, false))
+        }
+        (pane, BindingScope::Global) if global_shadows(action_b, pane) => {
+            Some((pane, ConflictKind::Shadowed, true))
+        }
         (BindingScope::ProjectChooser, BindingScope::Palette)
         | (BindingScope::Palette, BindingScope::ProjectChooser) => {
-            Some(BindingScope::ProjectChooser)
+            Some((BindingScope::ProjectChooser, ConflictKind::Collision, false))
         }
+        (BindingScope::Dialog, BindingScope::Help) | (BindingScope::Help, BindingScope::Dialog) => {
+            Some((BindingScope::Dialog, ConflictKind::Collision, false))
+        }
+        (BindingScope::PullRequestList, BindingScope::Palette)
+        | (BindingScope::Palette, BindingScope::PullRequestList) => Some((
+            BindingScope::PullRequestList,
+            ConflictKind::Collision,
+            false,
+        )),
         _ => None,
     }
+}
+
+/// Whether a `Global` binding of `action` is answered before `scope`'s own
+/// bindings on the same key. The main key handler (`app::input`) asks `Global`
+/// before the focused pane and before resize mode, except that `Quit` gives way
+/// to the agent and files panes when they bind its key. Every other scope is
+/// answered by a handler that runs before `Global` is consulted.
+fn global_shadows(action: Action, scope: BindingScope) -> bool {
+    match scope {
+        BindingScope::Left | BindingScope::Resize => true,
+        BindingScope::Center | BindingScope::Files => action != Action::Quit,
+        BindingScope::Global
+        | BindingScope::Interactive
+        | BindingScope::Palette
+        | BindingScope::Browser
+        | BindingScope::RuntimeKill
+        | BindingScope::StartupCommandLogs
+        | BindingScope::MacroList
+        | BindingScope::PullRequestList
+        | BindingScope::ProjectChooser
+        | BindingScope::Dialog
+        | BindingScope::CommitInput
+        | BindingScope::Help
+        | BindingScope::ServerScreen => false,
+    }
+}
+
+/// Every action bound in interactive mode to a key that sends no bytes of its
+/// own. Interactive mode matches the raw bytes the terminal sends, and on a
+/// classic host a chord such as Ctrl-5 arrives as another key's byte or as
+/// nothing at all: the binding can never fire there. No byte is guessed for
+/// it, because the guess would fire on that other key too. When the host sends
+/// extended keys, the chord arrives as a `CSI … u` key and is matched by
+/// meaning, so it fires in fullscreen after all.
+pub(crate) fn unmatchable_interactive_bindings(
+    keys: &crate::config::KeysConfig,
+) -> Vec<&'static str> {
+    resolve_keys(keys)
+        .into_iter()
+        .filter(|(_, bound, scopes)| {
+            scopes.contains(&BindingScope::Interactive)
+                && bound
+                    .iter()
+                    .any(|kc| key_combination_to_bytes(kc).is_none())
+        })
+        .map(|(action, _, _)| action.config_name())
+        .collect()
 }
 
 /// Detect key combination conflicts across bindings that share scopes.
@@ -2331,8 +2987,9 @@ fn conflict_scope(a: BindingScope, b: BindingScope) -> Option<BindingScope> {
 /// scope such a pair is reported under). This is called during config
 /// validation to prevent silent shadowing (where declaration order would pick a
 /// winner).
-pub fn detect_conflicts(keys: &crate::config::KeysConfig) -> Vec<KeyConflict> {
+pub(crate) fn detect_conflicts(keys: &crate::config::KeysConfig) -> Vec<KeyConflict> {
     let resolved = resolve_keys(keys);
+    #[cfg(test)]
     let format = config_format();
     let mut conflicts = Vec::new();
 
@@ -2343,13 +3000,13 @@ pub fn detect_conflicts(keys: &crate::config::KeysConfig) -> Vec<KeyConflict> {
 
             // Find the scopes a keystroke could reach both bindings through,
             // each named the way it will be reported.
-            let mut shared_scopes: Vec<BindingScope> = Vec::new();
-            for sa in scopes_a.iter() {
-                for sb in scopes_b.iter() {
-                    if let Some(scope) = conflict_scope(*sa, *sb)
-                        && !shared_scopes.contains(&scope)
+            let mut shared_scopes: Vec<(BindingScope, ConflictKind, bool)> = Vec::new();
+            for sa in *scopes_a {
+                for sb in *scopes_b {
+                    if let Some(meeting) = conflict_scope((*action_a, *sa), (*action_b, *sb))
+                        && !shared_scopes.iter().any(|(scope, ..)| *scope == meeting.0)
                     {
-                        shared_scopes.push(scope);
+                        shared_scopes.push(meeting);
                     }
                 }
             }
@@ -2361,13 +3018,21 @@ pub fn detect_conflicts(keys: &crate::config::KeysConfig) -> Vec<KeyConflict> {
             for ka in keys_a {
                 for kb in keys_b {
                     if keys_conflict(ka, kb) {
+                        #[cfg(test)]
                         let label = format.to_string(ka.normalized()).to_lowercase();
-                        for &scope in &shared_scopes {
+                        for &(scope, kind, b_first) in &shared_scopes {
+                            let (first, second) = if b_first {
+                                (action_b, action_a)
+                            } else {
+                                (action_a, action_b)
+                            };
                             conflicts.push(KeyConflict {
+                                #[cfg(test)]
                                 key_label: label.clone(),
                                 scope,
-                                action_a: action_a.config_name(),
-                                action_b: action_b.config_name(),
+                                kind,
+                                action_a: first.config_name(),
+                                action_b: second.config_name(),
                             });
                         }
                     }
@@ -2387,7 +3052,7 @@ pub fn detect_conflicts(keys: &crate::config::KeysConfig) -> Vec<KeyConflict> {
 /// to. `conditional` is true for bindings that only fire when scrollback is
 /// active (ScrollLineUp/Down).
 #[derive(Debug, Clone)]
-pub struct InteractiveByteBinding {
+pub(crate) struct InteractiveByteBinding {
     pub pattern: Vec<u8>,
     pub action: Action,
     pub conditional: bool,
@@ -2396,14 +3061,14 @@ pub struct InteractiveByteBinding {
 /// Precomputed byte patterns for all `Interactive`-scoped bindings.
 /// Built once at startup and stored on `App`.
 #[derive(Debug, Clone)]
-pub struct InteractiveBytePatterns {
+pub(crate) struct InteractiveBytePatterns {
     pub bindings: Vec<InteractiveByteBinding>,
 }
 
 impl InteractiveBytePatterns {
     /// Match a raw byte sequence against the intercepted bindings.
     /// Returns the action and whether it's conditional on scrollback.
-    pub fn match_sequence(&self, seq: &[u8]) -> Option<(Action, bool)> {
+    pub(crate) fn match_sequence(&self, seq: &[u8]) -> Option<(Action, bool)> {
         self.bindings
             .iter()
             .find(|b| b.pattern == seq)
@@ -2414,7 +3079,7 @@ impl InteractiveBytePatterns {
 impl RuntimeBindings {
     /// The raw byte patterns of every key bound to `action`, whatever its
     /// scope. Keys with no byte form are skipped.
-    pub fn byte_patterns_for(&self, action: Action) -> Vec<Vec<u8>> {
+    pub(crate) fn byte_patterns_for(&self, action: Action) -> Vec<Vec<u8>> {
         self.bindings
             .iter()
             .filter(|rb| rb.action == action)
@@ -2425,13 +3090,7 @@ impl RuntimeBindings {
     /// Build byte patterns for all `Interactive`-scoped bindings.
     /// Each key combination is converted to its raw terminal byte
     /// representation. Bindings that cannot be byte-encoded are skipped.
-    pub fn interactive_byte_patterns(&self) -> InteractiveBytePatterns {
-        let conditional_actions = [
-            Action::ScrollLineUp,
-            Action::ScrollLineDown,
-            Action::ScrollToBottom,
-            Action::ScrollToTop,
-        ];
+    pub(crate) fn interactive_byte_patterns(&self) -> InteractiveBytePatterns {
         let mut bindings = Vec::new();
         for rb in &self.bindings {
             if !rb.scopes.contains(&BindingScope::Interactive) {
@@ -2442,13 +3101,25 @@ impl RuntimeBindings {
                     bindings.push(InteractiveByteBinding {
                         pattern: bytes,
                         action: rb.action,
-                        conditional: conditional_actions.contains(&rb.action),
+                        conditional: scrolls_only_when_scrolled_back(rb.action),
                     });
                 }
             }
         }
         InteractiveBytePatterns { bindings }
     }
+}
+
+/// Whether an interactive-mode `action` acts only while the pane is scrolled
+/// back, its key otherwise reaching the child.
+pub(crate) fn scrolls_only_when_scrolled_back(action: Action) -> bool {
+    matches!(
+        action,
+        Action::ScrollLineUp
+            | Action::ScrollLineDown
+            | Action::ScrollToBottom
+            | Action::ScrollToTop
+    )
 }
 
 /// Convert a `KeyCombination` to the raw byte sequence a terminal would send.
@@ -2465,7 +3136,11 @@ pub(crate) fn key_combination_to_bytes(kc: &KeyCombination) -> Option<Vec<u8>> {
         // app_cursor is false on purpose: these patterns match bytes the HOST
         // sends to yaran, and yaran never sets DECCKM on the host, so cursor keys
         // always arrive in the CSI form.
-        One(code) => crate::key_encode::encode_key(code, norm.modifiers, false),
+        One(code) => crate::key_encode::encode_key(
+            code,
+            norm.modifiers,
+            crate::key_encode::CursorKeys::Normal,
+        ),
         _ => None,
     }
 }
@@ -2475,16 +3150,108 @@ mod tests {
     use super::*;
 
     fn default_bindings() -> RuntimeBindings {
-        RuntimeBindings::new(
-            |action| {
-                BINDING_DEFS
-                    .iter()
-                    .find(|d| d.action == action)
-                    .map(|d| d.default_keys.to_vec())
-                    .unwrap_or_default()
-            },
-            true,
-        )
+        RuntimeBindings::new(|action| {
+            BINDING_DEFS
+                .iter()
+                .find(|d| d.action == action)
+                .map_or_default(|d| d.default_keys.to_vec())
+        })
+    }
+
+    #[test]
+    fn an_exact_chord_wins_over_a_binding_it_extends() {
+        let bindings = RuntimeBindings::new(|action| match action {
+            Action::Confirm => vec![crokey::parse("ctrl-x").unwrap()],
+            Action::ToggleSelection => vec![crokey::parse("ctrl-alt-x").unwrap()],
+            _ => Vec::new(),
+        });
+        let chord = |modifiers| KeyEvent::new(KeyCode::Char('x'), modifiers);
+        assert_eq!(
+            bindings.lookup(
+                &chord(KeyModifiers::CONTROL | KeyModifiers::ALT),
+                BindingScope::Dialog
+            ),
+            Some(Action::ToggleSelection),
+            "the binding naming every modifier held is the one that fires"
+        );
+        assert_eq!(
+            bindings.lookup(&chord(KeyModifiers::CONTROL), BindingScope::Dialog),
+            Some(Action::Confirm)
+        );
+        assert_eq!(
+            bindings.lookup(
+                &chord(KeyModifiers::CONTROL | KeyModifiers::SUPER),
+                BindingScope::Dialog
+            ),
+            Some(Action::Confirm),
+            "a chord nothing names exactly still reaches the binding it extends"
+        );
+
+        // With extended keys, a plain Enter, Esc or Backspace binding also takes
+        // the key with Shift, which a classic terminal never told apart; an
+        // explicit Shift binding still wins, and no other key or modifier is
+        // let through.
+        let mut plain = RuntimeBindings::new(|action| match action {
+            Action::Confirm => vec![crokey::parse("enter").unwrap()],
+            Action::CloseOverlay => vec![crokey::parse("esc").unwrap()],
+            Action::ToggleSelection => vec![crokey::parse("backspace").unwrap()],
+            Action::OpenPalette => vec![crokey::parse("x").unwrap()],
+            _ => Vec::new(),
+        });
+        let key = |code, modifiers| KeyEvent::new(code, modifiers);
+        let shifted = |code| key(code, KeyModifiers::SHIFT);
+        for code in [KeyCode::Enter, KeyCode::Esc, KeyCode::Backspace] {
+            assert_eq!(
+                plain.lookup(&shifted(code), BindingScope::Dialog),
+                None,
+                "{code:?}: a classic run keeps today's matching"
+            );
+        }
+        plain.set_extended_keys(ExtendedKeys::On);
+        assert_eq!(
+            plain.lookup(&shifted(KeyCode::Enter), BindingScope::Dialog),
+            Some(Action::Confirm)
+        );
+        assert_eq!(
+            plain.lookup(&shifted(KeyCode::Esc), BindingScope::Dialog),
+            Some(Action::CloseOverlay)
+        );
+        assert_eq!(
+            plain.lookup(&shifted(KeyCode::Backspace), BindingScope::Dialog),
+            Some(Action::ToggleSelection)
+        );
+        assert_eq!(
+            plain.lookup_exact(&shifted(KeyCode::Enter), BindingScope::Dialog),
+            None,
+            "the exact lookup fullscreen uses has no Shift allowance"
+        );
+        assert_eq!(
+            plain.lookup(
+                &key(KeyCode::Enter, KeyModifiers::CONTROL),
+                BindingScope::Dialog
+            ),
+            None,
+            "only Shift is let through"
+        );
+        assert_eq!(
+            plain.lookup(
+                &key(KeyCode::Char('X'), KeyModifiers::SHIFT),
+                BindingScope::Dialog
+            ),
+            None,
+            "only Enter, Esc and Backspace take Shift"
+        );
+        let mut explicit = RuntimeBindings::new(|action| match action {
+            Action::Confirm => vec![crokey::parse("enter").unwrap()],
+            Action::ToggleSelection => vec![crokey::parse("shift-enter").unwrap()],
+            _ => Vec::new(),
+        });
+        explicit.set_extended_keys(ExtendedKeys::On);
+        assert_eq!(
+            explicit.lookup(&shifted(KeyCode::Enter), BindingScope::Dialog),
+            Some(Action::ToggleSelection),
+            "an explicit shift-enter binding wins"
+        );
     }
 
     #[test]
@@ -2499,7 +3266,10 @@ mod tests {
             KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
             KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
         ] {
-            assert!(text_field_owns_key(key), "{key:?} belongs to the field");
+            assert!(
+                text_field_owns_key(key, ExtendedKeys::Off),
+                "{key:?} belongs to the field"
+            );
         }
         // Not owned: these still reach the dialog's bindings.
         for key in [
@@ -2509,8 +3279,30 @@ mod tests {
             KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
             KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE),
         ] {
-            assert!(!text_field_owns_key(key), "{key:?} reaches the bindings");
+            assert!(
+                !text_field_owns_key(key, ExtendedKeys::Off),
+                "{key:?} reaches the bindings"
+            );
         }
+    }
+
+    #[test]
+    fn a_super_hyper_or_meta_chord_is_not_typing_in_a_text_field_with_extended_keys() {
+        for modifier in [KeyModifiers::SUPER, KeyModifiers::HYPER, KeyModifiers::META] {
+            let chord = KeyEvent::new(KeyCode::Char('x'), modifier);
+            assert!(
+                !text_field_owns_key(chord, ExtendedKeys::On),
+                "{modifier:?}-x reaches the bindings"
+            );
+            assert!(
+                text_field_owns_key(chord, ExtendedKeys::Off),
+                "{modifier:?}-x: a classic run keeps today's ownership"
+            );
+        }
+        assert!(text_field_owns_key(
+            KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT),
+            ExtendedKeys::On
+        ));
     }
 
     #[test]
@@ -2536,7 +3328,7 @@ mod tests {
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
         ] {
             assert!(
-                center_typing_owns_key(&key, false),
+                center_typing_owns_key(&key, TabKey::MovesPanes, ExtendedKeys::Off),
                 "{key:?} types into the agent"
             );
         }
@@ -2559,10 +3351,28 @@ mod tests {
             ),
         ] {
             assert!(
-                !center_typing_owns_key(&key, false),
+                !center_typing_owns_key(&key, TabKey::MovesPanes, ExtendedKeys::Off),
                 "{key:?} reaches the bindings"
             );
         }
+        // With extended keys, Super, Hyper and Meta make a chord like Ctrl and
+        // Alt do; in a classic run they still type, as before.
+        for modifier in [KeyModifiers::SUPER, KeyModifiers::HYPER, KeyModifiers::META] {
+            let chord = KeyEvent::new(KeyCode::Char('x'), modifier);
+            assert!(
+                !center_typing_owns_key(&chord, TabKey::MovesPanes, ExtendedKeys::On),
+                "{modifier:?}-x is yaran's"
+            );
+            assert!(
+                center_typing_owns_key(&chord, TabKey::MovesPanes, ExtendedKeys::Off),
+                "{modifier:?}-x types in a classic run"
+            );
+        }
+        assert!(center_typing_owns_key(
+            &KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+            TabKey::MovesPanes,
+            ExtendedKeys::On
+        ));
     }
 
     /// `tab_reaches_agent` moves exactly Tab and its two shift spellings across
@@ -2577,11 +3387,11 @@ mod tests {
         ];
         for key in tabs {
             assert!(
-                !center_typing_owns_key(&key, false),
+                !center_typing_owns_key(&key, TabKey::MovesPanes, ExtendedKeys::Off),
                 "{key:?} moves panes while the option is off"
             );
             assert!(
-                center_typing_owns_key(&key, true),
+                center_typing_owns_key(&key, TabKey::ReachesAgent, ExtendedKeys::Off),
                 "{key:?} types into the agent while the option is on"
             );
         }
@@ -2594,7 +3404,7 @@ mod tests {
             KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL),
         ] {
             assert!(
-                !center_typing_owns_key(&key, true),
+                !center_typing_owns_key(&key, TabKey::ReachesAgent, ExtendedKeys::Off),
                 "{key:?} stays a yaran chord whatever the option says"
             );
         }
@@ -2607,28 +3417,24 @@ mod tests {
     fn typeable_center_traps_focus_only_when_every_pane_key_is_typed() {
         let defaults = default_bindings();
         assert!(
-            !defaults.typeable_center_traps_focus(true),
+            !defaults.typeable_center_traps_focus(TabKey::ReachesAgent),
             "the default Ctrl-o and Ctrl-y are the way out"
         );
 
-        let tab_only = RuntimeBindings::new(
-            |action| match action {
-                Action::FocusNext => vec![key!(tab)],
-                Action::FocusPrev => vec![key!(shift - tab)],
-                _ => BINDING_DEFS
-                    .iter()
-                    .find(|d| d.action == action)
-                    .map(|d| d.default_keys.to_vec())
-                    .unwrap_or_default(),
-            },
-            true,
-        );
+        let tab_only = RuntimeBindings::new(|action| match action {
+            Action::FocusNext => vec![key!(tab)],
+            Action::FocusPrev => vec![key!(shift - tab)],
+            _ => BINDING_DEFS
+                .iter()
+                .find(|d| d.action == action)
+                .map_or_default(|d| d.default_keys.to_vec()),
+        });
         assert!(
-            tab_only.typeable_center_traps_focus(true),
+            tab_only.typeable_center_traps_focus(TabKey::ReachesAgent),
             "with both pane actions on Tab alone, nothing moves focus off the pane"
         );
         assert!(
-            !tab_only.typeable_center_traps_focus(false),
+            !tab_only.typeable_center_traps_focus(TabKey::MovesPanes),
             "the same bindings are fine while Tab still moves panes"
         );
     }
@@ -2647,20 +3453,16 @@ mod tests {
         );
 
         // Rebound to keys the field owns entirely: no honest label exists.
-        let letters_only = RuntimeBindings::new(
-            |action| {
-                if action == Action::ToggleSelection {
-                    vec![key!(h), key!(l)]
-                } else {
-                    BINDING_DEFS
-                        .iter()
-                        .find(|d| d.action == action)
-                        .map(|d| d.default_keys.to_vec())
-                        .unwrap_or_default()
-                }
-            },
-            true,
-        );
+        let letters_only = RuntimeBindings::new(|action| {
+            if action == Action::ToggleSelection {
+                vec![key!(h), key!(l)]
+            } else {
+                BINDING_DEFS
+                    .iter()
+                    .find(|d| d.action == action)
+                    .map_or_default(|d| d.default_keys.to_vec())
+            }
+        });
         assert_eq!(
             letters_only.label_for_text_field_dialog(Action::ToggleSelection),
             None
@@ -2757,7 +3559,7 @@ mod tests {
     fn hints_for_returns_dynamic_labels() {
         let bindings = default_bindings();
         let hints = bindings.hints_for(HintContext::LeftProject);
-        assert!(!hints.is_empty());
+        assert_ne!(hints, Vec::<(String, &str)>::new());
         // MoveDown hint should show combined j/k label
         let move_hint = hints.iter().find(|(_, desc)| *desc == "Move");
         assert!(move_hint.is_some());
@@ -2822,20 +3624,16 @@ mod tests {
     /// types a character.
     #[test]
     fn a_letters_only_rebinding_leaves_the_chooser_footer_no_label() {
-        let bindings = RuntimeBindings::new(
-            |action| {
-                if action == Action::NewStandaloneAgent {
-                    vec![key!(s)]
-                } else {
-                    BINDING_DEFS
-                        .iter()
-                        .find(|d| d.action == action)
-                        .map(|d| d.default_keys.to_vec())
-                        .unwrap_or_default()
-                }
-            },
-            true,
-        );
+        let bindings = RuntimeBindings::new(|action| {
+            if action == Action::NewStandaloneAgent {
+                vec![key!(s)]
+            } else {
+                BINDING_DEFS
+                    .iter()
+                    .find(|d| d.action == action)
+                    .map_or_default(|d| d.default_keys.to_vec())
+            }
+        });
         assert_eq!(
             bindings.label_for_text_field_dialog(Action::NewStandaloneAgent),
             None
@@ -2865,7 +3663,7 @@ mod tests {
             .expect("the Projects pane section exists");
         assert!(
             entries.iter().any(|(label, desc)| label == "s/Ctrl-s"
-                && *desc == "Start a standalone agent in a folder you choose"),
+                && desc == "Start a standalone agent in a folder you choose"),
             "got {entries:?}"
         );
     }
@@ -2946,11 +3744,172 @@ mod tests {
         );
     }
 
+    /// The step key is the agent pane's alone: fullscreen sends its byte to
+    /// the agent, where Ctrl-n is readline's next-history.
+    #[test]
+    fn next_pull_request_is_the_agent_panes_ctrl_n_and_fullscreen_leaves_it_to_the_agent() {
+        let bindings = default_bindings();
+        let ctrl_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert_eq!(
+            bindings.lookup(&ctrl_n, BindingScope::Center),
+            Some(Action::NextPullRequest)
+        );
+        assert_eq!(bindings.lookup(&ctrl_n, BindingScope::Interactive), None);
+        assert_eq!(
+            bindings.interactive_byte_patterns().match_sequence(&[0x0e]),
+            None,
+            "fullscreen must not intercept the Ctrl-n byte"
+        );
+    }
+
+    /// A config written before a newer default existed and already giving its
+    /// key to another action that meets it loads: the config passes the start
+    /// check, the new default starts unbound and says how to bind it, and the
+    /// user's own binding keeps its key.
+    #[test]
+    fn a_newer_default_steps_aside_for_an_explicit_binding_on_its_key() {
+        let shift_j = KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT);
+        let ctrl_n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        let plain_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        for (holder, bound, key, scope, holder_action, late, late_name) in [
+            (
+                "reconnect_agent",
+                &["ctrl-t"][..],
+                ctrl_t,
+                BindingScope::Center,
+                Action::ReconnectAgent,
+                Action::CycleTerminalLayout,
+                "cycle_terminal_layout",
+            ),
+            (
+                "next_tab",
+                &["ctrl-n"][..],
+                ctrl_n,
+                BindingScope::Center,
+                Action::NextTab,
+                Action::NextPullRequest,
+                "next_pull_request",
+            ),
+            (
+                "move_down",
+                &["j", "down", "shift-j"][..],
+                shift_j,
+                BindingScope::PullRequestList,
+                Action::MoveDown,
+                Action::PullRequestMoveDown,
+                "pull_request_move_down",
+            ),
+            (
+                "search_toggle",
+                &["a"][..],
+                plain_a,
+                BindingScope::Palette,
+                Action::SearchToggle,
+                Action::PullRequestsAttach,
+                "pull_requests_attach",
+            ),
+        ] {
+            let mut keys = crate::config::KeysConfig::default();
+            keys.bindings.insert(
+                holder.to_string(),
+                bound.iter().map(ToString::to_string).collect(),
+            );
+
+            assert_eq!(crate::config::validate_keys(&keys), Ok(()), "{holder}");
+            let bindings = RuntimeBindings::from_keys_config(&keys);
+            assert_eq!(
+                bindings.lookup(&key, scope),
+                Some(holder_action),
+                "{holder}"
+            );
+            assert_eq!(bindings.label_for(late), "", "{holder}");
+            // The fork's own late defaults (Shift-j moves an agent too) may step
+            // aside beside the one under test; this case is about that one.
+            let warnings: Vec<String> = late_default_warnings(&keys)
+                .into_iter()
+                .filter(|warning| warning.contains(late_name))
+                .collect();
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(
+                warnings[0].contains(late_name) && warnings[0].contains(holder),
+                "{warnings:?}"
+            );
+        }
+
+        // The user binding the step key there too is a collision they made.
+        let mut keys = crate::config::KeysConfig::default();
+        keys.bindings
+            .insert("next_tab".to_string(), vec!["ctrl-n".to_string()]);
+        keys.bindings
+            .insert("next_pull_request".to_string(), vec!["ctrl-n".to_string()]);
+        assert!(!detect_conflicts(&keys).is_empty());
+        assert_eq!(late_default_warnings(&keys), Vec::<String>::new());
+    }
+
+    /// A binding of Ctrl-n where the agent pane never looks is no collision,
+    /// so the default keeps its key.
+    #[test]
+    fn a_newer_default_keeps_its_key_beside_a_binding_in_another_pane() {
+        let mut keys = crate::config::KeysConfig::default();
+        keys.bindings
+            .insert("move_down".to_string(), vec!["ctrl-n".to_string()]);
+        assert_eq!(
+            RuntimeBindings::from_keys_config(&keys).label_for(Action::NextPullRequest),
+            "Ctrl-n"
+        );
+        assert_eq!(late_default_warnings(&keys), Vec::<String>::new());
+    }
+
+    /// The help overlay names the layout key, and typing in interactive mode
+    /// keeps Ctrl-t for the child.
+    #[test]
+    fn the_layout_key_is_in_the_help_and_never_taken_from_a_typing_child() {
+        let sections = default_bindings().help_sections();
+        assert!(
+            sections.iter().any(|(name, rows)| *name == "Agent pane"
+                && rows.iter().any(|(_, text)| text.contains("terminal dock"))),
+            "{sections:?}"
+        );
+        let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(
+            default_bindings().lookup(&ctrl_t, BindingScope::Interactive),
+            None
+        );
+    }
+
+    /// The agent pane's layout key is Ctrl-t, and Ctrl-e is left to the agent:
+    /// it is end-of-line in readline and the external-editor key in Claude
+    /// Code, so no default anywhere in the pane may take it.
+    #[test]
+    fn the_layout_key_is_ctrl_t_and_ctrl_e_reaches_the_agent() {
+        let bindings = default_bindings();
+        let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        let ctrl_e = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert_eq!(
+            bindings.lookup(&ctrl_t, BindingScope::Center),
+            Some(Action::CycleTerminalLayout)
+        );
+        assert_eq!(bindings.label_for(Action::CycleTerminalLayout), "Ctrl-t");
+        for scope in [BindingScope::Center, BindingScope::Interactive] {
+            assert_eq!(bindings.lookup(&ctrl_e, scope), None, "{scope:?}");
+        }
+        assert_eq!(
+            bindings.interactive_byte_patterns().match_sequence(&[0x05]),
+            None,
+            "fullscreen must not intercept the Ctrl-e byte"
+        );
+        assert!(
+            detect_conflicts(&crate::config::KeysConfig::default()).is_empty(),
+            "the defaults must not collide"
+        );
+    }
+
     #[test]
     fn help_sections_produces_valid_sections() {
         let bindings = default_bindings();
         let sections = bindings.help_sections();
-        assert!(!sections.is_empty());
+        assert_ne!(sections, Vec::<(&str, Vec<(String, String)>)>::new());
         let section_names: Vec<_> = sections.iter().map(|(n, _)| *n).collect();
         assert!(section_names.contains(&"Global"));
         assert!(section_names.contains(&"Projects pane"));
@@ -2984,7 +3943,7 @@ mod tests {
     }
 
     /// An action that ships with no default key but still carries a help entry
-    /// (SelectTab4) must not render a broken row with an empty key badge:
+    /// (`SelectTab4`) must not render a broken row with an empty key badge:
     /// `help_sections` skips label-less entries.
     #[test]
     fn help_sections_skips_unbound_actions_instead_of_rendering_empty_keys() {
@@ -3002,6 +3961,79 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn tab_number_row(bindings: &RuntimeBindings) -> (String, String) {
+        bindings
+            .help_sections()
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .find(|(_, desc)| desc.starts_with("Focus tab by number"))
+            .expect("the agent pane help carries a tab-number row")
+    }
+
+    /// The tab-number row names the keys the bindings hold and the tab
+    /// numbers that have none, so it stays true after a rebind.
+    #[test]
+    fn help_tab_number_row_names_the_unbound_tabs_and_follows_a_rebind() {
+        let defaults = default_bindings();
+        let (label, desc) = tab_number_row(&defaults);
+        let bound: Vec<Action> = SELECT_TAB_ACTIONS
+            .into_iter()
+            .filter(|a| !defaults.labels_for(*a).is_empty())
+            .collect();
+        assert_eq!(
+            label,
+            bound
+                .iter()
+                .map(|a| defaults.labels_for(*a))
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+        assert!(desc.contains("select_tab_N"), "{desc}");
+
+        let all_bound = RuntimeBindings::new(|action| {
+            SELECT_TAB_ACTIONS
+                .iter()
+                .position(|a| *a == action)
+                .map_or_default(|i| vec![crokey::parse(&format!("alt-{}", i + 1)).unwrap()])
+        });
+        let (label, desc) = tab_number_row(&all_bound);
+        assert_eq!(
+            label,
+            "Alt-1/Alt-2/Alt-3/Alt-4/Alt-5/Alt-6/Alt-7/Alt-8/Alt-9"
+        );
+        assert_eq!(
+            desc,
+            "Focus tab by number (a dock terminal while the dock has focus)"
+        );
+    }
+
+    /// With no tab key bound at all the row still says how to bind one.
+    #[test]
+    fn help_tab_number_row_stays_when_no_tab_key_is_bound() {
+        let none_bound = RuntimeBindings::new(|action| {
+            if SELECT_TAB_ACTIONS.contains(&action) {
+                Vec::new()
+            } else {
+                BINDING_DEFS
+                    .iter()
+                    .find(|d| d.action == action)
+                    .map_or_default(|d| d.default_keys.to_vec())
+            }
+        });
+        let (label, desc) = tab_number_row(&none_bound);
+        assert_ne!(label, "");
+        assert!(
+            desc.contains("1-9") && desc.contains("select_tab_N"),
+            "{desc}"
+        );
+    }
+
+    #[test]
+    fn number_runs_collapses_runs_of_three_or_more() {
+        assert_eq!(number_runs(&[1, 2, 3, 4, 5, 8, 9]), "1-5, 8, 9");
+        assert_eq!(number_runs(&[2, 4, 5]), "2, 4, 5");
     }
 
     fn palette_names<'a>(bindings: &[&'a RuntimeBinding]) -> Vec<&'a str> {
@@ -3081,9 +4113,7 @@ mod tests {
                 "open-worktree",
                 "open-worktree-with",
                 "show-terminal",
-                "open-current-pr",
-                "detach-pull-request",
-                "resume-pull-request-autodetection",
+                "pull-requests",
                 "recreate-working-copy",
                 "new-terminal-for-agent",
                 "agent-info",
@@ -3433,6 +4463,110 @@ mod tests {
         }
     }
 
+    /// The TUI palette's command set, sorted, kept by hand.
+    const EXPECTED_PALETTE_COMMANDS: [&str; 100] = [
+        "add-project",
+        "agent-info",
+        "change-agent-provider",
+        "change-default-provider",
+        "change-project-base-branch",
+        "change-project-default-provider",
+        "change-theme",
+        "checkout-project-default-branch",
+        "clear-status-line",
+        "clone-project",
+        "close-tab",
+        "close-terminal",
+        "cloud-login",
+        "cloud-logout",
+        "cloud-pair-phone",
+        "cloud-rotate-token",
+        "cloud-status",
+        "configure-global-env",
+        "configure-project-env",
+        "configure-startup-command",
+        "copy-path",
+        "cycle-terminal-layout",
+        "delete-agent",
+        "delete-project",
+        "detach-agent",
+        "edit-macros",
+        "filter-agents",
+        "force-reconnect-agent",
+        "force-redraw",
+        "fork-agent",
+        "help",
+        "input-debugging",
+        "kill-running",
+        "manage-projects",
+        "manage-worktrees",
+        "move-agent-bottom",
+        "move-agent-down",
+        "move-agent-top",
+        "move-agent-up",
+        "move-project-down",
+        "move-project-up",
+        "move-tab-left",
+        "move-tab-right",
+        "move-terminal-bottom",
+        "move-terminal-down",
+        "move-terminal-top",
+        "move-terminal-up",
+        "new-agent",
+        "new-agent-from-pr",
+        "new-agent-from-worktree",
+        "new-agent-tab",
+        "new-standalone-agent",
+        "new-standalone-terminal",
+        "new-terminal-for-agent",
+        "new-terminal-for-project",
+        "open-current-pr",
+        "open-worktree",
+        "open-worktree-with",
+        "prune-orphan-worktrees",
+        "pull-project",
+        "pull-requests",
+        "read-startup-command-logs",
+        "recheck-github",
+        "reconnect-agent",
+        "recreate-working-copy",
+        "refresh-changes",
+        "reload-binary",
+        "reload-config",
+        "remove-project",
+        "rename-agent",
+        "rerun-startup-command-on-agent",
+        "resource-monitor",
+        "session-settings",
+        "set-cloud-mode",
+        "set-tailscale-mode",
+        "show-agent",
+        "show-release-notes",
+        "show-terminal",
+        "show-welcome-screen",
+        "sort-agents",
+        "start-background-server",
+        "start-web-server",
+        "stop-agent-tab",
+        "stop-background-server",
+        "toggle-agent-auto-reopen",
+        "toggle-always-show-tabs",
+        "toggle-diff-line-numbers",
+        "toggle-git-pane",
+        "toggle-github-integration",
+        "toggle-human-board",
+        "toggle-nerd-font-icons",
+        "toggle-pr-banner-position",
+        "toggle-project",
+        "toggle-project-auto-reopen-agents",
+        "toggle-randomized-pet-name-default",
+        "toggle-remove-git-pane",
+        "toggle-sidebar",
+        "toggle-tab-to-agent",
+        "view-server-log",
+        "watch-rules",
+    ];
+
     /// THE "TUI PALETTE IS UNCHANGED" PIN.
     ///
     /// The exact set of commands the `Ctrl-p` palette lists, captured from the
@@ -3457,101 +4591,7 @@ mod tests {
             .collect();
         listed.sort_unstable();
 
-        let expected = [
-            "add-project",
-            "agent-info",
-            "attach-pull-request",
-            "change-agent-provider",
-            "change-default-provider",
-            "change-project-default-provider",
-            "change-theme",
-            "checkout-project-default-branch",
-            "close-tab",
-            "cloud-login",
-            "cloud-logout",
-            "cloud-pair-phone",
-            "cloud-rotate-token",
-            "cloud-status",
-            "configure-global-env",
-            "configure-project-env",
-            "configure-startup-command",
-            "copy-path",
-            "delete-agent",
-            "delete-project",
-            "delete-terminal",
-            "detach-agent",
-            "detach-pull-request",
-            "edit-macros",
-            "filter-agents",
-            "force-reconnect-agent",
-            "force-redraw",
-            "fork-agent",
-            "help",
-            "input-debugging",
-            "kill-running",
-            "manage-projects",
-            "manage-worktrees",
-            "move-agent-bottom",
-            "move-agent-down",
-            "move-agent-top",
-            "move-agent-up",
-            "move-project-down",
-            "move-project-up",
-            "move-terminal-bottom",
-            "move-terminal-down",
-            "move-terminal-top",
-            "move-terminal-up",
-            "new-agent",
-            "new-agent-from-pr",
-            "new-agent-from-worktree",
-            "new-agent-tab",
-            "new-standalone-agent",
-            "new-standalone-terminal",
-            "new-terminal-for-agent",
-            "new-terminal-for-project",
-            "open-current-pr",
-            "open-worktree",
-            "open-worktree-with",
-            "prune-orphan-worktrees",
-            "pull-project",
-            "read-startup-command-logs",
-            "recheck-github",
-            "reconnect-agent",
-            "recreate-working-copy",
-            "refresh-changes",
-            "reload-binary",
-            "reload-config",
-            "remove-project",
-            "rename-agent",
-            "rerun-startup-command-on-agent",
-            "resource-monitor",
-            "resume-pull-request-autodetection",
-            "session-settings",
-            "set-cloud-mode",
-            "set-tailscale-mode",
-            "show-agent",
-            "show-release-notes",
-            "show-terminal",
-            "show-welcome-screen",
-            "sort-agents",
-            "start-background-server",
-            "start-web-server",
-            "stop-background-server",
-            "toggle-agent-auto-reopen",
-            "toggle-always-show-tabs",
-            "toggle-diff-line-numbers",
-            "toggle-git-pane",
-            "toggle-github-integration",
-            "toggle-human-board",
-            "toggle-pr-banner-position",
-            "toggle-project",
-            "toggle-project-auto-reopen-agents",
-            "toggle-randomized-pet-name-default",
-            "toggle-remove-git-pane",
-            "toggle-sidebar",
-            "toggle-tab-to-agent",
-            "watch-rules",
-        ];
+        let expected = EXPECTED_PALETTE_COMMANDS;
 
         assert_eq!(
             listed, expected,
@@ -3615,7 +4655,7 @@ mod tests {
         // Ensure no action panics when asked for config_name
         for def in BINDING_DEFS {
             let name = def.action.config_name();
-            assert!(!name.is_empty());
+            assert_ne!(name, "");
         }
     }
 
@@ -3630,14 +4670,14 @@ mod tests {
         let palette = yaran_core::palette::find_by_action(Action::StartWebServer)
             .expect("StartWebServer must expose a core palette entry");
         assert_eq!(palette.name, "start-web-server");
-        assert!(!palette.description.is_empty());
+        assert_ne!(palette.description, "");
 
         // …but has no default key binding (palette-only) and no help section.
         assert!(
             def.default_keys.is_empty(),
             "StartWebServer must have no default keybinding"
         );
-        assert!(def.scopes.is_empty());
+        assert_eq!(def.scopes, []);
         assert!(def.help.is_none());
         assert_eq!(Action::StartWebServer.config_name(), "start_web_server");
 
@@ -3848,12 +4888,13 @@ mod tests {
 
     // ── Conflict detection tests ────────────────────────────────────────
 
-    /// Fork 24deeeee: `lookup` matches a binding whose modifiers are a SUBSET of
-    /// the event's, so ctrl-x and ctrl-alt-x on the same scope both match a
-    /// ctrl-alt-x press and table order silently picks one. That pair must be
-    /// reported as a conflict, not only an identical-modifier pair.
+    /// Fork 24deeeee guarded a ctrl-x / ctrl-alt-x pair, which once both matched
+    /// a ctrl-alt-x press with table order silently picking one. `lookup` now
+    /// prefers the binding that names the chord exactly, so the pair is no
+    /// longer ambiguous and is not a conflict: each press reaches its own
+    /// action.
     #[test]
-    fn detect_conflicts_rejects_modifier_subset_shadowing() {
+    fn a_modifier_superset_binding_wins_its_own_chord() {
         let mut keys = crate::config::KeysConfig::default();
         keys.bindings
             .insert("quit".to_string(), vec!["ctrl-x".to_string()]);
@@ -3861,19 +4902,23 @@ mod tests {
             .insert("toggle_help".to_string(), vec!["ctrl-alt-x".to_string()]);
 
         let conflicts = detect_conflicts(&keys);
-        assert!(conflicts.iter().any(|conflict| {
+        assert!(!conflicts.iter().any(|conflict| {
             (conflict.action_a == "quit" && conflict.action_b == "toggle_help")
                 || (conflict.action_a == "toggle_help" && conflict.action_b == "quit")
         }));
 
         let bindings = RuntimeBindings::from_keys_config(&keys);
-        let event = KeyEvent::new(
-            KeyCode::Char('x'),
-            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        let press = |modifiers| KeyEvent::new(KeyCode::Char('x'), modifiers);
+        assert_eq!(
+            bindings.lookup(
+                &press(KeyModifiers::CONTROL | KeyModifiers::ALT),
+                BindingScope::Global
+            ),
+            Some(Action::ToggleHelp)
         );
-        assert!(
-            bindings.lookup(&event, BindingScope::Global).is_some(),
-            "runtime lookup matches one of them, which is why the subset must be rejected"
+        assert_eq!(
+            bindings.lookup(&press(KeyModifiers::CONTROL), BindingScope::Global),
+            Some(Action::Quit)
         );
     }
 
@@ -3965,6 +5010,73 @@ mod tests {
         );
     }
 
+    /// A dialog whose body scrolls asks its own Dialog scope first and falls
+    /// back to the Help scope's scroll keys, so a key bound in both is a
+    /// collision the user must hear about at startup: the dialog's action wins
+    /// and the scroll it also names is silently lost.
+    #[test]
+    fn detect_conflicts_reports_a_dialog_key_that_is_also_a_scroll_key() {
+        let mut keys = crate::config::KeysConfig::default();
+        keys.bindings.insert(
+            "close_overlay".to_string(),
+            vec!["esc".to_string(), "q".to_string()],
+        );
+        let conflicts = detect_conflicts(&keys);
+        assert!(
+            conflicts.iter().any(|c| c.key_label == "q"
+                && c.scope == BindingScope::Dialog
+                && [c.action_a, c.action_b].contains(&"close_overlay")
+                && [c.action_a, c.action_b].contains(&"scroll_to_bottom")),
+            "expected close_overlay and scroll_to_bottom to collide on q in the \
+             dialog scope, got: {conflicts:?}"
+        );
+    }
+
+    /// Global bindings are looked up before the focused pane's, so a pane
+    /// binding on a key a global action also holds never fires. A user who
+    /// gives a tab-switch key the global remove-git-pane chord must hear
+    /// about it at startup.
+    #[test]
+    fn detect_conflicts_reports_a_pane_key_a_global_binding_shadows() {
+        let mut keys = crate::config::KeysConfig::default();
+        keys.bindings
+            .insert("select_tab_5".to_string(), vec!["ctrl-]".to_string()]);
+        let conflicts = detect_conflicts(&keys);
+        assert!(
+            conflicts.iter().any(|c| c.scope == BindingScope::Center
+                && [c.action_a, c.action_b].contains(&"select_tab_5")
+                && [c.action_a, c.action_b].contains(&"remove_git_pane")),
+            "expected select_tab_5 to be reported as shadowed by remove_git_pane \
+             in the agent pane, got: {conflicts:?}"
+        );
+    }
+
+    /// Quit gives way to the agent and files panes when they bind its key, so
+    /// it shadows nothing there, but the projects pane has no such deferral.
+    #[test]
+    fn detect_conflicts_reports_quit_only_where_it_does_not_defer() {
+        let mut keys = crate::config::KeysConfig::default();
+        keys.bindings
+            .insert("toggle_project".to_string(), vec!["q".to_string()]);
+        let conflicts = detect_conflicts(&keys);
+        let quit_scopes: Vec<BindingScope> = conflicts
+            .iter()
+            .filter(|c| [c.action_a, c.action_b].contains(&"quit"))
+            .map(|c| c.scope)
+            .collect();
+        assert_eq!(quit_scopes, vec![BindingScope::Left], "got: {conflicts:?}");
+    }
+
+    /// Legacy terminals send Ctrl-5 as the Ctrl-] byte, which the global
+    /// remove-git-pane binding holds, so the agent pane must not advertise it
+    /// as a tab switch.
+    #[test]
+    fn ctrl_5_is_not_a_tab_switch_in_the_agent_pane() {
+        let bindings = default_bindings();
+        let ctrl_5 = KeyEvent::new(KeyCode::Char('5'), KeyModifiers::CONTROL);
+        assert_eq!(bindings.lookup(&ctrl_5, BindingScope::Center), None);
+    }
+
     #[test]
     fn detect_conflicts_default_config_clean() {
         let keys = crate::config::KeysConfig::default();
@@ -3982,21 +5094,17 @@ mod tests {
     fn lookup_declaration_order_wins() {
         // Build bindings where two actions share the same key in the same scope.
         // The one declared earlier in BINDING_DEFS should win.
-        let bindings = RuntimeBindings::new(
-            |action| {
-                if action == Action::MoveDown || action == Action::MoveUp {
-                    // Both bound to 'x' in Left scope
-                    vec![crokey::parse("x").unwrap()]
-                } else {
-                    BINDING_DEFS
-                        .iter()
-                        .find(|d| d.action == action)
-                        .map(|d| d.default_keys.to_vec())
-                        .unwrap_or_default()
-                }
-            },
-            true,
-        );
+        let bindings = RuntimeBindings::new(|action| {
+            if action == Action::MoveDown || action == Action::MoveUp {
+                // Both bound to 'x' in Left scope
+                vec![crokey::parse("x").unwrap()]
+            } else {
+                BINDING_DEFS
+                    .iter()
+                    .find(|d| d.action == action)
+                    .map_or_default(|d| d.default_keys.to_vec())
+            }
+        });
         let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
         // MoveDown is declared before MoveUp in BINDING_DEFS
         assert_eq!(
@@ -4009,20 +5117,16 @@ mod tests {
     #[test]
     fn lookup_plain_key_ignores_shift_variant() {
         // A plain 'p' binding should NOT match Shift+p.
-        let bindings = RuntimeBindings::new(
-            |action| {
-                if action == Action::Quit {
-                    vec![crokey::parse("p").unwrap()]
-                } else {
-                    BINDING_DEFS
-                        .iter()
-                        .find(|d| d.action == action)
-                        .map(|d| d.default_keys.to_vec())
-                        .unwrap_or_default()
-                }
-            },
-            true,
-        );
+        let bindings = RuntimeBindings::new(|action| {
+            if action == Action::Quit {
+                vec![crokey::parse("p").unwrap()]
+            } else {
+                BINDING_DEFS
+                    .iter()
+                    .find(|d| d.action == action)
+                    .map_or_default(|d| d.default_keys.to_vec())
+            }
+        });
         let shift_p = KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT);
         assert_ne!(
             bindings.lookup(&shift_p, BindingScope::Global),
@@ -4034,20 +5138,16 @@ mod tests {
     #[test]
     fn lookup_shift_key_ignores_plain() {
         // A 'shift-p' binding should NOT match plain 'p'.
-        let bindings = RuntimeBindings::new(
-            |action| {
-                if action == Action::Quit {
-                    vec![crokey::parse("shift-p").unwrap()]
-                } else {
-                    BINDING_DEFS
-                        .iter()
-                        .find(|d| d.action == action)
-                        .map(|d| d.default_keys.to_vec())
-                        .unwrap_or_default()
-                }
-            },
-            true,
-        );
+        let bindings = RuntimeBindings::new(|action| {
+            if action == Action::Quit {
+                vec![crokey::parse("shift-p").unwrap()]
+            } else {
+                BINDING_DEFS
+                    .iter()
+                    .find(|d| d.action == action)
+                    .map_or_default(|d| d.default_keys.to_vec())
+            }
+        });
         let plain_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
         assert_ne!(
             bindings.lookup(&plain_p, BindingScope::Global),
@@ -4059,22 +5159,18 @@ mod tests {
     #[test]
     fn lookup_shift_p_and_plain_p_coexist() {
         // 'p' and 'shift-p' bound to different actions should both resolve correctly.
-        let bindings = RuntimeBindings::new(
-            |action| {
-                if action == Action::Quit {
-                    vec![crokey::parse("p").unwrap()]
-                } else if action == Action::ToggleHelp {
-                    vec![crokey::parse("shift-p").unwrap()]
-                } else {
-                    BINDING_DEFS
-                        .iter()
-                        .find(|d| d.action == action)
-                        .map(|d| d.default_keys.to_vec())
-                        .unwrap_or_default()
-                }
-            },
-            true,
-        );
+        let bindings = RuntimeBindings::new(|action| {
+            if action == Action::Quit {
+                vec![crokey::parse("p").unwrap()]
+            } else if action == Action::ToggleHelp {
+                vec![crokey::parse("shift-p").unwrap()]
+            } else {
+                BINDING_DEFS
+                    .iter()
+                    .find(|d| d.action == action)
+                    .map_or_default(|d| d.default_keys.to_vec())
+            }
+        });
         let plain_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE);
         let shift_p = KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT);
         assert_eq!(
@@ -4140,6 +5236,73 @@ mod tests {
         assert_eq!(
             bindings.lookup(&pgdn, BindingScope::Help),
             Some(Action::ScrollPageDown)
+        );
+    }
+
+    /// The web server status screen's log scrolls through the user's own
+    /// scroll bindings, and the `?` help lists them under its own section.
+    #[test]
+    fn the_server_screen_scrolls_through_the_bindings_and_its_help_says_so() {
+        let bindings = default_bindings();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert_eq!(
+            bindings.lookup(&key(KeyCode::PageUp), BindingScope::ServerScreen),
+            Some(Action::ScrollPageUp)
+        );
+        assert_eq!(
+            bindings.lookup(&key(KeyCode::PageDown), BindingScope::ServerScreen),
+            Some(Action::ScrollPageDown)
+        );
+        assert_eq!(
+            bindings.lookup(&key(KeyCode::Home), BindingScope::ServerScreen),
+            Some(Action::ScrollToTop)
+        );
+        assert_eq!(
+            bindings.lookup(&key(KeyCode::Up), BindingScope::ServerScreen),
+            Some(Action::ScrollLineUp)
+        );
+        assert_eq!(
+            bindings.lookup(&key(KeyCode::Down), BindingScope::ServerScreen),
+            Some(Action::ScrollLineDown)
+        );
+        assert_eq!(
+            bindings.lookup(&key(KeyCode::End), BindingScope::ServerScreen),
+            Some(Action::ScrollToBottom)
+        );
+        let sections = bindings.help_sections();
+        let (_, entries) = sections
+            .iter()
+            .find(|(name, _)| *name == SERVER_SCREEN_HELP_SECTION)
+            .expect("the help lists the server screen");
+        let labels: Vec<&str> = entries.iter().map(|(l, _)| l.as_str()).collect();
+        assert!(labels.contains(&"PageUp/PageDown"), "{labels:?}");
+        assert!(labels.contains(&"Home"), "{labels:?}");
+        assert!(labels.contains(&"Up/Down"), "{labels:?}");
+        // `q` is the screen's own return key, so End is the one that reaches.
+        assert!(labels.contains(&"End"), "{labels:?}");
+    }
+
+    #[test]
+    fn a_rebound_scroll_key_moves_the_server_screen_and_its_help() {
+        let mut keys = crate::config::KeysConfig::default();
+        keys.bindings
+            .insert("scroll_page_up".to_string(), vec!["ctrl-u".to_string()]);
+        let bindings = RuntimeBindings::from_keys_config(&keys);
+        assert_eq!(
+            bindings.lookup(
+                &KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                BindingScope::ServerScreen
+            ),
+            Some(Action::ScrollPageUp)
+        );
+        let sections = bindings.help_sections();
+        let (_, entries) = sections
+            .iter()
+            .find(|(name, _)| *name == SERVER_SCREEN_HELP_SECTION)
+            .unwrap();
+        assert!(
+            entries.iter().any(|(l, _)| l == "Ctrl-u/PageDown"),
+            "{entries:?}"
         );
     }
 
@@ -4235,7 +5398,7 @@ mod tests {
         // RuntimeBindings must still resolve defaults from BINDING_DEFS so runtime
         // keybindings are unchanged.
         let rb = RuntimeBindings::from_keys_config(&yaran_core::config::KeysConfig::default());
-        assert!(!rb.label_for(Action::OpenPalette).is_empty());
-        assert!(!rb.label_for(Action::Quit).is_empty());
+        assert_ne!(rb.label_for(Action::OpenPalette), "");
+        assert_ne!(rb.label_for(Action::Quit), "");
     }
 }

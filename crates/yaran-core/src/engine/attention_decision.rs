@@ -2,7 +2,7 @@
 //! push-only set behind phone notifications (D12).
 //!
 //! Both sets run the same function on the same `fired` list with the same `engaged`
-//! predicate, so they can only disagree on what `enabled` says.
+//! predicate, so they can only disagree on what the indicator setting says.
 //!
 //! - Pure: no I/O apart from debug logging.
 //!
@@ -24,7 +24,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use super::{AGENT_INPUT_SUPPRESSION_WINDOW, ATTENTION_ENGAGED_WINDOW};
+use super::{AGENT_INPUT_SUPPRESSION_WINDOW, ATTENTION_ENGAGED_WINDOW, AttentionIndicator};
 use crate::ids::{TabId, TabIdRef};
 
 /// Whether the user is currently "engaged" with a tab and so should not be
@@ -63,10 +63,10 @@ pub(crate) fn attention_engaged(
 pub(crate) fn apply_attention_decision(
     needs_attention: &mut HashSet<TabId>,
     fired: &[TabId],
-    enabled: bool,
+    indicator: AttentionIndicator,
     engaged: impl Fn(&TabIdRef) -> bool,
 ) {
-    if !enabled {
+    if indicator == AttentionIndicator::Off {
         needs_attention.clear();
         return;
     }
@@ -140,7 +140,12 @@ mod tests {
     #[test]
     fn apply_attention_decision_sets_flag_when_not_engaged() {
         let mut set = HashSet::new();
-        apply_attention_decision(&mut set, &[TabId::new("s1")], true, |_| false);
+        apply_attention_decision(
+            &mut set,
+            &[TabId::new("s1")],
+            AttentionIndicator::On,
+            |_| false,
+        );
         assert!(
             set.contains(TabIdRef::new("s1")),
             "a fired, unengaged tab must be flagged"
@@ -152,7 +157,12 @@ mod tests {
         let mut set = HashSet::new();
         set.insert(TabId::new("s1"));
         // Engaged: the fired signal is suppressed AND the existing flag is cleared.
-        apply_attention_decision(&mut set, &[TabId::new("s1")], true, |_| true);
+        apply_attention_decision(
+            &mut set,
+            &[TabId::new("s1")],
+            AttentionIndicator::On,
+            |_| true,
+        );
         assert!(
             !set.contains(TabIdRef::new("s1")),
             "engagement must both suppress the new signal and clear the old flag"
@@ -164,7 +174,9 @@ mod tests {
         let mut set = HashSet::new();
         set.insert(TabId::new("s1"));
         // No new signal this tick, but the user is now engaged → clear.
-        apply_attention_decision(&mut set, &[], true, |tab| tab.as_str() == "s1");
+        apply_attention_decision(&mut set, &[], AttentionIndicator::On, |tab| {
+            tab.as_str() == "s1"
+        });
         assert!(!set.contains(TabIdRef::new("s1")));
     }
 
@@ -172,7 +184,7 @@ mod tests {
     fn apply_attention_decision_retains_flag_while_unengaged() {
         let mut set = HashSet::new();
         set.insert(TabId::new("s1"));
-        apply_attention_decision(&mut set, &[], true, |_| false);
+        apply_attention_decision(&mut set, &[], AttentionIndicator::On, |_| false);
         assert!(
             set.contains(TabIdRef::new("s1")),
             "an unviewed flag must persist across ticks"
@@ -183,7 +195,12 @@ mod tests {
     fn apply_attention_decision_disabled_clears_everything() {
         let mut set = HashSet::new();
         set.insert(TabId::new("s1"));
-        apply_attention_decision(&mut set, &[TabId::new("s2")], false, |_| false);
+        apply_attention_decision(
+            &mut set,
+            &[TabId::new("s2")],
+            AttentionIndicator::Off,
+            |_| false,
+        );
         assert!(set.is_empty(), "the feature being off must drop every flag");
     }
 }

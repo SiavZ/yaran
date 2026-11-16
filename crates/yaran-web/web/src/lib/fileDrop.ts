@@ -431,13 +431,15 @@ function renameNote(saved: SavedFile[], ctx: DropContext): Prose {
   if (renamed.length > MAX_NAMED_FILES) {
     const where = folderPhrase(renamed, ctx)
     const listedIn: Prose = where.length === 0 ? ["the folders above"] : where
-    return prose` ${renamed.length} already existed and were saved under new names, which are listed in ${listedIn}.`
+    // Not "already existed": an agent's upload folder renames to clean a name
+    // up as well as to step around a clash.
+    return prose` ${renamed.length} were saved under different names, which are listed in ${listedIn}.`
   }
   const pairs = joinProse(
     renamed.map((r) => prose`${chip(r.requestedName)} was saved as ${chip(r.savedName)}`),
     ", ",
   )
-  return prose` ${pairs}, so nothing was overwritten.`
+  return prose` ${pairs}.`
 }
 
 /// A rung's report: the sentence, and its plain spelling beside it.
@@ -573,7 +575,7 @@ function savedFilesToast(
     const named =
       one.requestedName === one.savedName
         ? prose`Saved ${chip(one.savedName)}${where} and ${deliveredOne(ctx)}.`
-        : prose`Saved ${chip(one.requestedName)}${where} as ${chip(one.savedName)}, so nothing was overwritten, and ${deliveredOne(ctx)}.`
+        : prose`Saved ${chip(one.requestedName)}${where} as ${chip(one.savedName)}, and ${deliveredOne(ctx)}.`
     return dropToast("success", false, named)
   }
   return dropToast(

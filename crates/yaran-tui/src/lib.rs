@@ -64,14 +64,19 @@ mod app;
 mod cli;
 mod clipboard;
 mod config;
+mod config_cli;
 mod config_saver;
+mod config_spec;
 mod diff;
 mod doctor;
+mod host_keys;
 // The terminal-focus grace state machine is core-owned (`yaran_core::focus`),
 // shared by rule with the web's viewed-ping grace.
 pub(crate) use yaran_core::focus;
+mod key_decode;
 mod key_encode;
 mod keybindings;
+mod numeric;
 mod raw_input;
 mod server_screen;
 mod theme;
@@ -82,13 +87,17 @@ pub(crate) use config_saver::TuiConfigSurface;
 /// Server status screen shown by the binary while serving after a TUI↔server
 /// flip. Re-exported so `crates/yaran/src/main.rs` can drive it as the
 /// `serve_with_engine` tick.
-pub use server_screen::{ServerScreenTick, ServerStatusScreen};
+pub use server_screen::{ServerScreenTick, ServerStatusScreen, restore_terminal};
 
 /// Register the fully-commented config renderer with `yaran-core`, so that any
 /// surface which CREATES `config.toml` writes the documented template rather
 /// than a bare one. Re-exported so `crates/yaran/src/main.rs` can call it on the
 /// `yaran server` path, which never goes through the TUI's `ensure_config`.
 pub use config::install_canonical_renderer;
+pub use config_spec::config_command;
+
+/// The hidden password prompt `yaran remote login` signs in with.
+pub use config_cli::{SecretInput, read_env_value, read_sign_in_password};
 
 // Domain modules now live in yaran-core. Re-export them at the crate root so
 // existing `crate::<mod>::…` paths across the binary keep resolving unchanged.
@@ -96,6 +105,7 @@ pub(crate) use yaran_core::{
     editor, git, io_retry, lockfile, logger, model, pty, startup, statusline, storage,
 };
 
+use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::Result;
@@ -109,11 +119,21 @@ use yaran_core::engine::Engine;
 /// [`resume_after_server`] when the server stops. LOCAL MODE may bind more than
 /// one address (loopback + Tailscale), so `listeners`/`urls` are vectors.
 pub enum TuiExit {
+    /// The user quit: the process ends.
     Done,
+    /// The user switched to the web server, which takes over this process.
     FlipToServer {
+        /// The live engine, its PTYs still running and the single-instance lock
+        /// inside it.
         engine: Box<Engine>,
+        /// The listeners already bound for the server to accept on.
         listeners: Vec<std::net::TcpListener>,
+        /// The URL each listener is reached at, in the same order.
         urls: Vec<String>,
+        /// What the pre-flight learned (its warnings, the Tailscale bind
+        /// failures, whether an address was detected), so the server's log opens
+        /// with the same lines `yaran server` prints.
+        startup: yaran_core::serve_log::StartupNotes,
     },
     /// Exec onto a newer yaran, keeping the running agents alive.
     ///
@@ -127,95 +147,141 @@ pub enum TuiExit {
     },
 }
 
-/// Run yaran (TUI mode or a `config` subcommand). Called by the `yaran` binary
-/// crate.
+impl std::fmt::Debug for TuiExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Done => f.write_str("Done"),
+            Self::FlipToServer { urls, .. } => f
+                .debug_struct("FlipToServer")
+                .field("urls", urls)
+                .finish_non_exhaustive(),
+            Self::Reload { .. } => f.debug_struct("Reload").finish_non_exhaustive(),
+        }
+    }
+}
+
+/// Run `yaran config <args>`, given the arguments after the word `config` exactly
+/// as typed; every message and exit code is the config code's own.
 ///
-/// `companion` is the background web server this TUI may serve through. It is a
-/// `yaran-core` trait object because this crate never sees `yaran-web`: the binary
-/// implements it and is the only place the two surfaces meet. A `config`
-/// subcommand drops it unused.
+/// # Errors
+///
+/// When the config folder cannot be located or locked, or when the
+/// subcommand refuses or fails; the error carries the message it prints.
+pub fn run_config(config_args: &[String]) -> Result<()> {
+    cli::finish_config(run_config_command(config_args))
+}
+
+/// [`run_config`] before a result it could not print is told apart.
+fn run_config_command(config_args: &[String]) -> Result<()> {
+    let paths = config::YaranPaths::discover()?;
+    // Help anywhere in a config command (before a literal `--`) prints the
+    // config help, before any lock is taken.
+    if cli::asks_for_help(config_args) {
+        return cli::run(&["--help".to_string()], &paths);
+    }
+    let _lock = match lock_for_config_subcommand(config_args, &paths)? {
+        ConfigLock::Held(lock) => Some(lock),
+        ConfigLock::NotNeeded => None,
+        // The one look at whether there is anything to reset. A reset that
+        // went on would look again without the lock.
+        ConfigLock::NothingToReset => {
+            writeln!(
+                cli::ResultOut(std::io::stdout()),
+                "nothing to reset: {} does not exist",
+                paths.root.display()
+            )?;
+            return Ok(());
+        }
+    };
+
+    cli::run(config_args, &paths)
+}
+
+/// `yaran doctor [--json] [--anonymize]`: the operator's diagnostic dump. It
+/// changes nothing; its database section reads only while no yaran holds the
+/// lock (see `doctor`).
+///
+/// # Errors
+///
+/// When the config folder cannot be located, or an argument is not one of the two flags.
+pub fn run_doctor(args: &[String]) -> Result<()> {
+    if let Some(unknown) = args
+        .iter()
+        .find(|a| !matches!(a.as_str(), "--json" | "--anonymize"))
+    {
+        anyhow::bail!("unknown argument to yaran doctor: {unknown}");
+    }
+    let paths = config::YaranPaths::discover()?;
+    doctor::run_doctor(
+        &paths,
+        args.iter().any(|a| a == "--json"),
+        args.iter().any(|a| a == "--anonymize"),
+    )
+}
+
+/// `yaran session purge|purge-all`: the hard purge of an agent's stored data.
+/// Every mutating form takes the single-instance lock first, so a purge never
+/// races a running yaran that would recreate what it deletes, and only the lock
+/// holder ever opens `sessions.sqlite3`. `--help` and a missing root need no
+/// lock and must not create the root just to take one. Returns the exit code.
+///
+/// # Errors
+///
+/// When the config folder cannot be located or the purge fails.
+pub fn run_session(session_args: &[String]) -> Result<i32> {
+    let paths = config::YaranPaths::discover()?;
+    let _lock = match purge_lock(session_args, &paths) {
+        Ok(lock) => lock,
+        Err(err) => {
+            line_to_stderr(format_args!("{err}"));
+            std::process::exit(1);
+        }
+    };
+    cli::run_session(session_args, &paths)
+}
+
+/// A purge opens the session database, which only the holder of `dux.lock`
+/// may: it takes the lock, and is refused while a running yaran holds it.
+/// Anything else `yaran session` does needs no lock.
+fn purge_lock(
+    session_args: &[String],
+    paths: &config::YaranPaths,
+) -> Result<Option<lockfile::SingleInstanceLock>> {
+    match session_args.first().map(String::as_str) {
+        Some("purge" | "purge-all") if paths.root.exists() => Ok(Some(
+            lockfile::SingleInstanceLock::acquire(&paths.lock_path)?,
+        )),
+        _ => Ok(None),
+    }
+}
+
+/// Run the terminal UI; the `yaran` binary calls it when no command was given.
+/// `companion` is the background web server it may serve through, which the binary implements.
+///
+/// # Errors
+///
+/// When the config folder cannot be located or created, when the terminal UI
+/// cannot start (the config, the session database or the terminal refuses),
+/// or when its event loop stops on an error.
 pub fn run(
     companion: Box<dyn yaran_core::background_serve::BackgroundServeCompanion>,
 ) -> Result<TuiExit> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-
-    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        print_help();
-        return Ok(TuiExit::Done);
-    }
-
     let paths = config::YaranPaths::discover()?;
 
-    // `yaran doctor` (fork c6426735): read-only, so it takes no lock and works
-    // while a TUI holds one, which is exactly when it gets run.
-    if args.first().map(|s| s.as_str()) == Some("doctor") {
-        let json = args.iter().any(|a| a == "--json");
-        let anonymize = args.iter().any(|a| a == "--anonymize");
-        if let Some(unknown) = args[1..]
-            .iter()
-            .find(|a| !matches!(a.as_str(), "--json" | "--anonymize"))
-        {
-            anyhow::bail!("unknown argument to yaran doctor: {unknown}");
-        }
-        doctor::run_doctor(&paths, json, anonymize)?;
-        return Ok(TuiExit::Done);
-    }
-
-    if args.first().map(|s| s.as_str()) == Some("config") {
-        let config_args = &args[1..];
-        let sub = config_args.first().map(|s| s.as_str()).unwrap_or("");
-
-        // Acquire the single-instance lock only for subcommands that
-        // mutate shared on-disk state. Read-only operations (path, diff,
-        // regenerate preview) skip the lock entirely.
-        let _lock = match sub {
-            // reset mutates state when root exists. When root is absent,
-            // run_reset's fast-path reports "nothing to reset" and exits,
-            // so we avoid creating the directory just to take a lock.
-            "reset" if paths.root.exists() => Some(acquire_lock_or_exit(&paths.lock_path)),
-
-            // regenerate --yes creates directories and writes config.
-            // Create root (so the lockfile can be opened) and lock before
-            // any writes, preventing a concurrent TUI from starting
-            // between directory creation and the config write.
-            "regenerate" if config_args.iter().any(|a| a == "--yes") => {
-                std::fs::create_dir_all(&paths.root)?;
-                Some(acquire_lock_or_exit(&paths.lock_path))
-            }
-
-            // Everything else is read-only or prints help, so there is no
-            // shared state to protect.
-            _ => None,
-        };
-
-        cli::run(config_args, &paths)?;
-        return Ok(TuiExit::Done);
-    }
-
-    // `yaran session purge|purge-all`: GDPR hard purge. Every mutating form
-    // takes the single-instance lock, so a purge can never race a running yaran
-    // that would recreate what it deletes. `--help` and a missing root need no
-    // lock and must not create the root just to take one.
-    if args.first().map(|s| s.as_str()) == Some("session") {
-        let session_args = &args[1..];
-        let _lock = match session_args.first().map(|s| s.as_str()) {
-            Some("purge" | "purge-all") if paths.root.exists() => {
-                Some(acquire_lock_or_exit(&paths.lock_path))
-            }
-            _ => None,
-        };
-        let code = cli::run_session(session_args, &paths)?;
-        if code != 0 {
-            std::process::exit(code);
-        }
-        return Ok(TuiExit::Done);
+    // Before the lock: `kill -USR1` reaches whoever holds it, and the signal's
+    // default action would end this process. Idempotent.
+    if let Err(err) = yaran_core::reload_signal::install() {
+        // backtick-ok: printed to the terminal yaran was started from, never a status.
+        line_to_stderr(format_args!(
+            "warning: {err}; `kill -USR1` cannot reload this yaran, use Reload config in it"
+        ));
     }
 
     // TUI: always create the root directory (so the lockfile can be
     // opened), acquire the lock, then let bootstrap create everything
     // else. A losing process never touches shared state beyond the
     // empty root.
-    std::fs::create_dir_all(&paths.root)?;
+    create_private_root(&paths)?;
     let lock = acquire_lock_or_exit(&paths.lock_path);
     let app = app::App::bootstrap_with_lock(paths, lock)?;
     run_app(app, companion)
@@ -225,6 +291,11 @@ pub fn run(
 /// owns the live providers and the single-instance lock, so this rebuilds the
 /// App view state around it (no session relaunch) and runs the loop. A resumed
 /// TUI can flip to the server again, so the flip↔serve cycle repeats.
+///
+/// # Errors
+///
+/// When the terminal cannot be taken back or the event loop stops on an
+/// error.
 pub fn resume_after_server(
     mut engine: Box<Engine>,
     companion: Box<dyn yaran_core::background_serve::BackgroundServeCompanion>,
@@ -278,7 +349,11 @@ fn run_app(
     app.companion = Some(companion);
     match app.run()? {
         app::RunExit::Quit => Ok(TuiExit::Done),
-        app::RunExit::FlipToServer { listeners, urls } => {
+        app::RunExit::FlipToServer {
+            listeners,
+            urls,
+            startup,
+        } => {
             // Serving headless: `auto` identity now resolves to the forced
             // ghostty identity for agents launched under the server. Existing
             // PTYs keep their spawn-time env until relaunch.
@@ -291,6 +366,7 @@ fn run_app(
                 engine: Box::new(engine),
                 listeners,
                 urls,
+                startup,
             })
         }
         app::RunExit::Reload { handoff } => {
@@ -307,66 +383,59 @@ fn run_app(
     }
 }
 
-pub fn print_help() {
-    println!("{}", help_text());
+/// What the lock decision for a `config` subcommand came to.
+enum ConfigLock {
+    Held(lockfile::SingleInstanceLock),
+    NotNeeded,
+    /// A reset with no config folder to reset: nothing to lock or do.
+    NothingToReset,
 }
 
-/// The `yaran --help` body. Split out of [`print_help`] so the text is a value
-/// the tests can assert on; a `println!` straight to stdout is not checkable.
-pub fn help_text() -> &'static str {
-    "yaran\n\n\
-         Terminal and web UI for AI worktree sessions.\n\n\
-         Usage:\n\
-          yaran              Launch the TUI\n\
-          yaran server       Serve the web UI over the headless engine\n\
-          yaran config       Manage the configuration file\n\
-          yaran doctor       Print a diagnostic dump (--json, --anonymize)\n\
-          yaran --version    Print the version and the git commit it was built from\n\
-          yaran peer         Route messages between Yaran agent sessions\n\
-                           (`yaran peer --help` for send, list, sync-amq)\n\
-          yaran board        Post cards for the person running yaran, or resolve\n\
-                           them (`yaran board --help` for post, resolve, list)\n\
-          yaran session      Permanently purge an agent's data (yaran session --help)\n\
-          yaran cloud        Connect this machine to Yaran Cloud for your phone\n\
-                           (`yaran cloud --help` for login, logout, status, rotate, pair-phone)\n\n\
-         Server subcommand:\n\
-          yaran server                     Serve on the configured host and port\n\
-          yaran server --bind <ADDR:PORT>  Bind this exact address instead\n\
-          yaran server --port <PORT>       Override the port only\n\
-          yaran server --no-tailscale      Skip Tailscale detection this run\n\
-          There is no login: everyone who can reach the address shares this\n\
-          workspace, so keep a non-loopback bind on a network you trust.\n\n\
-         Config subcommands:\n\
-          yaran config path          Print the config file path\n\
-          yaran config diff          Show settings that differ from defaults.\n\
-                                   [env] and project details are summarized,\n\
-                                   never printed: safe to paste into a report.\n\
-          yaran config diff --raw    Show a unified diff against the default\n\
-                                   config. Prints the WHOLE config, [env]\n\
-                                   values included: redact before sharing.\n\
-          yaran config reset         Remove config and logs (keeps agents and worktrees)\n\
-          yaran config reset --all   Full factory reset (config, logs, sessions, worktrees)\n\
-          yaran config regenerate    Preview a fresh default config (shows diff)\n\
-          yaran config regenerate --yes\n\
-                                   Overwrite the config file with fresh defaults\n\n\
-         Environment variables:\n\
-           YARAN_HOME    Override the config directory (must be an absolute path).\n\
-                       When unset, defaults to:\n\
-                         macOS: ~/.yaran/\n\
-                         Linux: $XDG_CONFIG_HOME/yaran/ or ~/.config/yaran/\n\n\
-         First run writes a full default config to:\n\
-           macOS: ~/.yaran/config.toml\n\
-           Linux: $XDG_CONFIG_HOME/yaran/config.toml or ~/.config/yaran/config.toml\n\
-         Session state is stored in:\n\
-           macOS: ~/.yaran/sessions.sqlite3\n\
-           Linux: $XDG_CONFIG_HOME/yaran/sessions.sqlite3 or ~/.config/yaran/sessions.sqlite3"
+/// Take the single-instance lock for the `config` subcommands that mutate shared
+/// on-disk state, creating the config folder owner-only first.
+fn lock_for_config_subcommand(
+    config_args: &[String],
+    paths: &config::YaranPaths,
+) -> Result<ConfigLock> {
+    let sub = config_args.first().map_or("", std::string::String::as_str);
+    Ok(match sub {
+        // Decided here, so a missing root is not created just to take a lock.
+        "reset" if !paths.root.exists() => ConfigLock::NothingToReset,
+        "reset" => {
+            create_private_root(paths)?;
+            ConfigLock::Held(acquire_lock_or_exit(&paths.lock_path))
+        }
+
+        // Locked before any write, so a TUI cannot start between creating
+        // the root and writing the config.
+        "regenerate" if config_args.iter().any(|a| a == "--yes") => {
+            create_private_root(paths)?;
+            ConfigLock::Held(acquire_lock_or_exit(&paths.lock_path))
+        }
+
+        // `set` runs beside a live yaran, which holds this lock for its whole
+        // life; its write takes the config file's own lock instead.
+        _ => ConfigLock::NotNeeded,
+    })
+}
+
+/// One line on standard error, for what the terminal UI says on its way in or
+/// out. A line that cannot be written is dropped: there is nowhere else to say it.
+pub(crate) fn line_to_stderr(line: std::fmt::Arguments<'_>) {
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
+}
+
+/// Create the config folder owner-only, before any path opens the lock file in it.
+fn create_private_root(paths: &config::YaranPaths) -> Result<()> {
+    yaran_core::file_modes::create_private_dir_all(&paths.root)?;
+    Ok(())
 }
 
 fn acquire_lock_or_exit(path: &Path) -> lockfile::SingleInstanceLock {
     match lockfile::SingleInstanceLock::acquire(path) {
         Ok(lock) => lock,
         Err(err) => {
-            eprintln!("{err}");
+            line_to_stderr(format_args!("{err}"));
             std::process::exit(1);
         }
     }
@@ -376,82 +445,92 @@ fn acquire_lock_or_exit(path: &Path) -> lockfile::SingleInstanceLock {
 mod tests {
     use super::*;
 
-    /// `yaran server` is a real subcommand (`crates/yaran/src/main.rs` dispatches on
-    /// it), so `--help` must list it next to the TUI and `config`. Without this,
-    /// an installed user has no way to discover the web UI exists.
     #[test]
-    fn help_lists_the_server_subcommand() {
-        let help = help_text();
-        assert!(
-            help.contains("yaran server"),
-            "--help must name the `yaran server` subcommand:\n{help}"
-        );
-    }
-
-    /// The flags `parse_server_args` already accepts must be discoverable from
-    /// the top-level help, not only from `yaran server --help`.
-    #[test]
-    fn help_names_the_server_flags() {
-        let help = help_text();
-        for flag in ["--bind", "--port", "--no-tailscale"] {
+    fn purge_refuses_while_yaran_holds_the_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = config::YaranPaths {
+            config_path: dir.path().join("config.toml"),
+            sessions_db_path: dir.path().join("sessions.sqlite3"),
+            worktrees_root: dir.path().join("worktrees"),
+            lock_path: dir.path().join("dux.lock"),
+            socket_path: dir.path().join("yaran.sock"),
+            root: dir.path().to_path_buf(),
+        };
+        let args = |words: &[&str]| words.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let running = lockfile::SingleInstanceLock::acquire(&paths.lock_path).expect("yaran");
+        for purge in [&["purge", "--hard", "x"][..], &["purge-all"][..]] {
             assert!(
-                help.contains(flag),
-                "--help must mention the `yaran server` flag {flag}:\n{help}"
+                purge_lock(&args(purge), &paths).is_err(),
+                "{purge:?} must not open the database under a running yaran"
             );
         }
-    }
-
-    /// `yaran peer` is dispatched by the binary and is how agents message each
-    /// other, so the top-level help must name it.
-    #[test]
-    fn help_lists_the_peer_subcommand() {
-        let help = help_text();
         assert!(
-            help.contains("yaran peer"),
-            "--help must name the `yaran peer` subcommand:\n{help}"
+            purge_lock(&args(&["--help"]), &paths)
+                .expect("help")
+                .is_none()
         );
-    }
-
-    /// `yaran board` is dispatched by the binary and is how agents reach the
-    /// human board, so the top-level help must name it.
-    #[test]
-    fn help_lists_the_board_subcommand() {
-        let help = help_text();
+        drop(running);
         assert!(
-            help.contains("yaran board"),
-            "--help must name the `yaran board` subcommand:\n{help}"
-        );
-    }
-
-    /// `yaran cloud` is dispatched by the binary before the TUI, so `--help` must name it.
-    #[test]
-    fn help_lists_the_cloud_subcommand() {
-        let help = help_text();
-        assert!(
-            help.contains("yaran cloud"),
-            "--help must name `yaran cloud`:\n{help}"
-        );
-    }
-
-    /// The trust model currently appears only deep in the docs. `--help` is the
-    /// one place a user is guaranteed to look, so it must say that there is no
-    /// login and that everyone who can reach the address shares the workspace.
-    #[test]
-    fn help_states_the_server_has_no_login() {
-        let help = help_text();
-        assert!(
-            help.contains("no login"),
-            "--help must state that the server has no login:\n{help}"
-        );
-        assert!(
-            help.contains("shares"),
-            "--help must state that reachable clients share the workspace:\n{help}"
+            purge_lock(&args(&["purge-all"]), &paths)
+                .expect("stopped")
+                .is_some()
         );
     }
 
     #[test]
-    fn help_lists_the_version_flag() {
-        let help = help_text();
-        assert!(help.contains("yaran --version"), "{help}");
+    fn config_reset_tightens_an_existing_loose_folder_and_a_missing_one_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("restored-home");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let paths = config::YaranPaths {
+            root: root.clone(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        };
+
+        let lock = lock_for_config_subcommand(&["reset".to_string()], &paths).unwrap();
+        assert!(matches!(lock, ConfigLock::Held(_)));
+        drop(lock);
+        let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+
+        let missing = dir.path().join("never-created");
+        let absent = config::YaranPaths {
+            root: missing.clone(),
+            lock_path: missing.join("dux.lock"),
+            socket_path: missing.join("yaran.sock"),
+            ..paths
+        };
+        assert!(matches!(
+            lock_for_config_subcommand(&["reset".to_string()], &absent).unwrap(),
+            ConfigLock::NothingToReset
+        ));
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn the_config_folder_is_created_owner_only_before_the_lock_file_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("fresh-home");
+        let paths = config::YaranPaths {
+            root: root.clone(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
+        };
+
+        create_private_root(&paths).unwrap();
+
+        let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        assert!(!paths.lock_path.exists());
     }
 }

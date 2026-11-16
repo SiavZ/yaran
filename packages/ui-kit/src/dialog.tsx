@@ -25,8 +25,11 @@
  * ├── web:src/components/AgentInfoDialog.tsx
  * ├── web:src/components/AgentStartupCommandDialog.tsx
  * ├── web:src/components/AttachPullRequestDialog.tsx
+ * ├── web:src/components/AuthGate.test.tsx
+ * ├── web:src/components/ChangeBaseBranchDialog.tsx
  * ├── web:src/components/ChangeProviderDialog.tsx
  * ├── web:src/components/CheckoutDefaultBranchDialog.tsx
+ * ├── web:src/components/CloneProjectDialog.tsx
  * ├── web:src/components/CommitDialog.tsx
  * ├── web:src/components/ConfigEditorDialog.tsx
  * ├── web:src/components/ConfirmCloseEditorTabDialog.tsx
@@ -39,9 +42,12 @@
  * ├── web:src/components/ConfirmForceStopAgentDialog.tsx
  * ├── web:src/components/ConfirmRecreateWorkingCopyDialog.tsx
  * ├── web:src/components/ConfirmReloadFileDialog.tsx
+ * ├── web:src/components/ConfirmReopenEncodingDialog.tsx
+ * ├── web:src/components/ConfirmStopTabDialog.tsx
  * ├── web:src/components/ConfirmUseExistingBranchDialog.tsx
  * ├── web:src/components/ConfirmVanishedEditorDialog.tsx
  * ├── web:src/components/ConnectPhoneDialog.tsx
+ * ├── web:src/components/CopiedTextDialog.tsx
  * ├── web:src/components/CreateAgentDialog.tsx
  * ├── web:src/components/CustomizeWebappDialog.tsx
  * ├── web:src/components/DeleteEntryDialog.tsx
@@ -55,12 +61,18 @@
  * ├── web:src/components/MoveEntryDialog.tsx
  * ├── web:src/components/NewAgentPickerDialog.tsx
  * ├── web:src/components/NewEntryDialog.tsx
+ * ├── web:src/components/NewLauncherDialog.tsx
  * ├── web:src/components/ProjectInfoDialog.tsx
+ * ├── web:src/components/ProjectList.test.tsx
+ * ├── web:src/components/ProjectList.tsx
  * ├── web:src/components/ProjectSettingsDialog.tsx
+ * ├── web:src/components/ProjectsDialog.tsx
+ * ├── web:src/components/PullRequestsDialog.tsx
  * ├── web:src/components/RemoveProjectDialog.tsx
  * ├── web:src/components/RenameEntryDialog.tsx
  * ├── web:src/components/RenameSessionDialog.tsx
  * ├── web:src/components/SaveConflictDialog.tsx
+ * ├── web:src/components/StackNewDialog.tsx
  * ├── web:src/components/StandaloneAgentDialog.tsx
  * ├── web:src/components/StartupLogsDialog.tsx
  * ├── web:src/components/TaskManagerDialog.tsx
@@ -77,14 +89,25 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
 
 import { cn } from "./cn"
 import { Button } from "./button"
+import { useBackDismiss } from "./use-back-dismiss"
 import { XIcon } from "lucide-react"
 
-function Dialog({ onOpenChange, ...props }: DialogPrimitive.Root.Props) {
-  return (
-    <DialogPrimitive.Root
-      data-slot="dialog"
-      {...props}
-      onOpenChange={(open, details) => {
+// Every dialog closes on the browser's Back, the way its Cancel does
+// (`useBackDismiss`). `historyEntry={false}` takes a dialog out of that: one
+// whose being open is already a position in the URL (the editor overlay), which
+// Back leaves through the router instead, and one that opened by itself rather
+// than from the user's own click or tap (a screen raised at boot, a server's
+// answer, a target that vanished). Back must never be what dismisses those,
+// and their entry would land in history with no gesture behind it.
+function Dialog({
+  historyEntry = true,
+  onOpenChange,
+  ...props
+}: DialogPrimitive.Root.Props & { historyEntry?: boolean }) {
+  const back = useBackDismiss(
+    {
+      ...props,
+      onOpenChange: (open: boolean, details: DialogPrimitive.Root.ChangeEventDetails) => {
         // Escape cancels an IME candidate before it dismisses the form.
         const event = details.event
         if (
@@ -97,9 +120,11 @@ function Dialog({ onOpenChange, ...props }: DialogPrimitive.Root.Props) {
           return
         }
         onOpenChange?.(open, details)
-      }}
-    />
+      },
+    },
+    historyEntry,
   )
+  return <DialogPrimitive.Root data-slot="dialog" {...props} {...back} />
 }
 
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {

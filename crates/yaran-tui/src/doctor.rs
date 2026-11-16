@@ -9,8 +9,10 @@
 //! read-only and counted with the same model code yaran uses. Without the script
 //! it still prints that section.
 //!
-//! Read-only on purpose, including no lock: operators run it precisely when
-//! yaran is misbehaving, often while a TUI holds the lock.
+//! Read-only on purpose. Only the process holding `dux.lock` opens
+//! `sessions.sqlite3`, so the database section takes the lock for the moment it
+//! reads and, while a running yaran holds it, says so instead of reading behind
+//! that yaran's back; the script's sections still print.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -292,6 +294,20 @@ fn collect_sessions_snapshot(paths: &YaranPaths) -> SessionsSnapshot {
     if !paths.sessions_db_path.exists() {
         return SessionsSnapshot::empty("absent".to_string());
     }
+    // Held only while the database is read; dropped when this returns.
+    let _lock = match yaran_core::lockfile::SingleInstanceLock::acquire(&paths.lock_path) {
+        Ok(lock) => lock,
+        Err(yaran_core::lockfile::AcquireError::AlreadyRunning { pid, .. }) => {
+            let holder = pid.map_or_else(
+                || "a running yaran".to_string(),
+                |pid| format!("the running yaran (pid {pid})"),
+            );
+            return SessionsSnapshot::empty(format!(
+                "not read: {holder} holds the session database; stop it to include this section"
+            ));
+        }
+        Err(err) => return SessionsSnapshot::empty(format!("error: {err}")),
+    };
     let store = match SessionStore::open_read_only(&paths.sessions_db_path) {
         Ok(store) => store,
         Err(err) => return SessionsSnapshot::empty(format!("error: {err:#}")),
@@ -362,6 +378,7 @@ mod tests {
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("yaran.lock"),
             root: root.to_path_buf(),
+            socket_path: root.join("yaran.sock"),
         }
     }
 
@@ -407,6 +424,23 @@ mod tests {
         assert!(snap.orphaned_sessions.is_empty());
     }
 
+    /// Only the lock holder opens the session database: while a running yaran
+    /// holds the lock, the section says so and reads nothing.
+    #[test]
+    fn doctor_snapshot_leaves_the_database_to_the_running_yaran() {
+        let tmp = TempDir::new().unwrap();
+        let paths = paths_in(tmp.path());
+        std::fs::write(&paths.sessions_db_path, b"not a database").unwrap();
+        let _running = yaran_core::lockfile::SingleInstanceLock::acquire(&paths.lock_path).unwrap();
+        let snap = collect_sessions_snapshot(&paths);
+        assert!(
+            snap.integrity.starts_with("not read:")
+                && snap.integrity.contains("holds the session database"),
+            "{}",
+            snap.integrity
+        );
+    }
+
     /// A diagnostic must not change what it diagnoses: no migration, no
     /// journal switch, not one byte.
     #[test]
@@ -446,6 +480,7 @@ mod tests {
             sessions_db_path: PathBuf::from("/secret/home/.config/yaran/sessions.sqlite3"),
             worktrees_root: PathBuf::from("/secret/home/worktrees"),
             lock_path: PathBuf::from("/secret/home/.config/yaran/yaran.lock"),
+            socket_path: PathBuf::from("/secret/home/.config/yaran/yaran.sock"),
         };
         let snap = SessionsSnapshot {
             orphaned_worktrees: 1,

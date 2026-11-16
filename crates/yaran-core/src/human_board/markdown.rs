@@ -504,7 +504,7 @@ fn parse_properties(lines: &[&str]) -> Result<BTreeMap<String, String>, ParseErr
         }
         let Some((name, raw)) = line.split_once(':') else {
             return Err(format!(
-                "its property line {trimmed:?} is not `name: value`"
+                "its property line {trimmed:?} is not \"name: value\""
             ));
         };
         let name = name.trim().to_ascii_lowercase();

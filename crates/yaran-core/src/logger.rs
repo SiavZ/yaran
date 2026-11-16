@@ -1,3 +1,6 @@
+//! Writes yaran.log: the process-wide logger, its level, its rotation and the
+//! redaction of names a log line must not carry.
+
 use std::cell::Cell;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -8,7 +11,11 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use chrono::Utc;
 
-use crate::config::{LoggingConfig, YaranPaths};
+use crate::config::{LoggingConfig, ServerConfig, YaranPaths};
+// The level type and its parser belong to `[logging] level`, so they live with
+// the setting: `config_effective::effective_log_level` is the one rule for what
+// a value means.
+use crate::config_effective::LogLevel;
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
@@ -24,53 +31,14 @@ static ROTATION: LazyLock<Arc<RotationCell>> = LazyLock::new(|| {
 /// The threshold [`log`] gates on, kept outside [`LOGGER`] because the file is
 /// opened once for the process while the level moves with the config: a reload
 /// retunes it through [`set_level`].
-static LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
+static LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info.as_u8());
 
 struct Logger {
     log: RotatingLog,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-}
-
-impl LogLevel {
-    fn from_str(value: &str) -> Self {
-        match value {
-            "debug" => Self::Debug,
-            "error" => Self::Error,
-            "warn" => Self::Warn,
-            _ => Self::Info,
-        }
-    }
-
-    /// The inverse of the `as u8` cast used to store the level. Exhaustive on
-    /// the stored discriminants; anything else means a corrupted store, which
-    /// degrades to the same default `from_str` uses.
-    fn from_u8(value: u8) -> Self {
-        match value {
-            v if v == Self::Error as u8 => Self::Error,
-            v if v == Self::Warn as u8 => Self::Warn,
-            v if v == Self::Debug as u8 => Self::Debug,
-            _ => Self::Info,
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "ERROR",
-            Self::Warn => "WARN",
-            Self::Info => "INFO",
-            Self::Debug => "DEBUG",
-        }
-    }
-}
-
+/// Opens the log file the config names and installs the process-wide logger, with its level,
+/// rotation and panic hook; a file that cannot be opened leaves logging off.
 pub fn init(config: &LoggingConfig, paths: &YaranPaths) {
     let path = resolve_log_path(config, paths);
     if let Some(parent) = path.parent() {
@@ -105,10 +73,10 @@ fn install_panic_hook() {
                 .map(|s| (*s).to_string())
                 .or_else(|| info.payload().downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "<non-string panic payload>".to_string());
-            let location = info
-                .location()
-                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-                .unwrap_or_else(|| "<unknown location>".to_string());
+            let location = info.location().map_or_else(
+                || "<unknown location>".to_string(),
+                |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
+            );
             error(&format!(
                 "thread '{name}' panicked at {location}: {message}"
             ));
@@ -117,18 +85,22 @@ fn install_panic_hook() {
     });
 }
 
+/// Logs `message` at warn level.
 pub fn warn(message: &str) {
     log(LogLevel::Warn, message);
 }
 
+/// Logs `message` at info level.
 pub fn info(message: &str) {
     log(LogLevel::Info, message);
 }
 
+/// Logs `message` at debug level.
 pub fn debug(message: &str) {
     log(LogLevel::Debug, message);
 }
 
+/// Logs `message` at error level.
 pub fn error(message: &str) {
     log(LogLevel::Error, message);
 }
@@ -136,14 +108,17 @@ pub fn error(message: &str) {
 /// Adopt a new `logging.level`. Takes effect on the next line written; the log
 /// FILE is opened once for the process, so `logging.path` is startup-only and a
 /// reload cannot move it.
-pub fn set_level(level: &str) {
-    LEVEL.store(LogLevel::from_str(level) as u8, Ordering::Relaxed);
+pub(crate) fn set_level(level: &str) {
+    LEVEL.store(
+        crate::config_effective::effective_log_level(level).as_u8(),
+        Ordering::Relaxed,
+    );
 }
 
 /// Adopt new rotation settings. They are read afresh on every line written, so
 /// a reload takes effect at the next write; the log FILE stays the one opened at
 /// startup, exactly as `logging.path` does.
-pub fn set_rotation(config: &LoggingConfig) {
+pub(crate) fn set_rotation(config: &LoggingConfig) {
     ROTATION.store(RotationSettings::from_config(config));
 }
 
@@ -162,12 +137,7 @@ pub(crate) fn rotation_for_test() -> (u64, u32, bool) {
 
 /// The name of the level `log` currently gates on.
 pub fn current_level() -> &'static str {
-    match LogLevel::from_u8(LEVEL.load(Ordering::Relaxed)) {
-        LogLevel::Error => "error",
-        LogLevel::Warn => "warn",
-        LogLevel::Info => "info",
-        LogLevel::Debug => "debug",
-    }
+    LogLevel::from_u8(LEVEL.load(Ordering::Relaxed)).as_str()
 }
 
 #[cfg(test)]
@@ -191,7 +161,7 @@ fn log(level: LogLevel, message: &str) {
     #[cfg(test)]
     CAPTURED.with(|cell| {
         if let Some(lines) = cell.borrow_mut().as_mut() {
-            lines.push(format!("{} {message}", level.as_str()));
+            lines.push(format!("{} {message}", level.label()));
         }
     });
     if level > LogLevel::from_u8(LEVEL.load(Ordering::Relaxed)) {
@@ -234,7 +204,7 @@ fn json_line(
 ) -> String {
     let record = serde_json::json!({
         "timestamp": Utc::now().to_rfc3339(),
-        "level": level.as_str(),
+        "level": level.label(),
         "target": target,
         "fields": serde_json::Value::Object(fields),
     });
@@ -355,7 +325,7 @@ impl RotationSettings {
     fn from_config(config: &LoggingConfig) -> Self {
         Self {
             max_bytes: config.max_bytes,
-            keep: crate::config::normalized_log_keep(config.keep),
+            keep: crate::config::effective_log_keep(config.keep),
             compress: config.compress,
         }
     }
@@ -464,20 +434,26 @@ struct RotatingLog {
     fail_reopen: AtomicBool,
 }
 
+/// `path` with a symbolic link at it resolved, which is how a log's writer
+/// names the file it really opens.
+fn resolve_link(path: PathBuf) -> PathBuf {
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(&path).unwrap_or(path),
+        _ => path,
+    }
+}
+
 impl RotatingLog {
     fn open(path: PathBuf, rotation: Arc<RotationCell>) -> std::io::Result<Self> {
         // Rotation renames the log, which for a symlinked `logging.path` would
         // move the LINK and orphan the file the user pointed it at, so the link
         // is resolved once here and the numbered copies land beside the target.
-        let path = match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(&path).unwrap_or(path),
-            _ => path,
-        };
+        let path = resolve_link(path);
         let file = open_log_file(&path)?;
         // Seeded from the file on disk, so a log that grew past the limit under
         // an older yaran rotates on the first line rather than after another
         // whole limit's worth.
-        let size = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        let size = fs::metadata(&path).map_or(0, |meta| meta.len());
         Ok(Self {
             path,
             state: Arc::new(Mutex::new(LogState {
@@ -509,7 +485,10 @@ impl RotatingLog {
         if settings.max_bytes > 0
             && !state.rotation_broken
             && state.size > 0
-            && state.size.saturating_add(bytes.len() as u64) > settings.max_bytes
+            && state
+                .size
+                .saturating_add(crate::numeric::usize_to_u64(bytes.len()))
+                > settings.max_bytes
         {
             self.rotate(&mut state, settings);
         }
@@ -522,11 +501,13 @@ impl RotatingLog {
             match state.file.write(&bytes[written..]) {
                 Ok(0) => break,
                 Ok(n) => written += n,
-                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => break,
             }
         }
-        state.size = state.size.saturating_add(written as u64);
+        state.size = state
+            .size
+            .saturating_add(crate::numeric::usize_to_u64(written));
         let _ = state.file.flush();
     }
 
@@ -552,32 +533,7 @@ impl RotatingLog {
     /// probing costs one syscall per position, which a large `keep` turns into a
     /// stall on every line.
     fn scan(&self) -> (Vec<u32>, Vec<PathBuf>) {
-        let (Some(dir), Some(base)) = (self.path.parent(), self.path.file_name()) else {
-            return (Vec::new(), Vec::new());
-        };
-        let prefix = format!("{}.", base.to_string_lossy());
-        let mut positions = Vec::new();
-        let mut temps = Vec::new();
-        let Ok(entries) = fs::read_dir(dir) else {
-            return (positions, temps);
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(rest) = name.strip_prefix(&prefix) else {
-                continue;
-            };
-            if rest.ends_with(".tmp") {
-                temps.push(entry.path());
-                continue;
-            }
-            let digits = rest.strip_suffix(".gz").unwrap_or(rest);
-            if let Ok(n) = digits.parse::<u32>() {
-                positions.push(n);
-            }
-        }
-        positions.sort_unstable();
-        positions.dedup();
-        (positions, temps)
+        scan_copies(&self.path)
     }
 
     /// Shift the numbered copies up, move the live log into position 1, and open
@@ -639,11 +595,12 @@ impl RotatingLog {
                 state.size = 0;
             }
             Err(err) => {
+                static REPORTED: std::sync::Once = std::sync::Once::new();
+
                 // The handle still points at the file that was just renamed, so
                 // putting it back under the live name keeps later lines where a
                 // reader expects them.
                 let restored = fs::rename(self.numbered(1), &self.path).is_ok();
-                static REPORTED: std::sync::Once = std::sync::Once::new();
                 report_rotation_failure(
                     &REPORTED,
                     &format!(
@@ -685,6 +642,74 @@ impl RotatingLog {
         }
         open_log_file(&self.path)
     }
+}
+
+/// What the part of a file name after `<log>.` says it is.
+enum CopyName {
+    /// `<n>` or `<n>.gz`: a rotated copy at position `n`.
+    Copy(u32),
+    /// `<n>.gz.<pid>.tmp`: the file a compression was writing.
+    Temporary,
+}
+
+/// Only the names rotation itself makes, numbers validated, so a file the user
+/// keeps beside the log (`server.log.old`) is never taken for a copy.
+fn copy_name(rest: &str) -> Option<CopyName> {
+    let all_digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    let mut parts = rest.split('.');
+    let position = parts.next().filter(|text| all_digits(text))?;
+    let position = position.parse::<u32>().ok()?;
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (None, ..) | (Some("gz"), None, ..) => Some(CopyName::Copy(position)),
+        (Some("gz"), Some(pid), Some("tmp"), None) if all_digits(pid) => Some(CopyName::Temporary),
+        _ => None,
+    }
+}
+
+/// The rotated copies of the log at `path` found beside it: their positions,
+/// ascending, and the abandoned temporary files.
+fn scan_copies(path: &Path) -> (Vec<u32>, Vec<PathBuf>) {
+    let (Some(dir), Some(base)) = (path.parent(), path.file_name()) else {
+        return (Vec::new(), Vec::new());
+    };
+    let prefix = format!("{}.", base.to_string_lossy());
+    let mut positions = Vec::new();
+    let mut temps = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return (positions, temps);
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        match copy_name(rest) {
+            Some(CopyName::Copy(n)) => positions.push(n),
+            Some(CopyName::Temporary) => temps.push(entry.path()),
+            None => {}
+        }
+    }
+    positions.sort_unstable();
+    positions.dedup();
+    (positions, temps)
+}
+
+/// Every rotated copy of the log at `path` that exists, plain or gzipped, and
+/// every temporary file a killed compression left.
+pub fn rotated_copies_of(path: &Path) -> Vec<PathBuf> {
+    let (positions, temps) = scan_copies(path);
+    let mut found = temps;
+    for n in positions {
+        for suffix in ["", ".gz"] {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(format!(".{n}{suffix}"));
+            let copy = PathBuf::from(name);
+            if copy.exists() {
+                found.push(copy);
+            }
+        }
+    }
+    found
 }
 
 /// Gzip each plain rotated copy on a thread of its own, then release the claim.
@@ -751,9 +776,7 @@ fn compress_open_file(
         encoder.finish()?.sync_all()?;
 
         let _guard = lock_state(state);
-        let still_ours = fs::symlink_metadata(source)
-            .map(|meta| file_id(&meta) == id)
-            .unwrap_or(false);
+        let still_ours = fs::symlink_metadata(source).is_ok_and(|meta| file_id(&meta) == id);
         if !still_ours {
             return Err(std::io::Error::other(
                 "the rotated copy moved while it was being compressed",
@@ -805,21 +828,49 @@ fn report_rotation_failure(reported: &'static std::sync::Once, message: &str) {
 /// Separate from [`init`] because `init` installs a process-global logger and a
 /// panic hook, neither of which a test can do twice.
 fn open_log_file(path: &PathBuf) -> std::io::Result<std::fs::File> {
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    // Private from the first instant: through a dangling symlink this creates the
+    // target, which the later tightening never follows a link to reach.
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(crate::file_modes::PRIVATE_FILE_MODE)
+        .open(path)?;
     // A warning about the log file itself may have nowhere to go: `init`
     // installs the logger it warns through just after this returns.
     crate::file_modes::restrict_to_owner_best_effort(path, "log file");
     Ok(file)
 }
 
+/// The log file's path: `[logging] path` resolved against the config directory, `yaran.log` there
+/// when it is empty.
 pub fn resolve_log_path(config: &LoggingConfig, paths: &YaranPaths) -> PathBuf {
-    let configured = PathBuf::from(&config.path);
+    resolve_under_root(&config.path, paths, "yaran.log")
+}
+
+/// `[server] log_path` the way `[logging] path` is read: empty is the default,
+/// relative is from the config folder.
+pub fn resolve_server_log_path(config: &ServerConfig, paths: &YaranPaths) -> PathBuf {
+    resolve_under_root(&config.log_path, paths, "server.log")
+}
+
+/// The file the server log is written to, as a serve that opens it names it,
+/// for a reader with no running serve to ask.
+pub fn server_log_file(config: &ServerConfig, paths: &YaranPaths) -> PathBuf {
+    resolve_link(resolve_server_log_path(config, paths))
+}
+
+fn resolve_under_root(configured: &str, paths: &YaranPaths, default_name: &str) -> PathBuf {
+    let configured = PathBuf::from(configured);
     if configured.as_os_str().is_empty() {
+        // An existing home that still logs to dux.log keeps doing so until a
+        // yaran.log exists (docs/operations/rebranding.md). Only the main log
+        // has a legacy name; the server log was born under yaran.
         let legacy = paths.root.join("dux.log");
-        if !paths.root.join("yaran.log").exists() && legacy.exists() {
+        if default_name == "yaran.log" && !paths.root.join(default_name).exists() && legacy.exists()
+        {
             return legacy;
         }
-        return paths.root.join("yaran.log");
+        return paths.root.join(default_name);
     }
     if configured.is_absolute() {
         configured
@@ -861,6 +912,52 @@ pub(crate) fn capture_tracing<R>(f: impl FnOnce() -> R) -> (R, Vec<CapturedEvent
     (result, events)
 }
 
+/// The server's own log file, written by every way of serving and rotated by
+/// `[server]`'s `log_*` settings, apart from `yaran.log`'s.
+pub struct ServerLog(RotatingLog);
+
+impl std::fmt::Debug for ServerLog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerLog")
+            .field("path", &self.0.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ServerLog {
+    /// Append one line, adding its newline.
+    pub fn write_line(&self, line: &str) {
+        let mut text = String::with_capacity(line.len() + 1);
+        text.push_str(line);
+        text.push('\n');
+        self.0.write_line(&text);
+    }
+
+    /// The file lines are written to, with any symlink resolved.
+    pub fn path(&self) -> &Path {
+        &self.0.path
+    }
+}
+
+/// Open the server log named by `config`, creating its folder and the file
+/// owner-only; its settings are read once, here.
+///
+/// # Errors
+///
+/// Fails when the log's folder cannot be created or the file cannot be opened.
+pub fn open_server_log(config: &ServerConfig, paths: &YaranPaths) -> std::io::Result<ServerLog> {
+    let path = resolve_server_log_path(config, paths);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let settings = RotationSettings {
+        max_bytes: config.log_max_bytes,
+        keep: crate::config::effective_log_keep(config.log_keep),
+        compress: config.log_compress,
+    };
+    RotatingLog::open(path, Arc::new(RotationCell::new(settings))).map(ServerLog)
+}
+
 /// Serializes the tests that move the process-wide [`LEVEL`], so a parallel run
 /// cannot read another test's threshold.
 #[cfg(test)]
@@ -875,7 +972,9 @@ static LEVEL_TEST_LOCK: Mutex<()> = Mutex::new(());
 /// assertion window.
 #[cfg(test)]
 pub(crate) fn level_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    LEVEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    LEVEL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Whether the level guard is held right now, for a test that needs to see the
@@ -934,6 +1033,15 @@ mod tests {
         drop(open_log_file(&path).unwrap());
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode & 0o077, 0, "expected owner-only, got {mode:o}");
+
+        // A dangling symlink at the log path makes the open create its target,
+        // which must be private from the first instant, not tightened after.
+        let target = dir.path().join("created-through-the-link.log");
+        let link = dir.path().join("linked.log");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        drop(open_log_file(&link).unwrap());
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "expected 0600, got {mode:o}");
     }
 
     #[test]
@@ -1065,6 +1173,7 @@ mod tests {
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("yaran.lock"),
+            socket_path: root.join("yaran.sock"),
             root,
         }
     }
@@ -1188,11 +1297,21 @@ mod tests {
         use super::*;
         use std::io::Read;
 
-        fn settings(max_bytes: u64, keep: u32, compress: bool) -> RotationSettings {
+        /// Rotation at `max_bytes`, keeping `keep` plain old logs.
+        fn settings(max_bytes: u64, keep: u32) -> RotationSettings {
             RotationSettings {
                 max_bytes,
                 keep,
-                compress,
+                compress: false,
+            }
+        }
+
+        /// Rotation at `max_bytes`, keeping `keep` old logs compressed.
+        fn compressed(max_bytes: u64, keep: u32) -> RotationSettings {
+            RotationSettings {
+                max_bytes,
+                keep,
+                compress: true,
             }
         }
 
@@ -1247,7 +1366,7 @@ mod tests {
         #[test]
         fn a_write_past_the_limit_moves_the_old_log_aside() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(24, 3, false));
+            let log = log_in(dir.path(), settings(24, 3));
 
             log.write_line("first line\n");
             log.write_line("second line\n");
@@ -1264,7 +1383,7 @@ mod tests {
             );
             assert_eq!(
                 log.state.lock().unwrap().size,
-                "third line\n".len() as u64,
+                crate::numeric::usize_to_u64("third line\n".len()),
                 "the counter must restart with the new file"
             );
         }
@@ -1272,7 +1391,7 @@ mod tests {
         #[test]
         fn max_bytes_zero_never_rotates() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(0, 3, true));
+            let log = log_in(dir.path(), compressed(0, 3));
             for n in 0..200 {
                 log.write_line(&format!("line {n}\n"));
             }
@@ -1289,7 +1408,7 @@ mod tests {
         #[test]
         fn five_rotations_with_keep_three_leave_exactly_three_copies() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(12, 3, true));
+            let log = log_in(dir.path(), compressed(12, 3));
             for n in 1..=6 {
                 write_and_settle(&log, &format!("line {n}\n"));
             }
@@ -1317,7 +1436,7 @@ mod tests {
         #[test]
         fn keep_zero_rotates_and_leaves_only_the_live_log() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(12, 0, true));
+            let log = log_in(dir.path(), compressed(12, 0));
             for n in 1..=6 {
                 log.write_line(&format!("line {n}\n"));
             }
@@ -1332,7 +1451,7 @@ mod tests {
         #[test]
         fn a_compressed_copy_decompresses_to_the_original_bytes() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(24, 3, true));
+            let log = log_in(dir.path(), compressed(24, 3));
             log.write_line("first line\n");
             log.write_line("second line\n");
             log.write_line("third line\n");
@@ -1364,7 +1483,7 @@ mod tests {
         #[test]
         fn compression_off_leaves_the_copies_plain() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(12, 3, false));
+            let log = log_in(dir.path(), settings(12, 3));
             for n in 1..=6 {
                 log.write_line(&format!("line {n}\n"));
             }
@@ -1382,7 +1501,7 @@ mod tests {
         fn a_failed_compression_leaves_the_plain_copy_and_the_log_keeps_working() {
             let dir = tempfile::tempdir().unwrap();
             fs::create_dir(dir.path().join("yaran.log.1.gz")).unwrap();
-            let log = log_in(dir.path(), settings(24, 1, true));
+            let log = log_in(dir.path(), compressed(24, 1));
 
             log.write_line("first line\n");
             log.write_line("second line\n");
@@ -1422,7 +1541,7 @@ mod tests {
             // Compression stays off so the reader below sees a set of files
             // nothing is still rewriting, and `keep` is far above the number of
             // rotations so nothing is deleted.
-            let log = Arc::new(log_in(dir.path(), settings(200, 10_000, false)));
+            let log = Arc::new(log_in(dir.path(), settings(200, 10_000)));
 
             let writers = 8;
             let per_writer = 200;
@@ -1479,8 +1598,11 @@ mod tests {
             let existing = "x".repeat(4096);
             fs::write(&path, &existing).unwrap();
 
-            let log = log_in(dir.path(), settings(64, 3, false));
-            assert_eq!(log.state.lock().unwrap().size, existing.len() as u64);
+            let log = log_in(dir.path(), settings(64, 3));
+            assert_eq!(
+                log.state.lock().unwrap().size,
+                crate::numeric::usize_to_u64(existing.len())
+            );
 
             log.write_line("the first line after the upgrade\n");
             assert_eq!(
@@ -1493,7 +1615,7 @@ mod tests {
         #[test]
         fn a_reload_changes_the_limit_at_the_next_write() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(0, 3, false));
+            let log = log_in(dir.path(), settings(0, 3));
             for n in 1..=20 {
                 log.write_line(&format!("line {n}\n"));
             }
@@ -1502,7 +1624,7 @@ mod tests {
                 "nothing may rotate while the limit is 0"
             );
 
-            log.rotation.store(settings(16, 3, false));
+            log.rotation.store(settings(16, 3));
             log.write_line("after the reload\n");
 
             assert_eq!(
@@ -1516,10 +1638,45 @@ mod tests {
         #[test]
         fn every_file_rotation_produces_is_owner_only() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(12, 3, true));
+            let log = log_in(dir.path(), compressed(12, 3));
             for n in 1..=6 {
                 write_and_settle(&log, &format!("line {n}\n"));
             }
+
+            // The server log rotates through the same machinery on its own
+            // `[server]` settings: a 12-byte limit and three copies keep
+            // `server.log` plus exactly three gzipped copies.
+            let server = crate::config::ServerConfig {
+                log_max_bytes: 12,
+                log_keep: 3,
+                ..Default::default()
+            };
+            let paths = YaranPaths {
+                root: dir.path().to_path_buf(),
+                config_path: dir.path().join("config.toml"),
+                sessions_db_path: dir.path().join("sessions.sqlite3"),
+                worktrees_root: dir.path().join("worktrees"),
+                lock_path: dir.path().join("dux.lock"),
+                socket_path: dir.path().join("yaran.sock"),
+            };
+            let server_log = open_server_log(&server, &paths).expect("open the server log");
+            for n in 1..=6 {
+                server_log.write_line(&format!("line {n}\n"));
+                settle(&server_log.0);
+            }
+            let server_files: Vec<String> = names_in(dir.path())
+                .into_iter()
+                .filter(|name| name.starts_with("server.log"))
+                .collect();
+            assert_eq!(
+                server_files,
+                [
+                    "server.log",
+                    "server.log.1.gz",
+                    "server.log.2.gz",
+                    "server.log.3.gz"
+                ]
+            );
 
             for entry in fs::read_dir(dir.path()).unwrap() {
                 let entry = entry.unwrap();
@@ -1555,7 +1712,7 @@ mod tests {
         #[test]
         fn compression_never_touches_a_copy_a_rotation_put_at_its_name() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(0, 3, false));
+            let log = log_in(dir.path(), settings(0, 3));
             let source = dir.path().join("yaran.log.1");
             let target = dir.path().join("yaran.log.1.gz");
             fs::write(&source, b"the copy being compressed\n").unwrap();
@@ -1609,7 +1766,7 @@ mod tests {
         #[test]
         fn a_reopen_failure_stops_rotating_and_keeps_every_copy() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(8, 3, false));
+            let log = log_in(dir.path(), settings(8, 3));
             fs::write(dir.path().join("yaran.log.1"), "older one\n").unwrap();
             fs::write(dir.path().join("yaran.log.2"), "oldest one\n").unwrap();
             log.fail_reopen.store(true, Ordering::Relaxed);
@@ -1649,7 +1806,7 @@ mod tests {
         #[test]
         fn a_nested_write_is_dropped_so_the_panic_hook_cannot_re_enter() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(0, 3, false));
+            let log = log_in(dir.path(), settings(0, 3));
 
             let outer = WriteGuard::acquire().expect("the first write claims the thread");
             log.write_line("a line the panic hook tried to write\n");
@@ -1672,7 +1829,7 @@ mod tests {
         #[test]
         fn the_sweep_cleans_positions_above_keep_across_a_hole() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(8, 3, false));
+            let log = log_in(dir.path(), settings(8, 3));
             for name in [
                 "yaran.log.1",
                 "yaran.log.2",
@@ -1697,13 +1854,27 @@ mod tests {
         #[test]
         fn the_sweep_removes_a_temporary_an_earlier_run_abandoned() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(8, 3, false));
+            let log = log_in(dir.path(), settings(8, 3));
             fs::write(dir.path().join("yaran.log.1.gz.999999.tmp"), "half a gzip").unwrap();
+            // Names that only look like a copy or a temporary are somebody else's.
+            let lookalikes = [
+                "yaran.log.notes.tmp",
+                "yaran.log.1.gz.abc.tmp",
+                "yaran.log.1x",
+                "yaran.log.-1",
+                "yaran.log.2.bz2",
+            ];
+            for name in lookalikes {
+                fs::write(dir.path().join(name), "mine").unwrap();
+            }
 
             log.write_line("line one\n");
             log.write_line("line two\n");
 
-            assert_eq!(names_in(dir.path()), vec!["yaran.log", "yaran.log.1"]);
+            let mut expected = vec!["yaran.log".to_string(), "yaran.log.1".to_string()];
+            expected.extend(lookalikes.map(String::from));
+            expected.sort();
+            assert_eq!(names_in(dir.path()), expected);
         }
 
         /// Rotation reads the directory once instead of probing every position
@@ -1719,7 +1890,7 @@ mod tests {
         fn a_large_keep_does_not_slow_rotation_down() {
             fn rotate_a_hundred_times(keep: u32) -> std::time::Duration {
                 let dir = tempfile::tempdir().unwrap();
-                let log = log_in(dir.path(), settings(8, keep, false));
+                let log = log_in(dir.path(), settings(8, keep));
                 let started = std::time::Instant::now();
                 for n in 1..=100 {
                     log.write_line(&format!("line {n}\n"));
@@ -1755,7 +1926,7 @@ mod tests {
         #[test]
         fn a_line_larger_than_the_limit_is_written_whole() {
             let dir = tempfile::tempdir().unwrap();
-            let log = log_in(dir.path(), settings(10, 3, false));
+            let log = log_in(dir.path(), settings(10, 3));
             let huge = format!("{}\n", "x".repeat(200));
 
             log.write_line(&huge);
@@ -1788,11 +1959,8 @@ mod tests {
             let link = dir.path().join("yaran.log");
             std::os::unix::fs::symlink(&target, &link).unwrap();
 
-            let log = RotatingLog::open(
-                link.clone(),
-                Arc::new(RotationCell::new(settings(8, 3, false))),
-            )
-            .unwrap();
+            let log = RotatingLog::open(link.clone(), Arc::new(RotationCell::new(settings(8, 3))))
+                .unwrap();
             log.write_line("line one\n");
             log.write_line("line two\n");
 
@@ -1806,6 +1974,23 @@ mod tests {
                 "the copy must land beside the target"
             );
             assert_eq!(fs::read_to_string(&target).unwrap(), "line two\n");
+            // A reader with no serve to ask names the same file the writer did.
+            let paths = crate::config::YaranPaths {
+                root: dir.path().to_path_buf(),
+                config_path: dir.path().join("config.toml"),
+                sessions_db_path: dir.path().join("sessions.sqlite3"),
+                worktrees_root: dir.path().join("worktrees"),
+                lock_path: dir.path().join("dux.lock"),
+                socket_path: dir.path().join("yaran.sock"),
+            };
+            let server = crate::config::ServerConfig {
+                log_path: link.to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            assert_eq!(
+                server_log_file(&server, &paths),
+                fs::canonicalize(&target).unwrap()
+            );
         }
 
         /// A panic in one writer must not stop the log: the state it left behind
@@ -1813,7 +1998,7 @@ mod tests {
         #[test]
         fn a_poisoned_lock_still_writes() {
             let dir = tempfile::tempdir().unwrap();
-            let log = Arc::new(log_in(dir.path(), settings(0, 3, false)));
+            let log = Arc::new(log_in(dir.path(), settings(0, 3)));
             let poisoner = {
                 let log = Arc::clone(&log);
                 std::thread::spawn(move || {

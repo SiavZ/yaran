@@ -338,6 +338,7 @@ fn every_loadable_theme_paints_the_qr_black_on_white() {
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
         lock_path: root.join("yaran.lock"),
+        socket_path: root.join("yaran.sock"),
         root,
     };
     for listing in crate::theme::discover_available(&paths) {

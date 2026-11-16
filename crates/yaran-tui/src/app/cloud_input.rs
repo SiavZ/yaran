@@ -42,8 +42,12 @@ impl App {
         let PromptState::Cloud(prompt) = &self.prompt else {
             return None;
         };
-        let field = matches!(prompt, CloudPrompt::Login(_));
-        let action = if binding_lookup_is_suppressed(key, field) {
+        let field = if matches!(prompt, CloudPrompt::Login(_)) {
+            super::modal::TextFieldFocus::Field
+        } else {
+            super::modal::TextFieldFocus::Elsewhere
+        };
+        let action = if binding_lookup_is_suppressed(key, field, self.extended_keys) {
             None
         } else {
             self.bindings.lookup(&key, BindingScope::Dialog)

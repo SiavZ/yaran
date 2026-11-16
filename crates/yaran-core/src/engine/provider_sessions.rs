@@ -483,7 +483,7 @@ impl Engine {
             let tab_id = session.slot_tab_id().to_owned();
             let request = self.build_agent_launch_request(
                 session,
-                true,
+                crate::model::ConversationStart::Resume,
                 pty_size,
                 AgentLaunchKind::StartupAutoReopen,
             );
@@ -625,7 +625,7 @@ mod tests {
 
         let request = engine.build_agent_launch_request(
             session.clone(),
-            true,
+            crate::model::ConversationStart::Resume,
             (24, 80),
             AgentLaunchKind::StartupAutoReopen,
         );
@@ -639,7 +639,7 @@ mod tests {
             .unwrap();
         let request = engine.build_agent_launch_request(
             session,
-            true,
+            crate::model::ConversationStart::Resume,
             (24, 80),
             AgentLaunchKind::StartupAutoReopen,
         );
@@ -724,7 +724,10 @@ mod tests {
             .set_provider_session_id("s1", "jcode", "session_cactus_1_ab")
             .unwrap();
 
-        match engine.reconnect_plan("s1", false, (24, 80)).expect("plan") {
+        match engine
+            .reconnect_plan("s1", crate::engine::ReconnectMode::Normal, (24, 80))
+            .expect("plan")
+        {
             crate::engine::ReconnectPlan::Launch {
                 request, resume, ..
             } => {
@@ -739,7 +742,10 @@ mod tests {
         }
 
         // A forced reconnect is a request for a fresh agent, id or no id.
-        match engine.reconnect_plan("s1", true, (24, 80)).expect("plan") {
+        match engine
+            .reconnect_plan("s1", crate::engine::ReconnectMode::Force, (24, 80))
+            .expect("plan")
+        {
             crate::engine::ReconnectPlan::Launch {
                 request, resume, ..
             } => {
@@ -904,7 +910,7 @@ mod tests {
 
         let request = engine.build_agent_launch_request(
             session.clone(),
-            true,
+            crate::model::ConversationStart::Resume,
             (24, 80),
             AgentLaunchKind::Reconnect {
                 status_message: Default::default(),
@@ -942,7 +948,7 @@ mod tests {
         // The relaunch the sweep dispatched is a fresh one.
         let fallback = engine.build_agent_launch_request(
             session,
-            false,
+            crate::model::ConversationStart::Fresh,
             (24, 80),
             AgentLaunchKind::ResumeFallback {
                 status_message: Default::default(),
@@ -964,7 +970,7 @@ mod tests {
         engine.sessions.push(session.clone());
         let request = engine.build_agent_launch_request(
             session,
-            true,
+            crate::model::ConversationStart::Resume,
             (24, 80),
             AgentLaunchKind::StartupAutoReopen,
         );
@@ -1023,14 +1029,18 @@ mod tests {
 
         let request = engine.build_agent_launch_request(
             session,
-            false,
+            crate::model::ConversationStart::Fresh,
             (24, 80),
             AgentLaunchKind::Reconnect {
                 status_message: Default::default(),
             },
         );
         let (tx, rx) = std::sync::mpsc::channel();
-        crate::agent_job::run_agent_launch_job(request, tx);
+        crate::agent_job::run_agent_launch_job(
+            request,
+            &tx,
+            &crate::process_sessions::SpawnGate::default(),
+        );
         let client = loop {
             match rx.recv_timeout(std::time::Duration::from_secs(10)) {
                 Ok(WorkerEvent::AgentLaunchReady(data)) => break data.client,

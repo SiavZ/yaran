@@ -55,16 +55,41 @@ Then open `http://127.0.0.1:8790` (loopback only; `YARAN_PORT` overrides).
 
 Two loopback ports are published: the web preview on `YARAN_PORT` and the
 concurrent-TUI journey's background server on `YARAN_TUI_PORT`, which defaults to
-`YARAN_PORT + 208` (so 8790 pairs with 8998). Moving one moves both, which is what
-lets a second stack come up beside a running one:
+`YARAN_PORT + 208` (so 8790 pairs with 8998). Moving one moves both:
 
 ```bash
 YARAN_PORT=9000 ./up.sh         # web 9000, TUI-journey 9208
 ```
 
-`shot.sh` reads `YARAN_PORT` independently, so export it (or pass it to every
-script in the session) when you move the web port, or the screenshots go to the
-other stack.
+### A second stack beside a running one
+
+Ports are only part of it. A second stack also needs a compose project of its
+own (`COMPOSE_PROJECT_NAME`), so its volumes and network are its own, and a
+container name of its own, because a container name is global to Docker.
+`up.sh` derives the name from the project (`yaran-preview-<project>`), or takes
+`YARAN_PREVIEW_CONTAINER` if you set it; the default project (`preview-env`) keeps
+the container `yaran-preview`, as it always was. Name the second stack with
+EXPORTED environment variables, not compose's `-p` flag (the scripts take no
+such flag, so each one would fall back to the default stack) and not a `.env`
+file here (it would rename the default stack too, for everyone using this
+checkout). Export the project and the port for the whole session, so every
+script, compose command and teardown aims at the same stack:
+
+```bash
+export COMPOSE_PROJECT_NAME=preview-b YARAN_PORT=9000
+./up.sh                       # container yaran-preview-preview-b, web 9000, TUI 9208
+./shot.sh / home.png          # this stack, not the default one
+(cd screens && ./reshoot.sh no-password-banner)
+docker compose down -v        # this stack only: the project scopes it
+```
+
+Every script here reads `YARAN_PORT` and `COMPOSE_PROJECT_NAME` from the
+environment, so a session that sets them for one script and not the next ends up
+screenshotting, seeding or tearing down the other stack. The `yaran-preview` image
+is shared between stacks on purpose; do not remove it while another stack is up.
+A compose `up` you run by hand under a project of your own also needs
+`YARAN_PREVIEW_CONTAINER` set, since the derivation lives in `up.sh`; `exec`,
+`logs` and `down` find the container by its project and need only that.
 
 ### Iterate on code
 
@@ -180,6 +205,12 @@ air) and multiplied by the cell metrics measured off the live terminal, so a
 crop edge always lands on a cell boundary rather than slicing a border column
 down the middle. Crops are flush to their cells and never exceed 1.5:1.
 
+`--crop content` frames what a command printed into a plain terminal instead:
+from the top-left corner down to the last row with anything in it and across to
+just past the widest such row, keeping the capture's frame around it. It is for
+a shell transcript or a server console that fills a few rows of a screen that
+must be at least 24 tall.
+
 Each run writes four artifacts beside the requested PNG: the image, styled ANSI
 cells, a plain-text grid, and JSON capture details. The example journey does not use
 the network. Their repositories, commit dates, project names, provider output,
@@ -196,7 +227,21 @@ copy it to a throwaway `*.tmp.js` file and use the supplied `createAgent`,
 `config` export for a setting no dialog can reach and the optional `expectText`
 export, which refuses the capture unless those strings are on the screen it
 captured (a throwaway may leave it off and is told on stderr that nothing
-checked what it captured). Throwaway scripts are ignored
+checked what it captured). Two more optional exports change what runs:
+`launch = "server"` starts `yaran server` in the captured terminal instead of the
+terminal UI (and skips adding the demo projects, which only the TUI needs),
+`launch = "shell"` starts a plain `bash` with a `$ ` prompt for a journey that
+types a yaran command, with `HOME=/home/you` and the seeded state at that home's
+default config directory so what yaran prints names a path a reader recognizes, and
+`tailscale = { ip, status, serve }` puts a stand-in `tailscale` CLI on yaran's PATH
+that answers `ip`, `status --json --peers=false` and `serve status --json` with
+those values, and adds `ip` to the container's loopback so the Tailscale listener
+really binds (the capture service is granted `NET_ADMIN` for exactly this, inside
+its own disposable network namespace). Use an obviously fake machine and tailnet,
+never a real one. `github = true` keeps GitHub integration on and puts the
+screenshot fixtures' stand-in `gh` on yaran's PATH, so a journey can show pull
+requests; the journey points a repository's `origin` at a GitHub URL itself,
+once its agents exist. Throwaway scripts are ignored
 by Git, matching the web screenshot workflow; the journeys behind the docs
 screenshots are not throwaways and live under `screens/scenes`.
 
@@ -234,6 +279,7 @@ pieces an ordinary preview must not have, and they are installed only under
 | --- | --- |
 | Worktree workspace mode | The scenes create several agents per project and write into their isolated worktrees, regardless of the ordinary first-run default. |
 | `screens/fixtures/gh` | A stand-in `gh` answering only yaran's auth probe and its bounded `pr view`, so the pull-request chip, banner and from-PR dialog are shootable without a GitHub login. |
+| `screens/fixtures/gh` | A stand-in `gh` answering only yaran's auth probe, its bounded `pr view` per number and the pull-request sync's GraphQL questions, all from one canned table, so the pull-request chip, banner, list and dialogs are shootable without a GitHub login. Anything else fails loudly. |
 | `screens/fixtures/notes-agent` | A transcript provider installed as `claude`, so the folder agent's pane shows a scripted session rather than a streaming fixture. |
 | An `opencode` alias | yaran refuses a tab for a CLI that is not on PATH, and the tab strip shows one tab per provider, so `opencode` points at the fake provider for the length of the run. |
 
@@ -320,8 +366,10 @@ host (`BASE_IMAGE=<image> ./up.sh`) or use the in-container build.
 
 | File | Role |
 | --- | --- |
-| `Dockerfile` | Runtime image (glibc/git/node/tmux + claude/codex CLIs). |
-| `entrypoint.sh` | Seeds config + demo repos, then serves the web UI. |
+| `Dockerfile` | Runtime image (glibc/git/node/tmux + claude/codex CLIs). The container journeys build it with `AGENT_CLIS=0` and `JOURNEY_TOOLS=1`: no agent CLIs, plus socat, curl and Chromium. |
+| `entrypoint.sh` | Seeds config + demo repos, then serves the web UI. Its opt-in switches (`YARAN_BIND`, `YARAN_FAKE_TAILSCALE`, `YARAN_RELAYS`, `YARAN_LAUNCH`, `YARAN_RESTART_LOOP`, `YARAN_TAIL_LOG`, hooks in `/journey/seed.d`) are for the container journeys in `crates/yaran-journeys`; a preview sets none of them. |
+| `tailscale-stand-in.sh` | A stand-in `tailscale` CLI answering from files under `/data/tailscale`, installed only under `YARAN_FAKE_TAILSCALE=1`. |
+| `journey-images.env` | The base, nginx and Caddy images the container journeys and their CI workflow use, pinned by digest. |
 | `fake-agent.sh` | Fake provider with live preview output and deterministic capture fixtures. |
 | `compose.yml` | Defines the isolated web preview and opt-in TUI capture service. |
 | `up.sh` | Host: build binary + start/restart the container. |

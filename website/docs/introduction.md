@@ -7,7 +7,7 @@ order: 1
 
 `yaran` runs multiple AI coding agents in parallel, usually one git worktree each, and
 straight in a folder you already have when you want that instead. It spawns the real
-CLI for each agent (Claude Code, Codex, Copilot, OpenCode, or anything else you can run
+CLI for each agent (Claude Code, Codex, Copilot, Grok, OpenCode, or anything else you can run
 in a terminal) inside an embedded pseudo-terminal. No protocol layer, no adapters, no
 JSON-RPC. Just the tools you already use, side by side, each in its own branch.
 
@@ -53,7 +53,7 @@ yaran has three nouns:
   **standalone agent** is the exception you ask for by name: it runs in a folder you
   already have, with no branch and no worktree of yaran's, and yaran never creates, moves
   or removes that folder. See [Creating agents](/docs/creating-agents).
-- **Providers** are the CLIs that power agents. Claude, Codex, OpenCode, and Copilot
+- **Providers** are the CLIs that power agents. Claude, Codex, OpenCode, Copilot, and Grok
   ship configured out of the box, and you can wire up any other command yourself.
 
 The flow is: add a project, choose its default provider, and spin up an agent. yaran
@@ -65,12 +65,19 @@ walk away and reconnect later.
 Both front ends lay the workspace out the same way:
 
 - The **left pane** lists your agents in a single flat list, most-active first, with a
-  search filter and a project chooser.
+  search filter and a project chooser. Your project and standalone terminals are rows of
+  the same list, sorted with the agents.
 - The **center pane** shows the focused agent's live terminal, and it is a real typing
   surface on both front ends: focus it and your keystrokes go to the agent, while yaran's
-  own shortcuts keep working around them. The terminal UI adds a fullscreen toggle that
-  passes input through verbatim, and its center pane doubles as the diff view; in the
-  browser a diff opens in the file-editor overlay instead.
+  own shortcuts keep working around them.
+  - The terminal UI adds a fullscreen toggle that passes input straight through, and its
+    center pane doubles as the diff view.
+  - An agent's companion terminals dock under it in the same pane, on both front ends,
+    and the pane shows the agent alone, the agent and its terminals split, or the
+    terminals alone. In the split the part you are not typing in is drawn grey and faded.
+    In the terminal UI a layout key cycles the three and the focus keys visit the dock as
+    a pane of its own; in the browser the dock strip carries the layout buttons.
+  - In the browser a diff opens in the file-editor overlay instead.
 - The **right pane** shows the files an agent has changed, with diffs.
 
 This is the terminal UI, with a prompt being typed straight into the center pane while the
@@ -84,17 +91,23 @@ the name of the focused pane.
 > [!IMPORTANT]
 > In the terminal UI's windowed layout, not every key reaches the agent. yaran keeps its
 > own chords for itself: pane navigation, the command palette, tab switching, and the
-> rest of its bindings fire in yaran instead of typing into the agent. Fullscreen forwards
-> everything verbatim, so it is the escape hatch when the agent needs a key yaran normally
-> keeps.
+> rest of its bindings fire in yaran instead of typing into the agent. Fullscreen sends
+> everything straight to the agent, so it is the escape hatch when the agent needs a key
+> yaran normally keeps.
 
 > [!TIP]
-> Every yaran binding is configurable under `[keys]`, so you can free a specific chord for
-> the agent while windowed; see [Configuration](/docs/configuration#keybindings). Tab has
-> its own switch, `[ui] tab_reaches_agent`, because it moves between panes rather than
-> typing: turn it on and Tab and Shift-Tab go to the agent, with `Ctrl-o` and `Ctrl-y`
-> moving between panes instead. The `input-debugging` palette command shows exactly what
-> yaran receives for each keypress, which is what you want open while crafting a binding.
+> Three ways to get a key to the agent while windowed:
+>
+> - **Free the chord.** Every yaran binding is configurable under `[keys]`; see
+>   [Configuration](/docs/configuration#keybindings).
+> - **Send Tab to the agent.** Tab has its own switch, `[ui] tab_reaches_agent`, because it
+>   moves between panes rather than typing. Turn it on and Tab and Shift-Tab go to the
+>   agent, with `Ctrl-o` and `Ctrl-y` moving between panes instead.
+> - **See what yaran receives.** The `input-debugging` palette command shows exactly what
+>   yaran gets for each keypress: the key it reads and the bytes your terminal sent for it.
+>   Two chords that show the same key and the same bytes are two yaran cannot tell apart,
+>   and a key yaran cannot read at all says so. It is what you want open while crafting a
+>   binding.
 
 In the terminal UI, focus-next and focus-previous keys move between panes, and every
 pane has its own local key combinations; the in-app help overlay is the authoritative
@@ -112,22 +125,41 @@ would normally name the project.
 
 > [!IMPORTANT]
 > The agent's process, if it was still running, keeps running in a directory that no longer
-> exists. Nothing it does from then on reaches your files. The `recreate-working-copy`
-> command checks the agent's branch out again at the same path, which is what lets an agent
-> whose CLI keeps its history per directory resume the same conversation. The code changes
-> that were in the old directory are gone; this puts the directory back, not its contents.
-> The browser has the same action in the agent's menu.
+> exists. Nothing it does from then on reaches your files.
 >
-> You can run it while the agent is running. A running Claude tab never notices the folder
-> going and carries on in the recreated one with its conversation intact; every other CLI
-> is the cautious case, so stop the tab and start the agent again to continue there. The
-> confirmation says which of the two you are getting.
+> The `recreate-working-copy` command checks the agent's branch out again at the same path,
+> which is what lets an agent whose CLI keeps its history per directory resume the same
+> conversation. The browser has the same action in the agent's menu. The code changes that
+> were in the old directory are gone: this puts the directory back, not its contents.
 
-If the branch is gone locally but still on the remote, yaran creates it again from
-`origin/<branch>`, holding everything that had been pushed. If it is gone everywhere, yaran
-creates it again from the project's source branch, and the commits that branch held are not
-coming back. The confirmation says all three, and the message afterwards names the one that
-actually happened.
+### Recreating it while the agent is running
+
+You can run `recreate-working-copy` under a running agent. What happens to each running tab
+depends on its CLI:
+
+- **Claude and Grok** never notice the folder going and carry on in the recreated one with
+  their conversation intact (Grok is assumed to behave like Claude, not measured separately).
+- **Codex, OpenCode and any other CLI that can pick its conversation back up** cannot follow
+  the folder. The confirmation offers to restart those tabs, *ticked by default*: once the
+  working copy is back, yaran shuts them down politely and starts each again so it continues
+  its conversation there.
+- **A second tab of the same CLI** starts fresh, because only one tab per CLI gets its
+  conversation back. The message afterwards says so.
+- **A CLI with no way to pick a conversation back up**, such as Copilot, is left running,
+  because restarting it would lose the conversation. Stop and start it yourself if it cannot
+  follow the folder.
+
+### Which branch comes back
+
+The confirmation spells out all three cases, and the message afterwards names the one that
+actually happened:
+
+- **The branch still exists locally.** It is checked out again and its commits are exactly
+  where the agent left them.
+- **It is gone locally but still on the remote.** yaran creates it again from
+  `origin/<branch>`, holding everything that had been pushed.
+- **It is gone everywhere.** yaran creates it again from the project's source branch, and the
+  commits that branch held are *not* coming back.
 
 ### Very large diffs in the terminal UI
 
@@ -138,15 +170,18 @@ one on disk.
 - Over **1 MiB, or 20,000 lines**, the diff is still drawn, without syntax highlighting.
   Added and removed lines keep their green and red; only the token colors inside them go.
 - Over **16 MiB, or 200,000 lines**, yaran does not diff the file itself. It asks git for the
-  diff instead and shows the first **4,000 lines** of it, with the added and removed colors
-  and no syntax highlighting. When there is more than it shows, a line above it says how
-  many lines the whole diff has. A binary file is unaffected: past every ceiling it keeps
-  the same summary it always had, since there is no text diff to cut.
+  diff instead and shows the first **4,000 lines** of it (or the first 2 MiB, whichever
+  comes first), with the added and removed colors and no syntax highlighting. When there is
+  more than it shows, a line above it says how many lines the whole diff has. If git cannot
+  diff the file either, you get a message saying so.
+
+A binary file is unaffected: past every ceiling it keeps the same summary it always had,
+since there is no text diff to cut.
 
 > [!IMPORTANT]
-> Comparing versions that large in yaran would take minutes, so it does not try. What you see
-> past that ceiling is the start of the change, not all of it. Open the file in your editor,
-> or run git diff yourself and narrow the comparison to the part you care about.
+> Past that ceiling, what you see is the start of the change, not all of it. Open the file
+> in your editor, or run git diff yourself and narrow the comparison to the part you care
+> about.
 
 The browser's diffs are the editor's, and they have a limit of their own; see
 [Git without leaving the browser](/docs/web-git).
@@ -166,9 +201,10 @@ you write, and `worktrees/`, which holds the checkouts your agents work in.
 > That directory is **yours alone**. yaran makes it owner-only on every startup, and sets
 > owner-only permissions on the files it manages. Your config and session database can
 > hold environment variables you set for a project, which is exactly where an API token
-> tends to live, so no other user on the machine gets to read them. If you are upgrading
-> from a world-readable directory, the next start tightens it. That pass only ever
-> removes group and world access, never your own.
+> tends to live, so no other user on the machine gets to read them.
+>
+> If you are upgrading from a world-readable directory, the next start tightens it. That
+> pass only ever removes group and world access, never your own.
 
 > [!WARNING]
 > Making `config.toml` read-only does **not** stop yaran saving over it. A save writes a
@@ -177,15 +213,20 @@ you write, and `worktrees/`, which holds the checkouts your agents work in.
 > owner-writable. If you need a config yaran cannot touch, keep it somewhere yaran does not
 > write to.
 
-yaran never follows a symlink when setting a mode, so a `config.toml` that links into a
-dotfiles repository leaves that repository's file exactly as it is. A mode yaran cannot
-set is a warning, not an error, so a directory on a volume without `chmod` still works
-and yaran still starts.
+A `config.toml` that is a symlink (into a dotfiles repository, say) **stays a symlink**:
+
+- Saves write through it to the file it points at, owner-only like any save.
+- If that file is missing, yaran will not start, and a reload keeps the running settings,
+  password included. yaran never creates the file or replaces the link.
+- The startup pass that tightens modes never follows a symlink, so it leaves the linked
+  file's mode alone.
+- A mode yaran cannot set is a warning, not an error, so a directory on a volume without
+  `chmod` still works and yaran still starts.
 
 ## Where to go next
 
-- [Server mode overview](/docs/server-mode): the web UI, how to start it, and the
-  no-login trust model to understand before you expose it.
+- [Server mode overview](/docs/server-mode): the web UI, how to start it, and who can
+  get in, with or without the optional password, before you expose it.
 - [The workspace in the browser](/docs/web-workspace): the browser layout, its
   terminals, and the phone experience.
 - [Reaching yaran over Tailscale](/docs/tailscale): open your workspace on your phone,

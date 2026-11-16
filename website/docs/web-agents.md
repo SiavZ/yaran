@@ -20,35 +20,120 @@ the concepts behind projects, agents, and providers are in
 Repositories carry a small "git" badge. Pick one, give it an optional name, and yaran may
 show a pre-flight step first:
 
-- If the repo is checked out to something other than its default branch, it offers to check
-  that branch out before adding. Leave the box ticked and new agents branch from the
-  default branch; untick it and your folder stays where it is, and new agents branch from
-  the branch it is on. The dialog names the branch either way.
-- If the repo has no commits yet (a fresh `git init`), it offers to make the initial commit
-  for you. If git on the server cannot work out an identity for that commit, yaran fills in
+- **Not on its default branch.** yaran offers to check the default branch out before adding.
+  Leave the box ticked and new agents branch from the default branch; untick it and your
+  folder stays where it is, and new agents branch from the branch it is on. The dialog names
+  the branch either way.
+- **No commits yet** (a fresh `git init`). yaran offers to make the initial commit for you. If
+  git on the server cannot work out an identity for that commit, yaran fills in
   `yaran@localhost` as the address so the add still succeeds; see
   [the workspace page](/docs/web-workspace) for what it keeps and what it fills in.
+- **Not a repository at all.** yaran offers to initialize one, as described next.
+- **Inside another repository.** yaran refuses and names the repository's root: add that
+  repository instead.
 
-The confirm button's label adapts to whichever applies. A project's `⋯` menu carries
-project settings, project info, and remove project, alongside the agent-creation actions
-below.
+The confirm button's label adapts to whichever applies.
+
+A project's `⋯` menu carries everything you can do with it:
+
+- **Start an agent**, plain or from a pull request.
+- **Worktrees and terminals:** manage its worktrees, open a terminal at its root.
+- **Branches:** pull it, check out its default branch, change its base branch.
+- **Info and settings:** see its info, change its settings, read the startup-command logs of
+  all its agents.
+- **Leave:** delete or remove it.
+
+Every project, including one with no agents yet, is in **Projects…** in the app menu; see
+[the workspace page](/docs/web-workspace#managing-projects).
+
+### Starting from an empty folder
+
+**Initialize a repository…**, next to **Add project…** in the same menus, is for a folder
+that is not a git repository yet. The dialog says what it will do: pick an existing folder
+or create a new one with the new-folder control, then choose **Use this folder**.
+
+yaran then:
+
+- runs `git init` in it;
+- seeds a starter `.gitignore` covering the kinds of project it recognises in the folder (the
+  dialog lists them, and leaves that out when none apply);
+- makes an *empty* initial commit.
+
+Your existing files are left alone and stay untracked, so nothing is committed on your
+behalf. Picking a plain folder in **Add project…** offers the same step.
+
+### Starting from a remote instead
+
+**Clone a repository…**, next to **Add project…** in the same menus, takes a git address
+(or a short `owner/repo`, or a GitHub page pasted from your browser) rather than a folder. It asks for three things:
+
+- the address;
+- the destination folder (filled in from the address until you edit it);
+- the first agent's name, with the same random-name box as **New agent**.
+
+Press **Clone** and the dialog closes. Progress rides a toast, and the new agent is selected
+when it shows up.
+
+If yaran can tell straight away that something is wrong, the dialog stays open with the reason
+so you can fix it without retyping:
+
+- no address;
+- an agent name with characters a branch cannot hold;
+- a destination that is not a full path, or whose parent folder does not exist;
+- a folder that is already a project.
+
+Everything else, including what each failure leaves on disk, is in
+[Creating agents](/docs/creating-agents#cloning-a-repository).
 
 ## Creating an agent
 
 Two doors, differing in what you start from.
 
-**The launcher** sits at the bottom of the sidebar (and on the mobile hub): one filled
-button and one `⋯`. The button is a single click to a plain new agent, reading **Add
-project** instead while you have none. The `⋯` groups everything else you can create from
-nothing, under **Agents** (from a pull request, from an existing worktree, or standalone in
-a folder you already have), **Terminals** (a standalone shell) and **Projects**. Use this
-door when you have not picked a project yet. The cog menu's **New** submenu offers the same
-creation actions, including the reference-first PR flow. The Agents header above the list
-carries a **+** too.
+**The launcher** is the split button at the bottom of the sidebar (and along the bottom
+of the mobile hub). Its big half, **New agent…**, opens the project picker described
+below. The small **▾** beside it opens a menu of every other way to start, each entry
+with a sentence saying what it does:
+
+- **Agents:** an agent from a pull request, one from an existing worktree, or a
+  standalone agent in a folder you already have.
+- **Terminals:** a terminal in an agent's copy of the code, or a standalone one in your
+  home folder (that one opens right away).
+- **Projects:** add one that is already on the server, clone one, or initialize one.
+
+![The launcher at the bottom of the sidebar with its menu open above it: Agents, Terminals and Projects groups, each entry an icon, a title and a sentence saying what it does.](/screens/launcher-menu.png)
+
+On a phone the menu opens as a sheet from the bottom of the screen with the same list.
+
+![The same menu on a phone, as a sheet over the agents list: all three groups in full, from New agent from PR down to Initialize a repository.](/screens/phone-new-sheet.png)
+
+> [!TIP]
+> Use the launcher when you have not picked a project yet. It is the only place the
+> reference-first flow lives.
+
+With no projects yet, the menu puts **Projects** first and says so: add one, then start
+agents on it. The entries that need a project stay in view but greyed out, while the
+standalone agent and the standalone terminal still work.
+
+With the sidebar collapsed the launcher is a bare **+**, and it opens **Start something
+new**: the same choices, **New agent** included, as one dialog.
+
+![The Start something new dialog: Agents, Terminals and Projects groups, each row an icon, a title and a sentence saying what it makes.](/screens/new-dialog.png)
+
+A plain new agent starts by asking which project it belongs to. If the answer is "none",
+the bottom of that project list has two ways out: **Add a new project…**, and **Add
+standalone agent…**, which swaps the list for the folder picker a
+[standalone agent](/docs/creating-agents#running-an-agent-in-a-folder-you-already-have)
+starts from.
+
+![The New agent project picker: a search field over the projects, each with its agent count, and Add a new project and Add standalone agent side by side at the bottom.](/screens/new-agent-picker.png)
+
+**New agent from existing worktree…**, also in the launcher's menu, picks a project and then
+opens that project's worktree manager, described below, so you can bring an orphaned worktree
+back as an agent.
 
 ### Starting from a pull request, with no project
 
-Pick **New agent from PR…** from that `⋯` segment and the dialog opens with the reference
+Pick **New agent from PR…** in the launcher's menu and its own dialog opens with the reference
 field first. **No project is chosen and none is asked for.** Paste a PR link (or
 `owner/repo#123`, or a bare `owner/repo`) and yaran compares the repository it names against
 every project you have:
@@ -58,12 +143,26 @@ every project you have:
 - **One project is a checkout of that repository** and yaran goes straight on to resolve the
   pull request.
 - **Two or more are** and yaran shows you just those and asks which.
-- **None is** and yaran names the repository it could not place, then offers the project
-  picker.
+- **None is**, and the reference names a repository and a pull request number on a host
+  `gh` is signed in to. yaran looks the pull request up and shows it, with its title and
+  branch, and offers to clone the repository, add it as a project and start the agent on
+  the pull request in one go.
+  - If the folder it would clone into already holds a checkout of that repository, it offers
+    to add that folder as a project instead, with no second download.
+  - The folder and the agent name are editable, and **Choose an existing project** keeps the
+    old path.
+  - When the agent would need a review copy, the offer says so, with the same warning and
+    unticked **Create a review copy** box as in a project, and asks before cloning or adding.
+  - A reference without a number, or one `gh` cannot look up, gets the project picker with
+    the repository named.
 
 > [!IMPORTANT]
-> **yaran will not clone a repository it does not have.** Point it at a checkout that already
-> exists on the server, or clone one yourself first.
+> **The clone is the same one as Clone a repository…** (see
+> [Starting from a remote instead](#starting-from-a-remote-instead)). It uses the git
+> protocol `gh` is set to for that host and never prompts for a password.
+>
+> Over SSH, connect to the host once in a terminal first (`ssh -T git@<host>`), or the clone
+> cannot trust it.
 
 A number on its own (`#123` or `123`) is the one form this door cannot take, since it does
 not say which repository it belongs to. yaran refuses it and points you at "choose an existing
@@ -104,95 +203,154 @@ deleted agent left behind.
 
 ![The Worktrees dialog listing every worktree yaran manages for a project, with the agent holding each one.](/screens/worktree-manager-dialog.png)
 
-Each unused worktree carries a `⋯` menu with **Delete worktree…**, which removes the
-directory from disk after a confirmation naming the branch and the full path. That
-confirmation carries an **"Also delete the branch"** checkbox, ticked by default, because a
-branch left behind makes creating an agent under that name later fail with "branch already
-exists". Untick it and yaran removes the working directory only. A worktree that is not on a
-branch has no branch to offer, so the checkbox does not appear. If git refuses the branch
-deletion (it is checked out somewhere else, say), the worktree still goes and yaran tells you
-the branch survived and quotes git's reason.
+Each row is in one of these states:
 
-A worktree that already has an agent names that agent and offers no delete. Delete the agent
-instead.
+- **Unused.** It carries a `⋯` menu with **Delete worktree…**.
+- **Has an agent.** The row names that agent and offers no delete. Delete the agent instead.
+- **Being removed.** A worktree whose agent you just deleted is listed here until its removal
+  finishes, with no delete of its own: it is already going.
+- **In use.** Something is still using it but no agent is on it, and the row says what: an
+  agent being created there, a terminal open in it, the CLI of an agent you just deleted with
+  its worktree kept (still stopping), or a standalone agent whose folder is the worktree or
+  anywhere inside it. It cannot be deleted from the manager until that has gone.
+- **Left over after a delete.** A folder git let go of when its worktree was deleted, but
+  that yaran could not delete because something kept writing into it. The row names the
+  branches yaran kept because of it. Its `⋯` menu has **Copy path** and **Delete folder…**
+  (absent while something is using the folder). See
+  [When something keeps writing into the worktree](#when-something-keeps-writing-into-the-worktree).
+
+**Delete worktree…** removes the directory from disk after a confirmation naming the branch
+and the full path. That confirmation carries an **"Also delete the branch"** checkbox, ticked
+by default, because a branch left behind makes creating an agent under that name later fail
+with "branch already exists".
+
+- Untick it and yaran removes the working directory only.
+- A worktree that is not on a branch has no branch to offer, so the checkbox does not appear.
+- If git refuses the branch deletion (it is checked out somewhere else, say), the worktree
+  still goes and yaran tells you the branch survived and quotes git's reason.
+
+The manager checks again at the moment you confirm, and a few rules keep it safe:
+
+- A worktree an agent took in the meantime, or one an agent is being created on, is refused
+  rather than removed.
+- A removal that finds work still running in the worktree waits for it the same way an agent
+  delete does.
+- A standalone agent inside a worktree keeps that worktree for as long as the agent exists,
+  because yaran never removes a standalone agent's folder. Delete that agent, or move its folder
+  out, first. The same holds when you delete the worktree's own agent with the worktree box
+  ticked: the worktree is kept and yaran names the standalone agent.
+- Once a removal of a folder has begun, nothing new starts in it or in any folder inside it:
+  a new agent, a standalone agent, a relaunch, a terminal or a project added there is refused
+  and says why.
+- A worktree that holds a yaran project's repository is never removed.
 
 > [!TIP]
-> This is where you remove the branch of a worktree that has no agent. A worktree that does
-> have one is not listed as removable, and its agent's own delete dialog is the place: it
-> offers the same branch box. Once a worktree is gone neither surface can reach its branch,
-> and `git branch -D` is the way.
+> This is where you remove the branch of a worktree that has no agent. For a worktree that
+> does have one, use its agent's own delete dialog; see
+> [Kill versus delete](#kill-versus-delete). Once a worktree is gone neither surface can reach
+> its branch, and `git branch -D` is the way.
 
 The terminal UI has the same manager, as the `manage-worktrees` palette command, and both
 drive the same rules.
 
 ## Managing an agent
 
-An agent's `⋯` menu is where the rest lives: rename it (a display title, the branch keeps
-its own name), change its provider, view its info, inspect its project's environment and
-[startup command](/docs/startup-commands), and read startup-command logs. It opens with the
-**Input** group (**Attach a file…**, and the way back to the typing bar when you have turned
-it off), which is the same group the pane's own `⋯` carries, then the agent's actions below
-it.
+An agent's `⋯` menu is where the rest lives. It opens with the **Input** group (**Attach a
+file…**, the typing-surface switch, and on a computer the terminal-keys row), which is the same
+group the pane's own `⋯` carries. The agent's actions sit below it, each group under its own
+heading: **Tabs and project**, **Running**, **Agent**, **Startup**, **Worktree** and **Remove**. A standalone agent has no project, no startup command and no worktree, so its groups read **Tabs**, **Running**, **Agent**, **Folder** and **Remove**:
 
-![An agent's menu open beside its sidebar row: an Input group with Attach a file and Use virtual input at the top, then force recreate, detach and auto-reopen, then rename, fork, change provider, editor and delete actions.](/screens/agent-session-menu.png)
+- **Rename agent…** renames it, and its git branch too if you tick the box, exactly as in the
+  terminal UI; see [renaming an agent](/docs/creating-agents#renaming-an-agent).
+- **Change agent provider…** and **Force recreate agent…**, covered below.
+- **New agent tab…**, **New terminal in the worktree** (or **in the folder**, for a
+  standalone agent), and **Detach agent…** (only while something is running).
+- **Agent info…**, **Open editor here** or **in new tab**, and **Copy local path**.
+- **Recreate working copy…**, which only appears when the agent's folder has gone missing.
+- The **auto-reopen** toggle, and **Delete agent…**.
+
+These entries are about a branch yaran manages, so a standalone agent does not get them at all:
+
+- **Fork agent…**.
+- The project's environment, [startup command](/docs/startup-commands), **Rerun startup
+  command** and **Startup command logs…**.
+- **Pull requests…**, which lists the agent's pull requests and lets you attach, hide,
+  detach and reorder them; see [the Pull requests dialog](/docs/web-git#the-pull-requests-dialog).
+
+![An agent's menu open beside its sidebar row, whose badge counts three pull requests: an Input group with Attach a file and Use virtual input at the top, then the Tabs and project, Running, Agent, Startup, Worktree and Remove groups, each under its own heading.](/screens/agent-session-menu.png)
 
 **Change provider** and **Force recreate** are the two knobs around resume:
 
-- **Change provider** swaps which CLI the agent runs, taking effect the next time that tab
-  launches rather than yanking a running session. That launch follows the same per-provider
-  resume rule as any other: it resumes the new provider's prior conversation on the worktree
-  only if it supports resume and no other live tab of the agent is already running that same
-  provider. Copilot never resumes, so a tab switched to Copilot always starts fresh.
-- **Force recreate** is the explicit "start clean, abandon the conversation" button.
+- **Change agent provider…** swaps which CLI the agent runs, taking effect the next time that
+  tab launches rather than yanking a running session. That launch follows the usual
+  per-provider resume rule (see [how resume works](/docs/agent-tabs#how-resume-works)).
+  Copilot never resumes, so a tab switched to Copilot always starts fresh.
+- **Force recreate agent…** is the explicit "start clean, abandon the conversation" button.
 
 ## Provider tabs
 
 An agent can run more than one provider session in its single shared worktree, as **tabs**.
-With two or more, a strip of pills appears atop the terminal, each a live provider session
-against the same files. Add one with the split **+** button (the main button uses the
-project's default provider, the caret lets you pick), switch with a click, retarget or close
-from a pill's `⋯` menu. There is no privileged "main" tab: closing the agent's first tab
-hands its place to the next tab in the strip, and only an agent's very last tab refuses to
-close (detach the agent instead).
+With two or more (or two or more [docked terminals](/docs/web-workspace#the-terminal-dock)),
+a strip of pills appears atop the terminal, each a live provider session against the same
+files. On a computer, **New tab…** in the agent's header opens a small dialog that adds
+a tab on the default provider or a new terminal, whether or not the strip is showing.
 
-Resume is automatic and decided per provider, never a toggle. A launching tab resumes its
-provider's prior conversation when it is the only live tab of that provider, and starts fresh
-otherwise, so a Claude tab and an OpenCode tab can both resume side by side while two Claude
-tabs would not collide. Copilot is excluded from resume entirely. The full model, including
-closing a tab and the per-agent tab cap, is in [Agent tabs](/docs/agent-tabs).
+- **Add** one with the split **+** button: the main button uses the project's default
+  provider, the caret lets you pick.
+- **Switch** with a click.
+- **Reorder** by dragging a pill along the strip, or with a press and hold on a touch
+  screen. New tabs join at the right-hand end, and the order is kept across restarts.
+- **Retarget or close** from a pill's `⋯` menu. Closing the tab you are looking at lands
+  you on the tab to its right, or the one to its left when it was the last.
+
+There is no privileged "main" tab. The agent's first tab wears a small pin while there are
+two or more tabs: it is the tab that starts when you open a stopped agent, wherever you
+drag it.
+Closing it hands its place to the leftmost remaining tab, and only an agent's very last tab
+refuses to close (detach the agent instead).
+
+Resume is automatic and decided per provider, never a toggle: a Claude tab and an OpenCode
+tab can both resume side by side, while two Claude tabs would not collide. Copilot is
+excluded from resume entirely. The full model, including closing a tab and the per-agent tab
+cap, is in [Agent tabs](/docs/agent-tabs).
 
 ### Dormant tabs after a restart
 
 When the server restarts, every one of an agent's tabs comes back **dormant**, with no
-process behind it. An **extra** tab shows a card saying it is not running, with a **Start
-session** button, and nothing launches until you ask. The agent's **first** tab is the
-exception: selecting the agent starts it, because asking for the agent is asking for that
-tab.
+process behind it.
 
-A tab whose last run ended badly (it failed to launch, or the provider exited with an
-error) waits for you too, first tab included: it shows the same card, and only **Start
-session** retries it. That is deliberate, so a tab that cannot come up does not relaunch
-every time you open the agent.
+- **An extra tab** shows a card saying it is not running, with a **Start session** button,
+  and nothing launches until you ask.
+- **The agent's first tab** is the exception: selecting the agent starts it, because asking
+  for the agent is asking for that tab. Not while one of the agent's terminals is running,
+  though: then it opens on that terminal with a **Start** button, since an agent stopped
+  with its terminals left going was stopped on purpose.
+- **A tab whose last run ended badly** (it failed to launch, or the provider exited with an
+  error) waits for you too, first tab included. It shows the same card, and only **Start
+  session** retries it. That is deliberate, so a tab that cannot come up does not relaunch
+  every time you open the agent.
 
-Starting a dormant tab picks up that provider's most recent conversation in the worktree,
-unless another tab of the same provider is already running or the provider cannot resume, in
-which case it starts fresh. See [how resume works](/docs/agent-tabs#how-resume-works). To
-reach an older conversation, use the provider's own history command.
+Starting a dormant tab picks up that provider's conversation the same way any launch does;
+see [how resume works](/docs/agent-tabs#how-resume-works). To reach an older conversation,
+use the provider's own history command.
 
 ## Attention and notifications
 
 When an agent needs you (a permission prompt, a finished turn), its sidebar icon turns cyan
 and pulses, its tab-strip pill gains a small cyan dot, the browser tab title gains a count
-like `(2) yaran`, and the favicon grows a small cyan dot. The flag clears the moment you look
-at that agent. The whole model, and how to make sure your agents emit the signal, is in
-[Attention indicators](/docs/attention-indicators).
+like `(2) yaran`, and the favicon grows a small blinking cyan dot. The flag clears the moment
+you look at that agent. The whole model, and how to make sure your agents emit the signal, is
+in [Attention indicators](/docs/attention-indicators).
 
 Server mode can also raise a **real browser desktop notification** when an agent asks for
-you. It is strictly opt-in: yaran never auto-prompts. Open **Preferences…** from the cog menu,
-use **Enable browser notifications** once, and grant permission. It fires only while the yaran
-browser window is hidden or unfocused, and only for the agent whose view you have open. This
-is governed by the `web_notifications` capability, detailed in
-[Terminal capabilities](/docs/terminal-capabilities).
+you:
+
+- It is strictly opt-in: yaran never auto-prompts. Open **Preferences…** from the cog menu, use
+  **Enable browser notifications** once, and grant permission.
+- It fires only while the yaran browser window is hidden or unfocused, and only for the agent
+  whose view you have open.
+- It is governed by the `web_notifications` capability, detailed in
+  [Terminal capabilities](/docs/terminal-capabilities#browser-notifications-web-ui).
 
 > [!WARNING]
 > Browsers only allow the notification-permission prompt on secure origins, meaning HTTPS or
@@ -203,71 +361,284 @@ is governed by the `web_notifications` capability, detailed in
 ## Kill versus delete
 
 **Kill (detach)** stops the running session but keeps the agent and its worktree in a
-detached, reopenable state. The **Task Manager**, in the app menu behind the cog button,
-lists every running agent tab and companion terminal with its CPU, memory, and process count,
-expands any of them to show the child processes underneath, and stops them one by one or all
-at once. Every stop confirms first.
+detached, reopenable state. **Delete** removes the agent from yaran entirely.
 
-Everything the Task Manager stops, it stops **immediately**, with no shutdown wait: it is the
-surface you reach for when the machine is already in trouble. **Detach agent…** in the agent's
-`⋯` menu is the polite alternative, and waits for a clean shutdown before forcing anything.
+### The Task Manager
 
-**Force stop** on a row ends that row at once. On an agent's first row that means the agent
-and every tab it is running; on an extra tab it closes the tab; on a companion terminal it
-destroys the terminal. **Force stop everything…** does the same to every agent and terminal
-in one go. Both confirmations say so before you commit.
+The **Task Manager**, in the app menu behind the cog button, lists every running agent tab
+and every terminal (companion, project and standalone), with its CPU, memory, and process
+count. Expand any row to see the child processes underneath. It also shows a row for yaran
+itself and a total.
+
+- It stops rows one by one, or all at once. Every stop confirms first.
+- Everything it stops, it stops **immediately**, with no shutdown wait, and each
+  confirmation says so: it is the surface you reach for when the machine is already in
+  trouble. **Detach agent…** is the polite alternative.
+- **Force stop** on an agent's first row ends the agent and every tab it is running; on an
+  extra tab it closes the tab; on a terminal it destroys the terminal.
+- **Force stop everything…** does the same to every agent and terminal in one go. Both
+  confirmations say so before you commit.
 
 > [!WARNING]
-> Companion terminals, unlike agents, are **destroyed** when killed, not detached.
+> Terminals, unlike agents, are **destroyed** when killed, not detached.
 
 ### Detaching an agent
 
-You do not have to be inside the agent's own CLI to end its session. **Detach agent…** in
-the agent's `⋯` menu asks every process the agent is running to shut down, the same way
-closing yaran does: a polite signal first, then a wait, then a force-close for anything still
-there. The agent stays in your list as **Detached** and you can resume it later; whatever it
-was doing at that moment is interrupted. The terminal UI reaches the same action with the
-`detach-agent` palette command on the selected agent. The Task Manager's **Force stop** on an
-agent row ends the same processes without the wait, and says so in its own confirmation.
+**Detach agent…** in the agent's `⋯` menu is the polite alternative to Force stop. You do not
+have to be inside the agent's own CLI to use it. It asks every process the agent is running
+to shut down, the same way closing yaran does:
 
-The entry only appears while the agent has something running, and it always confirms first.
-The confirmation names the wait, which is the top-level `shutdown_timeout_seconds` in your
-`config.toml` (30 seconds by default, and not the same key as the one under `[server]`), and
-says how many of the agent's tabs stop together when it has more than one running. yaran then
-says which way it went: that the agent shut down and is detached, or that it did not exit in
-time and was force-closed.
+1. A polite signal first.
+2. A wait.
+3. A force-close for anything still there.
+
+The agent stays in your list as **Detached** and you can resume it later. The terminal UI
+reaches the same action with the `detach-agent` palette command on the selected agent.
+
+- The entry only appears while the agent has something running, and it always confirms first.
+- The confirmation names the wait, which is the top-level `shutdown_timeout_seconds` in your
+  `config.toml` (30 seconds by default, and not the same key as the one under `[server]`).
+- It also says how many of the agent's tabs stop together when it has more than one running.
+- Afterwards yaran says which way it went: that the agent shut down and is detached, or that it
+  did not exit in time and was force-closed.
 
 > [!CAUTION]
 > Detaching interrupts work in progress. A CLI part-way through an edit or a command is
 > given the shutdown grace to finish and then killed, so anything it had not written out is
 > lost. There is no undo; you can start the agent again, but not the run you stopped.
 
-**Delete** removes the agent from yaran entirely. It is the one destructive per-agent action
-yaran tints red, and it always confirms first. The confirmation includes an unchecked "also
-delete the git worktree" box, so by default your worktree survives a delete.
+### Deleting an agent
 
-Tick it and a second box appears, named after the branch. It only appears there because git
-will not delete a branch that is still checked out in a worktree, so with the worktree
-staying there is nothing to offer. Where it starts depends on where the branch came from:
+**Delete agent…** is the one destructive per-agent action yaran tints red, and it always
+confirms first. The confirmation includes an unchecked "also delete the git worktree" box, so
+by default your worktree survives a delete.
 
-- **Ticked**, for a branch yaran created for the agent. That is the old behavior. Untick it to
-  keep the branch.
-- **Unticked**, for a branch that already existed, or that was adopted along with an existing
-  worktree. Underneath it yaran says which of the two it is, and adds "It has N commits not
-  pushed anywhere" when there are any. In a repository with no remotes it says so differently,
-  because there the count is the branch's whole history and nothing was ever going anywhere.
-  Tick it and the branch goes anyway; this is the only way to remove such a branch from yaran
-  once its worktree is gone.
+Tick it and the branch boxes appear. They only appear then because git will not delete a
+branch that is still checked out in a worktree, so with the worktree staying there is nothing
+to offer. yaran keeps a list of every branch the agent's worktree has been on, including one
+it only passed through between two of yaran's checks, so the dialog can offer all of them:
 
-If the worktree has moved onto another branch since the agent was created, the tick removes
-**both**: the branch it is on now and the one it was born on, which is what keeps creating
-an agent under the old name from failing with "branch already exists". The box names both
-branches, yaran says which one predates the agent, and the commit count covers the two of them
-together.
+- **"Also delete the branch …"** names the branch the worktree is on now.
+- **"Also delete the other branches this agent was on: …"** names every other branch the
+  worktree has been on that still exists. It appears only when there is at least one.
 
-If git refuses to delete a branch yaran did try to remove, yaran says which branch is still there
-and why rather than reporting a deletion that did not happen.
+Ticking the worktree box also shows how many files in the worktree are not committed, such
+as "3 files in … aren't committed and will be deleted". Modified, staged, deleted, renamed
+and untracked files all count; files your `.gitignore` ignores do not. While git is still
+being asked the line says "Looking for uncommitted files in …", and when git could not look
+it says so and asks you to check the worktree yourself. With every file committed, or the
+worktree folder already gone, there is no line at all.
+
+> [!WARNING]
+> No unpushed commits does not mean nothing is lost. Removing the worktree deletes every
+> uncommitted file in it, untracked ones included, and nothing can bring them back.
+
+yaran starts reading the branches from git as soon as the dialog opens, so the answer is
+usually in by the time you tick the worktree box. Until it is, the dialog says "Looking for
+unpushed work on the branches…" (the browser shows the first box disabled; the terminal UI
+shows no branch box yet). Once git answers, the dialog says whether deleting the branches it
+offers would lose work that exists nowhere else, such as "No unpushed work on …" or "2 commits
+on … aren't pushed anywhere", naming up to two branches and counting them past that. The
+browser shows that answer for a few seconds before it goes away; the terminal UI keeps it
+above the boxes. Press **Delete** before git has answered, or after git could not be asked,
+and every branch is kept. When git could not be asked, or could not count the commits, the
+dialog says why; cancel and open it again to retry. A box whose commits git could not count
+is disabled and unticked, so its branches are kept.
+
+Where each box starts depends on whether yaran can prove the branch is its own:
+
+- **The first box is ticked** for the branch yaran created for the agent, and for a branch the
+  agent switched onto that git shows was created after the agent started. It is **unticked**
+  for a branch that already existed, came with an adopted worktree, or whose age git cannot
+  tell, with a line saying which.
+- **The second box is ticked** only when every branch in it is one yaran created for this agent.
+  Any other branch leaves it unticked, and the line under it names the ones yaran cannot vouch
+  for. A branch created after the agent started is one of those, because another worktree
+  may have made it.
+
+Under the boxes one line says what deleting the branches ticked right now loses: their commits
+on no remote and no local branch that stays. In a repository with no remote, the line says so
+too. This line is separate from what git found above the boxes. The line changes as you tick, and with both boxes
+ticked it counts everything the two hold together, which can be more than either box alone.
+When deleting them loses no commit there is no line at all. Ticking a box is the only way to
+remove such a branch from yaran once its worktree is gone.
+
+What yaran deletes, and what it never does:
+
+- **Only what the dialog showed.** Each branch is deleted only while it still points at the
+  commit the dialog counted. One that moved since is kept, and yaran says so. A branch yaran
+  noticed only after the dialog opened is kept too.
+- **Never the project's own branch**, and never a branch another worktree has checked out. The
+  dialog names a project branch the agent was on as kept rather than offering it.
+- **Never a different branch under an old name.** If the agent was once on `spike` and a
+  different `spike` exists now, the dialog does not offer it, and the message after the delete
+  says it was kept because a different branch now has that name. When git no longer keeps the
+  record that would say, a branch that has not moved on from where the agent left it still
+  counts as the same one; anything else is kept, with the reason that yaran cannot confirm it.
+  So a branch yaran could not fingerprint that was later rewritten (rebased or amended) is kept
+  and named as one yaran cannot confirm.
+- **Git refuses to delete a branch yaran tried to remove:** yaran says which branch is still
+  there and why, rather than reporting a deletion that did not happen.
+- **After the delete**, the message names every branch that was kept, each with its own
+  reason and the `git branch -D` command to remove it yourself.
+
+> [!IMPORTANT]
+> Deleting a project, and any delete where nobody was asked (the command line with no
+> branch flag, say), removes only the branch yaran created for the agent, and only while yaran
+> can prove the branch under that name is still the one it made. Every other branch the
+> worktree was on is kept and named. yaran's own renames of the branch are followed; a branch
+> you rename yourself and then recreate under the old name is not yaran's.
+
+### When somebody else is connected
+
+Some changes end terminals, and somebody else may be looking at one: another browser tab, a
+phone, or the terminal app. yaran refuses these while anybody else is connected to what they
+would end:
+
+- deleting an agent, detaching it, force-stopping it, restarting it from scratch;
+- stopping or closing a tab, closing a terminal;
+- removing a project, recreating a working copy with its tabs restarted;
+- starting an agent that would stop another agent already working in the same folder.
+
+An agent's tabs and terminals count as one thing here. Closing or stopping one of an
+agent's tabs, or closing one of its terminals, is refused over anyone who has any of that
+agent's tabs or terminals open, not only the one being closed, and the dialog names them
+with the same option to go ahead anyway. A project or standalone terminal counts on its
+own.
+
+The refusal says who, and changes nothing. It gives:
+
+- the device;
+- the address it connects from (marked unverified when yaran cannot vouch for it);
+- whether they are typing in it or watching;
+- which tab or terminal.
+
+The delete, detach, force stop, force recreate, stop tab, close tab, close terminal, recreate
+working copy and project dialogs say it in place, on both the browser and the terminal app,
+and so do the browser's Force stop everything and the terminal app's Kill Running. In that
+dialog:
+
+1. The dialog stays open and lists everybody it would cut off.
+2. Focus moves back to Cancel.
+3. The button becomes **Delete anyway** (or **Detach anyway**, **Close tab anyway**, and so
+   on). Pressing it goes ahead over exactly the people listed.
+4. Cancel or Escape changes nothing.
+
+Some details:
+
+- If somebody new has connected by then, nothing happens and the dialog lists everybody
+  again, so you never cut off someone you were not shown.
+- A double click on the first button never presses the one that replaces it: the override
+  takes its own click.
+- In the terminal app the list also follows people connecting and leaving while the dialog
+  is open.
+- Quitting the terminal app while somebody else is connected to one of its terminals asks
+  the same way, with **Quit anyway**.
+- Only the connection asking is left out. The browser tab you are using is never in its own
+  way, and neither is the terminal app deleting the agent it shows, but a second tab open on
+  the same computer counts like any other device.
+- The terminal app counts as connected to exactly the terminals it is drawing: an agent that
+  is selected but not on screen, because a diff fills the center pane, protects nothing.
+
+> [!IMPORTANT]
+> **A phone in your pocket still counts.** When a browser tab was showing a terminal and that
+> terminal's connection is lost rather than closed (the screen locked, the network dropped),
+> the tab keeps counting as connected for `presence_grace_seconds` under `[server]` (300
+> seconds by default), counted from the last moment it was on screen.
+>
+> It stops counting at once when the tab closes the terminal on purpose (you close the tab,
+> navigate away, or open another agent or terminal in it), when it signs out, or when
+> somebody goes ahead anyway. A device that was not showing the terminal stops counting once
+> it has been silent for 75 seconds.
+
+### What a delete with the worktree waits for
+
+With the worktree box ticked, yaran removes nothing until everything it started for that agent
+has stopped:
+
+- every tab;
+- every terminal you opened on it;
+- a startup command that is still running;
+- anything any of them left running in the background, such as a dev server, a job started
+  with `&`, or a `nohup`ed or disowned command.
+
+Each is asked to exit, given the same shutdown grace as a quit (`shutdown_timeout_seconds`),
+and killed if it is still there. The agent leaves the list at once; the removal finishes in
+the background and reports when it is done.
+
+It also waits for yaran's own work in that worktree: a pull, a push, a commit, a branch rename,
+a recreate of the working copy or a save from the editor still running there is allowed to
+finish, and the status says what it is waiting for. A branch renamed while the delete waited
+is removed under its new name.
+
+From the moment you confirm, nothing new can start in that worktree: a save, a dropped file,
+a pull or a new agent there is refused, and says why.
+
+> [!WARNING]
+> Ticking the box ends processes you may have started yourself in that agent's terminals,
+> background jobs included, because the folder they work in is about to be deleted. Closing
+> a terminal on its own still behaves like closing a terminal window: a disowned or
+> `nohup`ed job keeps running.
+
+When it cannot finish cleanly:
+
+- **The work does not finish in time.** After `removal_wait_seconds` in your `config.toml`
+  (120 seconds by default), yaran keeps the worktree and tells you so. Remove it later from the
+  worktree manager.
+- **Something refuses to stop even when killed.** yaran keeps the worktree untouched and names
+  the processes, so you can stop them and remove the worktree from the worktree manager.
+- **A terminal is standing in it.** A project or standalone terminal whose shell you `cd`'d
+  into the worktree, or anything else yaran started elsewhere that is standing in it, is never
+  ended to make way. The worktree is kept and yaran names the terminal: `cd` out of the folder
+  or close the terminal, then remove the worktree from the worktree manager.
+- **Something yaran cannot see writes into it.** A server another program launched in that
+  folder can still write while git deletes it. git then removes the worktree from the
+  repository but cannot delete the folder. See below.
+
+#### When something keeps writing into the worktree
+
+yaran does not delete such a folder on its own. It tells you what is left in it, and the
+project's worktree manager lists the folder under **Left over after a delete** until it is
+gone.
+
+- **The branches stay.** The branches the delete was going to remove are kept, because the
+  folder still holds their files. The message names them.
+- **Delete folder…** asks first. The confirmation names the folder and offers to delete the
+  kept branches too: ticked for a branch yaran created, unticked (with a warning) for one that
+  existed before the agent.
+- **A branch that moved is kept.** If a kept branch now points at a different commit than
+  when the folder was left behind, it is not deleted, and yaran says so.
+- **yaran deletes only the folder that was left behind.** It refuses a folder outside its
+  worktrees folder for the project, one reached through a symbolic link, one git lists as a
+  worktree again, one that holds another worktree or repository, one that holds the
+  project's own repository, and one an agent, a standalone agent or a terminal is using. If
+  git cannot be asked, nothing is deleted.
+- **If something is still writing,** the delete fails again, says what is left, and the
+  row stays. Stop whatever is writing there first.
+- **Delete the folder yourself** and the row stays for as long as a kept branch is still
+  there, reading that the folder is already removed, so you can still delete the branch
+  from it. Once none of its branches is left, the row goes away. A different folder or a
+  link that took the folder's place counts as the folder being gone, and is never deleted.
+- **Each kept branch says whether a delete can remove it.** One that moved since the folder
+  was left behind, one another worktree has checked out, one with no recorded commit and one
+  git cannot check are kept, and the row and the confirmation say which and why, with the
+  `git branch -D` command to delete it yourself. When the folder is gone and no kept branch
+  can be deleted, the row offers only **Copy path**.
+- **The row stays while there is something left to do:** the folder, or a kept branch that
+  still exists. Once neither is left, it goes away.
+
+> [!IMPORTANT]
+> yaran only sees what it started. A program that fully detaches itself from the terminal
+> session and the process tree, such as a `tmux new -d` session or a daemon that double-forks,
+> is not seen at all: yaran neither stops it nor counts it as using the worktree.
+>
+> Stop such a program yourself before you delete the worktree.
+
+If you quit yaran while a removal is still waiting, the quit finishes it before exiting. If yaran
+is killed or crashes first, the next start finishes it in the background and says so. It
+never removes a folder that another agent has started using in the meantime.
 
 > [!IMPORTANT]
 > Worktrees are your data. Deleting an agent leaves its worktree on disk unless you explicitly
-> opt in, which is why "adopt an existing worktree" above can bring one back.
+> opt in, which is why starting an agent from an existing worktree (see
+> [the worktree manager](#the-worktree-manager)) can bring one back.

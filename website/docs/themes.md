@@ -20,12 +20,16 @@ authored, and labels where each one came from.
 
 ![The terminal UI theme picker open over the workspace, listing yaran_dark as the current theme with the bundled themes below it.](/screens/tui-theme-picker.png)
 
-To set it by hand instead, edit the `[ui]` section of `config.toml` and restart:
+To set it by hand instead, edit the `[ui]` section of `config.toml` and reload the config
+(or restart):
 
 ```toml
 [ui]
 theme = "yaran_dark"   # the default
 ```
+
+With a yaran running, `yaran config set ui.theme "nord"` does the edit and the reload in one
+step. `yaran themes ls` lists every theme yaran can load and which one is in use.
 
 Built-in names use underscores:
 
@@ -40,6 +44,30 @@ theme = "gruvbox_dark"
 There are far more: Catppuccin's four flavors, Tokyo Night's variants, Solarized,
 Rose Pine, Everforest, Kanagawa, One Dark, and others. The picker is the list that
 never goes stale.
+
+## Nerd Font icons
+
+Running a [Nerd Font](https://www.nerdfonts.com) in your terminal? yaran can trade its
+plain icons for proper ones: a folder for the project, a star for standalone rows, the
+pull-request and warning marks, the disclosure chevrons, and the serving and terminals
+chips in the header. Out of the box yaran draws the plain set every screenshot in these
+docs shows, so it looks right in any font:
+
+![The terminal UI sidebar: three active agents, one of them running three tabs, and a collapsed Inactive tail.](/screens/tui-agent-list-two-line.png)
+
+Flip it with the `toggle-nerd-font-icons` command in the terminal UI's command palette.
+It takes effect on the spot and is saved for next time. You can also find it as **Nerd
+Font icons** in the web UI's Preferences dialog, or set it by hand:
+
+```toml
+[ui]
+nerd_font_icons = true   # off by default
+```
+
+> [!IMPORTANT]
+> This needs a Nerd Font (a patched font) set as your terminal's font. Without one the
+> icons come out as empty boxes; flip the setting back and the plain set returns. It
+> changes the terminal UI only: the web UI draws its own icons either way.
 
 ## How a theme name is resolved
 
@@ -114,12 +142,14 @@ You have two ways to define colors:
   complete, standard Opaline theme works in yaran as-is, even if it was never written
   with yaran in mind.
 
-Names inside dialogs (branches, paths, agent and project names) are drawn as small
-chips in your dialog's own colors, swapped: the dialog background (`yaran.overlay_bg`)
-on the dialog text color (`yaran.text_fg`). A chip is therefore exactly as readable as
-the sentence around it, and there is nothing extra to set. If your theme still sets
-`yaran.name_fg` or `yaran.name_bg` from an older version of yaran, you can delete them: yaran
-no longer reads either token and ignores them if they are there.
+Names inside dialogs (branches, paths, agent and project names) are drawn as small chips:
+the dialog background (`yaran.overlay_bg`) on the dialog text color (`yaran.text_fg`). There is
+nothing extra to set.
+
+> [!TIP]
+> The cards inside a pane, like the note in the changes pane when a folder has no
+> repository, sit on the pane's own background (`yaran.app_bg`) with just a border. Want them
+> to stand out? Set `yaran.pane_card_bg` and they get a fill of their own.
 
 Save the file and open the theme picker: your theme is listed alongside the built-ins,
 labeled as user-authored, with the same live preview. Tweak, save, re-pick, repeat.

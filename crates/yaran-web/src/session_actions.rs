@@ -5,10 +5,12 @@
 //! [`EngineHandle::apply_wire_scoped`]. The connection id is the one `/ws/events`
 //! hands the client in its `connected` handshake frame.
 //!
-//! The create route honors `Idempotency-Key` and discriminates its body on
+//! The create route honors `Idempotency-Key`, followed (`?operation=1`) or not, and
+//! discriminates its body on
 //! `new`, `fork`, `from_worktree` or `from_pr`. Delete takes `?delete_worktree=`
-//! and `?delete_branch=`, and an absent `delete_branch` keeps the provenance
-//! default. `POST /api/v1/pull-requests/resolve` is a READ among these writes: it
+//! and either a JSON body carrying both delete-dialog boxes' answers, each over
+//! the branches it pinned, or the older `?delete_branch=`; with neither, only
+//! the branch yaran can prove it made goes. `POST /api/v1/pull-requests/resolve` is a READ among these writes: it
 //! starts nothing, so it answers the client directly rather than going through a
 //! wire command and a toast, and the client then posts the create with the project
 //! it settled on.
@@ -43,20 +45,23 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use yaran_core::operations::OperationKind;
 use yaran_core::wire::WireCommand;
 
 use crate::git_routes::resolve_worktree;
 use crate::rest_common::{
-    Accepted, AwaitedCreate, CREATE_AWAIT_TIMEOUT, FROM_PR_CREATE_AWAIT_TIMEOUT, await_new_session,
-    await_session_for_op, create_failed, delete_wire_response, id_within_bound, idempotency_key,
-    outcome_is_error, require_configured_provider, scope_from_headers, unknown_session,
+    Accepted, AwaitedCreate, CREATE_AWAIT_TIMEOUT, FROM_PR_CREATE_AWAIT_TIMEOUT,
+    ForceConnectedQuery, OperationQuery, await_new_session, await_session_for_op, create_failed,
+    delete_operation_response, delete_wire_response, dispatch_guarded, dispatch_guarded_unrecorded,
+    id_within_bound, idempotency_key, operation_accepted, outcome_is_error, refusal,
+    require_configured_provider, scope_from_headers, unknown_session,
 };
 use crate::server::AppState;
 
-/// The session-action routes. The literal `/reorder` segment is registered
-/// alongside the parameterized `:id` routes; axum's matcher prefers static
-/// segments over `:id`, so `POST /api/v1/sessions/reorder` never resolves to the
-/// `:id` handlers. (The `GET /api/v1/sessions/:id` read lives in `workspace_routes`;
+/// The session-action routes. The literal `/reorder-global` segment is
+/// registered alongside the parameterized `:id` routes; axum's matcher prefers
+/// static segments over `:id`, so `POST /api/v1/sessions/reorder-global` never
+/// resolves to the `:id` handlers. (The `GET /api/v1/sessions/:id` read lives in `workspace_routes`;
 /// axum merges the per-path method routers, so the verbs here coexist with it.)
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -65,7 +70,10 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/pull-requests/resolve",
             post(resolve_pull_request_reference),
         )
-        .route("/api/v1/sessions/reorder", post(reorder_sessions))
+        .route(
+            "/api/v1/pull-requests/clone-destination",
+            post(check_pull_request_clone_destination),
+        )
         .route("/api/v1/sessions/reorder-global", post(reorder_agents))
         .route(
             "/api/v1/sessions/{id}",
@@ -74,6 +82,14 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/v1/sessions/{id}/branch-unpushed",
             axum::routing::get(session_branch_unpushed),
+        )
+        .route(
+            "/api/v1/sessions/{id}/uncommitted-files",
+            axum::routing::get(session_uncommitted_files),
+        )
+        .route(
+            "/api/v1/sessions/{id}/branch-pushed",
+            axum::routing::get(session_branch_pushed),
         )
         .route("/api/v1/sessions/{id}/reconnect", post(reconnect_session))
         .route(
@@ -86,12 +102,36 @@ pub fn routes() -> Router<AppState> {
             post(recreate_working_copy),
         )
         .route(
-            "/api/v1/sessions/{id}/pull-request",
-            put(attach_pull_request).delete(detach_pull_request),
+            "/api/v1/sessions/{id}/pull-requests",
+            post(attach_pull_request),
         )
         .route(
-            "/api/v1/sessions/{id}/pull-request/autodetect",
-            post(resume_pull_request_autodetection),
+            "/api/v1/sessions/{id}/pull-requests/detach",
+            post(detach_pull_request),
+        )
+        .route(
+            "/api/v1/sessions/{id}/pull-requests/hide",
+            post(hide_pull_request),
+        )
+        .route(
+            "/api/v1/sessions/{id}/pull-requests/show",
+            post(show_pull_request),
+        )
+        .route(
+            "/api/v1/sessions/{id}/pull-requests/sort",
+            put(set_pull_request_sort),
+        )
+        .route(
+            "/api/v1/sessions/{id}/pull-requests/move",
+            post(move_pull_request),
+        )
+        .route(
+            "/api/v1/sessions/{id}/pull-requests/order",
+            put(reorder_pull_requests),
+        )
+        .route(
+            "/api/v1/sessions/{id}/pull-requests/branches",
+            axum::routing::get(pull_request_branches),
         )
 }
 
@@ -133,6 +173,23 @@ enum CreateSessionBody {
         pr: String,
         #[serde(default)]
         name: String,
+        /// The client's AGREEMENT to a review copy of the pull request, for a
+        /// branch that cannot be used as it is. Absent/false makes a create
+        /// that needs a copy refuse and ask, so the client can show the
+        /// warning and re-POST with this set.
+        #[serde(default)]
+        review_copy: bool,
+        /// The identifier of the warning the agreement answers, as the refusal
+        /// carried it. Absent from a client that was never shown one.
+        #[serde(default)]
+        review_copy_warned: Option<String>,
+        /// The client agrees with a flag rather than a box (the command line).
+        #[serde(default)]
+        review_copy_by_flag: bool,
+        /// An id the client gives this create, echoed on the question a
+        /// refusal puts so the client can tell which create it answers.
+        #[serde(default)]
+        ask_id: Option<String>,
     },
     /// A STANDALONE agent: run a provider in a folder the user already has. It
     /// carries no `project_id`, belonging to no project, and it is the only kind
@@ -162,6 +219,7 @@ impl CreateSessionBody {
                 name,
                 use_existing_branch,
                 copy_uncommitted_changes,
+                name_checked: None,
             },
             CreateSessionBody::Fork { session_id, name } => {
                 WireCommand::ForkSession { session_id, name }
@@ -174,15 +232,24 @@ impl CreateSessionBody {
                 project_id,
                 worktree_path,
                 name,
+                checked: None,
             },
             CreateSessionBody::FromPr {
                 project_id,
                 pr,
                 name,
+                review_copy,
+                review_copy_warned,
+                review_copy_by_flag,
+                ask_id,
             } => WireCommand::CreateAgentFromPr {
                 project_id,
                 pr,
                 name,
+                review_copy,
+                review_copy_warned,
+                review_copy_by_flag,
+                ask_id,
             },
             CreateSessionBody::Standalone {
                 folder,
@@ -201,8 +268,39 @@ fn parse_create_session_body(raw: serde_json::Value) -> Result<CreateSessionBody
     serde_json::from_value(raw).map_err(|error| format!("invalid create body: {error}"))
 }
 
-async fn replay_created_session(state: &AppState, key: &str) -> Option<Response> {
+async fn replay_created_session(
+    state: &AppState,
+    key: &str,
+    operation: &OperationQuery,
+) -> Option<Response> {
     let previous_id = state.idempotency.get(key)?;
+    // A followed create keeps its key under its operation: a retry answers that
+    // record, or, unfollowed, the agent it made once it is there (the record
+    // itself while it has made none).
+    if let Some(record) = state
+        .engine
+        .operations()
+        .view(&previous_id, std::time::Instant::now())
+    {
+        if operation.asked() {
+            return Some(operation_accepted(&record));
+        }
+        let Some(created) = record.created.first().cloned() else {
+            return Some(accepted(Accepted {
+                op_id: Some(record.id),
+            }));
+        };
+        let (session, terminals) = state.engine.session(created).await??;
+        return Some(
+            (
+                StatusCode::OK,
+                Json(crate::workspace_routes::SessionWithTerminals::new(
+                    session, terminals,
+                )),
+            )
+                .into_response(),
+        );
+    }
     let (session, terminals) = state.engine.session(previous_id).await??;
     Some(
         (
@@ -215,40 +313,138 @@ async fn replay_created_session(state: &AppState, key: &str) -> Option<Response>
     )
 }
 
-async fn existing_branch_conflict(state: &AppState, body: &CreateSessionBody) -> Option<Response> {
-    let CreateSessionBody::New {
-        project_id,
-        name,
-        use_existing_branch,
-        ..
-    } = body
-    else {
-        return None;
-    };
-    let name = name.trim();
-    if *use_existing_branch || name.is_empty() {
-        return None;
+/// Turn the create's body into its wire command, with the checks that ask git
+/// made here on the blocking pool so the engine thread does not make them.
+///
+/// Existing-branch consent: an unconfirmed user-typed name that names an
+/// existing branch is refused with a confirmable 409 carrying the branch and
+/// its location, so the client asks and re-POSTs with `use_existing_branch`
+/// rather than silently adopting that branch's history; a name found free rides
+/// the command as checked. An adopt's worktree listing is read here too, and a
+/// worktree no agent may adopt is the same 400 the engine would answer. A
+/// request naming no known project is left for the engine to refuse.
+async fn checked_create_command(
+    state: &AppState,
+    body: CreateSessionBody,
+    operation: &OperationQuery,
+) -> Result<WireCommand, crate::rest_common::RouteRejection> {
+    match body.into_wire() {
+        WireCommand::CreateAgent {
+            project_id,
+            name,
+            copy_uncommitted_changes,
+            use_existing_branch,
+            ..
+        } => {
+            let trimmed = name.trim().to_string();
+            let mut name_checked = None;
+            if !use_existing_branch && !trimmed.is_empty() {
+                match state
+                    .engine
+                    .create_agent_branch_plan(project_id.clone(), trimmed.clone())
+                    .await
+                {
+                    Some(yaran_core::git::CreateAgentBranchPlan::ExistingBranch { location }) => {
+                        let location = match location {
+                            yaran_core::git::BranchLocation::Local => "local",
+                            yaran_core::git::BranchLocation::Remote => "remote",
+                        };
+                        return Err((
+                            StatusCode::CONFLICT,
+                            Json(serde_json::json!({
+                                "existing_branch": { "name": trimmed, "location": location }
+                            })),
+                        )
+                            .into_response()
+                            .into());
+                    }
+                    Some(_) => name_checked = Some(trimmed),
+                    None => {}
+                }
+            }
+            Ok(WireCommand::CreateAgent {
+                project_id,
+                name,
+                copy_uncommitted_changes,
+                use_existing_branch,
+                name_checked,
+            })
+        }
+        WireCommand::CreateAgentFromWorktree {
+            project_id,
+            worktree_path,
+            name,
+            ..
+        } => checked_adopt_command(state, project_id, worktree_path, name, operation).await,
+        other => Ok(other),
     }
-    let plan = state
+}
+
+/// [`checked_create_command`] for an adopt: refused first when a change is
+/// in the way of it, then the project's worktrees listed on the blocking pool.
+async fn checked_adopt_command(
+    state: &AppState,
+    project_id: String,
+    worktree_path: String,
+    name: String,
+    operation: &OperationQuery,
+) -> Result<WireCommand, crate::rest_common::RouteRejection> {
+    // A change in the way (the project being removed) is refused first,
+    // as the engine refuses it, and before git runs against a project
+    // that is going.
+    let unchecked = WireCommand::CreateAgentFromWorktree {
+        project_id: project_id.clone(),
+        worktree_path: worktree_path.clone(),
+        name: name.clone(),
+        checked: None,
+    };
+    if let Some(refused) = state.engine.wire_admission_refusal(unchecked).await {
+        let response = if operation.asked() {
+            followed_refusal(state, StatusCode::CONFLICT, refused)
+        } else {
+            (StatusCode::CONFLICT, refused).into_response()
+        };
+        return Err(response.into());
+    }
+    let Some(inputs) = state
         .engine
-        .create_agent_branch_plan(project_id.clone(), name.to_string())
-        .await?;
-    let yaran_core::git::CreateAgentBranchPlan::ExistingBranch { location } = plan else {
-        return None;
+        .project_worktree_inputs(project_id.clone())
+        .await
+    else {
+        return Ok(WireCommand::CreateAgentFromWorktree {
+            project_id,
+            worktree_path,
+            name,
+            checked: None,
+        });
     };
-    let location = match location {
-        yaran_core::git::BranchLocation::Local => "local",
-        yaran_core::git::BranchLocation::Remote => "remote",
-    };
-    Some(
-        (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "existing_branch": { "name": name, "location": location }
-            })),
+    let path = worktree_path.clone();
+    let checked = tokio::task::spawn_blocking(move || {
+        yaran_core::route_checks::check_adopt_worktree(
+            &inputs.project,
+            &inputs.paths,
+            &inputs.sessions,
+            &path,
         )
-            .into_response(),
-    )
+    })
+    .await;
+    match checked {
+        Ok(Ok(checked)) => Ok(WireCommand::CreateAgentFromWorktree {
+            project_id,
+            worktree_path,
+            name,
+            checked: Some(checked),
+        }),
+        Ok(Err(refused)) => Err((StatusCode::BAD_REQUEST, refused.to_string())
+            .into_response()
+            .into()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("worktree check failed: {e}"),
+        )
+            .into_response()
+            .into()),
+    }
 }
 
 /// Dispatch a create and tell an accepted outcome from a refusal to serve back.
@@ -261,29 +457,60 @@ async fn existing_branch_conflict(state: &AppState, body: &CreateSessionBody) ->
 /// response, which keeps the error small enough for clippy's large-error lint.
 async fn dispatch_create(
     state: &AppState,
-    body: CreateSessionBody,
+    command: WireCommand,
     headers: &HeaderMap,
+    operation: &OperationQuery,
 ) -> Result<yaran_core::wire::WireCommandOutcome, (StatusCode, String)> {
-    let outcome = state
-        .engine
-        .apply_wire_scoped(
-            body.into_wire(),
-            scope_from_headers(headers, &state.connections),
-        )
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let scope = scope_from_headers(headers, &state.connections);
+    let outcome = if operation.asked() {
+        state
+            .engine
+            .apply_wire_operation(command, scope, OperationKind::AgentCreate)
+            .await
+            .map(|(outcome, _)| outcome)
+    } else {
+        state
+            .engine
+            .apply_wire_recorded(command, scope, OperationKind::AgentCreate)
+            .await
+    }
+    .map_err(|e| {
+        let status = if yaran_core::operations::is_in_the_way(&e) {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        (status, e)
+    })?;
     if outcome_is_error(&outcome) {
         let msg = outcome
             .status
-            .map(|s| s.message)
-            .unwrap_or_else(|| "create rejected".to_string());
+            .map_or_else(|| "create rejected".to_string(), |s| s.message);
         return Err((StatusCode::CONFLICT, msg));
     }
     Ok(outcome)
 }
 
+/// A refused create answered to a client that follows its change. Refused for
+/// another create running, it also carries that create's operation id when one
+/// is open, so the client can wait for it; every other refusal, and every
+/// caller that did not ask to follow, gets the bare sentence.
+fn followed_refusal(state: &AppState, status: StatusCode, message: String) -> Response {
+    if message == yaran_core::operations::CREATE_IN_FLIGHT_REFUSAL
+        && let Some(operation) = state.engine.operations().create_guard_record()
+    {
+        return (
+            status,
+            Json(serde_json::json!({ "message": message, "operation": operation })),
+        )
+            .into_response();
+    }
+    (status, message).into_response()
+}
+
 async fn create_session(
     State(state): State<AppState>,
+    Query(operation): Query<OperationQuery>,
     headers: HeaderMap,
     Json(raw): Json<serde_json::Value>,
 ) -> Response {
@@ -298,24 +525,48 @@ async fn create_session(
     // exists, return it without creating another.
     let key = idempotency_key(&headers);
     if let Some(key) = &key
-        && let Some(response) = replay_created_session(&state, key).await
+        && let Some(response) = replay_created_session(&state, key, &operation).await
     {
         return response;
     }
 
-    // Existing-branch consent: an unconfirmed user-typed name that names an existing
-    // branch is refused with a confirmable 409 carrying the branch and its location,
-    // so the client asks and re-POSTs with `use_existing_branch` rather than silently
-    // adopting that branch's history. The wire command refuses the same way.
-    if let Some(response) = existing_branch_conflict(&state, &body).await {
-        return response;
+    // The from-PR create resolves differently, below.
+    let from_pr = matches!(body, CreateSessionBody::FromPr { .. });
+    let command = match checked_create_command(&state, body, &operation).await {
+        Ok(command) => command,
+        Err(response) => return response.into_response(),
+    };
+
+    // Followed as an operation: the record answers at once, and its id is the
+    // create op (or, for a from-PR create, the lookup that hands off to it).
+    if operation.asked() {
+        return match dispatch_create(&state, command, &headers, &operation).await {
+            Ok(outcome) => match &outcome.operation {
+                Some(record) => {
+                    if let Some(key) = key {
+                        state.idempotency.record(key, record.id.clone());
+                    }
+                    operation_accepted(record)
+                }
+                None => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    crate::engine_actor::MISSING_OPERATION_RECORD,
+                )
+                    .into_response(),
+            },
+            Err((status, message)) => followed_refusal(&state, status, message),
+        };
     }
 
     // The from-PR create resolves differently: its create op is minted later
     // (inside the PR-lookup followup), so it has no synchronous `created_op_id` and
     // must fall back to the set-difference await with a longer window (the
     // `gh pr view` network call routinely exceeds the default 20s).
-    let is_from_pr = matches!(body, CreateSessionBody::FromPr { .. });
+    let default_window = if from_pr {
+        FROM_PR_CREATE_AWAIT_TIMEOUT
+    } else {
+        CREATE_AWAIT_TIMEOUT
+    };
 
     // Snapshot the existing session ids for the from-PR fallback await. The
     // synchronous variants use the race-free op-id path instead and ignore this.
@@ -324,12 +575,12 @@ async fn create_session(
         None => return engine_unavailable(),
     };
 
-    let outcome = match dispatch_create(&state, body, &headers).await {
+    let outcome = match dispatch_create(&state, command, &headers, &operation).await {
         Ok(outcome) => outcome,
         Err(refusal) => return refusal.into_response(),
     };
 
-    resolve_created_session(&state, outcome, is_from_pr, &pre, key).await
+    resolve_created_session(&state, outcome, default_window, &pre, key).await
 }
 
 /// Wait for the dispatched create to produce its session and answer with it.
@@ -364,7 +615,7 @@ async fn create_session(
 async fn resolve_created_session(
     state: &AppState,
     outcome: yaran_core::wire::WireCommandOutcome,
-    is_from_pr: bool,
+    default_window: std::time::Duration,
     pre: &std::collections::HashSet<String>,
     key: Option<String>,
 ) -> Response {
@@ -385,11 +636,6 @@ async fn resolve_created_session(
             .into_response();
     };
 
-    let default_window = if is_from_pr {
-        FROM_PR_CREATE_AWAIT_TIMEOUT
-    } else {
-        CREATE_AWAIT_TIMEOUT
-    };
     let window = state.create_await_timeout.unwrap_or(default_window);
     match await_new_session(&state.engine, pre, status.key.as_deref(), window).await {
         AwaitedCreate::Resolved(id) => created_response(state, id, key).await,
@@ -430,19 +676,34 @@ struct CreatedRef {
 // ── Branch risk (read) ───────────────────────────────────────────────────────
 
 /// What the delete dialog says about the branches it is offering to remove.
+/// What the delete dialog offers about the agent's branches: the one the
+/// worktree is on (the first box) and every other one it has been on (the
+/// second box), each pinned to the commit a tick would delete, with how much
+/// work each box holds that exists on no remote.
 #[derive(Serialize)]
-struct BranchUnpushedResponse {
-    /// Every branch the delete would remove, which is what the dialog names.
-    /// A drifted agent gives up two, and the dialog renders THIS list rather
-    /// than working the pair out again from its own copy of the session, so
-    /// what the user is asked about is what the server would delete.
-    branches: Vec<String>,
-    /// Commits on those branches reachable from no remote-tracking ref, counted as a
-    /// union, or `null` when git could not answer; the dialog then omits the
-    /// sentence rather than guessing a number. The count and whether the repository
-    /// has remote-tracking refs at all travel as one object, because the number
-    /// means a different thing without the flag.
-    unpushed: Option<UnpushedPayload>,
+struct BranchOfferResponse {
+    /// The name of the branch the worktree was on when this was read.
+    current_name: String,
+    /// The branch the worktree is on, `null` when git could not read it or it
+    /// is the project's own.
+    current: Option<yaran_core::branch_history::OfferedBranch>,
+    /// What ticking only the first box loses.
+    current_unpushed: Option<UnpushedPayload>,
+    current_unpushed_error: Option<String>,
+    /// The other branches, each still there and none the project's own.
+    others: Vec<yaran_core::branch_history::OfferedBranch>,
+    /// What ticking only the second box loses.
+    others_unpushed: Option<UnpushedPayload>,
+    others_unpushed_error: Option<String>,
+    /// What ticking both boxes loses.
+    both_unpushed: Option<UnpushedPayload>,
+    both_unpushed_error: Option<String>,
+    /// Branches the agent was on that are the project's own, offered in no box.
+    protected: Vec<String>,
+    /// How many files in the worktree are not committed, which removing the
+    /// worktree deletes, or why git could not look.
+    uncommitted_files: Option<u32>,
+    uncommitted_files_error: Option<String>,
 }
 
 /// The wire shape of [`yaran_core::git::UnpushedCommits`].
@@ -452,7 +713,23 @@ struct UnpushedPayload {
     has_remote_refs: bool,
 }
 
-/// How much work would be lost by ticking "also delete the branch".
+fn unpushed_payload(
+    answer: Result<yaran_core::git::UnpushedCommits, String>,
+) -> (Option<UnpushedPayload>, Option<String>) {
+    match answer {
+        Ok(answer) => (
+            Some(UnpushedPayload {
+                count: answer.count,
+                has_remote_refs: answer.has_remote_refs,
+            }),
+            None,
+        ),
+        Err(reason) => (None, Some(reason)),
+    }
+}
+
+/// The branches the delete dialog offers, and how much work ticking each box
+/// would destroy.
 ///
 /// A read, run off the reactor because it shells out to git. Answered only for
 /// a managed agent with a project behind it; a standalone agent has no branch
@@ -464,32 +741,128 @@ async fn session_branch_unpushed(
     if !id_within_bound(&id) {
         return unknown_session();
     }
-    let Some(inputs) = state.engine.session_branch_delete_inputs(id).await else {
+    let Some(inputs) = state.engine.session_branch_delete_inputs(id.clone()).await else {
         return unknown_session();
     };
-    let branches: Vec<String> = inputs
-        .warned_branches()
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-    let repo = std::path::PathBuf::from(&inputs.project_path);
-    let counted = {
-        let branches = branches.clone();
-        tokio::task::spawn_blocking(move || {
-            let refs: Vec<&str> = branches.iter().map(String::as_str).collect();
-            yaran_core::git::unpushed_commit_count(&repo, &refs).ok()
-        })
-        .await
-        .unwrap_or(None)
+    let Ok(offer) = tokio::task::spawn_blocking(move || {
+        yaran_core::branch_history::delete_branch_offer(&inputs)
+    })
+    .await
+    else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the branch check stopped unexpectedly",
+        )
+            .into_response();
     };
-    axum::Json(BranchUnpushedResponse {
-        branches,
-        unpushed: counted.map(|answer| UnpushedPayload {
-            count: answer.count,
-            has_remote_refs: answer.has_remote_refs,
-        }),
+    state
+        .engine
+        .record_offered_branches(id, offer.newly_seen.clone())
+        .await;
+    let (current_unpushed, current_unpushed_error) = unpushed_payload(offer.current_unpushed);
+    let (others_unpushed, others_unpushed_error) = unpushed_payload(offer.others_unpushed);
+    let (both_unpushed, both_unpushed_error) = unpushed_payload(offer.both_unpushed);
+    let (uncommitted_files, uncommitted_files_error) = match offer.uncommitted_files {
+        Ok(count) => (Some(count), None),
+        Err(reason) => (None, Some(reason)),
+    };
+    axum::Json(BranchOfferResponse {
+        current_name: offer.current_name,
+        current: offer.current,
+        current_unpushed,
+        current_unpushed_error,
+        others: offer.others,
+        others_unpushed,
+        others_unpushed_error,
+        both_unpushed,
+        both_unpushed_error,
+        protected: offer.protected,
+        uncommitted_files,
+        uncommitted_files_error,
     })
     .into_response()
+}
+
+/// How many files in an agent's worktree are not committed, on its own.
+#[derive(Serialize)]
+struct UncommittedFilesResponse {
+    /// The count, or `null` when git could not look.
+    uncommitted_files: Option<u32>,
+    /// Why git could not look, `null` when it counted.
+    uncommitted_files_error: Option<String>,
+}
+
+/// How many files a worktree removal would delete with the folder, and
+/// nothing else: the command line's `agents rm --delete-worktree` and
+/// `projects rm --delete-worktrees` ask this when no branch is being decided.
+///
+/// Unlike `branch-unpushed` it reads no branch, counts no commit and records
+/// no branch the agent was on, so asking it leaves the delete that follows
+/// exactly as it would have been. It needs no project record: the worktree is
+/// the managed agent's own, the path the delete removes. A read, run off the
+/// reactor because it shells out to git. A standalone agent has no worktree
+/// yaran would remove, so it is answered as an unknown session.
+async fn session_uncommitted_files(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    if !id_within_bound(&id) {
+        return unknown_session();
+    }
+    // The rename probe is the managed workspace's own worktree path; its
+    // branch is not used here.
+    let Some((worktree, _branch)) = state.engine.rename_pushed_probe(id).await else {
+        return unknown_session();
+    };
+    let Ok(answer) = tokio::task::spawn_blocking(move || {
+        yaran_core::branch_history::worktree_uncommitted_files(std::path::Path::new(&worktree))
+    })
+    .await
+    else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the uncommitted-file check stopped unexpectedly",
+        )
+            .into_response();
+    };
+    let (uncommitted_files, uncommitted_files_error) = match answer {
+        Ok(count) => (Some(count), None),
+        Err(reason) => (None, Some(reason)),
+    };
+    axum::Json(UncommittedFilesResponse {
+        uncommitted_files,
+        uncommitted_files_error,
+    })
+    .into_response()
+}
+
+/// What the rename dialog warns about under its "also rename the git branch" box.
+#[derive(Serialize)]
+struct BranchPushedResponse {
+    /// Whether the branch has a pushed copy this clone knows of, or `null` when
+    /// git could not answer; the dialog then warns only about what it does know.
+    pushed: Option<bool>,
+}
+
+/// Whether renaming this agent's branch would leave a pushed copy behind on its
+/// old name.
+///
+/// A read, run off the reactor because it shells out to git. A standalone agent
+/// has no branch and its dialog renders no checkbox, so it is answered as an
+/// unknown session, like the delete dialog's branch read.
+async fn session_branch_pushed(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    if !id_within_bound(&id) {
+        return unknown_session();
+    }
+    let Some((worktree, branch)) = state.engine.rename_pushed_probe(id).await else {
+        return unknown_session();
+    };
+    let pushed = tokio::task::spawn_blocking(move || {
+        yaran_core::git::branch_is_pushed(std::path::Path::new(&worktree), &branch).ok()
+    })
+    .await
+    .unwrap_or(None);
+    axum::Json(BranchPushedResponse { pushed }).into_response()
 }
 
 // ── Delete ───────────────────────────────────────────────────────────────────
@@ -509,43 +882,109 @@ struct DeleteQuery {
     delete_branch: Option<bool>,
 }
 
+/// The most a delete's body may hold: the branch answers, a few branch names
+/// and commit ids each.
+const DELETE_BODY_LIMIT: usize = 256 * 1024;
+
+/// The optional JSON body of a delete: both delete-dialog boxes' answers,
+/// each over the branches it pinned to the commits it showed. Absent (or an
+/// empty body) means the caller predates the boxes and the query speaks.
+#[derive(Default, Deserialize)]
+struct DeleteBody {
+    #[serde(default)]
+    branches: Option<yaran_core::branch_history::BranchAnswersWire>,
+}
+
 async fn delete_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(q): Query<DeleteQuery>,
-    headers: HeaderMap,
+    Query(operation): Query<OperationQuery>,
+    Query(force): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
+    request: axum::extract::Request,
 ) -> Response {
     if !id_within_bound(&id) {
         return unknown_session();
     }
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
+    let Ok(body) = axum::body::to_bytes(body, DELETE_BODY_LIMIT).await else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "The agent was not deleted: the request body could not be read.",
+        )
+            .into_response();
+    };
+    let body: DeleteBody = if body.is_empty() {
+        DeleteBody::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(body) => body,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("The agent was not deleted: the request body is not valid: {err}."),
+                )
+                    .into_response();
+            }
+        }
+    };
+    // Refused here, before anything is dispatched, so a malformed pin is a
+    // 400 and never a delete without one.
+    if let Err(reason) = yaran_core::branch_history::BranchAnswersWire::to_request(
+        body.branches.as_ref(),
+        q.delete_branch,
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("The agent was not deleted: {reason}."),
+        )
+            .into_response();
+    }
     if let Err(resp) = resolve_worktree(&state, id.clone()).await {
         return resp.into_response();
     }
-    delete_wire_response(
-        state
-            .engine
-            .apply_wire_scoped(
-                WireCommand::DeleteSession {
-                    session_id: id,
-                    delete_worktree: q.delete_worktree,
-                    delete_branch: q.delete_branch,
-                },
-                scope_from_headers(&headers, &state.connections),
-            )
-            .await,
+    let command = WireCommand::DeleteSession {
+        session_id: id.clone(),
+        delete_worktree: q.delete_worktree,
+        delete_branch: q.delete_branch,
+        branches: body.branches,
+    };
+    let result = match dispatch_guarded(
+        &state,
+        command,
+        &headers,
+        OperationKind::AgentDelete,
+        &operation,
+        &force,
+        &client,
     )
+    .await
+    {
+        Ok(result) => result,
+        Err(refused) => return refused.into_response(),
+    };
+    if operation.asked() {
+        return delete_operation_response(result.and_then(super::rest_common::Guarded::followed));
+    }
+    delete_wire_response(result.map(|guarded| guarded.outcome))
 }
 
 // ── Patch (rename / provider / auto-reopen) ──────────────────────────────────
 
 /// Optional per-field session update. Any subset may be present; absent fields are
-/// untouched. `title` is title-only (never renames the git branch); an empty title
-/// clears the custom name back to the branch name. `provider` change is deferred to
-/// the next reconnect.
+/// untouched. `title` renames the agent, and an empty title clears the custom name
+/// back to the branch name (a standalone agent's folder name). `rename_branch`
+/// renames the git branch to `title` as well, the rename dialog's checkbox; it is
+/// read only with a `title` and absent means false. `provider` change is deferred
+/// to the next reconnect.
 #[derive(Deserialize)]
 struct PatchSessionBody {
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    rename_branch: bool,
     #[serde(default)]
     provider: Option<String>,
     #[serde(default)]
@@ -590,6 +1029,7 @@ async fn patch_session(
                 WireCommand::RenameSession {
                     session_id: id.clone(),
                     title,
+                    rename_branch: body.rename_branch,
                 },
                 scope.clone(),
             )
@@ -653,6 +1093,9 @@ struct ReconnectBody {
 async fn reconnect_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    Query(force_connected): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
     headers: HeaderMap,
     body: Option<Json<ReconnectBody>>,
 ) -> Response {
@@ -662,20 +1105,36 @@ async fn reconnect_session(
     if let Err(resp) = resolve_worktree(&state, id.clone()).await {
         return resp.into_response();
     }
-    let force = body.map(|Json(b)| b.force).unwrap_or(false);
-    match state
-        .engine
-        .apply_wire_scoped(
-            WireCommand::ReconnectSession {
-                session_id: id,
-                force,
-            },
-            scope_from_headers(&headers, &state.connections),
-        )
-        .await
+    let force = body.is_some_and(|Json(b)| b.force);
+    let command = WireCommand::ReconnectSession {
+        session_id: id,
+        force,
+    };
+    // Only a forced restart ends what is running; the engine guards just that.
+    let result = match dispatch_guarded(
+        &state,
+        command,
+        &headers,
+        OperationKind::AgentStart,
+        &operation,
+        &force_connected,
+        &client,
+    )
+    .await
     {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Ok(result) => result,
+        Err(refused) => return refused.into_response(),
+    };
+    match result.and_then(|guarded| {
+        if operation.asked() {
+            guarded.followed().map(|(_, op)| Some(op))
+        } else {
+            Ok(None)
+        }
+    }) {
+        Ok(Some(op)) => operation_accepted(&op),
+        Ok(None) => StatusCode::OK.into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
     }
 }
 
@@ -735,6 +1194,9 @@ struct KillSessionBody {
 async fn kill_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    Query(force_connected): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
     headers: HeaderMap,
     body: Option<Json<KillSessionBody>>,
 ) -> Response {
@@ -743,24 +1205,51 @@ async fn kill_session(
     }
     // Absent body means the polite path, which is what every per-agent gesture
     // sends; only the panic button asks for `force`.
-    let force = body.map(|Json(b)| b.force).unwrap_or(false);
-    match state
-        .engine
-        .apply_wire_scoped(
-            WireCommand::DetachAgent {
-                session_id: id,
-                force,
-            },
-            scope_from_headers(&headers, &state.connections),
-        )
-        .await
+    let force = body.is_some_and(|Json(b)| b.force);
+    let command = WireCommand::DetachAgent {
+        session_id: id,
+        force,
+    };
+    let result = match dispatch_guarded(
+        &state,
+        command,
+        &headers,
+        OperationKind::AgentStop,
+        &operation,
+        &force_connected,
+        &client,
+    )
+    .await
     {
-        Ok(_) => StatusCode::OK.into_response(),
+        Ok(result) => result,
+        Err(refused) => return refused.into_response(),
+    };
+    let result = result.and_then(|guarded| {
+        if operation.asked() {
+            guarded.followed().map(|(_, op)| Some(op))
+        } else {
+            Ok(None)
+        }
+    });
+    match result {
+        Ok(Some(op)) => operation_accepted(&op),
+        Ok(None) => StatusCode::OK.into_response(),
         // The engine returns "unknown session: …" when the row is gone (e.g. a
         // concurrent delete); surface that as 404, not a generic 400.
         Err(e) if e.contains("unknown session") => (StatusCode::NOT_FOUND, e).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
     }
+}
+
+/// Body of `POST /api/v1/sessions/:id/recreate-working-copy`. Optional: no body
+/// recreates the copy and leaves every running tab alone.
+#[derive(Deserialize)]
+struct RecreateWorkingCopyBody {
+    /// The confirmation's restart checkbox: once the checkout succeeds, stop
+    /// the running tabs that cannot follow the folder and can pick their
+    /// conversation back up, and start them again.
+    #[serde(default)]
+    restart_tabs: bool,
 }
 
 /// Check a managed agent's branch out again at the path its working copy used
@@ -769,45 +1258,57 @@ async fn kill_session(
 /// Like the kill route and unlike the git-mutation routes, it calls no
 /// `resolve_worktree`: a directory that is gone is precisely the case this
 /// exists for, and resolving one would refuse every legitimate request.
+///
+/// A recreate that restarts tabs stops them, so it goes through the attachment
+/// guard like a stop: a 409 naming who is attached, unless `force_connected`.
 async fn recreate_working_copy(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(force_connected): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
     headers: HeaderMap,
+    body: Option<Json<RecreateWorkingCopyBody>>,
 ) -> Response {
     if !id_within_bound(&id) {
         return unknown_session();
     }
-    match state
-        .engine
-        .apply_wire_scoped(
-            WireCommand::RecreateWorkingCopy { session_id: id },
-            scope_from_headers(&headers, &state.connections),
-        )
-        .await
-    {
+    let restart_tabs = body.is_some_and(|Json(body)| body.restart_tabs);
+    let command = WireCommand::RecreateWorkingCopy {
+        session_id: id,
+        restart_tabs,
+    };
+    let result =
+        match dispatch_guarded_unrecorded(&state, command, &headers, &force_connected, &client)
+            .await
+        {
+            Ok(result) => result,
+            Err(refused) => return refused.into_response(),
+        };
+    match result {
         Ok(_) => StatusCode::OK.into_response(),
         Err(e) if e.contains("unknown session") => (StatusCode::NOT_FOUND, e).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
     }
 }
 
-// ── Pull-request attach / detach ─────────────────────────────────────────────
+// ── Pull requests ────────────────────────────────────────────────────────────
 
-/// Body of `PUT /api/v1/sessions/:id/pull-request`: the raw reference text the
-/// user typed (a PR URL, `#123`, `owner/repo#123`, or a bare number).
+/// Body of `POST /api/v1/sessions/:id/pull-requests`: the raw reference text
+/// the user typed (a PR URL, `#123`, `owner/repo#123`, or a bare number).
 #[derive(Deserialize)]
 struct AttachPullRequestBody {
     pr: String,
 }
 
-/// Manually attach (pin) a pull request to a session. Dispatch only: the
-/// engine mints the keyed busy (broadcast by the actor arm) and spawns the gh
-/// lookup worker; the final (attached, or the failure) rides the status toast
-/// stream, and the pinned badge lands with the next pushed workspace document
-/// (announced, for a client that does not read the push, by `sessions.changed`).
+/// Attach a pull request to a session, beside the ones it has. Dispatch
+/// only: the engine mints the keyed busy (broadcast by the actor arm) and
+/// spawns the gh lookup worker; the final (attached, or the failure) rides the
+/// status toast stream and finishes the operation record, and the new row
+/// lands with the next pushed workspace document.
 async fn attach_pull_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
     headers: HeaderMap,
     Json(raw): Json<serde_json::Value>,
 ) -> Response {
@@ -840,120 +1341,242 @@ async fn attach_pull_request(
         )
         .await
     {
-        // The keyed status op spanning resolve and attach, so a client can
-        // correlate the eventual final on the toast stream. This is the
-        // documented deferred direction (see `rest_common`): the handler must
-        // NOT block on the `gh` lookup.
-        Ok(op_id) => accepted(Accepted { op_id: Some(op_id) }),
-        // Defense in depth for a session deleted between the check above and
-        // the dispatch: the engine's own unknown-session error stays a 404.
-        Err(e) if e.contains("unknown session") => (StatusCode::NOT_FOUND, e).into_response(),
-        // An attach that is still resolving owns this agent's pull-request
-        // state; the engine refuses the operation and 409 is this codebase's
-        // busy-refusal code (the create and delete in-flight guards above).
-        Err(e) if e.contains(yaran_core::engine::PR_ATTACH_IN_FLIGHT_MARKER) => {
-            (StatusCode::CONFLICT, e).into_response()
-        }
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        // The handler must NOT block on the `gh` lookup (see `rest_common`):
+        // the record, or the keyed op id it shares, is how a client learns
+        // how it ended.
+        Ok(record) if operation.asked() => operation_accepted(&record),
+        Ok(record) => accepted(Accepted {
+            op_id: Some(record.id),
+        }),
+        Err(e) => pull_request_refusal(e),
     }
 }
 
-/// Detach a session's pull request: removes a pin if there is one, clears the badge
-/// immediately, and stops autodetection until the agent is attached by hand or
-/// detection is resumed. Applies to an autodetected association too. Synchronous;
-/// the info status rides the stream like the sibling handlers' outcomes.
+/// How a pull-request change's refusal answers: a session or a pull request
+/// that is not there is a 404, an attach still resolving for the agent is the
+/// codebase's busy-refusal 409, and anything else is a 400.
+fn pull_request_refusal(error: String) -> Response {
+    if error.contains("unknown session")
+        || error.contains(yaran_core::engine::UNKNOWN_PULL_REQUEST_MARKER)
+    {
+        return (StatusCode::NOT_FOUND, error).into_response();
+    }
+    if error.contains(yaran_core::engine::PR_ATTACH_IN_FLIGHT_MARKER) {
+        return (StatusCode::CONFLICT, error).into_response();
+    }
+    refusal(error, StatusCode::BAD_REQUEST)
+}
+
+/// Run one synchronous pull-request change: `200` with its status, or with
+/// `?operation=1` the `202` and the record it finished inside the call.
+async fn change_pull_requests(
+    state: &AppState,
+    headers: &HeaderMap,
+    operation: &OperationQuery,
+    id: &str,
+    command: WireCommand,
+    kind: OperationKind,
+) -> Response {
+    if !id_within_bound(id) {
+        return unknown_session();
+    }
+    let scope = scope_from_headers(headers, &state.connections);
+    if operation.asked() {
+        return match state
+            .engine
+            .apply_wire_operation(command, scope, kind)
+            .await
+        {
+            Ok((_, record)) => operation_accepted(&record),
+            Err(e) => pull_request_refusal(e),
+        };
+    }
+    match state.engine.apply_wire_recorded(command, scope, kind).await {
+        Ok(outcome) => Json(outcome.status).into_response(),
+        Err(e) => pull_request_refusal(e),
+    }
+}
+
+/// Body of the routes that change one pull request: which one.
+type PullRequestBody = yaran_core::viewmodel::PrKeyView;
+
+/// `POST /api/v1/sessions/:id/pull-requests/detach`: detach one attached pull
+/// request. One yaran also found stays, as found.
 async fn detach_pull_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
     headers: HeaderMap,
+    Json(pr): Json<PullRequestBody>,
 ) -> Response {
-    if !id_within_bound(&id) {
-        return unknown_session();
-    }
-    match state
-        .engine
-        .apply_wire_scoped(
-            WireCommand::ClearPullRequestOverride { session_id: id },
-            scope_from_headers(&headers, &state.connections),
-        )
-        .await
-    {
-        Ok(_) => StatusCode::OK.into_response(),
-        // The engine returns "unknown session: …" when the row is gone; surface
-        // that as 404, not a generic 400 (the `kill_session` pattern).
-        Err(e) if e.contains("unknown session") => (StatusCode::NOT_FOUND, e).into_response(),
-        // An attach that is still resolving owns this agent's pull-request
-        // state; the engine refuses the operation and 409 is this codebase's
-        // busy-refusal code (the create and delete in-flight guards above).
-        Err(e) if e.contains(yaran_core::engine::PR_ATTACH_IN_FLIGHT_MARKER) => {
-            (StatusCode::CONFLICT, e).into_response()
-        }
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
-    }
+    let command = WireCommand::DetachPullRequest {
+        session_id: id.clone(),
+        pr,
+    };
+    change_pull_requests(
+        &state,
+        &headers,
+        &operation,
+        &id,
+        command,
+        OperationKind::PrDetach,
+    )
+    .await
 }
 
-/// Undo a detach: switch pull-request autodetection back on for the session
-/// and run one immediate check. Synchronous and shaped exactly like the detach
-/// beside it (same scoping, same `200`, same 404 mapping); resuming a session
-/// nobody detached is a harmless success.
-async fn resume_pull_request_autodetection(
+/// `POST /api/v1/sessions/:id/pull-requests/hide`: put one found pull request
+/// out of sight.
+async fn hide_pull_request(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
     headers: HeaderMap,
+    Json(pr): Json<PullRequestBody>,
 ) -> Response {
+    let command = WireCommand::HidePullRequest {
+        session_id: id.clone(),
+        pr,
+    };
+    change_pull_requests(
+        &state,
+        &headers,
+        &operation,
+        &id,
+        command,
+        OperationKind::PrHide,
+    )
+    .await
+}
+
+/// `POST /api/v1/sessions/:id/pull-requests/show`: show a hidden pull request
+/// again.
+async fn show_pull_request(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+    Json(pr): Json<PullRequestBody>,
+) -> Response {
+    let command = WireCommand::ShowPullRequest {
+        session_id: id.clone(),
+        pr,
+    };
+    change_pull_requests(
+        &state,
+        &headers,
+        &operation,
+        &id,
+        command,
+        OperationKind::PrShow,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct PullRequestSortBody {
+    /// `automatic` (or `auto`) | `manual`.
+    mode: yaran_core::wire::PullRequestSort,
+}
+
+/// `PUT /api/v1/sessions/:id/pull-requests/sort`: order the agent's pull
+/// requests automatically or in the user's own order.
+async fn set_pull_request_sort(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+    Json(body): Json<PullRequestSortBody>,
+) -> Response {
+    let command = WireCommand::SetPullRequestSort {
+        session_id: id.clone(),
+        mode: body.mode,
+    };
+    change_pull_requests(
+        &state,
+        &headers,
+        &operation,
+        &id,
+        command,
+        OperationKind::PrSort,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct MovePullRequestBody {
+    pr: PullRequestBody,
+    /// `top` | `up` | `down`, or a position counted from 1.
+    to: yaran_core::wire::PullRequestMove,
+}
+
+/// `POST /api/v1/sessions/:id/pull-requests/move`: move one shown pull
+/// request in the agent's order.
+async fn move_pull_request(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+    Json(body): Json<MovePullRequestBody>,
+) -> Response {
+    let command = WireCommand::MovePullRequest {
+        session_id: id.clone(),
+        pr: body.pr,
+        to: body.to,
+    };
+    change_pull_requests(
+        &state,
+        &headers,
+        &operation,
+        &id,
+        command,
+        OperationKind::PrMove,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct ReorderPullRequestsBody {
+    order: Vec<PullRequestBody>,
+}
+
+/// `PUT /api/v1/sessions/:id/pull-requests/order`: put the shown pull
+/// requests in the order a drag left them.
+async fn reorder_pull_requests(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    headers: HeaderMap,
+    Json(body): Json<ReorderPullRequestsBody>,
+) -> Response {
+    let command = WireCommand::ReorderPullRequests {
+        session_id: id.clone(),
+        order: body.order,
+    };
+    change_pull_requests(
+        &state,
+        &headers,
+        &operation,
+        &id,
+        command,
+        OperationKind::PrMove,
+    )
+    .await
+}
+
+/// `GET /api/v1/sessions/:id/pull-requests/branches`: every branch the
+/// agent's worktree has been on, the one checked out now first and the rest
+/// newest first, with its pull requests.
+async fn pull_request_branches(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     if !id_within_bound(&id) {
         return unknown_session();
     }
-    match state
-        .engine
-        .apply_wire_scoped(
-            WireCommand::ResumePullRequestAutodetection { session_id: id },
-            scope_from_headers(&headers, &state.connections),
-        )
-        .await
-    {
-        Ok(_) => StatusCode::OK.into_response(),
-        // The engine returns "unknown session: …" when the row is gone; surface
-        // that as 404, not a generic 400 (the `kill_session` pattern).
-        Err(e) if e.contains("unknown session") => (StatusCode::NOT_FOUND, e).into_response(),
-        // An attach that is still resolving owns this agent's pull-request
-        // state; the engine refuses the operation and 409 is this codebase's
-        // busy-refusal code (the create and delete in-flight guards above).
-        Err(e) if e.contains(yaran_core::engine::PR_ATTACH_IN_FLIGHT_MARKER) => {
-            (StatusCode::CONFLICT, e).into_response()
-        }
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    match state.engine.pull_request_branches(id).await {
+        Ok(view) => Json(view).into_response(),
+        Err(e) => pull_request_refusal(e),
     }
 }
 
 // ── Reorder ──────────────────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct ReorderBody {
-    project_id: String,
-    session_ids: Vec<String>,
-}
-
-async fn reorder_sessions(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<ReorderBody>,
-) -> Response {
-    match state
-        .engine
-        .apply_wire_scoped(
-            WireCommand::ReorderSessions {
-                project_id: body.project_id,
-                session_ids: body.session_ids,
-            },
-            scope_from_headers(&headers, &state.connections),
-        )
-        .await
-    {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
-    }
-}
 
 #[derive(Deserialize)]
 struct ReorderGlobalBody {
@@ -1036,6 +1659,395 @@ mod tests {
         let _ = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     }
 
+    /// The router over an engine where a followed stop holds `s1`, a followed
+    /// delete holds `ghost` (already off the list), and a phone is attached to
+    /// `s2`'s tab.
+    fn held_and_attached_agents_app(tmp: &std::path::Path) -> axum::Router {
+        use yaran_core::attachments::{ConnectionFacts, Surface, Target, TargetKind};
+        use yaran_core::engine::InFlightKey;
+        use yaran_core::operations::{Hold, OperationKind};
+
+        let mut engine = crate::test_support::unstarted_test_engine(tmp);
+        engine
+            .sessions
+            .push(crate::test_support::sample_agent("s1"));
+        engine
+            .sessions
+            .push(crate::test_support::sample_agent("s2"));
+        for (record, agent, kind) in [
+            ("op-h", "s1", OperationKind::AgentStop),
+            ("op-g", "ghost", OperationKind::AgentDelete),
+        ] {
+            engine.open_operation(record, kind);
+            engine
+                .operations
+                .admit(
+                    Some(record),
+                    &[],
+                    &[Hold::exclusive(InFlightKey::Agent(agent.to_string()))],
+                )
+                .unwrap();
+        }
+        engine.attachments.register(
+            "e-phone",
+            ConnectionFacts {
+                surface: Surface::Browser,
+                device: Some("Firefox-on-a-phone".to_string()),
+                address: Some("10.1.2.3".parse().unwrap()),
+                verified: false,
+                events: true,
+                browser: None,
+            },
+            None,
+        );
+        engine
+            .attachments
+            .attach(
+                "e-phone",
+                Target {
+                    kind: TargetKind::Tab,
+                    id: "s2-slot".to_string(),
+                    agent: Some("s2".to_string()),
+                },
+                None,
+                None,
+            )
+            .unwrap();
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        crate::server::router(handle)
+    }
+
+    /// Send each `(method, uri, body)` and assert its status and that its body
+    /// contains the text given.
+    async fn assert_each_answers(
+        app: &axum::Router,
+        cases: &[(&str, &str, &str, StatusCode, &str)],
+    ) {
+        for &(method, uri, body, status, says) in cases {
+            let mut request = Request::builder().method(method).uri(uri);
+            if !body.is_empty() {
+                request = request.header("content-type", "application/json");
+            }
+            let resp = app
+                .clone()
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let got = resp.status();
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            assert_eq!(got, status, "{method} {uri}: {text}");
+            assert!(text.contains(says), "{method} {uri}: {text}");
+        }
+    }
+
+    /// While a followed change holds an agent, every other change to it, or
+    /// to a tab or a terminal inside it, is a 409 naming that operation, and
+    /// so is a change to an agent a delete has already taken off the list,
+    /// rather than the 404 of an agent that never existed.
+    #[tokio::test]
+    async fn a_change_to_an_agent_another_change_holds_is_a_409_naming_it() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let app = held_and_attached_agents_app(tmp.path());
+        assert_each_answers(
+            &app,
+            &[
+                (
+                    "DELETE",
+                    "/api/v1/sessions/s1",
+                    "",
+                    StatusCode::CONFLICT,
+                    "op-h",
+                ),
+                (
+                    "DELETE",
+                    "/api/v1/sessions/s1?operation=1",
+                    "",
+                    StatusCode::CONFLICT,
+                    "op-h",
+                ),
+                (
+                    "POST",
+                    "/api/v1/sessions/s1/kill",
+                    "",
+                    StatusCode::CONFLICT,
+                    "op-h",
+                ),
+                (
+                    "POST",
+                    "/api/v1/sessions/s1/reconnect",
+                    "",
+                    StatusCode::CONFLICT,
+                    "op-h",
+                ),
+                (
+                    "POST",
+                    "/api/v1/sessions/s1/tabs",
+                    "",
+                    StatusCode::CONFLICT,
+                    "op-h",
+                ),
+                (
+                    "POST",
+                    "/api/v1/sessions/s1/tabs/s1-slot/start",
+                    "",
+                    StatusCode::CONFLICT,
+                    "op-h",
+                ),
+                (
+                    "POST",
+                    "/api/v1/sessions/s1/terminals?operation=1",
+                    "",
+                    StatusCode::CONFLICT,
+                    "op-h",
+                ),
+                (
+                    "DELETE",
+                    "/api/v1/sessions/ghost",
+                    "",
+                    StatusCode::CONFLICT,
+                    "op-g",
+                ),
+            ],
+        )
+        .await;
+    }
+
+    /// A change that would end a terminal somebody else is attached to is a
+    /// 409 listing who (a request with no connection of its own exempts
+    /// nobody), and goes ahead only with `force_connected=true`.
+    #[tokio::test]
+    async fn a_change_that_would_end_an_attached_terminal_is_a_409_listing_who() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let app = held_and_attached_agents_app(tmp.path());
+        assert_each_answers(
+            &app,
+            &[
+                (
+                    "DELETE",
+                    "/api/v1/sessions/s2",
+                    "",
+                    StatusCode::CONFLICT,
+                    r#""error":"attached""#,
+                ),
+                (
+                    "DELETE",
+                    "/api/v1/sessions/s2?operation=1",
+                    "",
+                    StatusCode::CONFLICT,
+                    r#""address":"10.1.2.3""#,
+                ),
+                (
+                    "POST",
+                    "/api/v1/sessions/s2/kill",
+                    "",
+                    StatusCode::CONFLICT,
+                    r#""device":"Firefox-on-a-phone""#,
+                ),
+                (
+                    "POST",
+                    "/api/v1/sessions/s2/reconnect",
+                    r#"{"force":true}"#,
+                    StatusCode::CONFLICT,
+                    r#""id":"s2-slot""#,
+                ),
+                (
+                    "DELETE",
+                    "/api/v1/sessions/s2/tabs/s2-slot",
+                    "",
+                    StatusCode::CONFLICT,
+                    r#""error":"attached""#,
+                ),
+                // Going ahead over only blockers somebody was shown: anybody else
+                // in the way refuses it again, each with the key to send back.
+                (
+                    "DELETE",
+                    "/api/v1/sessions/s2?force_connected=0123456789abcdef",
+                    "",
+                    StatusCode::CONFLICT,
+                    r#""key":""#,
+                ),
+                (
+                    "DELETE",
+                    "/api/v1/sessions/s2?force_connected=true",
+                    "",
+                    StatusCode::NO_CONTENT,
+                    "",
+                ),
+            ],
+        )
+        .await;
+    }
+
+    /// The recreate route reads `restart_tabs` from an optional body. Ticked, it
+    /// stops the running Codex tab, so it is a 409 naming whoever is attached
+    /// to that tab, like any stop. With no body it is false, so a client that
+    /// predates the field keeps today's behaviour: nothing is stopped, nothing
+    /// is guarded, and the recreate goes ahead.
+    #[tokio::test]
+    async fn the_recreate_route_guards_a_restart_and_defaults_to_none() {
+        use yaran_core::attachments::{ConnectionFacts, Surface, Target, TargetKind};
+
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let mut engine = crate::test_support::unstarted_test_engine(tmp.path());
+        let mut agent = crate::test_support::sample_agent("s1");
+        agent.provider = yaran_core::model::ProviderKind::new("codex");
+        engine.sessions.push(agent);
+        engine.projects.push(yaran_core::model::Project {
+            id: "p1".to_string(),
+            name: "p1".to_string(),
+            path: tmp.path().join("repo").to_string_lossy().into_owned(),
+            explicit_default_provider: None,
+            default_provider: yaran_core::model::ProviderKind::new("codex"),
+            leading_branch: Some("main".to_string()),
+            auto_reopen_agents: None,
+            startup_command: None,
+            env: std::collections::BTreeMap::default(),
+            current_branch: "main".to_string(),
+            branch_status: yaran_core::model::ProjectBranchStatus::Leading,
+            path_missing: false,
+            created_at: None,
+        });
+        engine
+            .folder_repo_statuses
+            .insert("s1".to_string(), yaran_core::git::FolderRepoStatus::Missing);
+        let running = yaran_core::pty::PtyClient::spawn(
+            "/bin/sh",
+            &["-c".to_string(), "sleep 30".to_string()],
+            tmp.path(),
+            24,
+            80,
+            100,
+        )
+        .expect("spawn the running tab");
+        engine
+            .providers
+            .insert(yaran_core::ids::TabId::new("s1-slot"), running);
+        engine.attachments.register(
+            "e-phone",
+            ConnectionFacts {
+                surface: Surface::Browser,
+                device: Some("Firefox-on-a-phone".to_string()),
+                address: Some("10.1.2.3".parse().unwrap()),
+                verified: false,
+                events: true,
+                browser: None,
+            },
+            None,
+        );
+        engine
+            .attachments
+            .attach(
+                "e-phone",
+                Target {
+                    kind: TargetKind::Tab,
+                    id: "s1-slot".to_string(),
+                    agent: Some("s1".to_string()),
+                },
+                None,
+                None,
+            )
+            .unwrap();
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle);
+
+        for (body, status, says) in [
+            (
+                r#"{"restart_tabs":true}"#,
+                StatusCode::CONFLICT,
+                r#""address":"10.1.2.3""#,
+            ),
+            ("", StatusCode::OK, ""),
+        ] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/v1/sessions/s1/recreate-working-copy");
+            if !body.is_empty() {
+                request = request.header("content-type", "application/json");
+            }
+            let resp = app
+                .clone()
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let got = resp.status();
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            assert_eq!(got, status, "{body:?}: {text}");
+            assert!(text.contains(says), "{body:?}: {text}");
+        }
+    }
+
+    /// A covered change a client did not ask to follow still opens an
+    /// operation record, so whatever it changes is held for as long as it
+    /// runs; its answer is the one the route has always given.
+    #[tokio::test]
+    async fn an_unfollowed_change_keeps_its_answer_and_still_opens_a_record() {
+        let tmp = yaran_core::test_scratch::ScratchDir::new();
+        let mut engine = crate::test_support::unstarted_test_engine(tmp.path());
+        engine
+            .sessions
+            .push(crate::test_support::sample_agent("s1"));
+        engine
+            .sessions
+            .push(crate::test_support::sample_agent("s2"));
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let operations = handle.operations().clone();
+        let app = crate::server::router(handle);
+
+        let mut expected_records = 0;
+        for (method, uri, body, status, answer) in [
+            (
+                "DELETE",
+                "/api/v1/sessions/s1",
+                "",
+                StatusCode::NO_CONTENT,
+                "",
+            ),
+            ("POST", "/api/v1/sessions/s2/kill", "", StatusCode::OK, ""),
+            (
+                "PUT",
+                "/api/v1/macros/greet",
+                r#"{"text":"hi","surface":"agent"}"#,
+                StatusCode::OK,
+                "",
+            ),
+        ] {
+            let mut request = Request::builder().method(method).uri(uri);
+            if !body.is_empty() {
+                request = request.header("content-type", "application/json");
+            }
+            let resp = app
+                .clone()
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), status, "{method} {uri}");
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            if !answer.is_empty() {
+                assert_eq!(String::from_utf8_lossy(&bytes), answer, "{method} {uri}");
+            }
+            expected_records += 1;
+            assert_eq!(
+                operations.len(),
+                expected_records,
+                "{method} {uri} opened a record"
+            );
+        }
+    }
+
     /// The disk watchdog samples the host's real disk at boot; on a nearly
     /// full machine (or CI runner) it would refuse every create these tests
     /// drive. The guard itself is covered by `yaran_core::engine::limits` with
@@ -1057,7 +2069,9 @@ mod tests {
     /// Boot a router whose engine has ONE project pointing at a real git repo
     /// that already has a branch named `existing_branch`. The project is declared
     /// in config.toml so the bootstrap reconciliation adopts it into the engine.
-    fn router_with_project_and_branch(existing_branch: &str) -> (TempDir, axum::Router, String) {
+    fn engine_with_project_and_branch(
+        existing_branch: &str,
+    ) -> (TempDir, yaran_core::engine::Engine) {
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -1072,7 +2086,8 @@ mod tests {
             config_path: tmp.path().join("config.toml"),
             sessions_db_path: tmp.path().join("sessions.sqlite3"),
             worktrees_root: tmp.path().join("worktrees"),
-            lock_path: tmp.path().join("yaran.lock"),
+            lock_path: tmp.path().join("dux.lock"),
+            socket_path: tmp.path().join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         std::fs::write(
@@ -1085,16 +2100,29 @@ mod tests {
         .unwrap();
         let mut engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
         ignore_host_disk_fullness(&mut engine);
+        (tmp, engine)
+    }
+
+    fn router_with_project_and_branch(existing_branch: &str) -> (TempDir, axum::Router, String) {
+        let (tmp, engine) = engine_with_project_and_branch(existing_branch);
         let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
         (tmp, crate::server::router(handle), "p1".to_string())
     }
 
     async fn post_create(app: &axum::Router, body: serde_json::Value) -> axum::response::Response {
+        post_create_at(app, "/api/v1/sessions", body).await
+    }
+
+    async fn post_create_at(
+        app: &axum::Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
         app.clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/sessions")
+                    .uri(uri)
                     .header("content-type", "application/json")
                     .body(axum::body::Body::from(body.to_string()))
                     .unwrap(),
@@ -1136,6 +2164,78 @@ mod tests {
         );
     }
 
+    /// An adopt into a project whose removal is running is refused as in the
+    /// way, before any worktree listing, as the engine refuses it.
+    #[tokio::test]
+    async fn an_adopt_into_a_project_being_removed_is_in_the_way_first() {
+        let (_tmp, engine) = engine_with_project_and_branch("other");
+        engine.open_operation(
+            "op-rm",
+            yaran_core::operations::OperationKind::ProjectRemove,
+        );
+        engine
+            .operations
+            .admit(
+                Some("op-rm"),
+                &[],
+                &[yaran_core::operations::Hold::exclusive(
+                    yaran_core::engine::InFlightKey::Project("p1".to_string()),
+                )],
+            )
+            .expect("the removal holds the project");
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle);
+
+        let response = post_create(
+            &app,
+            serde_json::json!({
+                "kind": "from_worktree",
+                "project_id": "p1",
+                "worktree_path": "/nowhere/at/all",
+                "name": "adopted",
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            yaran_core::operations::is_in_the_way(&String::from_utf8_lossy(&body)),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    /// An adopt of a folder that is no managed worktree is listed in the
+    /// route, and refused there with the engine's own sentence as a 400,
+    /// followed or not.
+    #[tokio::test]
+    async fn an_adopt_of_a_folder_that_is_no_managed_worktree_is_refused_at_once() {
+        for uri in ["/api/v1/sessions", "/api/v1/sessions?operation=1"] {
+            let (_tmp, app, project_id) = router_with_project_and_branch("other");
+            let response = post_create_at(
+                &app,
+                uri,
+                serde_json::json!({
+                    "kind": "from_worktree",
+                    "project_id": project_id,
+                    "worktree_path": "/nowhere/at/all",
+                    "name": "adopted",
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&body).starts_with(
+                    "Worktree \"/nowhere/at/all\" is not an adoptable managed worktree"
+                ),
+                "{uri}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+    }
+
     /// An unconfirmed create whose name matches an existing branch is
     /// REFUSED with a confirmable 409 carrying the branch info, instead of
     /// silently attaching to that branch's history.
@@ -1156,6 +2256,65 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["existing_branch"]["name"], "feature-x");
         assert_eq!(json["existing_branch"]["location"], "local");
+    }
+
+    /// A create refused because another create is running keeps its sentence
+    /// and status for every caller; one that asked to follow the change as an
+    /// operation also learns which operation is in the way, when there is one.
+    #[tokio::test]
+    async fn a_create_refused_for_another_create_names_its_operation_only_when_following() {
+        let (_tmp, mut engine) = engine_with_project_and_branch("feature-x");
+        engine.mark_in_flight(yaran_core::engine::InFlightKey::CreateAgent);
+        // An older create-kind record (a pull-request lookup, say) does not own the guard.
+        engine.open_operation(
+            "op-older",
+            yaran_core::operations::OperationKind::AgentCreate,
+        );
+        engine.open_operation(
+            "op-first",
+            yaran_core::operations::OperationKind::AgentCreate,
+        );
+        engine.operations.set_create_guard("op-first");
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle);
+        let body = serde_json::json!({ "kind": "new", "project_id": "p1", "name": "fresh" });
+        let sentence = "An agent is already being created or forked.";
+
+        let plain = post_create_at(&app, "/api/v1/sessions", body.clone()).await;
+        assert_eq!(plain.status(), StatusCode::CONFLICT);
+        let bytes = to_bytes(plain.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(String::from_utf8_lossy(&bytes), sentence);
+
+        let followed = post_create_at(&app, "/api/v1/sessions?operation=1", body).await;
+        assert_eq!(followed.status(), StatusCode::CONFLICT);
+        let bytes = to_bytes(followed.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["message"], sentence);
+        assert_eq!(json["operation"], "op-first");
+    }
+
+    /// With no open create record (a terminal UI started it), the followed
+    /// refusal is the bare sentence, naming no operation.
+    #[tokio::test]
+    async fn a_followed_create_refused_with_no_create_record_names_no_operation() {
+        let (_tmp, mut engine) = engine_with_project_and_branch("feature-x");
+        engine.mark_in_flight(yaran_core::engine::InFlightKey::CreateAgent);
+        // An open create-kind record that does not own the guard is not named.
+        engine.open_operation(
+            "op-lookup",
+            yaran_core::operations::OperationKind::AgentCreate,
+        );
+        let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+        let app = crate::server::router(handle);
+        let body = serde_json::json!({ "kind": "new", "project_id": "p1", "name": "fresh" });
+
+        let followed = post_create_at(&app, "/api/v1/sessions?operation=1", body).await;
+        assert_eq!(followed.status(), StatusCode::CONFLICT);
+        let bytes = to_bytes(followed.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            "An agent is already being created or forked."
+        );
     }
 
     /// A create for a FRESH name (no matching branch) is not refused by the
@@ -1201,7 +2360,8 @@ mod tests {
             config_path: tmp.path().join("config.toml"),
             sessions_db_path: tmp.path().join("sessions.sqlite3"),
             worktrees_root: tmp.path().join("worktrees"),
-            lock_path: tmp.path().join("yaran.lock"),
+            lock_path: tmp.path().join("dux.lock"),
+            socket_path: tmp.path().join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         let store = yaran_core::storage::SessionStore::open(&paths.sessions_db_path).unwrap();
@@ -1283,15 +2443,15 @@ mod tests {
         assert!(String::from_utf8_lossy(&body).contains("still launching"));
     }
 
-    /// PUT on an id no session has is the truthful 404, not the gh-gate 400
+    /// An attach on an id no session has is the truthful 404, not the gh-gate 400
     /// (the handler checks existence before dispatching).
     #[tokio::test]
     async fn attach_pull_request_404_for_unknown_session() {
         let (_tmp, app) = router_no_auth();
         let resp = send_json(
             &app,
-            "PUT",
-            "/api/v1/sessions/ghost/pull-request",
+            "POST",
+            "/api/v1/sessions/ghost/pull-requests",
             Some(serde_json::json!({ "pr": "#12" })),
         )
         .await;
@@ -1307,8 +2467,8 @@ mod tests {
         let (_tmp, app) = router_with_seeded_session("s1");
         let resp = send_json(
             &app,
-            "PUT",
-            "/api/v1/sessions/s1/pull-request",
+            "POST",
+            "/api/v1/sessions/s1/pull-requests",
             Some(serde_json::json!({ "reference": "#12" })),
         )
         .await;
@@ -1317,8 +2477,8 @@ mod tests {
 
         let resp = send_json(
             &app,
-            "PUT",
-            "/api/v1/sessions/ghost/pull-request",
+            "POST",
+            "/api/v1/sessions/ghost/pull-requests",
             Some(serde_json::json!({ "reference": "#12" })),
         )
         .await;
@@ -1343,7 +2503,8 @@ mod tests {
             config_path: tmp.path().join("config.toml"),
             sessions_db_path: tmp.path().join("sessions.sqlite3"),
             worktrees_root: tmp.path().join("worktrees"),
-            lock_path: tmp.path().join("yaran.lock"),
+            lock_path: tmp.path().join("dux.lock"),
+            socket_path: tmp.path().join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         let project_dir = tmp.path().join("plain-project");
@@ -1409,8 +2570,8 @@ mod tests {
         let (_tmp, app) = router_with_seeded_session_and_gh("s1");
         let resp = send_json(
             &app,
-            "PUT",
-            "/api/v1/sessions/s1/pull-request",
+            "POST",
+            "/api/v1/sessions/s1/pull-requests",
             Some(serde_json::json!({ "pr": "#42" })),
         )
         .await;
@@ -1425,6 +2586,28 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let op_id = json["op_id"].as_str().expect("op_id in the 202 body");
         assert!(op_id.starts_with("op-"), "got {op_id:?}");
+
+        // Followed, the answer is the attach's own record, waiting on its
+        // lookup under the same id.
+        let (_tmp, app) = router_with_seeded_session_and_gh("s1");
+        let resp = send_json(
+            &app,
+            "POST",
+            "/api/v1/sessions/s1/pull-requests?operation=1",
+            Some(serde_json::json!({ "pr": "#42" })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let location = resp.headers()[axum::http::header::LOCATION]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(record["kind"], "pr.attach");
+        let id = record["id"].as_str().expect("the record's id");
+        assert!(id.starts_with("op-"), "got {id:?}");
+        assert_eq!(location, format!("/api/v1/operations/{id}"));
     }
 
     /// With a real session but no usable gh (the test engine never probes gh,
@@ -1435,8 +2618,8 @@ mod tests {
         let (_tmp, app) = router_with_seeded_session("s1");
         let resp = send_json(
             &app,
-            "PUT",
-            "/api/v1/sessions/s1/pull-request",
+            "POST",
+            "/api/v1/sessions/s1/pull-requests",
             Some(serde_json::json!({ "pr": "#12" })),
         )
         .await;
@@ -1449,42 +2632,146 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn detach_pull_request_404_for_unknown_session() {
-        let (_tmp, app) = router_no_auth();
-        let resp = send_json(&app, "DELETE", "/api/v1/sessions/ghost/pull-request", None).await;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let _ = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    }
-
-    /// Detaching a session that never had a manual pin is a real detach now,
-    /// not a no-op: it suppresses autodetection just the same, and answers
-    /// 200. The engine-side proof that it clears the badge and records the
-    /// suppression lives in `yaran_core::engine`; this asserts the route shape.
-    #[tokio::test]
-    async fn detach_pull_request_200_without_override() {
-        let (_tmp, app) = router_with_seeded_session("s1");
-        let resp = send_json(&app, "DELETE", "/api/v1/sessions/s1/pull-request", None).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let _ = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    }
-
-    /// The way back is shaped exactly like the detach: synchronous, 200, and
-    /// resuming a session nobody detached is a harmless success.
-    #[tokio::test]
-    async fn resume_pull_request_autodetection_200_after_a_detach_and_without_one() {
-        let (_tmp, app) = router_with_seeded_session("s1");
-        for _ in 0..2 {
-            let resp = send_json(
-                &app,
+    /// The routes that change one agent's pull requests, each with a body
+    /// naming `#12` of `o/r`.
+    fn pull_request_change_routes(id: &str) -> Vec<(&'static str, String, serde_json::Value)> {
+        let pr = serde_json::json!({ "host": "github.com", "owner_repo": "o/r", "number": 12 });
+        let base = format!("/api/v1/sessions/{id}/pull-requests");
+        vec![
+            ("POST", format!("{base}/detach"), pr.clone()),
+            ("POST", format!("{base}/hide"), pr.clone()),
+            ("POST", format!("{base}/show"), pr.clone()),
+            (
+                "PUT",
+                format!("{base}/sort"),
+                serde_json::json!({ "mode": "manual" }),
+            ),
+            (
                 "POST",
-                "/api/v1/sessions/s1/pull-request/autodetect",
-                None,
-            )
-            .await;
-            assert_eq!(resp.status(), StatusCode::OK);
-            let _ = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+                format!("{base}/move"),
+                serde_json::json!({ "pr": pr.clone(), "to": "top" }),
+            ),
+            (
+                "PUT",
+                format!("{base}/order"),
+                serde_json::json!({ "order": [pr] }),
+            ),
+        ]
+    }
+
+    /// Every pull-request route answers an id no session has with a 404, the
+    /// branch list included.
+    #[tokio::test]
+    async fn the_pull_request_routes_404_for_an_unknown_session() {
+        let (_tmp, app) = router_no_auth();
+        for (method, uri, body) in pull_request_change_routes("ghost") {
+            let resp = send_json(&app, method, &uri, Some(body)).await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
         }
+        let resp = send_json(
+            &app,
+            "GET",
+            "/api/v1/sessions/ghost/pull-requests/branches",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Every pull-request change answers `?operation=1` with `202` and a
+    /// record of its own kind, finished inside the call, and without it a
+    /// plain `200`. A position outside the list is refused with the range, a
+    /// pull request the agent does not have is a 404, and the branch list
+    /// reads the agent's branches.
+    #[tokio::test]
+    async fn every_pull_request_change_answers_a_followed_change_with_its_record() {
+        let (_tmp, app) = router_with_seeded_session_prepared("s1", |engine, _| {
+            let mut found = yaran_core::model::AgentPr::found(
+                &yaran_core::model::PrInfo {
+                    number: 12,
+                    host: "github.com".to_string(),
+                    owner_repo: "o/r".to_string(),
+                    title: "Found".to_string(),
+                    ..Default::default()
+                },
+                chrono::Utc::now(),
+            );
+            found.attached = true;
+            found.head_branch = Some("feat".to_string());
+            engine
+                .session_store
+                .replace_agent_prs("s1", &[found], &yaran_core::model::PrPrefs::default())
+                .unwrap();
+        });
+        let kinds = [
+            "pr.detach",
+            "pr.hide",
+            "pr.show",
+            "pr.sort",
+            "pr.move",
+            "pr.move",
+        ];
+        for ((method, uri, body), kind) in pull_request_change_routes("s1").into_iter().zip(kinds) {
+            let resp = send_json(&app, method, &format!("{uri}?operation=1"), Some(body)).await;
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(
+                status,
+                StatusCode::ACCEPTED,
+                "{method} {uri}: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+            let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(record["kind"], kind, "{method} {uri}");
+            assert_eq!(record["state"], "succeeded", "{method} {uri}: {record}");
+        }
+
+        let (method, uri, body) = pull_request_change_routes("s1").remove(3);
+        let resp = send_json(&app, method, &uri, Some(body)).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "unfollowed, a change is a 200"
+        );
+
+        let resp = send_json(
+            &app,
+            "POST",
+            "/api/v1/sessions/s1/pull-requests/move",
+            Some(serde_json::json!({
+                "pr": { "host": "github.com", "owner_repo": "o/r", "number": 12 },
+                "to": 3,
+            })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&bytes),
+            "\"seeded\" shows 1 pull request; a position is 1 to 1."
+        );
+
+        let resp = send_json(
+            &app,
+            "POST",
+            "/api/v1/sessions/s1/pull-requests/hide",
+            Some(serde_json::json!({ "host": "github.com", "owner_repo": "o/r", "number": 99 })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let resp = send_json(
+            &app,
+            "GET",
+            "/api/v1/sessions/s1/pull-requests/branches",
+            None,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let view: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(view["branches"][0]["name"], "feat");
+        assert_eq!(view["branches"][0]["current"], true);
     }
 
     /// While an attach is resolving for the agent, every one of its
@@ -1492,12 +2779,13 @@ mod tests {
     /// same busy-refusal code the create and delete in-flight guards use.
     #[tokio::test]
     async fn the_pull_request_routes_409_while_an_attach_is_resolving() {
-        let cases: [(&str, &str); 3] = [
-            ("PUT", "/api/v1/sessions/s1/pull-request"),
-            ("DELETE", "/api/v1/sessions/s1/pull-request"),
-            ("POST", "/api/v1/sessions/s1/pull-request/autodetect"),
-        ];
-        for (method, uri) in cases {
+        let mut cases = vec![(
+            "POST",
+            "/api/v1/sessions/s1/pull-requests".to_string(),
+            serde_json::json!({ "pr": "#12" }),
+        )];
+        cases.extend(pull_request_change_routes("s1"));
+        for (method, uri, body) in cases {
             let (_tmp, app) = router_with_seeded_session_prepared("s1", |engine, dir| {
                 engine.github_integration_enabled = true;
                 engine.gh_status = yaran_core::model::GhStatus::Available;
@@ -1511,8 +2799,7 @@ mod tests {
                         .into();
                 engine.mark_in_flight(yaran_core::engine::InFlightKey::PrAttach("s1".to_string()));
             });
-            let body = (method == "PUT").then(|| serde_json::json!({ "pr": "#12" }));
-            let resp = send_json(&app, method, uri, body).await;
+            let resp = send_json(&app, method, &uri, Some(body)).await;
             assert_eq!(
                 resp.status(),
                 StatusCode::CONFLICT,
@@ -1532,12 +2819,13 @@ mod tests {
     #[tokio::test]
     async fn the_pull_request_routes_still_404_for_an_unknown_session_while_an_attach_is_resolving()
     {
-        let cases: [(&str, &str); 3] = [
-            ("PUT", "/api/v1/sessions/ghost/pull-request"),
-            ("DELETE", "/api/v1/sessions/ghost/pull-request"),
-            ("POST", "/api/v1/sessions/ghost/pull-request/autodetect"),
-        ];
-        for (method, uri) in cases {
+        let mut cases = vec![(
+            "POST",
+            "/api/v1/sessions/ghost/pull-requests".to_string(),
+            serde_json::json!({ "pr": "#12" }),
+        )];
+        cases.extend(pull_request_change_routes("ghost"));
+        for (method, uri, body) in cases {
             let (_tmp, app) = router_with_seeded_session_prepared("s1", |engine, dir| {
                 engine.github_integration_enabled = true;
                 engine.gh_status = yaran_core::model::GhStatus::Available;
@@ -1551,8 +2839,7 @@ mod tests {
                         .into();
                 engine.mark_in_flight(yaran_core::engine::InFlightKey::PrAttach("s1".to_string()));
             });
-            let body = (method == "PUT").then(|| serde_json::json!({ "pr": "#12" }));
-            let resp = send_json(&app, method, uri, body).await;
+            let resp = send_json(&app, method, &uri, Some(body)).await;
             assert_eq!(
                 resp.status(),
                 StatusCode::NOT_FOUND,
@@ -1560,20 +2847,6 @@ mod tests {
             );
             let _ = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         }
-    }
-
-    #[tokio::test]
-    async fn resume_pull_request_autodetection_404_for_unknown_session() {
-        let (_tmp, app) = router_no_auth();
-        let resp = send_json(
-            &app,
-            "POST",
-            "/api/v1/sessions/ghost/pull-request/autodetect",
-            None,
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let _ = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     }
 
     /// A CONFIRMED create (`use_existing_branch: true`) is not refused by the
@@ -1639,6 +2912,15 @@ struct ResolvePullRequestReply {
     /// the two surfaces word it identically. `null` when every project was
     /// inspected and "none of them" really means none of them.
     uninspected_summary: Option<String>,
+    /// Present on a zero-match answer for a reference yaran could offer to clone:
+    /// the address, the pull request's own facts, as `gh` just reported them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clone: Option<yaran_core::pr_reference::PullRequestCloneFacts>,
+    /// Present when an offer was possible but `gh` could not look the pull
+    /// request up: the lookup's own sentence. The answer is still a 200 with
+    /// its projects, so choosing an existing project stays open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clone_unavailable: Option<String>,
 }
 
 /// Read a typed pull-request reference and match it against every project's
@@ -1667,11 +2949,17 @@ async fn resolve_pull_request_reference(
             .into_response();
     }
 
-    let Some((projects, policy, gh_available)) =
-        state.engine.pull_request_resolution_inputs().await
-    else {
+    let Some(inputs) = state.engine.pull_request_resolution_inputs().await else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "engine unavailable").into_response();
     };
+    let crate::engine_actor::PullRequestResolutionInputs {
+        projects,
+        policy,
+        protocols,
+        gh_program,
+        gh_available,
+        ..
+    } = inputs;
     // The same gate the create carries: a raw or stale client must not reach a
     // resolution the create would then refuse.
     if !gh_available {
@@ -1684,42 +2972,172 @@ async fn resolve_pull_request_reference(
     if let Some(host) = reference.host.as_deref()
         && !policy.allows(host)
     {
+        // The status's words, in their plain spelling: this is an HTTP refusal.
         return (
             StatusCode::BAD_REQUEST,
-            format!(
-                "yaran cannot look up pull requests on {host}. Sign in to that host with \
-                 `gh auth login --hostname {host}`, or paste a reference from a host you \
-                 are already signed in to."
-            ),
+            yaran_core::gh::host_not_signed_in(host).to_string(),
         )
             .into_response();
     }
 
     let repository = reference.repository_label();
     let number = reference.number;
+    let offer = yaran_core::pr_reference::pull_request_clone_offer(&reference, &policy, &protocols);
     match tokio::task::spawn_blocking(move || {
-        yaran_core::pr_reference::resolve_reference_projects(&reference, &projects, &policy)
+        let resolution =
+            yaran_core::pr_reference::resolve_reference_projects(&reference, &projects, &policy);
+        // The lookup shells out to `gh`, so it runs here and only when it can
+        // matter: no project has the repository and an offer is possible.
+        let lookup = match offer {
+            Some(offer) if resolution.matches.is_empty() => Some(
+                yaran_core::pr_reference::look_up_clone_offer(&gh_program, offer),
+            ),
+            _ => None,
+        };
+        (resolution, lookup)
     })
     .await
     {
-        Ok(resolution) => Json(ResolvePullRequestReply {
-            repository,
-            number,
-            uninspected_count: resolution.uninspected.len(),
-            uninspected_summary: resolution.uninspected_summary(),
-            projects: resolution
-                .matches
-                .into_iter()
-                .map(|project| PullRequestProjectMatch {
-                    id: project.id,
-                    name: project.name,
-                })
-                .collect(),
-        })
-        .into_response(),
+        Ok((resolution, lookup)) => {
+            let (clone, clone_unavailable) = match lookup {
+                Some(Ok(clone)) => (Some(clone), None),
+                // Relayed `gh` text, so its bidirectional-text controls go.
+                Some(Err(sentence)) => {
+                    (None, Some(yaran_core::bidi::strip_bidi_controls(&sentence)))
+                }
+                None => (None, None),
+            };
+            Json(ResolvePullRequestReply {
+                repository,
+                number,
+                uninspected_count: resolution.uninspected.len(),
+                uninspected_summary: resolution.uninspected_summary(),
+                clone,
+                clone_unavailable,
+                projects: resolution
+                    .matches
+                    .into_iter()
+                    .map(|project| PullRequestProjectMatch {
+                        id: project.id,
+                        name: project.name,
+                    })
+                    .collect(),
+            })
+            .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("resolving the pull request reference failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
+/// The folder a pull request's repository would be cloned into or added from,
+/// and the repository it should hold.
+#[derive(Deserialize)]
+struct PullRequestCloneDestinationBody {
+    path: String,
+    host: String,
+    owner_repo: String,
+    /// The pull request's number, head branch and head commit, which let the
+    /// answer for a checkout say whether the agent will need a review copy.
+    /// Without the number and the branch it says nothing about one.
+    #[serde(default)]
+    number: Option<u64>,
+    #[serde(default)]
+    head_branch: Option<String>,
+    #[serde(default)]
+    head_oid: Option<String>,
+    /// The name the agent would get. A name other than the branch's own is
+    /// answered for itself, free folder or checkout: only one spelled like a
+    /// review copy of the branch needs one. Absent, the answer is the branch's.
+    #[serde(default)]
+    agent_name: Option<String>,
+}
+
+/// What the folder holds: `free` for a clone, `checkout` for an add. `path` is
+/// the folder as yaran will use it.
+#[derive(Serialize)]
+struct PullRequestCloneDestinationReply {
+    state: &'static str,
+    path: String,
+    /// For a checkout, and only when the request named the pull request's
+    /// branch: whether the agent will need a review copy, from what the folder
+    /// holds. Nothing is fetched or written to find out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_copy: Option<yaran_core::status_text::ReviewCopyOutlook>,
+}
+
+/// Say what a folder holds for a pull request's repository, so the client can
+/// offer the clone or the add that will actually run. A read: nothing is
+/// created. Git runs, so it does so off the async reactor.
+async fn check_pull_request_clone_destination(
+    State(state): State<AppState>,
+    Json(body): Json<PullRequestCloneDestinationBody>,
+) -> Response {
+    let Some(inputs) = state.engine.pull_request_resolution_inputs().await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "engine unavailable").into_response();
+    };
+    if !inputs.gh_available {
+        return (
+            StatusCode::BAD_REQUEST,
+            "GitHub PR agent creation requires GitHub integration and an authenticated gh CLI.",
+        )
+            .into_response();
+    }
+    let target = yaran_core::pr_reference::PullRequestCloneTarget {
+        host: body.host,
+        owner_repo: body.owner_repo,
+        number: 0,
+    };
+    let (number, head_branch, head_oid) = (body.number, body.head_branch, body.head_oid);
+    let typed_name = body
+        .agent_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && Some(*name) != head_branch.as_deref())
+        .map(str::to_string);
+    let worktrees_root = inputs.worktrees_root.clone();
+    match tokio::task::spawn_blocking(move || {
+        let projects: Vec<&str> = inputs.projects.iter().map(|p| p.path.as_str()).collect();
+        // The review copy question is asked only when the request names the
+        // pull request's number and branch.
+        let review = match (number, head_branch.as_deref()) {
+            (Some(number), Some(head_branch)) => {
+                Some(yaran_core::clone_project::FolderReviewCopyQuery {
+                    worktrees_root: &worktrees_root,
+                    number,
+                    head_branch,
+                    head_commit: head_oid.as_deref(),
+                    agent_name: typed_name.as_deref(),
+                })
+            }
+            _ => None,
+        };
+        yaran_core::clone_project::check_pr_destination(
+            &body.path,
+            &target,
+            &inputs.policy,
+            &projects,
+            review,
+        )
+    })
+    .await
+    {
+        Ok(Ok(check)) => Json(PullRequestCloneDestinationReply {
+            state: match check.state {
+                yaran_core::clone_project::PrDestination::Free => "free",
+                yaran_core::clone_project::PrDestination::Checkout => "checkout",
+            },
+            path: check.path.to_string_lossy().into_owned(),
+            review_copy: check.review_copy,
+        })
+        .into_response(),
+        Ok(Err(refused)) => (StatusCode::BAD_REQUEST, refused.to_string()).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("checking the folder failed: {e}"),
         )
             .into_response(),
     }

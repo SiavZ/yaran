@@ -235,7 +235,7 @@ fn migration_0005_drops_orphan_session_prs_and_succeeds() {
     );
 
     let store = SessionStore::open(&path).expect("an orphan PR row must not fail the open");
-    assert_eq!(store.load_prs("live").expect("live PRs").len(), 1);
+    assert_eq!(store.load_agent_prs_of("live").expect("live PRs").len(), 1);
     let session_ids: Vec<String> = store
         .load_sessions()
         .expect("load")
@@ -243,13 +243,13 @@ fn migration_0005_drops_orphan_session_prs_and_succeeds() {
         .map(|s| s.id)
         .collect();
     assert_eq!(session_ids, vec!["live".to_string()]);
-    let visible: Vec<String> = store
-        .load_all_latest_prs()
-        .expect("latest PRs")
-        .into_iter()
-        .map(|pr| pr.session_id)
+    let mut visible: Vec<String> = store
+        .load_agent_prs()
+        .expect("PRs")
+        .into_keys()
         .filter(|id| session_ids.contains(id))
         .collect();
+    visible.sort();
     assert_eq!(visible, vec!["live".to_string()]);
     let orphans: i64 = Connection::open(&path)
         .expect("raw open")
@@ -288,7 +288,10 @@ fn migration_0005_preserves_session_pr_foreign_key() {
     );
 
     let store = SessionStore::open(&path).expect("migrate with PR row");
-    assert_eq!(store.load_prs("session").expect("load PRs").len(), 1);
+    assert_eq!(
+        store.load_agent_prs_of("session").expect("load PRs").len(),
+        1
+    );
     let fk: (String, String, String) = Connection::open(&path)
         .expect("raw open")
         .query_row("pragma foreign_key_list(session_prs)", [], |row| {
@@ -305,7 +308,7 @@ fn migration_0005_preserves_session_pr_foreign_key() {
         "the declared reference still names agent_sessions(id)"
     );
     store.delete_session("session").expect("hard delete parent");
-    assert!(store.load_prs("session").expect("load").is_empty());
+    assert!(store.load_agent_prs_of("session").expect("load").is_empty());
 }
 
 /// Fork migration 0005 rebuilt the table with a NOT NULL, UNIQUE, CHECKed

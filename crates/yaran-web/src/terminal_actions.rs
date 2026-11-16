@@ -16,10 +16,13 @@
 //! `POST /api/v1/terminals/reorder` reorders every companion terminal, all three
 //! owners, as one flat global list, and its body is the complete set of ids in the
 //! desired order. Runtime-only, with no persistence.
+//!
+//! `POST /api/v1/terminals/place` moves one project or standalone terminal's row
+//! in the agents list's manual order: right after the agent it names, or first.
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, post},
@@ -27,11 +30,17 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use yaran_core::model::TerminalRoute;
+use yaran_core::operations::{OperationKind, OperationView};
 use yaran_core::wire::WireCommand;
 
+use crate::engine_actor::OperationTicket;
 use crate::git_routes::resolve_worktree;
-use crate::rest_common::{id_within_bound, scope_from_headers, unknown_session};
+use crate::rest_common::{
+    ForceConnectedQuery, OperationQuery, dispatch_guarded, id_within_bound, operation_accepted,
+    refusal, scope_from_headers, ticket_accepted, unknown_session,
+};
 use crate::server::AppState;
+use std::sync::{Arc, OnceLock};
 
 /// The companion-terminal routes. Session terminals nest under
 /// `/sessions/:id` and project terminals under `/projects/:id`, so the owner is
@@ -54,8 +63,9 @@ pub fn routes() -> Router<AppState> {
         )
         // The literal `reorder` segment is registered BEFORE the `{tid}` delete
         // so a router without literal-over-parameter precedence cannot read a
-        // reorder as a terminal id.
+        // reorder or a place as a terminal id.
         .route("/api/v1/terminals/reorder", post(reorder_terminals))
+        .route("/api/v1/terminals/place", post(place_terminal_in_list))
         .route("/api/v1/terminals", post(create_standalone_terminal))
         .route(
             "/api/v1/terminals/{tid}",
@@ -74,14 +84,20 @@ struct CreatedTerminal {
 /// `POST /api/v1/sessions/:id/terminals`: create a companion terminal for a
 /// session. Runs through the dedicated engine request; it mints no status, so no
 /// `X-Connection-Id` scoping is needed here.
-async fn create_terminal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+async fn create_terminal(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
+) -> Response {
     if !id_within_bound(&id) {
         return unknown_session();
     }
     if let Err(resp) = resolve_worktree(&state, id.clone()).await {
         return resp.into_response();
     }
-    match state.engine.create_terminal(id.clone()).await {
+    let (ticket, followed) = terminal_ticket(&operation);
+    match state.engine.create_terminal(id.clone(), ticket).await {
+        Ok(_) if let Some(record) = &followed => ticket_accepted(record),
         Ok((terminal_id, label)) => {
             let location = format!("/api/v1/sessions/{id}/terminals/{terminal_id}");
             (
@@ -91,7 +107,7 @@ async fn create_terminal(State(state): State<AppState>, Path(id): Path<String>) 
             )
                 .into_response()
         }
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
     }
 }
 
@@ -101,6 +117,7 @@ async fn create_terminal(State(state): State<AppState>, Path(id): Path<String>) 
 async fn create_project_terminal(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(operation): Query<OperationQuery>,
 ) -> Response {
     if !id_within_bound(&id) {
         return unknown_project();
@@ -108,7 +125,13 @@ async fn create_project_terminal(
     if state.engine.project_path(id.clone()).await.is_none() {
         return unknown_project();
     }
-    match state.engine.create_project_terminal(id.clone()).await {
+    let (ticket, followed) = terminal_ticket(&operation);
+    match state
+        .engine
+        .create_project_terminal(id.clone(), ticket)
+        .await
+    {
+        Ok(_) if let Some(record) = &followed => ticket_accepted(record),
         Ok((terminal_id, label)) => {
             let location = format!("/api/v1/projects/{id}/terminals/{terminal_id}");
             (
@@ -118,7 +141,7 @@ async fn create_project_terminal(
             )
                 .into_response()
         }
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
     }
 }
 
@@ -127,8 +150,13 @@ async fn create_project_terminal(
 /// there is no owner to resolve and nothing that has to exist first, which is
 /// exactly why the two routes above each begin by resolving theirs and this one
 /// does not.
-async fn create_standalone_terminal(State(state): State<AppState>) -> Response {
-    match state.engine.create_standalone_terminal().await {
+async fn create_standalone_terminal(
+    State(state): State<AppState>,
+    Query(operation): Query<OperationQuery>,
+) -> Response {
+    let (ticket, followed) = terminal_ticket(&operation);
+    match state.engine.create_standalone_terminal(ticket).await {
+        Ok(_) if let Some(record) = &followed => ticket_accepted(record),
         Ok((terminal_id, label)) => {
             let location = format!("/api/v1/terminals/{terminal_id}");
             (
@@ -138,7 +166,7 @@ async fn create_standalone_terminal(State(state): State<AppState>) -> Response {
             )
                 .into_response()
         }
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
     }
 }
 
@@ -149,6 +177,9 @@ async fn create_standalone_terminal(State(state): State<AppState>) -> Response {
 async fn delete_standalone_terminal(
     State(state): State<AppState>,
     Path(tid): Path<String>,
+    Query(operation): Query<OperationQuery>,
+    Query(force): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
     headers: HeaderMap,
 ) -> Response {
     if !id_within_bound(&tid) {
@@ -158,7 +189,7 @@ async fn delete_standalone_terminal(
         Some(owner) if owner.is_at_route(TerminalRoute::Standalone) => {}
         _ => return unknown_terminal(),
     }
-    dispatch_delete(&state, tid, &headers).await
+    dispatch_delete(&state, tid, &headers, &operation, &force, &client).await
 }
 
 /// `DELETE /api/v1/sessions/:id/terminals/:tid`: delete a companion terminal,
@@ -166,6 +197,9 @@ async fn delete_standalone_terminal(
 async fn delete_terminal(
     State(state): State<AppState>,
     Path((id, tid)): Path<(String, String)>,
+    Query(operation): Query<OperationQuery>,
+    Query(force): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
     headers: HeaderMap,
 ) -> Response {
     if !id_within_bound(&id) || !id_within_bound(&tid) {
@@ -182,7 +216,7 @@ async fn delete_terminal(
         Some(owner) if owner.is_at_route(TerminalRoute::Session(&id)) => {}
         _ => return unknown_terminal(),
     }
-    dispatch_delete(&state, tid, &headers).await
+    dispatch_delete(&state, tid, &headers, &operation, &force, &client).await
 }
 
 /// `DELETE /api/v1/projects/:id/terminals/:tid` deletes a project terminal,
@@ -190,6 +224,9 @@ async fn delete_terminal(
 async fn delete_project_terminal(
     State(state): State<AppState>,
     Path((id, tid)): Path<(String, String)>,
+    Query(operation): Query<OperationQuery>,
+    Query(force): Query<ForceConnectedQuery>,
+    client: crate::server::SocketClient,
     headers: HeaderMap,
 ) -> Response {
     if !id_within_bound(&id) || !id_within_bound(&tid) {
@@ -205,7 +242,7 @@ async fn delete_project_terminal(
         Some(owner) if owner.is_at_route(TerminalRoute::Project(&id)) => {}
         _ => return unknown_terminal(),
     }
-    dispatch_delete(&state, tid, &headers).await
+    dispatch_delete(&state, tid, &headers, &operation, &force, &client).await
 }
 
 /// Body for the global terminal reorder: the complete set of terminal ids in the
@@ -239,20 +276,90 @@ async fn reorder_terminals(
     }
 }
 
-/// The shared delete dispatch: `WireCommand::DeleteTerminal` is id-keyed and
-/// owner-blind by design; ownership was already enforced by the route above.
-async fn dispatch_delete(state: &AppState, tid: String, headers: &HeaderMap) -> Response {
+/// Body for placing one terminal's row in the agents list: the terminal and the
+/// agent it sits right after, absent or null for the top.
+#[derive(Deserialize)]
+struct PlaceTerminalBody {
+    terminal_id: String,
+    #[serde(default)]
+    after_agent: Option<String>,
+}
+
+/// `POST /api/v1/terminals/place`. The agents list's drag for a project or
+/// standalone terminal row: the engine refuses an unknown terminal and an
+/// agent's own, which is not a list row. Runtime-only, so no persistence.
+async fn place_terminal_in_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PlaceTerminalBody>,
+) -> Response {
     match state
         .engine
         .apply_wire_scoped(
-            WireCommand::DeleteTerminal { terminal_id: tid },
-            scope_from_headers(headers, &state.connections),
+            WireCommand::PlaceTerminalInList {
+                terminal_id: body.terminal_id,
+                after_agent: body.after_agent,
+            },
+            scope_from_headers(&headers, &state.connections),
         )
         .await
     {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => StatusCode::OK.into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
     }
+}
+
+/// The shared delete dispatch: `WireCommand::DeleteTerminal` is id-keyed and
+/// owner-blind by design; ownership was already enforced by the route above.
+async fn dispatch_delete(
+    state: &AppState,
+    tid: String,
+    headers: &HeaderMap,
+    operation: &OperationQuery,
+    force: &ForceConnectedQuery,
+    client: &crate::server::SocketClient,
+) -> Response {
+    let command = WireCommand::DeleteTerminal { terminal_id: tid };
+    let result = match dispatch_guarded(
+        state,
+        command,
+        headers,
+        OperationKind::TerminalClose,
+        operation,
+        force,
+        client,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(refused) => return refused.into_response(),
+    };
+    match result.and_then(|guarded| {
+        if operation.asked() {
+            guarded.followed().map(|(_, op)| Some(op))
+        } else {
+            Ok(None)
+        }
+    }) {
+        Ok(Some(op)) => operation_accepted(&op),
+        Ok(None) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => refusal(e, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// A terminal create followed as an operation carries a ticket, and the route
+/// keeps the slot the engine leaves its record in, to answer with.
+fn terminal_ticket(
+    operation: &OperationQuery,
+) -> (
+    Option<OperationTicket>,
+    Option<Arc<OnceLock<OperationView>>>,
+) {
+    // Recorded whether or not the client follows it; the answer is the record
+    // only when it asked.
+    let ticket = OperationTicket::new(OperationKind::TerminalCreate);
+    let followed = operation.asked().then(|| Arc::clone(&ticket.record));
+    (Some(ticket), followed)
 }
 
 fn unknown_terminal() -> Response {

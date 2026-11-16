@@ -66,8 +66,8 @@ use yaran_core::cloud::machine_api::{ApiFactory, default_api_factory};
 use yaran_core::cloud::outcome::{CloudActionOutcome, KEY_LOGIN, KEY_STATUS};
 use yaran_core::cloud::paths::CloudPaths;
 use yaran_core::cloud::status::{StatusReport, gather};
-use yaran_core::engine::{Engine, StatusUpdate};
-use yaran_core::statusline::{LiveStatusKeys, StatusTone};
+use yaran_core::engine::Engine;
+use yaran_core::statusline::LiveStatusKeys;
 
 use crate::engine_actor::EngineHandle;
 use crate::rest_common::RouteRejection;
@@ -77,11 +77,22 @@ use crate::server::AppState;
 /// reload is seen by the next request.
 #[derive(Clone)]
 pub struct CloudInputs {
+    /// Where the cloud credentials live.
     pub paths: CloudPaths,
+    /// The live `[cloud]` section.
     pub cloud: CloudConfig,
     /// The effective serving port, sent to the control plane as `origin_port`.
     pub server_port: u16,
+    /// The status keys registered as running, so a slow call is not called stranded.
     pub live_keys: LiveStatusKeys,
+}
+
+impl std::fmt::Debug for CloudInputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudInputs")
+            .field("server_port", &self.server_port)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CloudInputs {
@@ -118,7 +129,14 @@ pub struct CloudState {
     login: Arc<Mutex<Option<ActiveLogin>>>,
 }
 
+impl std::fmt::Debug for CloudState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudState").finish_non_exhaustive()
+    }
+}
+
 impl CloudState {
+    /// The routes' state over `engine`, with `api` overriding the control-plane client.
     pub fn new(engine: EngineHandle, api: Option<ApiFactory>) -> Arc<Self> {
         Arc::new(Self {
             engine,
@@ -148,7 +166,7 @@ impl CloudState {
     fn busy(&self, inputs: &CloudInputs, key: &str, message: &str) {
         inputs.live_keys.register(key);
         self.engine
-            .post_status(StatusUpdate::keyed(key, StatusTone::Busy, message));
+            .post_status(yaran_core::cloud::outcome::busy_status(key, message));
     }
 }
 
@@ -176,9 +194,13 @@ pub fn router<S: Clone + Send + Sync + 'static>(cloud: Arc<CloudState>) -> Route
 /// The authorize step of a login, as the dialog shows it.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct LoginView {
+    /// The id the dialog completes or cancels the login by.
     pub login_id: String,
+    /// The org's authorize page to open in a browser.
     pub authorize_url: String,
+    /// The machine key fingerprint the confirm page shows too.
     pub fingerprint: String,
+    /// The org's display name.
     pub org_name: String,
 }
 

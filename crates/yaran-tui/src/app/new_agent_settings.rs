@@ -343,7 +343,8 @@ impl App {
             }
             NameNewAgentFocus::Input
             | NameNewAgentFocus::RandomizedNameCheckbox
-            | NameNewAgentFocus::CopyChangesCheckbox => {}
+            | NameNewAgentFocus::CopyChangesCheckbox
+            | NameNewAgentFocus::ReviewCopyCheckbox => {}
         }
     }
 
@@ -498,8 +499,9 @@ mod tests {
             use_existing_branch: false,
             pull_before_create: false,
             copy_uncommitted_changes: false,
+            cloned: None,
         };
-        app.open_name_new_agent_prompt(request).unwrap();
+        app.open_name_new_agent_prompt(request);
     }
 
     fn extras(app: &App) -> &NewAgentExtras {
@@ -521,6 +523,7 @@ mod tests {
             input: Rect::new(10, 5, 30, 1),
             checkbox: None,
             copy_checkbox: None,
+            review_copy_checkbox: None,
         };
         if let PromptState::NameNewAgent { extras, .. } = &mut app.prompt {
             extras.hit_rows = rows;

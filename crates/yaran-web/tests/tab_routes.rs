@@ -58,23 +58,40 @@ async fn boot() -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
 async fn boot_with_tab_per_agent(
     tab_per_agent: u32,
 ) -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
+    boot_tuned(tab_per_agent, |params| params).await
+}
+
+async fn boot_tuned(
+    tab_per_agent: u32,
+    tune: impl FnOnce(RouterParams) -> RouterParams,
+) -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
+    boot_full(tab_per_agent, None, tune).await
+}
+
+/// [`boot_tuned`], with the web password set to `password` when one is given.
+async fn boot_full(
+    tab_per_agent: u32,
+    password: Option<&str>,
+    tune: impl FnOnce(RouterParams) -> RouterParams,
+) -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
     let tmp = yaran_core::test_scratch::ScratchDir::new();
     let root = tmp.path().to_path_buf();
     let wt1 = root.join("wt1");
     let wt2 = root.join("wt2");
-    std::fs::create_dir_all(&wt1).unwrap();
-    std::fs::create_dir_all(&wt2).unwrap();
+    std::fs::create_dir_all(&wt1).expect("create the test directory");
+    std::fs::create_dir_all(&wt2).expect("create the test directory");
 
     let paths = YaranPaths {
         root: root.clone(),
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -84,18 +101,18 @@ async fn boot_with_tab_per_agent(
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session("s1", wt1.to_string_lossy().as_ref()))
-            .unwrap();
+            .expect("save the test agent");
         store
             .create_session(&sample_session("s2", wt2.to_string_lossy().as_ref()))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
@@ -109,6 +126,11 @@ async fn boot_with_tab_per_agent(
             ..Default::default()
         },
     );
+    if let Some(password) = password {
+        engine.config.server.auth.password_hash =
+            yaran_core::auth::hash_password(&yaran_core::auth::Password::new(password.to_string()))
+                .expect("hash the test password");
+    }
     let (handle, _join) = spawn_engine_thread(engine);
     let params = RouterParams::plain_http().with_max_websocket_connections(
         yaran_core::config::DEFAULT_MAX_WEBSOCKET_EVENTS_CONNECTIONS,
@@ -117,16 +139,20 @@ async fn boot_with_tab_per_agent(
         yaran_core::config::DEFAULT_MAX_WEBSOCKET_TAB_CONNECTIONS,
         tab_per_agent,
     );
-    let app = build_app(handle, Router::<AppState>::new(), params);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let app = build_app(handle, Router::<AppState>::new(), tune(params));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
+    // Served the way every serve leg is, with both ends of each connection
+    // recorded for the auth layer.
     tokio::spawn(async move {
         axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
+            yaran_web::auth::provenance::Recorded(listener),
+            app.into_make_service_with_connect_info::<yaran_web::auth::Arrival>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, tmp)
 }
@@ -147,18 +173,19 @@ async fn boot_with_broken_provider_and_claude(
     let tmp = yaran_core::test_scratch::ScratchDir::new();
     let root = tmp.path().to_path_buf();
     let wt1 = root.join("wt1");
-    std::fs::create_dir_all(&wt1).unwrap();
+    std::fs::create_dir_all(&wt1).expect("create the test directory");
 
     let paths = YaranPaths {
         root: root.clone(),
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -168,15 +195,15 @@ async fn boot_with_broken_provider_and_claude(
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session("s1", wt1.to_string_lossy().as_ref()))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
@@ -208,28 +235,40 @@ async fn boot_with_broken_provider_and_claude(
         yaran_core::config::DEFAULT_MAX_WEBSOCKET_TABS_PER_AGENT,
     );
     let app = build_app(handle, Router::<AppState>::new(), params);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, tmp)
 }
 
+/// The creation is followed to its outcome so the tab's launch has reported and
+/// nothing still holds the tab when the caller acts on it.
 async fn create_extra_tab(client: &reqwest::Client, addr: SocketAddr, session: &str) -> String {
     let resp = client
-        .post(format!("http://{addr}/api/v1/sessions/{session}/tabs"))
+        .post(format!(
+            "http://{addr}/api/v1/sessions/{session}/tabs?operation=1"
+        ))
         .send()
         .await
-        .unwrap();
-    assert_eq!(resp.status(), 201, "create tab should 201");
-    let body: serde_json::Value = resp.json().await.unwrap();
-    body["tab_id"].as_str().unwrap().to_string()
+        .expect("send the request");
+    let record = followed_outcome(client, addr, resp).await;
+    assert_eq!(
+        record["state"], "succeeded",
+        "the tab should come up: {record}"
+    );
+    record["created"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("the record names the tab: {record}"))
+        .to_string()
 }
 
 #[tokio::test]
@@ -244,8 +283,24 @@ async fn post_tabs_creates_and_returns_an_attachable_id() {
         .unwrap();
     assert_eq!(resp.status(), 201);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(!body["tab_id"].as_str().unwrap().is_empty());
+    assert_ne!(body["tab_id"].as_str().unwrap(), "");
     assert_eq!(body["provider"], "claude");
+
+    // Followed as an operation, the create ends when the tab's launch reports,
+    // on the launch's own sentence, and names the tab.
+    let resp = client
+        .post(format!("http://{addr}/api/v1/sessions/s1/tabs?operation=1"))
+        .json(&serde_json::json!({ "provider": "claude" }))
+        .send()
+        .await
+        .unwrap();
+    let record = followed_outcome(&client, addr, resp).await;
+    assert_eq!(record["kind"], "tab.create");
+    assert_eq!(record["state"], "succeeded");
+    assert_eq!(record["message"], "Started a fresh claude tab.");
+    let tab = record["created"][0].as_str().expect("the created tab");
+    let session = wait_for_session(&client, addr, "s1", |s| tab_has_live_process(s, tab)).await;
+    assert!(tab_has_live_process(&session, tab), "{session}");
 }
 
 #[tokio::test]
@@ -279,15 +334,89 @@ where
             .get(format!("http://{addr}/api/v1/sessions/{id}"))
             .send()
             .await
-            .unwrap()
+            .expect("send the request")
             .json()
             .await
-            .unwrap();
+            .expect("the response body is JSON");
         if pred(&session) || tokio::time::Instant::now() >= deadline {
             return session;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+}
+
+/// Poll `/api/v1/workspace` until its `rev` reaches `min_rev`, failing after
+/// ~5s. The workspace document is the engine's cached serialization, rebuilt on
+/// its periodic spine check, so it trails the live per-session read; a revision
+/// is the only thing a client may wait on it for.
+async fn wait_for_workspace_rev(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    min_rev: u64,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let workspace: serde_json::Value = client
+            .get(format!("http://{addr}/api/v1/workspace"))
+            .send()
+            .await
+            .expect("send the request")
+            .json()
+            .await
+            .expect("the response body is JSON");
+        let rev = workspace["rev"]
+            .as_u64()
+            .expect("the document carries a rev");
+        if rev >= min_rev {
+            return workspace;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the workspace document never reached revision {min_rev}; it is at {rev}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Assert a change followed as an operation answered `202` with a `Location`
+/// naming its record, then read the record in short waits until it has an
+/// outcome, the way a client that asked for it does.
+async fn followed_outcome(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    resp: reqwest::Response,
+) -> serde_json::Value {
+    assert_eq!(resp.status(), 202, "a followed change answers 202");
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("a Location header")
+        .to_string();
+    let accepted: serde_json::Value = resp.json().await.expect("the response body is JSON");
+    assert_eq!(
+        location,
+        format!(
+            "/api/v1/operations/{}",
+            accepted["id"]
+                .as_str()
+                .expect("the accepted operation has an id")
+        )
+    );
+    for _ in 0..15 {
+        let record: serde_json::Value = client
+            .get(format!("http://{addr}{location}?wait_seconds=2"))
+            .send()
+            .await
+            .expect("send the request")
+            .json()
+            .await
+            .expect("the response body is JSON");
+        if record["state"] != "running" {
+            return record;
+        }
+    }
+    panic!("the operation at {location} never finished");
 }
 
 /// The id of the agent's session-slot tab, as the wire reports it. Never
@@ -298,10 +427,10 @@ async fn slot_tab_id(client: &reqwest::Client, addr: SocketAddr, id: &str) -> St
         .get(format!("http://{addr}/api/v1/sessions/{id}"))
         .send()
         .await
-        .unwrap()
+        .expect("send the request")
         .json()
         .await
-        .unwrap();
+        .expect("the response body is JSON");
     session["slot_tab_id"]
         .as_str()
         .expect("the spine names the slot tab")
@@ -311,7 +440,7 @@ async fn slot_tab_id(client: &reqwest::Client, addr: SocketAddr, id: &str) -> St
 fn tab_has_live_process(session: &serde_json::Value, tab_id: &str) -> bool {
     session["tabs"]
         .as_array()
-        .unwrap()
+        .expect("the agent lists its tabs")
         .iter()
         .any(|t| t["id"].as_str() == Some(tab_id) && t["has_live_process"] == true)
 }
@@ -409,9 +538,6 @@ async fn delete_slot_tab_promotes_the_next_tab() {
 
     let slot = slot_tab_id(&client, addr, "s1").await;
     let sibling = create_extra_tab(&client, addr, "s1").await;
-    // Wait out the sibling's async launch so the assertion below is about a
-    // process the promotion left alone, not one that never started.
-    wait_for_session(&client, addr, "s1", |s| tab_has_live_process(s, &sibling)).await;
 
     let resp = client
         .delete(format!("http://{addr}/api/v1/sessions/s1/tabs/{slot}"))
@@ -446,6 +572,62 @@ async fn delete_slot_tab_promotes_the_next_tab() {
         tab_has_live_process(&session, &sibling),
         "the promoted tab keeps the process it already had: {session}"
     );
+}
+
+/// A reorder names every tab of the agent. The strip the spine publishes then
+/// follows it with the slot tab anywhere, the slot pointer stays where it was,
+/// and a list that is not the exact set is refused.
+#[tokio::test]
+async fn reordering_tabs_moves_the_slot_tab_without_moving_the_pointer() {
+    let (addr, _tmp) = boot().await;
+    let client = reqwest::Client::new();
+    let slot = slot_tab_id(&client, addr, "s1").await;
+    let extra = create_extra_tab(&client, addr, "s1").await;
+    let url = format!("http://{addr}/api/v1/sessions/s1/tabs/reorder");
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "tab_ids": [extra, slot] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let min_rev = body["min_workspace_rev"]
+        .as_u64()
+        .expect("the answer names a revision");
+
+    let session = wait_for_session(&client, addr, "s1", |s| {
+        s["tabs"][0]["id"].as_str() == Some(extra.as_str())
+    })
+    .await;
+    assert_eq!(session["tabs"][1]["id"].as_str(), Some(slot.as_str()));
+    assert_eq!(session["slot_tab_id"].as_str(), Some(slot.as_str()));
+    // The revision named is one that shows the new order: the workspace document
+    // is a cached serialization that catches up on the engine's spine check, so
+    // it is waited for by revision, and the first one at or past `min_rev`
+    // must already carry the new strip.
+    let workspace = wait_for_workspace_rev(&client, addr, min_rev).await;
+    let in_workspace = workspace["sessions"]
+        .as_array()
+        .expect("the workspace lists its sessions")
+        .iter()
+        .find(|s| s["id"].as_str() == Some("s1"))
+        .expect("the agent is in the workspace document");
+    assert_eq!(
+        in_workspace["tabs"][0]["id"].as_str(),
+        Some(extra.as_str()),
+        "a document at or past the named revision shows the new order: {workspace}"
+    );
+    assert_eq!(in_workspace["tabs"][1]["id"].as_str(), Some(slot.as_str()));
+
+    let partial = client
+        .post(&url)
+        .json(&serde_json::json!({ "tab_ids": [slot] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(partial.status(), 400);
 }
 
 /// The agent's ONLY tab still cannot be closed: an agent always has a slot, and
@@ -527,10 +709,25 @@ async fn delete_extra_tab_removes_its_row() {
         .map(|t| t["id"].as_str().unwrap())
         .collect();
     assert!(!tab_ids.contains(&tab.as_str()));
+
+    // Followed as an operation, a close finishes inside the call and names the
+    // tab it removed.
+    let other = create_extra_tab(&client, addr, "s1").await;
+    let resp = client
+        .delete(format!(
+            "http://{addr}/api/v1/sessions/s1/tabs/{other}?operation=1"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let record = followed_outcome(&client, addr, resp).await;
+    assert_eq!(record["kind"], "tab.close");
+    assert_eq!(record["state"], "succeeded");
+    assert_eq!(record["removed"], serde_json::json!([other]));
 }
 
 #[tokio::test]
-async fn delete_extra_tab_with_live_sibling_does_not_detach() {
+async fn stopping_or_closing_an_extra_tab_with_a_live_sibling_does_not_detach() {
     // G15 companion case: closing an extra tab while a sibling (here, the
     // session-slot tab) is still live must report `detached: false`, not just
     // default to `true` because the closed tab itself is gone.
@@ -550,7 +747,36 @@ async fn delete_extra_tab_with_live_sibling_does_not_detach() {
         "reconnect should launch the session-slot tab: {}",
         launch_resp.status()
     );
-    wait_for_session(&client, addr, "s1", |s| tab_has_live_process(s, "s1")).await;
+    let slot = slot_tab_id(&client, addr, "s1").await;
+    wait_for_session(&client, addr, "s1", |s| tab_has_live_process(s, &slot)).await;
+
+    // Stopping the extra tab, followed as an operation, ends inside the call:
+    // its process is gone, its row stays, and the agent keeps running.
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/sessions/s1/tabs/{tab}/stop?operation=1"
+        ))
+        .send()
+        .await
+        .unwrap();
+    let record = followed_outcome(&client, addr, resp).await;
+    assert_eq!(record["kind"], "tab.stop");
+    assert_eq!(record["state"], "succeeded");
+    assert_eq!(
+        record["message"],
+        "Stopped the Claude 2 tab. Its other tabs are still running."
+    );
+    let session = wait_for_session(&client, addr, "s1", |_| true).await;
+    assert!(!tab_has_live_process(&session, &tab), "{session}");
+    assert!(tab_has_live_process(&session, &slot), "{session}");
+    assert!(
+        session["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"].as_str() == Some(tab.as_str())),
+        "a stopped tab keeps its row: {session}"
+    );
 
     let resp = client
         .delete(format!("http://{addr}/api/v1/sessions/s1/tabs/{tab}"))
@@ -563,6 +789,28 @@ async fn delete_extra_tab_with_live_sibling_does_not_detach() {
         body["detached"], false,
         "the session-slot tab is still live, so the agent must not detach"
     );
+
+    // Followed as operations, a stop ends when the agent has exited, and a
+    // start ends when its launch comes up.
+    let resp = client
+        .post(format!("http://{addr}/api/v1/sessions/s1/kill?operation=1"))
+        .send()
+        .await
+        .unwrap();
+    let record = followed_outcome(&client, addr, resp).await;
+    assert_eq!(record["kind"], "agent.stop");
+    assert_eq!(record["state"], "succeeded");
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/sessions/s1/reconnect?operation=1"
+        ))
+        .json(&serde_json::json!({ "force": false }))
+        .send()
+        .await
+        .unwrap();
+    let record = followed_outcome(&client, addr, resp).await;
+    assert_eq!(record["kind"], "agent.start");
+    assert_eq!(record["state"], "succeeded");
 }
 
 #[tokio::test]
@@ -911,9 +1159,12 @@ async fn deleting_a_tab_closes_its_attached_socket_and_frees_the_sub_quota() {
             .await
             .expect("connect the tab's pty socket");
 
-    // Delete just this tab (not the whole agent).
+    // Delete just this tab (not the whole agent), going ahead over the socket
+    // attached to it.
     let del = client
-        .delete(format!("http://{addr}/api/v1/sessions/s1/tabs/{tab}"))
+        .delete(format!(
+            "http://{addr}/api/v1/sessions/s1/tabs/{tab}?force_connected=true"
+        ))
         .send()
         .await
         .unwrap();
@@ -924,12 +1175,11 @@ async fn deleting_a_tab_closes_its_attached_socket_and_frees_the_sub_quota() {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut closed = false;
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(std::time::Duration::from_millis(300), ws.next()).await {
-            Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => {
-                closed = true;
-                break;
-            }
-            _ => continue,
+        if let Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) =
+            tokio::time::timeout(std::time::Duration::from_millis(300), ws.next()).await
+        {
+            closed = true;
+            break;
         }
     }
     assert!(
@@ -956,6 +1206,68 @@ async fn deleting_a_tab_closes_its_attached_socket_and_frees_the_sub_quota() {
         reconnected,
         "deleting a tab must free its per-agent socket sub-quota slot"
     );
+}
+
+/// A socket passes the auth layer once, at its upgrade, so every established
+/// socket, the events stream and every PTY alike, must close itself the moment
+/// its client stops being allowed. Here a password is set and this machine
+/// stops being trusted (a Funnel to yaran appears, or yaran can no longer confirm
+/// there is none): each socket closes with 4401, the code the browser answers
+/// with its login page, and a new one is accepted and closed the same way.
+#[tokio::test]
+async fn every_established_socket_closes_when_its_client_stops_being_allowed() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    use yaran_web::exposure::{ExposureCell, FunnelState};
+
+    async fn closes_signed_out<S>(ws: &mut S, what: &str)
+    where
+        S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(300), ws.next()).await {
+                Ok(Some(Ok(Message::Close(Some(frame))))) => {
+                    assert_eq!(u16::from(frame.code), 4401, "{what}");
+                    return;
+                }
+                Ok(Some(Ok(Message::Close(None)) | Err(_)) | None) => {
+                    panic!("the {what} socket ended without the auth close code")
+                }
+                _ => {}
+            }
+        }
+        panic!("the {what} socket stayed open after its client stopped being allowed");
+    }
+
+    for distrusted in [FunnelState::Funnel, FunnelState::Unconfirmed] {
+        let exposure = ExposureCell::new(FunnelState::Open);
+        let cell = exposure.clone();
+        let (addr, _tmp) = boot_full(
+            yaran_core::config::DEFAULT_MAX_WEBSOCKET_TABS_PER_AGENT,
+            Some("orbit velvet quarry lantern cobalt"),
+            move |params| params.with_live_exposure(cell),
+        )
+        .await;
+        let client = reqwest::Client::new();
+        let tab = create_extra_tab(&client, addr, "s1").await;
+
+        let (mut events, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
+            .await
+            .expect("connect the events socket");
+        let (mut pty, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/ws/sessions/s1/tabs/{tab}/pty"))
+                .await
+                .expect("connect the tab's pty socket");
+
+        exposure.set_funnel(distrusted);
+        closes_signed_out(&mut events, "events").await;
+        closes_signed_out(&mut pty, "pty").await;
+        let (mut again, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
+            .await
+            .expect("a new socket is accepted, so the browser hears why it closes");
+        closes_signed_out(&mut again, "new events").await;
+    }
 }
 
 // The ASYNC launch-failure path, as opposed to the synchronous 400 for an
@@ -998,17 +1310,14 @@ async fn tab_with_a_failing_async_launch_never_looks_live_and_is_cleaned_up() {
             .await
             .unwrap();
         let tabs = session["tabs"].as_array().unwrap();
-        match tabs.iter().find(|t| t["id"].as_str() == Some(tab.as_str())) {
-            Some(row) => {
-                assert_ne!(
-                    row["has_live_process"], true,
-                    "a tab whose launch failed must never look live"
-                );
-            }
-            None => {
-                saw_row_removed = true;
-                break;
-            }
+        if let Some(row) = tabs.iter().find(|t| t["id"].as_str() == Some(tab.as_str())) {
+            assert_ne!(
+                row["has_live_process"], true,
+                "a tab whose launch failed must never look live"
+            );
+        } else {
+            saw_row_removed = true;
+            break;
         }
         if tokio::time::Instant::now() >= deadline {
             break;
@@ -1019,6 +1328,25 @@ async fn tab_with_a_failing_async_launch_never_looks_live_and_is_cleaned_up() {
         saw_row_removed,
         "a fresh tab whose first launch failed must be cleaned up, not left as a \
          permanently dead-looking row"
+    );
+
+    // Followed as an operation, the same create fails, and a tab that was
+    // removed again is not reported as created.
+    let resp = client
+        .post(format!("http://{addr}/api/v1/sessions/s1/tabs?operation=1"))
+        .json(&serde_json::json!({ "provider": "broken" }))
+        .send()
+        .await
+        .unwrap();
+    let record = followed_outcome(&client, addr, resp).await;
+    assert_eq!(record["state"], "failed");
+    assert_eq!(record["created"], serde_json::json!([]));
+    assert!(
+        record["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Tab launch failed for "),
+        "{record}"
     );
 }
 
@@ -1065,23 +1393,39 @@ async fn a_failed_launch_is_published_and_an_explicit_start_tries_again() {
     })
     .await;
     assert_eq!(session["tabs"][0]["last_run_failed"], true);
-}
 
-/// The start route answers about the tab, not about a guess: an id that is not a
-/// tab of the path session is a 404, the same as every other tab verb.
-#[tokio::test]
-async fn start_refuses_a_tab_that_is_not_the_sessions() {
-    let (addr, _tmp) = boot().await;
-    let client = reqwest::Client::new();
-    let other = create_extra_tab(&client, addr, "s2").await;
+    // Followed as an operation, the press ends when that launch reports, and
+    // a launch that never came up is a failure.
     let resp = client
         .post(format!(
-            "http://{addr}/api/v1/sessions/s1/tabs/{other}/start"
+            "http://{addr}/api/v1/sessions/s1/tabs/s1-slot/start?operation=1"
         ))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 404);
+    let record = followed_outcome(&client, addr, resp).await;
+    assert_eq!(record["kind"], "tab.start");
+    assert_eq!(record["state"], "failed");
+}
+
+/// The start and stop routes answer about the tab, not about a guess: an id
+/// that is not a tab of the path session is a 404, the same as every other tab
+/// verb.
+#[tokio::test]
+async fn start_and_stop_refuse_a_tab_that_is_not_the_sessions() {
+    let (addr, _tmp) = boot().await;
+    let client = reqwest::Client::new();
+    let other = create_extra_tab(&client, addr, "s2").await;
+    for verb in ["start", "stop"] {
+        let resp = client
+            .post(format!(
+                "http://{addr}/api/v1/sessions/s1/tabs/{other}/{verb}"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404, "{verb}");
+    }
 }
 
 /// Both address forms of the session-slot tab reach the SAME pty.
@@ -1094,30 +1438,6 @@ async fn start_refuses_a_tab_that_is_not_the_sessions() {
 /// written to the child come back out of it and reach every attached subscriber.
 #[tokio::test]
 async fn both_address_forms_of_the_slot_tab_reach_the_same_pty() {
-    use futures_util::{SinkExt, StreamExt};
-
-    let (addr, _tmp) = boot().await;
-    let client = reqwest::Client::new();
-    // Launch the session-slot tab so both forms have a live child to talk to.
-    let launch = client
-        .post(format!("http://{addr}/api/v1/sessions/s1/reconnect"))
-        .json(&serde_json::json!({ "force": false }))
-        .send()
-        .await
-        .unwrap();
-    assert!(launch.status().is_success(), "reconnect should launch s1");
-    let slot = slot_tab_id(&client, addr, "s1").await;
-    assert_ne!(
-        slot, "s1",
-        "the slot tab is a generated id the session points at, not the session id"
-    );
-    wait_for_session(&client, addr, "s1", |s| tab_has_live_process(s, &slot)).await;
-
-    let bare = format!("ws://{addr}/ws/sessions/s1/pty");
-    // The slot tab's own stable address. The bare form has to resolve it through
-    // the session's pointer, which is the whole point of the round trip below.
-    let per_tab = format!("ws://{addr}/ws/sessions/s1/tabs/{slot}/pty");
-
     /// Write `line` on `writer` and wait for it to come back on `reader`,
     /// retrying the write: input is gated on pty ownership, and a previous
     /// socket's ownership is released asynchronously when it drops.
@@ -1149,6 +1469,30 @@ async fn both_address_forms_of_the_slot_tab_reach_the_same_pty() {
         }
         false
     }
+
+    use futures_util::{SinkExt, StreamExt};
+
+    let (addr, _tmp) = boot().await;
+    let client = reqwest::Client::new();
+    // Launch the session-slot tab so both forms have a live child to talk to.
+    let launch = client
+        .post(format!("http://{addr}/api/v1/sessions/s1/reconnect"))
+        .json(&serde_json::json!({ "force": false }))
+        .send()
+        .await
+        .unwrap();
+    assert!(launch.status().is_success(), "reconnect should launch s1");
+    let slot = slot_tab_id(&client, addr, "s1").await;
+    assert_ne!(
+        slot, "s1",
+        "the slot tab is a generated id the session points at, not the session id"
+    );
+    wait_for_session(&client, addr, "s1", |s| tab_has_live_process(s, &slot)).await;
+
+    let bare = format!("ws://{addr}/ws/sessions/s1/pty");
+    // The slot tab's own stable address. The bare form has to resolve it through
+    // the session's pointer, which is the whole point of the round trip below.
+    let per_tab = format!("ws://{addr}/ws/sessions/s1/tabs/{slot}/pty");
 
     assert!(
         write_here_read_there(&per_tab, &bare, "alphaslot").await,

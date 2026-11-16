@@ -117,9 +117,10 @@ fn temp_paths() -> (yaran_core::test_scratch::ScratchDir, YaranPaths) {
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     (tmp, paths)
 }
 
@@ -212,22 +213,27 @@ async fn unknown_path_falls_back_to_index() {
 /// Build a router backed by a throwaway engine for static-asset assertions.
 fn test_router() -> (yaran_core::test_scratch::ScratchDir, axum::Router) {
     let (tmp, paths) = temp_paths();
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     yaran_core::test_provider::defuse_config(&mut engine.config);
     let (handle, _join) = spawn_engine_thread(engine);
     (tmp, router(handle))
 }
 
 async fn get(app: axum::Router, uri: &str) -> axum::http::Response<Body> {
-    app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-        .await
-        .unwrap()
+    app.oneshot(
+        Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("build the request"),
+    )
+    .await
+    .unwrap()
 }
 
 fn header(resp: &axum::http::Response<Body>, name: &str) -> Option<String> {
     resp.headers()
         .get(name)
-        .map(|v| v.to_str().unwrap().to_string())
+        .map(|v| v.to_str().expect("the header is ASCII").to_string())
 }
 
 #[tokio::test]
@@ -298,7 +304,7 @@ async fn service_worker_served_no_cache_and_js_mime() {
 }
 
 #[tokio::test]
-async fn missing_hashed_asset_returns_404_not_spa_fallback() {
+async fn missing_hashed_asset_and_unknown_api_path_return_404_not_spa_fallback() {
     // A request for a hashed bundle chunk that does not exist must 404, NOT fall
     // back to index.html. Serving HTML for a `*.js` import() makes the browser
     // reject it as a module, which unmounts the React tree (white screen). This
@@ -315,27 +321,41 @@ async fn missing_hashed_asset_returns_404_not_spa_fallback() {
         !ctype.contains("html"),
         "a missing asset must not be served as text/html, got {ctype}"
     );
+
+    // An API path no route serves is an API answer, not the page: a script
+    // or the command line reading it must see that nothing is there.
+    for path in ["/api/v1/no-such-route", "/api/nothing/here"] {
+        let (_tmp, app) = test_router();
+        let resp = get(app, path).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path}");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|e| panic!("{path}: {e}: {}", String::from_utf8_lossy(&bytes)));
+        assert_eq!(body, serde_json::json!({"error": "not_found"}), "{path}");
+    }
 }
 
 #[tokio::test]
 async fn unknown_non_asset_path_still_serves_spa_shell() {
     // Client-side routes (anything outside `assets/`) must keep falling back to
     // the SPA index so deep links and the router keep working.
-    let (_tmp, app) = test_router();
-    let resp = get(app, "/some/client/route").await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    let ctype = header(&resp, "content-type").unwrap_or_default();
-    assert!(
-        ctype.contains("html"),
-        "an unknown non-asset path must serve the SPA shell as text/html, got {ctype}"
-    );
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_is_spa_shell(
-        &String::from_utf8_lossy(&bytes),
-        "an unknown non-asset path",
-    );
+    // A path that merely starts with the letters "api" is still a page.
+    for path in ["/some/client/route", "/apiary"] {
+        let (_tmp, app) = test_router();
+        let resp = get(app, path).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        let ctype = header(&resp, "content-type").unwrap_or_default();
+        assert!(
+            ctype.contains("html"),
+            "an unknown non-asset path must serve the SPA shell as text/html, got {ctype}"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_is_spa_shell(&String::from_utf8_lossy(&bytes), path);
+    }
 }
 
 #[tokio::test]
@@ -548,10 +568,19 @@ fn hashed_asset_refs_finds_vite_bundles_and_ignores_hand_named_files() {
         "the hashed bundle entries must be found and the hand-named logo skipped"
     );
     // Names a human chose, of the shape a notice page or a static site would use.
-    assert!(hashed_asset_refs(r#"<img src="assets/logo.png">"#).is_empty());
-    assert!(hashed_asset_refs(r#"<script src="assets/main.js">"#).is_empty());
-    assert!(hashed_asset_refs(r#"<script src="assets/app-v2.js">"#).is_empty());
-    assert!(hashed_asset_refs("no assets at all").is_empty());
+    assert_eq!(
+        hashed_asset_refs(r#"<img src="assets/logo.png">"#),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        hashed_asset_refs(r#"<script src="assets/main.js">"#),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        hashed_asset_refs(r#"<script src="assets/app-v2.js">"#),
+        Vec::<String>::new()
+    );
+    assert_eq!(hashed_asset_refs("no assets at all"), Vec::<String>::new());
 }
 
 #[test]
@@ -573,8 +602,14 @@ fn a_hash_containing_a_dash_is_still_a_hash() {
         vec!["assets/index-x8k-p4D8.js".to_string()]
     );
     // And the short hand-written names are still rejected, dash or no dash.
-    assert!(hashed_asset_refs(r#"<img src="assets/yaran-logo.png">"#).is_empty());
-    assert!(hashed_asset_refs(r#"<img src="assets/a-b-c.png">"#).is_empty());
+    assert_eq!(
+        hashed_asset_refs(r#"<img src="assets/yaran-logo.png">"#),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        hashed_asset_refs(r#"<img src="assets/a-b-c.png">"#),
+        Vec::<String>::new()
+    );
 }
 
 /// The smallest the whole embedded bundle graph can plausibly be.
@@ -632,13 +667,22 @@ fn chunk_refs_finds_lazy_imports_the_page_never_mentions() {
         vec!["a-ABCDEFGH.js".to_string()]
     );
     // Names a human chose, and things that merely look similar.
-    assert!(chunk_refs(r#"import("./helper.js")"#).is_empty());
-    assert!(chunk_refs(r#"import("./app-v2.js")"#).is_empty());
-    assert!(chunk_refs(r#"fetch("./api/thing-ABCDEFGH.js")"#).is_empty());
-    assert!(chunk_refs(r#"const s="./styles-ABCDEFGH.scss""#).is_empty());
-    assert!(chunk_refs("no imports at all").is_empty());
+    assert_eq!(chunk_refs(r#"import("./helper.js")"#), Vec::<String>::new());
+    assert_eq!(chunk_refs(r#"import("./app-v2.js")"#), Vec::<String>::new());
+    assert_eq!(
+        chunk_refs(r#"fetch("./api/thing-ABCDEFGH.js")"#),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        chunk_refs(r#"const s="./styles-ABCDEFGH.scss""#),
+        Vec::<String>::new()
+    );
+    assert_eq!(chunk_refs("no imports at all"), Vec::<String>::new());
     // The page-level form is NOT this form, which is the whole point.
-    assert!(chunk_refs(r#"<script src="assets/index-x8kEp4D8.js">"#).is_empty());
+    assert_eq!(
+        chunk_refs(r#"<script src="assets/index-x8kEp4D8.js">"#),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
@@ -648,7 +692,7 @@ fn chunk_refs_reads_backticks_and_a_missing_leading_dot_slash() {
     // template literals, and the editor's web worker is constructed from a URL
     // with no `./` prefix at all. Both shapes below are copied from a real build.
     assert_eq!(
-        chunk_refs(r#"Zy(()=>jh(()=>import(`./DiffViewer-CenXBp36.js`)));"#),
+        chunk_refs(r"Zy(()=>jh(()=>import(`./DiffViewer-CenXBp36.js`)));"),
         vec!["DiffViewer-CenXBp36.js".to_string()],
         "a backtick template literal is the form the bundler actually emits"
     );
@@ -658,7 +702,7 @@ fn chunk_refs_reads_backticks_and_a_missing_leading_dot_slash() {
         "a worker URL carries no leading ./ and must still be followed"
     );
     assert_eq!(
-        chunk_refs(r#"const a='./css-mode-DEadBeEf.js'"#),
+        chunk_refs(r"const a='./css-mode-DEadBeEf.js'"),
         vec!["css-mode-DEadBeEf.js".to_string()],
         "single quotes are a legal JavaScript string delimiter too"
     );
@@ -676,9 +720,15 @@ fn chunk_refs_reads_backticks_and_a_missing_leading_dot_slash() {
     );
     // Loosening the delimiters must not loosen anything else: a hand-chosen name,
     // a nested path and a non-bundle extension are still rejected.
-    assert!(chunk_refs("const h=`./helper.js`").is_empty());
-    assert!(chunk_refs("const n=`./nested/thing-ABCDEFGH.js`").is_empty());
-    assert!(chunk_refs("const s=`./styles-ABCDEFGH.scss`").is_empty());
+    assert_eq!(chunk_refs("const h=`./helper.js`"), Vec::<String>::new());
+    assert_eq!(
+        chunk_refs("const n=`./nested/thing-ABCDEFGH.js`"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        chunk_refs("const s=`./styles-ABCDEFGH.scss`"),
+        Vec::<String>::new()
+    );
 }
 
 #[tokio::test]
@@ -742,7 +792,10 @@ async fn index_references_a_real_hashed_asset_that_is_actually_served() {
         );
         total += body.len();
 
-        if !asset.ends_with(".js") {
+        if std::path::Path::new(&asset)
+            .extension()
+            .is_none_or(|extension| extension != "js")
+        {
             continue;
         }
         for chunk in chunk_refs(&String::from_utf8_lossy(&body)) {
@@ -971,7 +1024,10 @@ async fn live_server_serves_the_built_page_and_accepts_a_websocket() {
             "/{asset} came back too small to be a real bundle"
         );
         total += body.len();
-        if !asset.ends_with(".js") {
+        if std::path::Path::new(&asset)
+            .extension()
+            .is_none_or(|extension| extension != "js")
+        {
             continue;
         }
         for chunk in chunk_refs(&String::from_utf8_lossy(&body)) {

@@ -237,9 +237,11 @@ impl Engine {
         };
         state_token(agent_row_state(
             session.status,
-            self.session_is_streaming(agent_id),
-            self.session_is_typing(agent_id),
-            false,
+            crate::row_state::AgentRowFacts {
+                working: self.session_is_streaming(agent_id),
+                typing: self.session_is_typing(agent_id),
+                needs_attention: false,
+            },
         ))
     }
 }

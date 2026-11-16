@@ -6,7 +6,7 @@ use yaran_core::engine::{Final, StatusUpdate, status_op};
 use crate::app::WorkerEvent;
 
 /// Request sent from the main thread to the clipboard worker. Carries the
-/// op's success and failure finals (already keyed by the StatusOp minted at
+/// op's success and failure finals (already keyed by the `StatusOp` minted at
 /// the call site), so the worker can ship back the resolved `status` without
 /// the engine having to know the per-call label.
 struct CopyRequest {
@@ -55,8 +55,8 @@ impl Clipboard {
         // Declare the loading→final states together. The success message is the
         // label; the failure message matches the engine's prior wording.
         let success_label = label.to_string();
-        let op = status_op("Copying path to clipboard\u{2026}")
-            .on_success(move |_: &()| Final::info(success_label.clone()))
+        let op = status_op("Copying to the clipboard\u{2026}")
+            .on_success(move |(): &()| Final::info(success_label.clone()))
             .on_failure(|e: &String| Final::error(format!("Clipboard copy failed: {e}")));
         let pending = op.pending_status();
         self.tx
@@ -66,8 +66,17 @@ impl Clipboard {
                 op,
                 worker_tx: worker_tx.clone(),
             })
-            .map_err(|_| anyhow!("Clipboard worker thread is not running"))?;
+            .map_err(|_| {
+                anyhow!("the clipboard worker is not running; restart yaran to copy again")
+            })?;
         Ok(pending)
+    }
+
+    /// A handle whose worker is gone, so every copy is refused at the send.
+    #[cfg(test)]
+    pub(crate) fn without_worker() -> Self {
+        let (tx, _) = mpsc::channel::<CopyRequest>();
+        Self { tx }
     }
 
     #[cfg(test)]

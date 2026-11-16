@@ -1,4 +1,10 @@
 import {
+  authPaused,
+  isGateCloseCode,
+  onAuthOpen,
+  reportSocketAuthClose,
+} from "./authGate"
+import {
   reconnectAttemptBudget,
   reconnectAttemptTimeoutMs,
   reconnectBackoffCapMs,
@@ -9,6 +15,11 @@ import type { ConnState } from "./types"
 // Events and PTY sockets retry network failures with capped backoff, bounded by
 // the configured attempt budget. Terminal close codes fail; wake signals are
 // idempotent and health resets the schedule.
+//
+// AUTH. Every socket answers to the sign-in gate (`authGate.ts`): a close with an
+// auth code (4401 signed out or revoked, 4403 blocked) is reported to the gate
+// and holds the socket without spending its budget, nothing opens while the page
+// is signed out, and the move back into signed-in resumes every live socket.
 export { RECONNECT_MIN_MS }
 
 /// What the socket is doing about the connection right now, published through
@@ -60,6 +71,12 @@ export type ReconnectPolicy = {
   /// passes `0` and leans on `canRetry`, which already holds it shut for as long
   /// as the events socket is down.
   attemptBudget: () => number
+  /// Asked before every attempt after the first open; false holds the retry as
+  /// a shut gate does. The events socket asks whether the yaran at the address is
+  /// still the one this page opened on, so a different yaran is never connected
+  /// to, not even for the moment it would take to notice.
+  /// A plain `true` opens at once, with no extra turn of the event loop.
+  preflight?: () => boolean | Promise<boolean>
 }
 
 // The shared reconnecting WebSocket base. Subclasses supply the socket-specific
@@ -95,7 +112,12 @@ export abstract class ReconnectingSocket {
   // owned this socket is gone.
   private disposed = false
   private readonly policy: ReconnectPolicy
+  // Whether any attempt has opened yet: the first connect is the page's own
+  // boot, which has nothing to compare against.
+  private everOpened = false
+  private preflighting = false
   private wakeAttached = false
+  private authUnsubscribe: (() => void) | null = null
 
   // Connection-state transitions ("connecting" | "open" | "closed" | "failed").
   // Drives the status indicator / offline modal (events socket) and the focused
@@ -108,6 +130,9 @@ export abstract class ReconnectingSocket {
   // `close()` and never when the far end said stop. Fired for a parked socket
   // too: parking changes when the next attempt happens, not whether one is coming.
   onReconnecting: () => void = () => {}
+  // Fired once by `dispose()`, so a consumer can stop the work it scheduled for
+  // this socket's sake.
+  onDispose: () => void = () => {}
   // The retry schedule, published on every arming, every attempt, the give-up
   // and every open. The offline overlay reads it to say which attempt failed and
   // when the next one is due.
@@ -117,9 +142,12 @@ export abstract class ReconnectingSocket {
     this.url = url
     this.policy = {
       parkWhileHidden: policy.parkWhileHidden ?? false,
-      canRetry: policy.canRetry ?? (() => true),
+      // The sign-in gate comes first: a signed-out page opens nothing, whatever
+      // the socket's own gate says.
+      canRetry: () => !authPaused() && (policy.canRetry ?? (() => true))(),
       backoffCapMs: policy.backoffCapMs ?? reconnectBackoffCapMs,
       attemptBudget: policy.attemptBudget ?? reconnectAttemptBudget,
+      preflight: policy.preflight,
     }
   }
 
@@ -139,6 +167,7 @@ export abstract class ReconnectingSocket {
     this.failures = 0
     this.clearRetryTimer()
     this.attachWakeSignals()
+    this.attachAuthResume()
     // Explicit connects obey the same identity gate as automatic retries. A
     // closed gate defers the attach and polls without growing the fresh backoff.
     if (!this.policy.canRetry()) {
@@ -226,6 +255,40 @@ export abstract class ReconnectingSocket {
   }
 
   private open(): void {
+    const preflight = this.policy.preflight
+    if (preflight === undefined || !this.everOpened) {
+      this.openNow()
+      return
+    }
+    if (this.preflighting) return
+    let verdict: boolean | Promise<boolean>
+    try {
+      verdict = preflight()
+    } catch {
+      // A check that cannot run is no answer: attempt as before.
+      verdict = true
+    }
+    if (verdict === true) {
+      this.openNow()
+      return
+    }
+    this.preflighting = true
+    void Promise.resolve(verdict)
+      .catch(() => true)
+      .finally(() => {
+        this.preflighting = false
+      })
+      .then((go) => {
+        if (this.closedByUser || this.stopped || this.disposed || this.ws !== null) return
+        if (!go || !this.policy.canRetry()) {
+          if (this.reconnectTimer === null) this.armHeldRetry()
+          return
+        }
+        this.openNow()
+      })
+  }
+
+  private openNow(): void {
     // A socket may already be live here (a double `connect()`, from Reconnect
     // pressed twice mid-reconnect). Detach the orphan's handlers and close it
     // before assigning the new socket: otherwise its later `onclose` nulls the
@@ -234,7 +297,7 @@ export abstract class ReconnectingSocket {
     this.attempt = this.failures + 1
     this.onConn("connecting")
     this.emitPlan("connecting", this.attempt, null)
-    const ws = new WebSocket(this.url)
+    const ws = new WebSocket(this.openUrl())
     this.configureSocket(ws)
     this.ws = ws
     this.armConnectTimer(ws)
@@ -244,6 +307,7 @@ export abstract class ReconnectingSocket {
       // mutate shared connection state. A late callback from a socket a newer
       // open() already replaced must be inert.
       if (this.ws !== ws) return
+      this.everOpened = true
       this.clearConnectTimer()
       // An open that lasts means the connection is usable again, so the next drop
       // starts a fresh retry schedule from the floor. One that does not is no
@@ -273,8 +337,18 @@ export abstract class ReconnectingSocket {
       // the very wait it is supposed to be lengthening.
       this.clearSettleTimer()
       this.ws = null
+      // The session is over, or this address is blocked. Not a failure of the
+      // connection, so no budget is spent and nothing is scheduled: the gate puts
+      // the login page up, and signing in resumes this socket. Reported BEFORE
+      // the generic close below, so whoever hears that close (the store's drop
+      // probe above all) already finds the page signed out rather than
+      // guessing at why.
+      // An Access-verified page's 4401 is not the gate's: it falls through to
+      // `shouldReconnect`, where the Access session takes it (`isGateCloseCode`).
+      const authClose = !this.closedByUser && isGateCloseCode(event.code)
+      if (authClose) reportSocketAuthClose(event.code)
       this.onConn("closed")
-      if (this.closedByUser) return
+      if (this.closedByUser || authClose) return
       // A server may close with an app-specific code meaning "do not retry", such
       // as a PTY whose provider is gone, where re-subscribing would relaunch a
       // doomed provider. `shouldReconnect()` surfaces the stop state and returns
@@ -294,6 +368,9 @@ export abstract class ReconnectingSocket {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer !== null) return
+    // Signed out: a drop now says nothing about the network, and the sign-in
+    // resumes the socket, so hold without counting it.
+    if (authPaused()) return
     // One more attempt has failed, however it failed: a refused connection and
     // an attempt abandoned for never opening spend the budget alike.
     this.failures++
@@ -473,6 +550,16 @@ export abstract class ReconnectingSocket {
     window.removeEventListener("online", this.onWake)
   }
 
+  // Signing in is a wake signal: whatever the socket was holding for, the page
+  // can talk to the server again. Attached with the first `connect()`, retired
+  // only by `dispose()`, like the wake listeners.
+  private attachAuthResume(): void {
+    if (this.authUnsubscribe !== null) return
+    this.authUnsubscribe = onAuthOpen(() => {
+      this.resumeNow()
+    })
+  }
+
   // Arrow properties, so the same function identity is added and removed and so
   // `this` is the socket rather than the event target.
   private readonly onWake = (): void => {
@@ -504,10 +591,14 @@ export abstract class ReconnectingSocket {
   // or switched to a different target). Everything `close()` does, plus the wake
   // listeners, which is the difference between the two.
   dispose(): void {
+    const first = !this.disposed
     this.disposed = true
     this.stopped = true
     this.detachWakeSignals()
+    this.authUnsubscribe?.()
+    this.authUnsubscribe = null
     this.close()
+    if (first) this.onDispose()
   }
 
   // Reset the backoff when the connection is confirmed usable, so the next drop
@@ -520,6 +611,11 @@ export abstract class ReconnectingSocket {
   }
 
   // ---- Subclass extension hooks ----------------------------------------------
+
+  // The address each open dials; a subclass adds what can change between opens.
+  protected openUrl(): string {
+    return this.url
+  }
 
   // Tweak the freshly-constructed WebSocket before handlers are attached. Default:
   // no-op. (`void ws` keeps the param in the base signature without tripping

@@ -20,6 +20,12 @@ impl Engine {
     ///
     /// The terminal runs `config.terminal.command` and `args` with the session's
     /// resolved environment, the global env merged with the owning project's.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown session, a working copy whose directory
+    /// is gone, a folder a removal has claimed, an environment that cannot be
+    /// resolved, or a shell that fails to spawn.
     pub fn create_companion_terminal(
         &mut self,
         session_id: &str,
@@ -37,26 +43,19 @@ impl Engine {
         if let Some(reason) = self.missing_directory_reason(session_id) {
             anyhow::bail!("{reason}");
         }
+        // Nothing new may start in a folder a removal has claimed.
+        if let Some(refused) = self.worktree_ops().removal_refusal(session.directory()) {
+            anyhow::bail!("{}", refused.sentence("open a terminal there"));
+        }
 
-        // A standalone agent belongs to no project, so a terminal opened on it
-        // gets the global environment with no project overlay. Falling through
-        // to `unwrap_or_default` on a missing project id would hand it an empty
-        // environment instead, which is a different and much worse thing.
-        let user_env = match session.project_id() {
-            Some(project_id) => self
-                .projects
-                .iter()
-                .find(|project| project.id == project_id)
-                .and_then(|project| {
-                    crate::config::resolve_agent_env(&self.config.env, &project.env).ok()
-                })
-                .unwrap_or_default(),
-            None => crate::config::resolve_agent_env(
-                &self.config.env,
-                &std::collections::BTreeMap::new(),
-            )
-            .unwrap_or_default(),
-        };
+        // An agent's terminal runs with its agent's environment: the project's
+        // overlaid on the global one, or the global one alone for a standalone
+        // agent or a project record that is gone, never an empty one.
+        let user_env = crate::engine::resolve_env_or_refuse(
+            &self.config.env,
+            self.session_env_overlay(&session),
+            "open the terminal",
+        )?;
         // The agent's identity comes first so the user's `[env]` still wins, as
         // for the provider itself (fork
         // `companion_terminal_receives_session_identity_env`). A shell opened on
@@ -88,6 +87,7 @@ impl Engine {
             &self.config,
         ));
         env.extend(crate::agent_env::with_legacy_env_aliases(user_env));
+
         self.spawn_terminal(
             TerminalOwner::Session(session_id.to_string()),
             Path::new(session.directory()),
@@ -104,6 +104,12 @@ impl Engine {
     /// terminal command and the global env merged with the project's, owned by
     /// the project instead of a session. It does not run the project's
     /// `startup_command`, which is worktree provisioning, not a shell rc.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown project, a project path that is not a
+    /// directory on disk, a folder a removal has claimed, an environment that
+    /// cannot be resolved, or a shell that fails to spawn.
     pub fn create_project_terminal(
         &mut self,
         project_id: &str,
@@ -124,8 +130,14 @@ impl Engine {
             );
         }
 
-        let env =
-            crate::config::resolve_agent_env(&self.config.env, &project.env).unwrap_or_default();
+        let env = crate::engine::resolve_env_or_refuse(
+            &self.config.env,
+            crate::engine::EnvOverlay::Project {
+                name: &project.name,
+                env: &project.env,
+            },
+            "open the project terminal",
+        )?;
 
         self.spawn_terminal(
             TerminalOwner::Project(project_id.to_string()),
@@ -146,13 +158,20 @@ impl Engine {
     ///
     /// Like a project terminal it does not run any `startup_command`: that is
     /// worktree provisioning for new agents, not a shell rc.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a removal has claimed the directory, the
+    /// environment cannot be resolved, or the shell fails to spawn.
     pub fn create_standalone_terminal(&mut self, rows: u16, cols: u16) -> Result<(String, String)> {
         let dir = crate::home_path::standalone_terminal_dir();
         // The global half only. `resolve_agent_env` merges a project's env over
         // the global one; passing an empty map is exactly "there is no project".
-        let env =
-            crate::config::resolve_agent_env(&self.config.env, &std::collections::BTreeMap::new())
-                .unwrap_or_default();
+        let env = crate::engine::resolve_env_or_refuse(
+            &self.config.env,
+            crate::engine::EnvOverlay::GlobalOnly,
+            "open the standalone terminal",
+        )?;
 
         self.spawn_terminal(TerminalOwner::Standalone, &dir, &env, rows, cols)
     }
@@ -180,6 +199,14 @@ impl Engine {
         // pane matches it on the first frame, with no initial reflow of the
         // shell; a headless caller passes a default and relies on the client's
         // first resize.
+        //
+        // Announced before the check and kept until the session is registered
+        // below, so a removal claiming the folder meanwhile either refuses
+        // this spawn or waits to see its session.
+        let _spawning = self
+            .spawn_gate()
+            .enter(cwd)
+            .map_err(|refused| anyhow::anyhow!("{}", refused.sentence("open a terminal there")))?;
         let client = PtyClient::spawn_with_env_opts(
             &self.config.terminal.command,
             &self.config.terminal.args,
@@ -196,9 +223,67 @@ impl Engine {
             },
         )?;
 
+        // A terminal of an agent is remembered for the agent's whole life, so
+        // a worktree removal can end what was started in it even after it was
+        // closed. A project or standalone terminal belongs to no agent and is
+        // never purged; it is remembered so its session number is never
+        // mistaken for one a deleted agent used before.
+        if let Some(process) = client.process_session() {
+            let key = match owner.as_ref() {
+                crate::model::TerminalOwnerRef::Session(session_id) => session_id,
+                crate::model::TerminalOwnerRef::Project(_)
+                | crate::model::TerminalOwnerRef::Standalone => {
+                    crate::process_sessions::UNOWNED_PTYS
+                }
+            };
+            let standalone_agent = match owner.as_ref() {
+                crate::model::TerminalOwnerRef::Session(session_id) => self
+                    .session_by_id(session_id)
+                    .is_some_and(|session| session.workspace.as_managed().is_none()),
+                _ => false,
+            };
+            if standalone_agent {
+                self.process_registry.register_standalone(key, process, cwd);
+            } else {
+                self.process_registry.register(key, process, cwd);
+            }
+            client.set_leader_exit_hook(self.process_registry.leader_exit_hook(process));
+            let registry = self.process_registry.clone();
+            client.set_recorded_members(Box::new(move || registry.survivors_of(&[process])));
+            let name = format!("Terminal {}", self.terminal_counter + 1);
+            let what = match owner.as_ref() {
+                crate::model::TerminalOwnerRef::Session(session_id) => format!(
+                    "terminal \"{name}\" of agent \"{}\"",
+                    self.session_by_id(session_id).map_or_else(
+                        || session_id.to_string(),
+                        super::super::model::AgentSession::display_label
+                    )
+                ),
+                crate::model::TerminalOwnerRef::Project(project_id) => format!(
+                    "project terminal \"{name}\" of project \"{}\"",
+                    self.projects
+                        .iter()
+                        .find(|project| project.id == project_id)
+                        .map_or_else(|| project_id.to_string(), |project| project.name.clone())
+                ),
+                crate::model::TerminalOwnerRef::Standalone => {
+                    format!("standalone terminal \"{name}\"")
+                }
+            };
+            self.process_registry.label(process, what);
+        }
         self.terminal_counter += 1;
         let terminal_id = format!("term-{}", self.terminal_counter);
         let label = format!("Terminal {}", self.terminal_counter);
+        // A new list row lands at the end of the list, after the last agent in
+        // the stored order. An agent's own terminal is not a list row.
+        let list_after = match owner.as_ref() {
+            crate::model::TerminalOwnerRef::Session(_) => None,
+            crate::model::TerminalOwnerRef::Project(_)
+            | crate::model::TerminalOwnerRef::Standalone => {
+                self.sessions.last().map(|session| session.id.clone())
+            }
+        };
 
         self.companion_terminals.insert(
             terminal_id.clone(),
@@ -209,12 +294,23 @@ impl Engine {
                 client,
                 // Reuse the monotonic terminal counter so the default drag order
                 // equals creation order; reorders rewrite this later.
-                sort_order: self.terminal_counter as u64,
+                sort_order: u64::try_from(self.terminal_counter)
+                    .expect("the terminal counter fits in u64"),
                 created_at: chrono::Utc::now(),
+                list_after,
             },
         );
 
         Ok((terminal_id, label))
+    }
+
+    /// Put a project or standalone terminal's row right after `after_agent` in
+    /// the agents list's manual order, or first when `None`. Runtime only, like
+    /// the terminal.
+    pub fn place_terminal_in_list(&mut self, terminal_id: &str, after_agent: Option<String>) {
+        if let Some(terminal) = self.companion_terminals.get_mut(terminal_id) {
+            terminal.list_after = after_agent;
+        }
     }
 
     /// Where a file dropped onto the pane currently showing `pty_id` should be
@@ -259,7 +355,7 @@ impl Engine {
             // Normalized on every read rather than trusted, so a config that
             // never went through `load_config` still resolves a usable
             // directory.
-            relative: crate::config::normalized_upload_directory(&self.config.ui.upload_directory),
+            relative: crate::config::effective_upload_directory(&self.config.ui.upload_directory),
             write_gitignore: self.upload_seed_allowed(session),
         })
     }
@@ -270,7 +366,7 @@ impl Engine {
     /// For a managed worktree the configured preference decides, and the
     /// directory is inside a repository anyway.
     ///
-    /// A standalone agent's folder is the user's, so the preference is ANDed
+    /// A standalone agent's folder is the user's, so the preference is `ANDed`
     /// with whether git can see the path at all. The rule is git visibility
     /// rather than "is this a working repository", because a folder sitting
     /// inside somebody else's repository is exactly where untracked uploads
@@ -1106,6 +1202,62 @@ mod tests {
         assert!(terminal.foreground_cmd.is_none());
     }
 
+    /// A terminal whose environment cannot be resolved is refused, naming the
+    /// variable and where to fix it but never its value, and nothing opens.
+    #[test]
+    fn a_terminal_whose_environment_cannot_be_resolved_is_refused() {
+        let (mut engine, _tmp) = test_engine();
+        engine.config.terminal.command = "cat".to_string();
+        engine.config.terminal.args = vec![];
+        engine
+            .config
+            .env
+            .insert("API_TOKEN".to_string(), "hunter2$".to_string());
+
+        let err = engine
+            .create_standalone_terminal(24, 80)
+            .expect_err("the terminal is refused")
+            .to_string();
+
+        assert!(
+            err.starts_with(
+                "yaran did not open the standalone terminal: environment variable API_TOKEN"
+            ) && err.contains("Fix or remove it in [env] in config.toml"),
+            "{err}"
+        );
+        assert!(!err.contains("hunter2"), "the value is never named: {err}");
+        assert!(engine.companion_terminals.is_empty());
+    }
+
+    /// A broken variable in a project's own environment is pointed at there,
+    /// and a name that is no variable name is not repeated.
+    #[test]
+    fn a_project_terminal_refusal_points_at_the_project_and_hides_a_bad_name() {
+        let (mut engine, _tmp) = test_engine();
+        let repo = tempfile::tempdir().expect("project dir");
+        let mut project = sample_project("p1", repo.path().to_string_lossy().as_ref());
+        project
+            .env
+            .insert("sk-pasted token".to_string(), "v".to_string());
+        let name = project.name.clone();
+        engine.projects.push(project);
+
+        let err = engine
+            .create_project_terminal("p1", 24, 80)
+            .expect_err("the terminal is refused")
+            .to_string();
+
+        assert!(
+            err.contains(&format!("the environment variables of project \"{name}\"")),
+            "{err}"
+        );
+        assert!(
+            !err.contains("sk-pasted"),
+            "the bad name is not repeated: {err}"
+        );
+        assert!(engine.companion_terminals.is_empty());
+    }
+
     #[test]
     fn create_standalone_terminal_opens_in_the_home_directory_owning_nothing() {
         // The journey: the user asks for a terminal that belongs to nothing. It
@@ -1172,6 +1324,37 @@ mod tests {
             output.contains("project=[]"),
             "no project's env overlays a terminal that belongs to no project; saw: {output}"
         );
+    }
+
+    /// A managed agent whose project record is gone still gets the global
+    /// environment in its terminal, never an empty one.
+    #[test]
+    fn an_agent_terminal_whose_project_is_gone_gets_the_global_env() {
+        let (mut engine, _tmp) = test_engine();
+        let worktree = tempfile::tempdir().expect("worktree dir");
+        engine
+            .config
+            .env
+            .insert("YARAN_GLOBAL".to_string(), "global".to_string());
+        let mut session = sample_session("s1", "gone", "feat");
+        session
+            .workspace
+            .as_managed_mut()
+            .expect("managed test session")
+            .worktree_path = worktree.path().to_string_lossy().into_owned();
+        engine.sessions.push(session);
+        engine.config.terminal.command = "sh".to_string();
+        engine.config.terminal.args = vec![
+            "-c".to_string(),
+            "echo \"global=[$YARAN_GLOBAL]\"; sleep 5".to_string(),
+        ];
+
+        let (id, _) = engine
+            .create_companion_terminal("s1", 24, 80)
+            .expect("create the agent's terminal");
+
+        let output = read_until(&engine.companion_terminals[&id].client, "global=");
+        assert!(output.contains("global=[global]"), "saw: {output}");
     }
 
     /// Poll a PTY's visible text until `needle` appears, bounded. Terminal output

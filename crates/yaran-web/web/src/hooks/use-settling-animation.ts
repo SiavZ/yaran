@@ -1,0 +1,188 @@
+import * as React from "react"
+
+/** The event props the animated element must carry so the hook can see its
+ *  animation start and, where the Web Animations API is missing, reach its
+ *  cycle boundaries. */
+export type SettlingAnimationHandlers = {
+  onAnimationStart: (event: React.AnimationEvent) => void
+  onAnimationIteration: (event: React.AnimationEvent) => void
+  onAnimationEnd: (event: React.AnimationEvent) => void
+}
+
+function pageHidden(): boolean {
+  return typeof document !== "undefined" && document.hidden
+}
+
+function findAnimation(el: Element, name: string): Animation | undefined {
+  if (typeof el.getAnimations !== "function") return undefined
+  return el.getAnimations().find((a) => (a as CSSAnimation).animationName === name)
+}
+
+/**
+ * Keeps a looping CSS animation applied after `active` turns false until the
+ * iteration in flight finishes, so a stop comes to rest exactly on the
+ * animation's resting keyframe instead of freezing, snapping or gliding back
+ * from mid-cycle.
+ *
+ * `running` is what the caller keys the animation class on, and `attach` (a
+ * callback ref) and `handlers` go on the element that carries it. On a stop the hook finds the
+ * running animation through the Web Animations API and shortens it to end at
+ * the end of its current iteration, then lets the class go when the browser
+ * reports it finished: the last frame painted is the keyframes' 100%, with no
+ * event handled a task later landing a frame into the next cycle. Work resuming
+ * first restores infinite iterations on the same animation, so nothing
+ * restarts. Where `getAnimations` is missing, the next `animationiteration` (or
+ * `animationend`) of `animationName` is the fallback signal.
+ *
+ * Moving the element in the DOM (a reordered strip) makes the browser end its
+ * animation and start a new one of the same name from the first frame. A move
+ * mid-settle is therefore not a stop: the settle is handed to the replacement,
+ * which gets the old start time and the shortened iteration count, so the bounce
+ * still lands on the schedule it had and nothing snaps to rest in mid-air.
+ *
+ * A stop is immediate when there is nothing to finish: the animation never
+ * reported `animationstart` (reduced motion gates it off in CSS, or the
+ * element is not rendered), the browser cancelled it, or the tab is hidden and
+ * nothing is painted.
+ */
+export function useSettlingAnimation<T extends Element>(
+  active: boolean,
+  animationName: string,
+): {
+  running: boolean
+  attach: (el: T | null) => void
+  handlers: SettlingAnimationHandlers
+} {
+  // A callback ref kept in state, so the effects below re-run for a new element.
+  const [el, setEl] = React.useState<T | null>(null)
+  // Whether the browser has actually started the animation this run.
+  const [started, setStarted] = React.useState(false)
+  const [settling, setSettling] = React.useState(false)
+  const [prevActive, setPrevActive] = React.useState(active)
+
+  // A state update made during render lands on the NEXT render, so this render
+  // reads the value it is about to store rather than the stale one.
+  let settlingNow = settling
+  if (active !== prevActive) {
+    setPrevActive(active)
+    // Resuming mid-settle ends the settle without touching the running
+    // animation; stopping settles only when there is a painted cycle to finish.
+    settlingNow = !active && started && !pageHidden()
+    setSettling(settlingNow)
+  }
+  const running = active || settlingNow
+  if (!running && started) {
+    // The class is gone, so the animation is too: forget this run.
+    setStarted(false)
+    setSettling(false)
+  }
+
+  // The browser cancels a CSS animation whose element stops rendering, or that
+  // reduced motion switched off mid-run, and no boundary ever follows. React
+  // has no prop for the event, so it is heard natively.
+  React.useEffect(() => {
+    if (!el) return
+    const onCancel = (event: Event) => {
+      if ((event as AnimationEvent).animationName !== animationName) return
+      // A move replaced the animation rather than ending it: the new one is
+      // already there, and a settle in progress follows it.
+      if (el.isConnected && findAnimation(el, animationName)) return
+      setStarted(false)
+      setSettling(false)
+    }
+    el.addEventListener("animationcancel", onCancel)
+    return () => el.removeEventListener("animationcancel", onCancel)
+  }, [el, animationName])
+
+  React.useLayoutEffect(() => {
+    if (!settlingNow) return
+    let live = true
+    const finish = () => {
+      if (live) setSettling(false)
+    }
+    const onVisibility = () => {
+      if (pageHidden()) finish()
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    const cleanupVisibility = () =>
+      document.removeEventListener("visibilitychange", onVisibility)
+
+    if (!el || typeof el.getAnimations !== "function") {
+      // No Web Animations API: the boundary event handler ends the settle.
+      return () => {
+        live = false
+        cleanupVisibility()
+      }
+    }
+    const animation = el
+      .getAnimations()
+      .find((a) => (a as CSSAnimation).animationName === animationName)
+    const effect = animation?.effect
+    if (!animation || !effect) {
+      // It was running a moment ago and is gone now, so there is nothing left
+      // to finish.
+      finish()
+      return cleanupVisibility
+    }
+    const { currentIteration } = effect.getComputedTiming()
+    const iterations = (currentIteration ?? 0) + 1
+    // Where the settle lands, kept so a replacement can be put on the same
+    // schedule.
+    const landing = { start: animation.startTime, iterations }
+    let shortened: AnimationEffect = effect
+    shortened.updateTiming({ iterations })
+    const follow = (followed: Animation) => {
+      // A finish ends the settle. A cancel is either a real stop (nothing
+      // replaces the animation) or a move, which hands the settle on.
+      followed.finished.then(finish, () => adopt(followed))
+    }
+    const adopt = (cancelled: Animation) => {
+      if (!live) return
+      const replacement = el.isConnected ? findAnimation(el, animationName) : undefined
+      if (!replacement?.effect || replacement === cancelled) {
+        finish()
+        return
+      }
+      shortened = replacement.effect
+      shortened.updateTiming({ iterations: landing.iterations })
+      if (landing.start !== null) replacement.startTime = landing.start
+      follow(replacement)
+    }
+    follow(animation)
+    return () => {
+      live = false
+      cleanupVisibility()
+      // Resuming keeps this same animation looping from where it is. On a stop
+      // the class is leaving in this same commit, which cancels it anyway.
+      shortened.updateTiming({ iterations: Infinity })
+    }
+  }, [el, settlingNow, animationName])
+
+  const onAnimationStart = React.useCallback(
+    (event: React.AnimationEvent) => {
+      if (event.animationName === animationName) setStarted(true)
+    },
+    [animationName],
+  )
+  const onBoundary = React.useCallback(
+    (event: React.AnimationEvent) => {
+      if (event.animationName !== animationName) return
+      // With the Web Animations API the finish owns the stop; a boundary event
+      // is handled a task late and would cut the next iteration's first frame.
+      if (typeof event.currentTarget.getAnimations === "function") return
+      // A boundary while still active is a no-op: `settling` is already false.
+      setSettling(false)
+    },
+    [animationName],
+  )
+
+  const handlers = React.useMemo(
+    () => ({
+      onAnimationStart,
+      onAnimationIteration: onBoundary,
+      onAnimationEnd: onBoundary,
+    }),
+    [onAnimationStart, onBoundary],
+  )
+  return { running, attach: setEl, handlers }
+}

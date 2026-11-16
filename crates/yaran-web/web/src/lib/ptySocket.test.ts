@@ -4,8 +4,6 @@ import {
   PROVIDER_UNAVAILABLE_CLOSE,
   PtySocket,
   agentPtyUrl,
-  getActivePtySocket,
-  setActivePtySocket,
   projectTerminalPtyUrl,
   standaloneTerminalPtyUrl,
   tabPtyUrl,
@@ -13,6 +11,9 @@ import {
   terminalSocketUrl,
 } from "./ptySocket"
 import { setAppSocketGivenUp } from "./appSocketGiveUp"
+import { browserId } from "./browserId"
+import { pageSeatId } from "./pageSeat"
+import { noteConnectionIdPending, setConnectionId } from "./connection"
 import { clearServerValidated, noteServerValidated } from "./serverValidated"
 import type { ConnState } from "./types"
 
@@ -85,7 +86,6 @@ afterEach(() => {
   clearServerValidated()
   vi.unstubAllGlobals()
   vi.useRealTimers()
-  setActivePtySocket(null)
 })
 
 function last(): FakeWS {
@@ -163,8 +163,109 @@ describe("PtySocket", () => {
     const sock = new PtySocket("ws://x/ws/sessions/s1/pty")
     sock.connect()
     const ws = last()
-    expect(ws.url).toBe("ws://x/ws/sessions/s1/pty")
+    expect(ws.url).toBe(
+      `ws://x/ws/sessions/s1/pty?browser=${encodeURIComponent(browserId())}&page=${pageSeatId()}`,
+    )
     expect(ws.binaryType).toBe("arraybuffer")
+  })
+
+  it("names this browser on every open, linked to the tab's events connection or not", () => {
+    vi.useFakeTimers()
+    const browser = `${encodeURIComponent(browserId())}&page=${pageSeatId()}`
+    setConnectionId(null)
+    const sock = new PtySocket("ws://x/ws/sessions/s1/pty")
+    sock.connect()
+    expect(last().url).toBe(`ws://x/ws/sessions/s1/pty?browser=${browser}`)
+    last().open()
+    setConnectionId("e1")
+    last().triggerClose(1006)
+    vi.advanceTimersByTime(600)
+    expect(last().url).toBe(`ws://x/ws/sessions/s1/pty?events=e1&browser=${browser}`)
+    setConnectionId(null)
+  })
+
+  it("names one page id on every socket this page opens, so the page drives a row as one", () => {
+    const agent = new PtySocket("ws://x/ws/sessions/s1/pty")
+    agent.connect()
+    const first = new URL(last().url).searchParams.get("page")
+    const dock = new PtySocket("ws://x/ws/sessions/s1/terminals/t1/pty")
+    dock.connect()
+    expect(first).toMatch(/^[0-9a-f]{32}$/)
+    expect(new URL(last().url).searchParams.get("page")).toBe(first)
+  })
+
+  it("says a pane off screen is not viewed when it opens, and again on its reconnect", () => {
+    vi.useFakeTimers()
+    let onScreen = false
+    const sock = new PtySocket("ws://x/ws/sessions/s1/pty")
+    sock.onScreen = () => onScreen
+    sock.connect()
+    expect(new URL(last().url).searchParams.get("viewed")).toBe("0")
+    last().open()
+    last().triggerClose(1006)
+    vi.advanceTimersByTime(600)
+    expect(new URL(last().url).searchParams.get("viewed")).toBe("0")
+    onScreen = true
+    last().triggerClose(1006)
+    vi.advanceTimersByTime(2000)
+    expect(new URL(last().url).searchParams.has("viewed")).toBe(false)
+  })
+
+  it("counts every open, so a reconnect in place is a new connection", () => {
+    vi.useFakeTimers()
+    const sock = new PtySocket("ws://x/ws/sessions/s1/pty")
+    sock.connect()
+    last().open()
+    const first = sock.openSerial
+    last().triggerClose(1006)
+    vi.advanceTimersByTime(600)
+    last().open()
+    expect(sock.openSerial).toBe(first + 1)
+  })
+
+  it("sends the shown and unviewed frames without a beat to echo", () => {
+    const sock = new PtySocket("ws://x/ws/sessions/s1/pty")
+    sock.connect()
+    last().open()
+    expect(sock.sendShown()).toBe(true)
+    expect(sock.sendUnviewed()).toBe(true)
+    expect(last().sent.slice(-2)).toEqual(['{"shown":true}', '{"viewed":false}'])
+  })
+
+  it("names this tab's events connection on every open, the one it has at that moment", () => {
+    vi.useFakeTimers()
+    setConnectionId("e/1")
+    const sock = new PtySocket("ws://x/ws/sessions/s1/pty")
+    sock.connect()
+    const browser = `browser=${encodeURIComponent(browserId())}&page=${pageSeatId()}`
+    expect(last().url).toBe(`ws://x/ws/sessions/s1/pty?events=e%2F1&${browser}`)
+    last().open()
+    setConnectionId("e2")
+    last().triggerClose(1006)
+    vi.advanceTimersByTime(600)
+    expect(last().url).toBe(`ws://x/ws/sessions/s1/pty?events=e2&${browser}`)
+    setConnectionId(null)
+  })
+
+  it("holds its open until this tab's events id arrives, for at most a second", () => {
+    vi.useFakeTimers()
+    setConnectionId(null)
+    noteConnectionIdPending()
+    const browser = `browser=${encodeURIComponent(browserId())}&page=${pageSeatId()}`
+    const first = new PtySocket("ws://x/ws/sessions/s1/pty")
+    first.connect()
+    expect(FakeWS.instances.length).toBe(0)
+    setConnectionId("e7")
+    expect(last().url).toBe(`ws://x/ws/sessions/s1/pty?events=e7&${browser}`)
+
+    setConnectionId(null)
+    noteConnectionIdPending()
+    const second = new PtySocket("ws://x/ws/sessions/s2/pty")
+    second.connect()
+    vi.advanceTimersByTime(999)
+    expect(FakeWS.instances.length).toBe(1)
+    vi.advanceTimersByTime(1)
+    expect(last().url).toBe(`ws://x/ws/sessions/s2/pty?${browser}`)
   })
 
   it("records connection id and replay generation from the connected frame", () => {
@@ -519,7 +620,7 @@ describe("PtySocket", () => {
     sock.connect()
     const ws = last()
     ws.open()
-    sock.sendInput(new Uint8Array([1, 2, 3]))
+    expect(sock.sendInput(new Uint8Array([1, 2, 3]))).toBe(true)
     expect(ws.sent).toHaveLength(1)
     const frame = ws.sent[0]
     expect(frame).toBeInstanceOf(ArrayBuffer)
@@ -529,8 +630,8 @@ describe("PtySocket", () => {
   it("does not send stdin before the socket is open", () => {
     const sock = new PtySocket("ws://x/pty")
     sock.connect()
-    // Not opened yet (readyState 0): the send guard drops it.
-    sock.sendInput(new Uint8Array([9]))
+    // Not opened yet (readyState 0): the send guard drops it, and says so.
+    expect(sock.sendInput(new Uint8Array([9]))).toBe(false)
     expect(last().sent).toHaveLength(0)
   })
 
@@ -769,14 +870,24 @@ describe("PtySocket", () => {
   })
 })
 
-describe("active PTY socket registry", () => {
-  it("stores and clears the active socket", () => {
-    expect(getActivePtySocket()).toBeNull()
+describe("a resize outside the PTY's grid bounds", () => {
+  // The server refuses such a frame without a word, so sending it would spend
+  // a take-over on a claim that never happened. Reported as not sent, which is
+  // what keeps the caller's take-over intent armed for the next real frame.
+  it("never goes on the wire and is reported as not sent", () => {
     const sock = new PtySocket("ws://x/pty")
-    setActivePtySocket(sock)
-    expect(getActivePtySocket()).toBe(sock)
-    setActivePtySocket(null)
-    expect(getActivePtySocket()).toBeNull()
+    sock.connect()
+    const ws = last()
+    ws.open()
+    expect(sock.sendResize(0, 0, true)).toBe(false)
+    expect(sock.sendResize(65535, 65535, true, "41")).toBe(false)
+    expect(ws.sent).toEqual([])
+    expect(sock.sendResize(24, 80, true)).toBe(true)
+    expect(JSON.parse(ws.sent[0] as string)).toEqual({
+      rows: 24,
+      cols: 80,
+      takeover: true,
+    })
   })
 })
 
@@ -942,8 +1053,30 @@ describe("while the app socket has given up", () => {
 
 // Phase 13: an expired Access session is an ordinary retry, never the 4001 stop
 // and never `onGone`. The registry pin is in native/accessSession.test.ts.
+// The 4401 reaches the Access session only on a page Cloudflare Access verified;
+// anywhere else it is the sign-in gate's (`isGateCloseCode`).
+async function openAccessVerifiedGate(): Promise<void> {
+  const gate = await import("./authGate")
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          password_set: true,
+          required_here: false,
+          signed_in: false,
+          access_verified: true,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    ),
+  )
+  await gate.initAuthGate()
+}
+
 describe("PtySocket 4401", () => {
   it("retries without onGone or a failed state, and notes the expiry", async () => {
+    await openAccessVerifiedGate()
     const { accessSession, ACCESS_SESSION_EXPIRED_CLOSE } = await import(
       "./native/accessSession"
     )

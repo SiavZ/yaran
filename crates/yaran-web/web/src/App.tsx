@@ -4,16 +4,17 @@
  * <module-headers:begin>
  * Uses:
  * src/App.tsx
- * ├── @yaran/ui-kit:src/sonner.tsx
  * ├── @yaran/ui-kit:src/use-mobile.ts
  * ├── src/components/AddProjectDialog.tsx
  * ├── src/components/AgentEnvDialog.tsx
  * ├── src/components/AgentInfoDialog.tsx
  * ├── src/components/AgentStartupCommandDialog.tsx
  * ├── src/components/AttachPullRequestDialog.tsx
+ * ├── src/components/ChangeBaseBranchDialog.tsx
  * ├── src/components/ChangeProviderDialog.tsx
  * ├── src/components/ChangedFiles.tsx
  * ├── src/components/CheckoutDefaultBranchDialog.tsx
+ * ├── src/components/CloneProjectDialog.tsx
  * ├── src/components/CommitDialog.tsx
  * ├── src/components/ConfigEditorDialog.tsx
  * ├── src/components/ConfirmCloseEditorTabDialog.tsx
@@ -24,9 +25,11 @@
  * ├── src/components/ConfirmForceReconnectDialog.tsx
  * ├── src/components/ConfirmForceStopAgentDialog.tsx
  * ├── src/components/ConfirmRecreateWorkingCopyDialog.tsx
+ * ├── src/components/ConfirmStopTabDialog.tsx
  * ├── src/components/ConfirmUseExistingBranchDialog.tsx
  * ├── src/components/ConfirmVanishedEditorDialog.tsx
  * ├── src/components/ConnectPhoneDialog.tsx
+ * ├── src/components/CopiedTextDialog.tsx
  * ├── src/components/CreateAgentDialog.tsx
  * ├── src/components/CustomizeWebappDialog.tsx
  * ├── src/components/DeleteProjectDialog.tsx
@@ -38,9 +41,12 @@
  * ├── src/components/MacrosDialog.tsx
  * ├── src/components/MobileShell.tsx
  * ├── src/components/NewAgentPickerDialog.tsx
+ * ├── src/components/NewLauncherDialog.tsx
  * ├── src/components/OfflineOverlay.tsx
  * ├── src/components/ProjectInfoDialog.tsx
  * ├── src/components/ProjectSettingsDialog.tsx
+ * ├── src/components/ProjectsDialog.tsx
+ * ├── src/components/PullRequestsDialog.tsx
  * ├── src/components/RemoveProjectDialog.tsx
  * ├── src/components/RenameSessionDialog.tsx
  * ├── src/components/Sidebar.tsx
@@ -58,6 +64,7 @@
  * ├── src/hooks/use-changes-pane-controller.ts
  * ├── src/hooks/use-theater.ts
  * ├── src/hooks/use-visual-viewport.ts
+ * ├── src/lib/appViewport.ts
  * ├── src/lib/paneCover.ts
  * ├── src/lib/store.ts
  * ├── src/lib/theater.ts
@@ -76,11 +83,13 @@
 import type * as React from "react"
 
 import { AddProjectDialog } from "@/components/AddProjectDialog"
+import { CloneProjectDialog } from "@/components/CloneProjectDialog"
 import { StandaloneAgentDialog } from "@/components/StandaloneAgentDialog"
 import { AgentEnvDialog } from "@/components/AgentEnvDialog"
 import { AgentInfoDialog } from "@/components/AgentInfoDialog"
 import { AgentStartupCommandDialog } from "@/components/AgentStartupCommandDialog"
 import { AttachPullRequestDialog } from "@/components/AttachPullRequestDialog"
+import { PullRequestsDialog } from "@/components/PullRequestsDialog"
 import { WorktreesDialog } from "@/components/WorktreesDialog"
 import { AppSidebar } from "@/components/Sidebar"
 import { StartupLogsDialog } from "@/components/StartupLogsDialog"
@@ -92,8 +101,10 @@ import { FirstLoadDialog } from "@/components/FirstLoadDialog"
 import { ConfigEditorDialog } from "@/components/ConfigEditorDialog"
 import { ConfirmDeleteTerminalDialog } from "@/components/ConfirmDeleteTerminalDialog"
 import { ConfirmCloseTabDialog } from "@/components/ConfirmCloseTabDialog"
+import { ConfirmStopTabDialog } from "@/components/ConfirmStopTabDialog"
 import { ConfirmDetachAgentDialog } from "@/components/ConfirmDetachAgentDialog"
 import { ConfirmForceReconnectDialog } from "@/components/ConfirmForceReconnectDialog"
+import { CopiedTextDialog } from "@/components/CopiedTextDialog"
 import { ConfirmForceStopAgentDialog } from "@/components/ConfirmForceStopAgentDialog"
 import { ConfirmRecreateWorkingCopyDialog } from "@/components/ConfirmRecreateWorkingCopyDialog"
 import { ConfirmUseExistingBranchDialog } from "@/components/ConfirmUseExistingBranchDialog"
@@ -105,7 +116,9 @@ import { ConfirmCloseEditorTabDialog } from "@/components/ConfirmCloseEditorTabD
 import { ConfirmVanishedEditorDialog } from "@/components/ConfirmVanishedEditorDialog"
 import { CreateAgentDialog } from "@/components/CreateAgentDialog"
 import { NewAgentPickerDialog } from "@/components/NewAgentPickerDialog"
+import { NewLauncherDialog } from "@/components/NewLauncherDialog"
 import { RenameSessionDialog } from "@/components/RenameSessionDialog"
+import { ChangeBaseBranchDialog } from "@/components/ChangeBaseBranchDialog"
 import { CheckoutDefaultBranchDialog } from "@/components/CheckoutDefaultBranchDialog"
 import { DeleteProjectDialog } from "@/components/DeleteProjectDialog"
 import { DeleteSessionDialog } from "@/components/DeleteSessionDialog"
@@ -116,6 +129,7 @@ import { OfflineOverlay } from "@/components/OfflineOverlay"
 import { StandaloneEditorShell } from "@/components/StandaloneEditor"
 import { ProjectInfoDialog } from "@/components/ProjectInfoDialog"
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog"
+import { ProjectsDialog } from "@/components/ProjectsDialog"
 import { RemoveProjectDialog } from "@/components/RemoveProjectDialog"
 import { CustomizeWebappDialog } from "@/components/CustomizeWebappDialog"
 import { InsetHeader } from "@/components/InsetHeader"
@@ -131,8 +145,8 @@ import {
   SidebarInset,
   SidebarProvider,
 } from "@/components/ui/sidebar"
-import { Toaster } from "@yaran/ui-kit/sonner"
 import { useIsMobile } from "@yaran/ui-kit/use-mobile"
+import { SHELL_HEIGHT_CLASS, SHELL_SAFE_TOP, shellHeight } from "@/lib/appViewport"
 import {
   useChromeGesture,
   useTheaterEscape,
@@ -151,7 +165,8 @@ import { usePaneCoverKnown, usePaneCoverOwned } from "@/lib/paneCover"
 import { topChromeHidden } from "@/lib/theater"
 import { keyboardLikelyOpen } from "@/lib/viewport"
 
-// Every dialog and the toaster, rendered once above whichever shell is active.
+// Every dialog, rendered once above whichever shell is active. The toaster is
+// not here: it lives at the page root (`AuthGate`), so toasts outlive the gate.
 // The standalone editor is a shell too and needs these, so nothing here may move
 // into the desktop or mobile tree; everything portals to the body and depends on
 // no shell-specific provider.
@@ -161,13 +176,19 @@ function GlobalOverlays() {
       <CommitDialog />
       <EditorOverlay />
       <CreateAgentDialog />
+      <NewLauncherDialog />
       <NewAgentPickerDialog />
+      {/* Before every project dialog, so one opened from a row's menu stacks
+          over the list and closing it lands back on the list. */}
+      <ProjectsDialog />
       <RenameSessionDialog />
       <AttachPullRequestDialog />
+      <PullRequestsDialog />
       <ChangeProviderDialog />
       <DeleteSessionDialog />
       <ConfirmDeleteTerminalDialog />
       <ConfirmCloseTabDialog />
+      <ConfirmStopTabDialog />
       {/* At the root, not inside the Task Manager: the agent row menu opens the
           polite one with the Task Manager closed, and both are target-keyed. */}
       <ConfirmDetachAgentDialog />
@@ -193,12 +214,14 @@ function GlobalOverlays() {
       <AgentEnvDialog />
       <StartupLogsDialog />
       <AddProjectDialog />
+      <CloneProjectDialog />
       <StandaloneAgentDialog />
       <WorktreesDialog />
       <RemoveProjectDialog />
       <DeleteProjectDialog />
       <CheckoutDefaultBranchDialog />
-      <Toaster />
+      <ChangeBaseBranchDialog />
+      <CopiedTextDialog />
       {/* Portals to the body and sits above every other surface, so DOM order
           here is irrelevant. */}
       <OfflineOverlay />
@@ -251,7 +274,7 @@ export function DesktopShell() {
           the chrome collapse (see `useTheaterGesture`), so the whole change
           costs one refit at the geometry it settles on. */}
       {theater ? null : <AppSidebar />}
-      <SidebarInset className="flex h-svh min-h-0 flex-col overflow-hidden">
+      <SidebarInset className={`flex ${SHELL_HEIGHT_CLASS} min-h-0 flex-col overflow-hidden`}>
         {/* Theater takes this stack and the band-plus-strip inside TerminalArea
             on the same flag, so the gesture above pays for one refit between
             them. The hidden Changes pane's reopen control lives in this header
@@ -342,11 +365,10 @@ function MobileApp() {
     <div
       className="flex min-h-0 flex-col overflow-hidden"
       style={{
-        height:
-          constrainToKeyboard && viewportHeight !== null
-            ? viewportHeight
-            : "100svh",
-        paddingTop: "env(safe-area-inset-top)",
+        height: shellHeight(
+          constrainToKeyboard && viewportHeight !== null ? viewportHeight : null,
+        ),
+        paddingTop: SHELL_SAFE_TOP,
         paddingBottom: dropBottomInset ? 0 : "env(safe-area-inset-bottom)",
         paddingLeft: "env(safe-area-inset-left)",
         paddingRight: "env(safe-area-inset-right)",

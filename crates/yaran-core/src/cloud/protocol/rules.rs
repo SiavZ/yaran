@@ -68,7 +68,7 @@ pub struct Invalid(pub &'static str);
 
 impl fmt::Display for Invalid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "the cloud protocol field `{}` is invalid", self.0)
+        write!(f, "the cloud protocol field \"{}\" is invalid", self.0)
     }
 }
 

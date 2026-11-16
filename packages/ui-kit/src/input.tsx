@@ -15,16 +15,18 @@
  * src/input.tsx
  * ├── @yaran/mobile-shell:src/screens/onboarding/EnterUrl.tsx
  * ├── web:src/components/AddProjectDialog.tsx
+ * ├── web:src/components/AgentNameFields.tsx
  * ├── web:src/components/AttachPullRequestDialog.tsx
  * ├── web:src/components/ChangedFiles.tsx
+ * ├── web:src/components/CloneProjectDialog.tsx
  * ├── web:src/components/CreateAgentDialog.tsx
  * ├── web:src/components/CustomizeWebappDialog.tsx
  * ├── web:src/components/EditorBody.tsx
+ * ├── web:src/components/LoginPage.tsx
  * ├── web:src/components/MacrosDialog.tsx
  * ├── web:src/components/NewEntryDialog.tsx
  * ├── web:src/components/RenameEntryDialog.tsx
  * ├── web:src/components/RenameSessionDialog.tsx
- * ├── web:src/components/StandaloneAgentDialog.tsx
  * ├── web:src/components/WorktreesDialog.tsx
  * ├── web:src/components/cloud/CloudDialog.tsx
  * ├── web:src/components/ui/input-group.tsx

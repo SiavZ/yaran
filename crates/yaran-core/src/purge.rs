@@ -1167,6 +1167,7 @@ mod tests {
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("yaran.lock"),
             root: root.to_path_buf(),
+            socket_path: root.join("yaran.sock"),
         }
     }
 

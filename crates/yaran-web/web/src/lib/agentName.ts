@@ -1,49 +1,68 @@
-// Agent-name input rules, ported from `yaran_core::git` so the web new-agent
-// dialog accepts exactly the same strings the TUI does. The TUI rejects an
-// offending keystroke (`agent_name_char_map`); a React input hands over the
-// whole next value, so `sanitizeAgentName` maps the string through rules that
-// converge on the same accepted set:
-//   - space -> dash
-//   - drop chars outside [A-Za-z0-9-_/]
-//   - first char must be alphanumeric (drop leading -, _, / until one)
-//   - collapse "//" to "/"
-// A single trailing `/` is deliberately kept, since the user may be mid-typing
-// "feat/" before "feat/x"; `isValidAgentName` rejects it at submit, as the
-// TUI's `is_valid_agent_name` does.
+// Agent-name rules, ported from `yaran_core::git` so the web dialogs accept
+// exactly the names the TUI does: any name git accepts as a branch. The TUI
+// refuses an offending keystroke (`agent_name_char_map`); a React input hands
+// over the whole next value, so `sanitizeAgentName` maps it character by
+// character to the same result: a space becomes a dash, and a character no
+// agent name may hold anywhere is dropped. Everything else stays, and
+// `isValidAgentName` judges the whole name at submit.
 
-const ALLOWED = /[A-Za-z0-9\-_/]/
+// What git refuses anywhere in a ref name (ASCII control characters and DEL,
+// space, and ~ ^ : ? * [ \), and the bidirectional controls `lib/bidi.ts`
+// strips, which git takes but which would make a name draw as another.
+// eslint-disable-next-line no-control-regex
+const NEVER_IN_AN_AGENT_NAME = /[\u0000-\u001f\u007f ~^:?*[\\\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/
 
-/**
- * Map a full input value through the agent-name character rules listed above.
- * A trailing slash survives here and is rejected by `isValidAgentName`.
- */
+/** Map a full input value through the per-character rule above. */
 export function sanitizeAgentName(next: string): string {
   let out = ""
   for (const raw of next) {
     const ch = raw === " " ? "-" : raw
-    if (!ALLOWED.test(ch)) continue
-    // First accepted character must be alphanumeric (reject leading -, _, /).
-    if (out.length === 0 && !/[A-Za-z0-9]/.test(ch)) continue
-    // Collapse "//": skip a slash that would immediately follow a slash.
-    if (ch === "/" && out.endsWith("/")) continue
+    if (NEVER_IN_AN_AGENT_NAME.test(ch)) continue
     out += ch
   }
   return out
 }
 
 /**
- * Exact port of `yaran_core::git::is_valid_agent_name`: non-empty; doesn't start
- * with `-` or `/`; doesn't end with `/`; no `//`; only ASCII alphanumerics,
- * `-`, `_`, `/`. Used to gate the Create button.
+ * Exact port of `yaran_core::git::is_valid_agent_name`, the rules of
+ * `git check-ref-format --branch`; both are pinned by the shared
+ * `agent_name_cross_language.json` vectors. Used to gate the submit button.
  */
 export function isValidAgentName(name: string): boolean {
-  if (name.length === 0) return false
-  if (name.startsWith("-") || name.startsWith("/") || name.endsWith("/")) {
+  if (name === "" || name.startsWith("-") || name === "HEAD" || name === "@") {
     return false
   }
-  if (name.includes("//")) return false
-  for (const ch of name) {
-    if (!/[A-Za-z0-9\-_/]/.test(ch)) return false
+  if (NEVER_IN_AN_AGENT_NAME.test(name)) return false
+  if (name.includes("..") || name.includes("@{") || name.endsWith(".")) {
+    return false
   }
-  return true
+  return name
+    .split("/")
+    .every(
+      (part) =>
+        part !== "" && !part.startsWith(".") && !part.endsWith(".lock"),
+    )
+}
+
+/**
+ * The generated-name bookkeeping both name dialogs share. Typing a name keeps
+ * the remembered generated one only while the text still equals it, so a later
+ * uncheck can tell a name the user wrote from one yaran filled in.
+ */
+export function generatedNameAfterEdit(
+  draft: string,
+  generated: string | null,
+): string | null {
+  return draft === generated ? generated : null
+}
+
+/**
+ * What the name field holds after the pet-name box is unchecked: cleared when
+ * it still holds the generated name, untouched when the user has edited it.
+ */
+export function draftAfterRandomizeOff(
+  draft: string,
+  generated: string | null,
+): string {
+  return draft === generated ? "" : draft
 }

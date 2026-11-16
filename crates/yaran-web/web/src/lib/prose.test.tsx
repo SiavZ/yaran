@@ -11,8 +11,34 @@ import {
   HEURISTIC_BRANCH_NOTE_PROSE,
   worktreeBaseNoteProse,
 } from "./addProjectWarning"
+import { attachedEntryProse, attachedLeadProse } from "./attached"
+import { changeBaseBranchProse } from "./changeBaseBranch"
 import { checkoutDefaultBranchProse } from "./checkoutDefaultBranch"
+import {
+  type BranchOrigin,
+  type UncommittedAnswer,
+  type UnpushedAnswer,
+  branchesCheckFailedProse,
+  branchesCheckedProse,
+  currentBranchCheckFailedProse,
+  branchesCheckingProse,
+  currentBranchLabelProse,
+  currentBranchWarningProse,
+  otherBranchesLabelProse,
+  otherBranchesWarningProse,
+  protectedBranchesProse,
+  branchLossProse,
+  unpushedCountFailureProse,
+  worktreeFilesCheckingProse,
+  worktreeFilesProse,
+} from "./deleteAgent"
 import { detachConfirmProse } from "./detachAgent"
+import {
+  leftoverBranchFateProse,
+  leftoverDeleteBodyProse,
+  leftoverDeleteTitle,
+  leftoverKeptBranchProse,
+} from "./leftoverFolder"
 import { deleteProjectProse, removeProjectProse } from "./projectConfirm"
 import {
   chip,
@@ -25,8 +51,16 @@ import {
   joinProse,
   prose,
   wireProse,
+  addExistingOfferProse,
+  cloneOfferIncompleteProse,
+  cloneOfferProse,
 } from "./prose"
-import { recreateConfirmProse } from "./recreateWorkingCopy"
+import {
+  recreateConfirmProse,
+  recreateRestartCheckboxProse,
+} from "./recreateWorkingCopy"
+import { renameBranchNoteProse } from "./renameAgent"
+import type { UndeletableBranchView } from "./types"
 
 describe("a name's bidi controls", () => {
   it("are dropped by both chip builders", () => {
@@ -36,7 +70,11 @@ describe("a name's bidi controls", () => {
 
   it("never reach the recreate confirm's text", () => {
     const text = proseText(
-      recreateConfirmProse("~/wt", "feat\u202Etxt.exe", "main", true, ["claude"]),
+      recreateConfirmProse("~/wt", "feat\u202Etxt.exe", "main", true, {
+        follows: ["claude"],
+        restartable: [],
+        left_running: [],
+      }),
     )
     expect(text).toContain('"feattxt.exe"')
     expect(text).not.toMatch(/[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/)
@@ -116,12 +154,25 @@ describe("the sentences both surfaces print", () => {
           args.branch_name as string,
           args.source_branch as string,
           args.conversation_resumes as boolean,
-          args.providers as string[],
+          {
+            follows: [],
+            restartable: [],
+            left_running: [],
+            ...(args.running as Record<string, string[]>),
+          },
         )
+      case "recreate_restart_checkbox":
+        return recreateRestartCheckboxProse(args.restartable as string[])
       case "checkout_default_branch_confirm":
         return checkoutDefaultBranchProse(
           args.project_name as string,
           args.stored_base as string | null,
+        )
+      case "change_base_branch_confirm":
+        return changeBaseBranchProse(
+          args.project_name as string,
+          args.from as string | null,
+          args.to as string,
         )
       case "add_project_branch_warning":
         return branchWarningProse(
@@ -142,6 +193,120 @@ describe("the sentences both surfaces print", () => {
           (args.project_name as string | null) ?? undefined,
           args.agent_count as number,
         )
+      case "rename_branch_note":
+        return renameBranchNoteProse(
+          args.branch as string,
+          args.open_pr as number | null,
+          args.pushed as boolean,
+        )
+      case "unpushed_count_failure":
+        return unpushedCountFailureProse(
+          args.branches as string[],
+          args.reason as string,
+        )
+      case "delete_current_branch_label":
+        return currentBranchLabelProse(args.branch as string)
+      case "delete_other_branches_label":
+        return otherBranchesLabelProse(args.branches as string[])
+      case "delete_current_branch_warning":
+        return currentBranchWarningProse(args.origin as BranchOrigin) ?? []
+      case "delete_other_branches_warning":
+        return otherBranchesWarningProse(
+          args.others as { name: string; origin: BranchOrigin }[],
+          args.ticked as boolean,
+        )
+      case "delete_branch_loss":
+        return (
+          branchLossProse(
+            args.branches as string[],
+            args.lost as
+              | { count: number; has_remote_refs: boolean }
+              | { failed: string },
+          ) ?? []
+        )
+      case "delete_branches_checking":
+        return branchesCheckingProse()
+      case "delete_worktree_files_checking":
+        return worktreeFilesCheckingProse(args.agent as string)
+      case "delete_worktree_files":
+        return (
+          worktreeFilesProse(
+            args.agent as string,
+            args.files as UncommittedAnswer,
+          ) ?? []
+        )
+      case "delete_branches_checked": {
+        const answer = branchesCheckedProse(
+          args.current as string | null,
+          args.current_lost as UnpushedAnswer,
+          args.others as string[],
+          args.others_lost as UnpushedAnswer,
+          args.both_lost as UnpushedAnswer,
+        )
+        return "ok" in answer ? (answer.ok ?? []) : answer.failed
+      }
+      case "delete_branches_check_failed":
+        return branchesCheckFailedProse(args.reason as string)
+      case "delete_current_branch_check_failed":
+        return currentBranchCheckFailedProse(
+          args.branch as string,
+          args.reason as string,
+        )
+      case "delete_protected_branches":
+        return protectedBranchesProse(args.branches as string[])
+      case "attached_lead":
+        return attachedLeadProse()
+      case "attached_entry":
+        return attachedEntryProse({
+          device: args.device as string | null,
+          surface: args.surface as "browser" | "terminal_ui",
+          address: args.address as string | null,
+          verified: args.verified as boolean,
+          driving: args.driving as boolean,
+          targetKind: args.target_kind as "tab" | "terminal",
+          targetLabel: args.target_label as string,
+          agentLabel: args.agent_label as string | null,
+        })
+      case "pr_clone_offer":
+        return cloneOfferProse(args.repository as string, args.number as string)
+      case "pr_clone_offer_incomplete":
+        return cloneOfferIncompleteProse(
+          args.repository as string,
+          args.number as string,
+          args.summary as string,
+        )
+      case "pr_add_existing_offer":
+        return addExistingOfferProse(
+          args.folder as string,
+          args.repository as string,
+          args.number as string,
+        )
+      case "leftover_delete_body":
+        return leftoverDeleteBodyProse(
+          args.path as string,
+          args.folder_present as boolean,
+          args.left_by_agent as boolean,
+        )
+      case "leftover_branch_fate":
+        return leftoverBranchFateProse(
+          args.branches as string[],
+          args.delete as boolean,
+          args.folder_present as boolean,
+        )
+      case "leftover_delete_title":
+        return [
+          leftoverDeleteTitle(
+            args.folder_present as boolean,
+            args.branch_count as number,
+          ),
+        ]
+      case "leftover_kept_branch":
+        return leftoverKeptBranchProse({
+          name: args.name as string,
+          why: args.why as UndeletableBranchView["why"],
+          path: args.path as string | undefined,
+          reason: args.reason as string | undefined,
+        })
       default:
         throw new Error(`the fixture names a sentence this test cannot build: ${sentence}`)
     }
@@ -251,5 +416,45 @@ describe("a status sentence read off the wire", () => {
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+describe("the sentences that offer a pull request's repository", () => {
+  it("offers the clone, naming the repository and the number", () => {
+    expect(cloneOfferProse("github.com/acme/widget", "3")).toEqual([
+      { name: "github.com/acme/widget", quoted: false },
+      " isn't a yaran project yet. yaran will clone it, add it as a project, and create the agent from pull request ",
+      { name: "#3", quoted: false },
+      ".",
+    ])
+  })
+
+  it("says when some projects could not be checked", () => {
+    expect(
+      cloneOfferIncompleteProse(
+        "github.com/acme/widget",
+        "3",
+        "1 has an address yaran could not read",
+      ),
+    ).toEqual([
+      "yaran could not find a checked project for ",
+      { name: "github.com/acme/widget", quoted: false },
+      ". yaran could not check every project (1 has an address yaran could not read), so one of them may already be a checkout of it. yaran will clone it, add it as a project, and create the agent from pull request ",
+      { name: "#3", quoted: false },
+      ".",
+    ])
+  })
+
+  it("offers to add a folder that already holds a checkout", () => {
+    expect(
+      addExistingOfferProse("/home/ada/src/widget", "github.com/acme/widget", "3"),
+    ).toEqual([
+      { name: "/home/ada/src/widget", quoted: false },
+      " is already a checkout of ",
+      { name: "github.com/acme/widget", quoted: false },
+      ". yaran will add it as a project and create the agent from pull request ",
+      { name: "#3", quoted: false },
+      ".",
+    ])
   })
 })

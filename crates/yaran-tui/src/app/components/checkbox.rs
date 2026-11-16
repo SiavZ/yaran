@@ -1,3 +1,4 @@
+use crate::numeric::usize_to_u16_wrapping;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::prelude::{Color, Modifier, Style};
@@ -7,13 +8,46 @@ use ratatui::widgets::Widget;
 use yaran_core::prose::Prose;
 
 use super::name_chip::prose_lines;
-use super::wrap_lines::wrap_styled_lines;
+use super::wrap_lines::{char_display_width, display_width, wrap_styled_lines};
 use crate::theme::Theme;
+
+/// Whether a checkbox is ticked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CheckMark {
+    /// Ticked.
+    Checked,
+    /// Not ticked.
+    Unchecked,
+}
+
+impl From<bool> for CheckMark {
+    /// Ticked for `true`, the state a box shows for a setting that is on.
+    fn from(checked: bool) -> Self {
+        if checked {
+            Self::Checked
+        } else {
+            Self::Unchecked
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CheckboxState {
     Normal,
     Focused,
+    /// Cannot be answered: drawn dimmed, and never a focus stop.
+    Disabled,
+}
+
+impl CheckboxState {
+    /// The look of the checkbox at `stop` while focus rests on `current`.
+    pub(crate) fn of<T: PartialEq + Copy>(current: T, stop: T) -> Self {
+        if current == stop {
+            Self::Focused
+        } else {
+            Self::Normal
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -80,14 +114,25 @@ impl<'a> Checkbox<'a> {
         }
     }
 
-    pub(crate) fn checked(mut self, checked: bool) -> Self {
-        self.checked = checked;
+    pub(crate) fn checked(mut self, mark: CheckMark) -> Self {
+        self.checked = mark == CheckMark::Checked;
         self
     }
 
     pub(crate) fn state(mut self, state: CheckboxState) -> Self {
         self.state = state;
         self
+    }
+
+    /// How many rows the checkbox takes at `max_width`, laid out in its own
+    /// marker and label styles.
+    pub(crate) fn height_at(&self, max_width: u16) -> u16 {
+        self.layout(
+            max_width,
+            self.marker_style(Style::default()),
+            self.label_style(Style::default()),
+        )
+        .height
     }
 
     pub(crate) fn layout(
@@ -136,7 +181,7 @@ impl<'a> Checkbox<'a> {
         }
 
         CheckboxLayout {
-            height: lines.len() as u16,
+            height: usize_to_u16_wrapping(lines.len()),
             lines,
             background: None,
         }
@@ -157,6 +202,7 @@ impl<'a> Checkbox<'a> {
         match self.state {
             CheckboxState::Normal => base_marker_style,
             CheckboxState::Focused => base_marker_style.add_modifier(Modifier::BOLD),
+            CheckboxState::Disabled => base_marker_style.add_modifier(Modifier::DIM),
         }
     }
 
@@ -164,16 +210,19 @@ impl<'a> Checkbox<'a> {
         match self.state {
             CheckboxState::Normal => base_label_style,
             CheckboxState::Focused => base_label_style.add_modifier(Modifier::BOLD),
+            CheckboxState::Disabled => base_label_style.add_modifier(Modifier::DIM),
         }
     }
 }
 
 impl Widget for CheckboxLayout {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        // Never index past the buffer: a caller on a tiny screen can hand in a
+        // rect that reaches beyond it.
+        let area = area.intersection(buf.area);
         let clear_style = self
             .background
-            .map(|background| Style::default().bg(background))
-            .unwrap_or_default();
+            .map_or_default(|background| Style::default().bg(background));
         for clear_offset in 0..area.height {
             let y = area.y.saturating_add(clear_offset);
             for x_offset in 0..area.width {
@@ -184,7 +233,7 @@ impl Widget for CheckboxLayout {
         }
 
         for (offset, line) in self.lines.into_iter().enumerate() {
-            let y = area.y.saturating_add(offset as u16);
+            let y = area.y.saturating_add(usize_to_u16_wrapping(offset));
             if y >= area.y.saturating_add(area.height) {
                 break;
             }
@@ -199,13 +248,6 @@ impl Widget for CheckboxLayout {
             );
         }
     }
-}
-
-/// Terminal-cell width of `s`, reusing the renderer's own calculation so
-/// double-width CJK, emoji and combining marks are measured by the columns they
-/// occupy rather than by Unicode scalar count.
-fn display_width(s: &str) -> usize {
-    Line::from(s).width()
 }
 
 fn wrap_checkbox_label(label: &str, max_width: usize) -> Vec<String> {
@@ -263,16 +305,13 @@ fn push_broken_word_lines(word: &str, max_width: usize, lines: &mut Vec<String>)
     let mut chunk = String::new();
     let mut chunk_width = 0usize;
     for ch in word.chars() {
-        let ch_width = display_width(ch.encode_utf8(&mut [0u8; 4]));
-        // Flush before a char that would overflow the line. A double-width
-        // glyph can push the running width past `max_width` by one, so this is
-        // a "would exceed" check rather than exact equality.
-        if chunk_width + ch_width > max_width && !chunk.is_empty() {
+        let width = char_display_width(ch);
+        if !chunk.is_empty() && chunk_width + width > max_width {
             lines.push(std::mem::take(&mut chunk));
             chunk_width = 0;
         }
         chunk.push(ch);
-        chunk_width += ch_width;
+        chunk_width += width;
     }
     if !chunk.is_empty() {
         lines.push(chunk);
@@ -310,9 +349,25 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_label_wraps_by_display_width() {
+        for label in ["漢字漢字", "ab 漢字漢字"] {
+            let checkbox = Checkbox::new(label);
+            let layout = checkbox.layout(9, Style::default(), Style::default());
+            for line in &layout.lines {
+                let width: usize = line
+                    .spans
+                    .iter()
+                    .map(|span| super::super::wrap_lines::display_width(&span.content))
+                    .sum();
+                assert!(width <= 9, "{label:?} painted a {width}-column row");
+            }
+        }
+    }
+
+    #[test]
     fn checkbox_wraps_label_with_continuation_indent() {
         let checkbox = Checkbox::new("Also delete the worktree and branch")
-            .checked(false)
+            .checked(CheckMark::Unchecked)
             .state(CheckboxState::Normal);
 
         let layout = checkbox.layout(20, Style::default(), Style::default());
@@ -348,9 +403,11 @@ mod tests {
     #[test]
     fn checkbox_inline_prefix_uses_shared_ascii_marker() {
         let unchecked = Checkbox::new("")
-            .checked(false)
+            .checked(CheckMark::Unchecked)
             .state(CheckboxState::Normal);
-        let checked = Checkbox::new("").checked(true).state(CheckboxState::Normal);
+        let checked = Checkbox::new("")
+            .checked(CheckMark::Checked)
+            .state(CheckboxState::Normal);
 
         let unchecked_spans = unchecked.inline_prefix(Style::default());
         let checked_spans = checked.inline_prefix(Style::default());
@@ -369,11 +426,9 @@ mod tests {
             .text("Also delete the branch ")
             .name("feat/login");
         let label_style = Style::default().fg(Color::Yellow);
-        let layout = Checkbox::with_prose(&prose, &theme).checked(true).layout(
-            24,
-            Style::default(),
-            label_style,
-        );
+        let layout = Checkbox::with_prose(&prose, &theme)
+            .checked(CheckMark::Checked)
+            .layout(24, Style::default(), label_style);
 
         let rows: Vec<String> = layout
             .lines

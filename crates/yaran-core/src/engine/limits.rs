@@ -410,6 +410,7 @@ mod tests {
             use_existing_branch: false,
             pull_before_create: false,
             copy_uncommitted_changes: false,
+            cloned: None,
         };
 
         engine.config.limits.max_panes = 1;

@@ -189,6 +189,7 @@ mod tests {
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("yaran.lock"),
+            socket_path: root.join("yaran.sock"),
             root,
         }
     }
@@ -306,7 +307,7 @@ mod tests {
 
         let request = engine.build_agent_launch_request(
             session,
-            false,
+            crate::model::ConversationStart::Fresh,
             (5, 80),
             crate::worker::AgentLaunchKind::Reconnect {
                 status_message: Default::default(),

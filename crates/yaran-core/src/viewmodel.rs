@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 
 use crate::engine::Engine;
 use crate::ids::TabIdRef;
-use crate::model::{AgentSession, PrInfo, PrState, Project, ProjectBranchStatus, ProviderKind};
+use crate::model::{AgentSession, Project, ProjectBranchStatus, ProviderKind};
 use crate::worker::{ResourceKind, ResourceStats};
 
 /// The projects/sessions/sidebar "spine" a web client reads via
@@ -63,7 +63,9 @@ use crate::worker::{ResourceKind, ResourceStats};
 /// `GET /api/v1/sessions/:id/changes`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SpineView {
+    /// Every project in the workspace.
     pub projects: Vec<ProjectView>,
+    /// Every agent session in the workspace.
     pub sessions: Vec<SessionView>,
     /// Every companion terminal in manual `sort_order`. Each carries a tagged
     /// [`TerminalOwnerView`] so clients handle owner kinds exhaustively.
@@ -79,6 +81,10 @@ pub struct SpineView {
 /// signals the client to refetch with a `config.changed` event (see
 /// [`Engine::bootstrap`]).
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent settings and facts sent to the web client as JSON booleans"
+)]
 pub struct BootstrapView {
     /// Configured provider command names, sorted. Surfaced so a client can
     /// populate a per-project default-provider picker.
@@ -96,13 +102,16 @@ pub struct BootstrapView {
     /// [`AgentTabView::drop_paste`]. A provider name absent from this map
     /// resolves to the default form (`bare`) and no length limit.
     pub provider_drop_paste: BTreeMap<String, DropPasteView>,
-    /// Text macros from `[macros]` in `config.toml`, in config (IndexMap) order.
+    /// Text macros from `[macros]` in `config.toml`, in config (`IndexMap`) order.
     /// The web surfaces these two ways: the terminal-pane quick-picker filters
-    /// by the focused target's surface and runs one via `RunMacro`, and the
+    /// by the focused target's surface and types one into that pane, and the
     /// macro-editor dialog lists/edits them (which is why `text` is exposed: the
     /// web session is authenticated). A config reload that changes `[macros]`
     /// rebuilds this, delivered by a `config.changed` refetch.
     pub macros: Vec<MacroView>,
+    /// The version of `macros` ([`crate::wire::macros_version`]), sent back on a
+    /// whole-list save so a list changed since is refused, not overwritten.
+    pub macros_version: String,
     /// Web-surface welcome-screen tips, from the shared `yaran_core::welcome` list.
     pub welcome_tips: Vec<String>,
     /// Mirrors the binary's display version ('vX.Y.Z' or 'development'); the web shows it in the sidebar brand block.
@@ -127,6 +136,13 @@ pub struct BootstrapView {
     /// currently reachable (a banner the user can't currently see is still a
     /// real preference once `gh` comes back).
     pub github_integration: bool,
+    /// The hosts an address typed into the clone dialog is read as GitHub's
+    /// on ([`Engine::clone_github_hosts`]), so the browser suggests the same
+    /// destination folder the clone will use. It moves when the GitHub
+    /// integration is switched, from a browser or from the terminal UI, and
+    /// when a `gh` probe moves the host policy; each of those has browsers
+    /// refetch this document.
+    pub github_hosts: crate::gh::GithubHosts,
     /// Mirrors `config.ui.copy_on_select`: whether selecting text in the web
     /// terminal auto-copies it (default true). Read by the terminal pane and by
     /// the web's Preferences dialog.
@@ -232,6 +248,9 @@ pub struct BootstrapView {
     /// every spawned provider/terminal. Surfaced so a client can pre-fill an
     /// edit dialog.
     pub global_env: std::collections::BTreeMap<String, String>,
+    /// The version of `global_env` ([`crate::wire::global_env_version`]), sent
+    /// back on the global environment dialog's save for the same reason.
+    pub global_env_version: String,
     /// Mirrors `config.ui.status_clear_seconds`. The web honors it for toast
     /// auto-dismiss, and every tone dismisses: an info/success toast clears
     /// this many seconds after it arrives, a warning at
@@ -268,8 +287,9 @@ pub struct BootstrapView {
     /// Older servers omit it, so the web falls back to a sane default.
     pub agent_tabs_max: u16,
     /// Mirrors `config.ui.always_show_tab_strip`: when true the web always
-    /// renders the agent tab strip, even when a session has only one tab.
-    /// Default false shows it only once a session has two or more tabs.
+    /// renders the agent tab strip and the terminal dock's strip, even when a
+    /// session has only one tab. Default false shows them only once the agent
+    /// has two or more tabs or two or more terminals.
     /// Changing it from the web's Preferences dialog persists the new value
     /// here.
     /// Older servers omit it, so the web treats a missing value as `false`.
@@ -280,6 +300,19 @@ pub struct BootstrapView {
     /// change it; nothing in the web UI reads it for its own behavior. Older
     /// servers omit it, so the web treats a missing value as `false`.
     pub tab_reaches_agent: bool,
+    /// Mirrors `config.ui.nerd_font_icons`: whether the TUI draws its icons
+    /// from a Nerd Font. Projected only so the web's Preferences dialog can
+    /// show and change it; the web draws its own icons. Older servers omit it,
+    /// so the web treats a missing value as `false`.
+    pub nerd_font_icons: bool,
+    /// Mirrors `config.ui.extended_keys`: whether the TUI asks its host
+    /// terminal for extended keys (`"auto"`, `"on"` or `"off"`). Normalized
+    /// through [`crate::config::ExtendedKeysMode`] on the way out, so the
+    /// browser only ever sees a mode it knows. Projected only so the web's
+    /// Preferences dialog can show and change it; the web's own keys are
+    /// unaffected. Older servers omit it, so the web treats a missing value as
+    /// `"auto"`.
+    pub extended_keys: String,
     /// Mirrors `config.ui.attention_indicator`: whether an attention
     /// glyph/dot/tab-title/favicon cue is shown at all when an agent asks for
     /// attention (default true). The settings modal's "Both surfaces" group
@@ -299,7 +332,7 @@ pub struct BootstrapView {
     /// value (global default or project override). Named `global_` here so it
     /// cannot be confused with that per-project field when read alongside it.
     /// Older servers omit it, so the web falls back to "claude".
-    pub global_default_provider: String,
+    pub(crate) global_default_provider: String,
     /// The first-run welcome screen's content, from `yaran_core::welcome_screen`.
     /// Projected unconditionally, because the app menu can open the screen on
     /// demand and the content is config-static. Distinct from `welcome_tips`,
@@ -354,6 +387,9 @@ pub struct BootstrapView {
     /// Mirrors `config.server.reconnect_attempt_timeout_seconds`: how long one
     /// attempt may sit unopened before it is abandoned and counted as failed.
     pub reconnect_attempt_timeout_seconds: u32,
+    /// Mirrors `config.server.changes_request_timeout_seconds`: how long the
+    /// Changes pane waits for one changed-files request before giving it up.
+    pub changes_request_timeout_seconds: u32,
     /// Mirrors `config.server.heartbeat_seconds`: how often a visible page
     /// checks that its terminal connection is really alive.
     pub heartbeat_seconds: u32,
@@ -385,8 +421,11 @@ pub struct BootstrapView {
 /// from an array index, so the client never has to re-derive the sequence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WelcomeStepView {
+    /// The step's position in the sequence, from 1.
     pub number: u8,
+    /// The step's title.
     pub title: String,
+    /// What the step asks the user to do.
     pub detail: String,
 }
 
@@ -397,8 +436,11 @@ pub struct WelcomeStepView {
 /// the trimming so neither surface needs a Markdown renderer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WelcomeScreenView {
+    /// The line under the welcome screen's title.
     pub tagline: String,
+    /// The screen's introductory paragraphs.
     pub paragraphs: Vec<String>,
+    /// The numbered getting-started steps.
     pub steps: Vec<WelcomeStepView>,
 }
 
@@ -443,8 +485,9 @@ impl PendingFirstLoadView {
     /// The wire name for [`crate::first_load::FirstLoad::Welcome`].
     pub const WELCOME: &'static str = "welcome";
     /// The wire name for [`crate::first_load::FirstLoad::WhatsNew`].
-    pub const WHATS_NEW: &'static str = "whats_new";
+    pub(crate) const WHATS_NEW: &'static str = "whats_new";
 
+    /// The first-run welcome screen, with no release notes.
     pub fn welcome() -> Self {
         Self {
             screen: Self::WELCOME.to_string(),
@@ -452,6 +495,7 @@ impl PendingFirstLoadView {
         }
     }
 
+    /// The what's-new screen for the running version, carrying its release notes.
     pub fn whats_new(notes: crate::release_notes::ReleaseNotes) -> Self {
         Self {
             screen: Self::WHATS_NEW.to_string(),
@@ -474,20 +518,30 @@ pub struct MacroView {
     pub surface: String,
 }
 
+/// A project projected for web clients.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProjectView {
+    /// The project's unique id.
     pub id: String,
+    /// The display name.
     pub name: String,
+    /// The repository's path on the server.
     pub path: String,
+    /// The provider new agents in this project use: the explicit override, else the global default.
     pub default_provider: String,
     /// Explicit per-project provider override (None = inherits the global default).
     pub explicit_default_provider: Option<String>,
+    /// Whether the project's agents come back at startup, or `None` to follow the global setting.
     pub auto_reopen_agents: Option<bool>,
+    /// The command run in each new agent worktree before the provider launches.
     pub startup_command: Option<String>,
+    /// Variables passed to the project's agent and terminal PTYs, over the global ones.
     pub env: std::collections::BTreeMap<String, String>,
+    /// The branch the project's source checkout is on.
     pub current_branch: String,
-    /// "leading" | "not_leading" | "unknown"
+    /// "leading" | "`not_leading`" | "unknown"
     pub branch_status: String,
+    /// Whether the project's path is gone from disk.
     pub path_missing: bool,
     /// The project's configured leading/default branch, if known. Surfaced so a
     /// client can show the default branch in a project-info view. `None` when it
@@ -511,8 +565,11 @@ pub struct ProjectView {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentWorkspaceView {
+    /// A working copy yaran created and owns, inside a project.
     Managed {
+        /// The project the working copy belongs to.
         project_id: String,
+        /// The branch the working copy is on now.
         branch_name: String,
         /// The branch this agent was created on, immutable. Distinct from
         /// `branch_name` (the current branch, which tracks the worktree). When
@@ -525,6 +582,7 @@ pub enum AgentWorkspaceView {
         /// The branch this agent was forked from (its fork point / leading
         /// branch).
         source_branch: String,
+        /// The working copy's path on the server.
         worktree_path: String,
         /// The same path shortened against the server's home directory, for
         /// display. Computed here for the same reason the folder's label is:
@@ -537,13 +595,23 @@ pub enum AgentWorkspaceView {
         /// The sentence explaining why the changes region is quiet, when it is.
         /// Empty while the working copy is there.
         quiet_reason: String,
+        /// Whether the working copy has no branch checked out right now (a
+        /// detached checkout, a rebase or a bisect in progress). `branch_name`
+        /// then still names the branch it was last on, and the changes panel
+        /// says so until a branch is checked out again.
+        no_branch_checked_out: bool,
         /// Whether this agent's provider resumes its prior conversation when it
         /// comes up in the same directory. Carried because the recreate
         /// confirmation promises exactly that, and a provider with no
         /// directory-scoped resume (copilot ships with none) would have it
         /// promising something that cannot happen.
         conversation_resumes: bool,
+        /// What the recreate confirmation says about the running tabs and
+        /// offers to restart, decided here so the browser asks no CLI question
+        /// of its own. `None` while the working copy is there.
+        recreate: Option<RecreateView>,
     },
+    /// A folder the user already had, which yaran only visits.
     Folder {
         /// The folder as it exists on the SERVER's filesystem.
         folder_path: String,
@@ -551,8 +619,8 @@ pub enum AgentWorkspaceView {
         /// display. Computed here because the browser may not be on the
         /// server's machine and so cannot shorten it correctly itself.
         folder_label: String,
-        /// The live repository verdict for the folder: "working_repo" |
-        /// "inside_repo_rooted_elsewhere" | "no_repo" | "indeterminate" |
+        /// The live repository verdict for the folder: "`working_repo`" |
+        /// "`inside_repo_rooted_elsewhere`" | "`no_repo`" | "indeterminate" |
         /// "unprobed" (nobody has looked yet; it gates as "indeterminate" does,
         /// but its quiet reason reads as a wait rather than a fault). The changes
         /// region renders a real repository view for the first and its quiet copy
@@ -566,14 +634,30 @@ pub enum AgentWorkspaceView {
     },
 }
 
+/// The recreate confirmation's view of an agent whose working copy is gone.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RecreateView {
+    /// The running tabs sorted by what each does once the copy is back, or the
+    /// slot tab alone when none is running: what the running-tab paragraph is
+    /// written from.
+    pub running: crate::working_copy::RunningTabs,
+    /// The providers of the running tabs the confirmation offers to restart,
+    /// one per tab in strip order. Empty means the dialog has no checkbox.
+    pub restart_offer: Vec<String>,
+}
+
+use crate::working_copy::ConversationResume;
+
 impl AgentWorkspaceView {
     /// Project the model workspace, folding in the live repository verdict a
     /// folder needs (the model does not carry it: it is engine state, refreshed
     /// by a probe).
-    pub fn from_workspace(
+    pub(crate) fn from_workspace(
         workspace: &crate::model::AgentWorkspace,
         repo_status: crate::git::FolderRepoStatus,
-        conversation_resumes: bool,
+        conversation: ConversationResume,
+        recreate: Option<RecreateView>,
+        checkout: crate::worker::BranchCheckout,
     ) -> Self {
         match workspace {
             crate::model::AgentWorkspace::Managed(managed) => {
@@ -587,9 +671,15 @@ impl AgentWorkspaceView {
                     worktree_path: managed.worktree_path.clone(),
                     worktree_label: crate::home_path::shorten_home(worktree),
                     worktree_missing: repo_status == crate::git::FolderRepoStatus::Missing,
-                    quiet_reason: crate::working_copy::quiet_reason(repo_status, worktree, true)
-                        .unwrap_or_default(),
-                    conversation_resumes,
+                    quiet_reason: crate::working_copy::quiet_reason(
+                        repo_status,
+                        worktree,
+                        crate::model::AgentWorkspaceKind::Managed,
+                    )
+                    .unwrap_or_default(),
+                    no_branch_checked_out: checkout == crate::worker::BranchCheckout::NoBranch,
+                    conversation_resumes: conversation == ConversationResume::Resumes,
+                    recreate,
                 }
             }
             crate::model::AgentWorkspace::Folder(folder) => Self::Folder {
@@ -601,7 +691,7 @@ impl AgentWorkspaceView {
                 quiet_reason: crate::working_copy::quiet_reason(
                     repo_status,
                     std::path::Path::new(&folder.folder_path),
-                    false,
+                    crate::model::AgentWorkspaceKind::Folder,
                 )
                 .unwrap_or_else(|| repo_status.quiet_reason().to_string()),
             },
@@ -623,26 +713,43 @@ fn folder_repo_status_wire(status: crate::git::FolderRepoStatus) -> &'static str
     }
 }
 
+/// An agent session projected for web clients.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about an agent sent to the web client as JSON booleans"
+)]
 pub struct SessionView {
+    /// The session's unique id.
     pub id: String,
+    /// The display name the user gave the agent, if any.
     pub title: Option<String>,
+    /// The provider the session-slot tab runs.
     pub provider: String,
     /// Where this agent lives and what yaran may do there. See
     /// [`AgentWorkspaceView`].
     pub workspace: AgentWorkspaceView,
     /// "active" | "detached" | "exited"
     pub status: String,
+    /// Whether startup auto-reopen is allowed for this agent.
     pub auto_reopen_enabled: bool,
-    /// Associated GitHub pull request, if one is tracked for this session.
+    /// The pull request the agent shows: the first of [`Self::prs`].
     pub pr: Option<PrView>,
-    /// Whether the user detached this agent's pull request, which switches
-    /// autodetection off for it until they attach one by hand or resume
-    /// detection explicitly. Lives on `SessionView` and not on `PrView`
-    /// (unlike `overridden`) precisely because it is the state in which there
-    /// is NO pull request to hang it off: it is what lets a surface offer the
-    /// way back.
-    pub pr_autodetect_suppressed: bool,
+    /// Every pull request the agent shows, in its order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prs: Vec<PrView>,
+    /// The pull requests the user hid, in automatic order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prs_hidden: Vec<PrView>,
+    /// The open or draft pull request that would keep the branch's old name
+    /// if the agent's branch were renamed, as the rename dialog warns about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename_warning_pr: Option<u64>,
+    /// How the pull requests are ordered: "automatic" | "manual".
+    pub pr_sort: &'static str,
+    /// Moves whenever the agent's pull requests, their preferences or its
+    /// branch list change, so a client re-reads what it derived from them.
+    pub pr_revision: u64,
     /// The id of this agent's **session-slot tab**: its first tab. Closing that
     /// tab hands the slot on, so the pointer moves; what cannot be closed is an
     /// agent's only tab. Published so the browser never has to infer slot-ness
@@ -660,9 +767,9 @@ pub struct SessionView {
     /// whose launch has not produced a PTY yet has no process to ask anything
     /// of.
     pub detachable: bool,
-    /// Provider tabs for this session: the session-slot tab (`tabs[0]`, the one
-    /// named by `slot_tab_id`) first, then extra tabs in creation order. Always
-    /// non-empty. The client shows the tab strip only when `tabs.len() >= 2`.
+    /// Provider tabs for this session in strip order, the session-slot tab (the
+    /// one named by `slot_tab_id`) wherever the user left it. Always non-empty.
+    /// The client shows the tab strip only when `tabs.len() >= 2`.
     pub tabs: Vec<AgentTabView>,
     /// Whether the session's PTY has emitted any output yet. The web UI shows a
     /// readiness spinner until this is true.
@@ -713,15 +820,24 @@ pub struct SessionView {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TerminalOwnerView {
     /// A companion terminal spawned in an agent's worktree.
-    Session { session_id: String },
+    Session {
+        /// The agent session that owns the terminal.
+        session_id: String,
+    },
     /// A project terminal spawned at a project's repo root, with no agent.
-    Project { project_id: String },
+    Project {
+        /// The project that owns the terminal.
+        project_id: String,
+    },
     /// A standalone terminal, belonging to no agent and no project. There is no
     /// owner id to send, so it carries what its row names it by: the directory it
     /// opened in, home collapsed to `~` ([`crate::home_path::shorten_home`]),
     /// which is the row's second line and the sidebar search key. Collapsed
     /// server-side because the browser may be on another machine.
-    Standalone { cwd_label: String },
+    Standalone {
+        /// The directory the terminal opened in, home collapsed to `~`.
+        cwd_label: String,
+    },
 }
 
 impl crate::model::TerminalOwner {
@@ -734,7 +850,7 @@ impl crate::model::TerminalOwner {
     /// directory rather than a live probe: this string feeds the spine's change
     /// fingerprint, so a value that moved on every `cd` would churn the sidebar
     /// and make the row's search key unstable.
-    pub fn to_view(&self, cwd: &std::path::Path) -> TerminalOwnerView {
+    pub(crate) fn to_view(&self, cwd: &std::path::Path) -> TerminalOwnerView {
         match self.as_ref() {
             crate::model::TerminalOwnerRef::Session(id) => TerminalOwnerView::Session {
                 session_id: id.to_string(),
@@ -749,13 +865,16 @@ impl crate::model::TerminalOwner {
     }
 }
 
+/// A terminal projected for web clients.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TerminalView {
+    /// The terminal's unique id.
     pub id: String,
     /// Who this terminal belongs to, tagged. Every terminal carries its own
     /// owner now that they arrive as one flat collection rather than nested
     /// under the session or project that owns them.
     pub owner: TerminalOwnerView,
+    /// The terminal's display label.
     pub label: String,
     /// Whether the terminal's PTY has emitted any output yet.
     pub has_output: bool,
@@ -778,8 +897,9 @@ pub struct TerminalView {
     /// slowly and the coarse `sessions.changed` signal stays calm. The web UI
     /// shows this as the terminal's title when present, falling back to `label`.
     pub foreground_cmd: Option<String>,
-    /// The terminal's manual (drag) position within the flat Terminals section,
-    /// ascending. Projected verbatim from
+    /// The terminal's manual (drag) position among all terminals, ascending:
+    /// it orders an agent's own terminals and list terminals that share a
+    /// `list_after` anchor. Projected verbatim from
     /// [`crate::model::CompanionTerminal::sort_order`]; the base order both
     /// surfaces render before applying the active sort mode on top. Stamped at
     /// spawn from a monotonic counter (so it defaults to creation order) and
@@ -791,7 +911,7 @@ pub struct TerminalView {
     pub created_at: String,
     /// Terminal last-activity time as an RFC 3339 / ISO 8601 string: the wall
     /// clock of the terminal's most recent PTY activity
-    /// ([`crate::engine::Engine::pty_activity`]), falling back to `created_at`
+    /// ([`crate::engine::Engine::terminal_activity_at`]), falling back to `created_at`
     /// when the terminal has not emitted or received anything yet. Backs the
     /// shared "recently updated" display sort; mirror of [`SessionView::updated_at`].
     pub updated_at: String,
@@ -809,13 +929,19 @@ pub struct TerminalView {
     /// a fresh one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_owner: Option<String>,
+    /// A project or standalone terminal's manual place in the agents list: the
+    /// agent its row sits right after in the stored agent order, absent for the
+    /// top. Projected from [`crate::model::CompanionTerminal::list_after`]; an
+    /// agent's own terminals are not list rows and never carry it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_after: Option<String>,
 }
 
 /// The wire shape of [`crate::tab_verdict::TabRunVerdict`]: the enum flattened
 /// into a stable kind plus the payload that kind carries, so a browser can word
 /// the sentence without knowing Rust's variants.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct TabRunVerdictView {
+pub(crate) struct TabRunVerdictView {
     /// One of `launch_failed`, `exited`, `exited_unknown`, `rapid_clean_exit`
     /// (see [`crate::tab_verdict::TabRunEnding::wire_kind`]). A client that does
     /// not recognise a kind must fall back to its generic sentence rather than
@@ -825,7 +951,10 @@ pub struct TabRunVerdictView {
     pub status: Option<u32>,
     /// The spawn error, for `launch_failed` only.
     pub error: Option<String>,
-    pub ended_seconds_ago: u64,
+    /// When the run ended, on the server's run clock
+    /// ([`crate::tab_verdict::run_clock_seconds`]). Fixed for the life of the
+    /// verdict, so an aging verdict never changes the published document.
+    pub ended_at: u64,
     /// The last visible non-blank lines of the run, already capped and
     /// character-truncated by the engine.
     pub excerpt: Vec<String>,
@@ -837,28 +966,37 @@ impl TabRunVerdictView {
             ending: verdict.ending.wire_kind().to_string(),
             status: verdict.ending.status(),
             error: verdict.ending.error().map(str::to_string),
-            ended_seconds_ago: verdict.ended_seconds_ago(),
+            ended_at: verdict.ended_at_run_clock(),
             excerpt: verdict.excerpt.clone(),
         }
     }
 }
 
-/// One provider tab of an agent, projected for the tab strip. `order == 0` is
-/// the session-slot tab, the one named by `SessionView::slot_tab_id`. Closing it
-/// hands the slot to the next tab in strip order, and no tab is privileged for
+/// One provider tab of an agent, projected for the tab strip. The session-slot
+/// tab is the one named by `SessionView::slot_tab_id`, wherever it sits. Closing
+/// it hands the slot to the leftmost other tab, and no tab is privileged for
 /// resume, which is decided per provider by liveness at launch (see
 /// `Engine::tab_resume_decision`) rather than by position.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about a tab sent to the web client as JSON booleans"
+)]
 pub struct AgentTabView {
     /// Tab id. Matches `SessionView::slot_tab_id` for the session-slot tab.
     pub id: String,
     /// Effective provider name (the running pin if a swap happened while live,
     /// otherwise the tab's configured provider).
     pub provider: String,
-    /// Position in the strip: 0 = session-slot tab, 1..N = extra tabs in creation
-    /// order. Display ordering only: no tab is privileged (resume is decided
-    /// dynamically at launch by liveness, not by position).
+    /// Position in the strip, counting from 0 on the left. The session-slot tab
+    /// can be anywhere, named by `SessionView::slot_tab_id`. Display ordering
+    /// only: no tab is privileged (resume is decided dynamically at launch by
+    /// liveness, not by position).
     pub order: u32,
+    /// When the tab was created, in milliseconds since the epoch. Duplicate
+    /// provider labels are numbered by it, so a tab keeps its name when it is
+    /// dragged to another place.
+    pub created_at_ms: i64,
     /// Whether this tab's PTY is actively streaming (per-tab hysteresis boolean).
     pub working: bool,
     /// Whether the user is currently typing into this tab (a keystroke landed
@@ -893,11 +1031,11 @@ pub struct AgentTabView {
     /// screen: what the dormant card prints instead of "something went wrong".
     /// `None` exactly when `last_run_failed` is false.
     ///
-    /// `ended_seconds_ago` rather than a timestamp: the age is what the sentence
-    /// says, and the engine's clock is a monotonic `Instant` with no wall-clock
-    /// spelling. It goes stale by one spine refresh interval, which a coarse age
-    /// absorbs.
-    pub last_run_verdict: Option<TabRunVerdictView>,
+    /// When the run ended on the server's run clock rather than an age or a
+    /// wall-clock timestamp: an age would change the document every second, and
+    /// the engine's clock is a monotonic `Instant` with no wall-clock spelling.
+    /// The browser ages it against the run clock reading each delivery carries.
+    pub(crate) last_run_verdict: Option<TabRunVerdictView>,
     /// What this tab's live process launched with, for a file dropped onto its
     /// pane; `None` when no process is live.
     ///
@@ -963,29 +1101,120 @@ pub struct DropPasteView {
     pub command_name: String,
 }
 
+/// A pull request projected for web clients.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about a pull request sent to the web client as JSON booleans"
+)]
 pub struct PrView {
+    /// The pull request's number.
     pub number: u64,
-    /// "open" | "merged" | "closed"
+    /// "open" | "draft" | "merged" | "closed"
     pub state: String,
+    /// The pull request's title.
     pub title: String,
+    /// The pull request's web address.
     pub url: String,
-    /// Whether this PR was manually attached (pinned) rather than autodetected:
-    /// plain provenance. On `PrView` and NOT on `SessionView`, so "overridden
-    /// without a PR" is unrepresentable. Detach itself no longer needs this
-    /// flag to propagate; it removes the PR from the view in the same spine
-    /// change.
+    /// The same as [`Self::attached`], under the name a page built before
+    /// an agent could have several pull requests reads.
     pub overridden: bool,
+    /// The GitHub host it lives on.
+    pub host: String,
+    /// Its repository, as `owner/name`.
+    pub owner_repo: String,
+    /// Whether it lives in the agent's own repository, so a surface can name
+    /// it `#418` rather than `acme/infra#77`.
+    pub own_repo: bool,
+    /// The branch it merges from, once GitHub has said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_branch: Option<String>,
+    /// yaran found it on one of the agent's branches.
+    pub found: bool,
+    /// The user attached it.
+    pub attached: bool,
+    /// When it was opened on GitHub (RFC 3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// When GitHub last changed it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// When it was closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
+    /// When it was merged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_at: Option<String>,
+}
+
+/// Which pull request a change names: its host, repository and number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct PrKeyView {
+    /// The GitHub host.
+    pub host: String,
+    /// The repository, as `owner/name`.
+    pub owner_repo: String,
+    /// The pull request's number.
+    pub number: u64,
+}
+
+impl From<&crate::model::PrKey> for PrKeyView {
+    fn from(key: &crate::model::PrKey) -> Self {
+        Self {
+            host: key.host.clone(),
+            owner_repo: key.owner_repo.clone(),
+            number: key.number,
+        }
+    }
+}
+
+impl PrKeyView {
+    /// The key this names.
+    #[must_use]
+    pub fn key(&self) -> crate::model::PrKey {
+        crate::model::PrKey::new(self.host.clone(), self.owner_repo.clone(), self.number)
+    }
+}
+
+/// One branch an agent's worktree has been on, with its pull requests.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PrBranchView {
+    /// The branch's name now.
+    pub name: String,
+    /// The names a rename moved it away from, oldest first.
+    pub former_names: Vec<String>,
+    /// Whether the agent is on it now.
+    pub current: bool,
+    /// When yaran first saw the agent on it (RFC 3339), absent for one not
+    /// recorded yet.
+    pub first_seen_at: Option<String>,
+    /// Its pull requests, shown ones first in the agent's order, then the
+    /// hidden ones.
+    pub prs: Vec<PrKeyView>,
+}
+
+/// The branch list behind the Pull requests views.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PrBranchesView {
+    /// Every branch, newest first.
+    pub branches: Vec<PrBranchView>,
+    /// The pull requests, shown or hidden, that are on none of them.
+    pub on_no_listed_branch: Vec<PrKeyView>,
 }
 
 /// A single changed file projected for web clients (used by the per-session
 /// changed-files REST read `GET /api/v1/sessions/:id/changes`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChangedFileView {
+    /// The git status code.
     pub status: String,
+    /// The path, relative to the working copy.
     pub path: String,
+    /// Lines added.
     pub additions: usize,
+    /// Lines removed.
     pub deletions: usize,
+    /// Whether git calls the file binary, so it has no line counts.
     pub binary: bool,
     /// True when the repository excludes this path from diffs (`-diff` in a
     /// `.gitattributes`). Like a binary it has no line counts; unlike a binary
@@ -997,14 +1226,108 @@ pub struct ChangedFileView {
     /// leaves the payload every other consumer reads exactly as it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub renamed_from: Option<String>,
+    /// Present only on a row that stands for a whole folder, as
+    /// `"kind": "directory", "file_count": N` or `"kind": "nested_repository"`.
+    /// Absent on an ordinary file row, so a client that predates folding
+    /// reads every file row exactly as before and a folder row as a path.
+    #[serde(flatten)]
+    pub folder: Option<FolderView>,
+}
+
+/// What a folder row stands for on the wire. See
+/// [`crate::model::ChangedFileKind`] for what folds and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FolderView {
+    /// A folder standing for `file_count` files at any depth. The other two
+    /// fields are omitted when there is nothing to say: `nested_repositories`
+    /// when there are none, `fingerprint` when the folder was too large to
+    /// fingerprint (a staged one's comes from the index). The fingerprint
+    /// travels as hex text, because a 64-bit number does not survive a
+    /// JavaScript number.
+    Directory {
+        /// How many files the folder stands for, at any depth.
+        file_count: usize,
+        /// Repositories of their own inside the folder; omitted when there are none.
+        #[serde(skip_serializing_if = "is_zero")]
+        nested_repositories: usize,
+        /// Worktrees of this same repository inside the folder, counted apart
+        /// from repositories of their own. Omitted when there are none.
+        #[serde(skip_serializing_if = "is_zero")]
+        linked_worktrees: usize,
+        /// The folder's fingerprint as hex text; omitted when the folder was too large to
+        /// fingerprint.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fingerprint: Option<String>,
+        /// Staged side only: repositories of their own inside the folder that
+        /// staging it left out. Omitted when there are none.
+        #[serde(skip_serializing_if = "is_zero")]
+        nested_repositories_not_staged: usize,
+        /// Staged side only: worktrees of this repository inside the folder
+        /// that staging it left out. Omitted when there are none.
+        #[serde(skip_serializing_if = "is_zero")]
+        linked_worktrees_not_staged: usize,
+        /// The bare repositories inside the folder (worktree-relative paths),
+        /// whose files are counted in `file_count` but kept by a delete.
+        /// Omitted when there are none.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        bare_repositories: Vec<String>,
+        /// How many of `file_count` sit inside those bare repositories.
+        /// Omitted when there are none.
+        #[serde(skip_serializing_if = "is_zero")]
+        files_in_bare_repositories: usize,
+        /// Repositories of their own and worktrees of this repository inside
+        /// the folder, worktree-relative. Omitted when there are none.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        repositories_inside: Vec<String>,
+    },
+    /// An untracked repository of its own, which is not looked inside.
+    NestedRepository,
+    /// A linked worktree of this same repository placed inside the worktree,
+    /// which yaran does not delete (the worktree manager removes it).
+    LinkedWorktree,
+}
+
+impl FolderView {
+    /// The wire form of a row's kind, `None` for an ordinary file.
+    pub fn from_kind(kind: &crate::model::ChangedFileKind) -> Option<Self> {
+        match kind {
+            crate::model::ChangedFileKind::File => None,
+            crate::model::ChangedFileKind::Directory(contents) => Some(Self::Directory {
+                file_count: contents.file_count,
+                nested_repositories: contents.nested_repositories,
+                linked_worktrees: contents.linked_worktrees,
+                fingerprint: contents.fingerprint.map(|print| format!("{print:016x}")),
+                nested_repositories_not_staged: contents.repositories_not_staged,
+                linked_worktrees_not_staged: contents.worktrees_not_staged,
+                bare_repositories: contents.bare_repositories.clone(),
+                files_in_bare_repositories: contents.files_in_bare_repositories,
+                repositories_inside: contents.repositories_inside.clone(),
+            }),
+            crate::model::ChangedFileKind::NestedRepository => Some(Self::NestedRepository),
+            crate::model::ChangedFileKind::LinkedWorktree => Some(Self::LinkedWorktree),
+        }
+    }
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if hands the predicate a reference to the field"
+)]
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 /// One process inside a sampled tree, projected for web clients.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProcessInfoView {
+    /// The process's name.
     pub name: String,
+    /// The process id.
     pub pid: u32,
+    /// Its CPU use, as a percentage of one core.
     pub cpu_percent: f32,
+    /// Its resident memory, in bytes.
     pub rss_bytes: u64,
     /// True for the entry that IS the row's root process. The breakdown
     /// includes the root so it sums to the row total; this marks it so it does
@@ -1027,12 +1350,16 @@ pub struct ResourceStatsView {
     pub kind: String,
     /// Human-readable description. Display only; never parse it.
     pub label: String,
+    /// The root process's id, when the row has one.
     pub pid: Option<u32>,
     /// May exceed 100: a multi-threaded tree spread across cores legitimately
     /// does, so no surface may clamp it.
     pub cpu_percent: f32,
+    /// The resident memory of the whole tree, in bytes.
     pub rss_bytes: u64,
+    /// How many processes the tree holds.
     pub process_count: usize,
+    /// The processes in the tree, the root included.
     pub children: Vec<ProcessInfoView>,
     /// Whether the breakdown carries information beyond the row itself, i.e.
     /// whether the client should offer an expand affordance. Computed by core
@@ -1102,67 +1429,36 @@ impl ProjectView {
             .to_string(),
             path_missing: p.path_missing,
             leading_branch: p.leading_branch.clone(),
-            created_at: p.created_at.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
-        }
-    }
-}
-
-impl SessionView {
-    #[allow(clippy::too_many_arguments)]
-    fn from_session(
-        s: &AgentSession,
-        pr: Option<&PrInfo>,
-        pr_overridden: bool,
-        pr_autodetect_suppressed: bool,
-        tabs: Vec<AgentTabView>,
-        has_output: bool,
-        working: bool,
-        typing: bool,
-        needs_attention: bool,
-        detachable: bool,
-        repo_status: crate::git::FolderRepoStatus,
-        conversation_resumes: bool,
-    ) -> Self {
-        Self {
-            id: s.id.clone(),
-            title: s.title.clone(),
-            provider: s.provider.as_str().to_string(),
-            workspace: AgentWorkspaceView::from_workspace(
-                &s.workspace,
-                repo_status,
-                conversation_resumes,
-            ),
-            status: s.status.as_str().to_string(),
-            auto_reopen_enabled: s.auto_reopen_enabled,
-            pr: pr.map(|pr| PrView::from_pr(pr, pr_overridden)),
-            pr_autodetect_suppressed,
-            slot_tab_id: s.slot_tab_id().to_string(),
-            detachable,
-            tabs,
-            has_output,
-            working,
-            typing,
-            needs_attention,
-            created_at: s.created_at.to_rfc3339(),
-            updated_at: s.updated_at.to_rfc3339(),
-            last_focused_tab: s.last_focused_tab.clone(),
+            created_at: p.created_at.map_or_default(|dt| dt.to_rfc3339()),
         }
     }
 }
 
 impl PrView {
-    fn from_pr(pr: &PrInfo, overridden: bool) -> Self {
+    /// Project one of an agent's pull requests, `own` being what is known of
+    /// the agent's own repository.
+    fn from_pr(
+        own: crate::engine::pull_requests::OwnRepository<'_>,
+        pr: &crate::model::AgentPr,
+    ) -> Self {
+        let time = |at: Option<chrono::DateTime<chrono::Utc>>| at.map(|at| at.to_rfc3339());
         Self {
-            overridden,
+            overridden: pr.attached,
             number: pr.number,
-            state: match pr.state {
-                PrState::Open => "open",
-                PrState::Merged => "merged",
-                PrState::Closed => "closed",
-            }
-            .to_string(),
-            title: pr.title.clone(),
+            state: pr.state.word().to_string(),
+            // Stored rows may predate the stripping at the gh boundary.
+            title: crate::bidi::strip_bidi_controls(&pr.title),
             url: pr.url.clone(),
+            host: pr.host.clone(),
+            owner_repo: pr.owner_repo.clone(),
+            own_repo: own.holds(pr),
+            head_branch: pr.head_branch.clone(),
+            found: pr.found,
+            attached: pr.attached,
+            created_at: time(pr.gh_created_at),
+            updated_at: time(pr.gh_updated_at),
+            closed_at: time(pr.gh_closed_at),
+            merged_at: time(pr.gh_merged_at),
         }
     }
 }
@@ -1208,8 +1504,7 @@ impl Engine {
                 .map(|s| {
                     let extras = extras_by_session
                         .get(s.id.as_str())
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&[]);
+                        .map_or(&[][..], std::vec::Vec::as_slice);
                     self.project_session(s, extras)
                 })
                 .collect(),
@@ -1241,19 +1536,17 @@ impl Engine {
             typing: self.is_typing(id),
             foreground_cmd: t.foreground_cmd.clone(),
             sort_order: t.sort_order,
+            list_after: t.list_after.clone(),
             created_at: t.created_at.to_rfc3339(),
-            // `pty_activity` records the last activity as a monotonic `Instant`;
-            // map it back onto wall clock (now minus how long ago it fired) to
-            // match `created_at`'s RFC 3339 representation. No activity yet →
+            // The wall-clock time of the last activity, recorded when it
+            // happened, so the same activity reads the same on every rebuild,
+            // in `created_at`'s RFC 3339 representation. No activity yet →
             // fall back to the spawn time.
             updated_at: self
-                .pty_activity
+                .terminal_activity_at
                 .get(id)
-                .map(|last| {
-                    let ago = chrono::Duration::from_std(last.elapsed()).unwrap_or_default();
-                    (chrono::Utc::now() - ago).to_rfc3339()
-                })
-                .unwrap_or_else(|| t.created_at.to_rfc3339()),
+                .unwrap_or(&t.created_at)
+                .to_rfc3339(),
         }
     }
 
@@ -1298,7 +1591,7 @@ impl Engine {
     /// The set of project ids that own at least one live project terminal. Feeds
     /// the sidebar split so a project with a live terminal never sinks below the
     /// "no agents" separator.
-    pub fn project_ids_with_terminals(&self) -> std::collections::HashSet<String> {
+    pub(crate) fn project_ids_with_terminals(&self) -> std::collections::HashSet<String> {
         self.companion_terminals
             .values()
             .filter_map(|t| match t.owner.as_ref() {
@@ -1332,7 +1625,11 @@ impl Engine {
         // map and would cost O(sessions * tabs) per spine build.
         let has_output = std::iter::once(s.slot_tab_id())
             .chain(extra_tabs.iter().map(|t| TabIdRef::new(&t.id)))
-            .any(|id| self.providers.get(id).is_some_and(|p| p.has_output()));
+            .any(|id| {
+                self.providers
+                    .get(id)
+                    .is_some_and(super::pty::PtyClient::has_output)
+            });
         let working = std::iter::once(s.slot_tab_id())
             .chain(extra_tabs.iter().map(|t| TabIdRef::new(&t.id)))
             .any(|id| self.is_agent_streaming(id.as_str()));
@@ -1345,51 +1642,128 @@ impl Engine {
         let needs_attention = std::iter::once(s.slot_tab_id())
             .chain(extra_tabs.iter().map(|t| TabIdRef::new(&t.id)))
             .any(|id| self.tab_needs_attention(id.as_str()));
-        // Tabs, session-slot first, then extras in creation order.
-        let mut tabs = vec![self.tab_view(s.slot_tab_id(), self.running_provider_for(s), 0)];
-        let mut extras: Vec<_> = extra_tabs.to_vec();
-        extras.sort_by(|a, b| crate::model::tab_display_order(a, b));
-        for (i, t) in extras.into_iter().enumerate() {
-            let effective = self
-                .running_provider_pins
-                .get(TabIdRef::new(&t.id))
-                .cloned()
-                .unwrap_or_else(|| t.provider.clone());
-            tabs.push(self.tab_view(TabIdRef::new(&t.id), effective, (i + 1) as u32));
-        }
-        SessionView::from_session(
-            s,
-            self.pr_statuses.get(&s.id),
-            self.pr_overrides.contains_key(&s.id),
-            self.pr_suppressions.contains(&s.id),
+        let tabs = self.strip_tab_views(s, extra_tabs);
+        let conversation = if crate::config::provider_config(&self.config, &s.provider)
+            .supports_session_resume()
+        {
+            ConversationResume::Resumes
+        } else {
+            ConversationResume::StartsFresh
+        };
+        let recreate = self
+            .recreate_working_copy_inputs(&s.id)
+            .map(|inputs| RecreateView {
+                running: inputs.running_tabs,
+                restart_offer: inputs.restart_offer,
+            });
+        let rows = self.agent_prs.get(&s.id).map_or(&[][..], Vec::as_slice);
+        let own =
+            crate::engine::pull_requests::OwnRepository::of(self.pr_own_repos.get(&s.id), rows);
+        let ordered = crate::pr_list::order(rows, self.pr_sort_mode(&s.id));
+        let prs: Vec<PrView> = ordered
+            .visible
+            .iter()
+            .map(|pr| PrView::from_pr(own, pr))
+            .collect();
+        let prs_hidden: Vec<PrView> = ordered
+            .hidden
+            .iter()
+            .map(|pr| PrView::from_pr(own, pr))
+            .collect();
+        SessionView {
+            id: s.id.clone(),
+            title: s.title.clone(),
+            provider: s.provider.as_str().to_string(),
+            workspace: AgentWorkspaceView::from_workspace(
+                &s.workspace,
+                self.folder_repo_status(&s.id),
+                conversation,
+                recreate,
+                if self.no_branch_checked_out(&s.id) {
+                    crate::worker::BranchCheckout::NoBranch
+                } else {
+                    crate::worker::BranchCheckout::OnBranch
+                },
+            ),
+            status: s.status.as_str().to_string(),
+            auto_reopen_enabled: s.auto_reopen_enabled,
+            pr: prs.first().cloned(),
+            prs,
+            prs_hidden,
+            rename_warning_pr: self.rename_open_pull_request(&s.id),
+            pr_sort: self.pr_sort_mode(&s.id).stored_text(),
+            pr_revision: self.pr_revision.get(&s.id).copied().unwrap_or_default(),
+            slot_tab_id: s.slot_tab_id().to_string(),
+            detachable: self.is_detachable(&s.id),
             tabs,
             has_output,
             working,
             typing,
             needs_attention,
-            self.is_detachable(&s.id),
-            self.folder_repo_status(&s.id),
-            crate::config::provider_config(&self.config, &s.provider).supports_session_resume(),
-        )
+            created_at: s.created_at.to_rfc3339(),
+            updated_at: s.updated_at.to_rfc3339(),
+            last_focused_tab: s.last_focused_tab.clone(),
+        }
+    }
+
+    /// An agent's tabs in strip order: every tab by its position, the slot tab
+    /// wherever the user left it. Each carries its index as `order`.
+    fn strip_tab_views(
+        &self,
+        s: &AgentSession,
+        extra_tabs: &[&crate::model::AgentTab],
+    ) -> Vec<AgentTabView> {
+        let mut extras: Vec<_> = extra_tabs.to_vec();
+        extras.sort_by(|a, b| crate::model::tab_display_order(a, b));
+        let slot_position = self.slot_tab_positions.get(&s.id).copied().unwrap_or(0);
+        let slot_index = crate::model::slot_tab_index(&extras, slot_position);
+        let mut tabs: Vec<AgentTabView> = Vec::with_capacity(extras.len() + 1);
+        let next_order = |tabs: &Vec<AgentTabView>| {
+            u32::try_from(tabs.len()).expect("an agent has far fewer than 2^32 tabs")
+        };
+        for (i, t) in extras.iter().enumerate() {
+            if i == slot_index {
+                let order = next_order(&tabs);
+                tabs.push(self.tab_view(s, s.slot_tab_id(), &self.running_provider_for(s), order));
+            }
+            let effective = self
+                .running_provider_pins
+                .get(TabIdRef::new(&t.id))
+                .cloned()
+                .unwrap_or_else(|| t.provider.clone());
+            let order = next_order(&tabs);
+            tabs.push(self.tab_view(s, TabIdRef::new(&t.id), &effective, order));
+        }
+        if slot_index >= extras.len() {
+            let order = next_order(&tabs);
+            tabs.push(self.tab_view(s, s.slot_tab_id(), &self.running_provider_for(s), order));
+        }
+        tabs
     }
 
     /// Project one tab id into an [`AgentTabView`] from the tab-keyed runtime maps.
     /// `order` is display position only; no tab is privileged.
-    fn tab_view(&self, id: &TabIdRef, provider: ProviderKind, order: u32) -> AgentTabView {
+    fn tab_view(
+        &self,
+        s: &AgentSession,
+        id: &TabIdRef,
+        provider: &ProviderKind,
+        order: u32,
+    ) -> AgentTabView {
         AgentTabView {
             // The wire keeps plain strings: an id leaving the engine is bytes a
             // browser stores, not an id yaran is still reasoning about.
             id: id.as_str().to_string(),
             provider: provider.as_str().to_string(),
             order,
+            created_at_ms: self.tab_created_ms(s, id),
             working: self.is_agent_streaming(id.as_str()),
             typing: self.is_typing(id.as_str()),
             needs_attention: self.tab_needs_attention(id.as_str()),
             has_output: self
                 .providers
                 .get(id)
-                .map(|p| p.has_output())
-                .unwrap_or(false),
+                .is_some_and(super::pty::PtyClient::has_output),
             has_live_process: self.providers.contains_key(id),
             last_run_failed: self.tab_last_run_failed(id.as_str()),
             last_run_verdict: self.tab_run_verdict(id.as_str()).map(TabRunVerdictView::of),
@@ -1421,21 +1795,24 @@ impl Engine {
         })
     }
 
-    /// Project the build-/config-static snapshot served once via
-    /// `GET /api/v1/bootstrap`. Delivered as a one-shot REST read invalidated by
-    /// `config.changed`.
-    pub fn bootstrap(&self) -> BootstrapView {
+    /// Every configured provider's name, sorted.
+    fn available_providers(&self) -> Vec<String> {
         let mut available_providers: Vec<String> =
             self.config.providers.commands.keys().cloned().collect();
         available_providers.sort();
-        // What CONFIG says, and nothing else. A live process never writes here:
-        // what a tab launched with is published on the SPINE, per tab, because
-        // that is what a launch and a termination refresh. Folding launched
-        // entries in here collapsed a per-tab answer onto a per-provider key
-        // (two sibling tabs of one provider could not both be right) AND left
-        // the browser's copy stale for the life of the process.
-        let provider_drop_paste: BTreeMap<String, DropPasteView> = self
-            .config
+        available_providers
+    }
+
+    /// How a drop pastes into each provider, by provider name.
+    ///
+    /// What CONFIG says, and nothing else. A live process never writes here:
+    /// what a tab launched with is published on the SPINE, per tab, because
+    /// that is what a launch and a termination refresh. Folding launched
+    /// entries in here collapsed a per-tab answer onto a per-provider key
+    /// (two sibling tabs of one provider could not both be right) AND left
+    /// the browser's copy stale for the life of the process.
+    fn provider_drop_paste(&self) -> BTreeMap<String, DropPasteView> {
+        self.config
             .providers
             .commands
             .iter()
@@ -1448,17 +1825,50 @@ impl Engine {
                     },
                 )
             })
-            .collect();
+            .collect()
+    }
+
+    /// The compose bar mode yaran uses, by name.
+    fn compose_bar_name(&self) -> String {
+        crate::config_effective::effective_compose_bar(&self.config.ui.compose_bar)
+            .as_str()
+            .to_string()
+    }
+
+    /// The clipboard passthrough mode yaran uses, by name, with the master switch
+    /// resolved in.
+    fn clipboard_passthrough_name(&self) -> String {
+        crate::config_effective::effective_clipboard_passthrough(&self.config.capabilities)
+            .as_str()
+            .to_string()
+    }
+
+    /// Where the pull-request banner sits, by name.
+    fn pr_banner_position_name(&self) -> String {
+        crate::config_effective::effective_pr_banner_position(&self.config.ui.pr_banner_position)
+            .as_str()
+            .to_string()
+    }
+
+    /// Every macro, in the config's order.
+    fn macro_views(&self) -> Vec<MacroView> {
+        self.config
+            .macros
+            .entries
+            .iter()
+            .map(|(name, entry)| MacroView::from_entry(name, entry))
+            .collect()
+    }
+
+    /// Project the build-/config-static snapshot served once via
+    /// `GET /api/v1/bootstrap`. Delivered as a one-shot REST read invalidated by
+    /// `config.changed`.
+    pub fn bootstrap(&self) -> BootstrapView {
         BootstrapView {
-            available_providers,
-            provider_drop_paste,
-            macros: self
-                .config
-                .macros
-                .entries
-                .iter()
-                .map(|(name, entry)| MacroView::from_entry(name, entry))
-                .collect(),
+            available_providers: self.available_providers(),
+            provider_drop_paste: self.provider_drop_paste(),
+            macros: self.macro_views(),
+            macros_version: crate::wire::macros_version(&self.config.macros),
             welcome_tips: crate::welcome::web_tips(),
             yaran_version: crate::display_version().to_string(),
             randomize_agent_names_by_default: self
@@ -1471,19 +1881,18 @@ impl Engine {
                 .copy_uncommitted_changes_by_default,
             gh_available: self.pr_agent_command_available(),
             github_integration: self.config.ui.github_integration,
+            github_hosts: self.clone_github_hosts(),
             copy_on_select: self.config.ui.copy_on_select,
-            terminal_font_family: self.config.ui.terminal_font_family.clone(),
+            terminal_font_family: crate::config_effective::effective_terminal_font_family(
+                &self.config.ui.terminal_font_family,
+            ),
             terminal_font_size: crate::config::normalized_terminal_font_size(
                 self.config.ui.terminal_font_size,
             ),
             // Normalized rather than passed through: `set_settings` and the raw
             // config editor both put a value in memory without going through
             // `load_config`, so this is the last place to catch a typo.
-            compose_bar: crate::config::ComposeBarMode::from_config_str(
-                &self.config.ui.compose_bar,
-            )
-            .as_str()
-            .to_string(),
+            compose_bar: self.compose_bar_name(),
             mobile_accessory_bar: self.config.ui.mobile_accessory_bar,
             upload_write_gitignore: self.config.ui.upload_write_gitignore,
             upload_pasted_text_chars: crate::config::normalized_upload_pasted_text_chars(
@@ -1493,21 +1902,12 @@ impl Engine {
             attention_grace_seconds: self.config.ui.attention_grace_seconds,
             web_notifications: self.config.capabilities.web_notifications,
             hyperlinks: self.config.capabilities.hyperlinks,
-            // Resolve the `passthrough` master switch here rather than publishing
-            // it beside this field, so the browser gets one answer. Browser
-            // notifications are not one of its consequences: `web_notifications`
-            // is the only switch over those and is published untouched above.
-            clipboard_passthrough: if self.config.capabilities.passthrough {
-                crate::config::ClipboardPassthroughMode::parse(
-                    &self.config.capabilities.clipboard_passthrough,
-                )
-                .unwrap_or(crate::config::ClipboardPassthroughMode::Focused)
-            } else {
-                crate::config::ClipboardPassthroughMode::Off
-            }
-            .as_str()
-            .to_string(),
-            pr_banner_position: self.config.ui.pr_banner_position.clone(),
+            // The `passthrough` master switch is resolved in, so the browser gets
+            // one answer. Browser notifications are not one of its consequences:
+            // `web_notifications` is the only switch over those and is published
+            // untouched above.
+            clipboard_passthrough: self.clipboard_passthrough_name(),
+            pr_banner_position: self.pr_banner_position_name(),
             tailscale_mode: self.config.server.tailscale_mode().as_str().to_string(),
             // Always `false` here: `--no-tailscale` is the serving process's own
             // fact, and the bootstrap ROUTE injects it. See the field's doc.
@@ -1517,10 +1917,14 @@ impl Engine {
                 state: crate::cloud::view::CloudLegState::NotServing,
                 ..Default::default()
             }),
-            agent_sort: self.config.ui.agent_sort.clone(),
+            agent_sort: crate::config_effective::agent_sort_name(
+                crate::config_effective::effective_agent_sort(&self.config.ui.agent_sort),
+            )
+            .to_string(),
             agent_scrollback_lines: self.config.ui.agent_scrollback_lines,
             show_changes_pane: self.config.ui.show_changes_pane,
             global_env: self.config.env.clone(),
+            global_env_version: crate::wire::global_env_version(&self.config.env),
             status_clear_seconds: self.config.ui.status_clear_seconds,
             // Through the same clamp every shutdown path uses, so the browser
             // quotes the wait it will actually get.
@@ -1528,11 +1932,17 @@ impl Engine {
                 self.config.shutdown_timeout_seconds,
             )
             .as_secs(),
-            title: self.config.server.title.clone(),
-            favicon: self.config.server.favicon.clone(),
+            title: crate::config_effective::effective_server_title(&self.config.server.title),
+            favicon: crate::config_effective::effective_server_favicon(&self.config.server.favicon),
             agent_tabs_max: self.agent_tabs_max(),
             always_show_tab_strip: self.config.ui.always_show_tab_strip,
             tab_reaches_agent: self.config.ui.tab_reaches_agent,
+            nerd_font_icons: self.config.ui.nerd_font_icons,
+            extended_keys: crate::config_effective::effective_extended_keys(
+                &self.config.ui.extended_keys,
+            )
+            .as_str()
+            .to_string(),
             attention_indicator: self.config.ui.attention_indicator,
             attention_on_bell: self.config.ui.attention_on_bell,
             global_default_provider: self.config.defaults.provider.clone(),
@@ -1547,12 +1957,31 @@ impl Engine {
             disable_automated_welcome_screen: self.config.ui.disable_automated_welcome_screen,
             disable_release_notes: self.config.ui.disable_release_notes,
             file_drop_max_bytes: self.config.server.file_drop_max_bytes,
+            // The browser runs these as sent: each rule (0 meaning the default,
+            // a ceiling, a deadline kept above the beat) is applied here, once,
+            // by the function `yaran config get` reports too.
             replay_wait_seconds: self.config.server.replay_wait_seconds,
-            reconnect_backoff_cap_seconds: self.config.server.reconnect_backoff_cap_seconds,
+            reconnect_backoff_cap_seconds:
+                crate::config_effective::effective_reconnect_backoff_cap_seconds(
+                    self.config.server.reconnect_backoff_cap_seconds,
+                ),
             reconnect_attempts: self.config.server.reconnect_attempts,
-            reconnect_attempt_timeout_seconds: self.config.server.reconnect_attempt_timeout_seconds,
-            heartbeat_seconds: self.config.server.heartbeat_seconds,
-            heartbeat_deadline_seconds: self.config.server.heartbeat_deadline_seconds,
+            reconnect_attempt_timeout_seconds:
+                crate::config_effective::effective_reconnect_attempt_timeout_seconds(
+                    self.config.server.reconnect_attempt_timeout_seconds,
+                ),
+            changes_request_timeout_seconds:
+                crate::config_effective::effective_changes_request_timeout_seconds(
+                    self.config.server.changes_request_timeout_seconds,
+                ),
+            heartbeat_seconds: crate::config_effective::effective_heartbeat_seconds(
+                self.config.server.heartbeat_seconds,
+            ),
+            heartbeat_deadline_seconds:
+                crate::config_effective::effective_heartbeat_deadline_seconds(
+                    self.config.server.heartbeat_deadline_seconds,
+                    self.config.server.heartbeat_seconds,
+                ),
         }
     }
 }
@@ -1563,11 +1992,12 @@ mod tests {
     use crate::engine::test_support::{sample_project, sample_session, test_engine};
     use crate::ids::SessionIdRef;
     use crate::ids::TabId;
+    use crate::model::PrState;
 
     #[test]
     fn yaran_version_is_projected() {
         let (engine, _tmp) = test_engine();
-        assert!(!engine.bootstrap().yaran_version.is_empty());
+        assert_ne!(engine.bootstrap().yaran_version, "");
     }
 
     #[test]
@@ -1596,15 +2026,17 @@ mod tests {
                 worktree_label: "/tmp/s1-worktree".to_string(),
                 worktree_missing: false,
                 quiet_reason: String::new(),
+                no_branch_checked_out: false,
                 // The fixture agent runs claude, which resumes per directory.
                 conversation_resumes: true,
+                recreate: None,
             }
         );
         assert_eq!(spine.sessions[0].status, "detached");
     }
 
     /// `overridden` lives on `PrView` (so "overridden without a PR" is
-    /// unrepresentable) and flips with the engine's `pr_overrides` map, which
+    /// unrepresentable) and flips with the shown row's attached flag, which
     /// is also what makes a detach observable to the web's sessions fingerprint
     /// before the PR data itself changes.
     #[test]
@@ -1612,55 +2044,28 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/repo"));
         engine.sessions.push(sample_session("s1", "p1", "feature"));
-        engine.pr_statuses.insert(
+        engine.agent_prs.insert(
             "s1".to_string(),
-            crate::model::PrInfo {
-                number: 12,
-                state: crate::model::PrState::Open,
-                title: "Pinned".to_string(),
-                host: "github.com".to_string(),
-                owner_repo: "fork/r".to_string(),
-                url: "https://github.com/fork/r/pull/12".to_string(),
-            },
+            vec![crate::model::AgentPr::found(
+                &crate::model::PrInfo {
+                    number: 12,
+                    state: crate::model::PrState::Open,
+                    title: "Pinned".to_string(),
+                    host: "github.com".to_string(),
+                    owner_repo: "fork/r".to_string(),
+                    url: "https://github.com/fork/r/pull/12".to_string(),
+                    ..Default::default()
+                },
+                chrono::Utc::now(),
+            )],
         );
 
         let pr = engine.spine().sessions[0].pr.clone().expect("pr view");
         assert!(!pr.overridden, "autodetected PRs are not overridden");
 
-        engine.pr_overrides.insert(
-            "s1".to_string(),
-            crate::storage::StoredPr {
-                session_id: "s1".to_string(),
-                pr_number: 12,
-                host: "github.com".to_string(),
-                owner_repo: "fork/r".to_string(),
-                state: "OPEN".to_string(),
-                title: "Pinned".to_string(),
-                url: "https://github.com/fork/r/pull/12".to_string(),
-            },
-        );
+        engine.agent_prs.get_mut("s1").unwrap()[0].attached = true;
         let pr = engine.spine().sessions[0].pr.clone().expect("pr view");
         assert!(pr.overridden, "a pinned PR reports overridden");
-    }
-
-    /// The detach flag rides `SessionView`, not `PrView`: the state it
-    /// describes is precisely the one with no PR, and it is what lets a
-    /// surface offer "resume autodetection" only where that means something.
-    #[test]
-    fn session_view_reports_a_detached_agents_suppressed_autodetection() {
-        let (mut engine, _tmp) = test_engine();
-        engine.projects.push(sample_project("p1", "/repo"));
-        engine.sessions.push(sample_session("s1", "p1", "feature"));
-
-        assert!(!engine.spine().sessions[0].pr_autodetect_suppressed);
-
-        engine.pr_suppressions.insert("s1".to_string());
-        let view = &engine.spine().sessions[0];
-        assert!(view.pr_autodetect_suppressed);
-        assert!(
-            view.pr.is_none(),
-            "a detached agent shows no PR to hang the flag off"
-        );
     }
 
     #[test]
@@ -1819,12 +2224,13 @@ mod tests {
 
     #[test]
     fn macros_reflect_a_config_reload() {
+        use crate::config::{MacroEntry, MacroSurface};
+
         // Held because the reload stores this config's `logging.level` into the
         // process-wide threshold another test may be asserting on.
         let _guard = crate::logger::level_test_guard();
-        use crate::config::{MacroEntry, MacroSurface};
         let (mut engine, _tmp) = test_engine();
-        assert!(engine.bootstrap().macros.is_empty());
+        assert_eq!(engine.bootstrap().macros, Vec::<MacroView>::new());
 
         // Simulate a config reload that introduces a new macro.
         let mut new_config = engine.config.clone();
@@ -1916,16 +2322,33 @@ mod tests {
         let (mut engine, _tmp) = test_engine();
         engine.projects.push(sample_project("p1", "/repo"));
         engine.sessions.push(sample_session("s1", "p1", "feature"));
-        engine.pr_statuses.insert(
-            "s1".to_string(),
-            PrInfo {
-                number: 42,
-                state: PrState::Merged,
-                title: "Add the thing".to_string(),
-                host: "github.com".to_string(),
-                owner_repo: "owner/repo".to_string(),
-                url: "https://github.com/owner/repo/pull/42".to_string(),
+        // The agent's own repository is the one its worktree's remote names,
+        // as the sync reports it.
+        engine.process_worker_event(crate::worker::WorkerEvent::PrStatusReady(vec![
+            crate::worker::PrStatusResult {
+                session_id: "s1".to_string(),
+                answers: Vec::new(),
+                asked: Vec::new(),
+                own_repo: Some(crate::git::GitHubRemote {
+                    host: "github.com".to_string(),
+                    owner_repo: "Owner/Repo".to_string(),
+                }),
             },
+        ]));
+        engine.agent_prs.insert(
+            "s1".to_string(),
+            vec![crate::model::AgentPr::found(
+                &crate::model::PrInfo {
+                    number: 42,
+                    state: PrState::Merged,
+                    title: "Add the thing".to_string(),
+                    host: "github.com".to_string(),
+                    owner_repo: "owner/repo".to_string(),
+                    url: "https://github.com/owner/repo/pull/42".to_string(),
+                    ..Default::default()
+                },
+                chrono::Utc::now(),
+            )],
         );
 
         let vm = engine.spine();
@@ -1938,6 +2361,106 @@ mod tests {
         assert_eq!(pr.state, "merged");
         assert_eq!(pr.title, "Add the thing");
         assert_eq!(pr.url, "https://github.com/owner/repo/pull/42");
+
+        // A draft from the agent's own repository goes before the merged one,
+        // and a hidden one from another repository is listed apart; the
+        // revision moves when GitHub says the hidden one merged.
+        let rows = engine.agent_prs.get_mut("s1").unwrap();
+        rows[0].head_branch = Some("feature".to_string());
+        let mut draft = rows[0].clone();
+        draft.number = 43;
+        draft.state = PrState::Draft;
+        let mut other = rows[0].clone();
+        other.number = 7;
+        other.owner_repo = "acme/infra".to_string();
+        other.state = PrState::Open;
+        other.found = false;
+        other.attached = true;
+        other.hidden = true;
+        // A row stored before titles were cleaned where they enter.
+        other.title = "Infra \u{202E}fix\u{202C}".to_string();
+        rows.push(draft);
+        rows.push(other);
+        let vm = engine.spine();
+        let view = &vm.sessions[0];
+        let shown: Vec<(u64, &str, bool)> = view
+            .prs
+            .iter()
+            .map(|pr| (pr.number, pr.state.as_str(), pr.own_repo))
+            .collect();
+        assert_eq!(shown, vec![(43, "draft", true), (42, "merged", true)]);
+        assert_eq!(view.pr.as_ref().map(|pr| pr.number), Some(43));
+        assert_eq!(view.prs[1].head_branch.as_deref(), Some("feature"));
+        // Renaming the branch leaves the open draft on its old name.
+        assert_eq!(view.rename_warning_pr, Some(43));
+        let hidden = &view.prs_hidden[0];
+        assert_eq!(
+            (
+                hidden.number,
+                hidden.own_repo,
+                hidden.attached,
+                hidden.overridden
+            ),
+            (7, false, true, true)
+        );
+        assert_eq!(hidden.title, "Infra fix");
+        assert_eq!(view.pr_sort, "automatic");
+        let before = view.pr_revision;
+
+        engine.process_worker_event(crate::worker::WorkerEvent::PrStatusReady(vec![
+            crate::worker::PrStatusResult {
+                session_id: "s1".to_string(),
+                asked: Vec::new(),
+                own_repo: None,
+                answers: vec![crate::worker::PrSyncAnswer::Refreshed(
+                    crate::model::PrInfo {
+                        number: 7,
+                        state: PrState::Merged,
+                        title: "PR 7".to_string(),
+                        host: "github.com".to_string(),
+                        owner_repo: "acme/infra".to_string(),
+                        url: "https://github.com/acme/infra/pull/7".to_string(),
+                        ..Default::default()
+                    },
+                )],
+            },
+        ]));
+        let vm = engine.spine();
+        assert_eq!(vm.sessions[0].prs_hidden[0].state, "merged");
+        assert_ne!(vm.sessions[0].pr_revision, before);
+    }
+
+    /// Before any answer has named the agent's own repository, a found pull
+    /// request is still its own, and an attached-only one is not.
+    #[test]
+    fn a_found_pull_request_projects_as_own_before_the_repository_is_known() {
+        let (mut engine, _tmp) = test_engine();
+        engine.projects.push(sample_project("p1", "/repo"));
+        engine.sessions.push(sample_session("s1", "p1", "feature"));
+        let info = |number, owner_repo: &str| crate::model::PrInfo {
+            number,
+            state: PrState::Open,
+            host: "github.com".to_string(),
+            owner_repo: owner_repo.to_string(),
+            ..Default::default()
+        };
+        let found = crate::model::AgentPr::found(&info(42, "owner/repo"), chrono::Utc::now());
+        let mut attached = crate::model::AgentPr::found(&info(7, "acme/infra"), chrono::Utc::now());
+        attached.found = false;
+        attached.attached = true;
+        engine
+            .agent_prs
+            .insert("s1".to_string(), vec![found, attached]);
+
+        let vm = engine.spine();
+
+        let mut own: Vec<(u64, bool)> = vm.sessions[0]
+            .prs
+            .iter()
+            .map(|pr| (pr.number, pr.own_repo))
+            .collect();
+        own.sort_unstable();
+        assert_eq!(own, vec![(7, false), (42, true)]);
     }
 
     #[test]
@@ -2091,6 +2614,10 @@ mod tests {
         // Stamp fresh activity: updated_at now tracks the activity, at or after
         // the spawn time.
         engine.pty_activity.insert(tid.clone(), Instant::now());
+        engine.terminal_activity_at.insert(
+            tid.clone(),
+            chrono::Utc::now() + chrono::Duration::seconds(1),
+        );
         let after = engine.spine().terminals[0].clone();
         assert_ne!(
             after.updated_at, after.created_at,
@@ -2102,6 +2629,40 @@ mod tests {
             updated >= created,
             "updated_at ({updated}) must be at or after created_at ({created})"
         );
+    }
+
+    /// A terminal's activity time is the wall clock when its output arrived,
+    /// read from the poll that saw it, and reads the same on every rebuild.
+    #[test]
+    fn terminal_updated_at_is_the_wall_clock_of_its_activity() {
+        let (mut engine, _worktree) = engine_with_spawnable_terminals();
+        let (tid, _) = engine
+            .create_companion_terminal("s1", 24, 80)
+            .expect("term");
+        // Past the reader's post-resize quiet window, so the write below is
+        // the change the poll stamps.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        engine.poll_pty_activity();
+        engine.terminal_activity_at.remove(&tid);
+        let before = chrono::Utc::now();
+        engine.companion_terminals[&tid]
+            .client
+            .write_bytes(b"hello\n")
+            .expect("write to terminal");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !engine.terminal_activity_at.contains_key(&tid) {
+            assert!(std::time::Instant::now() < deadline, "no activity stamped");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            engine.poll_pty_activity();
+        }
+        let after = chrono::Utc::now();
+        let first = engine.spine().terminals[0].updated_at.clone();
+        let stamped = chrono::DateTime::parse_from_rfc3339(&first).unwrap();
+        assert!(
+            before <= stamped && stamped <= after,
+            "{before} {stamped} {after}"
+        );
+        assert_eq!(engine.spine().terminals[0].updated_at, first);
     }
 
     #[test]
@@ -2172,7 +2733,7 @@ mod tests {
             "activity on any tab must light the sidebar"
         );
 
-        // Tabs: session-slot first, then the extra tab, each with its own flags.
+        // Tabs: the session-slot tab first (nothing has been reordered), then the extra tab.
         assert_eq!(session.tabs.len(), 2);
         assert_eq!(session.tabs[0].id, "s1-slot");
         assert_eq!(session.tabs[0].order, 0);
@@ -2269,6 +2830,39 @@ mod tests {
             published[1..],
             ["tab-early", "tab-late", "tab-a", "tab-z"].map(String::from)
         );
+    }
+
+    #[test]
+    fn the_published_tabs_follow_the_strip_with_the_slot_tab_anywhere() {
+        let (mut engine, _tmp) = test_engine();
+        engine.projects.push(sample_project("p1", "/repo"));
+        let session = sample_session("s1", "p1", "feature");
+        engine.session_store.create_session(&session).unwrap();
+        engine.sessions.push(session);
+        for id in ["t2", "t3"] {
+            let tab = crate::model::AgentTab {
+                id: id.to_string(),
+                session_id: "s1".to_string(),
+                provider: ProviderKind::new("codex"),
+                sort_order: 1,
+                created_at: chrono::Utc::now(),
+            };
+            engine.session_store.insert_agent_tab(&tab).unwrap();
+            engine.agent_tabs.insert(TabId::new(id), tab);
+        }
+        engine
+            .apply(crate::engine::Command::ReorderAgentTabs {
+                session_id: "s1".to_string(),
+                tab_ids: ["t3", "s1-slot", "t2"].map(String::from).to_vec(),
+            })
+            .expect("reorder");
+
+        let view = &engine.spine().sessions[0];
+
+        let published: Vec<(&str, u32)> =
+            view.tabs.iter().map(|t| (t.id.as_str(), t.order)).collect();
+        assert_eq!(published, vec![("t3", 0), ("s1-slot", 1), ("t2", 2)]);
+        assert_eq!(view.slot_tab_id, "s1-slot");
     }
 
     #[test]
@@ -2692,13 +3286,32 @@ mod tests {
     }
 
     #[test]
+    fn github_hosts_follow_the_policy_only_while_the_integration_is_on() {
+        let (mut engine, _tmp) = test_engine();
+        engine.set_github_host_policy(crate::gh::GithubHostPolicy::LegacyNameRule);
+        assert_eq!(
+            engine.bootstrap().github_hosts,
+            crate::gh::GithubHosts::github_com_only()
+        );
+        engine.github_integration_enabled = true;
+        assert_eq!(
+            engine.bootstrap().github_hosts,
+            crate::gh::GithubHosts::NameRule
+        );
+        assert_eq!(
+            serde_json::to_value(crate::gh::GithubHosts::github_com_only()).unwrap(),
+            serde_json::json!({"kind": "hosts", "hosts": []})
+        );
+    }
+
+    #[test]
     fn available_providers_lists_configured_defaults_sorted() {
         let (engine, _tmp) = test_engine();
 
         let boot = engine.bootstrap();
 
-        // A default Config configures these four providers.
-        for provider in ["claude", "codex", "copilot", "opencode"] {
+        // A default Config configures these five providers.
+        for provider in ["claude", "codex", "copilot", "opencode", "grok"] {
             assert!(
                 boot.available_providers.iter().any(|p| p == provider),
                 "available_providers should contain {provider}: {:?}",
@@ -2757,6 +3370,17 @@ mod tests {
 
         engine.config.ui.always_show_tab_strip = true;
         assert!(engine.bootstrap().always_show_tab_strip);
+    }
+
+    #[test]
+    fn nerd_font_icons_is_projected_from_config() {
+        let (mut engine, _tmp) = test_engine();
+
+        // Default ships off: the plain icon set.
+        assert!(!engine.bootstrap().nerd_font_icons);
+
+        engine.config.ui.nerd_font_icons = true;
+        assert!(engine.bootstrap().nerd_font_icons);
     }
 
     #[test]
@@ -2828,6 +3452,22 @@ mod tests {
 
         engine.config.ui.compose_bar = "always".to_string();
         assert_eq!(engine.bootstrap().compose_bar, "always");
+    }
+
+    #[test]
+    fn extended_keys_is_projected_from_config() {
+        let (mut engine, _tmp) = test_engine();
+
+        assert_eq!(engine.bootstrap().extended_keys, "auto");
+
+        engine.config.ui.extended_keys = "off".to_string();
+        assert_eq!(engine.bootstrap().extended_keys, "off");
+
+        engine.config.ui.extended_keys = " ON ".to_string();
+        assert_eq!(engine.bootstrap().extended_keys, "on");
+
+        engine.config.ui.extended_keys = "kitty".to_string();
+        assert_eq!(engine.bootstrap().extended_keys, "auto");
     }
 
     #[test]
@@ -3094,6 +3734,23 @@ mod tests {
         assert!(cleared.last_run_verdict.is_none());
     }
 
+    /// A verdict nothing touches publishes the same spine on every rebuild, so
+    /// an idle workspace with a dormant failed tab sends browsers nothing new as
+    /// its age grows.
+    #[test]
+    fn a_verdicts_spine_is_the_same_on_every_rebuild() {
+        let (mut engine, _tmp) = engine_with_two_tabs();
+        engine.mark_tab_run_failed(
+            TabIdRef::new("s1-slot"),
+            crate::tab_verdict::TabRunEnding::ExitedWithStatus { status: 1 },
+            Vec::new(),
+        );
+        let before = serde_json::to_string(&engine.spine()).expect("the spine serializes");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let after = serde_json::to_string(&engine.spine()).expect("the spine serializes");
+        assert_eq!(before, after);
+    }
+
     /// A failed LAUNCH publishes the spawn error rather than a status, and the
     /// wire kind is the one the browser switches on.
     #[test]
@@ -3118,7 +3775,7 @@ mod tests {
         assert_eq!(verdict.ending, "launch_failed");
         assert_eq!(verdict.status, None);
         assert_eq!(verdict.error.as_deref(), Some("no such file or directory"));
-        assert!(verdict.excerpt.is_empty());
+        assert_eq!(verdict.excerpt, Vec::<String>::new());
     }
 
     #[test]
@@ -3341,6 +3998,7 @@ mod tests {
             "randomize_agent_names_by_default",
             "gh_available",
             "github_integration",
+            "github_hosts",
             "copy_on_select",
             "terminal_font_family",
             "terminal_font_size",
@@ -3362,6 +4020,8 @@ mod tests {
             "status_clear_seconds",
             "always_show_tab_strip",
             "tab_reaches_agent",
+            "nerd_font_icons",
+            "extended_keys",
             "attention_indicator",
             "attention_on_bell",
             "global_default_provider",
@@ -3380,6 +4040,7 @@ mod tests {
             "heartbeat_deadline_seconds",
             "reconnect_attempts",
             "reconnect_attempt_timeout_seconds",
+            "changes_request_timeout_seconds",
         ] {
             assert!(
                 json.contains(&format!("\"{field}\"")),
@@ -3439,6 +4100,19 @@ mod tests {
         let b = engine.bootstrap();
         assert_eq!(b.reconnect_attempts, 7);
         assert_eq!(b.reconnect_attempt_timeout_seconds, 8);
+    }
+
+    /// The changed-files request deadline is the browser's too, and reaches it
+    /// the same way, so a reload retimes the Changes pane with no restart.
+    #[test]
+    fn bootstrap_projects_the_changes_request_deadline_from_server_config() {
+        let (mut engine, _tmp) = test_engine();
+        assert_eq!(
+            engine.bootstrap().changes_request_timeout_seconds,
+            crate::config::DEFAULT_CHANGES_REQUEST_TIMEOUT_SECONDS
+        );
+        engine.config.server.changes_request_timeout_seconds = 9;
+        assert_eq!(engine.bootstrap().changes_request_timeout_seconds, 9);
     }
 
     #[test]

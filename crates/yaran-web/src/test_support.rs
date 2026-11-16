@@ -1,6 +1,6 @@
 //! Test-only helpers shared by the REST route modules' `#[cfg(test)]` suites:
-//! a minimal headless engine handle plus a plain router builder. yaran is
-//! trusted-local with no login gate, so every route is served plainly.
+//! a minimal headless engine handle plus a plain router builder. With no
+//! password in the test config, the auth layer lets every route through.
 //! Mirrors the private `test_engine_handle` in `server.rs`, lifted here so every
 //! route module can boot the same engine without duplicating the recipe.
 
@@ -18,11 +18,24 @@ use crate::server;
 /// a plain `sh`, so no test that creates or launches an agent can exec the
 /// developer's real agent CLI, and none depends on the developer's `$SHELL`. Every
 /// test in this crate boots through here rather than the production function.
+///
+/// The `gh` probe the engine loop starts is pointed at a program that does not
+/// exist, so it settles at once on "not installed" and never runs the
+/// developer's real `gh`. A real `gh` answers on its own schedule (it may ask
+/// GitHub over the network), and the moment it does it flips availability and
+/// fires `config.changed`, an event no test asked for that arrives whenever it
+/// likes. A test that needs `gh` points the probe at a stand-in of its own.
 pub(crate) fn bootstrap_test_engine(
     paths: &yaran_core::config::YaranPaths,
 ) -> anyhow::Result<yaran_core::engine::Engine> {
     let mut engine = crate::bootstrap::bootstrap_engine(paths)?;
     yaran_core::test_provider::defuse_config(&mut engine.config);
+    engine.gh_probe.program = paths.root.join("gh-is-not-installed").into_os_string();
+    // The disk watchdog samples the host's real disk at boot and posts its own
+    // warning, which status assertions would pick up on a nearly full machine.
+    // The guard itself is covered by `yaran_core::engine::limits`.
+    engine.config.limits.disk_high_water_pct = 0;
+    engine.config.limits.disk_warn_pct = 0;
     Ok(engine)
 }
 
@@ -34,7 +47,8 @@ pub(crate) fn test_engine_handle(tmp: &Path) -> EngineHandle {
         config_path: tmp.join("config.toml"),
         sessions_db_path: tmp.join("sessions.sqlite3"),
         worktrees_root: tmp.join("worktrees"),
-        lock_path: tmp.join("yaran.lock"),
+        lock_path: tmp.join("dux.lock"),
+        socket_path: tmp.join("yaran.sock"),
     };
     std::fs::create_dir_all(&paths.worktrees_root).unwrap();
     let engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
@@ -54,7 +68,6 @@ pub(crate) fn router_no_auth() -> (ScratchDir, Router) {
 /// a background task. Returns the bound `SocketAddr` so an integration test can
 /// issue real HTTP/WebSocket requests against it. The `ScratchDir` is kept alive by
 /// the returned guard; drop it to clean up the engine's on-disk state.
-#[allow(dead_code)]
 pub(crate) async fn boot_plain_test_server() -> (ScratchDir, SocketAddr) {
     let tmp = ScratchDir::new();
     let app = server::router(test_engine_handle(tmp.path()));
@@ -70,6 +83,54 @@ pub(crate) async fn boot_plain_test_server() -> (ScratchDir, SocketAddr) {
     (tmp, addr)
 }
 
+/// A managed agent of project `p1`, for a test that puts it in an engine by
+/// hand before the actor starts. Its worktree path does not exist.
+pub(crate) fn sample_agent(id: &str) -> yaran_core::model::AgentSession {
+    let now = chrono::Utc::now();
+    yaran_core::model::AgentSession {
+        id: id.to_string(),
+        agent_handle: yaran_core::model::normalize_agent_handle(id),
+        shared_workspace: false,
+        deleted_at: None,
+        slot_tab_id: format!("{id}-slot"),
+        provider: yaran_core::model::ProviderKind::new("claude"),
+        title: Some(format!("{id}-title")),
+        started_providers: Vec::new(),
+        desired_running: false,
+        auto_reopen_enabled: false,
+        status: yaran_core::model::SessionStatus::Detached,
+        created_at: now,
+        updated_at: now,
+        last_focused_tab: None,
+        workspace: yaran_core::model::AgentWorkspace::Managed(
+            yaran_core::model::ManagedWorkspace {
+                project_id: "p1".to_string(),
+                project_path: None,
+                source_branch: "main".to_string(),
+                branch_name: "feat".to_string(),
+                initial_branch: "feat".to_string(),
+                branch_provenance: yaran_core::model::BranchProvenance::CreatedByYaran,
+                worktree_path: format!("/tmp/{id}-worktree"),
+            },
+        ),
+    }
+}
+
+/// [`bootstrap_test_engine`] rooted at `tmp`, before an actor owns it, so a
+/// test can put state in it by hand first.
+pub(crate) fn unstarted_test_engine(tmp: &Path) -> yaran_core::engine::Engine {
+    let paths = yaran_core::config::YaranPaths {
+        root: tmp.to_path_buf(),
+        config_path: tmp.join("config.toml"),
+        sessions_db_path: tmp.join("sessions.sqlite3"),
+        worktrees_root: tmp.join("worktrees"),
+        lock_path: tmp.join("dux.lock"),
+        socket_path: tmp.join("yaran.sock"),
+    };
+    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    bootstrap_test_engine(&paths).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -80,7 +141,8 @@ mod tests {
             config_path: tmp.path().join("config.toml"),
             sessions_db_path: tmp.path().join("sessions.sqlite3"),
             worktrees_root: tmp.path().join("worktrees"),
-            lock_path: tmp.path().join("yaran.lock"),
+            lock_path: tmp.path().join("dux.lock"),
+            socket_path: tmp.path().join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         let engine = super::bootstrap_test_engine(&paths).unwrap();

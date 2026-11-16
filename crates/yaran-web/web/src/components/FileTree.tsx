@@ -1,4 +1,12 @@
-import { useRef, useState, useMemo, useCallback, useEffect, useLayoutEffect } from "react"
+import type { StatusLookup } from "@/lib/changedFiles"
+import {
+  useRef,
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+} from "react"
 import { ChevronRight, Loader2, RotateCw } from "lucide-react"
 import { cn } from "@yaran/ui-kit/cn"
 import { ScrollArea } from "@yaran/ui-kit/scroll-area"
@@ -31,8 +39,9 @@ const OVERSCAN = 10 // rows to render above/below the viewport
 interface FileTreeProps {
   root: EditorRoot
   openPath: string | null
-  // path → raw git status code, for marking changed files in the tree.
-  changed: Map<string, string>
+  // path → raw git status code, for marking changed files and folders in the
+  // tree (see `changedStatusLookup`, which answers inside folded folders).
+  changed: StatusLookup
   // A file whose ancestor chain is fetched and expanded on mount, and on every
   // later change, so a freshly created or deep-linked file is revealed.
   initialPath: string | null
@@ -294,6 +303,10 @@ export function FileTree({
     onRefreshSettledRef.current = onRefreshSettled
   })
 
+  // A LAYOUT effect, so the caller knows the loaded directories in the same
+  // commit that puts them on screen. A passive effect runs later, and a revisit
+  // (the window regaining focus) landing in between found no directories to
+  // refetch and was dropped without a trace.
   useLayoutEffect(() => {
     onLoadedDirsChangeRef.current?.(JSON.parse(loadedDirsKey) as string[])
   }, [loadedDirsKey])
@@ -624,6 +637,11 @@ export function FileTree({
                     <span className="min-w-0 flex-1 truncate text-sm font-medium">
                       {row.name}
                     </span>
+                    {/* A folded folder is a changed row of its own, and so is
+                        any folder inside one. */}
+                    {changed.get(row.path) && (
+                      <FileStatusIcon status={changed.get(row.path)!} />
+                    )}
                   </ContextMenuTrigger>
                   <FileTreeContextMenu
                     variant="dir"
@@ -708,7 +726,7 @@ export function FileTree({
                     }
                   >
                     <FileTreeIcon kind={fileIconKind(row.path)} />
-                    <span className="min-w-0 flex-1 truncate font-mono text-sm">
+                    <span className="min-w-0 flex-1 truncate text-sm">
                       {row.name}
                     </span>
                     {changed.get(row.path) && (

@@ -226,7 +226,11 @@ pub fn launch_args(
         ProviderSessionLaunch::Plain
         | ProviderSessionLaunch::CaptureClaude
         | ProviderSessionLaunch::CaptureCodex => {
-            let mut args = config.interactive_args(resume);
+            let mut args = config.interactive_args(if resume {
+                crate::model::ConversationStart::Resume
+            } else {
+                crate::model::ConversationStart::Fresh
+            });
             if let Some(session_id) = fresh_claude_id {
                 args.extend(["--session-id".to_string(), session_id.to_string()]);
             }

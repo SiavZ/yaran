@@ -3,11 +3,12 @@ import type { SessionStatus } from "@/lib/types"
 /** Visual treatment for an agent row, shared by the desktop sidebar and the
  *  mobile shell so the two surfaces never drift.
  *
- *  - `working`: busy, AND nothing outranks it. Drives the glyph pulse and the
- *    state word's own pulse together, so the two halves of the one cue stay in
- *    lockstep. It follows the same priority ladder the state word does, so it
- *    is on exactly when the word reads "Working"; a test walks the whole input
- *    space to keep the two from parting.
+ *  - `working`: busy, AND nothing outranks it. Drives the glyph cue (the pulse
+ *    and the bounce) and the state word's own pulse together, so the two
+ *    halves of the one cue stay in lockstep. It follows the same priority
+ *    ladder the state word does, so it is on exactly when the word reads
+ *    "Working"; a test walks the whole input space to keep the two from
+ *    parting.
  *  - `dimmed`: not running, so the whole row recedes and running agents stand
  *    out. Mutually exclusive with `working` by construction.
  *  - `attention`: a tab wants the user (a permission prompt, a finished turn),
@@ -44,8 +45,8 @@ export function agentRowVisual(
 // React Fast Refresh. `needsAttention` outranks the raw status, matching the
 // cyan treatment the Bot icon and the favicon dot use.
 const STATUS_DOT_COLOR: Record<SessionStatus, string> = {
-  active: "text-green-500",
-  detached: "text-amber-500",
+  active: "text-yaran-active",
+  detached: "text-yaran-detached",
   exited: "text-muted-foreground",
 }
 

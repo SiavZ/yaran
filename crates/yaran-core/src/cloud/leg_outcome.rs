@@ -133,7 +133,7 @@ impl CloudModeOutcome {
         } else {
             StatusTone::Info
         };
-        let update = StatusUpdate::keyed(CLOUD_MODE_KEY, tone, report.message);
+        let update = keyed_status(CLOUD_MODE_KEY, tone, report.message);
         if report.sticky {
             update.sticky()
         } else {
@@ -157,6 +157,17 @@ pub fn tls_disclosure(hostname: &str) -> String {
     format!("Cloudflare terminates TLS for {hostname} and can see this traffic.")
 }
 
+/// A status on one of the fixed cloud keys both surfaces share. A busy one goes
+/// through [`super::outcome::busy_status`], because `StatusUpdate::keyed` is for
+/// finals only.
+fn keyed_status(key: &str, tone: StatusTone, text: impl Into<StatusText>) -> StatusUpdate {
+    if tone == StatusTone::Busy {
+        super::outcome::busy_status(key, text)
+    } else {
+        StatusUpdate::keyed(key, tone, text)
+    }
+}
+
 /// What a leg event says on `cloud-leg` / `cloud-cloudflared`, if anything.
 /// `owner` is the Access owner email; `mode` decides whether failures stick.
 pub fn leg_status(
@@ -165,7 +176,7 @@ pub fn leg_status(
     owner: &str,
     mode: CloudMode,
 ) -> Option<StatusUpdate> {
-    let leg = |tone, text: StatusText| Some(StatusUpdate::keyed(CLOUD_LEG_KEY, tone, text));
+    let leg = |tone, text: StatusText| Some(keyed_status(CLOUD_LEG_KEY, tone, text));
     let sticky_if_yes = |update: StatusUpdate| {
         if mode.warns_when_unpaired() {
             update.sticky()
@@ -177,7 +188,7 @@ pub fn leg_status(
         CloudLegEvent::Acquiring { pct, total_mb } => {
             let size = total_mb.map(|mb| format!(" ({mb} MB)")).unwrap_or_default();
             let pct = pct.map(|p| format!(": {p}%")).unwrap_or_default();
-            Some(StatusUpdate::keyed(
+            Some(keyed_status(
                 CLOUD_CLOUDFLARED_KEY,
                 StatusTone::Busy,
                 format!(
@@ -248,7 +259,7 @@ pub fn leg_status(
 }
 
 fn stop_status(stop: &LegStop, hostname: &str) -> Option<StatusUpdate> {
-    let leg = |tone, text: StatusText| Some(StatusUpdate::keyed(CLOUD_LEG_KEY, tone, text));
+    let leg = |tone, text: StatusText| Some(keyed_status(CLOUD_LEG_KEY, tone, text));
     match stop {
         LegStop::Requested => None,
         LegStop::CredentialsGone => leg(

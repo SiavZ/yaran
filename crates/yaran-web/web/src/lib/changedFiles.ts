@@ -71,13 +71,101 @@ export interface ChangedFilesRecap {
   diffExcludedCount: number
 }
 
+// How many files one row stands for: a folded folder counts the files inside
+// it, so a total never reads one for a folder of thirty thousand. A nested
+// repository is one entry, since nothing looks inside it.
+export function changedFileCount(file: ChangedFileView): number {
+  return file.kind === "directory" ? (file.file_count ?? 0) : 1
+}
+
+// A folded folder's count in words ("28,747 files", "nested repository"), or
+// null for an ordinary file row. The TUI's `folder_count_label` says the same.
+export function folderCountLabel(file: ChangedFileView): string | null {
+  if (file.kind === "nested_repository") return "nested repository"
+  if (file.kind === "linked_worktree") return "worktree of this repository"
+  if (file.kind !== "directory") return null
+  const count = file.file_count ?? 0
+  const nested = file.nested_repositories ?? 0
+  const worktrees = file.linked_worktrees ?? 0
+  const parts: string[] = []
+  if (count > 0 || nested + worktrees === 0) parts.push(countWords(count, "file", "files"))
+  if (nested > 0) parts.push(countWords(nested, "nested repository", "nested repositories"))
+  if (worktrees > 0) {
+    parts.push(
+      countWords(worktrees, "worktree of this repository", "worktrees of this repository"),
+    )
+  }
+  // A staged folder names the repositories inside it that the stage left out,
+  // after a middle dot, as the TUI's `folder_contents_words` does.
+  const notStaged: string[] = []
+  const nestedLeft = file.nested_repositories_not_staged ?? 0
+  const worktreesLeft = file.linked_worktrees_not_staged ?? 0
+  if (nestedLeft > 0) {
+    notStaged.push(countWords(nestedLeft, "nested repository", "nested repositories"))
+  }
+  if (worktreesLeft > 0) {
+    notStaged.push(
+      countWords(worktreesLeft, "worktree of this repository", "worktrees of this repository"),
+    )
+  }
+  const held = joinWords(parts)
+  return notStaged.length > 0 ? `${held} \u00b7 ${joinWords(notStaged)} not staged` : held
+}
+
+// `a`, `a and b`, `a, b and c`, as the TUI's `join_words` writes it.
+export function joinWords(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts[0] ?? ""
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`
+}
+
+// A count with its noun, grouped by thousands the way the TUI writes it.
+export function countWords(count: number, one: string, many: string): string {
+  return `${count.toLocaleString("en-US")} ${count === 1 ? one : many}`
+}
+
+// Whether discarding this row would delete anything. A folder holding only
+// repositories of their own has nothing a delete takes (they are kept), and a
+// worktree of this same repository belongs to the worktree manager; the server
+// refuses both, so neither is offered. The TUI refuses the same two.
+export function discardActsOn(file: ChangedFileView): boolean {
+  if (file.kind === "linked_worktree") return false
+  if (file.kind === "directory") return deletableFileCount(file) > 0
+  return true
+}
+
+// Whether staging this row does what staging says. A worktree of this same
+// repository would be recorded as a link to it, and a folder holding nothing
+// but repositories would stage nothing (a folder stage leaves them out); the
+// server refuses both, so neither is offered and a bulk stage leaves them out.
+export function stageActsOn(file: ChangedFileView): boolean {
+  if (file.kind === "linked_worktree") return false
+  if (file.kind === "directory") return (file.file_count ?? 0) > 0
+  return true
+}
+
+// "only repositories of their own", "only worktrees of this repository", or
+// both, for a folder holding nothing else: a worktree is not a repository of
+// its own, so each is named for what it is. The terminal UI and the server
+// word it the same way.
+export function onlyRepositoriesWords(file: ChangedFileView): string {
+  // A bare repository a delete keeps is a repository of its own too.
+  const repositories =
+    (file.nested_repositories ?? 0) + (file.bare_repositories?.length ?? 0) > 0
+  const worktrees = (file.linked_worktrees ?? 0) > 0
+  if (worktrees && !repositories) return "only worktrees of this repository"
+  if (worktrees && repositories) {
+    return "only repositories of their own and worktrees of this repository"
+  }
+  return "only repositories of their own"
+}
+
 // The recap describes exactly the rows visible beneath it, so callers pass the
 // filtered list, never the source one.
 export function summarizeChangedFiles(
   files: ChangedFileView[],
 ): ChangedFilesRecap {
   const recap: ChangedFilesRecap = {
-    count: files.length,
+    count: files.reduce((sum, file) => sum + changedFileCount(file), 0),
     additions: 0,
     deletions: 0,
     binaryCount: 0,
@@ -125,6 +213,75 @@ export function mergeChangedFilesRecaps(
   }
 }
 
+// Every field of the wire type, typed against its keys: a field added to
+// `ChangedFileView` stops this compiling until it is listed, and every listed
+// field is compared. All of them are primitives, so `===` is the comparison.
+export const CHANGED_FILE_FIELDS = {
+  status: true,
+  path: true,
+  additions: true,
+  deletions: true,
+  binary: true,
+  diff_excluded: true,
+  renamed_from: true,
+  kind: true,
+  file_count: true,
+  nested_repositories: true,
+  linked_worktrees: true,
+  fingerprint: true,
+  nested_repositories_not_staged: true,
+  linked_worktrees_not_staged: true,
+  bare_repositories: true,
+  files_in_bare_repositories: true,
+  repositories_inside: true,
+} as const satisfies Record<keyof ChangedFileView, true>
+
+const FIELD_KEYS = Object.keys(CHANGED_FILE_FIELDS) as (keyof ChangedFileView)[]
+
+function sameChangedFile(a: ChangedFileView, b: ChangedFileView): boolean {
+  return FIELD_KEYS.every((key) => sameField(a[key], b[key]))
+}
+
+// A list field arrives as a fresh array on every fetch, so it is compared by
+// what it holds; every other field is a primitive.
+function sameField(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => item === b[index])
+  }
+  return a === b
+}
+
+// How many of a folder row's files a delete removes: all but those inside the
+// bare repositories it keeps. A file row is its one file.
+export function deletableFileCount(file: ChangedFileView): number {
+  if (file.kind !== "directory") return changedFileCount(file)
+  return Math.max(0, (file.file_count ?? 0) - (file.files_in_bare_repositories ?? 0))
+}
+
+// A freshly fetched list with every file that did not change swapped back for
+// the object already on screen, and the previous array itself when nothing
+// changed at all. Everything downstream memoizes by reference, so a refetch
+// that moved one file re-renders one row, and one that moved nothing re-renders
+// none.
+export function reuseUnchangedFiles(
+  previous: ChangedFileView[],
+  next: ChangedFileView[],
+): ChangedFileView[] {
+  if (previous === next) return previous
+  if (
+    previous.length === next.length &&
+    next.every((file, index) => sameChangedFile(previous[index]!, file))
+  ) {
+    return previous
+  }
+  if (previous.length === 0) return next
+  const byPath = new Map(previous.map((file) => [file.path, file]))
+  return next.map((file) => {
+    const old = byPath.get(file.path)
+    return old && sameChangedFile(old, file) ? old : file
+  })
+}
+
 // One section's worth of checked paths each. Staged and unstaged are kept apart
 // because the two sections carry opposite verbs.
 export interface ChangedFileSelection {
@@ -134,16 +291,130 @@ export interface ChangedFileSelection {
 
 // Drop every checked path that is no longer in the section it was checked in: a file
 // checked to be staged and then staged leaves the set rather than following the file across.
+//
+// A section whose checked paths all survive is returned as the SAME set, and the
+// whole selection as the same object when both do, so a caller can tell "nothing
+// changed" by reference. An empty section costs nothing, which is the common case
+// for a pane listing tens of thousands of files and checking none of them.
 export function reconcileSelection(
   prev: ChangedFileSelection,
   slice: { staged: ChangedFileView[]; unstaged: ChangedFileView[] },
 ): ChangedFileSelection {
   const survivors = (checked: Set<string>, files: ChangedFileView[]) => {
+    if (checked.size === 0) return checked
     const live = new Set(files.map((f) => f.path))
-    return new Set([...checked].filter((path) => live.has(path)))
+    for (const path of checked) {
+      if (!live.has(path)) {
+        return new Set([...checked].filter((kept) => live.has(kept)))
+      }
+    }
+    return checked
+  }
+  const staged = survivors(prev.staged, slice.staged)
+  const unstaged = survivors(prev.unstaged, slice.unstaged)
+  if (staged === prev.staged && unstaged === prev.unstaged) return prev
+  return { staged, unstaged }
+}
+
+// Something that answers "what is this path's raw git status code". A `Map`
+// is one, which is what a caller with nothing folded passes.
+export interface StatusLookup {
+  get(path: string): string | undefined
+}
+
+// The git status code for any path under a worktree, from the changes lists
+// (`lists` in priority order, the unstaged side first): a path that is a row
+// answers as its row, and a path with no row of its own answers as the
+// nearest folded folder it sits in, because that row stands for every file
+// under it. A repository of its own is not looked inside, whether it is a row
+// or one the folder row names in `repositories_inside`, so a path in one
+// answers nothing. The one place the editor asks this, for its tree, its
+// search results and anything else that marks a path.
+//
+// One gap, stated rather than papered over: a file the repository IGNORES
+// inside a folded folder is answered with the folder's status too. Neither
+// the folder row nor the tree listing says which paths are ignored (the tree
+// endpoint returns names and kinds only, and only the per-entry info panel
+// asks git), so nothing on this side can tell an ignored `.env` in an
+// untracked folder from the untracked files around it.
+export function changedStatusLookup(
+  lists: readonly (readonly Pick<
+    ChangedFileView,
+    "path" | "status" | "kind" | "repositories_inside"
+  >[])[],
+): StatusLookup {
+  const exact = new Map<string, string>()
+  const folders = new Map<string, string>()
+  const repositories = new Set<string>()
+  for (const list of lists) {
+    for (const file of list) {
+      if (!exact.has(file.path)) exact.set(file.path, file.status)
+      if (file.kind === "directory" && !folders.has(file.path)) {
+        folders.set(file.path, file.status)
+      }
+      for (const repository of file.repositories_inside ?? []) repositories.add(repository)
+    }
   }
   return {
-    staged: survivors(prev.staged, slice.staged),
-    unstaged: survivors(prev.unstaged, slice.unstaged),
+    get(path: string): string | undefined {
+      const own = exact.get(path)
+      if (own !== undefined || folders.size === 0) return own
+      if (repositories.has(path)) return undefined
+      for (let cut = path.lastIndexOf("/"); cut > 0; cut = path.lastIndexOf("/", cut - 1)) {
+        const above = path.slice(0, cut)
+        // Inside a repository counted in a folder: not a change of this one.
+        if (repositories.has(above)) return undefined
+        const status = folders.get(above)
+        if (status !== undefined) return status
+      }
+      return undefined
+    },
   }
+}
+
+// The selected paths with every one inside another selected path left out: a
+// checked folder already stands for everything under it, so acting on (or
+// counting) a checked row inside it as well would do it twice.
+export function uncoveredPaths(paths: Iterable<string>): string[] {
+  const all = new Set(paths)
+  const out: string[] = []
+  for (const path of all) {
+    let covered = false
+    for (let cut = path.lastIndexOf("/"); cut > 0; cut = path.lastIndexOf("/", cut - 1)) {
+      if (all.has(path.slice(0, cut))) {
+        covered = true
+        break
+      }
+    }
+    if (!covered) out.push(path)
+  }
+  return out
+}
+
+// A count as the pane writes every count: digits grouped by thousands, the
+// way the rows write "30,000 files".
+export function groupDigits(count: number): string {
+  return count.toLocaleString("en-US")
+}
+
+// The checked paths a verb acts on, with the ones inside another acting path
+// left out, and apart from them the checked paths it does not act on. Only a
+// folder the verb acts on covers the rows checked inside it: a folder holding
+// nothing but repositories is left out of a stage, so the repository checked
+// inside it must still be staged on its own. A path with no row (it left the
+// list) counts as acting, as it always has.
+export function actingPaths(
+  paths: Iterable<string>,
+  rows: readonly ChangedFileView[],
+  acts: (file: ChangedFileView) => boolean,
+): { acting: string[]; idle: string[] } {
+  const byPath = new Map(rows.map((row) => [row.path, row]))
+  const acting: string[] = []
+  const idle: string[] = []
+  for (const path of paths) {
+    const row = byPath.get(path)
+    if (row !== undefined && !acts(row)) idle.push(path)
+    else acting.push(path)
+  }
+  return { acting: uncoveredPaths(acting), idle }
 }

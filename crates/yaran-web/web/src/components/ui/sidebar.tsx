@@ -23,6 +23,7 @@ import {
   TooltipTrigger,
 } from "@yaran/ui-kit/tooltip"
 import { PanelLeftIcon } from "lucide-react"
+import { useSidebarUnfold } from "@/hooks/use-sidebar-unfold"
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
@@ -141,7 +142,7 @@ function SidebarProvider({
           } as React.CSSProperties
         }
         className={cn(
-          "group/sidebar-wrapper flex min-h-svh w-full has-data-[variant=inset]:bg-sidebar",
+          "group/sidebar-wrapper flex min-h-[calc(100svh-var(--yaran-app-top,0px))] w-full has-data-[variant=inset]:bg-sidebar",
           className
         )}
         {...props}
@@ -152,10 +153,16 @@ function SidebarProvider({
   )
 }
 
+function assignRef<T>(ref: React.Ref<T> | undefined, el: T | null) {
+  if (typeof ref === "function") ref(el)
+  else if (ref) ref.current = el
+}
+
 function Sidebar({
   side = "left",
   variant = "sidebar",
   collapsible = "offcanvas",
+  floatOpen = false,
   className,
   children,
   dir,
@@ -164,8 +171,26 @@ function Sidebar({
   side?: "left" | "right"
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
+  /** yaran: while collapsed, show the expanded sidebar floating over the page. The
+   * gap keeps its collapsed width, so the layout and the collapsed state stay
+   * exactly as they are; only the fixed container widens, above the page. */
+  floatOpen?: boolean
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+  const { floating, attachContainer, attachInner } = useSidebarUnfold(
+    state === "collapsed" && !isMobile,
+    floatOpen,
+  )
+  // The caller's ref stays in `props`, so every layout below forwards it as
+  // before; the desktop container also needs the element for the unfold.
+  const forwardedRef = props.ref
+  const containerRef = React.useCallback(
+    (el: HTMLDivElement | null) => {
+      attachContainer(el)
+      assignRef(forwardedRef, el)
+    },
+    [attachContainer, forwardedRef],
+  )
 
   if (collapsible === "none") {
     return (
@@ -212,7 +237,8 @@ function Sidebar({
     <div
       className="group peer hidden text-sidebar-foreground md:block"
       data-state={state}
-      data-collapsible={state === "collapsed" ? collapsible : ""}
+      data-collapsible={state === "collapsed" && !floating ? collapsible : ""}
+      data-floating={floating ? "" : undefined}
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
@@ -226,18 +252,25 @@ function Sidebar({
           // the edge sits under the finger. See SIDEBAR_RESIZING_ATTR.
           SIDEBAR_RESIZING_NO_TRANSITION,
           "group-data-[collapsible=offcanvas]:w-0",
+          // Under the floating sidebar's rail strip while it fades in.
+          "group-data-floating:bg-sidebar",
           "group-data-[side=right]:rotate-180",
           variant === "floating" || variant === "inset"
-            ? "group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
-            : "group-data-[collapsible=icon]:w-(--sidebar-width-icon)"
+            ? "group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))] group-data-floating:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
+            : "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-floating:w-(--sidebar-width-icon)"
         )}
       />
       <div
         data-slot="sidebar-container"
         data-side={side}
         className={cn(
-          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
+          "fixed top-[var(--yaran-app-top,0px)] bottom-0 z-10 hidden w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
           SIDEBAR_RESIZING_NO_TRANSITION,
+          // Floating over the page: above its content and its dividers (z-30),
+          // below menus, dialogs and toasts (z-50), and lifted by a shadow. It
+          // unfolds by a clip rather than the collapse toggle's width tween
+          // (`useSidebarUnfold`), so that tween is off while it floats.
+          "group-data-floating:z-40 group-data-floating:shadow-xl group-data-floating:transition-none",
           // Adjust the padding for floating and inset variants.
           variant === "floating" || variant === "inset"
             ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
@@ -245,8 +278,10 @@ function Sidebar({
           className
         )}
         {...props}
+        ref={containerRef}
       >
         <div
+          ref={attachInner}
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
           className="flex size-full flex-col bg-sidebar group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-sm group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border"

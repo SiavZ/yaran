@@ -8,28 +8,46 @@
 //! <module-headers:begin>
 //! Uses:
 //! engine_actor.rs
+//! ├── auth
+//! ├── auth::admission
+//! ├── bootstrap
 //! ├── cloud_mode
 //! ├── cloud_routes
+//! ├── console
 //! ├── crate
+//! ├── host_guard
 //! ├── serve_legs
+//! ├── server
 //! ├── test_support
 //! ├── yaran-core
+//! ├── yaran-core::attachments
+//! ├── yaran-core::auth
 //! ├── yaran-core::background_serve
+//! ├── yaran-core::branch_history
+//! ├── yaran-core::changes_status
 //! ├── yaran-core::config
+//! ├── yaran-core::config_effective
+//! ├── yaran-core::config_keys
 //! ├── yaran-core::config_reload_status
 //! ├── yaran-core::config_write
+//! ├── yaran-core::control_socket
 //! ├── yaran-core::engine
 //! ├── yaran-core::file_drop
 //! ├── yaran-core::gh
 //! ├── yaran-core::git
 //! ├── yaran-core::ids
+//! ├── yaran-core::leftover_folders
 //! ├── yaran-core::logger
 //! ├── yaran-core::model
+//! ├── yaran-core::operations
 //! ├── yaran-core::poller_status
 //! ├── yaran-core::project_browser
+//! ├── yaran-core::prose
 //! ├── yaran-core::provider
 //! ├── yaran-core::pty
+//! ├── yaran-core::pty_owners
 //! ├── yaran-core::sidebar
+//! ├── yaran-core::start_check_fixtures
 //! ├── yaran-core::status_text
 //! ├── yaran-core::statusline
 //! ├── yaran-core::storage
@@ -37,29 +55,42 @@
 //! ├── yaran-core::tailscale
 //! ├── yaran-core::viewmodel
 //! ├── yaran-core::wire
-//! └── yaran-core::worker
-//! External: chrono, serde_json, std, tempfile, tokio
+//! ├── yaran-core::worker
+//! ├── yaran-core::working_copy
+//! ├── yaran-core::worktree_manager
+//! └── yaran-core::worktree_ops
+//! External: anyhow, chrono, serde_json, std, tempfile, tokio
 //!
 //! Used by:
 //! engine_actor.rs
+//! ├── auth
+//! ├── auth::warnings
 //! ├── background
 //! ├── browse_routes
 //! ├── changes
 //! ├── cloud_loop
 //! ├── cloud_routes
+//! ├── cloud_test_support
+//! ├── config_routes
 //! ├── crate
 //! ├── file_drop_routes
 //! ├── file_routes
 //! ├── first_load_routes
 //! ├── git_routes
 //! ├── project_actions
+//! ├── project_reads
+//! ├── reload_signal
 //! ├── resource_routes
 //! ├── rest_common
 //! ├── serve_legs
 //! ├── server
 //! ├── session_actions
+//! ├── tab_actions
+//! ├── terminal_actions
 //! ├── test_support
+//! ├── workspace_routes
 //! ├── yaran-web[test add_project_base_branch]
+//! ├── yaran-web[test auth_router]
 //! ├── yaran-web[test changes_events]
 //! ├── yaran-web[test file_move_and_info_routes]
 //! ├── yaran-web[test file_tree_routes]
@@ -68,6 +99,10 @@
 //! ├── yaran-web[test missing_working_copy]
 //! ├── yaran-web[test project_worktrees_routes]
 //! ├── yaran-web[test pull_request_resolution]
+//! ├── yaran-web[test races_review2_editor_hold]
+//! ├── yaran-web[test races_review5_editor_delete]
+//! ├── yaran-web[test review11_symlink_folder]
+//! ├── yaran-web[test review9_nested_destructive]
 //! ├── yaran-web[test session_branch_routes]
 //! ├── yaran-web[test static_serving]
 //! ├── yaran-web[test tab_routes]
@@ -82,13 +117,19 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
-use yaran_core::config::{server_bind_settings_changed, server_console_settings_changed};
+use yaran_core::config::{
+    server_bind_setting_names, server_log_file_setting_names, server_log_file_settings_changed,
+    server_log_viewer_settings_changed,
+};
+use yaran_core::config_reload_status::ConfigReloadOutcome;
 use yaran_core::engine::{
     Command, Engine, EventReaction, InFlightKey, ProjectPersistenceView, PrunedPtyKind,
 };
 use yaran_core::ids::{TabId, TabIdRef};
 use yaran_core::model::TerminalOwner;
+use yaran_core::operations::{OperationKind, OperationView};
 use yaran_core::pty::{PtyClient, PtyViewerGuard};
+use yaran_core::status_text::StatusText;
 use yaran_core::statusline::{
     Generation, KeyedStatusController, KeyedWireStatus, QuietSurfaces, StatusScope, StatusTone,
 };
@@ -112,21 +153,132 @@ pub type PtySubscription = (PtyViewerGuard, Vec<u8>, std::sync::mpsc::Receiver<V
 /// session lifecycle and status, the `working` hysteresis flag and the per-session
 /// terminal list, which all live in the same projection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SpineChange {
+pub(crate) enum SpineChange {
     Projects,
     Sessions,
 }
 
+/// What the worktree manager's listing needs from the engine for one project:
+/// the classification inputs, and every folder something yaran started is still
+/// running in (so such a row is shown busy rather than removable).
+pub(crate) struct ProjectWorktreeInputs {
+    pub(crate) project: yaran_core::model::Project,
+    pub(crate) paths: yaran_core::config::YaranPaths,
+    pub(crate) sessions: Vec<yaran_core::model::AgentSession>,
+    pub(crate) busy: Vec<yaran_core::worktree_manager::BusyFolder>,
+}
+
+/// A request to follow a tab or terminal change as an operation, its id minted
+/// before dispatch. The engine opens the record before making the change, so
+/// nothing the change raises lands first, and fills `record` before replying.
+pub(crate) struct OperationTicket {
+    pub(crate) id: String,
+    pub(crate) kind: OperationKind,
+    pub(crate) record: Arc<std::sync::OnceLock<OperationView>>,
+}
+
+impl OperationTicket {
+    pub(crate) fn new(kind: OperationKind) -> Self {
+        Self {
+            id: yaran_core::operations::mint_operation_id(),
+            kind,
+            record: Arc::default(),
+        }
+    }
+
+    /// Leave the record as it stands for the route that sent this ticket.
+    fn hand_back(&self, engine: &Engine) {
+        if let Some(record) = engine.operations.peek(&self.id, Instant::now()) {
+            let _ = self.record.set(record);
+        }
+    }
+}
+
+/// A change covered by an operation record, and whether the client asked to
+/// follow it (which decides only the answer's shape). With no kind it is the
+/// attachment policy alone, for a guarded change that keeps no record.
+#[derive(Clone, Debug)]
+pub(crate) struct Followed {
+    pub(crate) kind: Option<OperationKind>,
+    pub(crate) answered: bool,
+    /// Go ahead even though somebody else is attached to what the change
+    /// would end (`force_connected` on the route). Only that refusal is
+    /// skipped; the reservation and every other check still run.
+    pub(crate) force_connected: bool,
+    /// With `force_connected`: go ahead only over these blockers
+    /// ([`yaran_core::attachments::Blocker::key`]), the ones the asking dialog
+    /// showed. `None` goes ahead over everybody.
+    pub(crate) accepted_connected: Option<std::collections::BTreeSet<String>>,
+    /// The browser tab asking, exempt from its own attachments: its events
+    /// connection, when the request named one from its own address (see
+    /// `rest_common::exempt_requester`). `None` exempts nobody.
+    pub(crate) requester: Option<String>,
+}
+
+/// Why the engine refused a dispatched change: its sentence, and, when the
+/// refusal was that somebody else is attached to what the change would end,
+/// who (see [`yaran_core::attachments`]).
+#[derive(Debug)]
+pub(crate) struct WireError {
+    pub(crate) message: String,
+    pub(crate) attached: Option<Vec<yaran_core::attachments::Blocker>>,
+}
+
+impl From<String> for WireError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            attached: None,
+        }
+    }
+}
+
+/// What a route says when a followed change came back without its record,
+/// which the engine sets before replying: something broke in between.
+pub const MISSING_OPERATION_RECORD: &str =
+    "the change was made, but its operation record did not come back with the reply";
+
+/// Everything the pull-request reference resolver reads from the engine.
+pub(crate) struct PullRequestResolutionInputs {
+    pub(crate) projects: Vec<yaran_core::model::Project>,
+    pub(crate) policy: yaran_core::gh::GithubHostPolicy,
+    /// Each signed-in host's git protocol, for the clone address.
+    pub(crate) protocols: std::collections::BTreeMap<String, yaran_core::gh::GitProtocol>,
+    /// The program the pull request lookup runs: `gh`, or a test's stand-in.
+    pub(crate) gh_program: std::ffi::OsString,
+    pub(crate) gh_available: bool,
+    /// Where managed worktrees live, which decides what name a review copy
+    /// can take.
+    pub(crate) worktrees_root: std::path::PathBuf,
+}
+
 /// One unit of work for the engine thread.
-pub enum EngineRequest {
+pub(crate) enum EngineRequest {
     ApplyWire(
         WireCommand,
-        oneshot::Sender<Result<WireCommandOutcome, String>>,
+        oneshot::Sender<Result<WireCommandOutcome, WireError>>,
         /// Audience for any statuses this command mints. The actor sets
         /// `engine.current_origin` to this for the duration of `apply_wire` and
         /// resets it to [`StatusScope::All`] after, so a web operation's toasts
         /// reach only the originating connection. `All` is the broadcast default.
         StatusScope,
+        /// Set for a change a route covers with an operation record: dispatched
+        /// through [`yaran_core::engine::Engine::apply_wire_operation`] (the reply
+        /// carries the record's id) when the client follows it, otherwise through
+        /// [`yaran_core::engine::Engine::apply_wire_recorded`] with the plain reply.
+        Option<Followed>,
+    ),
+    /// Reload `config.toml` after yaran wrote it itself, as `ApplyWire` with
+    /// `ReloadConfig` does, but as yaran's own reload, which is not announced.
+    ReloadAfterOwnConfigWrite(oneshot::Sender<Result<WireCommandOutcome, WireError>>),
+    /// Save one project setting (one of the four `UpdateProject*` commands)
+    /// through the project-persistence worker the terminal UI saves the same
+    /// settings through, and answer only once the write has completed and
+    /// `config.toml` was updated after it. See [`PendingProjectSave`].
+    SaveProjectSetting(
+        WireCommand,
+        StatusScope,
+        oneshot::Sender<Result<(), ProjectSaveFailure>>,
     ),
     /// A status from a non-engine producer (the changed-files `ChangesService`)
     /// to broadcast through the shared status controller so it auto-clears and
@@ -147,7 +299,18 @@ pub enum EngineRequest {
     /// nobody has been told yet", which a take cannot be used to ask because
     /// asking would be the telling.
     LateStatusFinalsWaiting(oneshot::Sender<usize>),
-    SubscribePty(String, oneshot::Sender<Result<PtySubscription, String>>),
+    /// Subscribe to a tab's PTY, launching it when dormant. The flag says
+    /// whether the pane opening it is on screen: only a pane on screen counts
+    /// as looking at the tab (see [`note_tab_looked_at`]).
+    SubscribePty(
+        String,
+        PaneVisibility,
+        oneshot::Sender<Result<PtySubscription, String>>,
+    ),
+    /// A pane that was mounted off screen came on screen: the same "looking at
+    /// it" a subscribe from a pane on screen is, for a tab already subscribed.
+    /// Fire-and-forget; an id that names no agent tab is a no-op.
+    PtyShown(String),
     WritePty(String, Vec<u8>),
     /// Resize a PTY: id, rows, cols, and the apply-order seq the owners lock
     /// stamped. The seq travels because this resize applies whenever the queue is
@@ -168,14 +331,25 @@ pub enum EngineRequest {
     /// Subscribe to an existing companion terminal (no launch; replies immediately).
     SubscribeTerminal(String, oneshot::Sender<Result<PtySubscription, String>>),
     /// Create a companion terminal for a session, replying `(terminal_id, label)`.
-    CreateTerminal(String, oneshot::Sender<Result<(String, String), String>>),
+    CreateTerminal(
+        String,
+        Option<OperationTicket>,
+        oneshot::Sender<Result<(String, String), String>>,
+    ),
     /// Create a project terminal for a project (a plain shell at the project's
     /// repo root with no agent attached), replying `(terminal_id, label)`.
-    CreateProjectTerminal(String, oneshot::Sender<Result<(String, String), String>>),
+    CreateProjectTerminal(
+        String,
+        Option<OperationTicket>,
+        oneshot::Sender<Result<(String, String), String>>,
+    ),
     /// Create a standalone terminal (a plain shell in the user's home directory,
     /// owned by neither an agent nor a project), replying `(terminal_id, label)`.
     /// Carries no owner id, because there is no owner to name.
-    CreateStandaloneTerminal(oneshot::Sender<Result<(String, String), String>>),
+    CreateStandaloneTerminal(
+        Option<OperationTicket>,
+        oneshot::Sender<Result<(String, String), String>>,
+    ),
     /// Resolve the owner of a companion terminal, or `None` for an unknown id. Lets
     /// the nested PTY sockets and terminal REST routes enforce that a `:tid` belongs
     /// to its path owner before subscribing to or deleting it, which
@@ -197,13 +371,18 @@ pub enum EngineRequest {
     CreateAgentTab(
         String,
         Option<String>,
+        Option<OperationTicket>,
         oneshot::Sender<Result<(String, String), String>>,
     ),
     /// Start a dormant tab explicitly, the press on its start card. The one launch
     /// path that gets past a recorded failure verdict, and dispatching the launch
     /// is what clears that verdict, so the pane mounting behind the card attaches
     /// to a launch in flight rather than starting a second. Already running is `Ok`.
-    StartAgentTab(String, oneshot::Sender<Result<(), String>>),
+    StartAgentTab(
+        String,
+        Option<OperationTicket>,
+        oneshot::Sender<Result<(), String>>,
+    ),
     /// Resolve the owning session id of an EXTRA tab (instant lookup), or
     /// `None` when the tab id is unknown or names a session's first tab, whose
     /// owner is resolved from that session's slot pointer rather than looked up.
@@ -234,6 +413,10 @@ pub enum EngineRequest {
         String,
         oneshot::Sender<Option<yaran_core::engine::BranchDeleteInputs>>,
     ),
+    /// Where the rename dialog asks whether the agent's branch was pushed: its
+    /// worktree and branch (instant lookup; the git read runs off-thread in the
+    /// handler). `None` for a standalone agent, which has no branch.
+    RenamePushedProbe(String, oneshot::Sender<Option<(String, String)>>),
     /// What git yaran may do for one agent in one round trip: the directory, whether
     /// the changes panel works, and whether the branch features exist there. Asking
     /// separately would let a caller act on half an answer. Asking also refreshes a
@@ -250,7 +433,11 @@ pub enum EngineRequest {
     /// `Some(message)` for a failure. The ENGINE owns the streak and the
     /// sentences, and queues whatever status it owes on its own worker lane, so
     /// the terminal UI sees the same warning this browser does.
-    NoteChangedFilesOutcome(String, Option<String>),
+    NoteChangedFilesOutcome(String, yaran_core::changes_status::ReadOutcome),
+    /// Branches a delete dialog's offer found in an agent's HEAD reflog that
+    /// its recorded list did not have, for the delete that follows to decide
+    /// over too.
+    RecordOfferedBranches(String, Vec<yaran_core::branch_history::SeenBranch>),
     /// A status a web-side producer owes to BOTH surfaces, put onto the
     /// engine's own worker lane rather than straight onto the web's broadcast.
     /// [`EngineRequest::EmitStatus`] is the web-only door; this one is for a
@@ -264,7 +451,7 @@ pub enum EngineRequest {
     /// Where a file dropped onto the pane showing this pty id should be saved.
     /// The pty id may be a terminal, an agent's first tab, or an extra tab; the
     /// engine resolves all three. A terminal answers with a PLAN rather
-    /// than a path, so the live-directory probe (a `/proc` read, or `lsof` on
+    /// than a path, so the live-directory probe (a `/proc` read, or a kernel query on
     /// macOS) happens on a blocking pool and never on this thread.
     FileDropDestination(
         String,
@@ -338,7 +525,13 @@ pub enum EngineRequest {
         String,
         String,
         StatusScope,
-        oneshot::Sender<Result<String, String>>,
+        oneshot::Sender<Result<OperationView, String>>,
+    ),
+    /// The branch list behind the Pull requests views: every branch the
+    /// agent's worktree has been on, with its pull requests. Read-only.
+    PullRequestBranches(
+        String,
+        oneshot::Sender<Result<yaran_core::viewmodel::PrBranchesView, String>>,
     ),
     /// Bump and return the next monotonic changed-files revision for a session
     /// (one actor round-trip over the engine's single SQLite connection). The
@@ -366,33 +559,44 @@ pub enum EngineRequest {
     /// project, the yaran paths, and the current sessions. Instant clones, because the
     /// classification shells to git and runs off-thread in the server handler.
     /// `None` when the project id is unknown.
-    ProjectWorktreeInputs(
-        String,
-        oneshot::Sender<
-            Option<(
-                yaran_core::model::Project,
-                yaran_core::config::YaranPaths,
-                Vec<yaran_core::model::AgentSession>,
-            )>,
-        >,
+    ProjectWorktreeInputs(String, oneshot::Sender<Option<ProjectWorktreeInputs>>),
+    /// The refusal a wire command would meet at admission now, holding
+    /// nothing, so a route answers it before running slow checks. An in-memory
+    /// read.
+    WireAdmissionRefusal(Box<WireCommand>, oneshot::Sender<Option<String>>),
+    /// Decide a worktree-manager removal against the engine's LIVE state and
+    /// announce it, `None` when the project id is unknown. The slow part (the
+    /// wait for operations in the worktree, then git) is the admitted ticket's,
+    /// run by the handler off-thread.
+    AdmitManagerRemoval {
+        project_id: String,
+        path: std::path::PathBuf,
+        branch: yaran_core::worktree_manager::BranchRemoval,
+        reply: oneshot::Sender<Option<yaran_core::worktree_manager::RemovalAdmission>>,
+    },
+    /// Admit a Delete folder request for a left-over worktree folder against
+    /// live state (see `Engine::admit_leftover_removal`); the admitted
+    /// ticket's checks and the delete run in the handler, off-thread.
+    AdmitLeftoverRemoval {
+        project_id: String,
+        path: std::path::PathBuf,
+        delete_branches: Vec<String>,
+        reply: oneshot::Sender<Option<yaran_core::leftover_folders::LeftoverAdmission>>,
+    },
+    /// What stands in the way of deleting or moving `path` and everything
+    /// under it (see `Engine::destructive_check`); the caller evaluates the
+    /// blocking part off the engine loop.
+    DestructiveCheck(
+        std::path::PathBuf,
+        oneshot::Sender<yaran_core::engine::DestructiveCheck>,
     ),
-    /// The registered-project inventory for the whole-worktree removal guard
-    /// (`Engine::registered_project_paths`). `Err` when a project path does not
-    /// expand to a safe absolute one; the caller refuses the removal.
-    RegisteredProjectPaths(oneshot::Sender<Result<Vec<std::path::PathBuf>, String>>),
     /// Everything the pull-request reference resolver needs: the live project list
     /// and the GitHub host policy. Instant clones, because reading a project's
     /// configured address shells to git and must not run on the engine loop or the
     /// async reactor. Fetched per request, never cached: the answer changes when an
     /// address is edited, when git's rewrite configuration changes, and when a
     /// project's path moves under the same id.
-    PullRequestResolutionInputs(
-        oneshot::Sender<(
-            Vec<yaran_core::model::Project>,
-            yaran_core::gh::GithubHostPolicy,
-            bool,
-        )>,
-    ),
+    PullRequestResolutionInputs(oneshot::Sender<PullRequestResolutionInputs>),
     /// Resolve a session's startup-command-log context: `(yaran paths, project_id)`
     /// for the session, so a GET handler can list/read its startup-command logs
     /// off-thread. `None` when the session id is unknown. Instant clone off engine
@@ -414,12 +618,16 @@ pub enum EngineRequest {
     /// a plain render of the running config when the file does not exist yet. Any
     /// other read error is an `Err`, so the editor refuses to open rather than let
     /// the user save a blank default over their real config.
-    ReadRawConfig(oneshot::Sender<Result<String, String>>),
+    ReadRawConfig(oneshot::Sender<Result<RawConfig, String>>),
     /// Validate and write raw `config.toml` text: parse as a `Config`, flush any
     /// pending managed writes so they cannot clobber it, then write the file
     /// atomically and verbatim. The caller adopts the change through a config
     /// reload. `Err(message)` for a parse or IO failure.
-    WriteRawConfig(String, oneshot::Sender<Result<(), String>>),
+    WriteRawConfig(
+        String,
+        Option<String>,
+        oneshot::Sender<Result<(), RawWriteError>>,
+    ),
     /// Read everything `yaran_core::first_load::plan` needs in one round trip: the
     /// last-seen version, the running display version, the `[ui]` suppression flags,
     /// and the state root the release-notes cache lives under. One trip so the
@@ -453,7 +661,7 @@ const TICK: Duration = Duration::from_millis(50);
 /// Consider running the spine fingerprint check every Nth tick rather than every
 /// tick. [`SpineCheck::maybe_check`] gates it further on the change signals, so an
 /// interval with no mutation, no streaming transition and no backstop does no work.
-const SPINE_CHECK_TICK_INTERVAL: u64 = 5;
+const SPINE_CHECK_TICK_INTERVAL: u32 = 5;
 
 /// Every ~40 ticks (~2s), run an unconditional spine fingerprint comparison so
 /// mutations that do not bump `mutation_version` are still published.
@@ -463,7 +671,7 @@ const SPINE_BACKSTOP_TICK_INTERVAL: u32 = 40;
 /// iteration: `Continue` runs another tick, `Exit` returns the engine to the caller.
 /// The flip's status screen drives this; the dedicated-thread path always answers
 /// `Continue` and exits only on the `Shutdown` request.
-pub enum LoopControl {
+pub(crate) enum LoopControl {
     Continue,
     Exit,
 }
@@ -531,37 +739,121 @@ fn take_apply_reloaded_config(reaction: EventReaction) -> Option<Box<yaran_core:
     }
 }
 
+/// What a `ConfigAdopted` reaction (bare or inside a `Multi`) carries: the
+/// config it replaced, whether the GitHub integration was on before, and what
+/// failed.
+fn find_config_adopted(
+    reaction: &EventReaction,
+) -> Option<(yaran_core::config::Config, bool, String)> {
+    match reaction {
+        EventReaction::ConfigAdopted {
+            before,
+            github_was_enabled,
+            error,
+        } => Some(((**before).clone(), *github_was_enabled, error.clone())),
+        EventReaction::Multi(reactions) => reactions.iter().find_map(find_config_adopted),
+        _ => None,
+    }
+}
+
+/// The reason a refused reload carries, whether the reaction is bare or inside
+/// a `Multi`.
+fn find_config_reload_refused(reaction: &EventReaction) -> Option<&str> {
+    match reaction {
+        EventReaction::OpenConfigReloadFailedModal(message) => Some(message),
+        EventReaction::Multi(reactions) => reactions.iter().find_map(find_config_reload_refused),
+        _ => None,
+    }
+}
+
+/// Which way of serving a reload arrived at, because each owes a different set of
+/// restart sentences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServeSurface {
+    /// `yaran server`: the only one whose console reads `[server] color`.
+    YaranServer,
+    /// The `start-web-server` flip: the only one with a log viewer, sized from
+    /// `log_viewer_lines` when it starts.
+    Flip,
+    /// The background server beside the terminal UI.
+    Background,
+}
+
 /// The warning a reload owes the user about `[server]` settings it could not make
-/// live, or `None` when nothing startup-bound moved. Two independent sentences,
-/// because the two sets are read at different moments. `background` picks the bind
-/// sentence's remedy; the console sentence never takes it, because only
-/// `yaran server` builds a console.
+/// live, or `None` when nothing startup-bound moved. Independent sentences,
+/// because the sets are read at different moments. The background server's bind
+/// sentence names its own remedy. The console sentence names `yaran server`, which
+/// alone prints the console to a terminal. The log viewer sentence is the
+/// flip's alone: anywhere else the next flip reads the new value anyway.
 fn server_restart_warning_copy(
     prev: &yaran_core::config::ServerConfig,
     next: &yaran_core::config::ServerConfig,
-    background: bool,
-) -> Option<String> {
-    let mut sentences: Vec<&str> = Vec::new();
-    if server_bind_settings_changed(prev, next) {
+    surface: ServeSurface,
+) -> Option<StatusText> {
+    let background = surface == ServeSurface::Background;
+    let mut sentences: Vec<StatusText> = Vec::new();
+    let bind_names = server_bind_setting_names(prev, next);
+    if !bind_names.is_empty() {
         sentences.push(
-            "Server settings changed in config that are read only when a listener binds; \
-             restart the server to apply them.",
+            format!(
+                "Server settings changed in config that are read only when a listener binds \
+                 ({}); restart the server to apply them.",
+                bind_names.join(", ")
+            )
+            .into(),
         );
         if background {
-            sentences
-                .push("With the background server, stopping and starting it again is the restart.");
+            sentences.push(
+                "With the background server, stopping and starting it again is the restart.".into(),
+            );
         }
     }
-    if server_console_settings_changed(prev, next) {
+    if prev.color != next.color {
+        sentences.push(yaran_core::status_text![
+            "The [server] color setting changed; the console that reads it is built by ",
+            q("yaran server"),
+            ", so it applies the next time you start ",
+            q("yaran server"),
+            "."
+        ]);
+    }
+    if let Some(sentence) = yaran_core::control_socket::moved_warning(prev, next) {
+        sentences.push(sentence.into());
+    }
+    if surface == ServeSurface::Flip && server_log_viewer_settings_changed(prev, next) {
         sentences.push(
-            "The [server] color setting changed; the console that reads it is built by \
-             `yaran server`, so it applies the next time you start `yaran server`.",
+            "The [server] log_viewer_lines setting changed; the log viewer is sized when \
+             start-web-server starts, so it applies the next time you run it."
+                .into(),
         );
     }
-    match sentences.is_empty() {
-        true => None,
-        false => Some(sentences.join(" ")),
+    if server_log_file_settings_changed(prev, next) {
+        let changed = server_log_file_setting_names(prev, next);
+        sentences.push(
+            format!(
+                "The [server] {} setting changed; server.log is opened when a server starts, \
+                 so it applies the next time one starts.",
+                changed.join(", ")
+            )
+            .into(),
+        );
     }
+    // Not in background mode: that serve never draws QR codes.
+    if prev.qr_codes != next.qr_codes && !background {
+        sentences.push(yaran_core::status_text![
+            "The [server] qr_codes setting changed; it is read when ",
+            q("yaran server"),
+            " or the start-web-server flip starts serving, so it applies the next time one of \
+             them starts."
+        ]);
+    }
+    let mut sentences = sentences.into_iter();
+    let mut joined = sentences.next()?;
+    for sentence in sentences {
+        joined.push(" ");
+        joined.push(sentence);
+    }
+    Some(joined)
 }
 
 /// Bound on the engine request channel: a burst buffer, not a steady-state queue,
@@ -591,38 +883,66 @@ pub struct LiveServerLimits {
     access_log: AtomicBool,
     pty_send_timeout_seconds: AtomicUsize,
     heartbeat_deadline_seconds: AtomicUsize,
+    /// `[server] presence_grace_seconds`, read as each terminal socket closes.
+    presence_grace_seconds: std::sync::atomic::AtomicU64,
+    /// `[server] allowed_hosts`, which the Host guard reads per request, so a
+    /// reload that edits the list applies to the running listener.
+    allowed_hosts: crate::host_guard::LiveHostNames,
+    /// `[server.auth]`, which the auth layer reads per request. Every reload
+    /// path adopts it here (see [`Self::store_from`]), so the password, the
+    /// blocklist and every limit apply to the running server with no restart.
+    auth: Arc<crate::auth::LiveAuth>,
 }
 
 impl LiveServerLimits {
+    /// The live `[server.auth]` section. Shared, not copied.
+    pub fn auth(&self) -> Arc<crate::auth::LiveAuth> {
+        Arc::clone(&self.auth)
+    }
+
+    /// The Host guard's configured-hosts set. Shared, not copied: the guard
+    /// holds this same set and sees every later [`Self::set_allowed_hosts`].
+    pub fn allowed_hosts(&self) -> crate::host_guard::LiveHostNames {
+        self.allowed_hosts.clone()
+    }
+
+    pub(crate) fn set_allowed_hosts(&self, hosts: &[String]) {
+        self.allowed_hosts.replace(hosts);
+    }
+
     /// Cap on the editor's file-search flat walk. `0` disables the cap.
     pub fn search_index_max_files(&self) -> usize {
         self.search_index_max_files.load(Ordering::Relaxed)
     }
 
+    /// Replace the cap on the editor's file-search flat walk; `0` disables it.
     pub fn set_search_index_max_files(&self, value: usize) {
         self.search_index_max_files.store(value, Ordering::Relaxed);
     }
 
-    /// Whether the per-request access log is on. The middleware still requires an
-    /// active console, so the flip and the noop-console paths emit nothing.
+    /// Whether the per-request access log is on. The middleware still requires a
+    /// console that records (`yaran server`'s or the flip's), so a noop console
+    /// emits nothing.
     pub fn access_log(&self) -> bool {
         self.access_log.load(Ordering::Relaxed)
     }
 
-    pub fn set_access_log(&self, value: bool) {
-        self.access_log.store(value, Ordering::Relaxed);
+    pub(crate) fn set_access_log(&self, value: crate::server::AccessLog) {
+        self.access_log
+            .store(value == crate::server::AccessLog::On, Ordering::Relaxed);
     }
 
     /// Deadline on one of a PTY socket's opening sends, in seconds, read when a
     /// socket opens so a reload applies to the next connection rather than to the
-    /// ones already attached. `0` means not seeded yet and the caller falls back to
-    /// the compiled default, because no bound at all is the one answer this must
-    /// never give.
+    /// ones already attached. Stored as yaran uses it (see
+    /// `config_effective::effective_pty_send_timeout_seconds`), so `0` only ever
+    /// means not seeded yet, and the caller falls back to the compiled default,
+    /// because no bound at all is the one answer this must never give.
     pub fn pty_send_timeout_seconds(&self) -> usize {
         self.pty_send_timeout_seconds.load(Ordering::Relaxed)
     }
 
-    pub fn set_pty_send_timeout_seconds(&self, value: usize) {
+    pub(crate) fn set_pty_send_timeout_seconds(&self, value: usize) {
         self.pty_send_timeout_seconds
             .store(value, Ordering::Relaxed);
     }
@@ -630,23 +950,55 @@ impl LiveServerLimits {
     /// How long a browser waits for the server's answer to one beat before treating
     /// the socket as half-open and reconnecting. Nothing on the server times itself
     /// by this; it is read so a send that answers a beat cannot outlive the window
-    /// the client waits in. `0` means not seeded yet, and the caller falls back to
-    /// the compiled default.
+    /// the client waits in. Stored as the browser uses it (see
+    /// `config_effective::effective_heartbeat_deadline_seconds`), so `0` only ever
+    /// means not seeded yet, and the caller falls back to the compiled default.
     pub fn heartbeat_deadline_seconds(&self) -> usize {
         self.heartbeat_deadline_seconds.load(Ordering::Relaxed)
     }
 
-    pub fn set_heartbeat_deadline_seconds(&self, value: usize) {
+    pub(crate) fn set_heartbeat_deadline_seconds(&self, value: usize) {
         self.heartbeat_deadline_seconds
             .store(value, Ordering::Relaxed);
     }
 
-    /// Adopt every value from a reloaded `[server]` section.
-    pub fn store_from(&self, server: &yaran_core::config::ServerConfig) {
+    /// How long a browser tab keeps counting as attached to a terminal it was
+    /// looking at after that terminal's socket closed.
+    pub fn presence_grace(&self) -> Duration {
+        Duration::from_secs(self.presence_grace_seconds.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn set_presence_grace_seconds(&self, value: u64) {
+        self.presence_grace_seconds.store(value, Ordering::Relaxed);
+    }
+
+    /// Adopt every value from a reloaded `[server]` section. `source` is the
+    /// text it was read from, when there is one (see [`crate::auth::LiveAuth::store`]).
+    pub fn store_from(&self, server: &yaran_core::config::ServerConfig, source: Option<&str>) {
         self.set_search_index_max_files(server.search_index_max_files);
-        self.set_access_log(server.access_log);
-        self.set_pty_send_timeout_seconds(server.pty_send_timeout_seconds as usize);
-        self.set_heartbeat_deadline_seconds(server.heartbeat_deadline_seconds as usize);
+        self.set_access_log(crate::server::AccessLog::of(server));
+        // As yaran uses them, through the functions `yaran config get` reports. A
+        // `u32` always fits a `usize` on the 64-bit targets yaran supports.
+        self.set_pty_send_timeout_seconds(
+            usize::try_from(
+                yaran_core::config_effective::effective_pty_send_timeout_seconds(
+                    server.pty_send_timeout_seconds,
+                ),
+            )
+            .unwrap_or(usize::MAX),
+        );
+        self.set_heartbeat_deadline_seconds(
+            usize::try_from(
+                yaran_core::config_effective::effective_heartbeat_deadline_seconds(
+                    server.heartbeat_deadline_seconds,
+                    server.heartbeat_seconds,
+                ),
+            )
+            .unwrap_or(usize::MAX),
+        );
+        self.set_presence_grace_seconds(server.presence_grace_seconds);
+        self.set_allowed_hosts(&server.allowed_hosts);
+        self.auth.store(&server.auth, source);
     }
 }
 
@@ -693,9 +1045,18 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
     // handlers write claims into it and the loop's spine check reads them back
     // out to publish the owner per agent tab.
     let pty_input_owners = Arc::new(PtySizeOwners::default());
+    // Driving or watching is read from this serve's ownership record.
+    engine.attachments.use_owners(Arc::clone(&pty_input_owners));
     // Built here for the same reason as `pty_input_owners`: the loop starts
     // before the router exists, so both sides have to be handed the same Arc.
     let live_limits = Arc::new(LiveServerLimits::default());
+    live_limits.set_presence_grace_seconds(engine.config.server.presence_grace_seconds);
+    // The password and the rest of `[server.auth]` hold from the first request,
+    // before any router seeds the other limits.
+    live_limits.auth().store(
+        &engine.config.server.auth,
+        engine.config.source_text.as_str(),
+    );
     // Filled by the serve path once its loop exists, which is after the actor is
     // already running on `yaran server`. A `OnceLock` rather than a constructor
     // argument for exactly that reason; empty means nothing is serving, which is
@@ -706,6 +1067,15 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
     (
         EngineHandle {
             req_tx,
+            instance_id: match engine.session_store.instance_id() {
+                Ok(id) => Some(Arc::from(id)),
+                Err(error) => {
+                    yaran_core::logger::warn(&format!(
+                        "could not read this yaran's instance id from its database: {error:#}"
+                    ));
+                    None
+                }
+            },
             status_tx: status_tx.clone(),
             status_clear_tx: status_clear_tx.clone(),
             status_snapshot_rx,
@@ -719,6 +1089,12 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
             live_limits: Arc::clone(&live_limits),
             tailscale_mode_control: Arc::clone(&tailscale_mode_control),
             cloud_mode_control: Arc::clone(&cloud_mode_control),
+            paths: Arc::new(engine.paths.clone()),
+            reload_surface: engine.surface.start_surface(),
+            admission: process_admission(engine),
+            worktree_ops: engine.worktree_ops().clone(),
+            operations: engine.operations.clone(),
+            attachments: engine.attachments.clone(),
             #[cfg(test)]
             refresh_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
         },
@@ -738,6 +1114,19 @@ pub(crate) fn build_actor_channels(engine: &Engine) -> (EngineHandle, ActorLoopE
             cloud_mode_control,
         },
     )
+}
+
+/// The address admission `engine` keeps for its whole life, made the first
+/// time a serve asks for it.
+fn process_admission(engine: &Engine) -> Arc<crate::auth::admission::Admission> {
+    let held = engine.serve_memory.get_or_init(|| {
+        let admission: Arc<dyn std::any::Any + Send + Sync> =
+            Arc::new(crate::auth::admission::Admission::default());
+        admission
+    });
+    Arc::clone(held)
+        .downcast::<crate::auth::admission::Admission>()
+        .unwrap_or_default()
 }
 
 /// Spawn the four global background workers on `engine`. Both `App::run` (the
@@ -774,9 +1163,80 @@ struct PendingSubscribe {
     deadline: Instant,
 }
 
+/// Why a project setting a browser asked for was not wholly saved, in the
+/// sentence the browser shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProjectSaveFailure {
+    /// Nothing changed: the change was refused before it reached the worker,
+    /// or the session database could not be written.
+    NotSaved(String),
+    /// The session database holds the change and memory follows it, but
+    /// `config.toml` could not be updated, so the change can revert the next
+    /// time yaran starts. Half done, and the browser says so until dismissed.
+    HalfSaved(String),
+    /// The engine stopped answering after the request was sent (its thread
+    /// went, or it dropped the reply), so the change may already be on the
+    /// worker: nobody can say whether it was saved.
+    NoAnswer,
+}
+
+/// A project setting saved on the project-persistence worker, whose route waits
+/// for the worker's completion, matched by the id the dispatch handed out. The
+/// reply is held until that completion is drained and `config.toml` mirrors it,
+/// as [`PendingSubscribe`] holds a subscribe until its launch reports back. No
+/// deadline of its own: the worker always reports back, a panic and a thread
+/// that never started included, and a change a config reload holds back is
+/// saved, and reported, when the reload lands.
+struct PendingProjectSave {
+    reply: oneshot::Sender<Result<(), ProjectSaveFailure>>,
+}
+
+/// The setting a project change saves and the project it belongs to, for the
+/// sentences a browser is answered with; `None` for an add or a removal.
+fn project_setting_named(
+    action: &yaran_core::worker::ProjectPersistenceAction,
+) -> Option<(&'static str, &str)> {
+    use yaran_core::worker::ProjectPersistenceAction as Action;
+    match action {
+        Action::UpdateDefaultProvider { project_name, .. } => {
+            Some(("default provider", project_name))
+        }
+        Action::UpdateAutoReopen { project_name, .. } => {
+            Some(("auto-reopen setting", project_name))
+        }
+        Action::UpdateStartupCommand { project_name, .. } => {
+            Some(("startup command", project_name))
+        }
+        Action::UpdateEnv { project_name, .. } => Some(("environment", project_name)),
+        Action::Add { .. } | Action::Remove { .. } | Action::Delete { .. } => None,
+    }
+}
+
+/// The caller-facing end of the engine actor: every route reaches the `!Send`
+/// engine through this cheap, cloneable handle, by request over a channel or
+/// through the registries it shares by handle.
 #[derive(Clone)]
 pub struct EngineHandle {
     req_tx: mpsc::Sender<EngineRequest>,
+    /// This yaran's instance id, read from its database when the handle is made
+    /// (see [`yaran_core::storage::SessionStore::instance_id`]). `None` when it
+    /// could not be read, which clients take as unknown. A consistency check
+    /// only: public and repeatable, so it never feeds an auth, trust,
+    /// ownership or ban decision.
+    instance_id: Option<Arc<str>>,
+    /// The engine's operation registry, shared by handle: a client polls a
+    /// record by id here, off the engine thread, while the engine and the
+    /// status emitter finish it.
+    operations: yaran_core::operations::Operations,
+    /// The engine's attachment registry, shared by handle: the terminal
+    /// sockets attach and detach here off the engine thread, and the engine
+    /// reserves against it before every change that would end a terminal.
+    attachments: yaran_core::attachments::Attachments,
+    /// The engine's per-worktree registry of operations in flight, shared by
+    /// handle: the editor, upload and git routes run off the engine thread and
+    /// still register the worktree they write into, so a removal waits for
+    /// them and refuses them once it has begun.
+    worktree_ops: yaran_core::worktree_ops::WorktreeOps,
     status_tx: broadcast::Sender<WireStatus>,
     status_clear_tx: broadcast::Sender<Option<String>>,
     status_snapshot_rx: watch::Receiver<Vec<KeyedWireStatus>>,
@@ -801,7 +1261,7 @@ pub struct EngineHandle {
     /// handle, mirroring `status_snapshot_rx`: a `watch` channel with no live
     /// receiver would make every publish a no-op, and connections come and go.
     workspace_rx: watch::Receiver<Option<Arc<WorkspaceDoc>>>,
-    /// Tripped when the server is tearing down (ReturnToTui, QuitProcess, or a
+    /// Tripped when the server is tearing down (`ReturnToTui`, `QuitProcess`, or a
     /// `Shutdown` request). PTY forwarders poll it so their blocking
     /// `recv_timeout` loop exits promptly even when the engine, and therefore
     /// the std-mpsc `Sender` in the `PtyClient` reader thread, stays alive
@@ -824,17 +1284,30 @@ pub struct EngineHandle {
     /// The `[server]` limits a reload can move on a bound listener, shared with
     /// the router the same way and for the same reason as `pty_input_owners`.
     live_limits: Arc<LiveServerLimits>,
-    /// Test-only tally of the worktrees [`Self::refresh_changed_files`] was asked
-    /// to recompute, newest last. That call is fire-and-forget into the actor
-    /// channel, so a route test has no other way to prove the request was made,
-    /// and "asked the engine to refresh" is exactly half of what a refresh-now
-    /// route must get right.
+    /// Where this engine's config and session database live, for the auth
+    /// layer's own writes (a password, a ban, the warning's dismissal) and its
+    /// stored sessions.
+    paths: Arc<yaran_core::config::YaranPaths>,
+    /// Which surface's start checks this engine's reload refuses a file by:
+    /// `yaran server`'s, or the terminal UI's for the flip and the background
+    /// server, which run on the terminal UI's engine.
+    reload_surface: yaran_core::config::Surface,
+    /// The web layer's address admission for this engine's whole life, so
+    /// every serve over it shares bans held in memory, failure counts and
+    /// waits (decided, after review: they belong to the yaran process, not to
+    /// one serve).
+    admission: Arc<crate::auth::admission::Admission>,
     /// The same slot as [`ActorLoopEnds::tailscale_mode_control`], so the serve
     /// path can hand the actor its live Tailscale-mode handle after the actor is
     /// already running (which it always is on `yaran server`).
     tailscale_mode_control: Arc<std::sync::OnceLock<crate::serve_legs::TailscaleModeControl>>,
     /// The serve's live `[cloud] mode` lane, filled like the Tailscale slot.
     cloud_mode_control: crate::cloud_mode::CloudControlSlot,
+    /// Test-only tally of the worktrees [`Self::refresh_changed_files`] was asked
+    /// to recompute, newest last. That call is fire-and-forget into the actor
+    /// channel, so a route test has no other way to prove the request was made,
+    /// and "asked the engine to refresh" is exactly half of what a refresh-now
+    /// route must get right.
     #[cfg(test)]
     refresh_requests: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -846,6 +1319,14 @@ const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<EngineHandle>();
 };
+
+impl std::fmt::Debug for EngineHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineHandle")
+            .field("instance_id", &self.instance_id)
+            .finish_non_exhaustive()
+    }
+}
 
 impl EngineHandle {
     /// Hand the actor this serve's live Tailscale-mode handle. Called once per
@@ -865,13 +1346,14 @@ impl EngineHandle {
     /// The teardown flag PTY forwarders poll. Cloned into each forwarder so a
     /// blocking `recv_timeout` loop can break within one timeout window once the
     /// server starts winding down, even though the underlying `PtyClient`'s
-    /// `Sender` outlives the flip (ReturnToTui keeps PTYs alive). The same flag
+    /// `Sender` outlives the flip (`ReturnToTui` keeps PTYs alive). The same flag
     /// is held loop-side ([`ActorLoopEnds`]) and by `serve_with_engine`, which
     /// trips it the instant the engine loop returns.
     pub(crate) fn shutdown_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.shutdown_flag)
     }
 
+    /// Subscribe to every status the engine broadcasts to browsers, from now on.
     pub fn subscribe_status(&self) -> broadcast::Receiver<WireStatus> {
         self.status_tx.subscribe()
     }
@@ -960,15 +1442,15 @@ impl EngineHandle {
         }
     }
 
-    /// The warning and the error raised while no browser was connected, taken
-    /// out of the controller in the same call. Asked once per joining
-    /// `/ws/events` connection; see [`EngineRequest::TakeLateStatusFinals`].
     /// The counter the events socket keeps up to date; see the field.
     pub(crate) fn events_watchers(&self) -> Arc<AtomicUsize> {
         Arc::clone(&self.events_watchers)
     }
 
-    pub async fn take_late_status_finals(&self) -> Vec<KeyedWireStatus> {
+    /// The warning and the error raised while no browser was connected, taken
+    /// out of the controller in the same call. Asked once per joining
+    /// `/ws/events` connection; see [`EngineRequest::TakeLateStatusFinals`].
+    pub(crate) async fn take_late_status_finals(&self) -> Vec<KeyedWireStatus> {
         let (tx, rx) = oneshot::channel();
         if self
             .req_tx
@@ -996,26 +1478,158 @@ impl EngineHandle {
         rx.await.unwrap_or(0)
     }
 
-    pub async fn apply_wire(&self, command: WireCommand) -> Result<WireCommandOutcome, String> {
+    pub(crate) async fn apply_wire(
+        &self,
+        command: WireCommand,
+    ) -> Result<WireCommandOutcome, String> {
         self.apply_wire_scoped(command, StatusScope::All).await
     }
 
+    /// Reload `config.toml` after yaran wrote it itself, without announcing it.
+    pub(crate) async fn reload_after_own_config_write(&self) -> Result<WireCommandOutcome, String> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::ReloadAfterOwnConfigWrite(tx))
+            .await
+            .map_err(|_| "engine thread gone".to_string())?;
+        rx.await
+            .map_err(|_| "engine reply dropped".to_string())?
+            .map_err(|e| e.message)
+    }
+
+    /// Save one project setting and answer once it is written: the session
+    /// database by the project-persistence worker, then memory and
+    /// `config.toml` on the engine thread. See
+    /// [`EngineRequest::SaveProjectSetting`].
+    pub(crate) async fn save_project_setting(
+        &self,
+        command: WireCommand,
+        origin: StatusScope,
+    ) -> Result<(), ProjectSaveFailure> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::SaveProjectSetting(command, origin, tx))
+            .await
+            .map_err(|_| ProjectSaveFailure::NoAnswer)?;
+        rx.await.map_err(|_| ProjectSaveFailure::NoAnswer)?
+    }
+
+    /// Like [`apply_wire_scoped`](Self::apply_wire_scoped), followed as an
+    /// operation of `kind`: answers the outcome and the id of the record a
+    /// client polls with [`Self::operations`].
+    pub(crate) async fn apply_wire_operation(
+        &self,
+        command: WireCommand,
+        origin: StatusScope,
+        kind: OperationKind,
+    ) -> Result<(WireCommandOutcome, OperationView), String> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::ApplyWire(
+                command,
+                tx,
+                origin,
+                Some(Followed {
+                    kind: Some(kind),
+                    answered: true,
+                    force_connected: false,
+                    accepted_connected: None,
+                    requester: None,
+                }),
+            ))
+            .await
+            .map_err(|_| "engine thread gone".to_string())?;
+        let outcome = rx
+            .await
+            .map_err(|_| "engine reply dropped".to_string())?
+            .map_err(|e| e.message)?;
+        let record = outcome
+            .operation
+            .clone()
+            .map(|record| *record)
+            .ok_or_else(|| MISSING_OPERATION_RECORD.to_string())?;
+        Ok((outcome, record))
+    }
+
+    /// Like [`apply_wire_scoped`](Self::apply_wire_scoped), with the same answer,
+    /// for a change a route records as an operation the client did not follow.
+    pub(crate) async fn apply_wire_recorded(
+        &self,
+        command: WireCommand,
+        origin: StatusScope,
+        kind: OperationKind,
+    ) -> Result<WireCommandOutcome, String> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::ApplyWire(
+                command,
+                tx,
+                origin,
+                Some(Followed {
+                    kind: Some(kind),
+                    answered: false,
+                    force_connected: false,
+                    accepted_connected: None,
+                    requester: None,
+                }),
+            ))
+            .await
+            .map_err(|_| "engine thread gone".to_string())?;
+        rx.await
+            .map_err(|_| "engine reply dropped".to_string())?
+            .map_err(|e| e.message)
+    }
+
+    /// A change that would end terminals somebody may be attached to, recorded
+    /// as an operation of `kind` (followed when `answered`). Refused with who is
+    /// attached unless `force_connected`; the record's view rides `outcome.operation`.
+    pub(crate) async fn apply_wire_guarded(
+        &self,
+        command: WireCommand,
+        origin: StatusScope,
+        followed: Followed,
+    ) -> Result<WireCommandOutcome, WireError> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::ApplyWire(
+                command,
+                tx,
+                origin,
+                Some(followed),
+            ))
+            .await
+            .map_err(|_| WireError::from("engine thread gone".to_string()))?;
+        rx.await
+            .map_err(|_| WireError::from("engine reply dropped".to_string()))?
+    }
+
+    /// Who is attached to which agent tab and terminal.
+    pub fn attachments(&self) -> &yaran_core::attachments::Attachments {
+        &self.attachments
+    }
+
+    /// The engine's operation registry.
+    pub fn operations(&self) -> &yaran_core::operations::Operations {
+        &self.operations
+    }
+
     /// Like [`apply_wire`](Self::apply_wire) but tags the command with the
-    /// originating connection's [`StatusScope`], so any statuses it mints (the
-    /// synchronous outcome, deferred busies/finals, worker busies) are delivered
-    /// only to that connection. `apply_wire` delegates here with
-    /// [`StatusScope::All`] (broadcast), so existing callers are unchanged.
-    pub async fn apply_wire_scoped(
+    /// originating connection's [`StatusScope`], so every status it mints (the
+    /// synchronous outcome, deferred busies and finals, worker busies) reaches
+    /// only that connection.
+    pub(crate) async fn apply_wire_scoped(
         &self,
         command: WireCommand,
         origin: StatusScope,
     ) -> Result<WireCommandOutcome, String> {
         let (tx, rx) = oneshot::channel();
         self.req_tx
-            .send(EngineRequest::ApplyWire(command, tx, origin))
+            .send(EngineRequest::ApplyWire(command, tx, origin, None))
             .await
             .map_err(|_| "engine thread gone".to_string())?;
-        rx.await.map_err(|_| "engine reply dropped".to_string())?
+        rx.await
+            .map_err(|_| "engine reply dropped".to_string())?
+            .map_err(|e| e.message)
     }
 
     /// Bump and return the next monotonic changed-files revision for `session_id`
@@ -1038,14 +1652,13 @@ impl EngineHandle {
             ));
             return 0;
         }
-        match rx.await {
-            Ok(rev) => rev,
-            Err(_) => {
-                yaran_core::logger::warn(&format!(
-                    "next_changes_rev for session {sid}: engine reply dropped; using rev 0 fallback"
-                ));
-                0
-            }
+        if let Ok(rev) = rx.await {
+            rev
+        } else {
+            yaran_core::logger::warn(&format!(
+                "next_changes_rev for session {sid}: engine reply dropped; using rev 0 fallback"
+            ));
+            0
         }
     }
 
@@ -1057,16 +1670,20 @@ impl EngineHandle {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub async fn subscribe_pty(&self, session_id: String) -> Result<PtySubscription, String> {
+    pub(crate) async fn subscribe_pty(
+        &self,
+        session_id: String,
+        viewed: PaneVisibility,
+    ) -> Result<PtySubscription, String> {
         let (tx, rx) = oneshot::channel();
         self.req_tx
-            .send(EngineRequest::SubscribePty(session_id, tx))
+            .send(EngineRequest::SubscribePty(session_id, viewed, tx))
             .await
             .map_err(|_| "engine thread gone".to_string())?;
         rx.await.map_err(|_| "engine reply dropped".to_string())?
     }
 
-    pub fn write_pty(&self, session_id: String, bytes: Vec<u8>) {
+    pub(crate) fn write_pty(&self, session_id: String, bytes: Vec<u8>) {
         // `try_send`: keystrokes are fire-and-forget from a sync caller. A full
         // channel means the producer is flooding far past the engine's drain
         // rate; shedding the write then is the intended overload behaviour (the
@@ -1099,14 +1716,23 @@ impl EngineHandle {
         rx.await.ok().flatten()
     }
 
-    pub fn note_viewed(&self, pty_id: String) {
+    /// A pane mounted off screen has come on screen. `try_send`: like a viewed
+    /// ping it is a hint, and the next coming on screen sends another.
+    pub(crate) fn pty_shown(&self, pty_id: String) {
+        let _ = self.req_tx.try_send(EngineRequest::PtyShown(pty_id));
+    }
+
+    pub(crate) fn note_viewed(&self, pty_id: String) {
         // `try_send`: a viewed ping is a periodic best-effort hint. Dropping one
         // under overload is harmless: the next ping (every ~2s while the tab is
         // foregrounded) re-stamps the engagement window.
         let _ = self.req_tx.try_send(EngineRequest::NoteViewed(pty_id));
     }
 
-    pub async fn subscribe_terminal(&self, terminal_id: String) -> Result<PtySubscription, String> {
+    pub(crate) async fn subscribe_terminal(
+        &self,
+        terminal_id: String,
+    ) -> Result<PtySubscription, String> {
         let (tx, rx) = oneshot::channel();
         self.req_tx
             .send(EngineRequest::SubscribeTerminal(terminal_id, tx))
@@ -1115,10 +1741,14 @@ impl EngineHandle {
         rx.await.map_err(|_| "engine reply dropped".to_string())?
     }
 
-    pub async fn create_terminal(&self, session_id: String) -> Result<(String, String), String> {
+    pub(crate) async fn create_terminal(
+        &self,
+        session_id: String,
+        ticket: Option<OperationTicket>,
+    ) -> Result<(String, String), String> {
         let (tx, rx) = oneshot::channel();
         self.req_tx
-            .send(EngineRequest::CreateTerminal(session_id, tx))
+            .send(EngineRequest::CreateTerminal(session_id, ticket, tx))
             .await
             .map_err(|_| "engine thread gone".to_string())?;
         rx.await.map_err(|_| "engine reply dropped".to_string())?
@@ -1127,13 +1757,14 @@ impl EngineHandle {
     /// Create a project terminal (a plain shell at the project's repo root with
     /// no agent attached), replying `(terminal_id, label)`. Mirrors
     /// `create_terminal`.
-    pub async fn create_project_terminal(
+    pub(crate) async fn create_project_terminal(
         &self,
         project_id: String,
+        ticket: Option<OperationTicket>,
     ) -> Result<(String, String), String> {
         let (tx, rx) = oneshot::channel();
         self.req_tx
-            .send(EngineRequest::CreateProjectTerminal(project_id, tx))
+            .send(EngineRequest::CreateProjectTerminal(project_id, ticket, tx))
             .await
             .map_err(|_| "engine thread gone".to_string())?;
         rx.await.map_err(|_| "engine reply dropped".to_string())?
@@ -1142,10 +1773,13 @@ impl EngineHandle {
     /// Create a standalone terminal (a plain shell in the user's home directory
     /// owned by nothing), replying `(terminal_id, label)`. Takes no owner id,
     /// which is the whole point of the kind.
-    pub async fn create_standalone_terminal(&self) -> Result<(String, String), String> {
+    pub(crate) async fn create_standalone_terminal(
+        &self,
+        ticket: Option<OperationTicket>,
+    ) -> Result<(String, String), String> {
         let (tx, rx) = oneshot::channel();
         self.req_tx
-            .send(EngineRequest::CreateStandaloneTerminal(tx))
+            .send(EngineRequest::CreateStandaloneTerminal(ticket, tx))
             .await
             .map_err(|_| "engine thread gone".to_string())?;
         rx.await.map_err(|_| "engine reply dropped".to_string())?
@@ -1153,14 +1787,17 @@ impl EngineHandle {
 
     /// Create an extra tab for `session_id` (provider `None` → project default),
     /// replying `(tab_id, provider)`. Direct-return, mirroring `create_terminal`.
-    pub async fn create_agent_tab(
+    pub(crate) async fn create_agent_tab(
         &self,
         session_id: String,
         provider: Option<String>,
+        ticket: Option<OperationTicket>,
     ) -> Result<(String, String), String> {
         let (tx, rx) = oneshot::channel();
         self.req_tx
-            .send(EngineRequest::CreateAgentTab(session_id, provider, tx))
+            .send(EngineRequest::CreateAgentTab(
+                session_id, provider, ticket, tx,
+            ))
             .await
             .map_err(|_| "engine thread gone".to_string())?;
         rx.await.map_err(|_| "engine reply dropped".to_string())?
@@ -1169,10 +1806,14 @@ impl EngineHandle {
     /// Start dormant tab `tab_id` explicitly (the "Start session" press). See
     /// [`EngineRequest::StartAgentTab`] for why this exists alongside the
     /// subscribe-launch path.
-    pub async fn start_agent_tab(&self, tab_id: String) -> Result<(), String> {
+    pub(crate) async fn start_agent_tab(
+        &self,
+        tab_id: String,
+        ticket: Option<OperationTicket>,
+    ) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.req_tx
-            .send(EngineRequest::StartAgentTab(tab_id, tx))
+            .send(EngineRequest::StartAgentTab(tab_id, ticket, tx))
             .await
             .map_err(|_| "engine thread gone".to_string())?;
         rx.await.map_err(|_| "engine reply dropped".to_string())?
@@ -1369,14 +2010,33 @@ impl EngineHandle {
 
     /// See [`EngineRequest::NoteChangedFilesOutcome`]. Fire and forget: the
     /// status it may produce travels the engine's worker lane, not this call.
-    pub async fn note_changed_files_outcome(&self, session_id: String, failure: Option<String>) {
+    pub async fn note_changed_files_outcome(
+        &self,
+        session_id: String,
+        outcome: yaran_core::changes_status::ReadOutcome,
+    ) {
         let _ = self
             .req_tx
-            .send(EngineRequest::NoteChangedFilesOutcome(session_id, failure))
+            .send(EngineRequest::NoteChangedFilesOutcome(session_id, outcome))
             .await;
     }
 
-    pub async fn session_git_access(
+    /// See [`EngineRequest::RecordOfferedBranches`]. Fire and forget.
+    pub async fn record_offered_branches(
+        &self,
+        session_id: String,
+        names: Vec<yaran_core::branch_history::SeenBranch>,
+    ) {
+        if names.is_empty() {
+            return;
+        }
+        let _ = self
+            .req_tx
+            .send(EngineRequest::RecordOfferedBranches(session_id, names))
+            .await;
+    }
+
+    pub(crate) async fn session_git_access(
         &self,
         session_id: String,
     ) -> Option<yaran_core::engine::SessionGitAccess> {
@@ -1406,6 +2066,20 @@ impl EngineHandle {
         rx.await.unwrap_or(None)
     }
 
+    /// See [`EngineRequest::RenamePushedProbe`].
+    pub async fn rename_pushed_probe(&self, session_id: String) -> Option<(String, String)> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .req_tx
+            .send(EngineRequest::RenamePushedProbe(session_id, tx))
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        rx.await.unwrap_or(None)
+    }
+
     /// See [`EngineRequest::SessionBranchDeleteInputs`].
     pub async fn session_branch_delete_inputs(
         &self,
@@ -1423,7 +2097,7 @@ impl EngineHandle {
         rx.await.unwrap_or(None)
     }
 
-    pub async fn session_worktree(&self, session_id: String) -> Option<String> {
+    pub(crate) async fn session_worktree(&self, session_id: String) -> Option<String> {
         let (tx, rx) = oneshot::channel();
         if self
             .req_tx
@@ -1535,20 +2209,33 @@ impl EngineHandle {
         rx.await.ok()
     }
 
-    /// Manually attach (pin) a pull request to a session from the raw typed
-    /// reference. Returns the keyed status op id the REST handler echoes in its
-    /// `202` body; the outcome rides the status toast stream. A synchronous
-    /// refusal (gh unavailable, empty reference, unknown session) is `Err` with
-    /// the engine's message.
-    pub async fn attach_pull_request(
+    /// Attach a pull request to a session from the raw typed reference.
+    /// Returns the operation record the attach is followed by, its id being
+    /// the keyed status op id; the outcome rides the status toast stream and
+    /// finishes the record. A synchronous refusal (gh unavailable, empty
+    /// reference, unknown session) is `Err` with the engine's message.
+    pub(crate) async fn attach_pull_request(
         &self,
         session_id: String,
         raw: String,
         scope: StatusScope,
-    ) -> Result<String, String> {
+    ) -> Result<OperationView, String> {
         let (tx, rx) = oneshot::channel();
         self.req_tx
             .send(EngineRequest::AttachPullRequest(session_id, raw, scope, tx))
+            .await
+            .map_err(|_| "engine thread gone".to_string())?;
+        rx.await.map_err(|_| "engine reply dropped".to_string())?
+    }
+
+    /// See [`EngineRequest::PullRequestBranches`].
+    pub(crate) async fn pull_request_branches(
+        &self,
+        session_id: String,
+    ) -> Result<yaran_core::viewmodel::PrBranchesView, String> {
+        let (tx, rx) = oneshot::channel();
+        self.req_tx
+            .send(EngineRequest::PullRequestBranches(session_id, tx))
             .await
             .map_err(|_| "engine thread gone".to_string())?;
         rx.await.map_err(|_| "engine reply dropped".to_string())?
@@ -1582,7 +2269,7 @@ impl EngineHandle {
     /// on its event bus. The document those events describe is pushed separately
     /// (see [`EngineHandle::workspace_docs`]); a client that cannot read the push
     /// refetches `/api/v1/workspace` on the event instead.
-    pub fn subscribe_spine_changes(&self) -> broadcast::Receiver<SpineChange> {
+    pub(crate) fn subscribe_spine_changes(&self) -> broadcast::Receiver<SpineChange> {
         self.spine_change_tx.subscribe()
     }
 
@@ -1596,8 +2283,34 @@ impl EngineHandle {
 
     /// The `[server]` limits a config reload can move without a restart. The
     /// router clones this into `AppState`; the actor stores each reload into it.
+    /// See the `worktree_ops` field.
+    pub fn worktree_ops(&self) -> &yaran_core::worktree_ops::WorktreeOps {
+        &self.worktree_ops
+    }
+
+    /// The `[server]` limits a reload changes while yaran serves. Shared, not copied.
     pub fn live_limits(&self) -> Arc<LiveServerLimits> {
         Arc::clone(&self.live_limits)
+    }
+
+    /// This yaran's instance id, `None` when it could not be read.
+    pub fn instance_id(&self) -> Option<&str> {
+        self.instance_id.as_deref()
+    }
+
+    /// Where this engine's config and session database live.
+    pub fn paths(&self) -> Arc<yaran_core::config::YaranPaths> {
+        Arc::clone(&self.paths)
+    }
+
+    /// Which surface's start checks this engine's reload refuses a file by.
+    pub fn reload_surface(&self) -> yaran_core::config::Surface {
+        self.reload_surface
+    }
+
+    /// This engine's (this yaran process's) address admission.
+    pub(crate) fn admission(&self) -> Arc<crate::auth::admission::Admission> {
+        Arc::clone(&self.admission)
     }
 
     /// The configured preferred editor name for the "open in editor" action
@@ -1649,7 +2362,7 @@ impl EngineHandle {
         #[cfg(test)]
         self.refresh_requests
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(worktree.clone());
         // `try_send`: a dropped refresh under overload self-heals, because the periodic
         // changed-files poller recomputes the lists on its next pass regardless.
@@ -1664,38 +2377,82 @@ impl EngineHandle {
     pub(crate) fn refresh_requests(&self) -> Vec<String> {
         self.refresh_requests
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
-    /// The registered-project inventory for the whole-worktree removal guard.
-    /// A dead engine reads as an error, so the caller refuses the removal.
-    pub async fn registered_project_paths(&self) -> Result<Vec<std::path::PathBuf>, String> {
-        let (tx, rx) = oneshot::channel();
+    /// See [`EngineRequest::AdmitManagerRemoval`].
+    pub async fn admit_manager_removal(
+        &self,
+        project_id: String,
+        path: std::path::PathBuf,
+        branch: yaran_core::worktree_manager::BranchRemoval,
+    ) -> Option<yaran_core::worktree_manager::RemovalAdmission> {
+        let (reply, rx) = oneshot::channel();
         if self
             .req_tx
-            .send(EngineRequest::RegisteredProjectPaths(tx))
+            .send(EngineRequest::AdmitManagerRemoval {
+                project_id,
+                path,
+                branch,
+                reply,
+            })
             .await
             .is_err()
         {
-            return Err("the engine is not running".to_string());
+            return None;
         }
-        rx.await
-            .unwrap_or_else(|_| Err("the engine is not running".to_string()))
+        rx.await.unwrap_or(None)
+    }
+
+    /// See [`EngineRequest::AdmitLeftoverRemoval`].
+    pub async fn admit_leftover_removal(
+        &self,
+        project_id: String,
+        path: std::path::PathBuf,
+        delete_branches: Vec<String>,
+    ) -> Option<yaran_core::leftover_folders::LeftoverAdmission> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .req_tx
+            .send(EngineRequest::AdmitLeftoverRemoval {
+                project_id,
+                path,
+                delete_branches,
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        rx.await.unwrap_or(None)
+    }
+
+    /// See [`EngineRequest::DestructiveCheck`]. `None` when the engine is gone.
+    pub async fn destructive_check(
+        &self,
+        path: std::path::PathBuf,
+    ) -> Option<yaran_core::engine::DestructiveCheck> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .req_tx
+            .send(EngineRequest::DestructiveCheck(path, reply))
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        rx.await.ok()
     }
 
     /// Snapshot the inputs to classify a project's managed worktrees (project,
     /// paths, sessions). Instant: the git classification runs off-thread in the
     /// caller. `None` when the project id is unknown.
-    #[allow(clippy::type_complexity)]
-    pub async fn project_worktree_inputs(
+    pub(crate) async fn project_worktree_inputs(
         &self,
         project_id: String,
-    ) -> Option<(
-        yaran_core::model::Project,
-        yaran_core::config::YaranPaths,
-        Vec<yaran_core::model::AgentSession>,
-    )> {
+    ) -> Option<ProjectWorktreeInputs> {
         let (tx, rx) = oneshot::channel();
         if self
             .req_tx
@@ -1708,16 +2465,29 @@ impl EngineHandle {
         rx.await.unwrap_or(None)
     }
 
-    /// The project list, host policy and gh-availability flag the pull-request
+    /// The refusal `command` would meet at admission now (see
+    /// [`EngineRequest::WireAdmissionRefusal`]); `None` when it would be
+    /// admitted or the engine thread is gone.
+    pub(crate) async fn wire_admission_refusal(&self, command: WireCommand) -> Option<String> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .req_tx
+            .send(EngineRequest::WireAdmissionRefusal(Box::new(command), tx))
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        rx.await.unwrap_or(None)
+    }
+
+    /// The project list, host policy, per-host git protocols, the program the
+    /// pull request lookup runs and the gh-availability flag the pull-request
     /// reference resolver needs. See
     /// [`EngineRequest::PullRequestResolutionInputs`].
-    pub async fn pull_request_resolution_inputs(
+    pub(crate) async fn pull_request_resolution_inputs(
         &self,
-    ) -> Option<(
-        Vec<yaran_core::model::Project>,
-        yaran_core::gh::GithubHostPolicy,
-        bool,
-    )> {
+    ) -> Option<PullRequestResolutionInputs> {
         let (tx, rx) = oneshot::channel();
         if self
             .req_tx
@@ -1774,7 +2544,7 @@ impl EngineHandle {
     /// render of the running config if the file is missing). `Err` on a read
     /// failure or a dead engine thread, so the editor never opens on blank
     /// content the user could save over their real config.
-    pub async fn read_raw_config(&self) -> Result<String, String> {
+    pub(crate) async fn read_raw_config(&self) -> Result<RawConfig, String> {
         let (tx, rx) = oneshot::channel();
         if self
             .req_tx
@@ -1788,26 +2558,38 @@ impl EngineHandle {
             .unwrap_or_else(|_| Err("the engine did not reply".to_string()))
     }
 
-    /// Validate and write raw `config.toml` text from the Monaco editor. Returns
-    /// `Err(message)` for invalid TOML, an IO failure, or a dead engine thread.
-    pub async fn write_raw_config(&self, content: String) -> Result<(), String> {
+    /// Validate and write raw `config.toml` text from the Monaco editor, over
+    /// the file the editor read: `token` is the one [`Self::read_raw_config`]
+    /// handed out. [`RawWriteError::Changed`] when the file moved since that
+    /// read; [`RawWriteError::Refused`] for no token, invalid TOML, a refused
+    /// change, an IO failure, or a dead engine thread.
+    pub(crate) async fn write_raw_config(
+        &self,
+        content: String,
+        token: Option<String>,
+    ) -> Result<(), RawWriteError> {
         let (tx, rx) = oneshot::channel();
         if self
             .req_tx
-            .send(EngineRequest::WriteRawConfig(content, tx))
+            .send(EngineRequest::WriteRawConfig(content, token, tx))
             .await
             .is_err()
         {
-            return Err("the engine is not available".to_string());
+            return Err(RawWriteError::Refused(
+                "the engine is not available".to_string(),
+            ));
         }
-        rx.await
-            .unwrap_or_else(|_| Err("the engine did not reply".to_string()))
+        rx.await.unwrap_or_else(|_| {
+            Err(RawWriteError::Refused(
+                "the engine did not reply".to_string(),
+            ))
+        })
     }
 
     /// Read the inputs `yaran_core::first_load::plan` needs. `None` when the engine
     /// thread is gone, in which case the caller shows no screen at all rather
     /// than guessing (and, critically, stamps nothing).
-    pub async fn first_load_inputs(&self) -> Option<FirstLoadInputs> {
+    pub(crate) async fn first_load_inputs(&self) -> Option<FirstLoadInputs> {
         let (tx, rx) = oneshot::channel();
         if self
             .req_tx
@@ -1822,7 +2604,7 @@ impl EngineHandle {
 
     /// Record `version` as seen. This is the write that makes a dismissal shared
     /// between the web UI and the TUI: one SQLite row, read by both.
-    pub async fn mark_version_seen(&self, version: String) -> Result<(), String> {
+    pub(crate) async fn mark_version_seen(&self, version: String) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         if self
             .req_tx
@@ -1840,26 +2622,17 @@ impl EngineHandle {
 /// Everything the first-load gate needs, read off the engine thread in one
 /// round-trip. See [`EngineRequest::FirstLoadInputs`].
 #[derive(Clone, Debug)]
-pub struct FirstLoadInputs {
+pub(crate) struct FirstLoadInputs {
     /// The version recorded in SQLite; `None` on a first ever launch.
-    pub last_seen: Option<String>,
+    pub(crate) last_seen: Option<String>,
     /// This build's display version (`"development"` for a non-release build).
-    pub running: String,
-    pub disable_welcome: bool,
-    pub disable_release_notes: bool,
+    pub(crate) running: String,
+    pub(crate) disable_welcome: bool,
+    pub(crate) disable_release_notes: bool,
     /// The yaran state directory, where the release-notes cache file lives.
-    pub state_root: std::path::PathBuf,
+    pub(crate) state_root: std::path::PathBuf,
 }
 
-/// Spawn the engine thread. Returns a handle and the thread's join handle.
-///
-/// This is the dedicated-thread server path (`yaran server`): the engine lives on
-/// its own std thread for its whole life. The channel setup, worker spawns, and
-/// loop body are shared with the in-process flip ([`crate::serve_with_engine`])
-/// via [`build_actor_channels`], [`spawn_global_workers`], and
-/// [`run_engine_loop`]. This path simply runs the loop on a spawned thread and
-/// drops the returned engine. The control closure always returns `Continue`, so
-/// the loop's only exit is the inline `Shutdown` request, exactly as before.
 /// Relaunch agents with auto-reopen intent, once, at server startup. The
 /// headless counterpart of the TUI's `auto_reopen_eligible_sessions`: the
 /// ELIGIBILITY rule is core-owned (`Engine::auto_reopen_candidates`, the same
@@ -1907,8 +2680,7 @@ fn count_startup_launches(reactions: Vec<EventReaction>) -> usize {
                 let message = view
                     .status
                     .as_ref()
-                    .map(|s| s.message.clone())
-                    .unwrap_or_else(|| "launch refused".to_string());
+                    .map_or_else(|| "launch refused".to_string(), |s| s.message.clone());
                 yaran_core::logger::info(&format!(
                     "Auto-reopen skipped for {}: {message}",
                     view.session_id
@@ -1920,7 +2692,30 @@ fn count_startup_launches(reactions: Vec<EventReaction>) -> usize {
     launched
 }
 
-pub fn spawn_engine_thread(mut engine: Engine) -> (EngineHandle, JoinHandle<()>) {
+/// Spawn the engine thread. Returns a handle and the thread's join handle.
+///
+/// This is the dedicated-thread server path (`yaran server`): the engine lives on
+/// its own std thread for its whole life. The channel setup, worker spawns, and
+/// loop body are shared with the in-process flip ([`crate::serve_with_engine`])
+/// via [`build_actor_channels`], [`spawn_global_workers`], and
+/// [`run_engine_loop`]. This path simply runs the loop on a spawned thread and
+/// drops the returned engine. The control closure always returns `Continue`, so
+/// the loop's only exit is the inline `Shutdown` request, exactly as before.
+pub fn spawn_engine_thread(engine: Engine) -> (EngineHandle, JoinHandle<()>) {
+    spawn_engine_thread_with_console(
+        engine,
+        crate::console::Console::noop(),
+        Arc::new(crate::QuitForce::default()),
+    )
+}
+
+/// [`spawn_engine_thread`] for `yaran server`, whose shutdown progress prints on
+/// its console as timestamped lines, the same lines the flip's viewer shows.
+pub(crate) fn spawn_engine_thread_with_console(
+    mut engine: Engine,
+    console: crate::console::Console,
+    quit: Arc<crate::QuitForce>,
+) -> (EngineHandle, JoinHandle<()>) {
     let (handle, ends) = build_actor_channels(&engine);
     spawn_global_workers(&mut engine);
     // Startup auto-reopen: dispatched before the loop starts so the loop's very
@@ -1931,7 +2726,14 @@ pub fn spawn_engine_thread(mut engine: Engine) -> (EngineHandle, JoinHandle<()>)
         // The dedicated thread never asks the loop to exit; the loop stops only
         // on the `Shutdown` request handled inline. The returned engine is
         // dropped here (thread end), exactly as the previous implementation did.
-        let _engine = run_engine_loop(engine, ends, ShutdownEcho::Stderr, || LoopControl::Continue);
+        let surface = ServeSurface::YaranServer;
+        let _engine = run_engine_loop(
+            engine,
+            ends,
+            ShutdownEcho::Console(console, quit),
+            surface,
+            || LoopControl::Continue,
+        );
     });
 
     (handle, join)
@@ -1963,20 +2765,27 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         // `launch_agent`), which flips the session live, and it also spawns a PR
         // check and stamps the viewed/attention state.
         EngineRequest::ApplyWire(..)
+        | EngineRequest::ReloadAfterOwnConfigWrite(..)
+        // Hands a project change to a worker; its completion moves the spine
+        // again when it is drained.
+        | EngineRequest::SaveProjectSetting(..)
         | EngineRequest::SubscribePty(..)
+        // Clears attention and starts a pull-request check, as a subscribe
+        // from a pane on screen does.
+        | EngineRequest::PtyShown(..)
         | EngineRequest::CreateTerminal(..)
         | EngineRequest::CreateProjectTerminal(..)
         | EngineRequest::CreateStandaloneTerminal(..)
         | EngineRequest::CreateAgentTab(..)
         // Starting a dormant tab dispatches a launch and clears its recorded
         // failure, both of which the spine publishes.
-        | EngineRequest::StartAgentTab(..) => true,
+        | EngineRequest::StartAgentTab(..)
 
         // The attach dispatch itself only mints a pending status op and spawns
         // the lookup worker, but the worker's result lands as an engine event
         // that pins the PR onto the session view (`SessionView.pr`), so lean
         // `true` per the asymmetry note above.
-        EngineRequest::AttachPullRequest(..) => true,
+        | EngineRequest::AttachPullRequest(..)
 
         // Writers of the per-tab activity/attention state that the spine
         // projects. `WritePty` calls `note_pty_input`, which is what lights the
@@ -1985,13 +2794,13 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         // `needs_attention`. Both are also observed by the per-tick
         // `poll_attention_transitions` / streaming polls, so answering `true`
         // here mostly makes the same-tick case prompt rather than next-tick.
-        EngineRequest::WritePty(..) | EngineRequest::NoteViewed(..) => true,
+        | EngineRequest::WritePty(..) | EngineRequest::NoteViewed(..)
 
         // Tears down every PTY and marks the agent sessions Detached, so it is a
         // mutator by any reading. Handled inline in the loop, which then breaks
         // out, so this answer is never actually consulted; it is stated
         // truthfully rather than left as a convenient `false`.
-        EngineRequest::Shutdown(..) => true,
+        | EngineRequest::Shutdown(..) => true,
 
         // Pure projections and instant clones off engine state: `Spine`,
         // `Session`, `Bootstrap`, `ResourceTargets` and `CreatedSessionForOp`
@@ -2002,18 +2811,20 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         | EngineRequest::Session(..)
         | EngineRequest::Bootstrap(..)
         | EngineRequest::ResourceTargets(..)
-        | EngineRequest::CreatedSessionForOp(..) => false,
+        | EngineRequest::CreatedSessionForOp(..)
 
         // Lookups: each arm is an `iter().find()` or a `HashMap::get` followed by
         // a clone of what it found (worktree path, repo root, terminal owner, tab
         // owner, project/session log context, worktree inputs). Read-only by
         // construction.
-        EngineRequest::TerminalOwnerOf(..)
+        | EngineRequest::TerminalOwnerOf(..)
         | EngineRequest::TerminalRoot(..)
         | EngineRequest::TabSession(..)
         | EngineRequest::SlotTabId(..)
         | EngineRequest::SessionWorktree(..)
         | EngineRequest::SessionBranchDeleteInputs(..)
+        | EngineRequest::PullRequestBranches(..)
+        | EngineRequest::RenamePushedProbe(..)
         | EngineRequest::SessionGitAccess(..)
         | EngineRequest::SessionMissingDirectoryReason(..)
         | EngineRequest::PtyKeyForPaneId(..)
@@ -2022,34 +2833,39 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         | EngineRequest::FileDropRefreshTarget(..)
         | EngineRequest::ProjectPath(..)
         | EngineRequest::ProjectWorktreeInputs(..)
-        | EngineRequest::RegisteredProjectPaths(..)
+        | EngineRequest::WireAdmissionRefusal(..)
+        // Announces a removal in the worktree registry; no spine row changes
+        // until the removal finishes and the listing is asked again.
+        | EngineRequest::AdmitManagerRemoval { .. }
+        | EngineRequest::AdmitLeftoverRemoval { .. }
+        | EngineRequest::DestructiveCheck(..)
         | EngineRequest::SessionStartupLogContext(..)
         | EngineRequest::ProjectStartupLogContext(..)
         | EngineRequest::EditorDefault(..)
         | EngineRequest::CloudInputs(..)
-        | EngineRequest::BrowseStartDir(..) => false,
+        | EngineRequest::BrowseStartDir(..)
 
         // Attach to an ALREADY-RUNNING PTY, or push bytes at one. Deliberately
         // distinct from `SubscribePty`: `SubscribeTerminal` never launches
         // anything (an unknown terminal id is an error, not a spawn), and
         // `ResizePty` resolves the client through `pty_for`, which borrows the
         // engine immutably. Neither adds, removes, or restates a spine row.
-        EngineRequest::SubscribeTerminal(..) | EngineRequest::ResizePty(..) => false,
+        | EngineRequest::SubscribeTerminal(..) | EngineRequest::ResizePty(..)
 
         // A read of a live PTY's grid through the same immutable `pty_for`
         // borrow `ResizePty` uses. It clones two integers out from under the
         // terminal lock and writes nothing anywhere.
-        EngineRequest::PtyGridSize(..) => false,
+        | EngineRequest::PtyGridSize(..)
 
         // Read-only git. `create_agent_branch_preflight` is a `branch_exists`
         // probe answering "fresh or existing branch?"; it writes nothing.
-        EngineRequest::CreateAgentBranchPlan(..) => false,
+        | EngineRequest::CreateAgentBranchPlan(..)
 
         // A pure read of what the caller needs to resolve a typed pull request
         // reference: the project list, the GitHub host policy, and whether the
         // from-PR command is available. It clones all three and sends them back.
         // The per-project git calls happen on the CALLER's worker, not here.
-        EngineRequest::PullRequestResolutionInputs(..) => false,
+        | EngineRequest::PullRequestResolutionInputs(..)
 
         // Writes that land somewhere the spine does not project. The changed-files
         // revision counter and the last-seen version are SQLite rows that no
@@ -2058,7 +2874,7 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         // untouched until an explicit reload). `RefreshChangedFiles` only spawns a
         // worker (`&self`), and the refreshed lists arrive through the worker-event
         // drain, which bumps the version itself.
-        EngineRequest::NextChangesRev(..)
+        | EngineRequest::NextChangesRev(..)
         | EngineRequest::MarkVersionSeen(..)
         | EngineRequest::ReadRawConfig(..)
         | EngineRequest::WriteRawConfig(..)
@@ -2067,12 +2883,14 @@ fn request_mutates_spine(req: &EngineRequest) -> bool {
         // The changed-files failure streak is engine state no `SpineView` field
         // reads; the status it may raise travels the worker lane.
         | EngineRequest::NoteChangedFilesOutcome(..)
+        // Writes the agent's branch list, which no `SpineView` field reads.
+        | EngineRequest::RecordOfferedBranches(..)
         // Puts a status on the worker lane and touches nothing else.
-        | EngineRequest::PostStatus(..) => false,
+        | EngineRequest::PostStatus(..)
 
         // Broadcast on the status channels only. Statuses are their own transport
         // (toasts on the web); no spine field carries them.
-        EngineRequest::EmitStatus(..)
+        | EngineRequest::EmitStatus(..)
         | EngineRequest::ClearStatus(..)
         | EngineRequest::TakeLateStatusFinals(..)
         | EngineRequest::LateStatusFinalsWaiting(..) => false,
@@ -2165,12 +2983,13 @@ pub(crate) struct DrainOutcome {
     stopped: bool,
 }
 
-/// Whether the request drain may echo shutdown progress to stderr.
+/// Where the request drain prints shutdown progress, if anywhere.
 ///
 /// `yaran server` owns its terminal and an operator running it in the foreground
-/// should see the agents winding down. Every other serve path shares the terminal
-/// with a themed yaran-tui screen, where a raw line lands wherever the cursor
-/// happens to sit; those paths stay silent and rely on `yaran.log`.
+/// should see the agents winding down, so it hands its console over. The flip
+/// prints the same lines through its own console from its own teardown, and the
+/// background server shares the terminal with the TUI; both pass `Silent` here
+/// and rely on `yaran.log`.
 ///
 /// This flag is about PRINTING, not about the `Shutdown` request itself, which
 /// SIGTERMs every agent wherever it arrives. Only `EngineHandle::shutdown` sends
@@ -2178,9 +2997,11 @@ pub(crate) struct DrainOutcome {
 /// cannot receive one today. Worth knowing if that ever changes: on the
 /// background-server path a `Shutdown` would wind down the agents of a terminal
 /// UI that never asked, so a new sender needs a reason and a gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) enum ShutdownEcho {
-    Stderr,
+    /// `yaran server`: the progress prints on its console, and a second stop
+    /// signal forces the quit through the shared state.
+    Console(crate::console::Console, Arc<crate::QuitForce>),
     Silent,
 }
 
@@ -2217,6 +3038,9 @@ pub(crate) struct EngineService {
     /// Subscribes waiting for their provider to come up via the worker-event
     /// drain.
     pending: Vec<PendingSubscribe>,
+    /// Project settings waiting for their worker's completion, by the id the
+    /// dispatch handed out.
+    pending_project_saves: std::collections::HashMap<String, PendingProjectSave>,
     /// The session most recently brought to the foreground via a PTY subscribe.
     /// Workspace-global (single-tenant server), last-subscribe-wins across
     /// browser clients, deliberately NOT the engine's `watched_session_id` (that
@@ -2256,6 +3080,8 @@ pub(crate) struct EngineService {
     /// mutation performs). Drives the clobber-safe reconcile in `handle_request`.
     config_disk_ahead: bool,
     shutdown_echo: ShutdownEcho,
+    /// Which way of serving this loop runs for, for the reload's restart warning.
+    surface: ServeSurface,
     /// The serve's live Tailscale-mode handle, empty only when nothing is
     /// serving. Every serve fills it, background mode included; background mode
     /// simply does not run this loop, so its reload is the terminal UI's.
@@ -2294,11 +3120,21 @@ impl Drop for EngineService {
                     if Instant::now() >= deadline {
                         break;
                     }
-                    thread::yield_now();
+                    std::thread::yield_now();
                 }
             }
         }
     }
+}
+
+/// How a config came to be in force, which decides whether a reload's
+/// operation records wait on the listener change it causes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfigArrival {
+    /// A reload, which a client may be following.
+    Reload,
+    /// A raw save's file taken on before a change, which no record follows.
+    DiskAdoption,
 }
 
 impl EngineService {
@@ -2327,7 +3163,9 @@ impl EngineService {
                 status_snapshot_tx,
                 events_watchers,
                 engine.live_status_keys.clone(),
-            ),
+                engine.operations.clone(),
+            )
+            .ending_reservations_of(engine.attachments.clone()),
             config_reload_tx,
             spine_change_tx,
             workspace_tx,
@@ -2337,6 +3175,7 @@ impl EngineService {
             tailscale_mode_control,
             cloud_mode_control,
             pending: Vec::new(),
+            pending_project_saves: std::collections::HashMap::new(),
             last_pr_foregrounded: None,
             spine_check,
             mutation_version: 0,
@@ -2346,6 +3185,7 @@ impl EngineService {
             tick_count: 0,
             config_disk_ahead: false,
             shutdown_echo,
+            surface: ServeSurface::YaranServer,
         }
     }
 
@@ -2378,7 +3218,11 @@ impl EngineService {
         // GitHub features work has to ride that same signal: without it a
         // browser keeps hiding (or offering) the pull-request entries, and a
         // momentary rate limit stands until the page is reloaded.
-        if peek_gh_availability_changed(reaction).is_some() {
+        // The integration switch and the hosts the clone dialog's folder
+        // suggestion reads ride the same document, so a change to only those
+        // nudges the same way.
+        if peek_gh_availability_changed(reaction).is_some() || peeks_github_facts_changed(reaction)
+        {
             let _ = self.config_reload_tx.send(());
         }
         // NOT origin-routed, deliberately, and for the same reason as the launch
@@ -2394,7 +3238,7 @@ impl EngineService {
         // Known-default reaction: spawn the switch (worker 2). Its completion
         // posts NonDefaultBranchCheckoutCompleted, whose status flows through
         // the wire_statuses_from_reaction drain above on the next iteration.
-        if self.web_owns(engine, reaction, routing) {
+        if Self::web_owns(engine, reaction, routing) {
             for status in engine.drive_checkout_followup(reaction) {
                 let _ = self.status.send(status);
             }
@@ -2417,6 +3261,15 @@ impl EngineService {
                 let _ = self.status.send(status);
             }
             for key in pr_followup.clear_keys {
+                self.status.clear(key);
+            }
+            // A clone is ready: add the project and dispatch its agent, whose
+            // busy takes over from the clone's, which is dismissed.
+            let clone_followup = engine.drive_clone_followup(reaction);
+            for status in clone_followup.statuses {
+                let _ = self.status.send(status);
+            }
+            for key in clone_followup.clear_keys {
                 self.status.clear(key);
             }
         }
@@ -2442,42 +3295,108 @@ impl EngineService {
             self.status.clear(key.clone());
         }
 
-        // A project mutation just updated SQLite + in-memory projects; mirror
-        // it into the portable config.toml so a later TUI start doesn't clobber it.
-        // Skip for `Added`, since that arm already wrote config inline in command.rs,
-        // and Skip for `PersistenceFailed`, since nothing was saved.
+        // Routed: while the terminal UI drains, a save it asked for is its own
+        // to mirror into config.toml and report, and a browser's is this
+        // layer's alone, so config.toml is written once either way.
         if let EventReaction::ProjectPersistenceOutcome(outcome) = reaction
-            && !matches!(
-                outcome.view,
-                ProjectPersistenceView::PersistenceFailed { .. }
-                    | ProjectPersistenceView::Added { .. }
-            )
-            && let Err(e) = engine.persist_projects_to_config()
+            && Self::web_owns(engine, reaction, routing)
         {
-            // STICKY: SQLite and the portable config now disagree about
-            // the same project. That is textbook half-done, and yaran treats
-            // config/DB divergence as a first-class hazard elsewhere (a
-            // later TUI start reads the config, not the database, so the
-            // change silently reverts). Fixing it means editing config.toml,
-            // outside anything the toast can offer.
-            let _ = self.status.send(
-                WireStatus::keyed(
-                    "config-write",
-                    "error",
-                    format!("Saved to the database, but config.toml could not be updated: {e:#}"),
-                )
-                .sticky(),
-            );
+            self.mirror_project_change(engine, outcome);
         }
     }
 
+    /// A project change was saved to SQLite, or failed to be, and memory
+    /// already follows a saved one: mirror it into the portable `config.toml`
+    /// so a later TUI start doesn't clobber it, and answer the browser waiting
+    /// on it, if one is. `Added` wrote config inline in command.rs, and a
+    /// `PersistenceFailed` saved nothing, so neither writes here.
+    fn mirror_project_change(
+        &mut self,
+        engine: &mut Engine,
+        outcome: &yaran_core::engine::ProjectPersistenceOutcome,
+    ) {
+        let waiting = outcome.status_op_id.as_deref().and_then(|id| {
+            engine.pending_web_project_saves.remove(id);
+            self.pending_project_saves.remove(id)
+        });
+        let named = project_setting_named(&outcome.action);
+        let config_written = match &outcome.view {
+            ProjectPersistenceView::PersistenceFailed { error } => {
+                if let Some(waiting) = waiting {
+                    let message = match named {
+                        Some((setting, project_name)) => yaran_core::status_text![
+                            "The ",
+                            setting,
+                            " for project ",
+                            q(project_name),
+                            " was not saved: the session database could not be written: ",
+                            error.as_str(),
+                        ],
+                        None => StatusText::plain(error.clone()),
+                    };
+                    // A request that has gone (the browser hung up) cannot be
+                    // answered, so the failure goes to the people on screen.
+                    if waiting
+                        .reply
+                        .send(Err(ProjectSaveFailure::NotSaved(
+                            message.message().to_string(),
+                        )))
+                        .is_err()
+                    {
+                        let _ = self.status.send(WireStatus::new("error", message));
+                    }
+                }
+                return;
+            }
+            ProjectPersistenceView::Added { .. } => Ok(()),
+            _ => engine.persist_projects_to_config(),
+        };
+        let Err(e) = config_written else {
+            if let Some(waiting) = waiting {
+                let _ = waiting.reply.send(Ok(()));
+            }
+            return;
+        };
+        let message = match named {
+            Some((setting, project_name)) => yaran_core::status_text![
+                "The ",
+                setting,
+                " for project ",
+                q(project_name),
+                " was saved to the database, but config.toml could not be updated, so it can \
+                 revert the next time yaran starts: ",
+                format!("{e:#}"),
+            ],
+            None => StatusText::plain(format!(
+                "Saved to the database, but config.toml could not be updated: {e:#}"
+            )),
+        };
+        // The browser that asked raises this sticky itself, so no status here
+        // unless that request is gone.
+        if let Some(waiting) = waiting
+            && named.is_some()
+            && waiting
+                .reply
+                .send(Err(ProjectSaveFailure::HalfSaved(
+                    message.message().to_string(),
+                )))
+                .is_ok()
+        {
+            return;
+        }
+        // STICKY: SQLite and the portable config now disagree about
+        // the same project. That is textbook half-done, and yaran treats
+        // config/DB divergence as a first-class hazard elsewhere (a
+        // later TUI start reads the config, not the database, so the
+        // change silently reverts). Fixing it means editing config.toml,
+        // outside anything the toast can offer.
+        let _ = self
+            .status
+            .send(WireStatus::keyed("config-write", "error", message).sticky());
+    }
+
     /// Whether the web owns the routable follow-ups for `reaction`.
-    fn web_owns(
-        &self,
-        engine: &Engine,
-        reaction: &EventReaction,
-        routing: FollowupRouting,
-    ) -> bool {
+    fn web_owns(engine: &Engine, reaction: &EventReaction, routing: FollowupRouting) -> bool {
         match routing {
             FollowupRouting::RunEverything => true,
             FollowupRouting::ByOrigin => {
@@ -2503,11 +3422,29 @@ impl EngineService {
     /// ends up correct either way; what it loses is the news that the reload
     /// failed, which the surface that failed it is the one showing.
     pub(crate) fn announce_config_reload(&mut self, engine: &Engine, reaction: &EventReaction) {
+        // A config the engine adopted after its own apply failed is already
+        // in force: browsers refetch it and hear what only a restart applies,
+        // as for one that applied. Its outcome follows on the reload's key,
+        // from the terminal UI's drain.
+        if let Some((before, _, _)) = find_config_adopted(reaction) {
+            let _ = self.config_reload_tx.send(());
+            if let Some(warning) = server_restart_warning_copy(
+                &before.server,
+                &engine.config.server,
+                ServeSurface::Background,
+            ) {
+                let _ = self.status.send(WireStatus::new("warning", warning));
+            }
+            return;
+        }
         let Some(config) = peek_apply_reloaded_config(reaction) else {
             return;
         };
-        let restart_warning =
-            server_restart_warning_copy(&engine.config.server, &config.server, true);
+        let restart_warning = server_restart_warning_copy(
+            &engine.config.server,
+            &config.server,
+            ServeSurface::Background,
+        );
         let _ = self.config_reload_tx.send(());
         // Says what has actually happened at this point, and no more. The
         // drainer has not adopted the config yet (the seam is pre-consume), so
@@ -2518,21 +3455,215 @@ impl EngineService {
         // KEYED on the reload's own key: the drainer posts the apply's answer on
         // that key through the worker lane, so a failed apply replaces this
         // sentence here instead of leaving "reloaded" standing in a browser.
-        let _ = self.status.send(WireStatus::keyed(
-            yaran_core::wire::status_keys::CONFIG_RELOAD,
-            "info",
-            yaran_core::config_reload_status::REFRESHING,
-        ));
+        // A reload yaran asked for after its own write is nobody's news, and the
+        // drainer answers it with nothing that would replace this.
+        if !engine.reload_origin.last_reload_was_own() {
+            let _ = self.status.send(WireStatus::keyed(
+                yaran_core::wire::status_keys::CONFIG_RELOAD,
+                "info",
+                yaran_core::config_reload_status::REFRESHING,
+            ));
+        }
         if let Some(warning) = restart_warning {
             let _ = self.status.send(WireStatus::new("warning", warning));
         }
     }
 
+    /// The reload's follow-up for `yaran server` and the flip, whose reload this loop owns; the
+    /// reaction may arrive wrapped in a `Multi`. A config in force after a failed apply gets
+    /// everything a successful reload owes, and a client following the reload learns how it ended.
+    pub(crate) fn apply_reload_followup(&mut self, engine: &mut Engine, reaction: EventReaction) {
+        let adopted = find_config_adopted(&reaction);
+        let refused = find_config_reload_refused(&reaction).map(str::to_string);
+        if let Some(config) = take_apply_reloaded_config(reaction) {
+            let before = engine.config.clone();
+            let github_before = engine.github_integration();
+            // A reload yaran asked for after its own write is nobody's news.
+            let quiet = engine.reload_origin.last_reload_was_own();
+            let outcome = match engine.apply_reloaded_config(*config) {
+                Ok(()) => {
+                    if !quiet {
+                        let _ = self.status.send(WireStatus::from_update(
+                            &yaran_core::config_reload_status::applied(),
+                        ));
+                    }
+                    let notes =
+                        self.config_in_force(engine, &before, github_before, ConfigArrival::Reload);
+                    ConfigReloadOutcome::Applied {
+                        notes: notes.into_iter().collect(),
+                    }
+                }
+                Err(e) => {
+                    // The engine kept the new config anyway, so it is in
+                    // force; the failure is said last, so it holds the line.
+                    self.config_in_force(engine, &before, github_before, ConfigArrival::Reload);
+                    let error = format!("{e:#}");
+                    let _ = self.status.send(WireStatus::from_update(
+                        &yaran_core::config_reload_status::adopted_but_apply_failed(&error),
+                    ));
+                    ConfigReloadOutcome::ApplyFailed(error)
+                }
+            };
+            engine.finish_config_reload_operations(&outcome);
+        }
+        if let Some((before, github_was_enabled, error)) = adopted {
+            // The engine applied this config only to drain the commands it had
+            // deferred, and left the `gh` probe a reload owes to this apply.
+            let github_before = if github_was_enabled {
+                yaran_core::engine::GithubIntegration::Enabled
+            } else {
+                yaran_core::engine::GithubIntegration::Disabled
+            };
+            engine.probe_gh_after_reload(github_before);
+            self.config_in_force(engine, &before, github_before, ConfigArrival::Reload);
+            let _ = self.status.send(WireStatus::from_update(
+                &yaran_core::config_reload_status::adopted_but_apply_failed(&error),
+            ));
+            engine.finish_config_reload_operations(&ConfigReloadOutcome::ApplyFailed(error));
+        }
+        if let Some(reason) = refused {
+            engine.finish_config_reload_operations(&ConfigReloadOutcome::Refused(reason));
+        }
+    }
+
+    /// Take on the file a raw save left on disk ahead of memory, exactly as a
+    /// reload does (decided, after review): judged by the serving surface's
+    /// own start check, and once applied, put in force through
+    /// [`Self::config_in_force`], so its `[server.auth]`, the pull-request
+    /// sync and the restart warning follow it as they follow every reload.
+    /// Kept ahead, with the reason, when the file cannot be taken on: applying
+    /// the command would save a memory that never saw the disk edits.
+    fn adopt_disk_config(&mut self, engine: &mut Engine) -> Result<(), String> {
+        let surface = engine.surface.start_surface();
+        let reloaded =
+            yaran_core::config::load_config_for_reload(&engine.paths).map_err(|error| {
+                format!(
+                    "config.toml was changed outside yaran and cannot be loaded, so this change \
+                 was not made and the running settings are unchanged. Fix the file, then try \
+                 again: {error}"
+                )
+            })?;
+        if let Some(refusal) = reloaded
+            .source_text
+            .as_str()
+            .and_then(|raw| yaran_core::config::start_refusal(raw, surface))
+            .or_else(|| yaran_core::config::log_path_refusal(&reloaded, &engine.paths))
+        {
+            return Err(format!(
+                "config.toml was changed outside yaran, and this change was not made because \
+                 the running settings cannot take that file on: {refusal} The running \
+                 settings are unchanged. Fix the file, then try again."
+            ));
+        }
+        let before = engine.config.clone();
+        let github_before = engine.github_integration();
+        let applied = engine.apply_reloaded_config(reloaded);
+        // In force either way: the engine keeps the config even when its
+        // apply fails, as on a reload.
+        self.config_in_force(engine, &before, github_before, ConfigArrival::DiskAdoption);
+        if let Err(error) = applied {
+            let _ = self.status.send(WireStatus::from_update(
+                &yaran_core::config_reload_status::adopted_but_apply_failed(&format!("{error:#}")),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Everything a reload owes the running server once `engine.config` replaces `before`, the
+    /// terminal UI's pull-request sync included. Answers the restart warning it raised, if any.
+    fn config_in_force(
+        &mut self,
+        engine: &mut Engine,
+        before: &yaran_core::config::Config,
+        github_before: yaran_core::engine::GithubIntegration,
+        arrival: ConfigArrival,
+    ) -> Option<String> {
+        engine.retune_pr_sync_after_reload(github_before);
+        // Memory now matches disk: any pending raw "Save" has been adopted, so
+        // disk is no longer ahead.
+        self.config_disk_ahead = false;
+        self.live_limits
+            .store_from(&engine.config.server, engine.config.source_text.as_str());
+        // Signal the web layer that config-static state changed so it emits a
+        // `config.changed` event and clients refetch `/api/v1/bootstrap`.
+        // Fire-and-forget: an `Err` only means no forwarder is listening (e.g.
+        // the TUI flip), which is fine.
+        let _ = self.config_reload_tx.send(());
+        // The `[server]` bind section only takes effect at startup; a reload
+        // cannot rebind listeners. Warn so the user knows a restart is needed
+        // for those specific changes to take effect.
+        let restart_warning =
+            server_restart_warning_copy(&before.server, &engine.config.server, self.surface);
+        if let Some(warning) = &restart_warning {
+            let _ = self
+                .status
+                .send(WireStatus::new("warning", warning.clone()));
+        }
+        // `yaran server` has no status line, and its operator reads the console.
+        if let ShutdownEcho::Console(console, _) = &self.shutdown_echo
+            && let Some(warning) =
+                yaran_core::control_socket::moved_warning(&before.server, &engine.config.server)
+        {
+            console.warn(&warning);
+        }
+        // `[server] tailscale` IS live, so a reload that changed it acts rather
+        // than warning. This is the reload owner for `yaran server` and for the
+        // flip. Background mode fills the same slot but never runs this loop,
+        // so its reload is the terminal UI's and there is no double apply. The
+        // parsed MODE, never the raw string: the value is trimmed and
+        // case-insensitive, so a user who retyped "Auto" must not have their
+        // listener stopped and started for nothing.
+        let next_tailscale = engine.config.server.tailscale_mode();
+        if before.server.tailscale_mode() != next_tailscale
+            && let Some(control) = self.tailscale_mode_control.get()
+        {
+            let status = self.status.tx.clone();
+            // A reload is not over until the serve has answered, and a change it
+            // could not follow is part of how the reload ended.
+            let operations = (arrival == ConfigArrival::Reload).then(|| engine.operations.clone());
+            if let Some(operations) = &operations {
+                operations.listener_change_started();
+            }
+            control.set_mode_detached(next_tailscale, move |outcome| {
+                let report = outcome.report(next_tailscale);
+                if let Some(operations) = operations {
+                    let problem = outcome
+                        .failed()
+                        .then(|| String::from(report.message.clone()));
+                    operations.listener_change_done(problem, Instant::now());
+                }
+                let tone = if report.warning { "warning" } else { "info" };
+                // The same key the terminal UI's mode change uses, so one
+                // answer per change whichever surface asked for it.
+                let _ = status.send(WireStatus::keyed(
+                    yaran_core::tailscale::MODE_CHANGE_STATUS_KEY,
+                    tone,
+                    report.message,
+                ));
+            });
+        }
+        // `[cloud]` is live too (mode, restart keys, ingress keys); the same
+        // one-owner rule applies (background mode never runs this).
+        let status = self.status.tx.clone();
+        crate::cloud_mode::apply_reload(
+            self.cloud_mode_control.get(),
+            &before.cloud,
+            &engine.config.cloud,
+            move |update| {
+                let _ = status.send(WireStatus::from_update(&update));
+            },
+        );
+        // The operation record keeps the plain spelling, which the command line
+        // prints.
+        restart_warning.map(String::from)
+    }
+
     /// Adopt the two live `[server]` limits from a config the drainer has already
     /// applied. The companion seam's post-apply half; see
     /// [`yaran_core::background_serve::BackgroundServeCompanion::note_config_applied`].
-    pub(crate) fn note_config_applied(&self, server: &yaran_core::config::ServerConfig) {
-        self.live_limits.store_from(server);
+    pub(crate) fn note_config_applied(&self, config: &yaran_core::config::Config) {
+        self.live_limits
+            .store_from(&config.server, config.source_text.as_str());
     }
 
     /// The shared maintenance sweeps, run by whoever drains `worker_rx`.
@@ -2622,6 +3753,34 @@ impl EngineService {
                 let _ = self.status.send(status);
             }
         }
+        // Tabs a recreate stopped start again once the reaper above has seen
+        // the last of them go: their launches take the same followup path the
+        // resume-fallback relaunches below do, and the recreate's spinner is
+        // answered by its final. Same fixed seed size as every web launch.
+        let restarts = engine.sweep_recreate_restarts((24, 80));
+        for reaction in restarts.launches {
+            self.note_mutation();
+            let followup = engine.drive_web_launch_followup(&reaction);
+            for status in followup.statuses {
+                let _ = self.status.send(status);
+            }
+            for key in followup.clear_keys {
+                self.status.clear(key);
+            }
+        }
+        for outcome in restarts.finals {
+            self.note_mutation();
+            for status in yaran_core::wire::wire_statuses_from_reaction(&outcome.into_reaction()) {
+                let _ = self.status.send(status);
+            }
+        }
+
+        // Release the queued startup relaunches the `[auto_resume]` throttle
+        // allows now (a no-op once the startup queue has drained).
+        let started = count_startup_launches(engine.pump_startup_launches((24, 80)));
+        if started > 0 {
+            self.note_mutation();
+        }
 
         // Resume-fallback sweep (both detection windows), BEFORE the exit prune:
         // a `--continue` that came up empty or a resume that hung past its
@@ -2643,13 +3802,6 @@ impl EngineService {
             for key in followup.clear_keys {
                 self.status.clear(key);
             }
-        }
-
-        // Release the queued startup relaunches the `[auto_resume]` throttle
-        // allows now (a no-op once the startup queue has drained).
-        let started = count_startup_launches(engine.pump_startup_launches((24, 80)));
-        if started > 0 {
-            self.note_mutation();
         }
 
         // Reap agent/terminal PTYs whose child process exited so they stop
@@ -2706,6 +3858,9 @@ impl EngineService {
         &mut self,
         engine: &mut Engine,
     ) -> yaran_core::background_serve::ServiceOutcome {
+        // Before the drain: a change this very turn applies is already one the
+        // terminal UI has to be told about.
+        self.status.keep_for_terminal_from_now();
         self.resolve_pending_subscribes(engine);
         self.check_spine(engine);
         let drained = self.drain_requests(engine);
@@ -2716,6 +3871,7 @@ impl EngineService {
             // Retirement is the companion's own decision, made one level up in
             // the `yaran` binary: this type only reports what one iteration did.
             retirement: None,
+            statuses: self.status.take_for_terminal(),
         }
     }
 
@@ -2782,7 +3938,10 @@ impl EngineService {
     fn check_spine(&mut self, engine: &Engine) {
         self.poll_change_signals(engine);
         self.tick_count = self.tick_count.wrapping_add(1);
-        if self.tick_count.is_multiple_of(SPINE_CHECK_TICK_INTERVAL) {
+        if self
+            .tick_count
+            .is_multiple_of(u64::from(SPINE_CHECK_TICK_INTERVAL))
+        {
             self.spine_check.maybe_check(
                 engine,
                 self.mutation_version,
@@ -2813,17 +3972,35 @@ impl EngineService {
             // `handle_request` takes). Decided before `req` is moved; the
             // fingerprint compare downstream stays the precise emit gate, so an
             // over-broad `true` only costs a serialize.
-            let mutates = request_mutates_spine(&req);
+            let moves_spine = request_mutates_spine(&req);
             match req {
-                EngineRequest::SubscribePty(tab_id, reply) => {
+                EngineRequest::SubscribePty(tab_id, viewed, reply) => {
                     handle_subscribe(
                         engine,
                         &mut self.pending,
                         &mut self.last_pr_foregrounded,
                         &mut self.status,
-                        tab_id,
+                        Subscribe { tab_id, viewed },
                         reply,
                     );
+                }
+                EngineRequest::PtyShown(tab_id) => {
+                    note_tab_looked_at(engine, &mut self.last_pr_foregrounded, &tab_id);
+                }
+                EngineRequest::SaveProjectSetting(cmd, origin, reply) => {
+                    engine.current_origin = origin;
+                    let dispatched = engine.dispatch_project_setting(cmd);
+                    engine.current_origin = StatusScope::All;
+                    match dispatched {
+                        Ok(save_id) => {
+                            self.pending_project_saves
+                                .insert(save_id, PendingProjectSave { reply });
+                        }
+                        Err(error) => {
+                            let _ =
+                                reply.send(Err(ProjectSaveFailure::NotSaved(error.to_string())));
+                        }
+                    }
                 }
                 EngineRequest::SpineJson(reply) => {
                     // Serve the loop-local cache (handled here, not in
@@ -2840,30 +4017,47 @@ impl EngineService {
                     // them to flush state, then mark agent sessions Detached.
                     // Handled here (not in `handle_request`) because it must stop
                     // the loop. `shutdown_ptys` logs the start/result to yaran.log;
-                    // on the `yaran server` path we also echo to the console
-                    // (stderr) so an operator running it in the foreground sees
-                    // the shutdown progress, mirroring what the TUI prints on
-                    // quit. Every other path shares the terminal with a themed
-                    // yaran-tui screen and stays silent.
-                    let echo = self.shutdown_echo == ShutdownEcho::Stderr;
-                    let agents = engine.providers.len();
-                    let terminals = engine.companion_terminals.len();
+                    // on the `yaran server` path it runs through the one
+                    // wind-down the flip uses too, so the console prints the
+                    // same timestamped lines and a second stop signal cuts the
+                    // wait short the same way. The flip runs its own shutdown
+                    // after its loop; the background server stays silent.
                     let grace = yaran_core::config::shutdown_grace(
                         engine.config.server.shutdown_timeout_seconds,
                     );
-                    if echo && agents + terminals > 0 {
-                        eprintln!(
-                            "{}",
-                            yaran_core::engine::format_shutdown_start(agents, terminals, grace)
-                        );
+                    match &self.shutdown_echo {
+                        ShutdownEcho::Console(console, quit) => {
+                            crate::wind_down_children(engine, console, grace, quit, |_| {}, || {});
+                        }
+                        ShutdownEcho::Silent => {
+                            engine.shutdown_ptys(grace);
+                        }
                     }
-                    let report = engine.shutdown_ptys(grace);
-                    if echo && report.agents_total + report.terminals_total > 0 {
-                        eprintln!("{}", yaran_core::engine::format_shutdown_result(&report));
-                    }
+                    engine.flush_focused_tab_writes(yaran_core::engine::FOCUSED_TAB_FLUSH_BOUND);
                     let _ = reply.send(());
                     stopped = true;
                     break;
+                }
+                // A config-changing command over a file a raw save left ahead
+                // of memory takes the file on first, as a reload does, or is
+                // refused saying why.
+                EngineRequest::ApplyWire(cmd, reply, origin, operation)
+                    if cmd.mutates_config_static() && self.config_disk_ahead =>
+                {
+                    match self.adopt_disk_config(engine) {
+                        Ok(()) => handle_request(
+                            engine,
+                            EngineRequest::ApplyWire(cmd, reply, origin, operation),
+                            &mut self.status,
+                            &self.config_reload_tx,
+                            &mut self.config_disk_ahead,
+                            &self.pty_input_owners,
+                        ),
+                        Err(message) => {
+                            yaran_core::logger::warn(&format!("[server] {message}"));
+                            let _ = reply.send(Err(message.into()));
+                        }
+                    }
                 }
                 other => {
                     handle_request(
@@ -2876,7 +4070,7 @@ impl EngineService {
                     );
                 }
             }
-            if mutates {
+            if moves_spine {
                 mutated = true;
                 self.note_mutation();
             }
@@ -2903,15 +4097,17 @@ impl EngineService {
 ///
 /// `control` is consulted once at the top of each outer iteration: `Exit` stops
 /// the loop and returns the engine WITHOUT shutting down any PTYs (the flip's
-/// ReturnToTui path relies on this). The inline `Shutdown` request still stops
+/// `ReturnToTui` path relies on this). The inline `Shutdown` request still stops
 /// the loop too, and it SIGTERMs the children (the CLI/quit teardown).
 pub(crate) fn run_engine_loop(
     mut engine: Engine,
     ends: ActorLoopEnds,
     shutdown_echo: ShutdownEcho,
+    surface: ServeSurface,
     mut control: impl FnMut() -> LoopControl,
 ) -> Engine {
     let mut svc = EngineService::new(&engine, ends, shutdown_echo);
+    svc.surface = surface;
     loop {
         // Caller-driven exit (the flip's status screen asked to stop). Checked
         // before any work so an exit takes effect on the next tick. PTYs are
@@ -2933,100 +4129,8 @@ pub(crate) fn run_engine_loop(
             // A reload worker re-read config.toml; apply the new config to the
             // running engine. This consumes `reaction`, so it MUST be the last
             // use of it in the loop body (all `&reaction` borrows above end
-            // first). `ApplyReloadedConfig` and `ProjectPersistenceOutcome` are
-            // distinct variants, so consuming here never skips the project sync.
-            //
-            // The reload follow-up reaction may arrive WRAPPED in a `Multi` when
-            // config-mutating commands were deferred during the reload (the
-            // engine folds the `ApplyReloadedConfig` in with the deferred saves'
-            // status reactions). Pull the `ApplyReloadedConfig` out of either the
-            // bare or the wrapped form so the server-restart warning always
-            // runs. The deferred saves' own status reactions were already
-            // surfaced by the `wire_statuses_from_reaction` drain above (it
-            // flattens `Multi`).
-            if let Some(config) = take_apply_reloaded_config(reaction) {
-                // Capture the rebind-relevant [server] settings
-                // BEFORE the swap so we can tell whether the reload touched
-                // anything that only takes effect at startup (listeners are
-                // bound once; reload-config never rebinds). Comparing here, where the
-                // arm already holds both the running config (pre-swap) and the
-                // incoming one, keeps the detection next to the config-reload handler.
-                let restart_warning =
-                    server_restart_warning_copy(&engine.config.server, &config.server, false);
-                // The parsed MODE, never the raw string: the value is trimmed
-                // and case-insensitive, so a user who retyped "Auto" must not
-                // have their listener stopped and started for nothing.
-                let previous_tailscale = engine.config.server.tailscale_mode();
-                let next_tailscale = config.server.tailscale_mode();
-                let previous_cloud = engine.config.cloud.clone();
-                let next_cloud = config.cloud.clone();
-                match engine.apply_reloaded_config(*config) {
-                    Ok(()) => {
-                        // Memory now matches disk: any pending raw "Save" has been
-                        // adopted, so disk is no longer ahead.
-                        svc.config_disk_ahead = false;
-                        svc.live_limits.store_from(&engine.config.server);
-                        // Signal the web layer that config-static state changed so
-                        // it emits a `config.changed` event and clients refetch
-                        // `/api/v1/bootstrap`. Fire-and-forget: an `Err` only means
-                        // no forwarder is listening (e.g. the TUI flip), which is
-                        // fine.
-                        let _ = svc.config_reload_tx.send(());
-                        let _ = svc.status.send(WireStatus::from_update(
-                            &yaran_core::config_reload_status::applied(),
-                        ));
-
-                        // The new config WAS applied to the engine, but the
-                        // `[server]` bind section only takes effect at startup; a
-                        // reload cannot rebind listeners. Warn so the user knows a
-                        // restart is needed for those specific changes to take
-                        // effect.
-                        if let Some(warning) = restart_warning {
-                            let _ = svc.status.send(WireStatus::new("warning", warning));
-                        }
-
-                        // `[server] tailscale` IS live, so a reload that changed
-                        // it acts rather than warning. This is the reload owner
-                        // for `yaran server` and for the flip. Background mode
-                        // fills the same slot but never runs this loop, so its
-                        // reload is the terminal UI's and there is no double
-                        // apply.
-                        if previous_tailscale != next_tailscale
-                            && let Some(control) = svc.tailscale_mode_control.get()
-                        {
-                            let status = svc.status.tx.clone();
-                            control.set_mode_detached(next_tailscale, move |outcome| {
-                                let report = outcome.report(next_tailscale);
-                                let tone = if report.warning { "warning" } else { "info" };
-                                // The same key the terminal UI's mode change
-                                // uses, so one answer per change whichever
-                                // surface asked for it.
-                                let _ = status.send(WireStatus::keyed(
-                                    yaran_core::tailscale::MODE_CHANGE_STATUS_KEY,
-                                    tone,
-                                    report.message,
-                                ));
-                            });
-                        }
-                        // `[cloud]` is live too (mode, restart keys, ingress keys); the
-                        // same one-owner rule applies (background mode never runs this).
-                        let status = svc.status.tx.clone();
-                        crate::cloud_mode::apply_reload(
-                            svc.cloud_mode_control.get(),
-                            &previous_cloud,
-                            &next_cloud,
-                            move |update| {
-                                let _ = status.send(WireStatus::from_update(&update));
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        let _ = svc.status.send(WireStatus::from_update(
-                            &yaran_core::config_reload_status::apply_failed(&format!("{e:#}")),
-                        ));
-                    }
-                }
-            }
+            // first).
+            svc.apply_reload_followup(&mut engine, reaction);
         }
 
         svc.run_maintenance(&mut engine);
@@ -3057,6 +4161,16 @@ fn peek_gh_availability_changed(reaction: &EventReaction) -> Option<bool> {
         EventReaction::GhAvailabilityChanged { available } => Some(*available),
         EventReaction::Multi(reactions) => reactions.iter().find_map(peek_gh_availability_changed),
         _ => None,
+    }
+}
+
+/// Whether this reaction (or one nested inside a `Multi`) says the GitHub
+/// facts the bootstrap document carries moved.
+fn peeks_github_facts_changed(reaction: &EventReaction) -> bool {
+    match reaction {
+        EventReaction::GithubFactsChanged => true,
+        EventReaction::Multi(reactions) => reactions.iter().any(peeks_github_facts_changed),
+        _ => false,
     }
 }
 
@@ -3095,6 +4209,15 @@ struct StatusEmitter {
     /// the guard that deregisters it, so the two cannot come apart.
     watchers: Arc<AtomicUsize>,
     controller: KeyedStatusController,
+    /// A keyed final landing here finishes the operation records waiting on its key, since
+    /// every final the web raises passes through this emitter (see [`yaran_core::operations`]).
+    operations: yaran_core::operations::Operations,
+    /// The engine's attachment registry: a final also ends the reservations
+    /// waiting on its key (see [`yaran_core::attachments::Life::Key`]).
+    attachments: yaran_core::attachments::Attachments,
+    /// Statuses for the terminal UI's status line while one services this emitter (`None` for
+    /// `yaran server`): those raised for every surface by a client with no connection here.
+    for_terminal: Option<Vec<WireStatus>>,
     /// Most recent generation for each keyed status so `clear` can guard
     /// against dismissing a newer status placed on the same key by a
     /// concurrent operation (e.g. a rapid retry during commit-msg generation).
@@ -3108,8 +4231,12 @@ impl StatusEmitter {
         snapshot_tx: watch::Sender<Vec<KeyedWireStatus>>,
         watchers: Arc<AtomicUsize>,
         live: yaran_core::statusline::LiveStatusKeys,
+        operations: yaran_core::operations::Operations,
     ) -> Self {
         Self {
+            operations,
+            attachments: yaran_core::attachments::Attachments::default(),
+            for_terminal: None,
             tx,
             clear_tx,
             snapshot_tx,
@@ -3128,6 +4255,33 @@ impl StatusEmitter {
         }
     }
 
+    /// Keep `status` for the terminal UI's status line, when one services
+    /// this emitter.
+    fn keep_for_terminal(&mut self, status: &WireStatus) {
+        if let Some(kept) = self.for_terminal.as_mut() {
+            kept.push(status.clone());
+        }
+    }
+
+    /// Start keeping statuses for the terminal UI, which is servicing this
+    /// emitter; a no-op once it is.
+    fn keep_for_terminal_from_now(&mut self) {
+        self.for_terminal.get_or_insert_with(Vec::new);
+    }
+
+    /// The statuses kept for the terminal UI since it last asked, from now on
+    /// keeping them (a terminal UI is servicing this emitter).
+    fn take_for_terminal(&mut self) -> Vec<WireStatus> {
+        std::mem::take(self.for_terminal.get_or_insert_with(Vec::new))
+    }
+
+    /// End the reservations of `attachments` waiting on a key as its final
+    /// lands here.
+    fn ending_reservations_of(mut self, attachments: yaran_core::attachments::Attachments) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
     /// Upsert the status in the controller (keyed or anonymous), refresh the
     /// Vec snapshot, then broadcast it live. Returns how many receivers the
     /// broadcast reached (zero when nobody is subscribed), which every call site
@@ -3135,6 +4289,20 @@ impl StatusEmitter {
     /// variant carries the whole status back, which is too large to return.
     fn send(&mut self, status: WireStatus) -> usize {
         let tone = StatusTone::from_wire(&status.tone);
+        // Before the quiet gate below: a final withheld from the web is still
+        // the outcome of the change a client is waiting on.
+        if tone != StatusTone::Busy
+            && let Some(key) = status.key.as_deref()
+        {
+            self.operations.finish_by_key(
+                key,
+                tone,
+                &status.message,
+                status.segments.as_deref(),
+                Instant::now(),
+            );
+            self.attachments.finish_key(key);
+        }
         // A status quiet on the web is the command's answer and not a
         // notification: it already rode back to its caller in the outcome, so it
         // must not enter the controller (which would replay it to every joining
@@ -3168,7 +4336,11 @@ impl StatusEmitter {
                 status.segments.clone(),
             ),
             status.scope.clone(),
-            status.sticky,
+            if status.sticky {
+                yaran_core::statusline::Stickiness::Sticky
+            } else {
+                yaran_core::statusline::Stickiness::Dismisses
+            },
         );
         if let Some(ref k) = status.key {
             self.generations.insert(k.clone(), generation);
@@ -3206,6 +4378,11 @@ impl StatusEmitter {
     }
 
     fn clear(&mut self, key: String) -> bool {
+        // A keyed operation that ends with nothing to say ends here, with no
+        // sentence. A hand-off moved its records to the next key first.
+        self.operations
+            .finish_by_key(&key, StatusTone::Info, "", None, Instant::now());
+        self.attachments.finish_key(&key);
         let generation = self.generations.get(&key).copied();
         if self.controller.clear(&key, generation) {
             self.generations.remove(&key);
@@ -3251,6 +4428,8 @@ impl StatusEmitter {
                 tone: up.tone,
                 message: up.message,
                 segments: up.segments,
+                // An upgraded busy and a refreshed one are never a question.
+                ask: None,
                 scope: up.scope,
                 sticky: up.sticky,
                 // A quiet status never reaches the controller, so nothing it
@@ -3297,13 +4476,13 @@ fn fingerprint_halves(spine: &yaran_core::viewmodel::SpineView) -> (String, Stri
     // its churn belongs to instead of silently signalling nothing.
     let (session_terminals, project_terminals): (Vec<_>, Vec<_>) =
         spine.terminals.iter().partition(|t| match &t.owner {
-            yaran_core::viewmodel::TerminalOwnerView::Session { .. } => true,
-            yaran_core::viewmodel::TerminalOwnerView::Project { .. } => false,
+            yaran_core::viewmodel::TerminalOwnerView::Session { .. }
             // Owned by nothing, so it belongs to neither half naturally and one
             // has to be chosen. It fires the sessions event, which is
             // where the flat sidebar list's churn already goes; see the note on
             // `fingerprint_halves`.
-            yaran_core::viewmodel::TerminalOwnerView::Standalone { .. } => true,
+            | yaran_core::viewmodel::TerminalOwnerView::Standalone { .. } => true,
+            yaran_core::viewmodel::TerminalOwnerView::Project { .. } => false,
         });
     let projects = serde_json::to_string(&(&spine.projects, &project_terminals))
         .unwrap_or_else(|_| "[]".to_string());
@@ -3329,18 +4508,17 @@ fn owned_spine(engine: &Engine, owners: &PtySizeOwners) -> yaran_core::viewmodel
         for session in &mut spine.sessions {
             overlay_session_input_owners(session, &map);
         }
-        // A companion terminal's pty id IS its terminal id and the spine carries
-        // terminals in one flat collection, so publishing their ownership is one
-        // more loop over the same snapshot. See
-        // [`overlay_session_input_owners`] for the cost this accepts.
+        // The spine carries terminals in one flat collection, so publishing
+        // their ownership is one more loop over the same snapshot. See
+        // [`overlay_terminal_input_owners`] for the cost this accepts.
         overlay_terminal_input_owners(&mut spine.terminals, &map);
     }
     spine
 }
 
-/// The pure half of the overlay: stamp `input_owner` onto every tab of ONE
-/// session whose PTY id appears in the owner map. A tab's own id is its PTY id,
-/// the first tab included, so this is a direct per-tab lookup.
+/// The pure half of the overlay: stamp the driver of ONE session's row onto
+/// every tab of it, the first tab included. A device drives a whole row, so
+/// every tab reports the same owner, the ones no socket has opened included.
 /// Companion terminal ownership IS published now, by
 /// [`overlay_terminal_input_owners`]: a terminal pane's take-over card consumes
 /// it to tell a stale driver name from a fresh one. Shared by [`owned_spine`] and the `Spine`/`Session` request arms in
@@ -3352,10 +4530,20 @@ fn owned_spine(engine: &Engine, owners: &PtySizeOwners) -> yaran_core::viewmodel
 /// collection rather than under a session.
 fn overlay_session_input_owners(
     session: &mut yaran_core::viewmodel::SessionView,
-    owners: &std::collections::HashMap<String, u64>,
+    owners: &std::collections::HashMap<yaran_core::pty_owners::RowKey, u64>,
 ) {
+    let row_owner = owners
+        .get(&yaran_core::pty_owners::RowKey::Agent(session.id.clone()))
+        .copied();
     for tab in &mut session.tabs {
-        if let Some(conn_id) = owners.get(&tab.id) {
+        // A tab still standing alone (claimed before any surface placed it in
+        // its row) answers for itself, as the registry does.
+        let alone = || {
+            owners
+                .get(&yaran_core::pty_owners::RowKey::Terminal(tab.id.clone()))
+                .copied()
+        };
+        if let Some(conn_id) = row_owner.or_else(alone) {
             // Stringified so the wire shape matches the `pty.owner` handover
             // frames' `owner` field, which is what the client compares its own
             // PTY-socket ids against.
@@ -3364,10 +4552,9 @@ fn overlay_session_input_owners(
     }
 }
 
-/// The terminal half of the overlay: stamp `input_owner` onto every terminal
-/// whose PTY id appears in the owner map. A companion terminal's PTY id is its
-/// terminal id, so this is the same direct lookup the tab loop does, over the
-/// spine's one flat terminal collection.
+/// The terminal half of the overlay: stamp onto every terminal the driver of
+/// its row, which is its agent's for an agent's terminal and its own for a
+/// project or standalone terminal.
 ///
 /// THE COST, accepted deliberately: an ownership flip on a terminal now moves
 /// the spine fingerprint and fires `sessions.changed`, exactly as it already
@@ -3376,10 +4563,21 @@ fn overlay_session_input_owners(
 /// tell a stale driver name from a fresh one.
 fn overlay_terminal_input_owners(
     terminals: &mut [yaran_core::viewmodel::TerminalView],
-    owners: &std::collections::HashMap<String, u64>,
+    owners: &std::collections::HashMap<yaran_core::pty_owners::RowKey, u64>,
 ) {
     for terminal in terminals {
-        if let Some(conn_id) = owners.get(&terminal.id) {
+        let agent = match &terminal.owner {
+            yaran_core::viewmodel::TerminalOwnerView::Session { session_id } => {
+                Some(session_id.as_str())
+            }
+            yaran_core::viewmodel::TerminalOwnerView::Project { .. }
+            | yaran_core::viewmodel::TerminalOwnerView::Standalone { .. } => None,
+        };
+        // A terminal still standing alone answers for itself, as the
+        // registry does.
+        let row = yaran_core::pty_owners::RowKey::of(&terminal.id, agent);
+        let alone = yaran_core::pty_owners::RowKey::Terminal(terminal.id.clone());
+        if let Some(conn_id) = owners.get(&row).or_else(|| owners.get(&alone)) {
             terminal.input_owner = Some(conn_id.to_string());
         }
     }
@@ -3399,15 +4597,15 @@ const FIRST_WORKSPACE_REV: u64 = 1;
 /// rather than splicing it per consumer is what makes a fetched body and a
 /// pushed frame orderable against each other: they are the same bytes, carrying
 /// the same number, however the client came by them.
-pub struct WorkspaceDoc {
+pub(crate) struct WorkspaceDoc {
     /// Monotonic within one run of the server, starting at 1. It says nothing
     /// across restarts, which is exactly why the client resets what it has
     /// applied whenever its events socket reopens.
-    pub rev: u64,
+    pub(crate) rev: u64,
     /// The serialized document, `rev` field included. `Arc<str>` because every
     /// connected client is handed the same bytes on every change; re-serializing
     /// per connection is the cost this whole change exists to remove.
-    pub json: Arc<str>,
+    pub(crate) json: Arc<str>,
 }
 
 /// Serialize one workspace document with `rev` as a top-level field alongside
@@ -3526,7 +4724,7 @@ impl SpineCheck {
     ) {
         self.ticks_since_backstop = self
             .ticks_since_backstop
-            .saturating_add(SPINE_CHECK_TICK_INTERVAL as u32);
+            .saturating_add(SPINE_CHECK_TICK_INTERVAL);
         // Same before-the-build ordering as `new`: a claim racing this check
         // reads as a still-newer generation next interval.
         let ownership_generation = owners.ownership_generation();
@@ -3626,32 +4824,32 @@ fn poll_attention_transitions(
 ) {
     if engine.needs_attention != *prev_attention {
         *version = version.wrapping_add(1);
-        *prev_attention = engine.needs_attention.clone();
+        prev_attention.clone_from(&engine.needs_attention);
     }
 }
 
-fn handle_pty_write(engine: &mut Engine, id: String, bytes: Vec<u8>) {
-    let wrote = pty_for(engine, &id).is_some_and(|client| client.write_bytes(&bytes).is_ok());
+fn handle_pty_write(engine: &mut Engine, id: &str, bytes: &[u8]) {
+    let wrote = pty_for(engine, id).is_some_and(|client| client.write_bytes(bytes).is_ok());
     if wrote
-        && (engine.providers.contains_key(TabIdRef::new(&id))
-            || engine.companion_terminals.contains_key(&id))
+        && (engine.providers.contains_key(TabIdRef::new(id))
+            || engine.companion_terminals.contains_key(id))
     {
-        engine.note_pty_write(&id, &bytes);
+        engine.note_pty_write(id, bytes);
     }
 }
 
 fn handle_pty_resize(
     engine: &Engine,
     input_owners: &PtySizeOwners,
-    id: String,
+    id: &str,
     rows: u16,
     cols: u16,
     seq: u64,
 ) {
-    let client = pty_for(engine, &id);
+    let client = pty_for(engine, id);
     let had_client = client.is_some();
     let outcome = input_owners.apply_grid_in_order(
-        &id,
+        id,
         seq,
         rows,
         cols,
@@ -3677,56 +4875,108 @@ fn handle_pty_resize(
     }
 }
 
+/// Who a wire command's statuses go to, and whether a client follows it as an
+/// operation.
+struct WireOrigin {
+    scope: StatusScope,
+    operation: Option<Followed>,
+}
+
 fn handle_apply_wire_request(
     engine: &mut Engine,
     cmd: WireCommand,
-    reply: oneshot::Sender<Result<WireCommandOutcome, String>>,
-    origin: StatusScope,
+    reply: oneshot::Sender<Result<WireCommandOutcome, WireError>>,
+    origin: WireOrigin,
     status_tx: &mut StatusEmitter,
     config_reload_tx: &broadcast::Sender<()>,
     config_disk_ahead: &mut bool,
 ) {
     let mutates_config = cmd.mutates_config_static();
-    if mutates_config && *config_disk_ahead {
-        let reloaded = yaran_core::config::load_config(&engine.paths);
-        let _ = engine.apply_reloaded_config(reloaded);
-        *config_disk_ahead = false;
+    // A client with no connection here (the command line) is no status surface,
+    // so what its change raises for every surface reaches the terminal UI's line too.
+    let for_every_surface = matches!(origin.scope, StatusScope::All);
+    // A file a raw save left ahead of memory is taken on before this runs,
+    // by the loop that owns the reload (`EngineService::adopt_disk_config`).
+    debug_assert!(!(mutates_config && *config_disk_ahead));
+    // Not the terminal UI: a browser tab when the route vouched for the events
+    // connection the request named, otherwise the command line.
+    engine.dispatch_policy = Some(yaran_core::attachments::Policy {
+        requester: origin
+            .operation
+            .as_ref()
+            .and_then(|followed| followed.requester.clone()),
+        force: origin
+            .operation
+            .as_ref()
+            .is_some_and(|followed| followed.force_connected),
+        accepted: origin
+            .operation
+            .as_ref()
+            .and_then(|followed| followed.accepted_connected.clone()),
+    });
+    engine.current_origin = origin.scope;
+    let result = match origin.operation {
+        Some(Followed {
+            kind: Some(kind),
+            answered: true,
+            ..
+        }) => engine.apply_wire_operation(cmd, kind),
+        Some(Followed {
+            kind: Some(kind),
+            answered: false,
+            ..
+        }) => engine.apply_wire_recorded(cmd, kind),
+        Some(Followed { kind: None, .. }) | None => engine.apply_wire(cmd),
     }
-
-    engine.current_origin = origin;
-    let result = engine.apply_wire(cmd).map_err(|e| e.to_string());
+    .map_err(|e| WireError {
+        attached: e
+            .downcast_ref::<yaran_core::engine::Attached>()
+            .map(|attached| attached.blockers.clone()),
+        message: e.to_string(),
+    });
     engine.current_origin = StatusScope::All;
+    engine.dispatch_policy = None;
 
     if result.is_ok() && mutates_config {
         let _ = config_reload_tx.send(());
     }
-    if let Ok(outcome) = &result
-        && let Some(status) = &outcome.status
-    {
-        let _ = status_tx.send(status.clone());
+    if let Ok(outcome) = &result {
+        for status in outcome.status.iter().chain(outcome.settled.iter()) {
+            if for_every_surface && status.scope == StatusScope::All {
+                status_tx.keep_for_terminal(status);
+            }
+            let _ = status_tx.send(status.clone());
+        }
     }
     let _ = reply.send(result);
 }
 
 fn handle_attach_pull_request(
     engine: &mut Engine,
-    session_id: String,
-    raw: String,
+    session_id: &str,
+    raw: &str,
     origin: StatusScope,
-    reply: oneshot::Sender<Result<String, String>>,
+    reply: oneshot::Sender<Result<OperationView, String>>,
     status_tx: &mut StatusEmitter,
 ) {
     engine.current_origin = origin;
-    let result = engine.dispatch_attach_pull_request(&session_id, &raw);
+    let result = engine.dispatch_attach_pull_request(session_id, raw);
     engine.current_origin = StatusScope::All;
     let result = match result {
         Ok((op_id, pending)) => {
+            // The record waits on the attach's own key, so the final the
+            // lookup ends in finishes it at the emitter. Opened before the
+            // busy goes out, so nothing the attach raises lands first.
+            engine.open_operation(&op_id, OperationKind::PrAttach);
             for status in
                 yaran_core::wire::wire_statuses_from_reaction(&EventReaction::Status(pending))
             {
                 let _ = status_tx.send(status);
             }
-            Ok(op_id)
+            engine
+                .operations
+                .peek(&op_id, Instant::now())
+                .ok_or_else(|| MISSING_OPERATION_RECORD.to_string())
         }
         Err(error) => Err(error.to_string()),
     };
@@ -3735,7 +4985,7 @@ fn handle_attach_pull_request(
 
 fn handle_create_agent_branch_plan(
     engine: &Engine,
-    project_id: String,
+    project_id: &str,
     name: String,
     reply: oneshot::Sender<Option<yaran_core::git::CreateAgentBranchPlan>>,
 ) {
@@ -3777,16 +5027,63 @@ fn first_load_inputs(engine: &Engine) -> FirstLoadInputs {
     }
 }
 
-fn read_raw_config(engine: &Engine) -> Result<String, String> {
+/// The raw `config.toml` as the editor opens it, with the proof of what was
+/// read that its save must carry back.
+#[derive(Debug, Clone)]
+pub(crate) struct RawConfig {
+    pub(crate) content: String,
+    /// [`yaran_core::config_write::read_token`] of the file as read (or of "no
+    /// file"). The save is refused unless the file still matches it.
+    pub(crate) token: String,
+}
+
+/// Why a raw config save did not land.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RawWriteError {
+    /// The file changed since the editor read it (a `yaran config set`, a ban,
+    /// another editor), so saving would undo that change. Nothing was written;
+    /// the browser offers to reload the file or keep editing.
+    Changed(String),
+    /// Anything else: no token, invalid TOML, a change the editor may not
+    /// make, an IO failure.
+    Refused(String),
+}
+
+impl std::fmt::Display for RawWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Changed(message) | Self::Refused(message) => f.write_str(message),
+        }
+    }
+}
+
+/// What the raw editor is told when the file moved under it.
+// backtick-ok: an HTTP refusal of the raw config editor's save, not a status.
+const RAW_CONFIG_CHANGED: &str = "config.toml changed on disk since you opened it (a `yaran \
+     config set`, a blocked address, or another editor), and saving would undo that change, \
+     so nothing was saved. Reload the file to see it as it is now (your edits here are \
+     discarded), or keep editing and copy what you need first.";
+
+fn read_raw_config(engine: &Engine) -> Result<RawConfig, String> {
     match std::fs::read_to_string(&engine.paths.config_path) {
-        Ok(raw) => Ok(raw),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(
-            yaran_core::config_write::render_config_plain(&engine.config),
-        ),
+        Ok(raw) => Ok(RawConfig {
+            token: yaran_core::config_write::read_token(Some(&raw)),
+            content: raw,
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RawConfig {
+            content: yaran_core::config_write::render_config_plain(&engine.config),
+            token: yaran_core::config_write::read_token(None),
+        }),
         Err(error) => Err(format!("Could not read config.toml: {error}")),
     }
 }
 
+/// Carry out one request the engine loop does not handle inline.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one delegating arm per engine request kind; splitting the match needs a catch-all \
+              arm, which gives up the compile-time check that every request kind is handled"
+)]
 fn handle_request(
     engine: &mut Engine,
     req: EngineRequest,
@@ -3805,16 +5102,35 @@ fn handle_request(
     input_owners: &PtySizeOwners,
 ) {
     match req {
-        EngineRequest::ApplyWire(cmd, reply, origin) => {
+        EngineRequest::ApplyWire(cmd, reply, origin, operation) => {
             handle_apply_wire_request(
                 engine,
                 cmd,
                 reply,
-                origin,
+                WireOrigin {
+                    scope: origin,
+                    operation,
+                },
                 status_tx,
                 config_reload_tx,
                 config_disk_ahead,
             );
+        }
+        EngineRequest::ReloadAfterOwnConfigWrite(reply) => {
+            engine.reload_after_own_config_write(|engine| {
+                handle_apply_wire_request(
+                    engine,
+                    WireCommand::ReloadConfig {},
+                    reply,
+                    WireOrigin {
+                        scope: StatusScope::All,
+                        operation: None,
+                    },
+                    status_tx,
+                    config_reload_tx,
+                    config_disk_ahead,
+                );
+            });
         }
         EngineRequest::EmitStatus(status) => {
             let _ = status_tx.send(status);
@@ -3822,299 +5138,537 @@ fn handle_request(
         EngineRequest::ClearStatus(key) => {
             status_tx.clear(key);
         }
-        EngineRequest::TakeLateStatusFinals(reply) => {
-            let _ = reply.send(status_tx.take_late_finals());
-        }
+        EngineRequest::TakeLateStatusFinals(reply) => answer(reply, status_tx.take_late_finals()),
         EngineRequest::LateStatusFinalsWaiting(reply) => {
-            let _ = reply.send(status_tx.late_finals_waiting());
+            answer(reply, status_tx.late_finals_waiting());
         }
         EngineRequest::AttachPullRequest(session_id, raw, origin, reply) => {
-            handle_attach_pull_request(engine, session_id, raw, origin, reply, status_tx);
+            handle_attach_pull_request(engine, &session_id, &raw, origin, reply, status_tx);
         }
-        // SubscribePty is handled inline in the loop (it needs `&mut pending`).
-        EngineRequest::SubscribePty(_, _) => unreachable!("SubscribePty handled in the loop"),
+        // SubscribePty is handled inline in the loop (it needs `&mut pending`),
+        // and PtyShown with it (it needs the loop's foreground memory).
+        EngineRequest::SubscribePty(..) => unreachable!("SubscribePty handled in the loop"),
+        EngineRequest::PtyShown(_) => unreachable!("PtyShown handled in the loop"),
+        // Handled inline in the loop (it needs the pending project saves).
+        EngineRequest::SaveProjectSetting(..) => {
+            unreachable!("SaveProjectSetting handled in the loop")
+        }
         // Shutdown is handled inline in the loop (it must stop the thread).
         EngineRequest::Shutdown(_) => unreachable!("Shutdown handled in the loop"),
-        EngineRequest::WritePty(id, bytes) => {
-            handle_pty_write(engine, id, bytes);
-        }
+        EngineRequest::WritePty(id, bytes) => handle_pty_write(engine, &id, &bytes),
         EngineRequest::ResizePty(id, rows, cols, seq) => {
-            handle_pty_resize(engine, input_owners, id, rows, cols, seq);
+            handle_pty_resize(engine, input_owners, &id, rows, cols, seq);
         }
         EngineRequest::PtyGridSize(id, reply) => {
-            let _ = reply.send(pty_for(engine, &id).and_then(|client| client.grid_size()));
+            answer(
+                reply,
+                pty_for(engine, &id).and_then(yaran_core::pty::PtyClient::grid_size),
+            );
         }
-        EngineRequest::NoteViewed(id) => {
-            // The engine gates on the id resolving to a real agent tab, so a
-            // companion-terminal id or a stale/bogus id is a harmless no-op and
-            // `agent_viewed` never accumulates junk entries.
-            engine.note_agent_viewed_if_known(&id);
+        // The engine gates on the id resolving to a real agent tab, so a
+        // companion-terminal id or a stale/bogus id is a harmless no-op and
+        // `agent_viewed` never accumulates junk entries.
+        EngineRequest::NoteViewed(id) => engine.note_agent_viewed_if_known(&id),
+        EngineRequest::SubscribeTerminal(id, reply) => {
+            answer(reply, subscribe_terminal(engine, &id));
         }
-        EngineRequest::SubscribeTerminal(terminal_id, reply) => {
-            let res = match engine.companion_terminals.get(&terminal_id) {
-                Some(terminal) => Ok(terminal.client.subscribe_with_repaint()),
-                None => Err("unknown terminal".to_string()),
-            };
-            let _ = reply.send(res);
+        EngineRequest::CreateTerminal(session_id, ticket, reply) => {
+            let owner = yaran_core::model::TerminalOwner::Session(session_id);
+            answer(
+                reply,
+                create_owned_terminal(engine, &owner, ticket.as_ref()),
+            );
         }
-        EngineRequest::CreateTerminal(session_id, reply) => {
-            // Headless spawn: seed a default 24x80 and let the first attaching
-            // client resize the PTY to its real viewport.
-            let res = engine
-                .create_companion_terminal(&session_id, 24, 80)
-                .map_err(|e| e.to_string());
-            let _ = reply.send(res);
+        EngineRequest::CreateProjectTerminal(project_id, ticket, reply) => {
+            let owner = yaran_core::model::TerminalOwner::Project(project_id);
+            answer(
+                reply,
+                create_owned_terminal(engine, &owner, ticket.as_ref()),
+            );
         }
-        EngineRequest::CreateProjectTerminal(project_id, reply) => {
-            let res = engine
-                .create_project_terminal(&project_id, 24, 80)
-                .map_err(|e| e.to_string());
-            let _ = reply.send(res);
+        EngineRequest::CreateStandaloneTerminal(ticket, reply) => {
+            let owner = yaran_core::model::TerminalOwner::Standalone;
+            answer(
+                reply,
+                create_owned_terminal(engine, &owner, ticket.as_ref()),
+            );
         }
-        EngineRequest::CreateStandaloneTerminal(reply) => {
-            let res = engine
-                .create_standalone_terminal(24, 80)
-                .map_err(|e| e.to_string());
-            let _ = reply.send(res);
+        EngineRequest::TerminalOwnerOf(id, reply) => answer(reply, terminal_owner_of(engine, &id)),
+        EngineRequest::TerminalRoot(id, reply) => answer(reply, terminal_root(engine, &id)),
+        EngineRequest::CreateAgentTab(session_id, provider, ticket, reply) => {
+            answer(
+                reply,
+                create_agent_tab_request(engine, &session_id, provider, ticket.as_ref()),
+            );
         }
-        EngineRequest::TerminalOwnerOf(terminal_id, reply) => {
-            let owner = engine
-                .companion_terminals
-                .get(&terminal_id)
-                .map(|t| t.owner.clone());
-            let _ = reply.send(owner);
-        }
-        EngineRequest::TerminalRoot(terminal_id, reply) => {
-            let root = engine
-                .companion_terminals
-                .get(&terminal_id)
-                .map(|t| (t.owner.clone(), t.client.spawn_dir().to_path_buf()));
-            let _ = reply.send(root);
-        }
-        EngineRequest::CreateAgentTab(session_id, provider, reply) => {
-            let res = create_agent_tab_inner(engine, &session_id, provider);
-            let _ = reply.send(res);
-        }
-        EngineRequest::StartAgentTab(tab_id, reply) => {
-            // Already running is success, not a second launch: the card can be
-            // pressed from a page whose spine has not caught up yet.
-            let res = if engine.providers.contains_key(TabIdRef::new(&tab_id)) {
-                Ok(())
-            } else {
-                launch_agent(engine, &tab_id)
-            };
-            let _ = reply.send(res);
+        EngineRequest::StartAgentTab(tab_id, ticket, reply) => {
+            answer(
+                reply,
+                start_agent_tab_request(engine, &tab_id, ticket.as_ref()),
+            );
         }
         EngineRequest::SlotTabId(session_id, reply) => {
-            let slot = engine
-                .session_by_id(&session_id)
-                .map(|s| s.slot_tab_id().to_string());
-            let _ = reply.send(slot);
+            answer(reply, slot_tab_id(engine, &session_id));
         }
-        EngineRequest::TabSession(tab_id, reply) => {
-            // This answers "which session owns this EXTRA tab". Slot-ness is
-            // asked of the resolver rather than inferred from "the slot tab has
-            // no `agent_tabs` row", which is a fact about today's storage shape.
-            //
-            // The per-tab route accepts the slot tab and reaches its PTY; the
-            // exclusion here is only about the stored-owner lookup, since the
-            // slot tab's owner is not stored, it is resolved. Callers that must
-            // accept the slot tab ask `is_slot_tab` first (the tab PTY socket
-            // and the REST tab verbs all do).
-            let owner = match engine.session_for_slot_tab(TabIdRef::new(&tab_id)) {
-                Some(_) => None,
-                None => engine
-                    .agent_tabs
-                    .get(TabIdRef::new(&tab_id))
-                    .map(|t| t.session_id.clone()),
-            };
-            let _ = reply.send(owner);
-        }
+        EngineRequest::TabSession(tab_id, reply) => answer(reply, tab_session(engine, &tab_id)),
         EngineRequest::CreateAgentBranchPlan(project_id, name, reply) => {
-            handle_create_agent_branch_plan(engine, project_id, name, reply);
+            handle_create_agent_branch_plan(engine, &project_id, name, reply);
         }
         EngineRequest::PtyKeyForPaneId(pane_id, reply) => {
-            let _ = reply.send(engine.pty_key_for_pane_id(&pane_id));
+            answer(reply, engine.pty_key_for_pane_id(&pane_id));
         }
         EngineRequest::FileDropDestination(pty_id, reply) => {
-            let _ = reply.send(engine.file_drop_destination(&pty_id));
+            answer(reply, engine.file_drop_destination(&pty_id));
         }
         EngineRequest::FileDropTreeDestination(pty_id, dir, reply) => {
-            let _ = reply.send(engine.file_drop_tree_destination(&pty_id, &dir));
+            answer(reply, engine.file_drop_tree_destination(&pty_id, &dir));
         }
         EngineRequest::FileDropRefreshTarget(pty_id, reply) => {
-            let _ = reply.send(engine.file_drop_refresh_target(&pty_id));
+            answer(reply, engine.file_drop_refresh_target(&pty_id));
         }
-        EngineRequest::SessionWorktree(session_id, reply) => {
-            let worktree = engine
-                .sessions
-                .iter()
-                .find(|s| s.id == session_id)
-                .map(|s| s.directory().to_string());
-            let _ = reply.send(worktree);
-        }
+        EngineRequest::SessionWorktree(id, reply) => answer(reply, session_worktree(engine, &id)),
         EngineRequest::SessionBranchDeleteInputs(session_id, reply) => {
-            let _ = reply.send(engine.branch_delete_inputs(&session_id));
+            answer(reply, engine.branch_delete_inputs(&session_id));
         }
-        EngineRequest::NoteChangedFilesOutcome(session_id, failure) => {
-            engine.post_changed_files_outcome(&session_id, failure.as_deref());
+        EngineRequest::RenamePushedProbe(session_id, reply) => {
+            answer(reply, engine.rename_pushed_probe(&session_id));
         }
-        EngineRequest::PostStatus(status) => {
-            engine.post_status(status);
+        EngineRequest::PullRequestBranches(session_id, reply) => {
+            answer(
+                reply,
+                engine
+                    .pull_request_branches(&session_id)
+                    .map_err(|err| format!("{err:#}")),
+            );
         }
+        EngineRequest::NoteChangedFilesOutcome(session_id, outcome) => {
+            engine.post_changed_files_outcome(&session_id, outcome);
+        }
+        EngineRequest::RecordOfferedBranches(session_id, names) => {
+            engine.record_offered_branches(&session_id, &names);
+        }
+        EngineRequest::PostStatus(status) => engine.post_status(status),
         EngineRequest::SessionMissingDirectoryReason(session_id, reply) => {
-            // Refreshed off-thread for the same reason the git access is: this
-            // call answers with the previous verdict and the next one sees the
-            // new answer, with no git subprocess on the engine thread.
-            engine.spawn_folder_repo_probe(&session_id);
-            let _ = reply.send(engine.missing_directory_reason(&session_id));
+            answer(reply, missing_directory_reason(engine, &session_id));
         }
         EngineRequest::SessionGitAccess(session_id, reply) => {
-            // Refresh first: the probe is off-thread, so this call answers with
-            // the previous verdict and the next one sees the new answer. That
-            // is how a folder that became a repository is noticed when the
-            // changes panel opens, with no git subprocess on the engine thread.
-            engine.spawn_folder_repo_probe(&session_id);
-            let _ = reply.send(engine.session_git_access(&session_id));
+            answer(reply, session_git_access(engine, &session_id));
         }
         EngineRequest::ProjectPath(project_id, reply) => {
-            let path = engine
-                .projects
-                .iter()
-                .find(|p| p.id == project_id)
-                .map(|p| p.path.clone());
-            let _ = reply.send(path);
+            answer(reply, project_path(engine, &project_id));
         }
-        EngineRequest::ResourceTargets(reply) => {
-            let _ = reply.send(engine.resource_monitor_targets());
-        }
-        EngineRequest::Bootstrap(reply) => {
-            let _ = reply.send(engine.bootstrap());
-        }
-        EngineRequest::Spine(reply) => {
-            let _ = reply.send(owned_spine(engine, input_owners));
-        }
+        EngineRequest::ResourceTargets(reply) => answer(reply, engine.resource_monitor_targets()),
+        EngineRequest::Bootstrap(reply) => answer(reply, engine.bootstrap()),
+        EngineRequest::Spine(reply) => answer(reply, owned_spine(engine, input_owners)),
         // SpineJson is handled inline in the loop (it serves the loop-local cache).
         EngineRequest::SpineJson(_) => unreachable!("SpineJson handled in the loop"),
         EngineRequest::Session(id, reply) => {
-            let view = engine.session_view(&id).map(|mut session| {
-                // Same input-owner overlay as the spine (see `owned_spine`), so
-                // the single-session read agrees with `/spine` about who is
-                // driving each tab.
-                overlay_session_input_owners(&mut session, &input_owners.input_owners_snapshot());
-                let terminals = engine
-                    .terminal_views_for_owner(yaran_core::model::TerminalOwnerRef::Session(&id));
-                (session, terminals)
-            });
-            let _ = reply.send(view);
+            answer(reply, session_with_terminals(engine, input_owners, &id));
         }
         EngineRequest::CreatedSessionForOp(op_id, reply) => {
-            let _ = reply.send(engine.created_session_for_op(&op_id));
+            answer(reply, engine.created_session_for_op(&op_id));
         }
         EngineRequest::NextChangesRev(session_id, reply) => {
-            // Single chokepoint over the engine's SQLite connection. On a DB
-            // error fall back to 0 (a non-advancing rev), which the client's
-            // `rev >=` apply guard treats as a redundant refetch rather than a
-            // crash; the error is logged for diagnosis.
-            let rev = engine
-                .session_store
-                .next_changes_rev(&session_id)
-                .unwrap_or_else(|e| {
-                    yaran_core::logger::error(&format!(
-                        "next_changes_rev failed for session {session_id}: {e}"
-                    ));
-                    0
-                });
-            let _ = reply.send(rev);
+            answer(reply, next_changes_rev(engine, &session_id));
         }
-        EngineRequest::EditorDefault(reply) => {
-            let _ = reply.send(engine.config.editor.default.clone());
-        }
+        EngineRequest::EditorDefault(reply) => answer(reply, engine.config.editor.default.clone()),
         EngineRequest::CloudInputs(reply) => {
-            let _ = reply.send(crate::cloud_routes::CloudInputs::from_engine(engine));
+            answer(reply, crate::cloud_routes::CloudInputs::from_engine(engine));
         }
-        EngineRequest::BrowseStartDir(reply) => {
-            let dir = yaran_core::project_browser::resolve_start_dir(&engine.config)
-                .to_string_lossy()
-                .to_string();
-            let _ = reply.send(dir);
-        }
+        EngineRequest::BrowseStartDir(reply) => answer(reply, browse_start_dir(engine)),
+        // Spawn the off-thread refresh unconditionally. If this worktree is
+        // not the currently-watched one, the resulting `ChangedFilesReady`
+        // (worktree-tagged) is dropped by `events.rs`. In practice the git
+        // HTTP handler only refreshes the worktree it just mutated, which is
+        // normally the watched one.
         EngineRequest::RefreshChangedFiles(worktree) => {
-            // Spawn the off-thread refresh unconditionally. If this worktree is
-            // not the currently-watched one, the resulting `ChangedFilesReady`
-            // (worktree-tagged) is dropped by `events.rs`. In practice the git
-            // HTTP handler only refreshes the worktree it just mutated, which is
-            // normally the watched one.
             engine.spawn_changed_files_refresh(std::path::PathBuf::from(worktree));
         }
         EngineRequest::PullRequestResolutionInputs(reply) => {
-            let _ = reply.send((
-                engine.projects.clone(),
-                engine.github_host_policy(),
-                engine.pr_agent_command_available(),
-            ));
+            answer(reply, pull_request_resolution_inputs(engine));
         }
+        EngineRequest::DestructiveCheck(path, reply) => {
+            answer(reply, engine.destructive_check(&path));
+        }
+        EngineRequest::AdmitManagerRemoval {
+            project_id,
+            path,
+            branch,
+            reply,
+        } => answer(
+            reply,
+            engine.admit_manager_removal(&project_id, &path, branch),
+        ),
+        EngineRequest::AdmitLeftoverRemoval {
+            project_id,
+            path,
+            delete_branches,
+            reply,
+        } => answer(
+            reply,
+            engine.admit_leftover_removal(&project_id, &path, delete_branches),
+        ),
         EngineRequest::ProjectWorktreeInputs(project_id, reply) => {
-            let inputs = engine
-                .projects
-                .iter()
-                .find(|p| p.id == project_id)
-                .cloned()
-                .map(|project| (project, engine.paths.clone(), engine.sessions.clone()));
-            let _ = reply.send(inputs);
+            answer(reply, project_worktree_inputs(engine, &project_id));
         }
-        EngineRequest::RegisteredProjectPaths(reply) => {
-            let _ = reply.send(
-                engine
-                    .registered_project_paths()
-                    .map_err(|e| format!("{e:#}")),
-            );
+        EngineRequest::WireAdmissionRefusal(command, reply) => {
+            answer(reply, engine.wire_admission_refusal(&command));
         }
         EngineRequest::SessionStartupLogContext(session_id, reply) => {
-            let context = engine
-                .sessions
-                .iter()
-                .find(|s| s.id == session_id)
-                // A standalone agent has no project, so it has no startup-command
-                // log directory either: startup commands are a project's
-                // worktree provisioning step.
-                .and_then(|session| {
-                    session
-                        .project_id()
-                        .map(|project_id| (engine.paths.clone(), project_id.to_string()))
-                });
-            let _ = reply.send(context);
+            answer(reply, session_startup_log_context(engine, &session_id));
         }
         EngineRequest::ProjectStartupLogContext(project_id, reply) => {
-            let context = engine
-                .projects
-                .iter()
-                .find(|p| p.id == project_id)
-                .map(|_| engine.paths.clone());
-            let _ = reply.send(context);
+            answer(reply, project_startup_log_context(engine, &project_id));
         }
-        EngineRequest::ReadRawConfig(reply) => {
-            let _ = reply.send(read_raw_config(engine));
+        EngineRequest::ReadRawConfig(reply) => answer(reply, read_raw_config(engine)),
+        EngineRequest::WriteRawConfig(content, token, reply) => {
+            let written =
+                write_raw_config_on_engine(engine, &content, token.as_deref(), config_disk_ahead);
+            answer(reply, written);
         }
-        EngineRequest::WriteRawConfig(content, reply) => {
-            let _ = reply.send(write_raw_config_on_engine(
-                engine,
-                &content,
-                config_disk_ahead,
-            ));
-        }
-        EngineRequest::FirstLoadInputs(reply) => {
-            let _ = reply.send(first_load_inputs(engine));
-        }
+        EngineRequest::FirstLoadInputs(reply) => answer(reply, first_load_inputs(engine)),
         EngineRequest::MarkVersionSeen(version, reply) => {
-            let result = engine
-                .session_store
-                .set_last_seen_version(&version)
-                .map_err(|err| format!("could not record the version as seen: {err:#}"));
-            let _ = reply.send(result);
+            answer(reply, mark_version_seen(engine, &version));
         }
     }
 }
+
+/// Send `value` on a request's reply channel. A requester that stopped waiting
+/// dropped its receiver, and nothing is owed to it.
+fn answer<T>(reply: oneshot::Sender<T>, value: T) {
+    let _ = reply.send(value);
+}
+
+/// Attach to an already running companion terminal; an unknown id is an
+/// error, never a spawn.
+fn subscribe_terminal(engine: &Engine, terminal_id: &str) -> Result<PtySubscription, String> {
+    match engine.companion_terminals.get(terminal_id) {
+        Some(terminal) => Ok(terminal.client.subscribe_with_repaint()),
+        None => Err("unknown terminal".to_string()),
+    }
+}
+
+/// Create a terminal for `owner`, followed by `ticket` when the client follows
+/// it. Headless spawn: seed a default 24x80 and let the first attaching client
+/// resize the PTY to its real viewport.
+fn create_owned_terminal(
+    engine: &mut Engine,
+    owner: &yaran_core::model::TerminalOwner,
+    ticket: Option<&OperationTicket>,
+) -> Result<(String, String), String> {
+    create_terminal_operation(engine, owner, ticket, |engine| match owner {
+        yaran_core::model::TerminalOwner::Session(session_id) => {
+            engine.create_companion_terminal(session_id, 24, 80)
+        }
+        yaran_core::model::TerminalOwner::Project(project_id) => {
+            engine.create_project_terminal(project_id, 24, 80)
+        }
+        yaran_core::model::TerminalOwner::Standalone => engine.create_standalone_terminal(24, 80),
+    })
+}
+
+/// Who owns a live companion terminal, `None` when the id names nothing.
+fn terminal_owner_of(engine: &Engine, terminal_id: &str) -> Option<TerminalOwner> {
+    engine
+        .companion_terminals
+        .get(terminal_id)
+        .map(|t| t.owner.clone())
+}
+
+/// A live companion terminal's owner and the directory it was spawned in.
+fn terminal_root(
+    engine: &Engine,
+    terminal_id: &str,
+) -> Option<(TerminalOwner, std::path::PathBuf)> {
+    engine
+        .companion_terminals
+        .get(terminal_id)
+        .map(|t| (t.owner.clone(), t.client.spawn_dir().to_path_buf()))
+}
+
+/// Create an agent tab, followed by `ticket` when the client follows it.
+fn create_agent_tab_request(
+    engine: &mut Engine,
+    session_id: &str,
+    provider: Option<String>,
+    ticket: Option<&OperationTicket>,
+) -> Result<(String, String), String> {
+    if let Some(ticket) = ticket {
+        engine.open_operation(&ticket.id, ticket.kind);
+    }
+    let owner = yaran_core::model::TerminalOwner::Session(session_id.to_string());
+    let res = engine
+        .admit(
+            ticket.map(|ticket| ticket.id.as_str()),
+            &engine.inside_admission(&owner),
+        )
+        .map_err(|e| e.to_string())
+        .and_then(|()| create_agent_tab_inner(engine, session_id, provider));
+    if let Some(ticket) = ticket {
+        match &res {
+            // Whether the tab came up is its launch report's to say, so
+            // the record holds the tab until that report.
+            Ok((tab_id, _)) => {
+                engine.operations.hold(
+                    &ticket.id,
+                    &yaran_core::operations::Hold::exclusive(yaran_core::engine::InFlightKey::Tab(
+                        TabId::new(tab_id.clone()),
+                    )),
+                );
+                engine.operations.note(
+                    &ticket.id,
+                    &yaran_core::operations::OperationNotes {
+                        created: vec![tab_id.clone()],
+                        ..Default::default()
+                    },
+                );
+                engine.operations.await_key(
+                    &ticket.id,
+                    &yaran_core::operations::launch_binding_key(tab_id),
+                );
+                ticket.hand_back(engine);
+            }
+            Err(_) => engine.operations.discard(&ticket.id),
+        }
+    }
+    res
+}
+
+/// Start a dormant tab, followed by `ticket` when the client follows it.
+fn start_agent_tab_request(
+    engine: &mut Engine,
+    tab_id: &str,
+    ticket: Option<&OperationTicket>,
+) -> Result<(), String> {
+    if let Some(ticket) = ticket {
+        engine.open_operation(&ticket.id, ticket.kind);
+    }
+    // Refused while another change holds the tab or its agent.
+    let admitted = match engine.owning_session_for_tab(tab_id) {
+        Some(session_id) => engine.admit(
+            ticket.map(|ticket| ticket.id.as_str()),
+            &engine.tab_admission(&session_id, TabId::new(tab_id.to_string())),
+        ),
+        None => Ok(()),
+    };
+    // Already running is success, not a second launch: the card can be
+    // pressed from a page whose spine has not caught up yet.
+    let running = engine.providers.contains_key(TabIdRef::new(tab_id));
+    let res = match admitted {
+        Err(in_the_way) => Err(in_the_way.to_string()),
+        Ok(()) if running => Ok(()),
+        Ok(()) => launch_agent(engine, tab_id),
+    };
+    if let Some(ticket) = ticket {
+        match &res {
+            // Nothing was started, so this is the end of it.
+            Ok(()) if running => {
+                engine
+                    .operations
+                    .finish(&ticket.id, StatusTone::Info, "", None, Instant::now());
+                ticket.hand_back(engine);
+            }
+            // A launch started here or already in flight: its report is the
+            // outcome, keyed by the slot tab's stored id whatever the route's spelling.
+            Ok(()) => {
+                let launched = engine
+                    .session_for_slot_tab(TabIdRef::new(tab_id))
+                    .map_or_else(
+                        || tab_id.to_string(),
+                        |session| session.slot_tab_id().to_string(),
+                    );
+                engine.operations.await_key(
+                    &ticket.id,
+                    &yaran_core::operations::launch_binding_key(&launched),
+                );
+                ticket.hand_back(engine);
+            }
+            Err(_) => engine.operations.discard(&ticket.id),
+        }
+    }
+    res
+}
+
+/// The id of a session's first tab, `None` when the session is unknown.
+fn slot_tab_id(engine: &Engine, session_id: &str) -> Option<String> {
+    engine
+        .session_by_id(session_id)
+        .map(|s| s.slot_tab_id().to_string())
+}
+
+/// Which session owns this EXTRA tab.
+///
+/// Slot-ness is asked of the resolver rather than inferred from "the slot tab
+/// has no `agent_tabs` row", which is a fact about today's storage shape. The
+/// per-tab route accepts the slot tab and reaches its PTY; the exclusion here
+/// is only about the stored-owner lookup, since the slot tab's owner is not
+/// stored, it is resolved. Callers that must accept the slot tab ask
+/// `is_slot_tab` first (the tab PTY socket and the REST tab verbs all do).
+fn tab_session(engine: &Engine, tab_id: &str) -> Option<String> {
+    match engine.session_for_slot_tab(TabIdRef::new(tab_id)) {
+        Some(_) => None,
+        None => engine
+            .agent_tabs
+            .get(TabIdRef::new(tab_id))
+            .map(|t| t.session_id.clone()),
+    }
+}
+
+/// The directory an agent works in, `None` when the session is unknown.
+fn session_worktree(engine: &Engine, session_id: &str) -> Option<String> {
+    engine
+        .sessions
+        .iter()
+        .find(|s| s.id == session_id)
+        .map(|s| s.directory().to_string())
+}
+
+/// Why an agent's directory is gone, if it is. Refreshed off-thread for the
+/// same reason the git access is: this call answers with the previous verdict
+/// and the next one sees the new answer, with no git subprocess on the engine
+/// thread.
+fn missing_directory_reason(engine: &mut Engine, session_id: &str) -> Option<String> {
+    engine.spawn_folder_repo_probe(session_id);
+    engine.missing_directory_reason(session_id)
+}
+
+/// What git may do in an agent's folder. Refresh first: the probe is
+/// off-thread, so this call answers with the previous verdict and the next one
+/// sees the new answer. That is how a folder that became a repository is
+/// noticed when the changes panel opens, with no git subprocess on the engine
+/// thread.
+fn session_git_access(
+    engine: &mut Engine,
+    session_id: &str,
+) -> Option<yaran_core::engine::SessionGitAccess> {
+    engine.spawn_folder_repo_probe(session_id);
+    engine.session_git_access(session_id)
+}
+
+/// A project's path, `None` when the project is unknown.
+fn project_path(engine: &Engine, project_id: &str) -> Option<String> {
+    engine
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .map(|p| p.path.clone())
+}
+
+/// One session's view with the same input-owner overlay as the spine (see
+/// `owned_spine`), so the single-session read agrees with `/spine` about who is
+/// driving each tab, and the terminals it owns.
+fn session_with_terminals(
+    engine: &Engine,
+    input_owners: &PtySizeOwners,
+    id: &str,
+) -> Option<(
+    yaran_core::viewmodel::SessionView,
+    Vec<yaran_core::viewmodel::TerminalView>,
+)> {
+    engine.session_view(id).map(|mut session| {
+        overlay_session_input_owners(&mut session, &input_owners.input_owners_snapshot());
+        let terminals =
+            engine.terminal_views_for_owner(yaran_core::model::TerminalOwnerRef::Session(id));
+        (session, terminals)
+    })
+}
+
+/// The next changed-files revision for a session, through the single
+/// chokepoint over the engine's SQLite connection. On a DB error it falls back
+/// to 0 (a non-advancing rev), which the client's `rev >=` apply guard treats as
+/// a redundant refetch rather than a crash; the error is logged for diagnosis.
+fn next_changes_rev(engine: &Engine, session_id: &str) -> u64 {
+    engine
+        .session_store
+        .next_changes_rev(session_id)
+        .unwrap_or_else(|e| {
+            yaran_core::logger::error(&format!(
+                "next_changes_rev failed for session {session_id}: {e}"
+            ));
+            0
+        })
+}
+
+/// Where the project browser starts.
+fn browse_start_dir(engine: &Engine) -> String {
+    yaran_core::project_browser::resolve_start_dir(&engine.config)
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Everything the pull-request reference resolver needs, cloned off the engine.
+fn pull_request_resolution_inputs(engine: &Engine) -> PullRequestResolutionInputs {
+    PullRequestResolutionInputs {
+        projects: engine.projects.clone(),
+        policy: engine.github_host_policy(),
+        protocols: engine.github_git_protocols(),
+        gh_program: engine.gh_probe.program.clone(),
+        gh_available: engine.pr_agent_command_available(),
+        worktrees_root: engine.paths.worktrees_root.clone(),
+    }
+}
+
+/// The inputs to classify a project's managed worktrees, `None` when the
+/// project is unknown.
+fn project_worktree_inputs(engine: &Engine, project_id: &str) -> Option<ProjectWorktreeInputs> {
+    engine
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .cloned()
+        .map(|project| ProjectWorktreeInputs {
+            project,
+            paths: engine.paths.clone(),
+            sessions: engine.sessions.clone(),
+            busy: engine.busy_folders(),
+        })
+}
+
+/// Where an agent's startup-command logs live. A standalone agent has no
+/// project, so it has no startup-command log directory either: startup
+/// commands are a project's worktree provisioning step.
+fn session_startup_log_context(
+    engine: &Engine,
+    session_id: &str,
+) -> Option<(yaran_core::config::YaranPaths, String)> {
+    engine
+        .sessions
+        .iter()
+        .find(|s| s.id == session_id)
+        .and_then(|session| {
+            session
+                .project_id()
+                .map(|project_id| (engine.paths.clone(), project_id.to_string()))
+        })
+}
+
+/// Where a project's startup-command logs live, `None` when it is unknown.
+fn project_startup_log_context(
+    engine: &Engine,
+    project_id: &str,
+) -> Option<yaran_core::config::YaranPaths> {
+    engine
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .map(|_| engine.paths.clone())
+}
+
+/// Record `version` as the last one the user has seen.
+fn mark_version_seen(engine: &Engine, version: &str) -> Result<(), String> {
+    engine
+        .session_store
+        .set_last_seen_version(version)
+        .map_err(|err| format!("could not record the version as seen: {err:#}"))
+}
+
+/// Why the raw config editor refused an edit that sets, changes or clears the
+/// web password.
+// backtick-ok: an HTTP refusal of the raw config editor's save, not a status.
+const PASSWORD_EDIT_REFUSAL: &str = "The web password cannot be set, changed or removed \
+     from the config editor, so nothing was written. Change it from Preferences, which asks \
+     for the current password, or with `yaran config set server.auth.password` on the machine \
+     yaran runs on, and keep password_hash as it is in this edit.";
 
 /// Validate and persist a raw `config.toml` edit from the web Monaco editor, on
 /// the engine thread. Runs as a free function (not an inline closure) so the `?`
@@ -4135,33 +5689,91 @@ fn handle_request(
 fn write_raw_config_on_engine(
     engine: &mut Engine,
     content: &str,
+    token: Option<&str>,
     config_disk_ahead: &mut bool,
-) -> Result<(), String> {
-    let parsed = yaran_core::config::validate_config_str(content)
-        .map_err(|e| format!("config.toml is not valid: {e}"))?;
-    // The web editor must not silently weaken the server perimeter: [server]
-    // host/allowed_hosts only take effect at restart, so a change here would
-    // persist unreviewed. Reject perimeter edits.
-    if parsed.server.host != engine.config.server.host
-        || parsed.server.allowed_hosts != engine.config.server.allowed_hosts
-    {
-        return Err(
-            "Server host/allowed_hosts cannot be changed from the web editor; \
-             edit config.toml directly and restart."
+) -> Result<(), RawWriteError> {
+    let Some(token) = token else {
+        return Err(RawWriteError::Refused(
+            "This save carries no proof of what it read, so it could undo a change made since. \
+             Reopen the config editor and save again."
                 .to_string(),
-        );
+        ));
+    };
+    write_raw_config_checked(engine, content, token, config_disk_ahead)
+}
+
+/// [`write_raw_config_on_engine`] once the save's token is in hand.
+fn write_raw_config_checked(
+    engine: &mut Engine,
+    content: &str,
+    token: &str,
+    config_disk_ahead: &mut bool,
+) -> Result<(), RawWriteError> {
+    let refused = RawWriteError::Refused;
+    yaran_core::config::validate_config_str(content)
+        .map_err(|e| refused(format!("config.toml is not valid: {e}")))?;
+    // Every guard below judges the file as a start would load it, with the
+    // load migrations applied (decided, after review): a deprecated
+    // `[server] bind` becomes `host` on the next start, so judging the text
+    // as written would let it change the host past this guard.
+    let parsed = yaran_core::config::effective_config_from_text(content)
+        .map_err(|e| refused(format!("config.toml is not valid: {}", e.reason())))?;
+    // The web editor must not silently weaken the server perimeter, so both
+    // halves of it stay a terminal-side edit. `host` binds once and needs a
+    // restart; `allowed_hosts` is read live by the Host guard and a reload
+    // applies it, so its refusal names the reload rather than a restart nobody
+    // needs.
+    if parsed.server.host != engine.config.server.host {
+        return Err(refused(
+            "Server host cannot be changed from the web editor; edit config.toml directly \
+             and restart."
+                .to_string(),
+        ));
+    }
+    if parsed.server.allowed_hosts != engine.config.server.allowed_hosts {
+        return Err(refused(
+            "Server allowed_hosts cannot be changed from the web editor; edit config.toml \
+             directly and run Reload config, which applies it to the running server."
+                .to_string(),
+        ));
     }
     // Flush pending managed writes so a coalesced lazy save cannot clobber the
-    // raw write, then persist the user's text verbatim.
+    // raw write, then persist the user's text verbatim, but only after checking,
+    // under the config write lock and against the file as it is NOW, that it
+    // leaves the web password exactly as it is. The editor is a page anyone the
+    // login lets in can use; setting, changing or clearing the password needs
+    // the current one (Preferences) or the machine itself (`yaran config set`).
+    // Checked against the file rather than memory, so a `yaran config set` that
+    // landed before its reload is the password the edit must keep.
     engine.config_writer.flush();
-    yaran_core::config_write::write_config_atomic(
-        &engine.paths.config_path,
-        content,
-        yaran_core::config_write::Durability::Fsync,
-    )
+    let running_hash = engine.config.server.auth.password_hash.clone();
+    let new_hash = parsed.server.auth.password_hash.clone();
+    yaran_core::config_write::replace_config_file(&engine.paths.config_path, |current| {
+        // The save carries proof of what it read; a file that moved since
+        // (a `yaran config set`, a ban, another editor) is not overwritten.
+        if yaran_core::config_write::read_token(current) != token {
+            anyhow::bail!(RAW_CONFIG_CHANGED);
+        }
+        let current_hash = current
+            .and_then(|raw| yaran_core::config::auth_section_of(raw).ok())
+            .map_or(running_hash, |auth| auth.password_hash);
+        if new_hash != current_hash {
+            anyhow::bail!(PASSWORD_EDIT_REFUSAL);
+        }
+        Ok((content.to_string(), ()))
+    })
     // Don't leak the absolute config-dir path to the client: return the
-    // underlying OS error without the path-annotated context.
-    .map_err(|e| format!("Could not write config.toml: {}", e.root_cause()))?;
+    // underlying error without the path-annotated context.
+    .map_err(|e| {
+        let cause = e.root_cause().to_string();
+        if cause == RAW_CONFIG_CHANGED {
+            RawWriteError::Changed(cause)
+        } else if cause == PASSWORD_EDIT_REFUSAL {
+            refused(cause)
+        } else {
+            refused(format!("Could not write config.toml: {cause}"))
+        }
+    })?;
     // Persist-only: the file is on disk, but the running config is left as-is so
     // nothing applies until an explicit reload. Mark disk as ahead of memory so a
     // later config-static mutation reconciles before its wholesale patch (which
@@ -4180,6 +5792,65 @@ fn last_run_failed_refusal() -> String {
         .to_string()
 }
 
+/// Whether the pane behind a terminal socket is on screen. A part of a stack
+/// kept mounted off screen is not looking at its tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneVisibility {
+    OnScreen,
+    OffScreen,
+}
+
+/// What a `SubscribePty` asks for: the tab, and whether the pane opening it
+/// is on screen.
+struct Subscribe {
+    tab_id: String,
+    viewed: PaneVisibility,
+}
+
+/// Which pull-request check looking at a tab started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LookedAtCheck {
+    /// The tight foreground refresh, for a genuine change of focus.
+    Foreground,
+    /// The normal background cadence, for the agent already in focus.
+    Cadence,
+}
+
+/// A tab is being looked at: a pane on screen subscribed to it, or a pane
+/// mounted off screen came on screen. Answers which pull-request check it
+/// started, or `None` for an id that names no agent tab (a terminal).
+///
+/// Looking at an agent's PTY foregrounds it, so its PR status is refreshed.
+/// What is looked at is always a TAB id (a slot tab's or an extra tab's), never
+/// a session id, so the owning session is resolved first. Only a GENUINE focus
+/// change gets the tight foreground refresh; a reconnect/remount of the
+/// already-focused agent falls back to the normal background cadence, so socket
+/// blips don't re-poll `gh` (mirrors the TUI's `previously_watched` gate).
+///
+/// It is also the web's "looking at it" signal for attention: the flag is
+/// cleared and briefly suppressed, stamped on the TAB id, not the owning
+/// session, and gated on the id resolving to a real tab so a stale deep link, a
+/// race, or a retry can never leak an `agent_viewed` entry that is never
+/// cleaned up. Typing then keeps it cleared via `note_pty_input` on `WritePty`,
+/// and the client's periodic viewed ping keeps it down while foregrounded.
+fn note_tab_looked_at(
+    engine: &mut Engine,
+    last_pr_foregrounded: &mut Option<String>,
+    tab_id: &str,
+) -> Option<LookedAtCheck> {
+    let owner = engine.owning_session_for_tab(tab_id)?;
+    let check = if last_pr_foregrounded.as_deref() == Some(owner.as_str()) {
+        engine.spawn_pr_check_for_session(&owner, yaran_core::engine::PR_CHECK_MIN_INTERVAL);
+        LookedAtCheck::Cadence
+    } else {
+        engine.spawn_foreground_pr_check(&owner);
+        LookedAtCheck::Foreground
+    };
+    *last_pr_foregrounded = Some(owner);
+    engine.note_agent_viewed_if_known(tab_id);
+    Some(check)
+}
+
 /// Handle a `SubscribePty` request. If the provider already exists, reply
 /// immediately. Otherwise launch/resume the real agent provider and defer the
 /// reply via a `PendingSubscribe` until the provider comes up (or times out).
@@ -4188,32 +5859,15 @@ fn handle_subscribe(
     pending: &mut Vec<PendingSubscribe>,
     last_pr_foregrounded: &mut Option<String>,
     status_tx: &mut StatusEmitter,
-    tab_id: String,
+    Subscribe { tab_id, viewed }: Subscribe,
     reply: oneshot::Sender<Result<PtySubscription, String>>,
 ) {
-    // Opening an agent's PTY foregrounds it, so refresh its PR status. What is
-    // subscribed is always a TAB id (a slot tab's or an extra tab's), never a
-    // session id, so resolve the owning session first. Only a GENUINE focus
-    // change gets the tight foreground refresh; a reconnect/remount of the
-    // already-focused agent falls back to the normal background cadence, so
-    // socket blips don't re-poll `gh` (mirrors the TUI's `previously_watched`
-    // gate).
-    if let Some(owner) = engine.owning_session_for_tab(&tab_id) {
-        if last_pr_foregrounded.as_deref() != Some(owner.as_str()) {
-            engine.spawn_foreground_pr_check(&owner);
-        } else {
-            engine.spawn_pr_check_for_session(&owner, yaran_core::engine::PR_CHECK_MIN_INTERVAL);
-        }
-        *last_pr_foregrounded = Some(owner);
+    // A pane mounted off screen is not looking at its tab: it must neither
+    // clear the tab's attention nor pull it into the foreground PR cadence,
+    // here or on any of its reconnects. Coming on screen is `PtyShown`.
+    if viewed == PaneVisibility::OnScreen {
+        note_tab_looked_at(engine, last_pr_foregrounded, &tab_id);
     }
-    // Opening a tab's live view is the web's "looking at it" signal: clear and
-    // briefly suppress its attention flag. Stamp the subscribed TAB id, not the
-    // owning session. Gated on the id resolving to a real tab so a stale deep
-    // link, a race, or a retry can never leak an `agent_viewed` entry that is
-    // never cleaned up. Typing then keeps it cleared via `note_pty_input` on
-    // `WritePty`, and the client's periodic viewed ping keeps it down while
-    // foregrounded.
-    engine.note_agent_viewed_if_known(&tab_id);
     if let Some(client) = engine.providers.get(TabIdRef::new(&tab_id)) {
         let _ = reply.send(Ok(client.subscribe_with_repaint()));
         return;
@@ -4238,6 +5892,28 @@ fn handle_subscribe(
         let _ = reply.send(Err(last_run_failed_refusal()));
         return;
     }
+    // Nor a tab a working-copy recreate is about to start again: its old
+    // process is still shutting down, and the restart starts it once that has
+    // gone. Said the same way, for the same reason.
+    if let Some(refusal) = engine.restart_launch_refusal(TabIdRef::new(&tab_id)) {
+        let _ = reply.send(Err(refusal.to_string()));
+        let _ = status_tx
+            .send(WireStatus::new("info", refusal).with_key(format!("tab-launch-{tab_id}")));
+        return;
+    }
+    // Nor a tab another change holds, directly or through its agent, so an open
+    // pane cannot undo a stop in flight. Joining a running launch starts nothing.
+    let launching = engine.is_in_flight(&yaran_core::engine::InFlightKey::AgentLaunch(TabId::new(
+        tab_id.clone(),
+    )));
+    if !launching
+        && let Some(session_id) = engine.owning_session_for_tab(&tab_id)
+        && let Err(in_the_way) =
+            engine.check_admission(&engine.tab_admission(&session_id, TabId::new(tab_id.clone())))
+    {
+        let _ = reply.send(Err(in_the_way.to_string()));
+        return;
+    }
     match launch_agent(engine, &tab_id) {
         Ok(()) => pending.push(PendingSubscribe {
             tab_id: TabId::new(tab_id),
@@ -4248,6 +5924,46 @@ fn handle_subscribe(
             let _ = reply.send(Err(e));
         }
     }
+}
+
+/// Create a terminal through `create`, followed as an operation when a client
+/// asked: the record opens before the call and ends with it (a terminal raises no status).
+fn create_terminal_operation(
+    engine: &mut Engine,
+    owner: &yaran_core::model::TerminalOwner,
+    ticket: Option<&OperationTicket>,
+    create: impl FnOnce(&mut Engine) -> anyhow::Result<(String, String)>,
+) -> Result<(String, String), String> {
+    if let Some(ticket) = ticket {
+        engine.open_operation(&ticket.id, ticket.kind);
+    }
+    // Refused while another change holds the agent or project it opens in.
+    let admitted = engine.admit(
+        ticket.map(|ticket| ticket.id.as_str()),
+        &engine.inside_admission(owner),
+    );
+    let res = admitted
+        .map_err(|e| e.to_string())
+        .and_then(|()| create(engine).map_err(|e| e.to_string()));
+    if let Some(ticket) = ticket {
+        match &res {
+            Ok((terminal_id, _)) => {
+                engine.operations.note(
+                    &ticket.id,
+                    &yaran_core::operations::OperationNotes {
+                        created: vec![terminal_id.clone()],
+                        ..Default::default()
+                    },
+                );
+                engine
+                    .operations
+                    .finish(&ticket.id, StatusTone::Info, "", None, Instant::now());
+                ticket.hand_back(engine);
+            }
+            Err(_) => engine.operations.discard(&ticket.id),
+        }
+    }
+    res
 }
 
 /// Resolve `provider` (or the session's project default) and create a Support
@@ -4307,8 +6023,12 @@ fn launch_agent(engine: &mut Engine, subscribed_id: &str) -> Result<(), String> 
         // session-slot launch to fresh (per-provider collision), and the toast
         // must not claim "Resumed" when the dispatch actually starts fresh.
         // The launch is for the agent's session-slot tab.
-        let resume =
-            engine.tab_resume_decision(&session, session.slot_tab_id(), &session.provider, true);
+        let resume = engine.tab_resume_decision(
+            &session,
+            session.slot_tab_id(),
+            &session.provider,
+            yaran_core::model::ConversationStart::Resume,
+        );
         // Use the SAME completion message the TUI shows on reconnect-ready rather
         // than a static "attaching…" placeholder (which left the status line stuck).
         let status_message = engine.agent_reconnect_status_message(&session, resume);
@@ -4321,7 +6041,7 @@ fn launch_agent(engine: &mut Engine, subscribed_id: &str) -> Result<(), String> 
                 (24, 80),
                 AgentLaunchKind::Reconnect { status_message },
             )
-            .quiet_status_on(if resume {
+            .quiet_status_on(if resume.is_resume() {
                 QuietSurfaces::BOTH
             } else {
                 QuietSurfaces::LOUD
@@ -4377,11 +6097,10 @@ fn dispatch_launch(engine: &mut Engine, request: AgentLaunchRequest) -> Result<(
     if let EventReaction::DispatchAgentLaunchView(view) = &reaction
         && !view.launched
     {
-        let message = view
-            .status
-            .as_ref()
-            .map(|s| s.message.clone())
-            .unwrap_or_else(|| "Agent launch was refused.".to_string());
+        let message = view.status.as_ref().map_or_else(
+            || "Agent launch was refused.".to_string(),
+            |s| s.message.clone(),
+        );
         return Err(message);
     }
     Ok(())
@@ -4399,11 +6118,184 @@ fn auto_reopen_log_line(count: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A raw editor save as the editor makes it: read the file for its token,
+    /// then save over what was read.
+    async fn save_raw(
+        handle: &super::EngineHandle,
+        content: impl Into<String>,
+    ) -> Result<(), super::RawWriteError> {
+        let token = handle.read_raw_config().await.expect("read").token;
+        handle.write_raw_config(content.into(), Some(token)).await
+    }
+
     use super::*;
     // The test flavour: stock provider names, harmless commands.
     use crate::test_support::bootstrap_test_engine as bootstrap_engine;
     use yaran_core::config::{YaranPaths, server_restart_settings_changed};
     use yaran_core::statusline::FINAL_REPLAY_WINDOW;
+
+    /// An engine whose project `p1` (named `p1`) is in the database and in
+    /// memory, its startup command already set to `make setup` in memory, as
+    /// a saved change leaves it before the completion is mirrored.
+    fn engine_with_a_saved_startup_command(paths: &YaranPaths) -> Engine {
+        yaran_core::storage::SessionStore::open(&paths.sessions_db_path)
+            .unwrap()
+            .upsert_project(&yaran_core::config::ProjectConfig {
+                id: "p1".to_string(),
+                path: paths.root.to_string_lossy().into_owned(),
+                name: Some("p1".to_string()),
+                default_provider: None,
+                leading_branch: None,
+                auto_reopen_agents: None,
+                startup_command: None,
+                env: std::collections::BTreeMap::new(),
+                workspace_mode: None,
+            })
+            .unwrap();
+        let mut engine = bootstrap_engine(paths).expect("engine");
+        engine.projects[0].startup_command = Some("make setup".to_string());
+        engine
+    }
+
+    fn startup_command_saved(status_op_id: &str, view: ProjectPersistenceView) -> EventReaction {
+        EventReaction::ProjectPersistenceOutcome(Box::new(
+            yaran_core::engine::ProjectPersistenceOutcome {
+                action: yaran_core::worker::ProjectPersistenceAction::UpdateStartupCommand {
+                    project_id: "p1".to_string(),
+                    project_name: "p1".to_string(),
+                    startup_command: Some("make setup".to_string()),
+                },
+                view,
+                status_op_id: Some(status_op_id.to_string()),
+            },
+        ))
+    }
+
+    fn startup_command_updated() -> ProjectPersistenceView {
+        ProjectPersistenceView::StartupCommandUpdated {
+            project_name: "p1".to_string(),
+            startup_command: Some("make setup".to_string()),
+        }
+    }
+
+    fn config_names_the_command(paths: &YaranPaths) -> bool {
+        std::fs::read_to_string(&paths.config_path)
+            .unwrap_or_default()
+            .contains("make setup")
+    }
+
+    /// While the terminal UI drains, a project save it asked for is its own to
+    /// mirror into config.toml: this layer writes nothing for it, so the file
+    /// is written once. With nothing else draining, this layer mirrors it.
+    #[test]
+    fn a_project_save_the_terminal_ui_asked_for_is_not_mirrored_by_origin() {
+        let (_tmp, paths) = temp_paths();
+        let mut engine = engine_with_a_saved_startup_command(&paths);
+        let (_handle, ends) = build_actor_channels(&engine);
+        let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
+        let reaction = startup_command_saved("a-tui-op", startup_command_updated());
+
+        svc.fanout_reaction(&mut engine, &reaction, FollowupRouting::ByOrigin);
+        assert!(!config_names_the_command(&paths));
+
+        svc.fanout_reaction(&mut engine, &reaction, FollowupRouting::RunEverything);
+        assert!(config_names_the_command(&paths));
+    }
+
+    /// A browser's project save is this layer's alone while the terminal UI
+    /// drains: mirrored into config.toml, answered, and no longer routed to
+    /// the web once answered.
+    #[test]
+    fn a_browsers_project_save_is_mirrored_and_answered_by_origin() {
+        let (_tmp, paths) = temp_paths();
+        let mut engine = engine_with_a_saved_startup_command(&paths);
+        let (_handle, ends) = build_actor_channels(&engine);
+        let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
+        engine
+            .pending_web_project_saves
+            .insert("a-web-save".to_string());
+        let (reply, mut answer) = oneshot::channel();
+        svc.pending_project_saves
+            .insert("a-web-save".to_string(), PendingProjectSave { reply });
+
+        svc.fanout_reaction(
+            &mut engine,
+            &startup_command_saved("a-web-save", startup_command_updated()),
+            FollowupRouting::ByOrigin,
+        );
+
+        assert_eq!(answer.try_recv().expect("answered"), Ok(()));
+        assert!(config_names_the_command(&paths));
+        assert!(engine.pending_web_project_saves.is_empty());
+    }
+
+    /// A failed save whose browser hung up goes to the people on screen, the
+    /// project's name a chip rather than a quotation.
+    #[test]
+    fn a_failed_project_save_nobody_waits_for_names_the_project_as_a_chip() {
+        let (_tmp, paths) = temp_paths();
+        let mut engine = engine_with_a_saved_startup_command(&paths);
+        let (handle, ends) = build_actor_channels(&engine);
+        let mut statuses = handle.subscribe_status();
+        let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
+        engine
+            .pending_web_project_saves
+            .insert("a-web-save".to_string());
+        let (reply, answer) = oneshot::channel();
+        drop(answer);
+        svc.pending_project_saves
+            .insert("a-web-save".to_string(), PendingProjectSave { reply });
+
+        svc.fanout_reaction(
+            &mut engine,
+            &startup_command_saved(
+                "a-web-save",
+                ProjectPersistenceView::PersistenceFailed {
+                    error: "disk full".to_string(),
+                },
+            ),
+            FollowupRouting::ByOrigin,
+        );
+
+        let status = statuses.try_recv().expect("broadcast");
+        assert_eq!(
+            status.message,
+            "The startup command for project \"p1\" was not saved: the session database \
+             could not be written: disk full"
+        );
+        assert!(
+            status
+                .segments
+                .unwrap_or_default()
+                .contains(&yaran_core::prose::ProseSegment::Name {
+                    name: "p1".to_string(),
+                    quoted: true,
+                }),
+            "the project is a chip"
+        );
+    }
+
+    /// A save the engine stopped answering about is neither saved nor not
+    /// saved: it is the third outcome.
+    #[tokio::test]
+    async fn a_project_save_the_engine_never_answers_is_told_apart() {
+        let (_tmp, paths) = temp_paths();
+        let engine = bootstrap_engine(&paths).expect("engine");
+        let (handle, ends) = build_actor_channels(&engine);
+        drop(ends);
+
+        let answer = handle
+            .save_project_setting(
+                WireCommand::UpdateProjectStartupCommand {
+                    project_id: "p1".to_string(),
+                    startup_command: None,
+                },
+                StatusScope::All,
+            )
+            .await;
+
+        assert_eq!(answer, Err(ProjectSaveFailure::NoAnswer));
+    }
 
     fn temp_paths() -> (tempfile::TempDir, YaranPaths) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -4413,7 +6305,8 @@ mod tests {
             config_path: root.join("config.toml"),
             sessions_db_path: root.join("sessions.sqlite3"),
             worktrees_root: root.join("worktrees"),
-            lock_path: root.join("yaran.lock"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         };
         std::fs::create_dir_all(&paths.worktrees_root).unwrap();
         (tmp, paths)
@@ -4450,6 +6343,54 @@ mod tests {
 
     /// The pre-consume seam announces a reload the drainer has not applied yet, so
     /// it must not move the caps the routes answer on: an apply that fails would
+    /// A command-line change the core's very first turn applies still hands
+    /// its status to the terminal UI: a request that waited in the socket's
+    /// backlog during a hand-over is exactly that, the new core's first work.
+    #[test]
+    fn a_change_applied_on_the_first_turn_reaches_the_terminal_ui() {
+        let (_tmp, paths) = temp_paths();
+        let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        engine
+            .sessions
+            .push(crate::test_support::sample_agent("s-cli"));
+        let (handle, ends) = build_actor_channels(&engine);
+        let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
+        let client = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("a runtime")
+                .block_on(handle.apply_wire(WireCommand::DeleteSession {
+                    branches: None,
+                    session_id: "s-cli".to_string(),
+                    delete_worktree: false,
+                    delete_branch: None,
+                }))
+        });
+        let deadline = Instant::now() + std::time::Duration::from_secs(15);
+        while svc.req_rx.is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "the delete never reached the engine"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let outcome = svc.service_engine_once(&mut engine);
+
+        client
+            .join()
+            .expect("the client thread")
+            .expect("the delete is applied");
+        assert!(
+            outcome
+                .statuses
+                .iter()
+                .any(|status| status.message.contains("Deleted")),
+            "{:?}",
+            outcome.statuses
+        );
+    }
+
     /// leave every route running the incoming limits against the old config.
     #[test]
     fn announcing_a_reload_leaves_the_live_limits_where_they_were() {
@@ -4458,7 +6399,7 @@ mod tests {
         let (handle, ends) = build_actor_channels(&engine);
         let limits = handle.live_limits();
         limits.set_search_index_max_files(9);
-        limits.set_access_log(false);
+        limits.set_access_log(crate::server::AccessLog::Off);
         let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
 
         let mut config = engine.config.clone();
@@ -4471,6 +6412,154 @@ mod tests {
 
         assert_eq!(limits.search_index_max_files(), 9);
         assert!(!limits.access_log());
+    }
+
+    /// A config the engine adopted after its own apply failed is in force, so
+    /// what a reload owes the running server follows it: the live limits and
+    /// the Host guard's allowed hosts take it, and browsers are told to
+    /// refetch, rather than everything staying on the config it replaced.
+    #[test]
+    fn a_config_adopted_after_a_failed_apply_reaches_the_running_server() {
+        let (_tmp, paths) = temp_paths();
+        let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        let (handle, ends) = build_actor_channels(&engine);
+        let limits = handle.live_limits();
+        let mut reloads = handle.subscribe_config_reloads();
+        let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
+        let mut before = engine.config.clone();
+        engine.config.server.allowed_hosts = vec!["after.example.com".to_string()];
+        engine.config.server.search_index_max_files = 4321;
+        // The adopted config turns the GitHub integration off: pull-request
+        // sync stops, as the terminal UI's reload does.
+        before.ui.github_integration = true;
+        engine.config.ui.github_integration = false;
+        engine.github_integration_enabled = false;
+        engine.agent_prs.insert(
+            "s1".to_string(),
+            vec![yaran_core::model::AgentPr::found(
+                &yaran_core::model::PrInfo {
+                    number: 1,
+                    state: yaran_core::model::PrState::Open,
+                    title: "x".into(),
+                    host: "github.com".into(),
+                    owner_repo: "o/r".into(),
+                    url: "https://example".into(),
+                    ..Default::default()
+                },
+                chrono::Utc::now(),
+            )],
+        );
+
+        let mut statuses = handle.subscribe_status();
+        // A client that asked for this reload waits on its record.
+        engine.open_operation(
+            "reload-op",
+            yaran_core::operations::OperationKind::ConfigReload,
+        );
+        engine
+            .operations
+            .await_reload("reload-op", yaran_core::engine::ReloadSlot::Now);
+        engine.operations.reload_closed();
+        // The adopted config also changes the Tailscale mode, which the serve
+        // refuses (it was started with --no-tailscale): the reload is not over
+        // until the serve has answered, and then says so.
+        engine.config.server.tailscale = "yes".to_string();
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (control, mut requests) = crate::serve_legs::TailscaleModeControl::new(
+            runtime.handle().clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        runtime.spawn(async move {
+            if let Some(request) = requests.recv().await {
+                let _ = request
+                    .reply
+                    .send(yaran_core::config::TailscaleModeOutcome::RefusedForcedNo);
+            }
+        });
+        let _ = svc.tailscale_mode_control.set(control);
+        svc.apply_reload_followup(
+            &mut engine,
+            EventReaction::ConfigAdopted {
+                github_was_enabled: before.ui.github_integration,
+                before: Box::new(before),
+                error: "the session database could not be read".to_string(),
+            },
+        );
+        let record_now = |engine: &Engine| {
+            engine
+                .operations
+                .peek("reload-op", Instant::now())
+                .expect("the record is kept")
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while record_now(&engine).state == yaran_core::operations::OperationState::Running
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let record = record_now(&engine);
+        assert_eq!(
+            record.state,
+            yaran_core::operations::OperationState::Partial
+        );
+        assert!(
+            record
+                .message
+                .contains("the session database could not be read"),
+            "{}",
+            record.message
+        );
+        assert!(
+            record.message.contains("--no-tailscale"),
+            "the refused listener change is named: {}",
+            record.message
+        );
+        let said = std::iter::from_fn(|| statuses.try_recv().ok())
+            .find(|status| {
+                status.key.as_deref() == Some(yaran_core::wire::status_keys::CONFIG_RELOAD)
+            })
+            .expect("the reload's outcome is said");
+        assert!(said.message.contains("in force"), "{}", said.message);
+        assert!(engine.agent_prs.is_empty(), "pull-request sync stopped");
+
+        assert_eq!(
+            limits.allowed_hosts().snapshot(),
+            vec!["after.example.com".to_string()]
+        );
+        assert_eq!(limits.search_index_max_files(), 4321);
+        assert!(reloads.try_recv().is_ok(), "browsers are told to refetch");
+    }
+
+    /// In background mode the terminal UI drains, and this seam announces a
+    /// reload to browsers: a config the engine adopted after its own apply
+    /// failed is announced like one that applied, so browsers refetch and
+    /// hear a change only a restart applies.
+    #[test]
+    fn an_adopted_config_is_announced_to_browsers() {
+        let (_tmp, paths) = temp_paths();
+        let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        let (handle, ends) = build_actor_channels(&engine);
+        let mut reloads = handle.subscribe_config_reloads();
+        let mut statuses = handle.subscribe_status();
+        let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
+        let before = engine.config.clone();
+        engine.config.server.port += 1;
+
+        svc.announce_config_reload(
+            &engine,
+            &EventReaction::ConfigAdopted {
+                github_was_enabled: before.ui.github_integration,
+                before: Box::new(before),
+                error: "the session database could not be read".to_string(),
+            },
+        );
+
+        assert!(reloads.try_recv().is_ok(), "browsers are told to refetch");
+        assert!(
+            std::iter::from_fn(|| statuses.try_recv().ok()).any(|status| status.tone == "warning"),
+            "the restart warning reaches browsers"
+        );
     }
 
     /// A background worker that died and came back is a fact about the process,
@@ -4516,9 +6605,10 @@ mod tests {
     #[test]
     fn announcing_a_reload_keys_it_so_the_apply_outcome_replaces_it() {
         let (_tmp, paths) = temp_paths();
-        let engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
         let (handle, ends) = build_actor_channels(&engine);
         let mut statuses = handle.subscribe_status();
+        let mut reloads = handle.subscribe_config_reloads();
         let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
 
         svc.announce_config_reload(
@@ -4548,7 +6638,7 @@ mod tests {
 
         // The apply fails, exactly as the engine loop reports it.
         let _ = svc.status.send(WireStatus::from_update(
-            &yaran_core::config_reload_status::apply_failed("boom"),
+            &yaran_core::config_reload_status::adopted_but_apply_failed("boom"),
         ));
 
         let replayed: Vec<_> = handle
@@ -4561,10 +6651,80 @@ mod tests {
         assert_eq!(replayed.len(), 1, "one key holds one status: {replayed:?}");
         assert_eq!(
             replayed[0].message,
-            yaran_core::config_reload_status::apply_failed("boom").message,
+            yaran_core::config_reload_status::adopted_but_apply_failed("boom").message,
             "and it is the outcome, not the announcement it answered"
         );
         assert_eq!(replayed[0].tone, "error");
+
+        // A reload yaran asked for after its own write announces nothing, and
+        // browsers still refetch.
+        while statuses.try_recv().is_ok() {}
+        while reloads.try_recv().is_ok() {}
+        // A real file: an empty one is refused rather than reloaded (see the
+        // test below), and swapped in whole as yaran's own writes are.
+        let staged = paths.config_path.with_extension("staged");
+        std::fs::write(&staged, "[ui]\nleft_width_pct = 30\n").unwrap();
+        std::fs::rename(&staged, &paths.config_path).unwrap();
+        engine
+            .reload_after_own_config_write(|engine| {
+                engine.apply(yaran_core::engine::Command::ReloadConfig)
+            })
+            .expect("the reload starts");
+        let read = loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the reload ends");
+            if matches!(event, yaran_core::worker::WorkerEvent::ConfigReloadReady(_)) {
+                break event;
+            }
+        };
+        let reaction = engine.process_worker_event(read);
+        svc.announce_config_reload(&engine, &reaction);
+        assert!(statuses.try_recv().is_err(), "nothing is announced");
+        assert!(reloads.try_recv().is_ok(), "browsers refetch");
+    }
+
+    /// A reload yaran asked for after its own write that finds the file empty
+    /// (an editor truncated it before writing) is refused, not read as the
+    /// defaults: nothing is applied and browsers are not told to refetch.
+    #[test]
+    fn a_reload_after_an_own_write_that_finds_the_file_empty_is_refused() {
+        let (_tmp, paths) = temp_paths();
+        std::fs::write(&paths.config_path, "[ui]\nleft_width_pct = 30\n").unwrap();
+        let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        let (handle, ends) = build_actor_channels(&engine);
+        let mut reloads = handle.subscribe_config_reloads();
+        let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
+        let before = engine.config.ui.left_width_pct;
+
+        std::fs::write(&paths.config_path, "\n").unwrap();
+        engine
+            .reload_after_own_config_write(|engine| {
+                engine.apply(yaran_core::engine::Command::ReloadConfig)
+            })
+            .expect("the reload starts");
+        let read = loop {
+            let event = engine
+                .worker_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the reload ends");
+            if matches!(event, yaran_core::worker::WorkerEvent::ConfigReloadReady(_)) {
+                break event;
+            }
+        };
+        let reaction = engine.process_worker_event(read);
+        let yaran_core::engine::EventReaction::OpenConfigReloadFailedModal(message) = &reaction
+        else {
+            panic!("the refusal is reported as a failed reload");
+        };
+        assert!(message.contains("is empty"), "{message}");
+        svc.announce_config_reload(&engine, &reaction);
+        assert!(
+            reloads.try_recv().is_err(),
+            "browsers are not sent to refetch"
+        );
+        assert_eq!(engine.config.ui.left_width_pct, before);
     }
 
     /// And the post-apply half is what moves them, with the section the drainer
@@ -4576,13 +6736,13 @@ mod tests {
         let (handle, ends) = build_actor_channels(&engine);
         let limits = handle.live_limits();
         limits.set_search_index_max_files(9);
-        limits.set_access_log(false);
+        limits.set_access_log(crate::server::AccessLog::Off);
         let svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
 
-        let mut server = engine.config.server.clone();
-        server.search_index_max_files = 4321;
-        server.access_log = true;
-        svc.note_config_applied(&server);
+        let mut config = engine.config.clone();
+        config.server.search_index_max_files = 4321;
+        config.server.access_log = true;
+        svc.note_config_applied(&config);
 
         assert_eq!(limits.search_index_max_files(), 4321);
         assert!(limits.access_log());
@@ -4647,6 +6807,37 @@ mod tests {
     ///
     /// Web-originated statuses are a third thing entirely and are unaffected here:
     /// they are scoped per connection inside `handle_request`, before any of this.
+    /// The GitHub facts a browser holds in its bootstrap document moving
+    /// without an availability transition (a probe moving the hosts, the
+    /// terminal UI switching the integration) has browsers refetch it, nested
+    /// in a `Multi` or not, and an unrelated reaction does not.
+    #[test]
+    fn moved_github_facts_have_browsers_refetch_the_bootstrap_document() {
+        let (_tmp, paths) = temp_paths();
+        let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");
+        let (handle, ends) = build_actor_channels(&engine);
+        let mut reloads = handle.subscribe_config_reloads();
+        let mut svc = EngineService::new(&engine, ends, ShutdownEcho::Silent);
+
+        svc.fanout_reaction(
+            &mut engine,
+            &EventReaction::RebuildLeftItems,
+            FollowupRouting::ByOrigin,
+        );
+        assert!(reloads.try_recv().is_err(), "nothing moved");
+
+        for reaction in [
+            EventReaction::GithubFactsChanged,
+            EventReaction::Multi(vec![
+                EventReaction::RebuildLeftItems,
+                EventReaction::GithubFactsChanged,
+            ]),
+        ] {
+            svc.fanout_reaction(&mut engine, &reaction, FollowupRouting::ByOrigin);
+            assert!(reloads.try_recv().is_ok(), "{reaction:?}");
+        }
+    }
+
     #[test]
     fn the_drain_seam_carries_worker_finals_to_clients_and_nothing_else() {
         let (_tmp, paths) = temp_paths();
@@ -4919,7 +7110,7 @@ mod tests {
     /// do-not-retry rule and carries no room for a reason, so the sentence rides
     /// the keyed status controller and reaches the browser as a toast.
     #[test]
-    fn subscribing_does_not_relaunch_a_tab_whose_last_run_failed() {
+    fn subscribing_does_not_launch_a_failed_tab_or_one_another_change_holds() {
         let (_tmp, paths) = temp_paths();
         {
             let store = yaran_core::storage::SessionStore::open(&paths.sessions_db_path).unwrap();
@@ -4952,7 +7143,8 @@ mod tests {
             clear_tx,
             snapshot_tx,
             Arc::new(AtomicUsize::new(1)),
-            Default::default(),
+            yaran_core::statusline::LiveStatusKeys::default(),
+            yaran_core::operations::Operations::default(),
         );
         let (tx, rx) = oneshot::channel();
         handle_subscribe(
@@ -4960,7 +7152,7 @@ mod tests {
             &mut pending,
             &mut last_pr,
             &mut status,
-            slot.as_str().to_string(),
+            on_screen(slot.as_str().to_string()),
             tx,
         );
 
@@ -4988,6 +7180,238 @@ mod tests {
                 "the refusal must name the way forward: {err}"
             ),
         }
+
+        // A tab whose agent another surface's followed change holds (here a
+        // stop) is not launched by a passive attach either, and the refusal
+        // names that operation.
+        engine.clear_tab_run_failure(slot.as_ref_id());
+        engine.open_operation("op-held", OperationKind::AgentStop);
+        engine
+            .operations
+            .admit(
+                Some("op-held"),
+                &[],
+                &[yaran_core::operations::Hold::exclusive(
+                    yaran_core::engine::InFlightKey::Agent("s1".to_string()),
+                )],
+            )
+            .unwrap();
+        let (tx, rx) = oneshot::channel();
+        handle_subscribe(
+            &mut engine,
+            &mut pending,
+            &mut last_pr,
+            &mut status,
+            on_screen(slot.as_str().to_string()),
+            tx,
+        );
+        assert!(pending.is_empty(), "no launch may be waited on");
+        assert!(
+            !engine.is_in_flight(&yaran_core::engine::InFlightKey::AgentLaunch(slot.clone())),
+            "no launch may be dispatched under another change's hold"
+        );
+        match rx.blocking_recv().expect("a reply") {
+            Ok(_) => panic!("subscribing a held tab must be refused"),
+            Err(err) => assert!(err.contains("op-held"), "{err}"),
+        }
+    }
+
+    /// A subscribe from a pane on screen, as every subscribe was before
+    /// panes could be mounted off screen.
+    fn on_screen(tab_id: impl Into<String>) -> Subscribe {
+        Subscribe {
+            tab_id: tab_id.into(),
+            viewed: PaneVisibility::OnScreen,
+        }
+    }
+
+    /// A pane mounted off screen opens its socket naming itself not viewed:
+    /// that subscribe leaves the tab's attention flag up, stamps nothing and
+    /// starts no foreground check, while a subscribe with the flag behaves as
+    /// every subscribe always has. (The tab's last run failed so neither
+    /// subscribe launches anything; looking at it is decided first.)
+    #[test]
+    fn only_a_subscribe_from_a_pane_on_screen_counts_as_looking_at_the_tab() {
+        let (_tmp, paths) = temp_paths();
+        seed_session(&paths, "s1");
+        let mut engine = bootstrap_engine(&paths).expect("bootstrap");
+        let slot = engine.sessions[0].slot_tab_id().to_string();
+        engine.mark_tab_run_failed(
+            yaran_core::ids::TabIdRef::new(&slot),
+            yaran_core::tab_verdict::TabRunEnding::ExitedWithStatus { status: 1 },
+            Vec::new(),
+        );
+        engine.needs_attention.insert(TabId::new(slot.clone()));
+        let mut pending = Vec::new();
+        let mut last_pr = None;
+        let (status_tx, _status_rx) = broadcast::channel(8);
+        let (clear_tx, _clear_rx) = broadcast::channel(8);
+        let (snapshot_tx, _snapshot_rx) = watch::channel(Vec::new());
+        let mut status = StatusEmitter::new(
+            status_tx,
+            clear_tx,
+            snapshot_tx,
+            Arc::new(AtomicUsize::new(1)),
+            yaran_core::statusline::LiveStatusKeys::default(),
+            yaran_core::operations::Operations::default(),
+        );
+        let mut subscribe = |engine: &mut Engine, last_pr: &mut Option<String>, viewed| {
+            let (tx, _rx) = oneshot::channel();
+            handle_subscribe(
+                engine,
+                &mut pending,
+                last_pr,
+                &mut status,
+                Subscribe {
+                    tab_id: slot.clone(),
+                    viewed,
+                },
+                tx,
+            );
+        };
+
+        subscribe(&mut engine, &mut last_pr, PaneVisibility::OffScreen);
+        assert!(
+            engine.tab_needs_attention(&slot),
+            "a hidden pane leaves the flag up"
+        );
+        assert!(!engine.agent_viewed.contains_key(TabIdRef::new(&slot)));
+        assert_eq!(last_pr, None, "and starts no foreground check");
+
+        subscribe(&mut engine, &mut last_pr, PaneVisibility::OnScreen);
+        assert!(!engine.tab_needs_attention(&slot));
+        assert!(engine.agent_viewed.contains_key(TabIdRef::new(&slot)));
+        assert_eq!(last_pr.as_deref(), Some("s1"));
+    }
+
+    /// Coming on screen is looking at the tab, whoever owns its pty: it
+    /// clears the flag, re-arms the suppression and starts the foreground
+    /// check; coming on screen again for the agent already in focus gets the
+    /// ordinary cadence; a terminal id is a no-op.
+    #[test]
+    fn coming_on_screen_is_looking_at_the_tab() {
+        let (_tmp, paths) = temp_paths();
+        seed_session(&paths, "s1");
+        let mut engine = bootstrap_engine(&paths).expect("bootstrap");
+        let slot = engine.sessions[0].slot_tab_id().to_string();
+        engine.needs_attention.insert(TabId::new(slot.clone()));
+        let mut last_pr = None;
+
+        assert_eq!(
+            note_tab_looked_at(&mut engine, &mut last_pr, &slot),
+            Some(LookedAtCheck::Foreground)
+        );
+        assert!(!engine.tab_needs_attention(&slot));
+        assert!(engine.agent_viewed.contains_key(TabIdRef::new(&slot)));
+        assert_eq!(
+            note_tab_looked_at(&mut engine, &mut last_pr, &slot),
+            Some(LookedAtCheck::Cadence)
+        );
+        assert_eq!(
+            note_tab_looked_at(&mut engine, &mut last_pr, "term-1"),
+            None
+        );
+        assert_eq!(last_pr.as_deref(), Some("s1"));
+    }
+
+    /// A tab a working-copy recreate is restarting is dormant while its old
+    /// process shuts down, and it is the restart's to start: opening its pane
+    /// does not launch it, and says why, and neither does the explicit start.
+    #[test]
+    fn a_tab_a_recreate_is_restarting_is_not_launched_by_its_pane_or_a_start() {
+        let (_tmp, paths) = temp_paths();
+        let worktree = paths.root.join("gone");
+        {
+            let store = yaran_core::storage::SessionStore::open(&paths.sessions_db_path).unwrap();
+            store
+                .create_session(&sample_session(
+                    "s1",
+                    "p1",
+                    "feat",
+                    worktree.to_string_lossy().as_ref(),
+                ))
+                .unwrap();
+        }
+        let mut engine = bootstrap_engine(&paths).expect("bootstrap");
+        engine.projects.push(yaran_core::model::Project {
+            id: "p1".to_string(),
+            name: "p1".to_string(),
+            path: paths.root.to_string_lossy().into_owned(),
+            explicit_default_provider: None,
+            default_provider: yaran_core::model::ProviderKind::new("claude"),
+            leading_branch: None,
+            auto_reopen_agents: None,
+            startup_command: None,
+            env: std::collections::BTreeMap::default(),
+            current_branch: "main".to_string(),
+            branch_status: yaran_core::model::ProjectBranchStatus::Leading,
+            path_missing: false,
+            created_at: None,
+        });
+        engine
+            .folder_repo_statuses
+            .insert("s1".to_string(), yaran_core::git::FolderRepoStatus::Missing);
+        let slot = engine
+            .slot_tab_id_of(yaran_core::ids::SessionIdRef::new("s1"))
+            .to_owned();
+        engine.providers.insert(
+            slot.clone(),
+            PtyClient::spawn_with_env("cat", &[], &paths.root, 24, 80, 1000, &[]).expect("spawn"),
+        );
+        engine
+            .begin_recreate_working_copy("s1", yaran_core::engine::TabsAfterRecreate::Restart)
+            .expect("the recreate starts");
+        engine.process_worker_event(yaran_core::worker::WorkerEvent::WorkingCopyRecreated {
+            session_id: "s1".to_string(),
+            outcome: Ok(yaran_core::working_copy::RecreatedBranch::CheckedOut),
+        });
+        assert!(
+            !engine.providers.contains_key(slot.as_ref_id()),
+            "the restart is shutting the old process down"
+        );
+
+        let mut pending = Vec::new();
+        let mut last_pr = None;
+        let (status_tx, mut status_rx) = broadcast::channel(8);
+        let (clear_tx, _clear_rx) = broadcast::channel(8);
+        let (snapshot_tx, _snapshot_rx) = watch::channel(Vec::new());
+        let mut status = StatusEmitter::new(
+            status_tx,
+            clear_tx,
+            snapshot_tx,
+            Arc::new(AtomicUsize::new(1)),
+            yaran_core::statusline::LiveStatusKeys::default(),
+            yaran_core::operations::Operations::default(),
+        );
+        let (tx, rx) = oneshot::channel();
+        handle_subscribe(
+            &mut engine,
+            &mut pending,
+            &mut last_pr,
+            &mut status,
+            on_screen(slot.as_str().to_string()),
+            tx,
+        );
+        let said = "is being restarted after its working copy was recreated";
+        let emitted = status_rx.try_recv().expect("the refusal is said out loud");
+        assert!(emitted.message.contains(said), "{}", emitted.message);
+        assert_eq!(
+            emitted.key.as_deref(),
+            Some(format!("tab-launch-{}", slot.as_str()).as_str())
+        );
+        assert!(pending.is_empty(), "no launch may be waited on");
+        match rx.blocking_recv().expect("a reply") {
+            Ok(_) => panic!("subscribing a tab being restarted must be refused"),
+            Err(err) => assert!(err.contains(said), "{err}"),
+        }
+        assert!(
+            !engine.is_in_flight(&yaran_core::engine::InFlightKey::AgentLaunch(slot.clone())),
+            "nothing was launched"
+        );
+
+        let err = launch_agent(&mut engine, slot.as_str()).expect_err("the start is refused");
+        assert!(err.contains(said), "{err}");
+        assert!(!engine.is_in_flight(&yaran_core::engine::InFlightKey::AgentLaunch(slot)));
     }
 
     /// An engine whose agent has ALREADY had its slot promoted: the claude tab
@@ -5070,7 +7494,8 @@ mod tests {
             clear_tx,
             snapshot_tx,
             Arc::new(AtomicUsize::new(1)),
-            Default::default(),
+            yaran_core::statusline::LiveStatusKeys::default(),
+            yaran_core::operations::Operations::default(),
         );
         let (tx, rx) = oneshot::channel();
         handle_subscribe(
@@ -5078,7 +7503,7 @@ mod tests {
             &mut pending,
             &mut last_pr,
             &mut status,
-            "t2".to_string(),
+            on_screen("t2".to_string()),
             tx,
         );
 
@@ -5098,11 +7523,20 @@ mod tests {
         assert!(rx.blocking_recv().expect("a reply").is_err());
     }
 
-    fn pruned(
-        kind: PrunedPtyKind,
-        detached: bool,
-        tab_closed: bool,
-    ) -> yaran_core::engine::PrunedPty {
+    /// How the pty in [`pruned`] went away.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Ending {
+        /// Its tab was closed, with two tabs left.
+        TabClosed,
+        /// It stopped and left its tab dormant.
+        Dormant,
+        /// Its agent was detached.
+        Detached,
+    }
+
+    fn pruned(kind: PrunedPtyKind, ending: Ending) -> yaran_core::engine::PrunedPty {
+        let detached = ending == Ending::Detached;
+        let tab_closed = ending == Ending::TabClosed;
         yaran_core::engine::PrunedPty {
             kind,
             id: "t1".to_string(),
@@ -5129,7 +7563,7 @@ mod tests {
     /// leaves something behind has to explain itself too.
     #[test]
     fn a_reaped_pty_is_announced_whenever_a_tab_row_or_a_pill_is_involved() {
-        let closed = prune_wire_status(&pruned(PrunedPtyKind::Agent, false, true))
+        let closed = prune_wire_status(&pruned(PrunedPtyKind::Agent, Ending::TabClosed))
             .expect("every clean tab exit is announced");
         assert_eq!(closed.tone, "info");
         assert_eq!(
@@ -5139,18 +7573,18 @@ mod tests {
         assert!(!closed.quiet_on.web);
 
         assert_eq!(
-            prune_wire_status(&pruned(PrunedPtyKind::Terminal, false, false)),
+            prune_wire_status(&pruned(PrunedPtyKind::Terminal, Ending::Dormant)),
             None,
             "the terminal's row left the sidebar in the same sweep"
         );
 
-        let dormant = prune_wire_status(&pruned(PrunedPtyKind::Agent, false, false))
+        let dormant = prune_wire_status(&pruned(PrunedPtyKind::Agent, Ending::Dormant))
             .expect("a dormant pill is indistinguishable from a never-launched one");
         assert_eq!(dormant.tone, "info");
         assert!(dormant.message.contains("Tab (Claude) exited."));
         assert!(!dormant.quiet_on.web, "there is nothing else to say it");
 
-        let detached = prune_wire_status(&pruned(PrunedPtyKind::Agent, true, false))
+        let detached = prune_wire_status(&pruned(PrunedPtyKind::Agent, Ending::Detached))
             .expect("losing the whole agent stays a warning");
         assert_eq!(detached.tone, "warning");
         assert!(detached.message.contains("exited."));
@@ -5161,7 +7595,7 @@ mod tests {
     /// the provider the pane fell back to.
     #[test]
     fn a_closed_tab_that_leaves_one_behind_names_what_the_pane_shows() {
-        let mut closed = pruned(PrunedPtyKind::Agent, false, true);
+        let mut closed = pruned(PrunedPtyKind::Agent, Ending::TabClosed);
         closed.closed_tab = Some(yaran_core::engine::ClosedTabExit {
             provider: "claude".to_string(),
             agent_label: "feat/x".to_string(),
@@ -5184,7 +7618,7 @@ mod tests {
     /// only place the user sees them: the pane they were printed in is gone.
     #[test]
     fn a_refused_resume_warning_quotes_the_provider() {
-        let mut refused = pruned(PrunedPtyKind::Agent, true, false);
+        let mut refused = pruned(PrunedPtyKind::Agent, Ending::Detached);
         refused.label = "feat/x".to_string();
         refused.refused_resume_excerpt = Some(vec![
             "Resuming your conversation.".to_string(),
@@ -5217,7 +7651,8 @@ mod tests {
             clear_tx,
             snapshot_tx,
             Arc::new(AtomicUsize::new(1)),
-            Default::default(),
+            yaran_core::statusline::LiveStatusKeys::default(),
+            yaran_core::operations::Operations::default(),
         );
 
         let _ =
@@ -5249,13 +7684,26 @@ mod tests {
         let (status_tx, mut status_rx) = broadcast::channel(8);
         let (clear_tx, mut clear_rx) = broadcast::channel(8);
         let (snapshot_tx, _snapshot_rx) = watch::channel(Vec::new());
+        let operations = yaran_core::operations::Operations::default();
         let mut status = StatusEmitter::new(
             status_tx,
             clear_tx,
             snapshot_tx,
             Arc::new(AtomicUsize::new(1)),
-            Default::default(),
+            yaran_core::statusline::LiveStatusKeys::default(),
+            operations.clone(),
         );
+        let policy = yaran_core::operations::OperationPolicy {
+            unknown_after: Duration::from_secs(60),
+            retention: Duration::from_secs(60),
+        };
+        operations.open(
+            "op-start",
+            yaran_core::operations::OperationKind::AgentStart,
+            policy,
+            Instant::now(),
+        );
+        operations.await_key("op-start", "launch:a");
 
         let mut tui_quiet = WireStatus::new("info", "the status line withholds this");
         tui_quiet.quiet_on = QuietSurfaces::TUI;
@@ -5281,6 +7729,14 @@ mod tests {
             clear_rx.try_recv().expect("the spinner is taken down"),
             Some("launch:a".to_string())
         );
+        // Withheld from the screen, still the outcome of the change a client is
+        // waiting on.
+        let record = operations.view("op-start", Instant::now()).unwrap();
+        assert_eq!(
+            record.state,
+            yaran_core::operations::OperationState::Succeeded
+        );
+        assert_eq!(record.message, "launched");
     }
 
     /// Only an info may be withheld. A warning reports something the screen
@@ -5295,7 +7751,8 @@ mod tests {
             clear_tx,
             snapshot_tx,
             Arc::new(AtomicUsize::new(1)),
-            Default::default(),
+            yaran_core::statusline::LiveStatusKeys::default(),
+            yaran_core::operations::Operations::default(),
         );
 
         let mut warning = WireStatus::new("warning", "git is failing");
@@ -5325,7 +7782,8 @@ mod tests {
             clear_tx,
             snapshot_tx,
             Arc::new(AtomicUsize::new(1)),
-            Default::default(),
+            yaran_core::statusline::LiveStatusKeys::default(),
+            yaran_core::operations::Operations::default(),
         );
 
         let _ = status.send(WireStatus::keyed("launch:a", "busy", "Launching...").sticky());
@@ -5406,9 +7864,8 @@ mod tests {
             match tokio::time::timeout(std::time::Duration::from_millis(200), spine_rx.recv()).await
             {
                 Ok(Ok(SpineChange::Sessions)) => break true,
-                Ok(Ok(SpineChange::Projects)) => {}
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break false,
-                Ok(Err(_)) | Err(_) => {}
+                Ok(Ok(SpineChange::Projects) | Err(_)) | Err(_) => {}
             }
             if std::time::Instant::now() >= deadline {
                 break false;
@@ -5482,9 +7939,8 @@ mod tests {
                 .await
             {
                 Ok(Ok(s)) if s.message == want => break true,
-                Ok(Ok(_)) => {}
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break false,
-                Ok(Err(_)) | Err(_) => {}
+                Ok(Ok(_) | Err(_)) | Err(_) => {}
             }
             if std::time::Instant::now() >= deadline {
                 break false;
@@ -5562,6 +8018,9 @@ mod tests {
             // hold-for-the-next-arrival rule, which needs an empty room.
             watchers: Arc::new(AtomicUsize::new(1)),
             controller: KeyedStatusController::emitting_finals(),
+            operations: yaran_core::operations::Operations::default(),
+            attachments: yaran_core::attachments::Attachments::default(),
+            for_terminal: None,
             generations: std::collections::HashMap::new(),
         };
         (emitter, snap_rx)
@@ -5579,13 +8038,25 @@ mod tests {
             snapshot_tx: snap_tx,
             watchers: Arc::new(AtomicUsize::new(0)),
             controller: KeyedStatusController::emitting_finals(),
+            operations: yaran_core::operations::Operations::default(),
+            attachments: yaran_core::attachments::Attachments::default(),
+            for_terminal: None,
             generations: std::collections::HashMap::new(),
         }
     }
 
     #[test]
-    fn a_named_status_keeps_its_segments_in_the_replay_snapshot() {
+    fn a_named_status_keeps_its_segments_in_the_replay_snapshot_and_the_record_it_finishes() {
         let (mut e, snap) = make_emitter();
+        e.operations.open(
+            "checkout",
+            yaran_core::operations::OperationKind::ProjectAdd,
+            yaran_core::operations::OperationPolicy {
+                unknown_after: Duration::from_secs(60),
+                retention: Duration::from_secs(60),
+            },
+            Instant::now(),
+        );
         let named =
             yaran_core::status_text!["Checked out ", q("main"), " for project ", q("app"), "."];
         let _ = e.send(WireStatus::keyed("checkout", "info", named.clone()));
@@ -5593,6 +8064,9 @@ mod tests {
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].message, named.message());
         assert_eq!(snapshot[0].segments.as_deref(), named.segments());
+        let record = e.operations.view("checkout", Instant::now()).unwrap();
+        assert_eq!(record.message, "Checked out \"main\" for project \"app\".");
+        assert_eq!(record.segments.as_deref(), named.segments());
     }
 
     #[test]
@@ -5602,7 +8076,14 @@ mod tests {
         let (snap_tx, _snap_rx) = watch::channel::<Vec<KeyedWireStatus>>(vec![]);
         let live = yaran_core::statusline::LiveStatusKeys::default();
         live.register("pull");
-        let mut e = StatusEmitter::new(tx, clear_tx, snap_tx, Arc::new(AtomicUsize::new(1)), live);
+        let mut e = StatusEmitter::new(
+            tx,
+            clear_tx,
+            snap_tx,
+            Arc::new(AtomicUsize::new(1)),
+            live,
+            yaran_core::operations::Operations::default(),
+        );
         let busy = yaran_core::status_text!["Pulling ", q("main"), "\u{2026}"];
         let _ = e.send(WireStatus::keyed("pull", "busy", busy.clone()));
         let _ = rx.try_recv();
@@ -5638,7 +8119,7 @@ mod tests {
         let _ = e.send(WireStatus::keyed("pr", "error", "gh could not resolve it"));
         e.tick(Instant::now() + yaran_core::statusline::FINAL_REPLAY_WINDOW);
 
-        assert!(e.take_late_finals().is_empty());
+        assert_eq!(e.take_late_finals(), Vec::<KeyedWireStatus>::new());
     }
 
     #[test]
@@ -5747,12 +8228,37 @@ mod tests {
             // hold-for-the-next-arrival rule, which needs an empty room.
             watchers: Arc::new(AtomicUsize::new(1)),
             controller: KeyedStatusController::emitting_finals(),
+            operations: yaran_core::operations::Operations::default(),
+            attachments: yaran_core::attachments::Attachments::default(),
+            for_terminal: None,
             generations: std::collections::HashMap::new(),
         };
+        e.operations.open(
+            "notes",
+            yaran_core::operations::OperationKind::AgentStop,
+            yaran_core::operations::OperationPolicy {
+                unknown_after: Duration::from_secs(60),
+                retention: Duration::from_secs(60),
+            },
+            Instant::now(),
+        );
         let _ = e.send(WireStatus::keyed("notes", "busy", "Fetching\u{2026}"));
         assert_eq!(snap_rx.borrow().len(), 1, "busy must be in the snapshot");
+        assert_eq!(
+            e.operations.view("notes", Instant::now()).unwrap().state,
+            yaran_core::operations::OperationState::Running,
+            "a busy is not an outcome"
+        );
 
         e.clear("notes".to_string());
+
+        // An operation that ends with nothing to say ends on its clear.
+        let record = e.operations.view("notes", Instant::now()).unwrap();
+        assert_eq!(
+            record.state,
+            yaran_core::operations::OperationState::Succeeded
+        );
+        assert_eq!(record.message, "");
 
         assert!(
             snap_rx.borrow().is_empty(),
@@ -5784,6 +8290,9 @@ mod tests {
             // hold-for-the-next-arrival rule, which needs an empty room.
             watchers: Arc::new(AtomicUsize::new(1)),
             controller: KeyedStatusController::emitting_finals(),
+            operations: yaran_core::operations::Operations::default(),
+            attachments: yaran_core::attachments::Attachments::default(),
+            for_terminal: None,
             generations: std::collections::HashMap::new(),
         };
         // One keyed Info, one anonymous Info, and a sticky error that must not
@@ -5878,6 +8387,9 @@ mod tests {
             // hold-for-the-next-arrival rule, which needs an empty room.
             watchers: Arc::new(AtomicUsize::new(1)),
             controller: KeyedStatusController::emitting_finals(),
+            operations: yaran_core::operations::Operations::default(),
+            attachments: yaran_core::attachments::Attachments::default(),
+            for_terminal: None,
             generations: std::collections::HashMap::new(),
         };
         let _ = e.send(WireStatus::keyed("del", "error", "Worktree delete failed.").sticky());
@@ -5963,6 +8475,9 @@ mod tests {
             // hold-for-the-next-arrival rule, which needs an empty room.
             watchers: Arc::new(AtomicUsize::new(1)),
             controller: KeyedStatusController::emitting_finals().with_live_keys(live.clone()),
+            operations: yaran_core::operations::Operations::default(),
+            attachments: yaran_core::attachments::Attachments::default(),
+            for_terminal: None,
             generations: std::collections::HashMap::new(),
         };
         let _ = e.send(WireStatus::keyed("create-1", "busy", "Pulling\u{2026}"));
@@ -6005,6 +8520,9 @@ mod tests {
             // hold-for-the-next-arrival rule, which needs an empty room.
             watchers: Arc::new(AtomicUsize::new(1)),
             controller: KeyedStatusController::emitting_finals(),
+            operations: yaran_core::operations::Operations::default(),
+            attachments: yaran_core::attachments::Attachments::default(),
+            for_terminal: None,
             generations: std::collections::HashMap::new(),
         };
         // Drain the initial sends so `rx` only sees the upgrades.
@@ -6118,6 +8636,49 @@ mod tests {
         }
     }
 
+    /// Every `[server.auth]` setting applies to the running server on a
+    /// reload: the live limits adopt it and no restart is asked for. The
+    /// password-check bounds included: the gate reads them per attempt.
+    #[test]
+    fn every_server_auth_setting_applies_on_reload_with_no_restart() {
+        let prev = yaran_core::config::ServerConfig::default();
+        let mut next = prev.clone();
+        next.auth = yaran_core::config::ServerAuthConfig {
+            password_hash: yaran_core::auth::hash_password(&yaran_core::auth::Password::new(
+                "orbit velvet quarry lantern cobalt".to_string(),
+            ))
+            .unwrap(),
+            require: yaran_core::config::AuthRequire::Everywhere,
+            minimum_password_length: 20,
+            minimum_password_score: 3,
+            max_failed_logins: 9,
+            blocked_addresses: vec!["198.51.100.0/24".to_string()],
+            session_idle_seconds: 120,
+            cli_token_idle_days: 7,
+            disable_no_auth_warning: true,
+            cookie_secure: yaran_core::config::CookieSecure::Always,
+            max_concurrent_password_checks: 4,
+            password_check_queue: 16,
+            max_password_bytes: 2048,
+            failed_login_window_seconds: 60,
+            failed_login_delay_seconds: 2,
+            failed_login_max_delay_seconds: 60,
+            max_failed_logins_per_minute: 10,
+            max_tracked_addresses: 50,
+            max_blocked_addresses: 20,
+        };
+        for surface in [
+            ServeSurface::YaranServer,
+            ServeSurface::Flip,
+            ServeSurface::Background,
+        ] {
+            assert_eq!(server_restart_warning_copy(&prev, &next, surface), None);
+        }
+        let limits = LiveServerLimits::default();
+        limits.store_from(&next, None);
+        assert_eq!(limits.auth().snapshot().config, next.auth);
+    }
+
     #[test]
     fn restart_drift_detects_host_change() {
         let prev = yaran_core::config::ServerConfig::default();
@@ -6126,12 +8687,88 @@ mod tests {
         assert!(server_restart_settings_changed(&prev, &next));
     }
 
+    /// The control socket is bound once per process, so a new path waits for
+    /// the next start of yaran itself, whichever way it serves.
     #[test]
-    fn restart_drift_detects_allowed_hosts_change() {
+    fn a_control_socket_change_says_it_applies_the_next_time_yaran_starts() {
+        let prev = yaran_core::config::ServerConfig::default();
+        let mut next = prev.clone();
+        next.control_socket = "/run/user/1000/yaran.sock".to_string();
+        for surface in [
+            ServeSurface::YaranServer,
+            ServeSurface::Flip,
+            ServeSurface::Background,
+        ] {
+            let copy = server_restart_warning_copy(&prev, &next, surface).expect("a warning");
+            assert!(copy.contains("control_socket"), "{copy}");
+            assert!(copy.contains("next time yaran starts"), "{copy}");
+            assert!(
+                !copy.contains("stopping and starting"),
+                "restarting a server does not rebind the socket: {copy}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_change_to_a_setting_read_when_serving_starts_says_it_applies_then() {
+        let prev = yaran_core::config::ServerConfig::default();
+        let mut next = prev.clone();
+        next.qr_codes = false;
+        let copy = server_restart_warning_copy(&prev, &next, ServeSurface::YaranServer)
+            .expect("a warning");
+        assert!(copy.contains("qr_codes"), "{copy}");
+        assert!(copy.contains("yaran server"), "{copy}");
+        assert!(copy.contains("start-web-server"), "{copy}");
+        assert!(
+            !copy.contains("color"),
+            "only the setting that changed is named: {copy}"
+        );
+        assert_eq!(
+            server_restart_warning_copy(&prev, &next, ServeSurface::Background),
+            None,
+            "the background server never draws QR codes, so it has nothing to say"
+        );
+
+        // The server log is opened when a serve starts, in every way of serving.
+        let log_path: fn(&mut yaran_core::config::ServerConfig) = |c| c.log_path = "x.log".into();
+        let changes = [
+            ("log_path", log_path),
+            ("log_max_bytes", |c| c.log_max_bytes += 1),
+            ("log_keep", |c| c.log_keep += 1),
+            ("log_compress", |c| c.log_compress = !c.log_compress),
+        ];
+        for (setting, change) in changes {
+            let mut next = prev.clone();
+            change(&mut next);
+            assert!(server_restart_settings_changed(&prev, &next), "{setting}");
+            for surface in [
+                ServeSurface::YaranServer,
+                ServeSurface::Flip,
+                ServeSurface::Background,
+            ] {
+                let copy = server_restart_warning_copy(&prev, &next, surface).expect("a warning");
+                assert!(copy.contains(setting), "{setting} on {surface:?}: {copy}");
+                assert!(copy.contains("server.log"), "{copy}");
+            }
+        }
+    }
+
+    #[test]
+    fn restart_drift_ignores_allowed_hosts_because_a_reload_applies_it() {
+        // The Host guard reads the list from the live limits a reload rewrites,
+        // so a restart warning here would send the user to restart for nothing.
         let prev = yaran_core::config::ServerConfig::default();
         let mut next = prev.clone();
         next.allowed_hosts.push("box.tailnet.ts.net".to_string());
-        assert!(server_restart_settings_changed(&prev, &next));
+        assert!(!server_restart_settings_changed(&prev, &next));
+        assert_eq!(
+            server_restart_warning_copy(&prev, &next, ServeSurface::YaranServer),
+            None
+        );
+        assert_eq!(
+            server_restart_warning_copy(&prev, &next, ServeSurface::Background),
+            None
+        );
     }
 
     #[test]
@@ -6209,11 +8846,26 @@ mod tests {
         let mut next = prev.clone();
         next.color = "never".to_string();
 
-        let copy = server_restart_warning_copy(&prev, &next, false).expect("a warning");
+        let copy = server_restart_warning_copy(&prev, &next, ServeSurface::YaranServer)
+            .expect("a warning");
         assert!(
             copy.contains("yaran server"),
             "the console is built by that process alone: {copy}"
         );
+        // The command is a chip on the web and quoted on the status line,
+        // never between backticks, which neither renders.
+        assert!(!copy.contains('`'), "{copy}");
+        assert!(copy.contains("\"yaran server\""), "{copy}");
+        let names: Vec<&str> = copy
+            .segments()
+            .expect("built from parts")
+            .iter()
+            .filter_map(|segment| match segment {
+                yaran_core::prose::ProseSegment::Name { name, .. } => Some(name.as_str()),
+                yaran_core::prose::ProseSegment::Text(_) => None,
+            })
+            .collect();
+        assert_eq!(names, ["yaran server", "yaran server"], "{copy}");
         assert!(
             !copy.contains("listener binds"),
             "nothing bound moved, so the bind sentence must stay away: {copy}"
@@ -6227,26 +8879,100 @@ mod tests {
         next.color = "never".to_string();
         next.port += 1;
 
-        let copy = server_restart_warning_copy(&prev, &next, false).expect("a warning");
+        let copy = server_restart_warning_copy(&prev, &next, ServeSurface::YaranServer)
+            .expect("a warning");
         assert!(copy.contains("listener binds"), "{copy}");
         assert!(copy.contains("yaran server"), "{copy}");
     }
 
     #[test]
-    fn the_restart_warning_adds_the_background_remedy_only_for_a_bind_change() {
+    fn the_restart_warning_names_each_bind_setting_and_adds_the_background_remedy_only_for_them() {
+        type Change = fn(&mut yaran_core::config::ServerConfig);
         let prev = yaran_core::config::ServerConfig::default();
+        let rows: [(&str, Change); 11] = [
+            ("host", |c| c.host = "0.0.0.0".into()),
+            ("port", |c| c.port += 1),
+            ("max_websocket_events_connections", |c| {
+                c.max_websocket_events_connections += 1;
+            }),
+            ("max_websocket_agent_connections", |c| {
+                c.max_websocket_agent_connections += 1;
+            }),
+            ("max_websocket_terminal_connections", |c| {
+                c.max_websocket_terminal_connections += 1;
+            }),
+            ("max_websocket_tab_connections", |c| {
+                c.max_websocket_tab_connections += 1;
+            }),
+            ("max_websocket_tabs_per_agent", |c| {
+                c.max_websocket_tabs_per_agent += 1;
+            }),
+            ("file_drop_max_bytes", |c| c.file_drop_max_bytes += 1),
+            ("file_drop_max_concurrency", |c| {
+                c.file_drop_max_concurrency += 1;
+            }),
+            ("tree_list_max_concurrency", |c| {
+                c.tree_list_max_concurrency += 1;
+            }),
+            ("release_notes_max_concurrency", |c| {
+                c.release_notes_max_concurrency += 1;
+            }),
+        ];
+        for (setting, change) in rows {
+            let mut next = prev.clone();
+            change(&mut next);
+            for surface in [
+                ServeSurface::YaranServer,
+                ServeSurface::Flip,
+                ServeSurface::Background,
+            ] {
+                let copy = server_restart_warning_copy(&prev, &next, surface).expect("a warning");
+                assert!(
+                    copy.contains(&format!("({setting})")),
+                    "{setting} on {surface:?}: {copy}"
+                );
+            }
+        }
+        // Two moved settings are both named, in the order the file lists them.
+        let mut two = prev.clone();
+        two.port += 1;
+        two.host = "0.0.0.0".into();
+        let copy = server_restart_warning_copy(&prev, &two, ServeSurface::YaranServer).unwrap();
+        assert!(copy.contains("(host, port)"), "{copy}");
+
         let mut bind = prev.clone();
         bind.port += 1;
         let mut console = prev.clone();
         console.color = "never".to_string();
 
-        let bind_copy = server_restart_warning_copy(&prev, &bind, true).expect("a warning");
+        let bind_copy =
+            server_restart_warning_copy(&prev, &bind, ServeSurface::Background).expect("a warning");
         assert!(bind_copy.contains("stopping and starting"), "{bind_copy}");
-        let console_copy = server_restart_warning_copy(&prev, &console, true).expect("a warning");
+        let console_copy = server_restart_warning_copy(&prev, &console, ServeSurface::Background)
+            .expect("a warning");
         assert!(
             !console_copy.contains("stopping and starting"),
             "the background server has no console to rebuild: {console_copy}"
         );
+    }
+
+    /// The flip's log viewer is sized once, when the flip starts, so a reload
+    /// that changes `log_viewer_lines` while the flip serves owes the usual
+    /// warning; `yaran server` and the background server have no viewer to warn
+    /// about.
+    #[test]
+    fn a_log_viewer_lines_change_is_a_restart_warning_in_the_flip_alone() {
+        let prev = yaran_core::config::ServerConfig::default();
+        let mut next = prev.clone();
+        next.log_viewer_lines = prev.log_viewer_lines + 1;
+        assert!(server_restart_settings_changed(&prev, &next));
+
+        let copy = server_restart_warning_copy(&prev, &next, ServeSurface::Flip)
+            .expect("the flip owes a warning");
+        assert!(copy.contains("log_viewer_lines"), "{copy}");
+        assert!(copy.contains("start-web-server"), "{copy}");
+        assert!(server_restart_warning_copy(&prev, &next, ServeSurface::YaranServer).is_none());
+        assert!(server_restart_warning_copy(&prev, &next, ServeSurface::Background).is_none());
     }
 
     #[test]
@@ -6254,7 +8980,7 @@ mod tests {
         let prev = yaran_core::config::ServerConfig::default();
         let mut next = prev.clone();
         next.access_log = !prev.access_log;
-        assert!(server_restart_warning_copy(&prev, &next, true).is_none());
+        assert!(server_restart_warning_copy(&prev, &next, ServeSurface::Background).is_none());
     }
 
     #[test]
@@ -6330,6 +9056,7 @@ mod tests {
             typing: false,
             foreground_cmd: None,
             sort_order: 1,
+            list_after: None,
             created_at: String::new(),
             updated_at: String::new(),
         }
@@ -6447,7 +9174,7 @@ mod tests {
 
         // Run every spine-check interval that fits before the backstop would fire.
         let intervals_before_backstop =
-            (SPINE_BACKSTOP_TICK_INTERVAL / SPINE_CHECK_TICK_INTERVAL as u32) - 1;
+            (SPINE_BACKSTOP_TICK_INTERVAL / SPINE_CHECK_TICK_INTERVAL) - 1;
         for _ in 0..intervals_before_backstop {
             check.maybe_check(&engine, 0, 0, &owners, &tx, &workspace_tx);
         }
@@ -6471,7 +9198,7 @@ mod tests {
         let mut check = SpineCheck::new(&engine, &owners, &workspace_tx);
 
         // Mutate the sessions spine WITHOUT touching the version counters.
-        for s in engine.sessions.iter_mut() {
+        for s in &mut engine.sessions {
             if s.id == "s1" {
                 s.title = Some("renamed-out-of-band".to_string());
             }
@@ -6479,7 +9206,7 @@ mod tests {
 
         // Drive exactly up to the backstop interval. The version never changed,
         // so the only thing that can run the compare is the backstop.
-        let intervals_to_backstop = SPINE_BACKSTOP_TICK_INTERVAL / SPINE_CHECK_TICK_INTERVAL as u32;
+        let intervals_to_backstop = SPINE_BACKSTOP_TICK_INTERVAL / SPINE_CHECK_TICK_INTERVAL;
         for _ in 0..intervals_to_backstop {
             check.maybe_check(&engine, 0, 0, &owners, &tx, &workspace_tx);
         }
@@ -6654,7 +9381,7 @@ mod tests {
         let mut check = SpineCheck::new(&engine, &owners, &workspace_tx);
         let seed_rev = workspace_rx.borrow_and_update().clone().unwrap().rev;
 
-        let intervals_to_backstop = SPINE_BACKSTOP_TICK_INTERVAL / SPINE_CHECK_TICK_INTERVAL as u32;
+        let intervals_to_backstop = SPINE_BACKSTOP_TICK_INTERVAL / SPINE_CHECK_TICK_INTERVAL;
         for _ in 0..intervals_to_backstop {
             check.maybe_check(&engine, 0, 0, &owners, &tx, &workspace_tx);
         }
@@ -6690,6 +9417,39 @@ mod tests {
             "a claim on a non-tab pty must not fire any coarse event"
         );
         assert!(!check.doc.json.contains("input_owner"));
+    }
+
+    /// A device drives a whole row, so a claim made through one of an agent's
+    /// terminals stamps the agent's tabs too, a tab nobody has opened included,
+    /// and leaves other agents alone.
+    #[test]
+    fn a_claim_through_an_agents_terminal_stamps_every_tab_of_its_row() {
+        let (_tmp, paths) = temp_paths();
+        seed_session(&paths, "s1");
+        seed_session(&paths, "s2");
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let owners = crate::pty_owners::PtySizeOwners::default();
+        owners.join_row(
+            "term-1",
+            yaran_core::pty_owners::RowKey::Agent("s1".to_string()),
+        );
+        owners.claim("term-1", 7);
+
+        let spine = owned_spine(&engine, &owners);
+        let slot_owner = |sid: &str| {
+            spine
+                .sessions
+                .iter()
+                .find(|s| s.id == sid)
+                .expect("session present")
+                .tabs
+                .first()
+                .expect("a first tab")
+                .input_owner
+                .clone()
+        };
+        assert_eq!(slot_owner("s1"), Some("7".to_string()));
+        assert_eq!(slot_owner("s2"), None);
     }
 
     /// The overlay must iterate EVERY session's tabs, not merely find a first
@@ -6778,7 +9538,8 @@ mod tests {
         engine.pty_activity.insert(
             "s1".to_string(),
             std::time::Instant::now()
-                - (AGENT_STREAMING_WINDOW + std::time::Duration::from_millis(50)),
+                .checked_sub(AGENT_STREAMING_WINDOW + std::time::Duration::from_millis(50))
+                .expect("the clock is past one streaming window"),
         );
         poll_streaming_transitions(&engine, &mut prev_streaming, &mut streaming_version);
         assert_eq!(
@@ -7042,15 +9803,14 @@ mod tests {
             "[defaults]\nstart_directory = \"{}\"\n",
             dir_b.path().to_string_lossy()
         );
-        handle
-            .write_raw_config(new_body.clone())
-            .await
-            .expect("write");
+        save_raw(&handle, new_body.clone()).await.expect("write");
 
         // PERSISTED: the file on disk now carries dir B.
         let on_disk = handle.read_raw_config().await.expect("read");
         assert!(
-            on_disk.contains(dir_b.path().to_string_lossy().as_ref()),
+            on_disk
+                .content
+                .contains(dir_b.path().to_string_lossy().as_ref()),
             "disk must hold the saved edit"
         );
 
@@ -7074,6 +9834,241 @@ mod tests {
         );
     }
 
+    /// The user journey for `allowed_hosts`: edit config.toml by hand, run
+    /// "Reload config", and the running Host guard answers by the new list. The
+    /// guard holds the very set the live limits hand out, so reading the set is
+    /// reading what the guard reads.
+    #[tokio::test]
+    async fn a_config_reload_hands_allowed_hosts_to_the_running_guard() {
+        let (_tmp, paths) = temp_paths();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let guard_set = handle.live_limits().allowed_hosts();
+
+        std::fs::write(
+            &paths.config_path,
+            "[server]\nallowed_hosts = [\"Box.Example.com:443\"]\n",
+        )
+        .expect("edit config.toml by hand");
+        handle
+            .apply_wire(WireCommand::ReloadConfig {})
+            .await
+            .expect("reload");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while guard_set.snapshot() != vec!["box.example.com".to_string()] {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the reload never reached the guard's set: {:?}",
+                guard_set.snapshot()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// A file saved from the web editor and then broken by hand cannot be
+    /// adopted; a settings change then must be refused out loud rather than
+    /// written over the disk edits from a memory that never saw them.
+    #[tokio::test]
+    async fn a_settings_change_is_refused_while_an_unadoptable_disk_edit_waits() {
+        let (_tmp, paths) = temp_paths();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        save_raw(&handle, "[ui]\nleft_width_pct = 25\n".to_string())
+            .await
+            .expect("raw save");
+        let broken = "[ui]\nleft_width_pct = 26\n\n[server.auth]\nrequire = \"lan\"\n";
+        std::fs::write(&paths.config_path, broken).expect("hand edit");
+        let refusal = handle
+            .apply_wire(WireCommand::SetSettings(yaran_core::wire::SettingsPatch {
+                copy_on_select: Some(false),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("refused");
+        assert!(refusal.contains("server.auth"), "{refusal}");
+        assert!(refusal.contains("was not made"), "{refusal}");
+        assert_eq!(std::fs::read_to_string(&paths.config_path).unwrap(), broken);
+    }
+
+    /// The web's "recover config" keeps the file's own `[server.auth]`: a
+    /// password set on disk after this yaran started is not replaced by the
+    /// running config's (here, none).
+    #[tokio::test]
+    async fn recovering_the_config_keeps_the_files_server_auth() {
+        let (_tmp, paths) = temp_paths();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let hash = yaran_core::auth::hash_password(&yaran_core::auth::Password::new(
+            "set on disk after yaran started".to_string(),
+        ))
+        .expect("hash");
+        std::fs::write(
+            &paths.config_path,
+            format!("[server.auth]\npassword_hash = \"{hash}\"\n"),
+        )
+        .expect("write");
+        handle
+            .apply_wire(WireCommand::RecoverConfig {})
+            .await
+            .expect("recover");
+        let after = std::fs::read_to_string(&paths.config_path).expect("read");
+        let auth = yaran_core::config::auth_section_of(&after).expect("valid");
+        assert_eq!(auth.password_hash, hash, "{after}");
+    }
+
+    /// A reload that meets an unreadable `[server.auth]` changes nothing at
+    /// all, not even the settings beside it that are fine, and says why; the
+    /// next good file applies as usual.
+    /// config.toml deleted while the server runs: the reload is refused and
+    /// the running config (its password included) stays.
+    #[tokio::test]
+    async fn a_reload_of_a_deleted_config_keeps_the_running_config() {
+        let (_tmp, paths) = temp_paths();
+        std::fs::write(
+            &paths.config_path,
+            "[server]\nallowed_hosts = [\"before.example.com\"]\n",
+        )
+        .expect("seed config");
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let guard_set = handle.live_limits().allowed_hosts();
+        handle
+            .apply_wire(WireCommand::ReloadConfig {})
+            .await
+            .expect("first reload");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while guard_set.snapshot() != vec!["before.example.com".to_string()] {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first reload never applied"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut statuses = handle.subscribe_status();
+        std::fs::remove_file(&paths.config_path).expect("delete");
+        handle
+            .apply_wire(WireCommand::ReloadConfig {})
+            .await
+            .expect("reload request");
+        let said = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let status = statuses.recv().await.expect("status");
+                if status.message.contains("no longer exists") {
+                    return status.message;
+                }
+            }
+        })
+        .await
+        .expect("a status says the file is gone");
+        assert!(said.contains("not reloaded"), "{said}");
+        assert_eq!(guard_set.snapshot(), vec!["before.example.com".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_reload_with_an_unreadable_server_auth_keeps_the_running_config() {
+        let (_tmp, paths) = temp_paths();
+        std::fs::write(
+            &paths.config_path,
+            "[server]\nallowed_hosts = [\"before.example.com\"]\n",
+        )
+        .expect("seed config");
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let guard_set = handle.live_limits().allowed_hosts();
+        handle
+            .apply_wire(WireCommand::ReloadConfig {})
+            .await
+            .expect("first reload");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while guard_set.snapshot() != vec!["before.example.com".to_string()] {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first reload never applied"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        for broken_auth in [
+            "[server.auth\n",
+            "[server.auth]\npassword_hash = \"not-a-hash\"\n",
+            "[server.auth]\nsession_idle_seconds = true\n",
+        ] {
+            let mut statuses = handle.subscribe_status();
+            std::fs::write(
+                &paths.config_path,
+                format!("[server]\nallowed_hosts = [\"after.example.com\"]\n\n{broken_auth}"),
+            )
+            .expect("edit config.toml by hand");
+            handle
+                .apply_wire(WireCommand::ReloadConfig {})
+                .await
+                .expect("reload request");
+            let said = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let status = statuses.recv().await.expect("status");
+                    if status.message.contains("server.auth") {
+                        return status.message;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{broken_auth:?}: no status named [server.auth]"));
+            assert!(said.contains("not reloaded"), "{said}");
+            assert_eq!(
+                guard_set.snapshot(),
+                vec!["before.example.com".to_string()],
+                "{broken_auth:?}: the whole reload is refused"
+            );
+        }
+
+        std::fs::write(
+            &paths.config_path,
+            "[server]\nallowed_hosts = [\"after.example.com\"]\n",
+        )
+        .expect("fix config.toml");
+        handle
+            .apply_wire(WireCommand::ReloadConfig {})
+            .await
+            .expect("reload");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while guard_set.snapshot() != vec!["after.example.com".to_string()] {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the good reload never applied"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// The web editor still leaves the perimeter to the terminal, but the
+    /// refusal must not send anyone to restart for a list a reload applies.
+    #[tokio::test]
+    async fn the_web_editor_refuses_an_allowed_hosts_edit_and_names_reload_not_restart() {
+        let (_tmp, paths) = temp_paths();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let refusal = save_raw(
+            &handle,
+            "[server]\nallowed_hosts = [\"box.example.com\"]\n".to_string(),
+        )
+        .await
+        .expect_err("an allowed_hosts edit from the browser is refused")
+        .to_string();
+        assert!(refusal.contains("allowed_hosts"), "{refusal}");
+        assert!(refusal.to_lowercase().contains("reload"), "{refusal}");
+        assert!(!refusal.contains("restart"), "{refusal}");
+
+        let refusal = save_raw(&handle, "[server]\nhost = \"0.0.0.0\"\n".to_string())
+            .await
+            .expect_err("a host edit from the browser is refused")
+            .to_string();
+        assert!(
+            refusal.contains("restart"),
+            "host still needs a restart: {refusal}"
+        );
+    }
+
     #[tokio::test]
     async fn config_static_mutation_after_a_raw_save_does_not_clobber_it() {
         let (_tmp, paths) = temp_paths();
@@ -7089,7 +10084,7 @@ mod tests {
             "[defaults]\nstart_directory = \"{}\"\n",
             dir_b.path().to_string_lossy()
         );
-        handle.write_raw_config(new_body).await.expect("write");
+        save_raw(&handle, new_body).await.expect("write");
 
         // Now toggle a config-static setting. Its wholesale toml_edit patch would
         // serialize the (stale) in-memory config over the file, reverting the
@@ -7102,11 +10097,15 @@ mod tests {
         // The saved edit survived on disk: the toggle reconciled instead of clobbering.
         let on_disk = handle.read_raw_config().await.expect("read");
         assert!(
-            on_disk.contains(dir_b.path().to_string_lossy().as_ref()),
+            on_disk
+                .content
+                .contains(dir_b.path().to_string_lossy().as_ref()),
             "the config-static mutation must not clobber the saved start_directory"
         );
         assert!(
-            !on_disk.contains(dir_a.path().to_string_lossy().as_ref()),
+            !on_disk
+                .content
+                .contains(dir_a.path().to_string_lossy().as_ref()),
             "the stale dir A must not have been written back"
         );
 
@@ -7134,7 +10133,8 @@ mod tests {
             clear_tx,
             snapshot_tx,
             Arc::new(AtomicUsize::new(1)),
-            Default::default(),
+            yaran_core::statusline::LiveStatusKeys::default(),
+            yaran_core::operations::Operations::default(),
         );
         let (config_reload_tx, _config_rx) = broadcast::channel(8);
         let mut disk_ahead = false;
@@ -7259,13 +10259,14 @@ mod tests {
     /// somebody answers for it). What it pins is the ANSWERS: an arm that
     /// silently answers `false` for a mutator below fails here.
     fn request_kind_answers() -> Vec<(&'static str, EngineRequest, bool)> {
-        vec![
+        let mut answers = vec![
             (
                 "ApplyWire",
                 EngineRequest::ApplyWire(
                     WireCommand::SetChangesPaneVisible { visible: true },
                     dead_reply(),
                     StatusScope::All,
+                    None,
                 ),
                 true,
             ),
@@ -7281,7 +10282,7 @@ mod tests {
             ),
             (
                 "SubscribePty",
-                EngineRequest::SubscribePty("s1".into(), dead_reply()),
+                EngineRequest::SubscribePty("s1".into(), PaneVisibility::OnScreen, dead_reply()),
                 true,
             ),
             (
@@ -7300,6 +10301,7 @@ mod tests {
                 false,
             ),
             ("NoteViewed", EngineRequest::NoteViewed("s1".into()), true),
+            ("PtyShown", EngineRequest::PtyShown("s1".into()), true),
             (
                 "SubscribeTerminal",
                 EngineRequest::SubscribeTerminal("t1".into(), dead_reply()),
@@ -7307,17 +10309,27 @@ mod tests {
             ),
             (
                 "CreateTerminal",
-                EngineRequest::CreateTerminal("s1".into(), dead_reply()),
+                EngineRequest::CreateTerminal("s1".into(), None, dead_reply()),
                 true,
             ),
             (
                 "CreateProjectTerminal",
-                EngineRequest::CreateProjectTerminal("p1".into(), dead_reply()),
+                EngineRequest::CreateProjectTerminal("p1".into(), None, dead_reply()),
                 true,
             ),
+        ];
+        answers.extend(request_kind_answers_second());
+        answers.extend(request_kind_answers_third());
+        answers.extend(request_kind_answers_fourth());
+        answers
+    }
+
+    /// The second part of [`request_kind_answers`].
+    fn request_kind_answers_second() -> Vec<(&'static str, EngineRequest, bool)> {
+        vec![
             (
                 "CreateStandaloneTerminal",
-                EngineRequest::CreateStandaloneTerminal(dead_reply()),
+                EngineRequest::CreateStandaloneTerminal(None, dead_reply()),
                 true,
             ),
             (
@@ -7332,7 +10344,7 @@ mod tests {
             ),
             (
                 "CreateAgentTab",
-                EngineRequest::CreateAgentTab("s1".into(), None, dead_reply()),
+                EngineRequest::CreateAgentTab("s1".into(), None, None, dead_reply()),
                 true,
             ),
             (
@@ -7361,10 +10373,26 @@ mod tests {
                 false,
             ),
             (
+                "PullRequestBranches",
+                EngineRequest::PullRequestBranches("s1".into(), dead_reply()),
+                false,
+            ),
+            (
+                "RenamePushedProbe",
+                EngineRequest::RenamePushedProbe("s1".into(), dead_reply()),
+                false,
+            ),
+            (
                 "PtyKeyForPaneId",
                 EngineRequest::PtyKeyForPaneId("s1".into(), dead_reply()),
                 false,
             ),
+        ]
+    }
+
+    /// The third part of [`request_kind_answers`].
+    fn request_kind_answers_third() -> Vec<(&'static str, EngineRequest, bool)> {
+        vec![
             (
                 "FileDropDestination",
                 EngineRequest::FileDropDestination("s1".into(), dead_reply()),
@@ -7419,11 +10447,6 @@ mod tests {
                 false,
             ),
             (
-                "RegisteredProjectPaths",
-                EngineRequest::RegisteredProjectPaths(dead_reply()),
-                false,
-            ),
-            (
                 "BrowseStartDir",
                 EngineRequest::BrowseStartDir(dead_reply()),
                 false,
@@ -7433,9 +10456,50 @@ mod tests {
                 EngineRequest::RefreshChangedFiles("/tmp/wt".into()),
                 false,
             ),
+        ]
+    }
+
+    /// The fourth part of [`request_kind_answers`].
+    fn request_kind_answers_fourth() -> Vec<(&'static str, EngineRequest, bool)> {
+        vec![
             (
                 "ProjectWorktreeInputs",
                 EngineRequest::ProjectWorktreeInputs("p1".into(), dead_reply()),
+                false,
+            ),
+            (
+                "WireAdmissionRefusal",
+                EngineRequest::WireAdmissionRefusal(
+                    Box::new(WireCommand::RemoveProject {
+                        project_id: "p1".into(),
+                    }),
+                    dead_reply(),
+                ),
+                false,
+            ),
+            (
+                "AdmitManagerRemoval",
+                EngineRequest::AdmitManagerRemoval {
+                    project_id: "p1".into(),
+                    path: "/tmp/wt".into(),
+                    branch: yaran_core::worktree_manager::BranchRemoval::Keep,
+                    reply: dead_reply(),
+                },
+                false,
+            ),
+            (
+                "AdmitLeftoverRemoval",
+                EngineRequest::AdmitLeftoverRemoval {
+                    project_id: "p1".into(),
+                    path: "/tmp/wt".into(),
+                    delete_branches: Vec::new(),
+                    reply: dead_reply(),
+                },
+                false,
+            ),
+            (
+                "DestructiveCheck",
+                EngineRequest::DestructiveCheck("/tmp/wt".into(), dead_reply()),
                 false,
             ),
             (
@@ -7455,7 +10519,7 @@ mod tests {
             ),
             (
                 "WriteRawConfig",
-                EngineRequest::WriteRawConfig("x = 1".into(), dead_reply()),
+                EngineRequest::WriteRawConfig("x = 1".into(), None, dead_reply()),
                 false,
             ),
             (
@@ -7491,7 +10555,8 @@ mod tests {
     fn one_loop_iteration(engine: Engine) -> Engine {
         let (handle, ends) = build_actor_channels(&engine);
         let mut ran = false;
-        let engine = run_engine_loop(engine, ends, ShutdownEcho::Stderr, move || {
+        let surface = ServeSurface::YaranServer;
+        let engine = run_engine_loop(engine, ends, ShutdownEcho::Silent, surface, move || {
             if ran {
                 LoopControl::Exit
             } else {
@@ -7571,7 +10636,7 @@ mod tests {
         // through with a copied-from-its-neighbour `false` that nothing reads.
         assert_eq!(
             request_kind_answers().len(),
-            45,
+            51,
             "every EngineRequest kind needs a row in request_kind_answers; \
              update the count deliberately when adding one"
         );
@@ -7594,7 +10659,7 @@ mod tests {
         let now = chrono::Utc::now();
         engine.sessions.push(yaran_core::model::AgentSession {
             id: "s1".to_string(),
-            agent_handle: "s1".to_string(),
+            agent_handle: yaran_core::model::normalize_agent_handle("s1"),
             shared_workspace: false,
             deleted_at: None,
             slot_tab_id: "s1-slot".to_string(),
@@ -7634,16 +10699,14 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let final_status = loop {
             svc.run_maintenance(&mut engine);
-            match statuses.try_recv() {
-                Ok(status) => break status,
-                Err(_) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "the detach outcome never reached the status stream"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
+            if let Ok(status) = statuses.try_recv() {
+                break status;
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the detach outcome never reached the status stream"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         };
         assert_eq!(final_status.key.as_deref(), Some("detach-agent:s1"));
         assert_eq!(final_status.tone, "info");
@@ -7665,6 +10728,307 @@ mod tests {
         assert_eq!(
             auto_reopen_log_line(3),
             "Auto-reopening 3 agents that were running when yaran last exited..."
+        );
+    }
+
+    /// `yaran server` started with no config.toml, and the user then writes
+    /// one by hand: a save from memory keeps what they wrote, changing only
+    /// what memory changed.
+    #[tokio::test]
+    async fn a_config_written_by_hand_after_a_start_without_one_survives_a_save() {
+        let (_tmp, paths) = temp_paths();
+        let _ = std::fs::remove_file(&paths.config_path);
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        std::fs::write(&paths.config_path, "[ui]\nleft_width_pct = 31\n").unwrap();
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("API".to_string(), "k".to_string());
+        handle
+            .apply_wire(WireCommand::PersistGlobalEnv { env, version: None })
+            .await
+            .expect("save");
+        let after = std::fs::read_to_string(&paths.config_path).unwrap();
+        assert!(after.contains("left_width_pct = 31"), "{after}");
+        assert!(after.contains("API = \"k\""), "{after}");
+    }
+
+    /// a config-changing command that takes on a file saved in the
+    /// raw editor adopts it into the engine, so it must adopt its
+    /// `[server.auth]` into the auth layer too, as every reload path does.
+    #[tokio::test]
+    async fn a_command_adopting_the_disk_file_also_adopts_its_server_auth() {
+        let (_tmp, paths) = temp_paths();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let opened = handle.read_raw_config().await.expect("read");
+        let live = handle.live_limits().auth();
+        assert_eq!(
+            live.snapshot().config.blocked_addresses,
+            Vec::<String>::new()
+        );
+        let edited = if opened.content.contains("blocked_addresses = []") {
+            opened.content.replace(
+                "blocked_addresses = []",
+                "blocked_addresses = [\"203.0.113.7\"]",
+            )
+        } else {
+            format!(
+                "{}\n[server.auth]\nblocked_addresses = [\"203.0.113.7\"]\n",
+                opened.content
+            )
+        };
+        save_raw(&handle, edited)
+            .await
+            .expect("the raw save persists the file");
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("API".to_string(), "k".to_string());
+        handle
+            .apply_wire(WireCommand::PersistGlobalEnv { env, version: None })
+            .await
+            .expect("the command adopts the file and applies");
+        let after = handle.read_raw_config().await.expect("read").content;
+        assert!(
+            after.contains("203.0.113.7"),
+            "the engine kept the edit: {after}"
+        );
+        assert_eq!(
+            live.snapshot().config.blocked_addresses,
+            ["203.0.113.7"],
+            "the engine took the file on, but the auth layer still runs the old [server.auth]"
+        );
+    }
+
+    /// A config-changing command over a file edited on disk first takes the
+    /// file on, and that adoption is judged by the same start check the
+    /// serving surface's reload uses: a file `yaran server` refuses is not
+    /// adopted, the command is refused saying why, and the running settings
+    /// stay as they were. A problem only the terminal UI refuses does not stop
+    /// `yaran server` taking the file on.
+    #[tokio::test]
+    async fn a_file_the_serving_surface_refuses_is_never_adopted_by_a_command() {
+        let (_tmp, paths) = temp_paths();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let randomized = || async {
+            handle
+                .bootstrap()
+                .await
+                .expect("bootstrap")
+                .randomize_agent_names_by_default
+        };
+        let before = randomized().await;
+        let opened = handle.read_raw_config().await.expect("read");
+        let key = "enable_randomized_pet_name_by_default";
+        assert!(opened.content.contains(&format!("{key} = {before}")));
+        let flipped = opened.content.replace(
+            &format!("{key} = {before}"),
+            &format!("{key} = {}", !before),
+        );
+        let duplicate_projects = "\n[[projects]]\nid = \"same\"\npath = \"/tmp/yaran-fixture-a\"\n\n\
+                                  [[projects]]\nid = \"same\"\npath = \"/tmp/yaran-fixture-b\"\n";
+        save_raw(&handle, format!("{flipped}{duplicate_projects}"))
+            .await
+            .expect("the raw save persists the file");
+        let env = || {
+            let mut env = std::collections::BTreeMap::new();
+            env.insert("API".to_string(), "k".to_string());
+            WireCommand::PersistGlobalEnv { env, version: None }
+        };
+        let refused = handle.apply_wire(env()).await;
+        let message = refused.expect_err("a file yaran server refuses is not adopted");
+        assert!(message.contains("unchanged"), "{message}");
+        assert!(message.contains("will not start"), "{message}");
+        assert_eq!(randomized().await, before, "the running settings stay");
+
+        // A problem only the terminal UI refuses: yaran server takes it on.
+        assert!(flipped.contains("\n[env]\n"), "{flipped}");
+        save_raw(
+            &handle,
+            flipped.replacen("\n[env]\n", "\n[env]\nA = \"${\"\n", 1),
+        )
+        .await
+        .expect("the raw save persists the file");
+        handle
+            .apply_wire(env())
+            .await
+            .expect("yaran server adopts what only the terminal UI refuses");
+        assert_eq!(randomized().await, !before);
+    }
+
+    /// `yaran server`'s start (its bootstrap, then the listener plan with no
+    /// `--bind` or `--port`) refuses exactly the files the one list of start
+    /// checks says stop it, for every kind of problem the list knows.
+    #[test]
+    fn yaran_server_refuses_exactly_what_the_start_checks_say() {
+        for fixture in yaran_core::start_check_fixtures::FIXTURES {
+            let (_tmp, paths) = temp_paths();
+            std::fs::write(&paths.config_path, fixture.text).unwrap();
+            let refused = match crate::bootstrap::bootstrap_engine(&paths) {
+                Err(_) => true,
+                Ok(engine) => yaran_core::config::resolve_server_plan(
+                    &engine.config.server,
+                    &yaran_core::config::ServerCliOverrides::default(),
+                    None,
+                )
+                .is_err(),
+            };
+            let listed = yaran_core::config::start_problems_of(fixture.text)
+                .iter()
+                .any(|problem| problem.stops(yaran_core::config::Surface::YaranServer));
+            assert_eq!(
+                refused, fixture.stops_yaran_server,
+                "{}: start",
+                fixture.name
+            );
+            assert_eq!(
+                listed, fixture.stops_yaran_server,
+                "{}: the list",
+                fixture.name
+            );
+        }
+    }
+
+    // ── The raw editor's save carries proof of what it read ────────────────
+
+    /// Review probe (ported): a password set with `yaran config set` while a
+    /// browser has the raw editor open must not be undone when that editor
+    /// saves an unrelated change. The save carries the read's token, the file
+    /// moved, so the save is refused as a conflict and nothing is written.
+    #[tokio::test]
+    async fn review17_raw_editor_save_keeps_a_password_set_meanwhile() {
+        let (_tmp, paths) = temp_paths();
+        std::fs::write(&paths.config_path, "[ui]\nleft_width_pct = 20\n").unwrap();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let opened = handle.read_raw_config().await.expect("read");
+        yaran_core::config_keys::set_password(
+            &paths.config_path,
+            &yaran_core::auth::Password::new("correct horse battery staple 77".to_string()),
+            &[],
+        )
+        .expect("set password");
+        let saved = handle
+            .write_raw_config(
+                opened
+                    .content
+                    .replace("left_width_pct = 20", "left_width_pct = 25"),
+                Some(opened.token),
+            )
+            .await;
+        assert!(matches!(saved, Err(RawWriteError::Changed(_))), "{saved:?}");
+        let after = std::fs::read_to_string(&paths.config_path).unwrap();
+        let auth = yaran_core::config::auth_section_of(&after).expect("loads");
+        assert!(
+            auth.has_password(),
+            "the password set meanwhile was erased by the raw editor save:\n{after}"
+        );
+    }
+
+    /// A ban appended while the editor was open is kept the same way.
+    #[tokio::test]
+    async fn a_raw_save_never_undoes_a_ban_appended_meanwhile() {
+        let (_tmp, paths) = temp_paths();
+        std::fs::write(&paths.config_path, "[ui]\nleft_width_pct = 20\n").unwrap();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let opened = handle.read_raw_config().await.expect("read");
+        yaran_core::config_keys::append_blocked_address(
+            &paths.config_path,
+            "203.0.113.9".parse().unwrap(),
+            10,
+        )
+        .unwrap();
+        let saved = handle
+            .write_raw_config(opened.content.clone(), Some(opened.token.clone()))
+            .await;
+        assert!(matches!(saved, Err(RawWriteError::Changed(_))), "{saved:?}");
+        assert!(
+            std::fs::read_to_string(&paths.config_path)
+                .unwrap()
+                .contains("203.0.113.9")
+        );
+
+        // Read again: the fresh token saves.
+        let fresh = handle.read_raw_config().await.expect("read");
+        assert_ne!(fresh.token, opened.token);
+        handle
+            .write_raw_config(
+                fresh
+                    .content
+                    .replace("left_width_pct = 20", "left_width_pct = 25"),
+                Some(fresh.token),
+            )
+            .await
+            .expect("a save over what it read");
+        let after = std::fs::read_to_string(&paths.config_path).unwrap();
+        assert!(after.contains("left_width_pct = 25") && after.contains("203.0.113.9"));
+    }
+
+    /// The raw editor's guards judge the file as a start would load it, after
+    /// the load migrations: a deprecated `[server] bind` that a start turns
+    /// into `host = "0.0.0.0"` is the host changing, and is refused.
+    #[tokio::test]
+    async fn a_raw_save_cannot_change_the_host_through_a_deprecated_bind() {
+        let (_tmp, paths) = temp_paths();
+        std::fs::write(
+            &paths.config_path,
+            "[server]\nhost = \"127.0.0.1\"\nport = 3890\n",
+        )
+        .unwrap();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let before = std::fs::read_to_string(&paths.config_path).unwrap();
+        let saved = save_raw(&handle, "[server]\nbind = \"0.0.0.0:3890\"\n").await;
+        match saved {
+            Err(RawWriteError::Refused(reason)) => {
+                assert!(reason.contains("host"), "{reason}");
+            }
+            other => panic!("a host change through a deprecated bind was saved: {other:?}"),
+        }
+        assert_eq!(std::fs::read_to_string(&paths.config_path).unwrap(), before);
+        // The same bind naming the host already in force is no change, and saves.
+        save_raw(&handle, "[server]\nbind = \"127.0.0.1:3890\"\n")
+            .await
+            .expect("a bind equal to the running host and port is no host change");
+    }
+
+    /// A save that carries no proof of what it read is refused: the raw editor
+    /// is its only client, and it always has one.
+    #[tokio::test]
+    async fn a_raw_save_with_no_token_is_refused() {
+        let (_tmp, paths) = temp_paths();
+        std::fs::write(&paths.config_path, "[ui]\nleft_width_pct = 20\n").unwrap();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let saved = handle
+            .write_raw_config("[ui]\nleft_width_pct = 25\n".to_string(), None)
+            .await;
+        assert!(matches!(saved, Err(RawWriteError::Refused(_))), "{saved:?}");
+        assert!(
+            std::fs::read_to_string(&paths.config_path)
+                .unwrap()
+                .contains("= 20")
+        );
+    }
+
+    /// With no file yet, the token names that, and a save that finds a file
+    /// written meanwhile is a conflict too.
+    #[tokio::test]
+    async fn a_raw_save_over_a_file_that_appeared_meanwhile_is_a_conflict() {
+        let (_tmp, paths) = temp_paths();
+        let engine = bootstrap_engine(&paths).expect("bootstrap");
+        let (handle, _join) = spawn_engine_thread(engine);
+        let _ = std::fs::remove_file(&paths.config_path);
+        let opened = handle.read_raw_config().await.expect("read");
+        std::fs::write(&paths.config_path, "[ui]\nleft_width_pct = 31\n").unwrap();
+        let saved = handle
+            .write_raw_config(opened.content, Some(opened.token))
+            .await;
+        assert!(matches!(saved, Err(RawWriteError::Changed(_))), "{saved:?}");
+        assert!(
+            std::fs::read_to_string(&paths.config_path)
+                .unwrap()
+                .contains("= 31")
         );
     }
 }

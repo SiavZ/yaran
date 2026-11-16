@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
-import { afterEach, beforeAll, describe, expect, it } from "vitest"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { Toaster } from "@yaran/ui-kit/sonner"
 
@@ -48,14 +48,16 @@ function toastEl(): HTMLElement {
   return el as HTMLElement
 }
 
-// Drive a pointer drag across the toast. Each event goes in its OWN act()
-// because sonner locks the swipe axis into React state on the first move and
-// reads it on the NEXT one.
+// Drive a finger drag across the toast (a mouse drag selects text instead).
+// Each event goes in its OWN act() because sonner locks the swipe axis into
+// React state on the first move and reads it on the NEXT one.
 async function swipe(el: HTMLElement, dx: number, dy: number) {
   const opts = { bubbles: true, cancelable: true, button: 0 }
   const at = (type: string, x: number, y: number) =>
     act(() => {
-      el.dispatchEvent(new MouseEvent(type, { ...opts, clientX: x, clientY: y }))
+      const ev = new MouseEvent(type, { ...opts, clientX: x, clientY: y })
+      Object.defineProperty(ev, "pointerType", { value: "touch" })
+      el.dispatchEvent(ev)
     })
   at("pointerdown", 0, 0)
   at("pointermove", Math.sign(dx) * 4, Math.sign(dy) * 4)
@@ -203,5 +205,114 @@ describe("an ordinary notification", () => {
       await new Promise((resolve) => setTimeout(resolve, 120))
     }
     expect(toastEl().getAttribute("data-removed")).not.toBe("true")
+  })
+})
+
+describe("a notification with an action button", () => {
+  it("leaves the toast to the press's handler, which replaces it on the same id", async () => {
+    render(<Toaster />)
+    let pressed = 0
+    act(() => {
+      notifyWarning("the copy was blocked", {
+        id: "copy-1",
+        sticky: true,
+        action: { label: "Copy", onClick: () => (pressed += 1) },
+      })
+    })
+    await screen.findByText("the copy was blocked")
+    act(() => {
+      screen.getByRole("button", { name: "Copy" }).click()
+    })
+    expect(pressed).toBe(1)
+    // The press alone must not close the toast: only its handler knows
+    // whether the press worked.
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(toastEl().getAttribute("data-removed")).not.toBe("true")
+
+    act(() => {
+      notifySuccess("copied it", { id: "copy-1" })
+    })
+    await screen.findByText("copied it")
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull()
+  })
+})
+
+describe("the countdown bar", () => {
+  // sonner MERGES a raise into the toast already on its id, so a bar left over
+  // from the toast being replaced would keep draining on one that never goes.
+  it("drains only while the toast on an id is going to dismiss itself", async () => {
+    render(<Toaster />)
+    const bar = () => toastEl().querySelector(".yaran-toast-drain")
+    act(() => {
+      notifySuccess("counting down", { id: "k" })
+    })
+    await screen.findByText("counting down")
+    expect(bar()).not.toBeNull()
+
+    act(() => {
+      notifyWarning("waiting for you", { id: "k", sticky: true })
+    })
+    await screen.findByText("waiting for you")
+    expect(bar()).toBeNull()
+
+    act(() => {
+      notifyBusy("working on it", { id: "k" })
+    })
+    await screen.findByText("working on it")
+    expect(bar()).toBeNull()
+
+    // A base window of 0 turns auto-clear off for every final tone.
+    setStatusClearSeconds(0)
+    act(() => {
+      notifyError("no window at all", { id: "k" })
+    })
+    await screen.findByText("no window at all")
+    expect(bar()).toBeNull()
+  })
+
+  // The bar starts over on every replacement, so sonner's timer has to as well.
+  // sonner only resets a toast's remaining time when its duration changes, so a
+  // toast that was paused once and then replaced with the same duration would
+  // resume from the remainder left at that pause and vanish early.
+  it("restarts the full window when a once-paused toast is replaced on its id", () => {
+    // Fake timers and a fake clock, so the boundaries below are exact: sonner
+    // measures a pause with `Date` and delivers every raise on a timeout.
+    vi.useFakeTimers()
+    try {
+      const advance = (ms: number) =>
+        act(() => {
+          vi.advanceTimersByTime(ms)
+        })
+      setStatusClearSeconds(6)
+      render(<Toaster />)
+      act(() => {
+        notifySuccess("first copy", { id: "same" })
+      })
+      advance(0)
+      screen.getByText("first copy")
+      advance(3000)
+      // Hovering expands the stack, which is what pauses sonner's timers, with
+      // 3000ms of the 6000ms window left.
+      const stack = document.querySelector("[data-sonner-toaster]") as HTMLElement
+      act(() => {
+        fireEvent.mouseEnter(stack)
+      })
+      advance(500)
+      act(() => {
+        fireEvent.mouseLeave(stack)
+      })
+      act(() => {
+        notifySuccess("second copy", { id: "same" })
+      })
+      advance(0)
+      screen.getByText("second copy")
+      // Well past the old remainder, just short of a fresh window.
+      advance(5900)
+      expect(toastEl().getAttribute("data-removed")).not.toBe("true")
+      advance(200)
+      expect(toastEl().getAttribute("data-removed")).toBe("true")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

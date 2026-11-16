@@ -318,7 +318,7 @@ impl Repo {
             (Some(remote), Some(merge_ref)) if remote != "." => Ok(Upstream { remote, merge_ref }),
             _ => bail!(
                 "branch {branch} of {} has no upstream to sync the board with; set one with \
-                 `git branch --set-upstream-to`",
+                 \"git branch --set-upstream-to\"",
                 self.root.display()
             ),
         }
@@ -592,7 +592,13 @@ fn git_in(dir: &Path, args: &[&str], timeout: Duration, ssh_batch: bool) -> Resu
         cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
     }
     let label = format!("git {}", args.first().copied().unwrap_or(""));
-    match run_command_with_timeout(cmd, timeout, DEFAULT_READER_DRAIN, &label) {
+    match run_command_with_timeout(
+        cmd,
+        crate::bounded_command::ChildGroup::New,
+        timeout,
+        DEFAULT_READER_DRAIN,
+        &label,
+    ) {
         CommandOutcome::Completed(output) => Ok(GitOutput {
             ok: output.status.success(),
             stderr: crate::sanitize::for_terminal(String::from_utf8_lossy(&output.stderr).trim()),
@@ -603,7 +609,9 @@ fn git_in(dir: &Path, args: &[&str], timeout: Duration, ssh_batch: bool) -> Resu
             dir.display(),
             timeout.as_secs()
         )),
-        CommandOutcome::Failed(why) => Err(anyhow!("could not run {label}: {why}")),
+        CommandOutcome::Failed(why) | CommandOutcome::NotFound(why) => {
+            Err(anyhow!("could not run {label}: {why}"))
+        }
     }
 }
 

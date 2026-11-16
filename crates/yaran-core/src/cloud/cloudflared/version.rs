@@ -107,6 +107,7 @@ pub fn probe_user_binary(binary: &Path) -> Result<ProbedVersion, VersionRefusal>
     cmd.arg("--version").env_clear();
     match run_command_with_timeout(
         cmd,
+        crate::bounded_command::ChildGroup::New,
         VERSION_PROBE_TIMEOUT,
         DEFAULT_READER_DRAIN,
         "cloudflared",
@@ -118,13 +119,15 @@ pub fn probe_user_binary(binary: &Path) -> Result<ProbedVersion, VersionRefusal>
         }
         CommandOutcome::TimedOut => Err(VersionRefusal::ProbeFailed {
             detail: format!(
-                "`--version` did not answer within {}s",
+                "\"--version\" did not answer within {}s",
                 VERSION_PROBE_TIMEOUT.as_secs()
             ),
         }),
-        CommandOutcome::Failed(detail) => Err(VersionRefusal::ProbeFailed {
-            detail: crate::sanitize::for_terminal(&detail),
-        }),
+        CommandOutcome::Failed(detail) | CommandOutcome::NotFound(detail) => {
+            Err(VersionRefusal::ProbeFailed {
+                detail: crate::sanitize::for_terminal(&detail),
+            })
+        }
     }
 }
 

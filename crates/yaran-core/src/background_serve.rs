@@ -70,7 +70,7 @@ pub const TUI_DEVICE_LABEL: &str = "the yaran TUI";
 /// it per gesture rather than caching it. That is what makes the toggle-off world
 /// byte-identical: nothing is serving, there is no seat, and every gate answers
 /// "allowed" without a registry existing at all.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TuiOwnership {
     /// The registry this serve built. One per serve: a stop/start cycle makes a
     /// new one, which is exactly why connection ids are process-global.
@@ -82,30 +82,36 @@ pub struct TuiOwnership {
 }
 
 impl TuiOwnership {
-    /// Claim `pty_id` for the terminal UI if nobody is driving it, and hand back
-    /// the handover to announce, or `None` when nothing changed hands.
+    /// Claim `pty_id`'s whole row for the terminal UI if nobody is driving it,
+    /// and hand back the handover to announce for every pty of the row, or
+    /// nothing when nothing changed hands.
     ///
-    /// It never steals: a pty another connection holds is left with that
-    /// connection. A pty this seat already holds is not a new claim either, so
-    /// there is nothing to announce for it.
-    pub fn claim_if_free(&self, pty_id: &str) -> Option<PtyOwnershipEvent> {
+    /// It never steals: a row another connection holds is left with that
+    /// connection. A row this seat already holds is not a new claim either, so
+    /// there is nothing to announce for it. The pty must already have joined
+    /// its row ([`PtySizeOwners::join_row`]).
+    pub fn claim_if_free(&self, pty_id: &str) -> Vec<PtyOwnershipEvent> {
         let claim = self
             .owners
             .may_write(pty_id, self.conn_id, Some(TUI_DEVICE_LABEL), || {});
-        if !claim.claimed_new {
-            return None;
-        }
-        claim.epoch.map(|epoch| PtyOwnershipEvent::Claimed {
-            pty_id: pty_id.to_string(),
-            conn_id: self.conn_id,
-            epoch,
-            device: TUI_DEVICE_LABEL.to_string(),
-        })
+        let (true, Some(epoch)) = (claim.claimed_new, claim.epoch) else {
+            return Vec::new();
+        };
+        self.owners
+            .row_members(pty_id)
+            .into_iter()
+            .map(|pty_id| PtyOwnershipEvent::Claimed {
+                pty_id,
+                conn_id: self.conn_id,
+                epoch,
+                device: TUI_DEVICE_LABEL.to_string(),
+            })
+            .collect()
     }
 
-    /// Claim every pty that is running in `engine` and that nobody drives, and
-    /// hand back one handover per pty that changed hands, in the engine's
-    /// stable order.
+    /// Claim every row with a pty running in `engine` that nobody drives, and
+    /// hand back one handover per pty that changed hands, rows in the engine's
+    /// stable order of their first running pty.
     ///
     /// What "running" means is [`Engine::running_pty_ids`]: a dormant tab has
     /// no process and so no pty, and is never claimed.
@@ -114,16 +120,27 @@ impl TuiOwnership {
     /// alone with the connection holding it.
     pub fn claim_every_running_pty(&self, engine: &Engine) -> Vec<PtyOwnershipEvent> {
         let running = engine.running_pty_ids();
-        let mut claimed = Vec::new();
+        for pty_id in &running {
+            self.owners.join_row(pty_id, engine.pty_row(pty_id));
+        }
+        let mut claimed: Vec<PtyOwnershipEvent> = Vec::new();
         let mut skipped = Vec::new();
         for pty_id in &running {
-            match self.claim_if_free(pty_id) {
-                Some(event) => claimed.push(event),
-                None => {
-                    let (holder, _, _) = self.owners.current_owner(pty_id);
+            let already_claimed = claimed.iter().any(|event| {
+                matches!(event, PtyOwnershipEvent::Claimed { pty_id: claimed_id, .. }
+                    if claimed_id == pty_id)
+            });
+            if already_claimed {
+                continue;
+            }
+            let events = self.claim_if_free(pty_id);
+            if events.is_empty() {
+                let (holder, _, _) = self.owners.current_owner(pty_id);
+                if holder != Some(self.conn_id) {
                     skipped.push((pty_id.clone(), holder));
                 }
             }
+            claimed.extend(events);
         }
         crate::logger::info(&bulk_claim_log_line(claimed.len(), running.len(), &skipped));
         claimed
@@ -168,8 +185,11 @@ pub enum PtyOwnershipEvent {
     /// The terminal UI took (or was handed) input ownership of a pty: the
     /// `pty.owner` handover a browser's claim emits, with the same epoch.
     Claimed {
+        /// The pty claimed.
         pty_id: String,
+        /// The terminal UI's connection id.
         conn_id: u64,
+        /// The ownership epoch the claim was given.
         epoch: u64,
         /// The claimer's device label, which for this participant is always
         /// [`TUI_DEVICE_LABEL`]. Carried rather than assumed so the translation
@@ -179,15 +199,24 @@ pub enum PtyOwnershipEvent {
     /// The terminal UI let a pty go, and nobody has taken it: the owner-cleared
     /// `pty.owner`. Without it a watcher's card is a permanent lie about a
     /// terminal that stopped serving.
-    Released { pty_id: String, epoch: u64 },
+    Released {
+        /// The pty let go.
+        pty_id: String,
+        /// The ownership epoch the release was given.
+        epoch: u64,
+    },
     /// A resize the terminal UI owned and APPLIED, stamped with the seq the
     /// owners lock gave it. Web watchers adopt this grid, which is the whole
     /// point of the terminal UI joining the registry: one pty, one authoritative
     /// geometry, whoever is driving.
     GridApplied {
+        /// The pty resized.
         pty_id: String,
+        /// The new height, in rows.
         rows: u16,
+        /// The new width, in columns.
         cols: u16,
+        /// The resize sequence the owners lock stamped.
         seq: u64,
     },
 }
@@ -237,12 +266,37 @@ pub struct ServiceOutcome {
     /// what died and how; the terminal UI puts it on the status line, replacing
     /// the "serving on ..." message that is by then a lie.
     pub retirement: Option<String>,
+    /// The statuses a connectionless client's change (the command line) raised
+    /// for every surface, in order, for the terminal UI's status line to show.
+    pub statuses: Vec<crate::wire::WireStatus>,
 }
 
-/// A web server the terminal UI services once per loop iteration.
-///
-/// Every method takes `&mut Engine` rather than holding one: the TUI owns the
-/// engine and lends it for the duration of the call.
+impl ServiceOutcome {
+    /// Fold in what a LATER turn did: either turn having mutated or stopped
+    /// counts, the first retirement wins, and the statuses keep their order.
+    pub fn absorb(&mut self, later: Self) {
+        self.mutated |= later.mutated;
+        self.stopped |= later.stopped;
+        if self.retirement.is_none() {
+            self.retirement = later.retirement;
+        }
+        self.statuses.extend(later.statuses);
+    }
+}
+
+/// What a background serve claims for the terminal UI as it starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServeClaims {
+    /// Every running pty nobody drives, before any listener accepts a
+    /// connection.
+    UndrivenPtys,
+    /// Nothing: every pty stays as it is.
+    Nothing,
+}
+
+/// A web server the terminal UI services once per loop iteration, lending it the
+/// engine for each call. [`Self::has_core`] decides whether the engine is lent;
+/// [`Self::is_serving`] decides everything a person sees or a browser drives.
 pub trait BackgroundServeCompanion {
     /// Do the companion's share of one drained reaction, before the terminal UI
     /// applies it.
@@ -265,6 +319,12 @@ pub trait BackgroundServeCompanion {
     /// draining. Called once per TUI loop iteration while serving.
     fn service(&mut self, engine: &mut Engine) -> ServiceOutcome;
 
+    /// What a core that has since stopped left this surface to report: the
+    /// changes and statuses of the requests its hand-over finished. [`Self::service`]
+    /// reports them while a core is up; an iteration with no core takes them here,
+    /// so a stop that leaves no core behind still shows them.
+    fn take_handed_over(&mut self) -> ServiceOutcome;
+
     /// Note that the terminal UI changed engine state this iteration, so the
     /// companion can open its own change-detection gate. Called with the number of
     /// commands the engine has applied in total; the companion compares it against
@@ -274,48 +334,63 @@ pub trait BackgroundServeCompanion {
     /// Adopt the `[server]` section the terminal UI has just swapped in, so the
     /// handful of settings a running listener can honor take effect.
     ///
-    /// Post-apply, unlike [`Self::on_reaction`]: the reload's apply can fail
-    /// after validation passed, and a route answering on the incoming caps while
-    /// the old config is still in force is worse than one answering a request
-    /// late. Called only when the apply succeeded.
-    fn note_config_applied(&mut self, server: &crate::config::ServerConfig);
+    /// Post-apply, unlike [`Self::on_reaction`]: a route answering on the
+    /// incoming caps while the old config is still in force is worse than one
+    /// answering a request late. Called once the new config is in force: the
+    /// apply succeeded, or it failed and the config was adopted anyway. The
+    /// whole config, because the text it was read from is what tells the
+    /// server whether changes it wrote itself are in that text yet.
+    fn note_config_applied(&mut self, config: &crate::config::Config);
 
-    /// Whether a listener is serving right now.
+    /// Whether the web is served right now.
     fn is_serving(&self) -> bool;
+
+    /// Whether a core is up: the web served, or the control socket alone.
+    /// While one is, the engine is lent every iteration.
+    fn has_core(&self) -> bool;
+
+    /// Serve the control socket alone, the plain terminal UI's core; a no-op when
+    /// a core is already up or yaran runs without the socket.
+    fn start_control_socket(&mut self, engine: &mut Engine);
+
+    /// Stop every core, the control socket's included, once the requests it
+    /// already accepted finish: for a quit, or the flip, whose core serves next.
+    fn release(&mut self, engine: &mut Engine);
 
     /// The URLs currently being served, for status copy. Empty when not serving.
     fn urls(&self) -> Vec<String>;
 
-    /// How many browser tabs are connected right now. Zero when not serving.
+    /// How many browsers are connected right now. Zero when not serving.
     ///
-    /// "Connections", not "devices": one browser with two tabs open is two of
-    /// these, and nothing on this side of the wire can tell they are one laptop.
+    /// Browsers, not tabs: every tab of one browser profile counts once, by the
+    /// display-only id each browser keeps for itself; a private window or a
+    /// second browser on the same machine counts again.
     ///
     /// Read once per rendered frame, so it must stay a cheap load rather than a
     /// question that takes a lock or a turn.
-    fn connections(&self) -> usize;
+    fn browsers(&self) -> usize;
 
-    /// Start serving on `listeners`, which the caller already bound.
+    /// Start serving on `listeners`, which the caller already bound so a bind
+    /// failure tears nothing down. Returns the URLs, or a status-line message.
+    /// `claims` says whether every undriven running pty is claimed for the
+    /// terminal UI before any listener accepts a connection; `startup` opens
+    /// the log's banner.
     ///
-    /// Bound by the CALLER so a bind failure is reported without anything having
-    /// been torn down: the terminal UI stays exactly where it was. Returns the
-    /// URLs on success, or a message fit for the status line.
+    /// # Errors
     ///
-    /// `claim_before_serving` asks for every pty running in `engine` that nobody
-    /// drives to be claimed for the terminal UI BEFORE any listener accepts a
-    /// connection (see [`TuiOwnership::claim_every_running_pty`]), and the claims
-    /// announced once the serve is up. The terminal UI passes it for a start
-    /// somebody at its keyboard asked for, and never for the startup autostart.
-    /// Seeding the registry first is the whole point: a browser tab already
-    /// reconnecting cannot win a plain-attach claim in between, and its handshake
-    /// reads the owner from the seeded registry.
+    /// Fails with a status-line message when serving cannot start.
     fn start(
         &mut self,
         engine: &mut Engine,
         listeners: Vec<std::net::TcpListener>,
         urls: Vec<String>,
-        claim_before_serving: bool,
+        claims: ServeClaims,
+        startup: crate::serve_log::StartupNotes,
     ) -> Result<Vec<String>, String>;
+
+    /// The log file the running serve opened, which a reload of `log_path` does
+    /// not move; `None` when not serving or none could be opened.
+    fn server_log_path(&self) -> Option<std::path::PathBuf>;
 
     /// Change `[server] tailscale` on the running listener.
     ///
@@ -342,8 +417,8 @@ pub trait BackgroundServeCompanion {
     /// held only to copy.
     fn cloud_view(&self) -> Option<crate::cloud::view::CloudLegView>;
 
-    /// Stop serving and release everything the serve owned. A no-op when not
-    /// serving, so a caller never has to check first.
+    /// Stop serving the web and release what the serve owned, back to serving the
+    /// control socket alone. A no-op when not serving.
     fn stop(&mut self, engine: &mut Engine);
 
     /// The terminal UI's seat in this serve's PTY-ownership registry, or `None`
@@ -390,14 +465,14 @@ mod tests {
         assert_eq!(device.as_deref(), Some(TUI_DEVICE_LABEL));
         assert_eq!(
             claimed,
-            Some(PtyOwnershipEvent::Claimed {
+            vec![PtyOwnershipEvent::Claimed {
                 pty_id: "s1-slot".to_string(),
                 conn_id: seat.conn_id,
                 epoch,
                 device: TUI_DEVICE_LABEL.to_string(),
-            })
+            }]
         );
-        assert_eq!(seat.claim_if_free("s1-slot"), None);
+        assert_eq!(seat.claim_if_free("s1-slot"), Vec::new());
     }
 
     /// The bulk claim leaves one line in the log saying how many of the running
@@ -433,7 +508,7 @@ mod tests {
         let browser = seat.owners.next_conn_id();
         seat.owners.claim("term-1", browser).expect("claimed");
 
-        assert_eq!(seat.claim_if_free("term-1"), None);
+        assert_eq!(seat.claim_if_free("term-1"), Vec::new());
         assert!(seat.owners.is_owner("term-1", browser));
     }
 
@@ -491,5 +566,55 @@ mod tests {
         assert!(seat.owners.is_owner(&terminal, seat.conn_id));
         assert!(seat.owners.is_owner("b-slot", browser));
         assert_eq!(seat.owners.current_owner("a-tab-2").0, None);
+    }
+
+    /// Switching serving on claims ROWS: two running tabs of one agent are
+    /// taken together under one epoch, and an agent a browser drives through
+    /// one tab keeps its other running tab out of the terminal UI's hands.
+    #[test]
+    fn claiming_every_running_pty_takes_whole_rows_and_never_half_of_one() {
+        let (mut engine, _tmp) = crate::engine::test_support::test_engine();
+        let spawn = || {
+            crate::pty::PtyClient::spawn(
+                "sleep",
+                &["5".to_string()],
+                std::path::Path::new("."),
+                10,
+                10,
+                100,
+            )
+            .expect("spawn pty")
+        };
+        for (tab, session) in [("a-1", "a"), ("a-2", "a"), ("b-1", "b"), ("b-2", "b")] {
+            engine
+                .providers
+                .insert(crate::ids::TabId::new(tab), spawn());
+            engine.agent_tabs.insert(
+                crate::ids::TabId::new(tab),
+                crate::engine::test_support::sample_tab(tab, session, "claude", 1),
+            );
+        }
+        let seat = seat();
+        let browser = seat.owners.next_conn_id();
+        seat.owners.join_row("b-2", engine.pty_row("b-2"));
+        seat.owners.claim("b-2", browser).expect("claimed");
+
+        let claimed = seat.claim_every_running_pty(&engine);
+
+        let epochs: std::collections::BTreeSet<u64> = claimed
+            .iter()
+            .map(|event| match event {
+                PtyOwnershipEvent::Claimed { epoch, .. } => *epoch,
+                other => panic!("only claims are announced: {other:?}"),
+            })
+            .collect();
+        assert_eq!(claimed.len(), 2, "{claimed:?}");
+        assert_eq!(epochs.len(), 1, "one row, one epoch");
+        assert!(seat.owners.is_owner("a-1", seat.conn_id));
+        assert!(seat.owners.is_owner("a-2", seat.conn_id));
+        assert!(
+            seat.owners.is_owner("b-1", browser),
+            "the browser's row stays whole"
+        );
     }
 }

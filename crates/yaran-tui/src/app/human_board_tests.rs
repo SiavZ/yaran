@@ -98,6 +98,7 @@ fn staged_file(path: &str) -> yaran_core::model::ChangedFile {
         binary: false,
         diff_excluded: false,
         renamed_from: None,
+        kind: yaran_core::model::ChangedFileKind::File,
     }
 }
 
@@ -105,7 +106,7 @@ fn staged_file(path: &str) -> yaran_core::model::ChangedFile {
 fn board_app(board: Option<Board>) -> App {
     let mut app = test_app(default_bindings());
     app.engine.config.ui.human_board = true;
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     if let Some(board) = board {
         let store = BoardStore::new(&app.engine.paths.root);
         store
@@ -334,7 +335,7 @@ fn the_board_fills_the_column_and_changes_is_a_tab_beside_it() {
 #[test]
 fn with_the_board_off_the_right_column_is_unchanged() {
     let mut app = test_app(default_bindings());
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     app.engine.staged_files = vec![staged_file("a.rs")];
     assert!(!app.engine.config.ui.human_board, "off by default");
     assert_eq!(app.right_lower(), RightLower::StagedAndCommit);
@@ -362,7 +363,7 @@ fn an_empty_board_says_so_and_how_cards_arrive() {
 fn an_unreadable_board_says_why_in_the_pane() {
     let mut app = test_app(default_bindings());
     app.engine.config.ui.human_board = true;
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     std::fs::write(app.engine.paths.root.join("human_board.json"), "{ nope").unwrap();
     app.load_human_board_now();
     let text = screen(&mut app);
@@ -546,8 +547,7 @@ fn the_toggle_flips_the_setting_and_moves_the_cursor_off_a_hidden_section() {
 #[test]
 fn the_palette_runs_the_toggle() {
     let mut app = test_app(default_bindings());
-    app.execute_command("toggle-human-board".to_string())
-        .unwrap();
+    app.execute_command("toggle-human-board").unwrap();
     assert!(app.engine.config.ui.human_board);
 }
 
@@ -1197,7 +1197,7 @@ fn team_app() -> App {
     app.engine.config.ui.human_board = true;
     app.engine.config.board.people = vec!["Sam".to_string(), "Alex".to_string()];
     app.engine.config.board.me = "alex".to_string();
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     let mut board = Board::default();
     let mut for_sam = new_card(CardKind::Task, None, "Sign the contract");
     for_sam.assignee = Some("Sam".to_string());
@@ -1369,7 +1369,7 @@ fn a_shared_board_shows_how_its_last_sync_went() {
 fn a_folder_board_reads_its_notes() {
     let mut app = test_app(default_bindings());
     app.engine.config.ui.human_board = true;
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     let folder = app.engine.paths.root.join("shared-board");
     app.engine.config.board.dir = folder.to_string_lossy().into_owned();
     app.engine.config.board.me = "Kim".to_string();
@@ -1406,7 +1406,7 @@ fn two_sided_app(me: &str, blocking: bool) -> (App, String) {
     app.engine.config.ui.human_board = true;
     app.engine.config.board.people = vec!["Sam".to_string(), "Alex".to_string()];
     app.engine.config.board.me = me.to_string();
-    app.right_hidden = false;
+    app.panes.right_hidden = false;
     let mut board = Board::default();
     board.prefix = "S".to_string();
     let mut card = new_card(CardKind::Confirm, Some("db-9"), "Drop the old audit table?");
@@ -1913,7 +1913,24 @@ fn every_element_of_the_card_dialog_shares_one_left_edge() {
     // Boxes draw their border down the middle of a cell, so text one column in
     // starts right where the borders do.
     assert_eq!(field_left + 1, reply, "the reply field's border");
-    assert_eq!(button_left + 1, reply, "the buttons' borders");
+    // The buttons take the shared row every dialog uses: centred between the
+    // same two edges the field spans.
+    let field_right = lines[field_row]
+        .chars()
+        .collect::<Vec<_>>()
+        .iter()
+        .rposition(|c| *c == '\u{256e}')
+        .expect("the field's top-right corner");
+    let button_right = lines[close_row - 1]
+        .chars()
+        .collect::<Vec<_>>()
+        .iter()
+        .rposition(|c| *c == '\u{256e}')
+        .expect("the last button's top-right corner");
+    assert!(
+        (button_left - field_left).abs_diff(field_right - button_right) <= 1,
+        "the buttons are centred: {button_left}..{button_right} in {field_left}..{field_right}"
+    );
 }
 
 #[test]
@@ -1975,6 +1992,7 @@ fn a_copy_joins_soft_wrapped_rows_with_a_space_and_keeps_real_breaks() {
         end: TermGridPos { row: 2, col: 40 },
         dragging: false,
         origin: Default::default(),
+        part: crate::app::CenterPart::Main,
     };
     assert_eq!(
         selected_card_text(&rows, &continues, &all),

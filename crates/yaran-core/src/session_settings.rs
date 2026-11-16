@@ -65,6 +65,7 @@ pub struct SessionSettings {
 ///
 /// Injected at the session-settings layer so the policy follows the role,
 /// independent of whether the underlying harness is Claude or Codex.
+// backtick-ok: a system prompt handed to the agent CLI, never a status
 pub const ORCHESTRATOR_SYSTEM_PROMPT: &str = "\
 You are running in Yaran Orchestrator mode.
 

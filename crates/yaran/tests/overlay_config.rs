@@ -127,6 +127,7 @@ fn paths_in(root: &Path) -> YaranPaths {
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
         lock_path: root.join("yaran.lock"),
+        socket_path: root.join("yaran.sock"),
     }
 }
 
@@ -165,7 +166,7 @@ fn run_overlay_sed(dir: &Path, input: &str) -> String {
 fn load(root: &Path, text: &str) -> Config {
     let paths = paths_in(root);
     std::fs::write(&paths.config_path, text).expect("write patched config");
-    load_config(&paths)
+    load_config(&paths).expect("the patched config loads")
 }
 
 fn assert_snippet_holds(config: &Config, what: &str) {

@@ -28,8 +28,11 @@ use serde_json::Value;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ProseSegment {
+    /// Constant words.
     Text(String),
+    /// A name yaran did not write, drawn as a chip.
     Name {
+        /// The name's text, bidi controls removed.
         name: String,
         /// The plain-text spelling wraps this name in straight double quotes.
         quoted: bool,
@@ -45,29 +48,34 @@ pub struct Prose {
 }
 
 impl Prose {
+    /// An empty sentence.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Constant words.
+    #[must_use]
     pub fn text(mut self, text: impl AsRef<str>) -> Self {
         self.push_text(text);
         self
     }
 
     /// A name the plain-text spelling leaves bare.
+    #[must_use]
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.push_name(name);
         self
     }
 
     /// A name the plain-text spelling wraps in straight double quotes.
+    #[must_use]
     pub fn quoted(mut self, name: impl Into<String>) -> Self {
         self.push_quoted(name);
         self
     }
 
     /// Another sentence, appended segment by segment.
+    #[must_use]
     pub fn then(mut self, other: Prose) -> Self {
         for segment in other.segments {
             match segment {
@@ -78,6 +86,7 @@ impl Prose {
         self
     }
 
+    /// Appends constant words, merging them into the text before.
     pub fn push_text(&mut self, text: impl AsRef<str>) {
         let text = text.as_ref();
         if text.is_empty() {
@@ -110,6 +119,7 @@ impl Prose {
         });
     }
 
+    /// The segments, in order.
     pub fn segments(&self) -> &[ProseSegment] {
         &self.segments
     }
@@ -127,10 +137,12 @@ impl Prose {
         prose
     }
 
+    /// The segments, by value.
     pub fn into_segments(self) -> Vec<ProseSegment> {
         self.segments
     }
 
+    /// Whether the sentence has no segments.
     pub fn is_empty(&self) -> bool {
         self.segments.is_empty()
     }
@@ -159,6 +171,10 @@ impl Prose {
     /// The shape the cross-language fixture records: a string for constant
     /// words, `{ "name", "quoted" }` for a name, the same shape the browser's
     /// `Prose` type has.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the segments are strings and plain structs, which always serialize.
     pub fn to_json(&self) -> Value {
         serde_json::to_value(&self.segments).expect("prose segments always serialize")
     }
@@ -269,6 +285,76 @@ mod tests {
         );
     }
 
+    /// A fixture argument that is a list of strings; absent is empty.
+    /// The left-over folder dialog's sentences, for [`build`].
+    fn build_leftover(sentence: &str, args: &Value) -> Prose {
+        let s = |key: &str| args[key].as_str().expect(key).to_string();
+        match sentence {
+            "leftover_delete_body" => crate::leftover_folders::delete_dialog_body(
+                &s("path"),
+                leftover_folder_on_disk(args),
+                if args["left_by_agent"].as_bool().expect("left_by_agent") {
+                    crate::leftover_folders::LeftBy::Agent
+                } else {
+                    crate::leftover_folders::LeftBy::Manager
+                },
+            ),
+            "leftover_branch_fate" => {
+                let branches = strings(&args["branches"]);
+                let branches: Vec<&str> = branches.iter().map(String::as_str).collect();
+                crate::leftover_folders::delete_dialog_branch_fate(
+                    &branches,
+                    if args["delete"].as_bool().expect("delete") {
+                        crate::leftover_folders::BranchChoice::Delete
+                    } else {
+                        crate::leftover_folders::BranchChoice::Keep
+                    },
+                    leftover_folder_on_disk(args),
+                )
+            }
+            "leftover_delete_title" => {
+                Prose::new().text(crate::leftover_folders::delete_dialog_title(
+                    leftover_folder_on_disk(args),
+                    crate::numeric::u64_to_usize(
+                        args["branch_count"].as_u64().expect("branch_count"),
+                    ),
+                ))
+            }
+            "leftover_kept_branch" => crate::leftover_folders::kept_branch_sentence(
+                &s("name"),
+                &match s("why").as_str() {
+                    "no_commit" => crate::leftover_folders::BranchBlock::NoCommit,
+                    "checked_out" => {
+                        crate::leftover_folders::BranchBlock::CheckedOut { path: s("path") }
+                    }
+                    "moved" => crate::leftover_folders::BranchBlock::Moved,
+                    "unchecked" => crate::leftover_folders::BranchBlock::Unchecked {
+                        reason: s("reason"),
+                    },
+                    other => panic!("no such reason a branch is kept: {other}"),
+                },
+            ),
+            other => panic!("not a left-over folder sentence: {other}"),
+        }
+    }
+
+    fn leftover_folder_on_disk(args: &Value) -> crate::leftover_folders::FolderOnDisk {
+        if args["folder_present"].as_bool().expect("folder_present") {
+            crate::leftover_folders::FolderOnDisk::Present
+        } else {
+            crate::leftover_folders::FolderOnDisk::Gone
+        }
+    }
+
+    fn strings(value: &Value) -> Vec<String> {
+        value.as_array().map_or_default(|items| {
+            items
+                .iter()
+                .map(|item| item.as_str().expect("a string").to_string())
+                .collect()
+        })
+    }
+
     /// Merge adjacent strings, the normalization the fixture's note promises,
     /// so neither side is bound to the other's split of its constant words.
     fn merged(segments: &Value) -> Value {
@@ -282,6 +368,136 @@ mod tests {
         Value::Array(out)
     }
 
+    /// The `rename_branch_note` case, whose pushed flag names its own state.
+    fn rename_branch_note(args: &Value) -> Prose {
+        let pushed = if args["pushed"].as_bool().expect("pushed") {
+            crate::engine::BranchPushed::Pushed
+        } else {
+            crate::engine::BranchPushed::NotPushed
+        };
+        let branch = args["branch"].as_str().expect("branch");
+        crate::engine::rename_branch_note_prose(branch, args["open_pr"].as_u64(), pushed)
+    }
+
+    /// The delete-agent dialog's branch-box sentences.
+    const DELETE_AGENT_BOX_SENTENCES: &[&str] = &[
+        "delete_current_branch_label",
+        "delete_other_branches_label",
+        "delete_current_branch_warning",
+        "delete_other_branches_warning",
+        "delete_branches_checking",
+        "delete_branches_checked",
+        "delete_branches_check_failed",
+        "delete_current_branch_check_failed",
+        "unpushed_count_failure",
+        "delete_protected_branches",
+        "delete_branch_loss",
+        "delete_worktree_files_checking",
+        "delete_worktree_files",
+    ];
+
+    fn build_delete_agent_box(sentence: &str, args: &Value) -> Prose {
+        let s = |key: &str| args[key].as_str().expect(key).to_string();
+        match sentence {
+            "delete_current_branch_label" => {
+                crate::delete_agent_prose::current_branch_label_prose(&s("branch"))
+            }
+            "delete_other_branches_label" => {
+                let branches = strings(&args["branches"]);
+                let branches: Vec<&str> = branches.iter().map(String::as_str).collect();
+                crate::delete_agent_prose::other_branches_label_prose(&branches)
+            }
+            "delete_current_branch_warning" => {
+                crate::delete_agent_prose::current_branch_warning_prose(fixture_origin(
+                    &args["origin"],
+                ))
+                .unwrap_or_default()
+            }
+            "delete_branch_loss" => {
+                let branches = strings(&args["branches"]);
+                let branches: Vec<&str> = branches.iter().map(String::as_str).collect();
+                let lost = fixture_unpushed(&args["lost"]).expect("a count or a failure");
+                crate::delete_agent_prose::branch_loss_prose(&branches, &lost).unwrap_or_default()
+            }
+            "delete_other_branches_warning" => {
+                let others: Vec<(String, crate::branch_history::BranchOrigin)> = args["others"]
+                    .as_array()
+                    .expect("others")
+                    .iter()
+                    .map(|other| {
+                        (
+                            other["name"].as_str().expect("name").to_string(),
+                            fixture_origin(&other["origin"]),
+                        )
+                    })
+                    .collect();
+                let others: Vec<(&str, crate::branch_history::BranchOrigin)> = others
+                    .iter()
+                    .map(|(name, origin)| (name.as_str(), *origin))
+                    .collect();
+                crate::delete_agent_prose::other_branches_warning_prose(
+                    &others,
+                    if args["ticked"].as_bool().expect("ticked") {
+                        crate::delete_agent_prose::BoxState::Ticked
+                    } else {
+                        crate::delete_agent_prose::BoxState::Unticked
+                    },
+                )
+            }
+            "delete_branches_checking" => crate::delete_agent_prose::branches_checking_prose(),
+            "delete_worktree_files_checking" => {
+                crate::delete_agent_prose::worktree_files_checking_prose(&s("agent"))
+            }
+            "delete_worktree_files" => {
+                let files = &args["files"];
+                let answer = match files["failed"].as_str() {
+                    Some(reason) => Err(reason.to_string()),
+                    None => Ok(
+                        u32::try_from(files["count"].as_u64().expect("count")).expect("a count")
+                    ),
+                };
+                crate::delete_agent_prose::worktree_files_prose(&s("agent"), &answer)
+                    .unwrap_or_default()
+            }
+            "delete_branches_checked" => {
+                let lost = |key: &str| fixture_unpushed(&args[key]).expect(key);
+                let others = strings(&args["others"]);
+                let others: Vec<&str> = others.iter().map(String::as_str).collect();
+                crate::delete_agent_prose::branches_checked_prose(
+                    args["current"].as_str(),
+                    &lost("current_lost"),
+                    &others,
+                    &lost("others_lost"),
+                    &lost("both_lost"),
+                )
+                .map_or_else(
+                    |failed| failed,
+                    |said| said.expect("a fixture case says something"),
+                )
+            }
+            "delete_branches_check_failed" => {
+                crate::delete_agent_prose::branches_check_failed_prose(&s("reason"))
+            }
+            "delete_current_branch_check_failed" => {
+                crate::delete_agent_prose::current_branch_check_failed_prose(
+                    &s("branch"),
+                    &s("reason"),
+                )
+            }
+            "unpushed_count_failure" => {
+                let branches = strings(&args["branches"]);
+                let branches: Vec<&str> = branches.iter().map(String::as_str).collect();
+                crate::delete_agent_prose::unpushed_count_failure_prose(&branches, &s("reason"))
+            }
+            "delete_protected_branches" => {
+                let branches = strings(&args["branches"]);
+                let branches: Vec<&str> = branches.iter().map(String::as_str).collect();
+                crate::delete_agent_prose::protected_branches_prose(&branches)
+            }
+            other => panic!("not a delete-agent box sentence: {other}"),
+        }
+    }
+
     /// Build one fixture case's sentence the way the terminal UI does.
     fn build(sentence: &str, args: &Value) -> Prose {
         let s = |key: &str| args[key].as_str().expect(key).to_string();
@@ -289,28 +505,41 @@ mod tests {
             "detach_confirm" => {
                 let label = s("label");
                 let grace = args["grace_seconds"].as_u64().expect("grace_seconds");
-                let tabs = args["live_tabs"].as_u64().expect("live_tabs") as usize;
+                let tabs =
+                    crate::numeric::u64_to_usize(args["live_tabs"].as_u64().expect("live_tabs"));
                 crate::engine::detach_confirm_prose(&label, grace, tabs)
             }
             "recreate_confirm" => {
                 let worktree = std::path::PathBuf::from(s("worktree_label"));
-                let providers: Vec<String> = args["providers"]
-                    .as_array()
-                    .expect("providers")
-                    .iter()
-                    .map(|p| p.as_str().expect("provider").to_string())
-                    .collect();
-                let resumes = args["conversation_resumes"].as_bool().expect("resumes");
+                let running = crate::working_copy::RunningTabs {
+                    follows: strings(&args["running"]["follows"]),
+                    restartable: strings(&args["running"]["restartable"]),
+                    left_running: strings(&args["running"]["left_running"]),
+                };
+                let resume = if args["conversation_resumes"].as_bool().expect("resumes") {
+                    crate::working_copy::ConversationResume::Resumes
+                } else {
+                    crate::working_copy::ConversationResume::StartsFresh
+                };
                 let (branch, source) = (s("branch_name"), s("source_branch"));
                 crate::working_copy::recreate_confirm_prose(
-                    &worktree, &branch, &source, resumes, &providers,
+                    &worktree, &branch, &source, resume, &running,
                 )
+            }
+            leftover if leftover.starts_with("leftover_") => build_leftover(leftover, args),
+            "recreate_restart_checkbox" => {
+                crate::working_copy::recreate_restart_checkbox_prose(&strings(&args["restartable"]))
             }
             "checkout_default_branch_confirm" => {
                 let project = s("project_name");
                 let base = args["stored_base"].as_str();
                 crate::engine::checkout_default_branch_confirm_prose(&project, base)
             }
+            "change_base_branch_confirm" => crate::engine::change_base_branch_confirm_prose(
+                &s("project_name"),
+                args["from"].as_str(),
+                &s("to"),
+            ),
             "add_project_branch_warning" => crate::add_project_prose::branch_warning_prose(
                 &s("current_branch"),
                 args["default_branch"].as_str(),
@@ -321,14 +550,71 @@ mod tests {
             "add_project_heuristic_note" => crate::add_project_prose::heuristic_branch_note_prose(),
             "delete_project_confirm" => crate::project_prose::delete_project_confirm_prose(
                 args["project_name"].as_str(),
-                args["agent_count"].as_u64().expect("agent_count") as usize,
+                crate::numeric::u64_to_usize(args["agent_count"].as_u64().expect("agent_count")),
             ),
             "remove_project_confirm" => crate::project_prose::remove_project_confirm_prose(
                 args["project_name"].as_str(),
-                args["agent_count"].as_u64().expect("agent_count") as usize,
+                crate::numeric::u64_to_usize(args["agent_count"].as_u64().expect("agent_count")),
             ),
+            "rename_branch_note" => rename_branch_note(args),
+            "pr_clone_offer" => crate::pr_reference::pr_clone_offer_prose(
+                &s("repository"),
+                s("number").parse().expect("number"),
+            ),
+            "pr_clone_offer_incomplete" => crate::pr_reference::pr_clone_offer_incomplete_prose(
+                &s("repository"),
+                s("number").parse().expect("number"),
+                &s("summary"),
+            ),
+            "pr_add_existing_offer" => crate::pr_reference::pr_add_existing_offer_prose(
+                &s("folder"),
+                &s("repository"),
+                s("number").parse().expect("number"),
+            ),
+            delete_box if DELETE_AGENT_BOX_SENTENCES.contains(&delete_box) => {
+                build_delete_agent_box(delete_box, args)
+            }
+            "attached_lead" => crate::attached_prose::attached_lead_prose(),
+            "attached_entry" => {
+                use crate::attachments::{Surface, TargetKind};
+                crate::attached_prose::attached_entry_prose(&crate::attached_prose::AttachedEntry {
+                    device: args["device"].as_str().map(str::to_string),
+                    surface: match s("surface").as_str() {
+                        "browser" => Surface::Browser,
+                        "terminal_ui" => Surface::TerminalUi,
+                        other => panic!("unknown surface {other}"),
+                    },
+                    address: args["address"].as_str().map(str::to_string),
+                    verified: args["verified"].as_bool().expect("verified"),
+                    driving: args["driving"].as_bool().expect("driving"),
+                    target_kind: match s("target_kind").as_str() {
+                        "tab" => TargetKind::Tab,
+                        "terminal" => TargetKind::Terminal,
+                        other => panic!("unknown target kind {other}"),
+                    },
+                    target_label: s("target_label"),
+                    agent_label: args["agent_label"].as_str().map(str::to_string),
+                })
+            }
             other => panic!("the fixture names a sentence this test cannot build: {other}"),
         }
+    }
+
+    fn fixture_origin(value: &Value) -> crate::branch_history::BranchOrigin {
+        serde_json::from_value(value.clone()).expect("a branch origin")
+    }
+
+    fn fixture_unpushed(value: &Value) -> Option<crate::delete_agent_prose::UnpushedAnswer> {
+        if value.is_null() {
+            return None;
+        }
+        if let Some(reason) = value["failed"].as_str() {
+            return Some(Err(reason.to_string()));
+        }
+        Some(Ok(crate::git::UnpushedCommits {
+            count: u32::try_from(value["count"].as_u64().expect("count")).expect("a count"),
+            has_remote_refs: value["has_remote_refs"].as_bool().expect("has_remote_refs"),
+        }))
     }
 
     /// The other half of the pin in the browser's `prose.test.tsx`. Both read

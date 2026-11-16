@@ -73,11 +73,12 @@ fn engine_with_an_agent_and_a_terminal_running()
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         store
             .upsert_project(&ProjectConfig {
                 id: "p1".to_string(),
@@ -87,15 +88,15 @@ fn engine_with_an_agent_and_a_terminal_running()
                 leading_branch: None,
                 auto_reopen_agents: None,
                 startup_command: None,
-                env: Default::default(),
+                env: std::collections::BTreeMap::new(),
                 workspace_mode: None,
             })
-            .unwrap();
+            .expect("save the test project");
         store
             .create_session(&sample_session("s1", root.to_string_lossy().as_ref()))
-            .unwrap();
+            .expect("save the test agent");
     }
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     yaran_core::test_provider::defuse_config(&mut engine.config);
     engine
         .changed_files_poller_started
@@ -166,15 +167,19 @@ async fn attach(url: &str) -> (ClientWs, serde_json::Value) {
 /// Start a serve over `engine` on a fresh loopback port.
 fn serve(
     engine: &mut Engine,
-    claim_before_serving: bool,
+    claims: yaran_core::background_serve::ServeClaims,
 ) -> (BackgroundServer, std::net::SocketAddr) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback bind");
     let addr = listener.local_addr().expect("bound address");
+    // Not a test about Tailscale: on any other mode every request waits on the
+    // first Funnel check, which would consult this machine's real CLI.
+    engine.config.server.tailscale = "no".to_string();
     let server = BackgroundServer::start(
         engine,
         vec![listener],
         vec![format!("http://{addr}")],
-        claim_before_serving,
+        claims,
+        &yaran_core::serve_log::StartupNotes::default(),
     )
     .expect("the serve starts");
     (server, addr)
@@ -186,9 +191,11 @@ fn run_browser(
     engine: &mut Engine,
     server: &mut BackgroundServer,
     browser: std::thread::JoinHandle<()>,
-    asks: mpsc::Receiver<Ask>,
+    asks: &mpsc::Receiver<Ask>,
 ) {
-    let seat = server.ownership();
+    let seat = server
+        .ownership()
+        .expect("a web serve gives the terminal UI a seat");
     let deadline = Instant::now() + Duration::from_secs(60);
     while !browser.is_finished() {
         assert!(
@@ -252,19 +259,20 @@ async fn browser(
     assert_eq!(hello["owner_device"].as_str(), Some(TUI_DEVICE_LABEL));
 
     // The terminal UI keeps typing into it, and the browser watches it arrive.
-    ask.send(Ask::TuiTypes(b"yaran-tui-still-types\n")).unwrap();
+    ask.send(Ask::TuiTypes(b"yaran-tui-still-types\n"))
+        .expect("the terminal UI thread is listening");
     let seen = accumulate_until(&mut pty, "yaran-tui-still-types", Duration::from_secs(8)).await;
     assert!(seen.contains("yaran-tui-still-types"), "{seen:?}");
 
     // A plain attach resize and the browser's typing take nothing.
     pty.send(Message::Text(r#"{"rows":30,"cols":100}"#.into()))
         .await
-        .unwrap();
+        .expect("send the resize frame");
     pty.send(Message::Binary(
         b"yaran-plain-attach-marker\n".to_vec().into(),
     ))
     .await
-    .unwrap();
+    .expect("send the typed bytes");
     let stolen = accumulate_until(
         &mut pty,
         "yaran-plain-attach-marker",
@@ -281,10 +289,10 @@ async fn browser(
         r#"{"rows":30,"cols":100,"takeover":true}"#.into(),
     ))
     .await
-    .unwrap();
+    .expect("send the take-over frame");
     pty.send(Message::Binary(b"yaran-took-over-marker\n".to_vec().into()))
         .await
-        .unwrap();
+        .expect("send the typed bytes");
     let after = accumulate_until(&mut pty, "yaran-took-over-marker", Duration::from_secs(8)).await;
     assert!(
         after.contains("yaran-took-over-marker"),
@@ -301,8 +309,13 @@ async fn browser(
 #[test]
 fn a_browser_finds_everything_running_driven_by_the_tui_until_it_takes_over() {
     let (mut engine, terminal, _tmp) = engine_with_an_agent_and_a_terminal_running();
-    let (mut server, addr) = serve(&mut engine, true);
-    let seat = server.ownership();
+    let (mut server, addr) = serve(
+        &mut engine,
+        yaran_core::background_serve::ServeClaims::UndrivenPtys,
+    );
+    let seat = server
+        .ownership()
+        .expect("a web serve gives the terminal UI a seat");
 
     // Before anything has connected, and before the run loop has turned once.
     assert!(seat.owners.is_owner("s1-slot", seat.conn_id));
@@ -318,7 +331,7 @@ fn a_browser_finds_everything_running_driven_by_the_tui_until_it_takes_over() {
         &mut engine,
         &mut server,
         on_its_own_runtime(journey),
-        ask_rx,
+        &ask_rx,
     );
 
     let still_mine = seat.owners.is_owner("s1-slot", seat.conn_id);
@@ -337,8 +350,13 @@ fn a_browser_finds_everything_running_driven_by_the_tui_until_it_takes_over() {
 #[test]
 fn a_serve_started_without_the_claim_leaves_everything_free() {
     let (mut engine, terminal, _tmp) = engine_with_an_agent_and_a_terminal_running();
-    let (mut server, addr) = serve(&mut engine, false);
-    let seat = server.ownership();
+    let (mut server, addr) = serve(
+        &mut engine,
+        yaran_core::background_serve::ServeClaims::Nothing,
+    );
+    let seat = server
+        .ownership()
+        .expect("a web serve gives the terminal UI a seat");
 
     assert_eq!(seat.owners.current_owner("s1-slot").0, None);
     assert_eq!(seat.owners.current_owner(&terminal).0, None);
@@ -352,7 +370,7 @@ fn a_serve_started_without_the_claim_leaves_everything_free() {
         &mut engine,
         &mut server,
         on_its_own_runtime(journey),
-        ask_rx,
+        &ask_rx,
     );
     server.stop();
 }

@@ -35,6 +35,10 @@ vi.mock("@/components/LazyTerminalPane", () => ({
   LazyTerminalPane: ({ overlay }: { overlay?: ReactNode }) => (
     <div data-testid="pane-stub">{overlay}</div>
   ),
+  // An agent's screen is its stack, the same stand-in with the same overlay.
+  LazyTerminalStack: ({ overlay }: { overlay?: ReactNode }) => (
+    <div data-testid="pane-stub">{overlay}</div>
+  ),
 }))
 
 let mockState: YaranState
@@ -126,6 +130,10 @@ function makeState(theater: boolean): YaranState {
     pendingSlotTab: {},
     routeNotFound: null,
     createTabInFlight: [],
+    stackLayouts: {},
+    stackTerminals: {},
+    stackTabs: {},
+    pendingTerminalOrder: null,
     mobileScreen: "terminal",
     changes: { bySession: {} },
   } as unknown as YaranState
@@ -182,6 +190,35 @@ describe("the computer layout under a full-pane cover", () => {
     registerPaneCover("t2", true)
     render(<DesktopShell />)
     expect(theaterButton()).toBeNull()
+  })
+
+  it("follows the part theater shows when it is a terminal of the agent's dock", () => {
+    const base = makeState(true)
+    mockState = {
+      ...base,
+      spine: {
+        ...base.spine!,
+        terminals: [
+          {
+            id: "t1",
+            owner: { kind: "session", session_id: "s1" },
+            label: "Terminal 1",
+            sort_order: 1,
+          },
+        ],
+      },
+      selectedTarget: { kind: "terminal", terminalId: "t1", owner: { kind: "session", sessionId: "s1" } },
+    } as unknown as YaranState
+    // A box lost on the agent's socket, folded away under the terminal, is
+    // not the screen anybody is looking at.
+    const agentCover = registerPaneCover("s1", true)
+    render(<DesktopShell />)
+    expect(theaterButton()).toBeNull()
+    agentCover()
+    cleanup()
+    registerPaneCover("t1", true)
+    render(<DesktopShell />)
+    expect(theaterButton()).toBeTruthy()
   })
 })
 

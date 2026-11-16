@@ -74,6 +74,7 @@ impl PurgeHarness {
             worktrees_root: worktrees_root.clone(),
             lock_path: root.join("yaran.lock"),
             root: root.clone(),
+            socket_path: root.join("yaran.sock"),
         };
 
         // Build provider/AMQ roots inside the tmp so we never touch

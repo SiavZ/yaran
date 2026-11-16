@@ -35,15 +35,15 @@ pub(crate) const REFRESH_FLOOR: Duration = Duration::from_secs(300);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A fetch result: the keys and the response's `max-age`, or a sanitized error.
-pub type Fetched = Result<(Jwks, Option<Duration>), String>;
+pub(crate) type Fetched = Result<(Jwks, Option<Duration>), String>;
 
 /// Where keys come from. BLOCKING: the cache calls it on a blocking task.
-pub trait JwksSource: Send + Sync + 'static {
+pub(crate) trait JwksSource: Send + Sync + 'static {
     fn fetch(&self, team: &TeamDomain) -> Fetched;
 }
 
 /// The production source: one ureq GET of the team's certs endpoint.
-pub struct UreqJwksSource;
+pub(crate) struct UreqJwksSource;
 
 impl JwksSource for UreqJwksSource {
     fn fetch(&self, team: &TeamDomain) -> Fetched {

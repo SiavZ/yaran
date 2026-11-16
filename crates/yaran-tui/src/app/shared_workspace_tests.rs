@@ -15,7 +15,7 @@ fn shared_config(default_mode: WorkspaceMode) -> Option<WorkspaceConfig> {
 
 fn open_create_prompt(app: &mut App) {
     let project = app.selected_project().cloned().expect("selected project");
-    app.begin_new_agent_for_project(project).unwrap();
+    app.begin_new_agent_for_project(project);
 }
 
 fn make_session_shared(app: &mut App, id: &str) {
@@ -184,7 +184,7 @@ fn fork_stays_isolated_under_shared_project_default() {
     let mut app = test_app(default_bindings());
     app.engine.config.workspace = shared_config(WorkspaceMode::Shared);
 
-    app.fork_selected_session().unwrap();
+    app.fork_selected_session();
 
     assert!(matches!(
         app.prompt,
@@ -204,8 +204,7 @@ fn shared_delete_dialog_hides_worktree_checkbox() {
     make_session_shared(&mut app, "session-1");
     app.rebuild_left_items();
     select(&mut app, "session-1");
-    app.confirm_delete_selected_session()
-        .expect("open delete dialog");
+    app.confirm_delete_selected_session();
 
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
     terminal
@@ -240,7 +239,11 @@ fn shared_session_rejects_real_branch_rename() {
     let original_branch = app.engine.sessions[0].branch_name().map(str::to_string);
     let original_title = app.engine.sessions[0].title.clone();
 
-    app.apply_rename_session("session-1", "display-title".to_string(), true);
+    app.apply_rename_session(
+        "session-1",
+        "display-title",
+        yaran_core::engine::BranchRename::AlsoTheBranch,
+    );
 
     assert_eq!(
         app.engine.sessions[0].branch_name().map(str::to_string),
@@ -257,7 +260,11 @@ fn shared_session_rename_changes_only_display_title() {
     let original_branch = app.engine.sessions[0].branch_name().map(str::to_string);
     let original_handle = app.engine.sessions[0].agent_handle().to_string();
 
-    app.apply_rename_session("session-1", "display-title".to_string(), false);
+    app.apply_rename_session(
+        "session-1",
+        "display-title",
+        yaran_core::engine::BranchRename::NameOnly,
+    );
 
     assert_eq!(
         app.engine.sessions[0].title.as_deref(),
@@ -304,11 +311,12 @@ fn second_shared_writer_requires_confirmation_for_create_and_reconnect() {
     assert!(matches!(app.prompt, PromptState::None));
 
     select(&mut app, "waiting");
-    app.reconnect_selected_session(false).unwrap();
+    app.reconnect_selected_session(LaunchView::Minimized)
+        .unwrap();
     assert!(matches!(
         &app.prompt,
         PromptState::ConfirmSharedWriter {
-            action: SharedWriterAction::Reconnect { session_id, force: false, .. },
+            action: SharedWriterAction::Reconnect { session_id, mode: yaran_core::engine::ReconnectMode::Normal, .. },
             focus: ConfirmFocus::Cancel,
             ..
         } if session_id == "waiting"
@@ -324,8 +332,8 @@ fn shared_writer_confirmation_space_activates_focused_cancel() {
         existing_agent: "other-agent".to_string(),
         action: SharedWriterAction::Reconnect {
             session_id: "session-1".to_string(),
-            force: false,
-            seek_fullscreen: false,
+            mode: yaran_core::engine::ReconnectMode::Normal,
+            view: LaunchView::Minimized,
         },
         focus: ConfirmFocus::Cancel,
     };

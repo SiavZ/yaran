@@ -2,6 +2,13 @@ import type { ReactElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 import { BUSY_TOAST_MAX_MS } from "./notify"
 
 // Mock sonner before importing the store so the store's top-level
@@ -13,6 +20,7 @@ vi.mock("sonner", () => {
     warning: vi.fn(),
     loading: vi.fn(),
     dismiss: vi.fn(),
+    getToasts: vi.fn(() => []),
   })
   return { toast }
 })
@@ -27,6 +35,13 @@ vi.mock("sonner", () => {
 let statusClearSeconds = 6
 
 const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (u.includes("/api/v1/bootstrap")) {
     return {
@@ -86,7 +101,12 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -150,6 +170,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.loading).toHaveBeenCalledWith("Pulling…", {
       id: "pull",
       duration: BUSY_TOAST_MAX_MS,
+      description: expect.anything(),
     })
 
     // Success replaces it on the same id, should fire toast.success with 6s.
@@ -157,6 +178,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.success).toHaveBeenCalledWith("Pulled.", {
       id: "pull",
       duration: 6000,
+      description: expect.anything(),
     })
 
     // Clear dismisses the toast by key.
@@ -172,6 +194,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.error).toHaveBeenCalledWith("Push failed.", {
       id: "push",
       duration: 24000,
+      description: expect.anything(),
     })
   })
 
@@ -183,6 +206,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.warning).toHaveBeenCalledWith("Careful!", {
       id: "warn-key",
       duration: 18000,
+      description: expect.anything(),
     })
   })
 
@@ -194,6 +218,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.success).toHaveBeenCalledWith("All good.", {
       id: "yaran-anon-status",
       duration: 6000,
+      description: expect.anything(),
     })
   })
 
@@ -206,6 +231,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.loading).toHaveBeenCalledWith("Uploading…", {
       id: "yaran-anon-status",
       duration: BUSY_TOAST_MAX_MS,
+      description: expect.anything(),
     })
 
     // Clear dismisses the anonymous slot.
@@ -242,6 +268,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.success).toHaveBeenCalledWith("Changes committed successfully.", {
       id: "yaran-anon-status",
       duration: 6000,
+      description: expect.anything(),
     })
   })
 
@@ -254,6 +281,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.success).toHaveBeenCalledWith("Done.", {
       id: "k",
       duration: 10000,
+      description: expect.anything(),
     })
   })
 
@@ -266,11 +294,13 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.success).toHaveBeenCalledWith("Sticky info.", {
       id: "k",
       duration: Infinity,
+      description: expect.anything(),
     })
     status(mod, "k2", "error", "Sticky error.")
     expect(toast.error).toHaveBeenCalledWith("Sticky error.", {
       id: "k2",
       duration: Infinity,
+      description: expect.anything(),
     })
   })
 
@@ -285,6 +315,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.loading).toHaveBeenCalledWith("Working…", {
       id: "k",
       duration: BUSY_TOAST_MAX_MS,
+      description: expect.anything(),
     })
   })
 
@@ -297,11 +328,13 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.warning).toHaveBeenCalledWith("Careful.", {
       id: "w",
       duration: 30000,
+      description: expect.anything(),
     })
     status(mod, "e", "error", "Broken.")
     expect(toast.error).toHaveBeenCalledWith("Broken.", {
       id: "e",
       duration: 40000,
+      description: expect.anything(),
     })
   })
 
@@ -430,6 +463,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.success).toHaveBeenCalledWith("Default window.", {
       id: "k",
       duration: 6000,
+      description: expect.anything(),
     })
   })
 
@@ -445,6 +479,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.loading).toHaveBeenCalledWith('Removing worktree for agent "x"…', {
       id: "delete:s1",
       duration: BUSY_TOAST_MAX_MS,
+      description: expect.anything(),
     })
 
     // The async success final reuses the same id, swapping spinner → check.
@@ -452,6 +487,7 @@ describe("engine status → sonner toast routing", () => {
     expect(toast.success).toHaveBeenCalledWith("Agent and worktree removed.", {
       id: "delete:s1",
       duration: 6000,
+      description: expect.anything(),
     })
   })
 })
@@ -503,6 +539,7 @@ describe("the standalone editor tab", () => {
     expect(toast.success).toHaveBeenCalledWith("Saved.", {
       id: "save",
       duration: 6000,
+      description: expect.anything(),
     })
   })
 
@@ -525,6 +562,7 @@ describe("the standalone editor tab", () => {
     expect(toast.warning).toHaveBeenCalledWith("Agent exited.", {
       id: "pull",
       duration: 18000,
+      description: expect.anything(),
     })
   })
 })
@@ -538,6 +576,7 @@ describe("an engine status that says it waits for the user", () => {
     expect(toast.warning).toHaveBeenCalledWith("Half of it landed.", {
       id: "half-done",
       duration: Infinity,
+      description: expect.anything(),
     })
   })
 
@@ -549,6 +588,7 @@ describe("an engine status that says it waits for the user", () => {
     expect(toast.warning).toHaveBeenCalledWith("Careful.", {
       id: "ordinary",
       duration: 18000,
+      description: expect.anything(),
     })
   })
 
@@ -563,6 +603,7 @@ describe("an engine status that says it waits for the user", () => {
     expect(toast.error).toHaveBeenCalledWith("Broken.", {
       id: "ordinary",
       duration: 24000,
+      description: expect.anything(),
     })
   })
 })
@@ -592,7 +633,7 @@ describe("an engine status that names things", () => {
     mod.eventsSocket.onEvent(frame)
     expect(toast.success).toHaveBeenCalledTimes(1)
     const [body, options] = vi.mocked(toast.success).mock.calls[0]
-    expect(options).toEqual({ id: "op-9", duration: 6000 })
+    expect(options).toEqual({ id: "op-9", duration: 6000, description: expect.anything() })
     expect(typeof body).not.toBe("string")
     const html = renderToStaticMarkup(body as ReactElement)
     expect(html).toContain('<code data-slot="inline-code"')
@@ -609,6 +650,7 @@ describe("an engine status that names things", () => {
     expect(toast.success).toHaveBeenCalledWith(frame.message, {
       id: "op-9",
       duration: 6000,
+      description: expect.anything(),
     })
   })
 })
@@ -627,5 +669,136 @@ describe("a refusal the browser raises itself", () => {
     expect(html).toMatch(/<code data-slot="inline-code"[^>]*>nope<\/code>/)
     expect(html).not.toContain("&quot;nope&quot;")
     expect(html).toContain("is not configured. Pick one of the configured providers.")
+  })
+})
+
+describe("a create that asks for a review copy", () => {
+  const askFor = (request: string) => ({
+    kind: "review_copy",
+    request,
+    warned: "diverged:pr-head-review",
+    warning: [
+      "Branch ",
+      { name: "pr-head", quoted: true },
+      " has diverged. Pushes would land on ",
+      { name: "pr-head-review", quoted: true },
+      ".",
+    ],
+  })
+  const ask = askFor("")
+  const refusal = (request: string, key = "op-3") => ({
+    event: "status",
+    key,
+    tone: "error",
+    message: 'Branch "pr-head" has diverged. Pushes would land on "pr-head-review".',
+    ask: askFor(request),
+    scope: { connection: "c1" },
+  })
+
+  function createBodies() {
+    return fetchMock.mock.calls
+      .filter(([url]) => String(url).endsWith("/api/v1/sessions"))
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)))
+  }
+
+  it("reopens the dialog with the typed values and asks again with the agreement", async () => {
+    const mod = await loadStoreWithBootstrap()
+    const { toast } = await import("sonner")
+
+    mod.openCreateAgentFromPr("p1")
+    mod.setCreateAgentPrInput("#42")
+    mod.setCreateAgentDraft("my-review")
+    mod.submitNameDialog("my-review")
+    expect(mod.getSnapshot().createAgentTarget).toBeNull()
+
+    const [first] = createBodies()
+    mod.eventsSocket.onEvent(refusal(first.ask_id))
+    // The same refusal replayed (a reconnect) does not stack a toast over the
+    // dialog that is asking.
+    mod.eventsSocket.onEvent({ ...refusal(first.ask_id), ask: undefined })
+    const reopened = mod.getSnapshot()
+    expect(toast.error).not.toHaveBeenCalled()
+    expect(reopened.createAgentTarget).toEqual({ kind: "pr", projectId: "p1" })
+    expect(reopened.createAgentPrInput).toBe("#42")
+    expect(reopened.createAgentDraft).toBe("my-review")
+    expect(reopened.createAgentReviewCopy).toEqual({
+      warned: "diverged:pr-head-review",
+      warning: ask.warning,
+      agreed: false,
+    })
+
+    // Unticked, submitting sends nothing more.
+    mod.submitNameDialog("my-review")
+    expect(createBodies()).toHaveLength(1)
+
+    mod.setCreateAgentReviewCopyAgreed(true)
+    mod.submitNameDialog("my-review")
+    expect(createBodies()[1]).toMatchObject({
+      kind: "from_pr",
+      project_id: "p1",
+      pr: "#42",
+      name: "my-review",
+      review_copy: true,
+      review_copy_warned: "diverged:pr-head-review",
+    })
+  })
+
+  it("is an ordinary error toast when this tab asked for no pull request create", async () => {
+    const mod = await loadStoreWithBootstrap()
+    const { toast } = await import("sonner")
+
+    mod.eventsSocket.onEvent(refusal("pr-never-sent"))
+    expect(toast.error).toHaveBeenCalledTimes(1)
+    expect(mod.getSnapshot().createAgentTarget).toBeNull()
+  })
+
+  it("puts a question back to the submission it answers, not the latest one", async () => {
+    const mod = await loadStoreWithBootstrap()
+
+    mod.openCreateAgentFromPr("p1")
+    mod.setCreateAgentPrInput("#41")
+    mod.setCreateAgentDraft("first")
+    mod.submitNameDialog("first")
+    mod.openCreateAgentFromPr("p1")
+    mod.setCreateAgentPrInput("#42")
+    mod.setCreateAgentDraft("second")
+    mod.submitNameDialog("second")
+    const [a, b] = createBodies()
+
+    mod.eventsSocket.onEvent(refusal(a.ask_id))
+    const reopened = mod.getSnapshot()
+    expect(reopened.createAgentPrInput).toBe("#41")
+    expect(reopened.createAgentDraft).toBe("first")
+
+    // The other one is still waiting for its own.
+    mod.setCreateAgentReviewCopyAgreed(true)
+    mod.eventsSocket.onEvent(refusal(b.ask_id, "op-4"))
+    expect(mod.getSnapshot().createAgentPrInput).toBe("#42")
+  })
+
+  it("leaves another surface's refusal as a toast and keeps waiting for its own", async () => {
+    const mod = await loadStoreWithBootstrap()
+    const { toast } = await import("sonner")
+
+    mod.openCreateAgentFromPr("p1")
+    mod.setCreateAgentPrInput("#42")
+    mod.setCreateAgentDraft("my-review")
+    mod.submitNameDialog("my-review")
+
+    // The command line's create, or the terminal UI's, reaches every page.
+    mod.eventsSocket.onEvent({ ...refusal("elsewhere", "op-9"), scope: "all" })
+    expect(toast.error).toHaveBeenCalledTimes(1)
+    expect(mod.getSnapshot().createAgentTarget).toBeNull()
+
+    // An unrelated failure of this connection does not end the wait either.
+    mod.eventsSocket.onEvent({
+      event: "status",
+      key: "op-10",
+      tone: "error",
+      message: "Could not rename.",
+      scope: { connection: "c1" },
+    })
+    mod.eventsSocket.onEvent(refusal(createBodies()[0].ask_id))
+    expect(mod.getSnapshot().createAgentTarget).toEqual({ kind: "pr", projectId: "p1" })
   })
 })

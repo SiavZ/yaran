@@ -44,6 +44,17 @@ pub const KEY_LOGOUT: &str = "cloud-logout";
 pub const KEY_ROTATE: &str = "cloud-rotate";
 pub const KEY_STATUS: &str = "cloud-status";
 
+/// The keyed busy a Yaran Cloud action shows under its fixed `key` while it runs.
+///
+/// The cloud actions answer on fixed keys that both surfaces share (a login a
+/// browser started can end on the terminal UI's line), so their busy cannot
+/// come from a `status_op`, which mints a key of its own. The pairing a
+/// `status_op` enforces is the caller's here: register `key` as live first,
+/// and always end it with the action's own final on the same key.
+pub fn busy_status(key: &str, text: impl Into<StatusText>) -> StatusUpdate {
+    StatusUpdate::busy(text).with_key(key)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloudActionOutcome {
     Paired {

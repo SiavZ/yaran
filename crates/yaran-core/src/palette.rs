@@ -40,6 +40,7 @@ pub mod search;
 use crate::action::Action;
 
 /// One row of the palette registry.
+#[derive(Debug)]
 pub struct PaletteCommand {
     /// The action this command dispatches (the join key to TUI keybindings).
     pub action: Action,
@@ -90,11 +91,10 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand {
         action: Action::ManageProjects,
         name: "manage-projects",
-        description: "Choose a project to target for project actions",
-        // Per-project (chooser): opens the project chooser so project-scoped
-        // palette commands act on the picked project. The web reaches every
-        // project through its Add-project picker and per-project ⋯ menus, so
-        // there is no equivalent app-menu entry.
+        description: "Manage a project: its actions, settings and base branch",
+        // Global (chooser): lists every project, orphaned groups included, and
+        // opens the pick's action list. The web's equivalent is the app menu's
+        // "Projects…" list, which holds the same project `⋯` menu per row.
     },
     PaletteCommand {
         action: Action::ManageWorktrees,
@@ -135,6 +135,25 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         action: Action::CloseTab,
         name: "close-tab",
         description: "Close the focused tab of the selected agent",
+    },
+    PaletteCommand {
+        action: Action::StopTab,
+        name: "stop-agent-tab",
+        description: "Stop the focused tab of the selected agent, keeping the tab",
+        // Per-tab: the web has it as "Stop tab…" in each running tab's menu.
+    },
+    PaletteCommand {
+        action: Action::MoveTabLeft,
+        name: "move-tab-left",
+        description: "Move the focused tab of the selected agent, or its docked terminal, one place left",
+        // Per-tab: the web reorders tabs by dragging a pill along the strip, so
+        // it gets no app-menu entry for this.
+    },
+    PaletteCommand {
+        action: Action::MoveTabRight,
+        name: "move-tab-right",
+        description: "Move the focused tab of the selected agent, or its docked terminal, one place right",
+        // Per-tab: see move-tab-left.
     },
     PaletteCommand {
         action: Action::ChangeDefaultProvider,
@@ -195,6 +214,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         description: "Stop serving the web UI in the background; your agents keep running",
         // TUI-only: stopping the server from inside the server would be sawing
         // off the branch. Closing the browser tab is the web-side equivalent.
+    },
+    PaletteCommand {
+        action: Action::ViewServerLog,
+        name: "view-server-log",
+        description: "Open the server's log full-screen while yaran serves in the background",
+        // TUI-only: `yaran server` prints this log to its terminal and the flip shows
+        // it on its status screen; the web has no view of it.
     },
     PaletteCommand {
         action: Action::SetTailscaleMode,
@@ -277,6 +303,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         // UI surfaces this through a dedicated Add-project button.
     },
     PaletteCommand {
+        action: Action::CloneProject,
+        name: "clone-project",
+        description: "Clone a repository and start an agent on it",
+        // The web surfaces this as "Clone a repository…" in the Add project
+        // submenu of the app menu and the launcher's `⋯`, not as a command.
+    },
+    PaletteCommand {
         action: Action::CopyPath,
         name: "copy-path",
         description: "Copy the selected agent's directory",
@@ -326,6 +359,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         // Per-project: web exposes "Checkout default branch for <project>…".
     },
     PaletteCommand {
+        action: Action::ChangeProjectBaseBranch,
+        name: "change-project-base-branch",
+        description: "Switch the selected project to a branch you pick and branch new worktrees from it",
+        // Per-project: the web's "Change base branch…" in the project `⋯` menu,
+        // so it has no app-menu entry of its own.
+    },
+    PaletteCommand {
         action: Action::ReconnectAgent,
         name: "reconnect-agent",
         description: "Restart the CLI for the selected agent",
@@ -339,43 +379,37 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         // Per-session: web manages companion terminals per session inline.
     },
     PaletteCommand {
+        action: Action::CycleTerminalLayout,
+        name: "cycle-terminal-layout",
+        description: "Cycle the center pane between the agent, the split with its terminals, and the terminals",
+        // Per-agent: the web's layout controls are the dock strip's buttons and
+        // the floating layout pill, so it gets no app-menu entry for this.
+    },
+    PaletteCommand {
         action: Action::DeleteSession,
         name: "delete-agent",
         description: "Delete the selected agent session",
         // Per-session: web deletes a session via its per-row delete + confirm.
     },
     PaletteCommand {
-        action: Action::DeleteTerminal,
-        name: "delete-terminal",
-        description: "Delete the selected companion terminal",
-        // Per-terminal: web deletes terminals via their per-row delete + confirm.
+        action: Action::CloseTerminal,
+        name: "close-terminal",
+        description: "Close the selected terminal",
+        // Per-terminal: the web closes a terminal from its row's or its dock
+        // pill's menu, behind the same confirm.
     },
     PaletteCommand {
         action: Action::OpenCurrentPullRequest,
         name: "open-current-pr",
-        description: "Open the selected agent's current pull request in the default browser",
+        description: "Open the pull request the band shows in the default browser",
         // Per-session: web links to the PR directly from the session's PR badge.
     },
     PaletteCommand {
-        action: Action::AttachPullRequest,
-        name: "attach-pull-request",
-        description: "Attach a GitHub pull request to the selected agent",
-        // Per-session: the web exposes "Attach pull request…" in the agent's
-        // own ⋯ menu (already shipped), so no app-menu entry is warranted.
-    },
-    PaletteCommand {
-        action: Action::DetachPullRequest,
-        name: "detach-pull-request",
-        description: "Detach the selected agent's pull request and stop looking for one on it",
-        // Per-session: the web's agent ⋯ menu carries "Detach pull request",
-        // so no app-menu entry is warranted.
-    },
-    PaletteCommand {
-        action: Action::ResumePullRequestAutodetection,
-        name: "resume-pull-request-autodetection",
-        description: "Look for a pull request on the selected agent's branch again, after a detach",
-        // Per-session: the web's agent ⋯ menu carries "Resume PR
-        // autodetection" on the same gate, so no app-menu entry is warranted.
+        action: Action::PullRequests,
+        name: "pull-requests",
+        description: "Show, order, attach and hide the selected agent's pull requests",
+        // Per-session: the web's counterpart is "Pull requests…" in the agent's
+        // own ⋯ menu, so no app-menu entry is warranted.
     },
     // ── Global ────────────────────────────────────────────────────
     PaletteCommand {
@@ -422,6 +456,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         // everything…" confirms once and does the same to all of them. The
         // polite, waited shutdown is the agent menu's "Detach agent…" and
         // the detach-agent palette command below.
+    },
+    PaletteCommand {
+        action: Action::ClearStatusLine,
+        name: "clear-status-line",
+        description: "Clears the last message.",
+        // TUI-only: the web shows statuses as toasts, each with its own close
+        // button and swipe to dismiss.
     },
     PaletteCommand {
         action: Action::DetachAgent,
@@ -656,6 +697,15 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         action: Action::CloudPairPhone,
         name: "cloud-pair-phone",
         description: "Show the QR code that adds your organization to the Yaran app",
+    },
+    PaletteCommand {
+        action: Action::ToggleNerdFontIcons,
+        name: "toggle-nerd-font-icons",
+        description: "Toggle Nerd Font icons (needs a patched Nerd Font)",
+        // TUI-only: the web draws its own icons, so the web app menu gets no
+        // entry. The web exposes the value as a PREFERENCE row
+        // (ui.nerd_font_icons in the Preferences dialog's terminal-UI group) so
+        // it can still be changed from a browser.
     },
     PaletteCommand {
         action: Action::ToggleRandomizedPetNameDefault,

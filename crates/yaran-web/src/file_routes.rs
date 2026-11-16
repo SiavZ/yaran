@@ -53,6 +53,24 @@ const MAX_RAW_BYTES: u64 = 25 * 1024 * 1024;
 #[derive(Deserialize)]
 struct ReadOp {
     path: String,
+    /// Read in exactly this encoding (a WHATWG label) instead of by the
+    /// automatic rules: the person's answer to a fallback that read the file
+    /// wrong. Absent for an ordinary read, and from every older client.
+    #[serde(default)]
+    encoding: Option<String>,
+}
+
+/// Resolve an optional client encoding label. An unknown one is answered 400 by
+/// the caller rather than the file being read or written some other way.
+fn requested_encoding(
+    label: Option<&str>,
+) -> Result<Option<&'static yaran_core::text_encoding::Encoding>, String> {
+    match label {
+        None => Ok(None),
+        Some(label) => yaran_core::text_encoding::encoding_for_label(label)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -72,6 +90,37 @@ struct WriteOp {
     expected_modified: Option<String>,
     #[serde(default)]
     expected_size: Option<u64>,
+    /// The encoding to write the text in (a WHATWG label): the one the read
+    /// reported, or a conversion the person chose. Absent means the text's own
+    /// UTF-8, which is what every older client and the upload route send, and
+    /// such a save is still refused over a file that is not UTF-8.
+    #[serde(default)]
+    encoding: Option<String>,
+    /// Start the file with the encoding's byte-order mark. Only meaningful with
+    /// `encoding`, and refused for an encoding that has none.
+    #[serde(default)]
+    bom: bool,
+    /// The encoding (a WHATWG label) and mark the client read the file in. The
+    /// same as `encoding` and `bom` for an ordinary save, different for a
+    /// conversion, and absent from an older client, which is then judged the
+    /// conservative way (see `write_checked_existing`).
+    #[serde(default)]
+    read_encoding: Option<String>,
+    #[serde(default)]
+    read_bom: bool,
+}
+
+/// A save refused (422) because the text holds a character the chosen encoding
+/// has no bytes for. Structured so the browser can name the character and
+/// where it is, and point at converting the file, in its own words.
+#[derive(Serialize)]
+struct UnmappableBody {
+    error: &'static str,
+    message: String,
+    character: String,
+    line: usize,
+    column: usize,
+    encoding: &'static str,
 }
 
 /// A save's success body: the file's stamp AFTER the write. The client
@@ -81,6 +130,22 @@ struct WriteOp {
 struct WriteResult {
     modified: Option<String>,
     size: u64,
+    /// The verdict on what was written, judged the way a read would judge it,
+    /// so the editor takes a conversion's outcome from the server rather than
+    /// assuming it (see `WorktreeFile`). Absent for a save that stated no
+    /// encoding.
+    #[serde(flatten)]
+    verdict: Option<WriteVerdict>,
+}
+
+/// What a save that stated an encoding wrote, as [`WriteResult`] carries it.
+#[derive(Serialize)]
+struct WriteVerdict {
+    /// Why the text cannot be written back unchanged in this encoding, or
+    /// `null` when it can.
+    unwritable: Option<&'static str>,
+    mixed_line_endings: bool,
+    eol: &'static str,
 }
 
 /// A 409's body. `deleted` is its own field rather than being inferred from a
@@ -123,14 +188,10 @@ struct RawQuery {
     path: String,
 }
 
-fn is_false(v: &bool) -> bool {
-    !v
-}
-
 #[derive(Serialize)]
 struct FileList {
     files: Vec<String>,
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     truncated: bool,
 }
 
@@ -159,14 +220,25 @@ struct OpenedEditor {
 /// the reader opens, so it is derived from `MAX_EDITABLE_BYTES` rather than left at
 /// the framework's default, which would let a file open and then refuse to save.
 ///
-/// Not simply the read cap, because the content travels as a JSON string: serde_json
-/// escapes a quote, a backslash and the newline, carriage-return and tab controls to
-/// two bytes each and passes other non-ASCII through, so twice the read cap covers
-/// any text file, and the extra room is the envelope and the path. A file made
-/// largely of OTHER control characters escapes to six bytes each and does not fit;
-/// the refusal names the limit rather than failing opaquely.
+/// Not simply the read cap, because the content travels as decoded text in a JSON
+/// string, and both grow it. A byte of a single-byte code page can decode to a
+/// character three bytes long in UTF-8 (every € in windows-1252), and `serde_json`
+/// escapes a control character to six bytes (`\u0001`); six bytes per byte read is
+/// the worst any supported encoding reaches, so six times the read cap covers any
+/// file the reader opens, and the extra room is the envelope and the path.
+///
+/// This only bounds the request. The limit that means something to a person is the
+/// size of the file that would be written, [`MAX_SAVED_BYTES`], checked on the
+/// encoded bytes before anything is written.
+///
+/// [`MAX_SAVED_BYTES`]: yaran_core::worktree_file::MAX_SAVED_BYTES
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "MAX_EDITABLE_BYTES is five megabytes, which a usize holds on every target, and a const cannot call TryFrom"
+)]
 const MAX_EDIT_WRITE_BYTES: usize =
-    2 * yaran_core::worktree_file::MAX_EDITABLE_BYTES as usize + 64 * 1024;
+    6 * yaran_core::worktree_file::MAX_EDITABLE_BYTES as usize + 64 * 1024;
 
 /// What an editor request's paths resolve against, decided by the ADDRESS the
 /// request arrived at and never by the id alone. Each address is an extractor that
@@ -482,8 +554,12 @@ async fn list_tree<R: EditorRoot>(
 async fn read_file<R: EditorRoot>(root: R, Json(op): Json<ReadOp>) -> Response {
     let worktree = root.path().to_path_buf();
     let path = op.path;
+    let requested = match requested_encoding(op.encoding.as_deref()) {
+        Ok(requested) => requested,
+        Err(unknown) => return (StatusCode::BAD_REQUEST, unknown).into_response(),
+    };
     match tokio::task::spawn_blocking(move || {
-        yaran_core::worktree_file::read_file(&worktree, &path)
+        yaran_core::worktree_file::read_file_as(&worktree, &path, requested)
     })
     .await
     {
@@ -535,19 +611,33 @@ async fn diff_contents(
         Err(r) => return r.into_response(),
     };
     let path = op.path;
+    let requested = match requested_encoding(op.encoding.as_deref()) {
+        Ok(requested) => requested,
+        Err(unknown) => return (StatusCode::BAD_REQUEST, unknown).into_response(),
+    };
     match tokio::task::spawn_blocking(move || {
-        match yaran_core::diff::file_diff_contents(&worktree, &path) {
+        match yaran_core::diff::file_diff_contents_as(&worktree, &path, requested) {
             Ok(contents) => Ok(DiffAnswer::Contents(contents)),
             // A version past the editor's size ceiling is answered with the head
             // of git's own patch rather than an error: the reader wanted to see
             // the change, and there is one to show. Every other refusal is still
             // a refusal.
             Err(e) if e.downcast_ref::<yaran_core::diff::DiffTooLarge>().is_some() => {
-                match yaran_core::diff::diff_head_via_git(&worktree, &path) {
+                match yaran_core::diff::diff_head_via_git_as(&worktree, &path, requested) {
                     Ok(head) => Ok(DiffAnswer::Head {
                         path: path.clone(),
                         head,
                     }),
+                    // The person asked for an encoding the patch is not valid
+                    // in: that is the whole answer, and the size story would
+                    // bury it.
+                    Err(fallback)
+                        if fallback
+                            .downcast_ref::<yaran_core::diff::PatchNotInEncoding>()
+                            .is_some() =>
+                    {
+                        Err(fallback)
+                    }
                     // The fallback failing does not make the file smaller. The
                     // refusal leads and git's words follow it, so the browser
                     // still learns the first and more useful fact.
@@ -588,9 +678,23 @@ async fn diff_contents(
 ///    `is_outside`, which is rejected immediately.
 /// 2. After `canonicalize()` the resolved target is re-verified inside the
 ///    canonical root, closing the gap in which a symlink could be replaced.
-async fn read_raw<R: EditorRoot>(root: R, Query(q): Query<RawQuery>) -> Response {
+///
+/// A markdown preview asks for every image it shows at once, so reads share the
+/// [`tree_list_permit`] bound with the editor's other small filesystem work. The
+/// permit bounds how many reads hold a blocking thread at once; it is released
+/// when the read is done, so a file's bytes, up to `MAX_RAW_BYTES`, stay in memory
+/// past it until the response has been sent.
+async fn read_raw<R: EditorRoot>(
+    State(state): State<AppState>,
+    root: R,
+    Query(q): Query<RawQuery>,
+) -> Response {
     let worktree = root.path().to_path_buf();
     let path = q.path;
+    let _permit = match tree_list_permit(&state).await {
+        Ok(permit) => permit,
+        Err(resp) => return resp.into_response(),
+    };
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<(&'static str, Vec<u8>)> {
         // Use the read-permissive resolver so symlinked images inside the
         // worktree reach this proxy. The image proxy intentionally does NOT
@@ -684,7 +788,7 @@ fn mime_for_path(path: &str) -> &'static str {
         .map(|(_, ext)| ext.to_ascii_lowercase());
     match ext.as_deref() {
         Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("svg") => "image/svg+xml",
         Some("webp") => "image/webp",
@@ -693,6 +797,41 @@ fn mime_for_path(path: &str) -> &'static str {
         Some("ico") => "image/x-icon",
         _ => "application/octet-stream",
     }
+}
+
+/// The answer to a save the write itself refused: a freshness conflict carrying
+/// the file's current stamp, a file too large to save, text the chosen encoding
+/// cannot hold, or a path or containment problem.
+fn write_refusal(e: &anyhow::Error) -> Response {
+    if let Some(conflict) = e.downcast_ref::<yaran_core::worktree_file::WriteConflict>() {
+        return (
+            StatusCode::CONFLICT,
+            Json(WriteConflictBody {
+                modified: conflict.current.as_ref().and_then(|s| s.modified.clone()),
+                size: conflict.current.as_ref().map(|s| s.size),
+                deleted: conflict.deleted,
+            }),
+        )
+            .into_response();
+    }
+    if let Some(too_large) = e.downcast_ref::<yaran_core::worktree_file::SaveTooLarge>() {
+        return (StatusCode::PAYLOAD_TOO_LARGE, too_large.to_string()).into_response();
+    }
+    if let Some(refused) = e.downcast_ref::<yaran_core::text_encoding::Unmappable>() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(UnmappableBody {
+                error: "unmappable",
+                message: refused.to_string(),
+                character: refused.character.to_string(),
+                line: refused.line,
+                column: refused.column,
+                encoding: refused.encoding.name(),
+            }),
+        )
+            .into_response();
+    }
+    (StatusCode::BAD_REQUEST, e.to_string()).into_response()
 }
 
 /// The root extractor runs before the body is read, so an address problem (an
@@ -710,7 +849,7 @@ async fn write_file<R: EditorRoot>(
     // user can actually provoke by opening a large file and typing in it.
     let Json(op) = match op {
         Ok(op) => op,
-        Err(rejection) => return write_rejection(rejection),
+        Err(rejection) => return write_rejection(&rejection),
     };
     let worktree = root.path().to_path_buf();
     let wt = worktree.clone();
@@ -724,30 +863,64 @@ async fn write_file<R: EditorRoot>(
             modified: Some(modified),
             size,
         });
+    let read_as = match requested_encoding(op.read_encoding.as_deref()) {
+        Ok(read) => read.map(|read| (read, op.read_bom)),
+        Err(unknown) => return (StatusCode::BAD_REQUEST, unknown).into_response(),
+    };
+    let encoding = match requested_encoding(op.encoding.as_deref()) {
+        Ok(encoding) => encoding.map(|encoding| yaran_core::worktree_file::SaveEncoding {
+            encoding,
+            bom: op.bom,
+            read_as,
+        }),
+        Err(unknown) => return (StatusCode::BAD_REQUEST, unknown).into_response(),
+    };
     // write_file's errors are path/containment validation, all client conditions, so
     // map them to 400. The one exception is a freshness conflict, which is a
     // 409 carrying the file's CURRENT stamp so the browser can offer a choice
     // (overwrite, reload, cancel) without another round trip.
+    let hold = match crate::git_routes::hold_targets_for_write(
+        &state,
+        root.path(),
+        &[&path],
+        yaran_core::worktree_ops::WorktreeOpKind::EditorWrite,
+        "save the file",
+    )
+    .await
+    {
+        Ok(hold) => hold,
+        Err(r) => return r.into_response(),
+    };
     let stamp = match tokio::task::spawn_blocking(move || {
-        yaran_core::worktree_file::write_file_checked(&wt, &path, &content, expected.as_ref())
+        let _hold = hold;
+        yaran_core::worktree_file::write_file_encoded(
+            &wt,
+            &path,
+            &content,
+            encoding,
+            expected.as_ref(),
+        )
+        .map(|stamp| {
+            (
+                stamp,
+                encoding.map(|save| {
+                    yaran_core::text_encoding::saved_verdict(
+                        &content,
+                        save.encoding,
+                        if save.bom {
+                            yaran_core::text_encoding::ByteOrderMark::Written
+                        } else {
+                            yaran_core::text_encoding::ByteOrderMark::Omitted
+                        },
+                    )
+                }),
+            )
+        })
     })
     .await
     {
-        Ok(Ok(stamp)) => stamp,
-        Ok(Err(e)) => {
-            if let Some(conflict) = e.downcast_ref::<yaran_core::worktree_file::WriteConflict>() {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(WriteConflictBody {
-                        modified: conflict.current.as_ref().and_then(|s| s.modified.clone()),
-                        size: conflict.current.as_ref().map(|s| s.size),
-                        deleted: conflict.deleted,
-                    }),
-                )
-                    .into_response();
-            }
-            return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
-        }
+        Ok(Ok(written)) => written,
+        Ok(Err(e)) => return write_refusal(&e),
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -757,9 +930,17 @@ async fn write_file<R: EditorRoot>(
         }
     };
     refresh_root_changes(&state, &root, &worktree);
+    let (stamp, verdict) = stamp;
     Json(WriteResult {
         modified: stamp.modified,
         size: stamp.size,
+        verdict: verdict.map(|v| WriteVerdict {
+            unwritable: v
+                .unwritable
+                .map(yaran_core::text_encoding::Unwritable::as_str),
+            mixed_line_endings: v.line_endings.mixed,
+            eol: v.line_endings.saves_as.label(),
+        }),
     })
     .into_response()
 }
@@ -767,7 +948,7 @@ async fn write_file<R: EditorRoot>(
 /// Turn a save-route body rejection into a response the user can act on. Only the
 /// size case is reworded, reporting the cap in MB and saying the file can still be
 /// edited outside yaran; everything else keeps the framework's own accurate wording.
-fn write_rejection(rejection: JsonRejection) -> Response {
+fn write_rejection(rejection: &JsonRejection) -> Response {
     let too_large = matches!(rejection, JsonRejection::BytesRejection(_))
         || rejection.status() == StatusCode::PAYLOAD_TOO_LARGE;
     if too_large {
@@ -831,8 +1012,23 @@ async fn create_file<R: EditorRoot>(
     let worktree = root.path().to_path_buf();
     let wt = worktree.clone();
     let path = op.path;
-    match tokio::task::spawn_blocking(move || yaran_core::worktree_file::create_file(&wt, &path))
-        .await
+    let hold = match crate::git_routes::hold_targets_for_write(
+        &state,
+        root.path(),
+        &[&path],
+        yaran_core::worktree_ops::WorktreeOpKind::EditorWrite,
+        "create the file",
+    )
+    .await
+    {
+        Ok(hold) => hold,
+        Err(r) => return r.into_response(),
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _hold = hold;
+        yaran_core::worktree_file::create_file(&wt, &path)
+    })
+    .await
     {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -858,8 +1054,23 @@ async fn create_dir<R: EditorRoot>(
     let worktree = root.path().to_path_buf();
     let wt = worktree.clone();
     let path = op.path;
-    match tokio::task::spawn_blocking(move || yaran_core::worktree_file::create_dir(&wt, &path))
-        .await
+    let hold = match crate::git_routes::hold_targets_for_write(
+        &state,
+        root.path(),
+        &[&path],
+        yaran_core::worktree_ops::WorktreeOpKind::EditorWrite,
+        "create the folder",
+    )
+    .await
+    {
+        Ok(hold) => hold,
+        Err(r) => return r.into_response(),
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _hold = hold;
+        yaran_core::worktree_file::create_dir(&wt, &path)
+    })
+    .await
     {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
@@ -886,20 +1097,17 @@ async fn rename_entry<R: EditorRoot>(
     let wt = worktree.clone();
     let from = op.from;
     let to = op.to;
-    match tokio::task::spawn_blocking(move || {
-        yaran_core::worktree_file::rename_entry(&wt, &from, &to)
-    })
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("rename task failed: {e}"),
-            )
-                .into_response();
-        }
+    let targets = [from.clone(), to.clone()];
+    let outcome = destructive_editor_op(
+        &state,
+        root.path(),
+        &[&targets[0], &targets[1]],
+        "move",
+        move |clear| yaran_core::worktree_file::rename_entry(&wt, &from, &to, clear),
+    )
+    .await;
+    if let Err(rejection) = outcome {
+        return rejection.into_response();
     }
     refresh_root_changes(&state, &root, &worktree);
     StatusCode::OK.into_response()
@@ -915,21 +1123,120 @@ async fn delete_entry<R: EditorRoot>(
     let worktree = root.path().to_path_buf();
     let wt = worktree.clone();
     let path = op.path;
-    match tokio::task::spawn_blocking(move || yaran_core::worktree_file::delete_entry(&wt, &path))
-        .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("delete task failed: {e}"),
-            )
-                .into_response();
-        }
+    let target = path.clone();
+    let outcome = destructive_editor_op(&state, root.path(), &[&target], "delete", move |clear| {
+        yaran_core::worktree_file::delete_entry(&wt, &path, clear)
+    })
+    .await;
+    if let Err(rejection) = outcome {
+        return rejection.into_response();
     }
     refresh_root_changes(&state, &root, &worktree);
     StatusCode::OK.into_response()
+}
+
+/// Run an editor delete or move of `targets` (relative to `root`) behind the
+/// one gate every destructive file operation passes. Removing or moving a
+/// folder removes or moves everything under it (an agent's worktree inside a
+/// terminal's root, a standalone agent's folder, a project's repository,
+/// something yaran started there), so:
+///
+/// 1. every target that is a folder is CLAIMED, so nothing new can start
+///    inside it from here on;
+/// 2. the engine is asked the one occupancy question for every target;
+/// 3. the targets that are not folders are held;
+/// 4. the operation runs off the async runtime, and gets its clearance from
+///    the check right before it touches anything. A refusal is a 409 with
+///    the sentence, a request the operation itself rejects a 400.
+async fn destructive_editor_op(
+    state: &AppState,
+    root: &std::path::Path,
+    targets: &[&String],
+    what: &'static str,
+    op: impl for<'c> FnOnce(
+        &mut dyn FnMut() -> Result<
+            yaran_core::destructive::Cleared<'c>,
+            yaran_core::destructive::Refused,
+        >,
+    ) -> anyhow::Result<()>
+    + Send
+    + 'static,
+) -> Result<(), crate::rest_common::RouteRejection> {
+    // Off the async runtime: a claim may wait (bounded) for a removal
+    // running inside the folder.
+    let guard = {
+        let state = state.clone();
+        let root = root.to_path_buf();
+        let relative: Vec<String> = targets
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            let relative: Vec<&str> = relative.iter().map(String::as_str).collect();
+            crate::git_routes::guard_destructive_targets(
+                &state,
+                &root,
+                &relative,
+                &format!("{what} the entry"),
+            )
+        })
+        .await
+        .map_err(|e| {
+            crate::rest_common::RouteRejection::from(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("{what} task failed: {e}"),
+                )
+                    .into_response(),
+            )
+        })??
+    };
+    let mut check: Option<yaran_core::engine::DestructiveCheck> = None;
+    for target in targets {
+        let one = state
+            .engine
+            .destructive_check(root.join(target))
+            .await
+            .ok_or_else(|| {
+                crate::rest_common::RouteRejection::from(
+                    (StatusCode::SERVICE_UNAVAILABLE, "engine unavailable").into_response(),
+                )
+            })?;
+        check = Some(match check {
+            Some(check) => check.and(one),
+            None => one,
+        });
+    }
+    let outcome = tokio::task::spawn_blocking(move || {
+        let claims: Vec<&yaran_core::worktree_ops::DestructiveClaim> =
+            guard.claims.iter().collect();
+        let mut clear = || match &check {
+            Some(check) => check.clear(&claims, what),
+            None => Err(yaran_core::destructive::Refused(
+                "yaran did not touch it: nothing was checked".to_string(),
+            )),
+        };
+        op(&mut clear)
+    })
+    .await;
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e))
+            if e.downcast_ref::<yaran_core::destructive::Refused>()
+                .is_some() =>
+        {
+            Err((StatusCode::CONFLICT, e.to_string()).into_response().into())
+        }
+        Ok(Err(e)) => Err((StatusCode::BAD_REQUEST, e.to_string())
+            .into_response()
+            .into()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{what} task failed: {e}"),
+        )
+            .into_response()
+            .into()),
+    }
 }
 
 /// Open a file in a locally-installed GUI editor, reusing the TUI's detection and
@@ -1003,6 +1310,22 @@ async fn open_in_editor<R: EditorRoot>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_list_omits_truncated_unless_it_is_true() {
+        let list = |truncated| FileList {
+            files: vec!["a".to_string()],
+            truncated,
+        };
+        assert_eq!(
+            serde_json::to_string(&list(false)).unwrap(),
+            r#"{"files":["a"]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&list(true)).unwrap(),
+            r#"{"files":["a"],"truncated":true}"#
+        );
+    }
 
     #[test]
     fn mime_for_path_maps_image_extensions_case_insensitively() {
@@ -1283,7 +1606,7 @@ mod tests {
         /// Boots a real router with session "s1" pointed at a fresh worktree
         /// directory containing `hello.txt`. Returns the temp root (kept alive
         /// for the test), the worktree path, and the router.
-        async fn router_with_session() -> (tempfile::TempDir, std::path::PathBuf, axum::Router) {
+        fn router_with_session() -> (tempfile::TempDir, std::path::PathBuf, axum::Router) {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().to_path_buf();
             let wt = root.join("wt");
@@ -1295,7 +1618,8 @@ mod tests {
                 config_path: root.join("config.toml"),
                 sessions_db_path: root.join("sessions.sqlite3"),
                 worktrees_root: root.join("worktrees"),
-                lock_path: root.join("yaran.lock"),
+                lock_path: root.join("dux.lock"),
+                socket_path: root.join("yaran.sock"),
             };
             std::fs::create_dir_all(&paths.worktrees_root).unwrap();
             {
@@ -1309,7 +1633,7 @@ mod tests {
                         leading_branch: None,
                         auto_reopen_agents: None,
                         startup_command: None,
-                        env: Default::default(),
+                        env: std::collections::BTreeMap::new(),
                         workspace_mode: None,
                     })
                     .unwrap();
@@ -1323,7 +1647,88 @@ mod tests {
             (tmp, wt, app)
         }
 
-        fn json_req(uri: &str, body: serde_json::Value) -> Request<axum::body::Body> {
+        /// Every editor write into a worktree whose removal has begun is
+        /// refused with a 409 that says so, and writes nothing: a save landing
+        /// after the folder went would otherwise bring it back.
+        #[tokio::test]
+        async fn editor_writes_are_refused_once_the_worktree_removal_has_begun() {
+            let (_tmp, wt, app, ops) = router_with_session_and_ops();
+            let _removal = ops.announce_removal(&wt);
+            for (route, body) in [
+                (
+                    "write",
+                    serde_json::json!({ "path": "new.txt", "content": "x" }),
+                ),
+                ("create-file", serde_json::json!({ "path": "made.txt" })),
+                ("create-dir", serde_json::json!({ "path": "a/b" })),
+                (
+                    "rename",
+                    serde_json::json!({ "from": "hello.txt", "to": "moved.txt" }),
+                ),
+                ("delete", serde_json::json!({ "path": "hello.txt" })),
+            ] {
+                let resp = app
+                    .clone()
+                    .oneshot(json_req(
+                        &format!("/api/v1/sessions/s1/files/{route}"),
+                        &body,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::CONFLICT, "{route}");
+                let text = String::from_utf8(
+                    axum::body::to_bytes(resp.into_body(), 64 * 1024)
+                        .await
+                        .unwrap()
+                        .to_vec(),
+                )
+                .unwrap();
+                assert!(text.contains("removing the worktree"), "{route}: {text}");
+            }
+            assert!(!wt.join("new.txt").exists());
+            assert!(!wt.join("made.txt").exists());
+            assert!(!wt.join("a").exists());
+            assert!(wt.join("hello.txt").exists());
+        }
+
+        /// While an editor save is running it holds the worktree, so a removal
+        /// waits for it instead of racing it.
+        #[tokio::test]
+        async fn an_editor_write_is_released_once_it_has_finished() {
+            let (_tmp, wt, app, ops) = router_with_session_and_ops();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({ "path": "new.txt", "content": "x" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert!(ops.holders(&wt).is_empty(), "the hold ends with the write");
+        }
+
+        fn router_with_session_and_ops() -> (
+            tempfile::TempDir,
+            std::path::PathBuf,
+            axum::Router,
+            yaran_core::worktree_ops::WorktreeOps,
+        ) {
+            let (tmp, wt, _) = router_with_session();
+            let paths = YaranPaths {
+                root: tmp.path().to_path_buf(),
+                config_path: tmp.path().join("config.toml"),
+                sessions_db_path: tmp.path().join("sessions.sqlite3"),
+                worktrees_root: tmp.path().join("worktrees"),
+                lock_path: tmp.path().join("yaran2.lock"),
+                socket_path: tmp.path().join("yaran.sock"),
+            };
+            let engine = crate::test_support::bootstrap_test_engine(&paths).unwrap();
+            let ops = engine.worktree_ops().clone();
+            let (handle, _join) = crate::engine_actor::spawn_engine_thread(engine);
+            (tmp, wt, crate::server::router(handle), ops)
+        }
+
+        fn json_req(uri: &str, body: &serde_json::Value) -> Request<axum::body::Body> {
             Request::builder()
                 .method("POST")
                 .uri(uri)
@@ -1334,11 +1739,11 @@ mod tests {
 
         #[tokio::test]
         async fn create_file_endpoint_creates_an_empty_file() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/create-file",
-                    serde_json::json!({ "path": "new.txt" }),
+                    &serde_json::json!({ "path": "new.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1348,11 +1753,11 @@ mod tests {
 
         #[tokio::test]
         async fn create_file_endpoint_rejects_overwrite_with_400() {
-            let (_tmp, _wt, app) = router_with_session().await;
+            let (_tmp, _wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/create-file",
-                    serde_json::json!({ "path": "hello.txt" }),
+                    &serde_json::json!({ "path": "hello.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1361,11 +1766,11 @@ mod tests {
 
         #[tokio::test]
         async fn create_file_endpoint_rejects_git_path() {
-            let (_tmp, _wt, app) = router_with_session().await;
+            let (_tmp, _wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/create-file",
-                    serde_json::json!({ "path": ".git/evil" }),
+                    &serde_json::json!({ "path": ".git/evil" }),
                 ))
                 .await
                 .unwrap();
@@ -1374,11 +1779,11 @@ mod tests {
 
         #[tokio::test]
         async fn create_dir_endpoint_creates_a_directory() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/create-dir",
-                    serde_json::json!({ "path": "a/b/c" }),
+                    &serde_json::json!({ "path": "a/b/c" }),
                 ))
                 .await
                 .unwrap();
@@ -1388,11 +1793,11 @@ mod tests {
 
         #[tokio::test]
         async fn create_dir_endpoint_rejects_existing_entry_with_400() {
-            let (_tmp, _wt, app) = router_with_session().await;
+            let (_tmp, _wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/create-dir",
-                    serde_json::json!({ "path": "hello.txt" }),
+                    &serde_json::json!({ "path": "hello.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1401,11 +1806,11 @@ mod tests {
 
         #[tokio::test]
         async fn rename_endpoint_renames_a_file() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/rename",
-                    serde_json::json!({ "from": "hello.txt", "to": "renamed.txt" }),
+                    &serde_json::json!({ "from": "hello.txt", "to": "renamed.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1416,12 +1821,12 @@ mod tests {
 
         #[tokio::test]
         async fn rename_endpoint_rejects_existing_destination_with_400() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             std::fs::write(wt.join("dst.txt"), "already here\n").unwrap();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/rename",
-                    serde_json::json!({ "from": "hello.txt", "to": "dst.txt" }),
+                    &serde_json::json!({ "from": "hello.txt", "to": "dst.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1436,11 +1841,11 @@ mod tests {
 
         #[tokio::test]
         async fn rename_endpoint_rejects_git_destination_with_400() {
-            let (_tmp, _wt, app) = router_with_session().await;
+            let (_tmp, _wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/rename",
-                    serde_json::json!({ "from": "hello.txt", "to": ".git/evil" }),
+                    &serde_json::json!({ "from": "hello.txt", "to": ".git/evil" }),
                 ))
                 .await
                 .unwrap();
@@ -1449,11 +1854,11 @@ mod tests {
 
         #[tokio::test]
         async fn delete_endpoint_deletes_a_file() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/delete",
-                    serde_json::json!({ "path": "hello.txt" }),
+                    &serde_json::json!({ "path": "hello.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1463,11 +1868,11 @@ mod tests {
 
         #[tokio::test]
         async fn delete_endpoint_rejects_worktree_root_with_400() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/delete",
-                    serde_json::json!({ "path": "." }),
+                    &serde_json::json!({ "path": "." }),
                 ))
                 .await
                 .unwrap();
@@ -1477,13 +1882,13 @@ mod tests {
 
         #[tokio::test]
         async fn delete_endpoint_rejects_git_path_with_400() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             std::fs::create_dir(wt.join(".git")).unwrap();
             std::fs::write(wt.join(".git/config"), "[core]\n").unwrap();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/delete",
-                    serde_json::json!({ "path": ".git/config" }),
+                    &serde_json::json!({ "path": ".git/config" }),
                 ))
                 .await
                 .unwrap();
@@ -1493,11 +1898,11 @@ mod tests {
 
         #[tokio::test]
         async fn create_file_endpoint_unknown_session_is_404() {
-            let (_tmp, _wt, app) = router_with_session().await;
+            let (_tmp, _wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/does-not-exist/files/create-file",
-                    serde_json::json!({ "path": "new.txt" }),
+                    &serde_json::json!({ "path": "new.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1511,11 +1916,11 @@ mod tests {
         /// empty (the documented no-content success contract every route shares).
         #[tokio::test]
         async fn create_file_endpoint_returns_no_content_body_on_success() {
-            let (_tmp, _wt, app) = router_with_session().await;
+            let (_tmp, _wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/create-file",
-                    serde_json::json!({ "path": "empty-body.txt" }),
+                    &serde_json::json!({ "path": "empty-body.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1529,12 +1934,12 @@ mod tests {
         /// raised limit a 3 MB file opens and then fails to save.
         #[tokio::test]
         async fn a_file_larger_than_the_framework_default_still_saves() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let content = "a".repeat(3 * 1024 * 1024);
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/write",
-                    serde_json::json!({ "path": "big.txt", "content": content }),
+                    &serde_json::json!({ "path": "big.txt", "content": content }),
                 ))
                 .await
                 .unwrap();
@@ -1554,15 +1959,273 @@ mod tests {
             serde_json::from_slice(&bytes).expect("a JSON body")
         }
 
+        async fn read_json(
+            app: &axum::Router,
+            body: serde_json::Value,
+        ) -> axum::response::Response {
+            app.clone()
+                .oneshot(json_req("/api/v1/sessions/s1/files/read", &body))
+                .await
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn read_reports_the_encoding_and_whether_it_was_a_fallback() {
+            let (_tmp, wt, app) = router_with_session();
+            let plain =
+                body_json(read_json(&app, serde_json::json!({ "path": "hello.txt" })).await).await;
+            assert_eq!(plain["encoding"], "UTF-8");
+            assert_eq!(plain["bom"], false);
+            assert_eq!(plain["encoding_fallback"], false);
+            assert!(plain["unwritable"].is_null());
+            assert_eq!(plain["mixed_line_endings"], false);
+            assert_eq!(plain["eol"], "LF");
+            assert_eq!(plain["looks_like_utf8"], false);
+
+            // Text this encoding cannot write back unchanged opens read-only
+            // with the reason on the wire, never as binary.
+            std::fs::write(wt.join("nec.txt"), [0x87, 0x90]).unwrap();
+            let nec = body_json(
+                read_json(
+                    &app,
+                    serde_json::json!({ "path": "nec.txt", "encoding": "shift_jis" }),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(nec["binary"], false);
+            assert_eq!(nec["read_only"], true);
+            assert_eq!(nec["unwritable"], "round_trip");
+            assert_eq!(nec["path_read_only"], false);
+
+            // The server holds the line itself: the client's read-only is not
+            // the only thing between this save and `81 E0`.
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "nec.txt",
+                        "content": nec["content"],
+                        "expected_modified": nec["modified"],
+                        "expected_size": nec["size"],
+                        "encoding": "Shift_JIS",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(std::fs::read(wt.join("nec.txt")).unwrap(), [0x87, 0x90]);
+
+            std::fs::write(wt.join("latin1.txt"), b"caf\xe9\n").unwrap();
+            let latin1 =
+                body_json(read_json(&app, serde_json::json!({ "path": "latin1.txt" })).await).await;
+            assert_eq!(latin1["binary"], false);
+            assert_eq!(latin1["content"], "caf\u{e9}\n");
+            assert_eq!(latin1["encoding"], "windows-1252");
+            assert_eq!(latin1["encoding_fallback"], true);
+        }
+
+        #[tokio::test]
+        async fn read_in_a_requested_encoding_or_refuse_it() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("jp.txt"), [0x93, 0xfa, 0x96, 0x7b]).unwrap();
+            let resp = read_json(
+                &app,
+                serde_json::json!({ "path": "jp.txt", "encoding": "shift_jis" }),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_json(resp).await;
+            assert_eq!(body["content"], "\u{65e5}\u{672c}");
+            assert_eq!(body["encoding"], "Shift_JIS");
+            assert_eq!(body["encoding_fallback"], false);
+
+            // Bytes that are not valid in the requested encoding are refused,
+            // never shown with replacement characters.
+            let resp = read_json(
+                &app,
+                serde_json::json!({ "path": "jp.txt", "encoding": "utf-8" }),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            let text = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            assert!(String::from_utf8_lossy(&text).contains("not valid UTF-8"));
+
+            let resp = read_json(
+                &app,
+                serde_json::json!({ "path": "jp.txt", "encoding": "klingon" }),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        }
+
+        #[tokio::test]
+        async fn a_save_in_the_read_encoding_writes_those_bytes() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("latin1.txt"), b"caf\xe9\r\n").unwrap();
+            let stamp =
+                body_json(read_json(&app, serde_json::json!({ "path": "latin1.txt" })).await).await;
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "latin1.txt",
+                        "content": "th\u{e9}\r\n",
+                        "expected_modified": stamp["modified"],
+                        "expected_size": stamp["size"],
+                        "encoding": "windows-1252",
+                        "bom": false,
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(std::fs::read(wt.join("latin1.txt")).unwrap(), b"th\xe9\r\n");
+        }
+
+        /// A character the encoding cannot hold is a 422 that names it and
+        /// where it is, and the file is left exactly as it was.
+        #[tokio::test]
+        async fn a_near_fit_character_is_422_and_nothing_is_written() {
+            let (_tmp, wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "yen.txt",
+                        "content": "\u{a5}100\n",
+                        "encoding": "Shift_JIS",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(body_json(resp).await["character"], "\u{a5}");
+            assert!(!wt.join("yen.txt").exists());
+        }
+
+        /// What the save wrote, judged by the server: a conversion that still
+        /// leaves two marks is read-only in its new encoding too, and the
+        /// client must not assume otherwise.
+        #[tokio::test]
+        async fn a_save_answers_with_the_verdict_on_what_it_wrote() {
+            let (_tmp, _wt, app) = router_with_session();
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "ok.txt",
+                        "content": "a\r\nb\r\n",
+                        "encoding": "UTF-8",
+                    }),
+                ))
+                .await
+                .unwrap();
+            let body = body_json(resp).await;
+            assert!(body["unwritable"].is_null());
+            assert_eq!(body["mixed_line_endings"], false);
+            assert_eq!(body["eol"], "CRLF");
+        }
+
+        /// The verdict's three keys are all there (a writable save says
+        /// `unwritable: null`) when the save stated an encoding, and all absent
+        /// when it did not.
+        #[tokio::test]
+        async fn a_save_carries_its_verdict_keys_only_when_it_stated_an_encoding() {
+            let (_tmp, _wt, app) = router_with_session();
+            let save = |body: serde_json::Value| {
+                let app = app.clone();
+                async move {
+                    let resp = app
+                        .oneshot(json_req("/api/v1/sessions/s1/files/write", &body))
+                        .await
+                        .unwrap();
+                    let body = body_json(resp).await;
+                    let object = body.as_object().unwrap().clone();
+                    ["unwritable", "mixed_line_endings", "eol"].map(|key| object.get(key).cloned())
+                }
+            };
+            let stated = save(serde_json::json!({
+                "path": "ok.txt",
+                "content": "a\n",
+                "encoding": "UTF-8",
+            }))
+            .await;
+            assert_eq!(
+                stated,
+                [
+                    Some(serde_json::Value::Null),
+                    Some(serde_json::Value::Bool(false)),
+                    Some(serde_json::json!("LF")),
+                ]
+            );
+            let unstated = save(serde_json::json!({ "path": "ok2.txt", "content": "a\n" })).await;
+            assert_eq!(unstated, [None, None, None]);
+        }
+
+        #[tokio::test]
+        async fn an_unmappable_character_is_422_with_its_details() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("latin1.txt"), b"caf\xe9\n").unwrap();
+            let stamp =
+                body_json(read_json(&app, serde_json::json!({ "path": "latin1.txt" })).await).await;
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "latin1.txt",
+                        "content": "caf\u{e9}\n\u{20ac}\u{65e5}\n",
+                        "expected_modified": stamp["modified"],
+                        "expected_size": stamp["size"],
+                        "encoding": "windows-1252",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let body = body_json(resp).await;
+            assert_eq!(body["error"], "unmappable");
+            assert_eq!(body["character"], "\u{65e5}");
+            assert_eq!(body["line"], 2);
+            assert_eq!(body["column"], 2);
+            assert_eq!(body["encoding"], "windows-1252");
+            assert_eq!(std::fs::read(wt.join("latin1.txt")).unwrap(), b"caf\xe9\n");
+        }
+
+        /// A page that predates encodings sends no encoding, and its guarded
+        /// save over bytes that are not UTF-8 is still refused.
+        #[tokio::test]
+        async fn a_save_with_no_encoding_over_a_non_utf8_file_is_still_refused() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("latin1.txt"), b"caf\xe9\n").unwrap();
+            let stamp =
+                body_json(read_json(&app, serde_json::json!({ "path": "latin1.txt" })).await).await;
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "latin1.txt",
+                        "content": "typed over nothing\n",
+                        "expected_modified": stamp["modified"],
+                        "expected_size": stamp["size"],
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(std::fs::read(wt.join("latin1.txt")).unwrap(), b"caf\xe9\n");
+        }
+
         /// The read route must hand the editor the token a later save sends
         /// back, or the guard below has nothing to compare against.
         #[tokio::test]
         async fn read_returns_the_files_stamp() {
-            let (_tmp, _wt, app) = router_with_session().await;
+            let (_tmp, _wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/read",
-                    serde_json::json!({ "path": "hello.txt" }),
+                    &serde_json::json!({ "path": "hello.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1580,11 +2243,11 @@ mod tests {
         /// then believe somebody else edited the file.
         #[tokio::test]
         async fn a_successful_write_returns_the_fresh_stamp() {
-            let (_tmp, _wt, app) = router_with_session().await;
+            let (_tmp, _wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/write",
-                    serde_json::json!({ "path": "hello.txt", "content": "typed\n" }),
+                    &serde_json::json!({ "path": "hello.txt", "content": "typed\n" }),
                 ))
                 .await
                 .unwrap();
@@ -1596,12 +2259,12 @@ mod tests {
 
         #[tokio::test]
         async fn a_write_with_a_matching_stamp_is_accepted() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let read = app
                 .clone()
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/read",
-                    serde_json::json!({ "path": "hello.txt" }),
+                    &serde_json::json!({ "path": "hello.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1609,7 +2272,7 @@ mod tests {
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/write",
-                    serde_json::json!({
+                    &serde_json::json!({
                         "path": "hello.txt",
                         "content": "mine\n",
                         "expected_modified": stamp["modified"],
@@ -1630,12 +2293,12 @@ mod tests {
         /// the browser needs to offer a choice.
         #[tokio::test]
         async fn a_write_with_a_stale_stamp_is_409_with_the_current_stamp() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let read = app
                 .clone()
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/read",
-                    serde_json::json!({ "path": "hello.txt" }),
+                    &serde_json::json!({ "path": "hello.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1645,7 +2308,7 @@ mod tests {
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/write",
-                    serde_json::json!({
+                    &serde_json::json!({
                         "path": "hello.txt",
                         "content": "clobber\n",
                         "expected_modified": stamp["modified"],
@@ -1668,12 +2331,12 @@ mod tests {
 
         #[tokio::test]
         async fn a_write_onto_a_file_deleted_underneath_is_409_and_creates_nothing() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let read = app
                 .clone()
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/read",
-                    serde_json::json!({ "path": "hello.txt" }),
+                    &serde_json::json!({ "path": "hello.txt" }),
                 ))
                 .await
                 .unwrap();
@@ -1683,7 +2346,7 @@ mod tests {
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/write",
-                    serde_json::json!({
+                    &serde_json::json!({
                         "path": "hello.txt",
                         "content": "back\n",
                         "expected_modified": stamp["modified"],
@@ -1703,12 +2366,12 @@ mod tests {
         /// page: it must behave exactly as it did before the guard existed.
         #[tokio::test]
         async fn a_write_with_no_stamp_still_overwrites_unconditionally() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             std::fs::write(wt.join("hello.txt"), "changed by someone else\n").unwrap();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/write",
-                    serde_json::json!({ "path": "hello.txt", "content": "overwritten\n" }),
+                    &serde_json::json!({ "path": "hello.txt", "content": "overwritten\n" }),
                 ))
                 .await
                 .unwrap();
@@ -1723,11 +2386,11 @@ mod tests {
         /// other way round) would compare against a value nobody supplied.
         #[tokio::test]
         async fn a_half_specified_stamp_is_ignored_rather_than_half_enforced() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/write",
-                    serde_json::json!({
+                    &serde_json::json!({
                         "path": "hello.txt",
                         "content": "written\n",
                         "expected_size": 999_999,
@@ -1746,12 +2409,12 @@ mod tests {
         /// limit, rather than the framework's bare length message.
         #[tokio::test]
         async fn an_over_limit_save_is_refused_with_a_message_naming_the_limit() {
-            let (_tmp, wt, app) = router_with_session().await;
+            let (_tmp, wt, app) = router_with_session();
             let content = "a".repeat(crate::file_routes::MAX_EDIT_WRITE_BYTES + 1);
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/s1/files/write",
-                    serde_json::json!({ "path": "huge.txt", "content": content }),
+                    &serde_json::json!({ "path": "huge.txt", "content": content }),
                 ))
                 .await
                 .unwrap();
@@ -1763,8 +2426,12 @@ mod tests {
                     .to_vec(),
             )
             .unwrap();
+            let limit = format!(
+                "{} MB",
+                crate::file_routes::MAX_EDIT_WRITE_BYTES / (1024 * 1024)
+            );
             assert!(
-                body.contains("too large") && body.contains("10 MB"),
+                body.contains("too large") && body.contains(&limit),
                 "the refusal must name the cause and the limit: {body}"
             );
             assert!(
@@ -1773,18 +2440,143 @@ mod tests {
             );
         }
 
+        /// A file the reader opens must save: 4 MiB of € in windows-1252 is
+        /// 12 MiB of UTF-8 in the request, and 4 MiB on disk.
+        #[tokio::test]
+        async fn a_code_page_file_the_editor_opened_saves_however_its_text_grows() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("euro.txt"), vec![0x80u8; 4 * 1024 * 1024]).unwrap();
+            let read =
+                body_json(read_json(&app, serde_json::json!({ "path": "euro.txt" })).await).await;
+            assert_eq!(read["encoding"], "windows-1252");
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "euro.txt",
+                        "content": read["content"],
+                        "expected_modified": read["modified"],
+                        "expected_size": read["size"],
+                        "encoding": "windows-1252",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(
+                std::fs::metadata(wt.join("euro.txt")).unwrap().len(),
+                4 * 1024 * 1024
+            );
+        }
+
+        /// The limit that matters is the file that would be written, and its
+        /// refusal says so.
+        #[tokio::test]
+        async fn a_save_whose_file_would_be_too_large_is_refused_naming_that_limit() {
+            let (_tmp, wt, app) = router_with_session();
+            let content = "a".repeat(
+                usize::try_from(yaran_core::worktree_file::MAX_SAVED_BYTES)
+                    .expect("ten megabytes fits a usize")
+                    + 1,
+            );
+            let resp = app
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({ "path": "huge.txt", "content": content, "encoding": "UTF-8" }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let body = String::from_utf8(
+                to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert!(body.contains("on disk") && body.contains("10 MB"), "{body}");
+            assert!(!wt.join("huge.txt").exists());
+        }
+
+        #[tokio::test]
+        async fn a_conversion_states_the_encoding_it_was_read_in() {
+            let (_tmp, wt, app) = router_with_session();
+            std::fs::write(wt.join("j.txt"), "\u{3042}\u{71d0}").unwrap();
+            let read =
+                body_json(read_json(&app, serde_json::json!({ "path": "j.txt" })).await).await;
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "/api/v1/sessions/s1/files/write",
+                    &serde_json::json!({
+                        "path": "j.txt",
+                        "content": read["content"],
+                        "expected_modified": read["modified"],
+                        "expected_size": read["size"],
+                        "encoding": "Shift_JIS",
+                        "read_encoding": "UTF-8",
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let back = body_json(
+                read_json(
+                    &app,
+                    serde_json::json!({ "path": "j.txt", "encoding": "Shift_JIS" }),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(back["content"], "\u{3042}\u{71d0}");
+            assert!(back["unwritable"].is_null());
+        }
+
+        #[tokio::test]
+        async fn a_save_whose_text_starts_with_a_mark_character_is_refused() {
+            let (_tmp, wt, app) = router_with_session();
+            for (encoding, bom) in [("UTF-8", false), ("UTF-16LE", true)] {
+                let resp = app
+                    .clone()
+                    .oneshot(json_req(
+                        "/api/v1/sessions/s1/files/write",
+                        &serde_json::json!({
+                            "path": "m.txt",
+                            "content": "\u{feff}a",
+                            "encoding": encoding,
+                            "bom": bom,
+                        }),
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{encoding}");
+                let text = String::from_utf8(
+                    to_bytes(resp.into_body(), usize::MAX)
+                        .await
+                        .unwrap()
+                        .to_vec(),
+                )
+                .unwrap();
+                assert!(
+                    text.contains("U+FEFF") && text.contains("nothing was written"),
+                    "{text}"
+                );
+            }
+            assert!(!wt.join("m.txt").exists());
+        }
+
         /// The root extractor runs before the body is read, so a request that
         /// is wrong in BOTH ways (unknown id and an over-limit body) answers
         /// for the address first: 404, never the body diagnostic. This pins
         /// the extractor-first ordering the `write_file` doc comment names.
         #[tokio::test]
         async fn a_bad_id_beats_the_body_diagnostic() {
-            let (_tmp, _wt, app) = router_with_session().await;
+            let (_tmp, _wt, app) = router_with_session();
             let content = "a".repeat(crate::file_routes::MAX_EDIT_WRITE_BYTES + 1);
             let resp = app
                 .oneshot(json_req(
                     "/api/v1/sessions/ghost/files/write",
-                    serde_json::json!({ "path": "huge.txt", "content": content }),
+                    &serde_json::json!({ "path": "huge.txt", "content": content }),
                 ))
                 .await
                 .unwrap();

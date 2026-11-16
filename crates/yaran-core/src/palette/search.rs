@@ -107,6 +107,17 @@ impl Document {
         best
     }
 
+    /// Score this document against already-deduplicated query tokens, or `None`
+    /// when the prefix-AND rule refuses it.
+    fn score(&self, tokens: &[(String, u32)]) -> Option<u32> {
+        let mut total: u32 = 0;
+        for (token, idf) in tokens {
+            let weight = self.weight_for(token)?;
+            total = total.saturating_add(idf.saturating_mul(weight));
+        }
+        Some(total)
+    }
+
     /// Whether any token of this document starts with `token`.
     fn contains_prefix(&self, token: &str) -> bool {
         self.name
@@ -139,25 +150,15 @@ impl Corpus {
 
     /// `ln((N + 1) / (df + 1)) + 1`, scaled by 1000 and rounded.
     fn idf_milli(&self, token: &str) -> u32 {
-        let total = self.documents.len() as f64;
-        let df = self
-            .documents
-            .iter()
-            .filter(|document| document.contains_prefix(token))
-            .count() as f64;
+        let total = crate::numeric::usize_to_f64(self.documents.len());
+        let df = crate::numeric::usize_to_f64(
+            self.documents
+                .iter()
+                .filter(|document| document.contains_prefix(token))
+                .count(),
+        );
         let idf = ((total + 1.0) / (df + 1.0)).ln() + 1.0;
-        (idf * 1000.0).round().max(0.0) as u32
-    }
-
-    /// Score one document against already-deduplicated query tokens, or `None`
-    /// when the prefix-AND rule refuses it.
-    fn score(&self, document: &Document, tokens: &[(String, u32)]) -> Option<u32> {
-        let mut total: u32 = 0;
-        for (token, idf) in tokens {
-            let weight = document.weight_for(token)?;
-            total = total.saturating_add(idf.saturating_mul(weight));
-        }
-        Some(total)
+        crate::numeric::f64_to_u32_saturating((idf * 1000.0).round().max(0.0))
     }
 
     /// Every match, best first, ties in table order.
@@ -177,7 +178,8 @@ impl Corpus {
             .iter()
             .enumerate()
             .filter_map(|(index, document)| {
-                self.score(document, &tokens)
+                document
+                    .score(&tokens)
                     .map(|score| ScoredCommand { index, score })
             })
             .collect::<Vec<_>>();
@@ -231,8 +233,8 @@ mod tests {
         assert_eq!(tokenize("  New   Agent  "), vec!["new", "agent"]);
         assert_eq!(tokenize("open/current_pr!"), vec!["open", "current", "pr"]);
         assert_eq!(tokenize("v2 pane"), vec!["v2", "pane"]);
-        assert!(tokenize("").is_empty());
-        assert!(tokenize("---  ,.;").is_empty());
+        assert_eq!(tokenize(""), Vec::<String>::new());
+        assert_eq!(tokenize("---  ,.;"), Vec::<String>::new());
     }
 
     #[test]
@@ -281,15 +283,15 @@ mod tests {
         let corpus = fixture();
         // `wid` prefixes `widget`; `zzz` prefixes nothing, so the AND fails.
         assert_eq!(ranked_indices(&corpus, "alpha wid"), vec![0]);
-        assert!(ranked_indices(&corpus, "alpha zzz").is_empty());
+        assert_eq!(ranked_indices(&corpus, "alpha zzz"), Vec::<usize>::new());
         // Order does not matter.
         assert_eq!(
             ranked_indices(&corpus, "wid alpha"),
             ranked_indices(&corpus, "alpha wid")
         );
         // An empty and a punctuation-only query match nothing at all.
-        assert!(ranked_indices(&corpus, "").is_empty());
-        assert!(ranked_indices(&corpus, " -- .. ").is_empty());
+        assert_eq!(ranked_indices(&corpus, ""), Vec::<usize>::new());
+        assert_eq!(ranked_indices(&corpus, " -- .. "), Vec::<usize>::new());
     }
 
     #[test]
@@ -381,14 +383,17 @@ mod tests {
 
     #[test]
     fn corpus_agent_tab_has_both_kinds_of_hit() {
-        // Two name-token hits first, then the commands that carry one of the
+        // Three name-token hits first, then the commands that carry one of the
         // words in their description only.
         assert_eq!(
             ranked_match_names("agent tab"),
             vec![
                 "new-agent-tab",
+                "stop-agent-tab",
                 "toggle-tab-to-agent",
                 "close-tab",
+                "move-tab-left",
+                "move-tab-right",
                 "toggle-always-show-tabs"
             ]
         );
@@ -408,6 +413,7 @@ mod tests {
                 "fork-agent",
                 "change-agent-provider",
                 "new-agent-tab",
+                "stop-agent-tab",
                 "toggle-agent-auto-reopen",
                 "rerun-startup-command-on-agent",
                 "show-agent",
@@ -428,8 +434,11 @@ mod tests {
                 "toggle-project-auto-reopen-agents",
                 "sort-agents",
                 "close-tab",
+                "move-tab-left",
+                "move-tab-right",
                 "read-startup-command-logs",
-                "attach-pull-request",
+                "clone-project",
+                "cycle-terminal-layout",
                 "recreate-working-copy",
                 "toggle-always-show-tabs",
                 "toggle-randomized-pet-name-default",
@@ -448,9 +457,7 @@ mod tests {
                 "open-worktree",
                 "open-worktree-with",
                 "show-terminal",
-                "open-current-pr",
-                "detach-pull-request",
-                "resume-pull-request-autodetection",
+                "pull-requests",
                 "kill-running",
                 "resource-monitor",
                 "refresh-changes",
@@ -472,7 +479,8 @@ mod tests {
                 "recreate-working-copy",
                 "prune-orphan-worktrees",
                 "fork-agent",
-                "change-agent-provider"
+                "change-agent-provider",
+                "change-project-base-branch"
             ]
         );
     }
@@ -487,7 +495,7 @@ mod tests {
 
     #[test]
     fn corpus_nonsense_query_matches_nothing() {
-        assert!(ranked_match_names("qqzzx").is_empty());
-        assert!(ranked_match_names("new qqzzx").is_empty());
+        assert_eq!(ranked_match_names("qqzzx"), Vec::<&str>::new());
+        assert_eq!(ranked_match_names("new qqzzx"), Vec::<&str>::new());
     }
 }

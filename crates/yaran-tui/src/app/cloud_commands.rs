@@ -64,9 +64,9 @@ use super::*;
 /// The pair-phone busy's key: a local read with no outcome sentence of its own.
 pub(crate) const KEY_PAIR_PHONE: &str = "cloud-pair-phone";
 
-/// A keyed busy (core keeps `StatusUpdate::busy` crate-private).
+/// A busy on one of the fixed cloud keys both surfaces share.
 fn cloud_busy(key: &str, text: impl Into<StatusText>) -> StatusUpdate {
-    StatusUpdate::keyed(key, StatusTone::Busy, text)
+    yaran_core::cloud::outcome::busy_status(key, text)
 }
 
 /// Which Yaran Cloud modal is open, and where it is.

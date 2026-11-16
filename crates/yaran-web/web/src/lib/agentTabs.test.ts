@@ -8,9 +8,10 @@ import {
   closeDetachesAgent,
   closeTabConsequences,
   slotSuccessorLabel,
+  tabAfterClose,
   defaultProviderForSession,
   dormantTabNeedsCard,
-  exitEjectsToWelcome,
+  slotTabEndedInView,
   isFirstTab,
   isSlotTabTarget,
   resolveFocusedTab,
@@ -158,6 +159,37 @@ describe("dormantTabNeedsCard", () => {
     const sessionSlot = { ...extraTab("s1", false), id: "s1" }
     expect(
       dormantTabNeedsCard(agentTarget("s1", "s1"), slotSession, sessionSlot, []),
+    ).toBe(false)
+  })
+
+  // An agent stopped with a terminal still running was stopped on purpose:
+  // opening it shows the terminal and a Start, and only that press starts it.
+  it("is true for a healthy dormant first tab while one of its terminals runs", () => {
+    const sessionSlot = { ...extraTab("s1", false), id: "s1" }
+    const target = agentTarget("s1", "s1")
+    expect(
+      dormantTabNeedsCard(target, slotSession, sessionSlot, [], undefined, null, true),
+    ).toBe(true)
+    expect(
+      dormantTabNeedsCard(target, slotSession, sessionSlot, ["s1"], undefined, null, true),
+    ).toBe(false)
+  })
+
+  // A first tab whose run ended cleanly while the user watched rests on the
+  // idle screen: the user just quit it, so staying on the agent must not start
+  // it again. A press (the started latch) or a live process takes it off.
+  it("is true for a first tab whose run ended while it was on screen", () => {
+    const sessionSlot = { ...extraTab("s1", false), id: "s1" }
+    const target = agentTarget("s1", "s1")
+    expect(
+      dormantTabNeedsCard(target, slotSession, sessionSlot, [], undefined, "s1"),
+    ).toBe(true)
+    expect(
+      dormantTabNeedsCard(target, slotSession, sessionSlot, ["s1"], undefined, "s1"),
+    ).toBe(false)
+    const live = { ...extraTab("s1", true), id: "s1" }
+    expect(
+      dormantTabNeedsCard(target, slotSession, live, [], undefined, "s1"),
     ).toBe(false)
   })
 
@@ -586,6 +618,12 @@ describe("slotSuccessorLabel", () => {
     expect(slotSuccessorLabel(session, slot)).toBe("Codex 2")
   })
 
+  it("names the leftmost other tab when the slot tab sits in the middle", () => {
+    const slot = extraTab("t2", true)
+    const session = sessionWithSlot("t2", [extraTab("t1", true), slot, extraTab("t3", true)])
+    expect(slotSuccessorLabel(session, slot)).toBe("Codex")
+  })
+
   it("names nobody when an extra tab closes", () => {
     const extra = extraTab("t2", true)
     const session = sessionWithSlot("t1", [extraTab("t1", true), extra])
@@ -602,19 +640,57 @@ describe("slotSuccessorLabel", () => {
   })
 })
 
-describe("exitEjectsToWelcome", () => {
-  it("ejects when the agent we were attached to stops", () => {
-    expect(exitEjectsToWelcome(true, true, "detached", false)).toBe(true)
+describe("slotTabEndedInView", () => {
+  it("reports when the agent we were attached to stops", () => {
+    expect(slotTabEndedInView(true, true, "detached", false)).toBe(true)
   })
 
-  it("stays put when the run ended badly, so the diagnosis card replaces the pane", () => {
-    expect(exitEjectsToWelcome(true, true, "detached", true)).toBe(false)
+  it("does not report a run that ended badly, whose diagnosis card replaces the pane", () => {
+    expect(slotTabEndedInView(true, true, "detached", true)).toBe(false)
   })
 
-  it("never ejects on an extra tab, a pane that never came up, or a live agent", () => {
-    expect(exitEjectsToWelcome(false, true, "detached", false)).toBe(false)
-    expect(exitEjectsToWelcome(true, false, "detached", false)).toBe(false)
-    expect(exitEjectsToWelcome(true, true, "active", false)).toBe(false)
-    expect(exitEjectsToWelcome(true, true, undefined, false)).toBe(false)
+  it("never reports for an extra tab, a pane that never came up, or a live agent", () => {
+    expect(slotTabEndedInView(false, true, "detached", false)).toBe(false)
+    expect(slotTabEndedInView(true, false, "detached", false)).toBe(false)
+    expect(slotTabEndedInView(true, true, "active", false)).toBe(false)
+    expect(slotTabEndedInView(true, true, undefined, false)).toBe(false)
+  })
+})
+
+describe("tabAfterClose", () => {
+  const strip = ["a", "b", "c"].map((id) => ({ ...tab("codex"), id }))
+
+  it("lands on the tab to the right", () => {
+    expect(tabAfterClose(strip, "a")).toBe("b")
+    expect(tabAfterClose(strip, "b")).toBe("c")
+  })
+
+  it("lands on the tab to the left when the closed one was last", () => {
+    expect(tabAfterClose(strip, "c")).toBe("b")
+  })
+
+  it("names nobody for the only tab or a tab that is not in the strip", () => {
+    expect(tabAfterClose(strip.slice(0, 1), "a")).toBeUndefined()
+    expect(tabAfterClose(strip, "z")).toBeUndefined()
+  })
+})
+
+describe("tabLabels by creation order", () => {
+  const made = (id: string, created: number): AgentTabView => ({
+    ...tab("claude"),
+    id,
+    created_at_ms: created,
+  })
+
+  it("keeps a tab's number wherever it is dragged", () => {
+    const a = made("a", 10)
+    const b = made("b", 20)
+    const c = made("c", 30)
+    expect(tabLabels([a, b, c])).toEqual(["claude", "claude 2", "claude 3"])
+    expect(tabLabels([c, a, b])).toEqual(["claude 3", "claude", "claude 2"])
+  })
+
+  it("falls back to the strip order for tabs with no creation time", () => {
+    expect(tabLabels([tab("claude"), tab("claude")])).toEqual(["claude", "claude 2"])
   })
 })

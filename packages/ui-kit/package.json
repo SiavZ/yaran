@@ -15,6 +15,9 @@
     "./popupSheet": "./src/popupSheet.ts",
     "./toast-policy": "./src/toast-policy.ts",
     "./use-mobile": "./src/use-mobile.ts",
+    "./focusRing": "./src/focusRing.ts",
+    "./modalHistory": "./src/modalHistory.ts",
+    "./use-back-dismiss": "./src/use-back-dismiss.ts",
     "./*": "./src/*.tsx"
   },
   "scripts": {

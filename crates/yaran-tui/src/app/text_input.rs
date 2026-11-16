@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::components::wrap_lines::char_display_width;
+
 /// Function signature for the optional character mapper on `TextInput`.
 type CharMapFn = fn(&str, usize, char) -> Option<char>;
 
@@ -9,7 +11,7 @@ type CharMapFn = fn(&str, usize, char) -> Option<char>;
 /// Single-line by default; [`TextInput::with_multiline`] enables multiline
 /// editing, where Enter inserts newlines and Up/Down navigate between lines.
 #[derive(Clone, Debug)]
-pub struct TextInput {
+pub(crate) struct TextInput {
     pub text: String,
     pub cursor: usize,
     multiline: Option<MultilineState>,
@@ -26,7 +28,7 @@ struct MultilineState {
     visible_lines: usize,
     /// Index of the first visible visual line (0-based scroll position).
     scroll_offset: usize,
-    /// Display width in characters for soft-wrapping. `None` means no wrapping.
+    /// Display width in terminal columns for soft-wrapping. `None` means no wrapping.
     display_width: Option<usize>,
 }
 
@@ -37,7 +39,7 @@ impl Default for TextInput {
 }
 
 impl TextInput {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             text: String::new(),
             cursor: 0,
@@ -47,7 +49,7 @@ impl TextInput {
         }
     }
 
-    pub fn with_text(text: String) -> Self {
+    pub(crate) fn with_text(text: String) -> Self {
         let cursor = text.len();
         Self {
             text,
@@ -59,26 +61,26 @@ impl TextInput {
     }
 
     /// Set placeholder text shown when the input is empty.
-    pub fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
+    pub(crate) fn with_placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.placeholder = Some(placeholder.into());
         self
     }
 
     /// Returns the placeholder text, if set, for rendering when the input is empty.
-    pub fn placeholder(&self) -> Option<&str> {
+    pub(crate) fn placeholder(&self) -> Option<&str> {
         self.placeholder.as_deref()
     }
 
     /// Set a character mapper consulted before each insertion with the current
     /// text, cursor byte-offset, and candidate character. `Some(c)` inserts `c`,
     /// which may differ from the input; `None` silently rejects.
-    pub fn with_char_map(mut self, map: fn(&str, usize, char) -> Option<char>) -> Self {
+    pub(crate) fn with_char_map(mut self, map: fn(&str, usize, char) -> Option<char>) -> Self {
         self.char_map = Some(map);
         self
     }
 
     /// Enable multiline editing with a visible line limit for rendering.
-    pub fn with_multiline(mut self, visible_lines: usize) -> Self {
+    pub(crate) fn with_multiline(mut self, visible_lines: usize) -> Self {
         self.multiline = Some(MultilineState {
             visible_lines,
             scroll_offset: 0,
@@ -92,13 +94,13 @@ impl TextInput {
     /// called at construction and not by its rendered height, its label, or the
     /// modal it sits in. Public because the dual-mode rule in
     /// [`crate::app::modal`] has to ask a live instance.
-    pub fn is_multiline(&self) -> bool {
+    pub(crate) fn is_multiline(&self) -> bool {
         self.multiline.is_some()
     }
 
     /// Set the display width for soft-wrapping in multiline mode.
     /// Lines longer than this width are wrapped visually. Pass `None` to disable.
-    pub fn set_display_width(&mut self, width: Option<usize>) {
+    pub(crate) fn set_display_width(&mut self, width: Option<usize>) {
         if let Some(m) = &mut self.multiline {
             m.display_width = width;
         }
@@ -106,23 +108,23 @@ impl TextInput {
 
     // ── Character-level operations ──────────────────────────────────
 
-    pub fn move_left(&mut self) {
+    pub(crate) fn move_left(&mut self) {
         self.cursor = prev_char_boundary(&self.text, self.cursor);
     }
 
-    pub fn move_right(&mut self) {
+    pub(crate) fn move_right(&mut self) {
         self.cursor = next_char_boundary(&self.text, self.cursor);
     }
 
-    pub fn move_home(&mut self) {
+    pub(crate) fn move_home(&mut self) {
         self.cursor = 0;
     }
 
-    pub fn move_end(&mut self) {
+    pub(crate) fn move_end(&mut self) {
         self.cursor = self.text.len();
     }
 
-    pub fn insert_char(&mut self, ch: char) {
+    pub(crate) fn insert_char(&mut self, ch: char) {
         let index = clamp_cursor(&self.text, self.cursor);
         let ch = if let Some(map) = self.char_map {
             match map(&self.text, index, ch) {
@@ -148,7 +150,7 @@ impl TextInput {
     ///
     /// Goes through [`TextInput::insert_char`] per character so the optional
     /// `char_map` filters a paste exactly as it filters typing.
-    pub fn insert_str(&mut self, text: &str) {
+    pub(crate) fn insert_str(&mut self, text: &str) {
         let multiline = self.multiline.is_some();
         let mut pending_separator = false;
         let mut inserted_any = false;
@@ -179,9 +181,10 @@ impl TextInput {
             self.insert_char(ch);
             inserted_any = true;
         }
+        self.ensure_cursor_visible();
     }
 
-    pub fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         let index = clamp_cursor(&self.text, self.cursor);
         if index == 0 {
             return;
@@ -191,7 +194,7 @@ impl TextInput {
         self.cursor = prev;
     }
 
-    pub fn delete(&mut self) {
+    pub(crate) fn delete(&mut self) {
         let index = clamp_cursor(&self.text, self.cursor);
         if index >= self.text.len() {
             return;
@@ -203,15 +206,15 @@ impl TextInput {
 
     // ── Word-level operations ───────────────────────────────────────
 
-    pub fn move_left_word(&mut self) {
+    pub(crate) fn move_left_word(&mut self) {
         self.cursor = prev_word_boundary(&self.text, self.cursor);
     }
 
-    pub fn move_right_word(&mut self) {
+    pub(crate) fn move_right_word(&mut self) {
         self.cursor = next_word_boundary(&self.text, self.cursor);
     }
 
-    pub fn backspace_word(&mut self) {
+    pub(crate) fn backspace_word(&mut self) {
         let index = clamp_cursor(&self.text, self.cursor);
         let target = prev_word_boundary(&self.text, index);
         if target < index {
@@ -220,7 +223,7 @@ impl TextInput {
         }
     }
 
-    pub fn delete_word(&mut self) {
+    pub(crate) fn delete_word(&mut self) {
         let index = clamp_cursor(&self.text, self.cursor);
         let target = next_word_boundary(&self.text, index);
         if target > index {
@@ -231,17 +234,17 @@ impl TextInput {
 
     // ── Bulk operations ─────────────────────────────────────────────
 
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
     }
 
-    pub fn set_text(&mut self, text: String) {
+    pub(crate) fn set_text(&mut self, text: String) {
         self.cursor = text.len();
         self.text = text;
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
 
@@ -250,7 +253,7 @@ impl TextInput {
     /// Move cursor to the same column on the previous visual line.
     /// If the previous line is shorter, the cursor lands at its end.
     /// No-op when already on the first line or in single-line mode.
-    pub fn move_up(&mut self) {
+    pub(crate) fn move_up(&mut self) {
         if self.multiline.is_none() {
             return;
         }
@@ -266,7 +269,7 @@ impl TextInput {
     /// Move cursor to the same column on the next visual line.
     /// If the next line is shorter, the cursor lands at its end.
     /// No-op when already on the last line or in single-line mode.
-    pub fn move_down(&mut self) {
+    pub(crate) fn move_down(&mut self) {
         if self.multiline.is_none() {
             return;
         }
@@ -282,7 +285,7 @@ impl TextInput {
 
     /// Move cursor to the start of the current visual line (multiline) or
     /// to the start of the entire text (single-line).
-    pub fn move_line_home(&mut self) {
+    pub(crate) fn move_line_home(&mut self) {
         if self.multiline.is_none() {
             self.cursor = 0;
             return;
@@ -294,7 +297,7 @@ impl TextInput {
 
     /// Move cursor to the end of the current visual line (multiline) or
     /// to the end of the entire text (single-line).
-    pub fn move_line_end(&mut self) {
+    pub(crate) fn move_line_end(&mut self) {
         if self.multiline.is_none() {
             self.cursor = self.text.len();
             return;
@@ -306,21 +309,18 @@ impl TextInput {
     }
 
     /// Total number of visual lines (accounting for soft-wrap).
-    pub fn total_lines(&self) -> usize {
+    pub(crate) fn total_lines(&self) -> usize {
         visual_line_count(&self.text, self.wrap_width())
     }
 
     /// Current scroll offset (first visible visual line index). Returns 0 in single-line mode.
-    pub fn scroll_offset(&self) -> usize {
-        self.multiline
-            .as_ref()
-            .map(|m| m.scroll_offset)
-            .unwrap_or(0)
+    pub(crate) fn scroll_offset(&self) -> usize {
+        self.multiline.as_ref().map_or(0, |m| m.scroll_offset)
     }
 
     /// Returns the visual lines currently visible for rendering
     /// (accounting for soft-wrap and scroll offset).
-    pub fn visible_lines(&self) -> Vec<String> {
+    pub(crate) fn visible_lines(&self) -> Vec<String> {
         let width = self.wrap_width();
         let all = compute_visual_lines(&self.text, width);
         match &self.multiline {
@@ -333,19 +333,26 @@ impl TextInput {
         }
     }
 
-    /// Returns `(row, col)` of the cursor relative to the scroll offset, for rendering.
-    /// In single-line mode, returns `(0, cursor_position)`.
-    pub fn cursor_display_position(&self) -> (usize, usize) {
+    /// Returns `(row, col)` of the cursor relative to the scroll offset, for
+    /// rendering, with `col` in display columns. `None` when the caret's row is
+    /// scrolled out of the visible window, so no caret is drawn on a row that
+    /// is showing a different line. In single-line mode, returns
+    /// `Some((0, caret column))`.
+    pub(crate) fn cursor_display_position(&self) -> Option<(usize, usize)> {
         let width = self.wrap_width();
         let (vrow, vcol) = cursor_visual_pos(&self.text, self.cursor, width);
-        let offset = self.scroll_offset();
-        (vrow.saturating_sub(offset), vcol)
+        if let Some(m) = &self.multiline
+            && (vrow < m.scroll_offset || vrow >= m.scroll_offset + m.visible_lines)
+        {
+            return None;
+        }
+        Some((vrow - self.scroll_offset(), vcol))
     }
 
     /// Set the cursor position from a visual (row, col) relative to the scroll
     /// offset, as produced by a mouse click. The row is relative to the visible
     /// area (0 = first visible line), not the absolute visual row.
-    pub fn set_cursor_from_display_pos(&mut self, display_row: usize, display_col: usize) {
+    pub(crate) fn set_cursor_from_display_pos(&mut self, display_row: usize, display_col: usize) {
         let offset = self.scroll_offset();
         let abs_row = offset + display_row;
         let width = self.wrap_width();
@@ -371,27 +378,27 @@ impl TextInput {
 
     /// Scroll by a signed number of lines (positive = down, negative = up).
     /// Clamps to valid range. No-op in single-line mode.
-    pub fn scroll_by(&mut self, delta: isize) {
+    pub(crate) fn scroll_by(&mut self, delta: isize) {
         let Some(m) = &mut self.multiline else {
             return;
         };
         let total = visual_line_count(&self.text, m.display_width);
         let max_scroll = total.saturating_sub(m.visible_lines);
         if delta >= 0 {
-            m.scroll_offset = (m.scroll_offset + delta as usize).min(max_scroll);
+            m.scroll_offset = (m.scroll_offset + delta.cast_unsigned()).min(max_scroll);
         } else {
             m.scroll_offset = m.scroll_offset.saturating_sub(delta.unsigned_abs());
         }
     }
 
     /// Update the visible line count (e.g. when the render area height changes).
-    pub fn set_visible_lines(&mut self, visible: usize) {
+    pub(crate) fn set_visible_lines(&mut self, visible: usize) {
         if let Some(m) = &mut self.multiline {
             m.visible_lines = visible;
         }
     }
 
-    /// Get the effective wrap width. `None` means no wrapping (use usize::MAX).
+    /// Get the effective wrap width. `None` means no wrapping (use `usize::MAX`).
     fn wrap_width(&self) -> Option<usize> {
         self.multiline.as_ref().and_then(|m| m.display_width)
     }
@@ -427,8 +434,17 @@ impl TextInput {
     /// - `Up` / `Down` → move between lines
     ///
     /// Everything else (Esc, Tab, and Enter/Up/Down in single-line mode)
-    /// returns `false` for the caller to handle.
-    pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+    /// returns `false` for the caller to handle. A consumed key in multiline
+    /// mode leaves the caret's row scrolled into view.
+    pub(crate) fn handle_key(&mut self, key: KeyEvent) -> bool {
+        let consumed = self.apply_editing_key(key);
+        if consumed {
+            self.ensure_cursor_visible();
+        }
+        consumed
+    }
+
+    fn apply_editing_key(&mut self, key: KeyEvent) -> bool {
         let has_alt = key.modifiers.contains(KeyModifiers::ALT);
         let has_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let is_multiline = self.multiline.is_some();
@@ -437,7 +453,6 @@ impl TextInput {
             // Multiline-only: Enter inserts newline
             KeyCode::Enter if is_multiline => {
                 self.insert_char('\n');
-                self.ensure_cursor_visible();
                 true
             }
             // Multiline-only: Up/Down navigate lines
@@ -510,11 +525,15 @@ impl TextInput {
                 self.move_right_word();
                 true
             }
-            KeyCode::Char(c) if !has_ctrl => {
+            // A Super, Hyper or Meta chord is a chord, not typing: inserting
+            // its bare letter would type a character nobody typed.
+            KeyCode::Char(c)
+                if !has_ctrl
+                    && !key.modifiers.intersects(
+                        KeyModifiers::SUPER | KeyModifiers::HYPER | KeyModifiers::META,
+                    ) =>
+            {
                 self.insert_char(c);
-                if is_multiline {
-                    self.ensure_cursor_visible();
-                }
                 true
             }
             _ => false,
@@ -525,32 +544,27 @@ impl TextInput {
 // ── Private helpers ─────────────────────────────────────────────────
 
 fn prev_char_boundary(text: &str, index: usize) -> usize {
-    let index = index.min(text.len());
-    text[..index]
-        .char_indices()
-        .last()
-        .map(|(i, _)| i)
-        .unwrap_or(0)
+    let index = clamp_cursor(text, index);
+    text[..index].char_indices().last().map_or(0, |(i, _)| i)
 }
 
 fn next_char_boundary(text: &str, index: usize) -> usize {
-    let index = index.min(text.len());
+    let index = clamp_cursor(text, index);
     text[index..]
         .char_indices()
         .nth(1)
-        .map(|(offset, _)| index + offset)
-        .unwrap_or(text.len())
+        .map_or(text.len(), |(offset, _)| index + offset)
 }
 
+/// `cursor` as a byte offset `text` can be cut at: past the end is the end,
+/// and inside a character is that character's start. Every helper that slices
+/// the text takes its index through here, since the fields are public.
 pub(crate) fn clamp_cursor(text: &str, cursor: usize) -> usize {
-    if cursor >= text.len() {
-        return text.len();
+    let mut cursor = cursor.min(text.len());
+    while !text.is_char_boundary(cursor) {
+        cursor -= 1;
     }
-    if text.is_char_boundary(cursor) {
-        cursor
-    } else {
-        prev_char_boundary(text, cursor)
-    }
+    cursor
 }
 
 /// Compute visual lines using word-aware soft-wrapping.
@@ -585,7 +599,7 @@ fn is_word_char(c: char) -> bool {
 /// Scan backward from `index` to find the previous word boundary.
 /// Skips non-word chars, then skips word chars, standard terminal behaviour.
 fn prev_word_boundary(text: &str, index: usize) -> usize {
-    let index = index.min(text.len());
+    let index = clamp_cursor(text, index);
     let before = &text[..index];
     let mut chars = before.char_indices().rev().peekable();
 
@@ -612,7 +626,7 @@ fn prev_word_boundary(text: &str, index: usize) -> usize {
 /// Scan forward from `index` to find the next word boundary.
 /// Skips non-word chars, then skips word chars, standard terminal behaviour.
 fn next_word_boundary(text: &str, index: usize) -> usize {
-    let index = index.min(text.len());
+    let index = clamp_cursor(text, index);
     let after = &text[index..];
     let mut chars = after.char_indices().peekable();
 
@@ -638,9 +652,29 @@ fn next_word_boundary(text: &str, index: usize) -> usize {
 
 // ── Word-aware wrapping ────────────────────────────────────────────
 
-/// Split a single logical line (no `\n`) into visual rows, preferring
-/// breaks at the last space within `width`. Returns a vec of
-/// `(char_start, char_end)` ranges into the char array.
+/// Display columns the characters `chars` occupy.
+fn columns_of(chars: &[char]) -> usize {
+    chars.iter().map(|&c| char_display_width(c)).sum()
+}
+
+/// The char index within `chars[start..end]` a display column `target` lands
+/// on: the boundary after the last character that ends at or before it, so a
+/// column inside a wide glyph lands before that glyph.
+fn char_index_at_column(chars: &[char], start: usize, end: usize, target: usize) -> usize {
+    let mut column = 0;
+    for (index, &c) in chars.iter().enumerate().take(end).skip(start) {
+        column += char_display_width(c);
+        if column > target {
+            return index;
+        }
+    }
+    end
+}
+
+/// Split a single logical line (no `\n`) into visual rows of at most `width`
+/// display columns, preferring breaks at the last space in the row. Returns a
+/// vec of `(char_start, char_end)` ranges into the char array. A character
+/// wider than `width` still takes a row of its own.
 fn wrap_logical_line(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     if chars.is_empty() {
         return vec![(0, 0)];
@@ -648,13 +682,22 @@ fn wrap_logical_line(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     let mut rows = Vec::new();
     let mut pos = 0;
     while pos < chars.len() {
-        let remaining = chars.len() - pos;
-        if remaining <= width {
+        let mut window_end = pos;
+        let mut used = 0;
+        while let Some(&c) = chars.get(window_end) {
+            let w = char_display_width(c);
+            if used + w > width {
+                break;
+            }
+            used += w;
+            window_end += 1;
+        }
+        if window_end == chars.len() {
             rows.push((pos, chars.len()));
             break;
         }
-        // Look for the last space within [pos..pos+width].
-        let window_end = pos + width;
+        let window_end = window_end.max(pos + 1);
+        // Look for the last space within [pos..window_end].
         let mut break_at = None;
         for i in (pos..window_end).rev() {
             if chars[i] == ' ' {
@@ -727,23 +770,22 @@ fn wordwrap_cursor_pos(text: &str, cursor: usize, width: Option<usize>) -> (usiz
 
         if idx <= logical_end {
             let col_in_logical = before[logical_start..].chars().count();
+            let chars: Vec<char> = logical.chars().collect();
             match width {
                 Some(w) if w > 0 => {
-                    let chars: Vec<char> = logical.chars().collect();
                     let rows = wrap_logical_line(&chars, w);
                     for (ri, &(start, end)) in rows.iter().enumerate() {
                         let is_last_row = ri + 1 == rows.len();
-                        let col_offset = col_in_logical - start;
-                        let row_len = end - start;
-                        if col_in_logical >= start && (col_offset < row_len || is_last_row) {
-                            return (vrow + ri, col_offset);
+                        if col_in_logical >= start && (col_in_logical < end || is_last_row) {
+                            return (vrow + ri, columns_of(&chars[start..col_in_logical]));
                         }
                     }
                     // Fallback: past the last row
                     let last = rows.len().saturating_sub(1);
-                    return (vrow + last, col_in_logical - rows[last].0);
+                    let start = rows[last].0;
+                    return (vrow + last, columns_of(&chars[start..col_in_logical]));
                 }
-                _ => return (vrow, col_in_logical),
+                _ => return (vrow, columns_of(&chars[..col_in_logical])),
             }
         }
 
@@ -783,8 +825,8 @@ fn wordwrap_byte_offset(
                 if target_vrow < vrow + rows.len() {
                     let ri = target_vrow - vrow;
                     let (row_char_start, row_char_end) = rows[ri];
-                    let row_len = row_char_end - row_char_start;
-                    let target_char = row_char_start + target_vcol.min(row_len);
+                    let target_char =
+                        char_index_at_column(&chars, row_char_start, row_char_end, target_vcol);
                     let byte_offset: usize =
                         chars[..target_char].iter().map(|c| c.len_utf8()).sum();
                     return logical_start + byte_offset;
@@ -794,7 +836,7 @@ fn wordwrap_byte_offset(
             _ => {
                 if vrow == target_vrow {
                     let chars: Vec<char> = logical.chars().collect();
-                    let target_char = target_vcol.min(chars.len());
+                    let target_char = char_index_at_column(&chars, 0, chars.len(), target_vcol);
                     let byte_offset: usize =
                         chars[..target_char].iter().map(|c| c.len_utf8()).sum();
                     return logical_start + byte_offset;
@@ -813,6 +855,17 @@ fn wordwrap_byte_offset(
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    #[test]
+    fn a_super_hyper_or_meta_chord_types_nothing() {
+        let mut input = TextInput::new();
+        for modifier in [KeyModifiers::SUPER, KeyModifiers::HYPER, KeyModifiers::META] {
+            assert!(!input.handle_key(KeyEvent::new(KeyCode::Char('x'), modifier)));
+        }
+        assert_eq!(input.text, "");
+        assert!(input.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT)));
+        assert_eq!(input.text, "X");
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent {
@@ -954,6 +1007,27 @@ mod tests {
     }
 
     // ── handle_key dispatch ────────────────────────────────────────
+
+    #[test]
+    fn a_cursor_inside_a_character_is_floored_to_its_start() {
+        let edits: [fn(&mut TextInput); 8] = [
+            TextInput::move_left,
+            TextInput::move_right,
+            TextInput::move_left_word,
+            TextInput::move_right_word,
+            TextInput::backspace,
+            TextInput::delete,
+            TextInput::backspace_word,
+            |input| input.insert_char('x'),
+        ];
+        for edit in edits {
+            let mut input = TextInput::with_text("aé b".to_string());
+            input.cursor = 2;
+            edit(&mut input);
+            assert!(input.text.is_char_boundary(input.cursor), "{input:?}");
+        }
+        assert_eq!(clamp_cursor("aé", 2), 1);
+    }
 
     #[test]
     fn handle_key_plain_char() {
@@ -1112,7 +1186,7 @@ mod tests {
         let mut ti = TextInput::new();
         // Ctrl+a should not insert 'a'
         assert!(!ti.handle_key(key_ctrl(KeyCode::Char('a'))));
-        assert!(ti.text.is_empty());
+        assert_eq!(ti.text, "");
     }
 
     #[test]
@@ -1160,45 +1234,45 @@ mod tests {
     fn singleline_enter_not_consumed() {
         let mut ti = TextInput::new();
         assert!(!ti.handle_key(key(KeyCode::Enter)));
-        assert!(ti.text.is_empty());
+        assert_eq!(ti.text, "");
     }
 
     #[test]
     fn multiline_up_down_navigation() {
         let mut ti = multiline_input("hello\nworld\nfoo", 10);
         // Cursor at end (byte 15), visual row 2, col 3
-        assert_eq!(ti.cursor_display_position(), (2, 3));
+        assert_eq!(ti.cursor_display_position(), Some((2, 3)));
 
         ti.move_up();
-        assert_eq!(ti.cursor_display_position(), (1, 3));
+        assert_eq!(ti.cursor_display_position(), Some((1, 3)));
         assert_eq!(ti.cursor, 9);
 
         ti.move_up();
-        assert_eq!(ti.cursor_display_position(), (0, 3));
+        assert_eq!(ti.cursor_display_position(), Some((0, 3)));
         assert_eq!(ti.cursor, 3);
 
         // Already at row 0, no-op
         ti.move_up();
-        assert_eq!(ti.cursor_display_position(), (0, 3));
+        assert_eq!(ti.cursor_display_position(), Some((0, 3)));
 
         ti.move_down();
-        assert_eq!(ti.cursor_display_position(), (1, 3));
+        assert_eq!(ti.cursor_display_position(), Some((1, 3)));
 
         ti.move_down();
-        assert_eq!(ti.cursor_display_position(), (2, 3));
+        assert_eq!(ti.cursor_display_position(), Some((2, 3)));
 
         // Already at last row, no-op
         ti.move_down();
-        assert_eq!(ti.cursor_display_position(), (2, 3));
+        assert_eq!(ti.cursor_display_position(), Some((2, 3)));
     }
 
     #[test]
     fn multiline_up_clamps_to_shorter_line() {
         let mut ti = multiline_input("hi\nworld", 10);
-        assert_eq!(ti.cursor_display_position(), (1, 5));
+        assert_eq!(ti.cursor_display_position(), Some((1, 5)));
 
         ti.move_up();
-        assert_eq!(ti.cursor_display_position(), (0, 2));
+        assert_eq!(ti.cursor_display_position(), Some((0, 2)));
         assert_eq!(ti.cursor, 2);
     }
 
@@ -1208,7 +1282,7 @@ mod tests {
         ti.cursor = 5; // end of "world", col 5
 
         ti.move_down();
-        assert_eq!(ti.cursor_display_position(), (1, 2));
+        assert_eq!(ti.cursor_display_position(), Some((1, 2)));
         assert_eq!(ti.cursor, 8);
     }
 
@@ -1299,13 +1373,13 @@ mod tests {
     fn cursor_display_position_accounts_for_scroll() {
         let mut ti = multiline_input("a\nb\nc\nd\ne", 3);
         ti.cursor = 0;
-        assert_eq!(ti.cursor_display_position(), (0, 0));
+        assert_eq!(ti.cursor_display_position(), Some((0, 0)));
 
         ti.move_down();
         ti.move_down();
         ti.move_down();
         assert_eq!(ti.scroll_offset(), 1);
-        assert_eq!(ti.cursor_display_position(), (2, 0)); // row 3 - offset 1 = 2
+        assert_eq!(ti.cursor_display_position(), Some((2, 0))); // row 3 - offset 1 = 2
     }
 
     #[test]
@@ -1436,11 +1510,11 @@ mod tests {
 
         ti.move_down(); // → row 1, col 0 → byte 3 ('d')
         assert_eq!(ti.cursor, 3);
-        assert_eq!(ti.cursor_display_position(), (1, 0));
+        assert_eq!(ti.cursor_display_position(), Some((1, 0)));
 
         ti.move_up(); // → row 0, col 0 → byte 0 ('a')
         assert_eq!(ti.cursor, 0);
-        assert_eq!(ti.cursor_display_position(), (0, 0));
+        assert_eq!(ti.cursor_display_position(), Some((0, 0)));
     }
 
     #[test]
@@ -1772,7 +1846,7 @@ mod tests {
         let mut ti = multiline_input("abcde", 10);
         ti.set_display_width(Some(5));
         // "abcde" at width 5 = ["abcde"], cursor at end = byte 5
-        let (row, col) = ti.cursor_display_position();
+        let (row, col) = ti.cursor_display_position().expect("caret in view");
         assert_eq!((row, col), (0, 5));
         // The row must be within visible_lines
         let visible = ti.visible_lines();
@@ -1789,7 +1863,7 @@ mod tests {
         // Cursor at end (byte 11) → row 1, col 5
         let mut ti = multiline_input("hello world", 10);
         ti.set_display_width(Some(8));
-        let (row, col) = ti.cursor_display_position();
+        let (row, col) = ti.cursor_display_position().expect("caret in view");
         assert_eq!((row, col), (1, 5));
         let visible = ti.visible_lines();
         assert!(row < visible.len());
@@ -1801,7 +1875,7 @@ mod tests {
         // Cursor at end (byte 10) → row 1, col 5
         let mut ti = multiline_input("abcdefghij", 10);
         ti.set_display_width(Some(5));
-        let (row, col) = ti.cursor_display_position();
+        let (row, col) = ti.cursor_display_position().expect("caret in view");
         assert_eq!((row, col), (1, 5));
         let visible = ti.visible_lines();
         assert!(row < visible.len());
@@ -1813,7 +1887,7 @@ mod tests {
         // Cursor at end (byte 6) → row 1, col 0
         let mut ti = multiline_input("abcde\n", 10);
         ti.set_display_width(Some(5));
-        let (row, col) = ti.cursor_display_position();
+        let (row, col) = ti.cursor_display_position().expect("caret in view");
         assert_eq!((row, col), (1, 0));
         let visible = ti.visible_lines();
         assert!(
@@ -1844,7 +1918,7 @@ mod tests {
                     continue;
                 }
                 ti.cursor = cursor;
-                let (row, _col) = ti.cursor_display_position();
+                let (row, _col) = ti.cursor_display_position().expect("caret in view");
                 assert!(
                     row < visible.len(),
                     "text={text:?} width={width} cursor={cursor}: \
@@ -1902,17 +1976,59 @@ mod tests {
         assert_eq!(input.text, "y");
     }
 
-    /// A mapper that converts 'a' to 'A'.
-    fn upcase_a(_text: &str, _cursor: usize, ch: char) -> Option<char> {
-        if ch == 'a' { Some('A') } else { Some(ch) }
-    }
-
     #[test]
     fn map_transforms_char() {
-        let mut input = TextInput::new().with_char_map(upcase_a);
+        let mut input =
+            TextInput::new().with_char_map(|_, _, ch| Some(if ch == 'a' { 'A' } else { ch }));
         input.handle_key(key(KeyCode::Char('a')));
         input.handle_key(key(KeyCode::Char('b')));
         input.handle_key(key(KeyCode::Char('a')));
         assert_eq!(input.text, "AbA");
+    }
+
+    #[test]
+    fn a_wide_character_row_wraps_and_places_the_caret_by_display_columns() {
+        let mut ti = TextInput::new().with_multiline(4);
+        ti.set_display_width(Some(4));
+        ti.set_text("日本語".to_string());
+
+        assert_eq!(
+            ti.visible_lines(),
+            vec!["日本".to_string(), "語".to_string()]
+        );
+        assert_eq!(ti.cursor_display_position(), Some((1, 2)));
+
+        ti.set_cursor_from_display_pos(0, 2);
+        assert_eq!(ti.cursor, "日".len());
+    }
+
+    #[test]
+    fn every_caret_move_keeps_the_caret_in_view() {
+        let mut ti = TextInput::new().with_multiline(1);
+        ti.set_text("a\nb".to_string());
+        ti.ensure_cursor_visible();
+        assert_eq!(ti.scroll_offset(), 1);
+
+        ti.handle_key(key(KeyCode::Left));
+        ti.handle_key(key(KeyCode::Left));
+
+        assert_eq!(ti.scroll_offset(), 0);
+        assert_eq!(ti.cursor_display_position(), Some((0, 1)));
+    }
+
+    #[test]
+    fn a_paste_scrolls_to_where_it_leaves_the_caret() {
+        let mut ti = TextInput::new().with_multiline(1);
+        ti.insert_str("a\nb\nc");
+        assert_eq!(ti.scroll_offset(), 2);
+    }
+
+    #[test]
+    fn a_caret_scrolled_out_of_view_has_no_display_position() {
+        let mut ti = TextInput::new().with_multiline(1);
+        ti.set_text("a\nb\nc".to_string());
+        ti.ensure_cursor_visible();
+        ti.scroll_by(-2);
+        assert_eq!(ti.cursor_display_position(), None);
     }
 }

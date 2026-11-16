@@ -393,7 +393,9 @@ impl Runner {
             status_text![
                 "Phone notifications stopped: ",
                 n(org),
-                " says this machine is no longer paired. Run `yaran cloud login` to pair it again."
+                " says this machine is no longer paired. Run ",
+                q("yaran cloud login"),
+                " to pair it again."
             ],
         );
     }
@@ -421,7 +423,12 @@ impl Runner {
             status_text![
                 format!("{words} dropped because "),
                 n(org),
-                format!(" could not be reached for {} ({error}). yaran keeps trying; run `yaran cloud status` to check the connection.", span_words(self.ttl)),
+                format!(
+                    " could not be reached for {} ({error}). yaran keeps trying; run ",
+                    span_words(self.ttl)
+                ),
+                q("yaran cloud status"),
+                " to check the connection.",
             ],
         );
     }

@@ -324,7 +324,14 @@ fn a_404_is_definitive_and_settles_the_version_instead_of_being_re_asked_forever
     assert!(err.to_string().contains("v9.9.9"), "{err}");
 
     // And the gate turns that into "show nothing, but stop asking".
-    let plan = first_load::plan(Some("v0.6.0"), "v9.9.9", false, false);
+    let plan = first_load::plan(
+        Some("v0.6.0"),
+        "v9.9.9",
+        first_load::AutomaticScreens {
+            disable_welcome: false,
+            disable_release_notes: false,
+        },
+    );
     let plan = first_load::after_fetch(plan, err.outcome());
     assert_eq!(plan.screen, FirstLoad::Nothing);
     assert!(plan.mark_seen, "a definitive answer must not be re-asked");
@@ -646,8 +653,10 @@ fn an_offline_launch_shows_nothing_and_leaves_the_stored_version_untouched() {
     let plan = first_load::plan(
         store.last_seen_version().unwrap().as_deref(),
         "v0.7.0",
-        false,
-        false,
+        first_load::AutomaticScreens {
+            disable_welcome: false,
+            disable_release_notes: false,
+        },
     );
     assert_eq!(plan.screen, FirstLoad::WhatsNew);
 
@@ -692,8 +701,10 @@ fn an_online_launch_shows_the_notes_and_then_stores_the_version() {
     let plan = first_load::plan(
         store.last_seen_version().unwrap().as_deref(),
         "v0.7.0",
-        false,
-        false,
+        first_load::AutomaticScreens {
+            disable_welcome: false,
+            disable_release_notes: false,
+        },
     );
     let notes = release_notes::load_or_fetch_tag(
         &server.base_url,
@@ -719,8 +730,10 @@ fn an_online_launch_shows_the_notes_and_then_stores_the_version() {
     let plan = first_load::plan(
         store.last_seen_version().unwrap().as_deref(),
         "v0.7.0",
-        false,
-        false,
+        first_load::AutomaticScreens {
+            disable_welcome: false,
+            disable_release_notes: false,
+        },
     );
     assert_eq!(plan.screen, FirstLoad::Nothing);
     assert!(!plan.mark_seen);

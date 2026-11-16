@@ -6,12 +6,15 @@ import {
   MISSING_FOLDER_INFO_LINE,
   MISSING_WORKING_COPY_INFO_LINE,
   changesQuietReason,
+  changesGitBlockedReason,
+  directoryGoneReason,
   missingDirectoryInfoLine,
   folderWorkspace,
   managedWorkspace,
   matchWorkspace,
   newTerminalLabel,
   sessionLabel,
+  standaloneAgentDefaultName,
   supportsBranchGit,
   workspaceBranchName,
   workspaceDirectory,
@@ -177,15 +180,16 @@ describe("agent workspace", () => {
     expect(sessionLabel(withFolder("/home/someone/notes/"))).toBe("notes")
     // A trailing "." is not a name of its own.
     expect(sessionLabel(withFolder("/home/someone/notes/."))).toBe("notes")
-    // A path whose last component is ".." has no name at all, so the label
-    // falls back to the whole path rather than the word "..".
+    // The folder's name is converted into a valid agent name.
+    expect(sessionLabel(withFolder("/home/someone/My Notes"))).toBe("My-Notes")
+    // A path whose last component is ".." has no name at all, so the label is
+    // the fixed fallback rather than the word "..".
     expect(sessionLabel(withFolder("/home/someone/notes/.."))).toBe(
-      "/home/someone/notes/..",
+      "standalone-agent",
     )
-    // Nor has the root, nor the empty string. Both fall back to the same field
-    // the Rust side falls back to, the path itself.
-    expect(sessionLabel(withFolder("/"))).toBe("/")
-    expect(sessionLabel(withFolder(""))).toBe("")
+    // Nor has the root, nor the empty string.
+    expect(sessionLabel(withFolder("/"))).toBe("standalone-agent")
+    expect(sessionLabel(withFolder(""))).toBe("standalone-agent")
 
     // A managed agent still takes its branch.
     expect(sessionLabel({ title: null, workspace: managed })).toBe("feature/x")
@@ -263,5 +267,111 @@ describe("missingDirectoryInfoLine", () => {
         folder("no_repo"),
       ),
     ).toBeNull()
+  })
+})
+
+// The Changes pane keeps its header and menu in every quiet state, and greys
+// out the git items there with a short reason. The reason is the first clause
+// of the server's own quiet sentence, so the menu and the body below it say
+// the same thing, and it exists exactly when the panel is quiet.
+describe("why the Changes pane's git items are unavailable", () => {
+  it("names each quiet folder state in a short sentence", () => {
+    expect(changesGitBlockedReason(folder("no_repo"))).toBe(
+      "This folder has no git repository.",
+    )
+    expect(changesGitBlockedReason(folder("inside_repo_rooted_elsewhere"))).toBe(
+      "This folder sits inside a repository rooted elsewhere.",
+    )
+    expect(changesGitBlockedReason(folder("indeterminate"))).toBe(
+      "yaran could not consult git about this folder.",
+    )
+    expect(changesGitBlockedReason(folder("unprobed"))).toBe(
+      "yaran is still looking at this folder.",
+    )
+    expect(changesGitBlockedReason(folder("missing"))).toBe(
+      "This folder no longer exists on disk.",
+    )
+  })
+
+  it("names a managed working copy that is gone", () => {
+    expect(changesGitBlockedReason(missingCopy)).toBe(
+      "This working copy no longer exists on disk.",
+    )
+  })
+
+  it("has nothing to say where the panel works", () => {
+    expect(changesGitBlockedReason(folder("working_repo"))).toBeNull()
+    expect(changesGitBlockedReason(managed)).toBeNull()
+  })
+
+  // One spelling of "is the panel quiet": the short reason follows
+  // `changesQuietReason`, so an older server that sends no quiet sentence for a
+  // managed agent never greys out its menu.
+  it("follows the quiet verdict rather than asking a second question", () => {
+    const older: AgentWorkspaceWire = { ...managed, worktree_missing: true }
+    expect(changesQuietReason(older)).toBeNull()
+    expect(changesGitBlockedReason(older)).toBeNull()
+  })
+})
+
+// The editor is rooted at the agent's directory, so it opens in every quiet
+// state but one: the directory itself being gone.
+describe("why an agent's directory cannot be opened in the editor", () => {
+  it("is only the directory being gone", () => {
+    expect(directoryGoneReason(folder("missing"))).toBe(
+      "This folder no longer exists on disk.",
+    )
+    expect(directoryGoneReason(missingCopy)).toBe(
+      "This working copy no longer exists on disk.",
+    )
+    for (const status of [
+      "working_repo",
+      "inside_repo_rooted_elsewhere",
+      "no_repo",
+      "indeterminate",
+      "unprobed",
+    ] as const) {
+      expect(directoryGoneReason(folder(status)), status).toBeNull()
+    }
+    expect(directoryGoneReason(managed)).toBeNull()
+  })
+})
+
+// An empty sentence is no sentence: the pane's body and its menu read the one
+// verdict, so neither can call the pane quiet while the other does not.
+describe("an empty quiet sentence", () => {
+  it("counts as not quiet for both the body and the menu", () => {
+    const empty = folder("no_repo", "")
+    expect(changesQuietReason(empty)).toBeNull()
+    expect(changesGitBlockedReason(empty)).toBeNull()
+    const emptyManaged: AgentWorkspaceWire = {
+      ...managed,
+      worktree_missing: true,
+      quiet_reason: "",
+    }
+    expect(changesQuietReason(emptyManaged)).toBeNull()
+    expect(changesGitBlockedReason(emptyManaged)).toBeNull()
+  })
+})
+
+// SHARED VECTORS with yaran-core `git.rs`
+// `the_default_standalone_name_is_a_valid_agent_name_converted_from_the_folder`.
+// The dialog promises this name in its placeholder, so the browser has to
+// derive the same string the server will store.
+describe("standaloneAgentDefaultName", () => {
+  it.each([
+    ["/home/ada/notes", "notes"],
+    ["/home/ada/notes/", "notes"],
+    ["/home/ada/My Notes! (2026)", "My-Notes-2026"],
+    ["/home/ada/my_project - copy", "my_project-copy"],
+    ["/home/ada/a--b", "a--b"],
+    ["/home/ada/Café notes", "Caf-notes"],
+    ["/home/ada/_draft_", "draft"],
+    ["/", "standalone-agent"],
+    ["/home/ada/   ", "standalone-agent"],
+    ["/home/ada/!!!", "standalone-agent"],
+    ["", "standalone-agent"],
+  ])("names %j %j", (folder, expected) => {
+    expect(standaloneAgentDefaultName(folder)).toBe(expected)
   })
 })

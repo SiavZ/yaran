@@ -22,9 +22,10 @@
 //! all naming `example/application`, plus the pull-request spellings: a full
 //! PR URL, `owner/repo#123`, `#123` and a bare `123`.
 //!
-//! Nothing here consults [`crate::gh::GithubHostPolicy`]. Parsing is about what
-//! the text SAYS; whether yaran may ask `gh` about that host is a separate
-//! question, asked by the callers that have a host to ask about.
+//! Parsing never consults [`crate::gh::GithubHostPolicy`]. It is about what the
+//! text SAYS; whether yaran may ask `gh` about that host is a separate question,
+//! asked by the callers that have a host to ask about, and by
+//! [`pull_request_clone_offer`] when it turns a parsed reference into an offer.
 //!
 //! # What is refused as ambiguous
 //!
@@ -41,6 +42,10 @@
 //! * A missing scheme separator that is also scp shorthand:
 //!   `https:acme/widget/pull/7`, a browser address that lost its slashes and an
 //!   scp address on a host named `https`. See [`classify`].
+
+use std::collections::BTreeMap;
+
+use crate::gh::{GitProtocol, GithubHostPolicy};
 
 /// A repository, a pull request number, or both, as named by typed text.
 ///
@@ -94,6 +99,232 @@ impl TypedReference {
     }
 }
 
+/// A pull request in a repository yaran may clone, as requests carry it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PullRequestCloneTarget {
+    /// The GitHub host the repository lives on.
+    pub host: String,
+    /// The repository, as `owner/name`.
+    pub owner_repo: String,
+    /// The pull request's number.
+    pub number: u64,
+}
+
+/// What a clone confirmation shows: the target plus the address yaran would
+/// clone from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequestCloneOffer {
+    /// The address yaran would clone from.
+    pub address: String,
+    /// The GitHub host the repository lives on.
+    pub host: String,
+    /// The repository, as `owner/name`.
+    pub owner_repo: String,
+    /// The pull request's number.
+    pub number: u64,
+}
+
+impl PullRequestCloneOffer {
+    /// The pull request this offer is for.
+    pub fn target(&self) -> PullRequestCloneTarget {
+        PullRequestCloneTarget {
+            host: self.host.clone(),
+            owner_repo: self.owner_repo.clone(),
+            number: self.number,
+        }
+    }
+}
+
+/// The one place that infers a host for a reference that names none, and the one
+/// place that builds a clone address from a reference.
+///
+/// There is an offer only for a reference that names a repository and a pull
+/// request number on a host the policy allows. A missing host is `github.com`
+/// when the policy allows it, else the only allowed host, else no offer:
+/// guessing among several could clone the wrong repository. The address follows
+/// `gh repo clone`: `git@host:owner/repo.git` when `gh`'s git protocol for the
+/// host is ssh, `https://host/owner/repo.git` in every other case, including a
+/// host with no recorded protocol (the legacy policy records none).
+pub fn pull_request_clone_offer(
+    reference: &TypedReference,
+    policy: &GithubHostPolicy,
+    protocols: &BTreeMap<String, GitProtocol>,
+) -> Option<PullRequestCloneOffer> {
+    let owner_repo = strip_dot_git(reference.owner_repo.as_deref()?).to_string();
+    let number = reference.number?;
+    let host = match reference.host.as_deref() {
+        Some(host) => host.to_ascii_lowercase(),
+        None if policy.allows("github.com") => "github.com".to_string(),
+        None => match policy {
+            GithubHostPolicy::Hosts(hosts) if hosts.len() == 1 => hosts.iter().next()?.clone(),
+            _ => return None,
+        },
+    };
+    if !policy.allows(&host) {
+        return None;
+    }
+    let address = clone_address(&host, &owner_repo, protocols);
+    Some(PullRequestCloneOffer {
+        address,
+        host,
+        owner_repo,
+        number,
+    })
+}
+
+/// The address `gh repo clone` would clone `owner_repo` on `host` from:
+/// `git@host:owner/repo.git` when `gh`'s git protocol for the host is ssh,
+/// `https://host/owner/repo.git` otherwise. `host` is lowercase and
+/// `owner_repo` carries no `.git`.
+pub fn clone_address(
+    host: &str,
+    owner_repo: &str,
+    protocols: &BTreeMap<String, GitProtocol>,
+) -> String {
+    // `git@host:port:owner/repo.git` is not an address, so a host with a port
+    // is cloned over https whatever its protocol setting says.
+    match protocols.get(host) {
+        Some(GitProtocol::Ssh) if !host.contains(':') => format!("git@{host}:{owner_repo}.git"),
+        _ => format!("https://{host}/{owner_repo}.git"),
+    }
+}
+
+/// The clone offer with the pull request's own facts, as `gh` just reported
+/// them: what a confirmation shows, and what the answer to the folder check
+/// and the submit are built from. Serializes as the resolve answer's `clone`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct PullRequestCloneFacts {
+    /// The address yaran would clone from.
+    pub address: String,
+    /// The GitHub host the repository lives on.
+    pub host: String,
+    /// The repository, as `owner/name`.
+    pub owner_repo: String,
+    /// The pull request's number.
+    pub number: u64,
+    /// The pull request's title.
+    pub title: String,
+    /// The pull request's state as `gh` reported it.
+    pub state: String,
+    /// The pull request's head branch.
+    pub head_branch: String,
+    /// The pull request's head commit, when `gh` reported it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_oid: Option<String>,
+    /// Whether the agent will need a review copy, told before the clone: see
+    /// [`crate::status_text::ReviewCopyOutlook`].
+    pub review_copy: crate::status_text::ReviewCopyOutlook,
+}
+
+impl PullRequestCloneFacts {
+    /// The pull request these facts are about.
+    pub fn target(&self) -> PullRequestCloneTarget {
+        PullRequestCloneTarget {
+            host: self.host.clone(),
+            owner_repo: self.owner_repo.clone(),
+            number: self.number,
+        }
+    }
+}
+
+/// Look the pull request up through `gh_program` and pair it with the offer.
+/// The error is the lookup's own sentence, unchanged. Blocking: it runs `gh`.
+///
+/// # Errors
+///
+/// Fails with the lookup's own sentence when `gh` cannot be run or cannot find the pull request.
+pub fn look_up_clone_offer(
+    gh_program: &std::ffi::OsStr,
+    offer: PullRequestCloneOffer,
+) -> Result<PullRequestCloneFacts, String> {
+    let target = offer.target();
+    // The two lookups are independent, so they run together and the worst case
+    // stays one bound rather than two.
+    let (metadata, default_branch) = std::thread::scope(|scope| {
+        let default_branch = scope.spawn(|| {
+            crate::gh::look_up_default_branch(gh_program, &target.host, &target.owner_repo)
+        });
+        let metadata = crate::gh::look_up_pull_request(
+            gh_program,
+            &crate::worker::PullRequestLookup {
+                host: target.host.clone(),
+                owner_repo: target.owner_repo.clone(),
+                number: target.number,
+            },
+        );
+        (metadata, default_branch.join().ok().and_then(Result::ok))
+    });
+    let metadata = metadata?;
+    // A default branch gh cannot name leaves the offer standing with the
+    // question open: it is asked after the project exists instead.
+    let review_copy = crate::agent_job::clone_review_copy_outlook(
+        &metadata.head_ref_name,
+        default_branch.as_deref(),
+        metadata.number,
+        &|_| true,
+    );
+    Ok(PullRequestCloneFacts {
+        address: offer.address,
+        host: offer.host,
+        owner_repo: offer.owner_repo,
+        number: metadata.number,
+        title: metadata.title,
+        state: metadata.state,
+        head_branch: metadata.head_ref_name,
+        head_oid: metadata.head_ref_oid,
+        review_copy,
+    })
+}
+
+/// The confirmation's opening sentence when every project was checked and none
+/// is a checkout of the repository. `repository` is
+/// [`TypedReference::repository_label`] with the host the offer settled on.
+pub fn pr_clone_offer_prose(repository: &str, number: u64) -> crate::prose::Prose {
+    crate::prose::Prose::new()
+        .name(repository)
+        .text(
+            " isn't a yaran project yet. yaran will clone it, add it as a project, and create the \
+             agent from pull request ",
+        )
+        .name(format!("#{number}"))
+        .text(".")
+}
+
+/// The same opening when some projects could not be checked, so one of them
+/// may already be a checkout. `summary` is
+/// [`ReferenceResolution::uninspected_summary`].
+pub fn pr_clone_offer_incomplete_prose(
+    repository: &str,
+    number: u64,
+    summary: &str,
+) -> crate::prose::Prose {
+    crate::prose::Prose::new()
+        .text("yaran could not find a checked project for ")
+        .name(repository)
+        .text(format!(
+            ". yaran could not check every project ({summary}), so one of them may already be a \
+             checkout of it. yaran will clone it, add it as a project, and create the agent from \
+             pull request "
+        ))
+        .name(format!("#{number}"))
+        .text(".")
+}
+
+/// The opening when the folder already holds a checkout of the repository.
+pub fn pr_add_existing_offer_prose(
+    folder: &str,
+    repository: &str,
+    number: u64,
+) -> crate::prose::Prose {
+    crate::prose::Prose::new()
+        .name(folder)
+        .text(" is already a checkout of ")
+        .name(repository)
+        .text(". yaran will add it as a project and create the agent from pull request ")
+        .name(format!("#{number}"))
+        .text(".")
+}
+
 /// The one message every unparseable spelling gets. It names the shapes rather
 /// than describing the failure, because the failure is nearly always "that is
 /// not one of these".
@@ -121,6 +352,11 @@ fn ambiguous_scheme_separator(scheme: &str) -> String {
 }
 
 /// Parse typed text into the repository and/or pull request it names.
+///
+/// # Errors
+///
+/// Fails with the sentence to show when `raw` is empty or names no repository or pull request yaran
+/// can read.
 pub fn parse_typed_reference(raw: &str) -> Result<TypedReference, String> {
     let input = raw.trim();
     if input.is_empty() {
@@ -265,10 +501,7 @@ fn classify(input: &str) -> Result<Form, String> {
     // `git@github.com:acme/widget` is unaffected: its leading run holds an `@`,
     // so it is not a scheme token. Matched case-insensitively, because this text
     // is never handed to git.
-    let scheme = input
-        .split_once(':')
-        .map(|(scheme, _)| scheme)
-        .unwrap_or("");
+    let scheme = input.split_once(':').map_or("", |(scheme, _)| scheme);
     if is_scheme_token(scheme) {
         match scheme.to_ascii_lowercase().as_str() {
             "http" | "https" => {
@@ -464,7 +697,7 @@ fn raw_url_authority(input: &str) -> Option<&str> {
 fn decode_component(raw: &str) -> Result<String, String> {
     percent_encoding::percent_decode_str(raw)
         .decode_utf8()
-        .map(|decoded| decoded.into_owned())
+        .map(std::borrow::Cow::into_owned)
         .map_err(|_| UNPARSEABLE.to_string())
 }
 
@@ -488,7 +721,10 @@ fn parse_schemeless_form(input: &str) -> Result<Parts, String> {
     // documents, so `example/application:tags` is not mistaken for an address.
     let (host, path) = match read_colon_form(body) {
         ColonForm::Ambiguous => return Err(AMBIGUOUS_PORT_OR_OWNER.to_string()),
-        ColonForm::Scp(authority, path) => (Some(host_from_authority(authority, true)?), path),
+        ColonForm::Scp(authority, path) => (
+            Some(host_from_authority(authority, AuthorityForm::SshLike)?),
+            path,
+        ),
         ColonForm::NotScp => {
             // A schemeless value is `owner/repo[/...]` or `host/owner/repo[/...]`,
             // told apart by the leading segment: a dot, a port or `localhost`
@@ -496,8 +732,8 @@ fn parse_schemeless_form(input: &str) -> Result<Parts, String> {
             // So `github.com/example` is a host with its repository missing.
             let segments = path_segments(body);
             if looks_like_host(segments.first().copied().unwrap_or_default()) {
-                let host = host_from_authority(segments[0], false)?;
-                let rest = body.split_once('/').map(|(_, rest)| rest).unwrap_or("");
+                let host = host_from_authority(segments[0], AuthorityForm::Web)?;
+                let rest = body.split_once('/').map_or("", |(_, rest)| rest);
                 (Some(host), rest)
             } else {
                 (None, body)
@@ -579,6 +815,16 @@ fn read_colon_form(input: &str) -> ColonForm<'_> {
     ColonForm::NotScp
 }
 
+/// How an authority was written: the ssh family's, whose port belongs to the
+/// transport, or a web address's, whose port names the server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthorityForm {
+    /// An ssh-like address (`git@host:...`, `ssh://`).
+    SshLike,
+    /// A web address.
+    Web,
+}
+
 /// The host a message and a match should use, from a schemeless authority as
 /// written.
 ///
@@ -586,24 +832,24 @@ fn read_colon_form(input: &str) -> ColonForm<'_> {
 /// not reach a log line or a match. A port comes off only for the ssh family,
 /// where it is the transport's and says nothing about the server's API; a web
 /// port is KEPT, or the match lands on a different server.
-fn host_from_authority(authority: &str, ssh_like: bool) -> Result<String, String> {
+fn host_from_authority(authority: &str, form: AuthorityForm) -> Result<String, String> {
     let host = match authority.rsplit_once('@') {
         Some((_, host)) => host,
         None => authority,
     };
-    let host = if ssh_like {
+    let host = if form == AuthorityForm::SshLike {
         host.split(':').next().unwrap_or(host)
     } else {
         host
     };
     let host = host.to_ascii_lowercase();
-    if host.is_empty() || host.chars().any(|c| c.is_whitespace()) {
+    if host.is_empty() || host.chars().any(char::is_whitespace) {
         return Err(UNPARSEABLE.to_string());
     }
     // `gh` has never heard of `ssh.github.com`, GitHub's port-443 ssh endpoint,
     // and neither has a project's configured address once yaran has read it, so
     // the same name is used here.
-    if ssh_like && host == "ssh.github.com" {
+    if form == AuthorityForm::SshLike && host == "ssh.github.com" {
         return Ok("github.com".to_string());
     }
     Ok(host)
@@ -683,7 +929,9 @@ impl Uninspectable {
 /// One project yaran could not inspect, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UninspectedProject {
+    /// The project's display name.
     pub name: String,
+    /// Why it could not be inspected.
     pub reason: Uninspectable,
 }
 
@@ -694,7 +942,9 @@ pub struct UninspectedProject {
 /// inspected licenses a surface to say there is no checkout.
 #[derive(Clone, Debug, Default)]
 pub struct ReferenceResolution {
+    /// The projects that are checkouts of the repository.
     pub matches: Vec<crate::model::Project>,
+    /// The projects yaran could not ask about.
     pub uninspected: Vec<UninspectedProject>,
 }
 
@@ -793,7 +1043,7 @@ pub fn resolve_reference_projects(
                 }
             }
             crate::git::RemoteResolution::Unresolved => {
-                uninspected(Uninspectable::AddressUnreadable)
+                uninspected(Uninspectable::AddressUnreadable);
             }
             crate::git::RemoteResolution::Denied => {
                 if !reference_host_is_askable {
@@ -811,20 +1061,45 @@ pub fn resolve_reference_projects(
 /// Parsing is NOT done here: it is pure and instant, so the surface does it
 /// inline and refuses a bare number or unreadable text without a round trip.
 /// Only a reference that names a repository is worth a git call per project.
+///
+/// When no project has the repository and an offer to clone it is possible, the
+/// pull request is looked up through `gh_program` in the same job, so the
+/// confirmation can show which pull request the user is agreeing to. A lookup
+/// that fails is carried as its own sentence beside the empty match list.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "every input of the resolution job, handed over once by the surface that starts it"
+)]
 pub fn run_reference_resolution_job(
-    reference: TypedReference,
+    reference: &TypedReference,
     raw_input: String,
-    projects: Vec<crate::model::Project>,
-    policy: crate::gh::GithubHostPolicy,
-    worker_tx: std::sync::mpsc::Sender<crate::worker::WorkerEvent>,
+    projects: &[crate::model::Project],
+    policy: &crate::gh::GithubHostPolicy,
+    protocols: &BTreeMap<String, GitProtocol>,
+    gh_program: &std::ffi::OsStr,
+    worker_tx: &std::sync::mpsc::Sender<crate::worker::WorkerEvent>,
     status_op_id: Option<String>,
 ) {
     let repository = reference.repository_label().unwrap_or_default();
-    let resolution = resolve_reference_projects(&reference, &projects, &policy);
+    let resolution = resolve_reference_projects(reference, projects, policy);
+    let lookup = match pull_request_clone_offer(reference, policy, protocols) {
+        Some(offer) if resolution.matches.is_empty() => {
+            Some(look_up_clone_offer(gh_program, offer))
+        }
+        _ => None,
+    };
+    let (offer, clone_unavailable) = match lookup {
+        Some(Ok(offer)) => (Some(offer), None),
+        // Relayed `gh` text, so its bidirectional-text controls go.
+        Some(Err(sentence)) => (None, Some(crate::bidi::strip_bidi_controls(&sentence))),
+        None => (None, None),
+    };
     let _ = worker_tx.send(crate::worker::WorkerEvent::PullRequestReferenceResolved {
         raw_input,
         repository,
         result: Ok(resolution),
+        offer,
+        clone_unavailable,
         status_op_id,
     });
 }
@@ -1502,7 +1777,7 @@ mod resolution_tests {
             leading_branch: None,
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Unknown,
             path_missing: false,
@@ -1552,12 +1827,117 @@ mod resolution_tests {
         let projects = vec![widget];
 
         let reference = parse_typed_reference("https://github.com/acme/unknown/pull/3").unwrap();
-        assert!(resolve(&reference, &projects).matches.is_empty());
+        assert_eq!(resolve(&reference, &projects).matches, []);
         assert_eq!(
             reference.repository_label().as_deref(),
             Some("github.com/acme/unknown"),
             "the message has to be able to say WHICH repository yaran has no project for"
         );
+    }
+
+    fn offer(
+        text: &str,
+        policy: &GithubHostPolicy,
+        protocols: &[(&str, crate::gh::GitProtocol)],
+    ) -> Option<PullRequestCloneOffer> {
+        let protocols = protocols.iter().map(|(h, p)| (h.to_string(), *p)).collect();
+        pull_request_clone_offer(&parse_typed_reference(text).unwrap(), policy, &protocols)
+    }
+
+    fn allowed(hosts: &[&str]) -> GithubHostPolicy {
+        GithubHostPolicy::Hosts(hosts.iter().map(std::string::ToString::to_string).collect())
+    }
+
+    #[test]
+    fn a_clone_offer_builds_the_address_gh_would_clone_from() {
+        use crate::gh::GitProtocol::{Https, Ssh};
+        let github = allowed(&["github.com"]);
+
+        let ssh = offer("acme/widget#3", &github, &[("github.com", Ssh)]).unwrap();
+        assert_eq!(ssh.address, "git@github.com:acme/widget.git");
+        assert_eq!(
+            (ssh.host.as_str(), ssh.owner_repo.as_str(), ssh.number),
+            ("github.com", "acme/widget", 3)
+        );
+        assert_eq!(
+            offer("acme/widget#3", &github, &[("github.com", Https)])
+                .unwrap()
+                .address,
+            "https://github.com/acme/widget.git"
+        );
+        assert_eq!(
+            offer("acme/widget#3", &github, &[]).unwrap().address,
+            "https://github.com/acme/widget.git",
+            "a host with no recorded protocol is https"
+        );
+        assert_eq!(
+            offer(
+                "https://GHE.example/acme/widget/pull/4",
+                &allowed(&["ghe.example"]),
+                &[("ghe.example", Ssh)]
+            )
+            .unwrap()
+            .address,
+            "git@ghe.example:acme/widget.git"
+        );
+        assert_eq!(
+            offer(
+                "https://ghe.example:8443/acme/widget/pull/4",
+                &allowed(&["ghe.example:8443"]),
+                &[("ghe.example:8443", Ssh)]
+            )
+            .unwrap()
+            .address,
+            "https://ghe.example:8443/acme/widget.git",
+            "a host with a port cannot be written as an scp-style address"
+        );
+    }
+
+    #[test]
+    fn a_clone_offer_settles_a_missing_host_or_gives_none() {
+        // github.com wins when gh is signed in there, even with another host.
+        assert_eq!(
+            offer(
+                "acme/widget#3",
+                &allowed(&["ghe.example", "github.com"]),
+                &[]
+            )
+            .unwrap()
+            .host,
+            "github.com"
+        );
+        // A lone enterprise host is used.
+        assert_eq!(
+            offer("acme/widget#3", &allowed(&["ghe.example"]), &[])
+                .unwrap()
+                .host,
+            "ghe.example"
+        );
+        // Two hosts and no github.com: guessing could clone the wrong repository.
+        assert!(offer("acme/widget#3", &allowed(&["a.example", "b.example"]), &[]).is_none());
+        assert!(offer("acme/widget#3", &GithubHostPolicy::DenyAll, &[]).is_none());
+    }
+
+    #[test]
+    fn a_clone_offer_needs_a_repository_a_number_and_an_allowed_host() {
+        let github = allowed(&["github.com"]);
+        assert!(offer("acme/widget", &github, &[]).is_none());
+        assert!(offer("#3", &github, &[]).is_none());
+        assert!(offer("https://gitlab.com/acme/widget/pull/3", &github, &[]).is_none());
+    }
+
+    #[test]
+    fn the_legacy_policy_offers_https_on_github_hosts_only() {
+        let legacy = GithubHostPolicy::LegacyNameRule;
+        let github = offer("acme/widget#3", &legacy, &[]).unwrap();
+        assert_eq!(github.address, "https://github.com/acme/widget.git");
+        assert_eq!(
+            offer("github.example.com/acme/widget#3", &legacy, &[])
+                .unwrap()
+                .address,
+            "https://github.example.com/acme/widget.git"
+        );
+        assert!(offer("gitlab.com/acme/widget#3", &legacy, &[]).is_none());
     }
 
     #[test]
@@ -1664,7 +2044,7 @@ mod resolution_tests {
 
         let reference = parse_typed_reference("https://github.com/acme/widget/pull/5").unwrap();
         let resolution = resolve(&reference, &projects);
-        assert!(resolution.matches.is_empty());
+        assert_eq!(resolution.matches, []);
         assert_eq!(
             resolution.uninspected,
             vec![],
@@ -1685,7 +2065,7 @@ mod resolution_tests {
 
         let reference = parse_typed_reference("https://gitlab.com/acme/widget/pull/5").unwrap();
         let resolution = resolve(&reference, &projects);
-        assert!(resolution.matches.is_empty());
+        assert_eq!(resolution.matches, []);
         assert_eq!(
             resolution.uninspected,
             vec![UninspectedProject {
@@ -1703,7 +2083,7 @@ mod resolution_tests {
 
         let reference = parse_typed_reference("acme/widget#1").unwrap();
         let resolution = resolve(&reference, &projects);
-        assert!(resolution.matches.is_empty());
+        assert_eq!(resolution.matches, []);
         assert_eq!(
             resolution.uninspected,
             vec![UninspectedProject {
@@ -1722,7 +2102,7 @@ mod resolution_tests {
         let (dir, widget) = project_with_origin("widget", "git@github.com:acme/gadget.git");
         let projects = vec![widget];
         let reference = parse_typed_reference("acme/widget#1").unwrap();
-        assert!(resolve(&reference, &projects).matches.is_empty());
+        assert_eq!(resolve(&reference, &projects).matches, []);
 
         // Re-pins the new address as well, for the same reason the fixture
         // pinned the first one.
@@ -1810,7 +2190,7 @@ mod resolution_tests {
 
         let reference = parse_typed_reference("https://github.com/acme/unknown/pull/3").unwrap();
         let resolution = resolve(&reference, &projects);
-        assert!(resolution.matches.is_empty());
+        assert_eq!(resolution.matches, []);
         assert!(
             resolution.is_complete(),
             "every project was inspected, so \"none of them\" really means none of them"
@@ -1826,11 +2206,95 @@ mod resolution_tests {
 
         let reference = parse_typed_reference("#123").unwrap();
         let resolution = resolve(&reference, &projects);
-        assert!(resolution.matches.is_empty());
+        assert_eq!(resolution.matches, []);
         assert!(
             resolution.is_complete(),
             "a bare number is refused with an explanation; listing every project as \
              unchecked would turn that refusal into a scare"
+        );
+    }
+
+    /// Run the resolution job for `text` over `projects` with `gh_program` as
+    /// `gh`, and return the one event it posts.
+    fn resolution_event(
+        text: &str,
+        projects: &[Project],
+        gh_program: &std::path::Path,
+    ) -> crate::worker::WorkerEvent {
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_reference_resolution_job(
+            &parse_typed_reference(text).unwrap(),
+            text.to_string(),
+            projects,
+            &allowed(&["github.com"]),
+            &BTreeMap::new(),
+            gh_program.as_os_str(),
+            &tx,
+            Some("op".to_string()),
+        );
+        rx.try_recv().expect("the job posts its answer")
+    }
+
+    #[test]
+    fn the_resolution_job_looks_the_pull_request_up_only_when_no_project_has_the_repository() {
+        use crate::gh::probe_test_support::stand_in_gh_with_pull_request;
+        use crate::worker::WorkerEvent;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let found = stand_in_gh_with_pull_request(
+            dir.path(),
+            &[("github.com", "https")],
+            Ok(r#"{"number":3,"title":"Fix docs","state":"OPEN","headRefName":"fix-docs"}"#),
+        );
+        let WorkerEvent::PullRequestReferenceResolved {
+            offer,
+            clone_unavailable,
+            ..
+        } = resolution_event("acme/widget#3", &Vec::new(), &found)
+        else {
+            panic!("wrong event");
+        };
+        let offer = offer.expect("a repository no project has is offered");
+        assert_eq!(offer.address, "https://github.com/acme/widget.git");
+        assert_eq!(
+            (offer.title.as_str(), offer.head_branch.as_str()),
+            ("Fix docs", "fix-docs")
+        );
+        assert_eq!(clone_unavailable, None);
+
+        let missing_dir = tempfile::tempdir().expect("tempdir");
+        let missing = stand_in_gh_with_pull_request(
+            missing_dir.path(),
+            &[("github.com", "https")],
+            Err("no such pull request"),
+        );
+        let WorkerEvent::PullRequestReferenceResolved {
+            offer,
+            clone_unavailable,
+            ..
+        } = resolution_event("acme/widget#3", &Vec::new(), &missing)
+        else {
+            panic!("wrong event");
+        };
+        assert!(offer.is_none());
+        assert!(
+            clone_unavailable
+                .as_deref()
+                .is_some_and(|sentence| sentence.starts_with("Failed to resolve PR #3")),
+            "the lookup's own sentence is carried: {clone_unavailable:?}"
+        );
+
+        let (_origin, widget) = project_with_origin("widget", "git@github.com:acme/widget.git");
+        let WorkerEvent::PullRequestReferenceResolved {
+            offer,
+            clone_unavailable,
+            ..
+        } = resolution_event("acme/widget#3", &[widget], &missing)
+        else {
+            panic!("wrong event");
+        };
+        assert!(
+            offer.is_none() && clone_unavailable.is_none(),
+            "a project has it, so nothing is looked up"
         );
     }
 }

@@ -68,6 +68,7 @@ impl PhoneQrSource for CloudPaths {
     }
 }
 
+/// The phone-pairing QR route, merged into the main router.
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/v1/cloud/phone-qr", get(get_phone_qr))
 }

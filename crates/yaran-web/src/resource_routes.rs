@@ -45,7 +45,7 @@ const CACHE_TTL: Duration = Duration::from_secs(1);
 /// re-established by the next sample, so recovering the guard beats propagating
 /// a panic into every later request.
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The 200 body: `{ "rows": [...] }`.
@@ -59,7 +59,9 @@ struct Cached {
     rows: Vec<ResourceStatsView>,
 }
 
-pub struct ResourceService {
+/// The resource-monitor sampler behind `GET /api/v1/resources`, with a
+/// single-flight walk and a short cache.
+pub(crate) struct ResourceService {
     engine: EngineHandle,
     /// The sampler. Held across samples because sysinfo derives per-process CPU
     /// from the delta between two refreshes; see [`yaran_core::resource_stats`].
@@ -75,7 +77,7 @@ pub struct ResourceService {
 }
 
 impl ResourceService {
-    pub fn new(engine: EngineHandle) -> Arc<Self> {
+    pub(crate) fn new(engine: EngineHandle) -> Arc<Self> {
         Arc::new(Self {
             engine,
             collector: Arc::new(Mutex::new(ResourceCollector::new())),
@@ -89,7 +91,7 @@ impl ResourceService {
     /// cache is cold or stale. `None` means the engine actor is gone (the handler
     /// maps that to 503), which is distinct from a real "nothing is running"
     /// result: the yaran and total rows are always present in a successful sample.
-    pub async fn get(self: &Arc<Self>) -> Option<Vec<ResourceStatsView>> {
+    pub(crate) async fn get(self: &Arc<Self>) -> Option<Vec<ResourceStatsView>> {
         if let Some(rows) = self.read_fresh() {
             return Some(rows);
         }
@@ -124,13 +126,12 @@ impl ResourceService {
             }
             let role = {
                 let mut inflight = lock(&self.inflight);
-                match inflight.as_ref() {
-                    Some(rx) => Role::Waiter(rx.clone()),
-                    None => {
-                        let (tx, rx) = watch::channel(false);
-                        *inflight = Some(rx);
-                        Role::Owner(tx)
-                    }
+                if let Some(rx) = inflight.as_ref() {
+                    Role::Waiter(rx.clone())
+                } else {
+                    let (tx, rx) = watch::channel(false);
+                    *inflight = Some(rx);
+                    Role::Owner(tx)
                 }
             };
             match role {
@@ -146,7 +147,6 @@ impl ResourceService {
                     if self.read_fresh().is_some() {
                         return;
                     }
-                    continue;
                 }
             }
         }
@@ -161,7 +161,10 @@ impl ResourceService {
         }
         impl Drop for InflightGuard<'_> {
             fn drop(&mut self) {
-                *self.inflight.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *self
+                    .inflight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 let _ = self.tx.send(true);
             }
         }
@@ -188,7 +191,7 @@ impl ResourceService {
         // of sleep when the collector has to re-establish its CPU baseline.
         self.collect_count.fetch_add(1, Ordering::SeqCst);
         let collector = Arc::clone(&self.collector);
-        let sampled = tokio::task::spawn_blocking(move || lock(&collector).sample(targets)).await;
+        let sampled = tokio::task::spawn_blocking(move || lock(&collector).sample(&targets)).await;
 
         match sampled {
             // `was_baseline` (a short-window sample) is a TUI-only concern
@@ -211,15 +214,14 @@ impl ResourceService {
 
     /// Total sysinfo walks run (test instrumentation).
     #[cfg(test)]
-    pub fn collect_count(&self) -> usize {
+    pub(crate) fn collect_count(&self) -> usize {
         self.collect_count.load(Ordering::SeqCst)
     }
 }
 
-/// The resource-monitor read route. Served with no authentication, like every
-/// other API route (the single-tenant trusted-access model in CLAUDE.md): any
-/// client that can reach the server can read every agent's and terminal's process
-/// stats.
+/// The resource-monitor read route. Behind the same auth layer as every other
+/// API route (the single-tenant model in CLAUDE.md): any client it lets in can
+/// read every agent's and terminal's process stats.
 pub fn routes() -> Router<AppState> {
     Router::new().route("/api/v1/resources", get(get_resources))
 }

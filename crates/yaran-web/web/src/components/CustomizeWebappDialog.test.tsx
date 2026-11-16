@@ -211,9 +211,10 @@ describe("CustomizeWebappDialog", () => {
     render(<CustomizeWebappDialog />)
 
     // Five select rows: pr_banner_position, compose_bar, server.tailscale and
-    // cloud.mode (static enums), and defaults.provider (enum-dynamic, sourced
-    // from available_providers).
-    expect(screen.getAllByRole("combobox").length).toBe(5)
+    // Six select rows: pr_banner_position, compose_bar, server.tailscale,
+    // cloud.mode and ui.extended_keys (static enums), and defaults.provider
+    // (enum-dynamic, sourced from available_providers).
+    expect(screen.getAllByRole("combobox").length).toBe(6)
   })
 
   it("shows the documented default for each row", () => {
@@ -321,7 +322,7 @@ describe("CustomizeWebappDialog", () => {
   })
 
   // The terminal-keys row rides the GENERIC settings PATCH but still carries a
-  // store-side optimistic override (the input ⋯ menu's quick toggle), so like
+  // store-side optimistic override (the keys toggle in the top menu and the phone's action cluster), so like
   // the Changes-pane row its baseline must be the override-aware selector.
   // Read from the raw bootstrap, the switch would show a stale value AND
   // `buildWrites` would treat a toggle back to that stale value as a no-op and
@@ -353,6 +354,36 @@ describe("CustomizeWebappDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
     await waitFor(() => expect(closeCustomizeWebapp).toHaveBeenCalled())
+    expect(setInstanceIdentity).not.toHaveBeenCalled()
+    expect(saveSettings).not.toHaveBeenCalled()
+    // Nothing was sent, so nothing on the wire will answer: the dialog says so.
+    expect(notifyInfo).toHaveBeenCalledWith("Nothing to save: no preference was changed.")
+  })
+
+  it("leaves a real save's confirmation to the server's status", async () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+
+    fireEvent.click(screen.getByLabelText("Copy on select"))
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+    await waitFor(() => expect(closeCustomizeWebapp).toHaveBeenCalled())
+    expect(saveSettings).toHaveBeenCalledTimes(1)
+    expect(notifyInfo).not.toHaveBeenCalled()
+  })
+
+  it("says so when a section reset finds every row already at its default", async () => {
+    // The fixture's instance name is the one Web row off its default.
+    seed({ title: "", favicon: "" })
+    render(<CustomizeWebappDialog />)
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Reset section to defaults/i })[0])
+
+    await waitFor(() =>
+      expect(notifyInfo).toHaveBeenCalledWith(
+        "Nothing to reset: every setting in this section is already at its default.",
+      ),
+    )
     expect(setInstanceIdentity).not.toHaveBeenCalled()
     expect(saveSettings).not.toHaveBeenCalled()
   })
@@ -767,17 +798,30 @@ describe("CustomizeWebappDialog", () => {
     expect(notifyWarning).not.toHaveBeenCalled()
   })
 
+  const FORCED_NO_REPLY = {
+    mode: "auto",
+    warning: true,
+    message:
+      '[server] tailscale is saved as "auto". This run was started with --no-tailscale, which wins for as long as it runs, so nothing changed on the listeners; restart yaran without that flag to use the saved mode.',
+  }
+
   // ── The run-scoped lock ───────────────────────────────────────────────────
 
-  it("locks the Tailscale row on a run started with --no-tailscale", () => {
+  it("keeps the Tailscale row editable on a run started with --no-tailscale and says the change waits for the next run", async () => {
+    setTailscaleMode.mockResolvedValue(FORCED_NO_REPLY)
     seed({ tailscale_mode: "no", tailscale_forced_no: true })
     render(<CustomizeWebappDialog />)
 
     const trigger = screen.getByLabelText("Bind your Tailscale address")
-    expect(trigger.hasAttribute("disabled")).toBe(true)
+    expect(trigger.hasAttribute("disabled")).toBe(false)
     const row = trigger.closest(".flex-col.gap-2")
     expect(row!.textContent).toContain("--no-tailscale")
     expect(row!.textContent).toContain("next time")
+
+    await pickTailscaleMode("Auto")
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(setTailscaleMode).toHaveBeenCalledWith("auto"))
+    await waitFor(() => expect(notifyWarning).toHaveBeenCalledWith(FORCED_NO_REPLY.message))
   })
 
   it("leaves the row editable on an ordinary run", () => {
@@ -791,11 +835,13 @@ describe("CustomizeWebappDialog", () => {
     )
   })
 
-  // Reset-to-defaults writes every row in the section at once, which would
-  // otherwise post a value past a control the user cannot reach.
-  it("skips the locked Tailscale row when the section is reset", async () => {
-    // `hyperlinks` is in the same section and differs from its default, so the
-    // reset has real work to do and its completion is observable.
+  // A lock says this run cannot put the value in force, not that it cannot be
+  // saved: the server saves it for the next run and its reply says so, so a
+  // reset writes the locked row like any other and that reply is the outcome.
+
+  it("writes the locked Tailscale row's default when its section is reset", async () => {
+    setTailscaleMode.mockResolvedValue(FORCED_NO_REPLY)
+    // `hyperlinks` is in the same section and differs from its default too.
     seed({ tailscale_mode: "no", tailscale_forced_no: true, hyperlinks: false })
     render(<CustomizeWebappDialog />)
 
@@ -804,9 +850,25 @@ describe("CustomizeWebappDialog", () => {
     const caption = screen.getByText(/^Both surfaces\./)
     fireEvent.click(caption.parentElement!.querySelector("button")!)
 
-    await waitFor(() => expect(saveSettings).toHaveBeenCalled())
+    await waitFor(() => expect(notifyWarning).toHaveBeenCalledWith(FORCED_NO_REPLY.message))
+    expect(setTailscaleMode).toHaveBeenCalledWith("auto")
     expect(saveSettings.mock.calls[0][0].capabilities).toEqual({ hyperlinks: true })
-    expect(setTailscaleMode).not.toHaveBeenCalled()
+    expect(notifyInfo).not.toHaveBeenCalled()
+  })
+
+  it("does not say there was nothing to reset when only the locked row was off its default", async () => {
+    setTailscaleMode.mockResolvedValue(FORCED_NO_REPLY)
+    seed({ github_integration: true, tailscale_mode: "yes", tailscale_forced_no: true })
+    render(<CustomizeWebappDialog />)
+
+    const caption = screen.getByText(/^Both surfaces\./)
+    fireEvent.click(caption.parentElement!.querySelector("button")!)
+
+    await waitFor(() => expect(notifyWarning).toHaveBeenCalledWith(FORCED_NO_REPLY.message))
+    expect(setTailscaleMode).toHaveBeenCalledTimes(1)
+    expect(setTailscaleMode).toHaveBeenCalledWith("auto")
+    expect(saveSettings).not.toHaveBeenCalled()
+    expect(notifyInfo).not.toHaveBeenCalled()
   })
 
   // THE HAZARD PIN. The endpoint is a blind read-and-flip while this modal saves
@@ -947,6 +1009,88 @@ describe("CustomizeWebappDialog", () => {
   })
 })
 
+describe("CustomizeWebappDialog search", () => {
+  const search = () => screen.getByLabelText("Search settings") as HTMLInputElement
+  const type = (query: string) => fireEvent.change(search(), { target: { value: query } })
+
+  it("hides rows and whole sections that do not match, and the reset buttons with them", () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+    expect(screen.getAllByRole("button", { name: "Reset section to defaults…" }).length).toBeGreaterThan(0)
+
+    type("attention")
+
+    expect(screen.getByLabelText("Show attention indicator")).toBeTruthy()
+    expect(screen.getByLabelText("Attention on terminal bell")).toBeTruthy()
+    expect(screen.queryByLabelText("Copy on select")).toBeNull()
+    expect(screen.getByText(/Both surfaces/)).toBeTruthy()
+    expect(screen.queryByText(/This browser \(Web\)/)).toBeNull()
+    expect(screen.queryByText(/Terminal UI\. These affect/)).toBeNull()
+    expect(screen.queryByRole("button", { name: "Reset section to defaults…" })).toBeNull()
+  })
+
+  it("shows only rows holding every word of the query", () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+
+    type("Attention BELL")
+
+    expect(screen.getByLabelText("Attention on terminal bell")).toBeTruthy()
+    expect(screen.queryByLabelText("Show attention indicator")).toBeNull()
+  })
+
+  it("finds a row by a word only its config key has, and lights it in the shown key", () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+
+    type("tab_reaches")
+
+    expect(screen.getByLabelText("Send Tab to the agent")).toBeTruthy()
+    expect(screen.queryByLabelText("Always show tab strip")).toBeNull()
+    const mark = screen.getByText("tab_reaches")
+    expect(mark.tagName).toBe("MARK")
+    expect(mark.parentElement?.textContent).toBe("ui.tab_reaches_agent")
+  })
+
+  it("says so when nothing matches", () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+
+    type("nothing-is-called-this")
+
+    const status = screen.getByRole("status")
+    expect(status.textContent).toContain("No settings match nothing-is-called-this.")
+    expect(status.textContent).toContain("Edit config file…")
+  })
+
+  it("Escape clears a search first and closes the dialog only after", () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+    type("bell")
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" })
+    expect(closeCustomizeWebapp).not.toHaveBeenCalled()
+    expect(search().value).toBe("")
+    expect(screen.getByLabelText("Copy on select")).toBeTruthy()
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" })
+    expect(closeCustomizeWebapp).toHaveBeenCalled()
+  })
+
+  it("still saves an edit made to a row the search has since hidden", async () => {
+    seed()
+    render(<CustomizeWebappDialog />)
+
+    fireEvent.click(screen.getByLabelText("Copy on select"))
+    type("attention")
+    expect(screen.queryByLabelText("Copy on select")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+    await waitFor(() => expect(closeCustomizeWebapp).toHaveBeenCalled())
+    const [patch] = saveSettings.mock.calls[0]
+    expect(patch.ui).toEqual({ copy_on_select: false })
+  })
+})
 
 describe("settings search", () => {
   it("finds settings by config key and keeps edits when the search changes", () => {
@@ -954,7 +1098,7 @@ describe("settings search", () => {
     render(<CustomizeWebappDialog />)
     const instance = screen.getByRole("textbox", { name: "Instance name" })
     fireEvent.change(instance, { target: { value: "My workspace" } })
-    const search = screen.getByRole("searchbox", { name: "Search settings" })
+    const search = screen.getByLabelText("Search settings")
     fireEvent.change(search, { target: { value: "ui.terminal_font_size" } })
     expect(screen.getByLabelText("Terminal font size")).toBeTruthy()
     expect(screen.queryByRole("textbox", { name: "Instance name" })).toBeNull()
@@ -966,7 +1110,7 @@ describe("settings search", () => {
   it("explains empty results and recovers on clearing the search", () => {
     seed()
     render(<CustomizeWebappDialog />)
-    const search = screen.getByRole("searchbox", { name: "Search settings" })
+    const search = screen.getByLabelText("Search settings")
     fireEvent.change(search, { target: { value: "no-such-setting-xyz" } })
     expect(screen.getByRole("status").textContent).toContain("No settings match")
     fireEvent.change(search, { target: { value: "" } })
@@ -976,7 +1120,7 @@ describe("settings search", () => {
   it("keeps filtered controls live across configuration updates", () => {
     seed({ terminal_font_size: 14 })
     const { rerender } = render(<CustomizeWebappDialog />)
-    const search = screen.getByRole("searchbox", { name: "Search settings" })
+    const search = screen.getByLabelText("Search settings")
     fireEvent.change(search, { target: { value: "  TERMINAL   FONT  " } })
     expect((screen.getByLabelText("Terminal font size") as HTMLInputElement).value).toBe("14")
 

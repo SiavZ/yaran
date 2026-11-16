@@ -3,7 +3,8 @@
 //! While an agent or a terminal is busy, its state word ("Working", "Running")
 //! pulses between full brightness and a floor, and a cycling ellipsis runs after
 //! it in a slot the width of three dots so nothing behind the word ever shifts.
-//! The web pulses its glyph on the same clock; the terminal UI keeps its spinner.
+//! The web pulses its glyph on the same clock, and the glyph also
+//! bounces four times per period; the terminal UI keeps its spinner.
 //!
 //! Everything here is a function of wall-clock elapsed milliseconds, per the
 //! animation tenet, so the cadence does not depend on how often either surface
@@ -13,7 +14,7 @@
 
 /// One full brightness cycle of the pulse, in milliseconds: bright, down to the
 /// floor at the halfway point, back to bright.
-pub const WORKING_CUE_PERIOD_MS: u64 = 1600;
+pub(crate) const WORKING_CUE_PERIOD_MS: u64 = 1600;
 
 /// How long each ellipsis state holds. Four states fill one pulse period, which
 /// is what keeps the dots and the pulse on a single clock.
@@ -22,7 +23,7 @@ pub const ELLIPSIS_STEP_MS: u64 = 400;
 /// The dimmest the pulse ever gets, as a fraction of full brightness. The word
 /// must stay readable at the bottom of the cycle, so this is a dip and not a
 /// blink.
-pub const PULSE_FLOOR: f32 = 0.8;
+pub(crate) const PULSE_FLOOR: f32 = 0.8;
 
 /// How far toward the surrounding muted tone the word travels at the bottom of
 /// the pulse, on a surface that has no opacity to dip.
@@ -34,7 +35,7 @@ pub const PULSE_FLOOR: f32 = 0.8;
 /// floor lands is a separate judgement from how much light is left. Two thirds
 /// keeps a visible third of the working hue, which still reads as that hue next
 /// to the grey around it.
-pub const PULSE_MUTE_FRACTION: f32 = 2.0 / 3.0;
+pub(crate) const PULSE_MUTE_FRACTION: f32 = 2.0 / 3.0;
 
 /// How far toward the muted tone a [`pulse_step`] cell sits, in `[0.0, 1.0]`:
 /// `0.0` is the untouched working color and [`PULSE_MUTE_FRACTION`] is the
@@ -44,14 +45,19 @@ pub fn mute_blend(step: usize) -> f32 {
 }
 
 /// How many distinct ellipsis states there are: none, one dot, two, three.
-pub const ELLIPSIS_STATES: u64 = WORKING_CUE_PERIOD_MS / ELLIPSIS_STEP_MS;
+pub(crate) const ELLIPSIS_STATES: u64 = WORKING_CUE_PERIOD_MS / ELLIPSIS_STEP_MS;
 
 /// Width of the reserved ellipsis slot, in character cells.
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "a constant three, and no From or TryFrom runs in a const"
+)]
 pub const ELLIPSIS_SLOT_WIDTH: usize = (ELLIPSIS_STATES - 1) as usize;
 
 /// The ellipsis at `elapsed_ms`: `""`, `"."`, `".."`, `"..."`, one step every
 /// [`ELLIPSIS_STEP_MS`], looping.
-pub fn ellipsis_at(elapsed_ms: u64) -> &'static str {
+pub(crate) fn ellipsis_at(elapsed_ms: u64) -> &'static str {
     match (elapsed_ms / ELLIPSIS_STEP_MS) % ELLIPSIS_STATES {
         0 => "",
         1 => ".",
@@ -72,8 +78,9 @@ pub fn ellipsis_slot(elapsed_ms: u64) -> String {
 /// `1.0` at the start of the period, [`PULSE_FLOOR`] at its midpoint, back to
 /// `1.0` at its end. A triangle wave shaped by a smoothstep, which is the same
 /// curve the web gets from `ease-in-out` on a two-keyframe opacity animation.
-pub fn pulse_level(elapsed_ms: u64) -> f32 {
-    let u = (elapsed_ms % WORKING_CUE_PERIOD_MS) as f32 / WORKING_CUE_PERIOD_MS as f32;
+pub(crate) fn pulse_level(elapsed_ms: u64) -> f32 {
+    let u = crate::numeric::u64_to_f32(elapsed_ms % WORKING_CUE_PERIOD_MS)
+        / crate::numeric::u64_to_f32(WORKING_CUE_PERIOD_MS);
     let triangle = 1.0 - (2.0 * u - 1.0).abs();
     let eased = triangle * triangle * (3.0 - 2.0 * triangle);
     // Clamped because the arithmetic lands a hair outside at the endpoints, and
@@ -87,14 +94,14 @@ pub fn pulse_level(elapsed_ms: u64) -> f32 {
 /// bright, mid, floor, mid: cell 0 is full brightness, cells 1 and 3 sit halfway
 /// down, and cell 2 is the floor.
 pub fn pulse_step(elapsed_ms: u64) -> usize {
-    ((elapsed_ms / ELLIPSIS_STEP_MS) % ELLIPSIS_STATES) as usize
+    crate::numeric::u64_to_usize((elapsed_ms / ELLIPSIS_STEP_MS) % ELLIPSIS_STATES)
 }
 
 /// The brightness level a [`pulse_step`] cell paints at: [`pulse_level`] sampled
 /// at the cell's own start, so the quantized shades sit on the continuous curve
 /// rather than beside it.
-pub fn step_level(step: usize) -> f32 {
-    pulse_level(step as u64 % ELLIPSIS_STATES * ELLIPSIS_STEP_MS)
+pub(crate) fn step_level(step: usize) -> f32 {
+    pulse_level(crate::numeric::usize_to_u64(step) % ELLIPSIS_STATES * ELLIPSIS_STEP_MS)
 }
 
 #[cfg(test)]
@@ -184,7 +191,8 @@ mod tests {
 
     #[test]
     fn the_mute_blend_runs_none_third_two_thirds_third() {
-        let thirds = |value: f32| (value * 3.0).round() as i32;
+        let thirds =
+            |value: f32| crate::numeric::f64_to_u32_saturating(f64::from(value * 3.0).round());
         assert!(mute_blend(0).abs() < 1e-6);
         assert_eq!(thirds(mute_blend(1)), 1);
         assert_eq!(thirds(mute_blend(2)), 2);

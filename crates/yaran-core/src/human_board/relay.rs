@@ -82,7 +82,13 @@ pub fn deliver(job: &RelayJob, transport: &str, exe: &Path, store: &BoardStore) 
         .arg(&job.to)
         .arg(&job.text);
     let label = format!("yaran peer send to {}", job.to);
-    match run_command_with_timeout(cmd, RELAY_TIMEOUT, DEFAULT_READER_DRAIN, &label) {
+    match run_command_with_timeout(
+        cmd,
+        crate::bounded_command::ChildGroup::New,
+        RELAY_TIMEOUT,
+        DEFAULT_READER_DRAIN,
+        &label,
+    ) {
         CommandOutcome::Completed(output) if output.status.success() => {}
         CommandOutcome::Completed(output) => {
             let why = crate::sanitize::for_terminal(String::from_utf8_lossy(&output.stderr).trim());
@@ -96,7 +102,9 @@ pub fn deliver(job: &RelayJob, transport: &str, exe: &Path, store: &BoardStore) 
         CommandOutcome::TimedOut => {
             bail!("{label} took longer than {}s", RELAY_TIMEOUT.as_secs())
         }
-        CommandOutcome::Failed(why) => return Err(anyhow!("could not run {label}: {why}")),
+        CommandOutcome::Failed(why) | CommandOutcome::NotFound(why) => {
+            return Err(anyhow!("could not run {label}: {why}"));
+        }
     }
     record(job, store, Utc::now())
 }

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::StatusUpdate;
 use crate::prose::ProseSegment;
-use crate::status_text::StatusText;
+use crate::status_text::{StatusAsk, StatusText};
 use crate::statusline::{QuietSurfaces, StatusScope, StatusTone};
 
 /// Process-global source of opaque status ids. Monotonic only so each op gets a
@@ -22,10 +22,17 @@ use crate::statusline::{QuietSurfaces, StatusScope, StatusTone};
 /// read or construct it.
 static NEXT_STATUS_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Mint a fresh opaque correlation id for one status operation. Used internally
-/// by [`status_op`]; not part of the consumer-facing API.
-fn next_status_id() -> String {
+/// Mint a fresh opaque correlation id for one status operation; operation
+/// record ids share the counter, so one never names another change's status.
+pub(crate) fn next_status_id() -> String {
     format!("op-{}", NEXT_STATUS_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Whether `key` came from [`next_status_id`], and so names one operation, not
+/// a key every change of a kind shares.
+pub(crate) fn is_minted_status_id(key: &str) -> bool {
+    key.strip_prefix("op-")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// What replaces a pending status when its operation finishes.
@@ -35,12 +42,17 @@ pub enum Final {
     /// `sticky` marks the rare outcome that must wait for the user rather than
     /// retiring on a timer; see [`Final::sticky`].
     Message {
+        /// How the sentence reads.
         tone: StatusTone,
         /// The plain sentence the terminal UI prints.
         text: String,
         /// The parts `text` was built from, for the web's name chips; see
         /// [`crate::status_text`].
         segments: Option<Vec<ProseSegment>>,
+        /// The question the sentence puts to the user, when it is one.
+        ask: Option<StatusAsk>,
+        /// Whether the message waits for the user instead of retiring on a
+        /// timer.
         sticky: bool,
         /// Which surfaces withhold this outcome. A quieted keyed final still
         /// retires its spinner; only the sentence is withheld.
@@ -52,36 +64,49 @@ pub enum Final {
 }
 
 impl Final {
+    /// An info-toned final saying `text`.
     pub fn info(text: impl Into<StatusText>) -> Self {
-        let (text, segments) = text.into().into_parts();
+        let text = text.into();
+        let ask = text.ask().cloned();
+        let (text, segments) = text.into_parts();
         Final::Message {
             tone: StatusTone::Info,
             text,
             segments,
+            ask,
             sticky: false,
             quiet_on: QuietSurfaces::LOUD,
         }
     }
+    /// A warning-toned final saying `text`.
     pub fn warning(text: impl Into<StatusText>) -> Self {
-        let (text, segments) = text.into().into_parts();
+        let text = text.into();
+        let ask = text.ask().cloned();
+        let (text, segments) = text.into_parts();
         Final::Message {
             tone: StatusTone::Warning,
             text,
             segments,
+            ask,
             sticky: false,
             quiet_on: QuietSurfaces::LOUD,
         }
     }
+    /// An error-toned final saying `text`.
     pub fn error(text: impl Into<StatusText>) -> Self {
-        let (text, segments) = text.into().into_parts();
+        let text = text.into();
+        let ask = text.ask().cloned();
+        let (text, segments) = text.into_parts();
         Final::Message {
             tone: StatusTone::Error,
             text,
             segments,
+            ask,
             sticky: false,
             quiet_on: QuietSurfaces::LOUD,
         }
     }
+    /// A final that retires the busy with no message.
     pub fn clear() -> Self {
         Final::Clear
     }
@@ -90,18 +115,21 @@ impl Final {
     /// no message to keep and is returned unchanged. Reserve it for outcomes
     /// where the user must act outside the toast to recover, or where something
     /// may have been lost or left half-done.
+    #[must_use]
     pub fn sticky(self) -> Self {
         match self {
             Final::Message {
                 tone,
                 text,
                 segments,
+                ask,
                 quiet_on,
                 ..
             } => Final::Message {
                 tone,
                 text,
                 segments,
+                ask,
                 sticky: true,
                 quiet_on,
             },
@@ -111,18 +139,21 @@ impl Final {
 
     /// Withhold this outcome from the named surfaces (builder form). A
     /// [`Final::Clear`] has no message to withhold and is returned unchanged.
+    #[must_use]
     pub fn quiet_on(self, quiet_on: QuietSurfaces) -> Self {
         match self {
             Final::Message {
                 tone,
                 text,
                 segments,
+                ask,
                 sticky,
                 ..
             } => Final::Message {
                 tone,
                 text,
                 segments,
+                ask,
                 sticky,
                 quiet_on,
             },
@@ -136,7 +167,8 @@ impl Final {
 /// the worker channel without closures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedFinal {
-    pub key: String,
+    pub(crate) key: String,
+    /// What the op ends on.
     pub outcome: Final,
     /// Delivery audience captured at dispatch time, while
     /// `Engine::current_origin` is still set, and copied onto the emitted
@@ -147,6 +179,7 @@ pub struct ResolvedFinal {
 }
 
 impl ResolvedFinal {
+    /// The final `outcome` for the op keyed `key`, to every surface.
     pub fn new(key: impl Into<String>, outcome: Final) -> Self {
         Self {
             key: key.into(),
@@ -167,6 +200,7 @@ impl ResolvedFinal {
 
     /// Attach a delivery [`StatusScope`] (builder form). Used by the deferred-op
     /// mint sites to carry `current_origin` across the worker channel.
+    #[must_use]
     pub fn with_scope(mut self, scope: StatusScope) -> Self {
         self.scope = scope;
         self
@@ -180,12 +214,14 @@ impl ResolvedFinal {
                 tone,
                 text,
                 segments,
+                ask,
                 sticky,
                 quiet_on,
             } => EventReaction::Status(StatusUpdate {
                 tone,
                 message: text,
                 segments,
+                ask,
                 key: Some(self.key),
                 scope: self.scope,
                 sticky,
@@ -207,12 +243,16 @@ pub fn status_op(pending: impl Into<StatusText>) -> NeedsSuccess {
     }
 }
 
+/// A status op with its busy text and key, before its success final is
+/// declared.
+#[derive(Debug)]
 pub struct NeedsSuccess {
     key: String,
     pending: StatusText,
 }
 
 impl NeedsSuccess {
+    /// Declare the final the op ends on when it succeeds.
     pub fn on_success<T, F>(self, f: F) -> NeedsFailure<T>
     where
         F: FnOnce(&T) -> Final + Send + 'static,
@@ -259,7 +299,18 @@ pub struct HandlerStatusOp<O> {
     scope: StatusScope,
 }
 
+impl<O> std::fmt::Debug for HandlerStatusOp<O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HandlerStatusOp")
+            .field("key", &self.key)
+            .field("pending", &self.pending)
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<O> HandlerStatusOp<O> {
+    /// The op's key, which its busy and final share.
     pub fn id(&self) -> &str {
         &self.key
     }
@@ -274,6 +325,7 @@ impl<O> HandlerStatusOp<O> {
     /// Attach a delivery [`StatusScope`] (builder form). Stamped by the deferred-op
     /// dispatch sites with `Engine::current_origin` so the op's busy/progress/final
     /// stay scoped to the originating connection.
+    #[must_use]
     pub fn with_scope(mut self, scope: StatusScope) -> Self {
         self.scope = scope;
         self
@@ -352,7 +404,9 @@ impl crate::engine::Engine {
 /// under it, so [`Engine::begin_status_op`] is one method rather than one per
 /// flavour.
 pub trait PendingStatusOp {
+    /// The key the op's busy and final share.
     fn status_key(&self) -> &str;
+    /// The keyed busy shown while the op runs.
     fn pending_status(&self) -> StatusUpdate;
 }
 
@@ -374,6 +428,7 @@ impl<T, E> PendingStatusOp for StatusOp<T, E> {
     }
 }
 
+/// A status op whose success final is declared, before its failure final is.
 pub struct NeedsFailure<T> {
     key: String,
     pending: StatusText,
@@ -381,7 +436,17 @@ pub struct NeedsFailure<T> {
     _t: PhantomData<fn(&T)>,
 }
 
+impl<T> std::fmt::Debug for NeedsFailure<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NeedsFailure")
+            .field("key", &self.key)
+            .field("pending", &self.pending)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T> NeedsFailure<T> {
+    /// Declare the final the op ends on when it fails, completing it.
     pub fn on_failure<E, F>(self, f: F) -> StatusOp<T, E>
     where
         F: FnOnce(&E) -> Final + Send + 'static,
@@ -404,8 +469,17 @@ pub struct StatusOp<T, E> {
     on_failure: Box<dyn FnOnce(&E) -> Final + Send>,
 }
 
+impl<T, E> std::fmt::Debug for StatusOp<T, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StatusOp")
+            .field("key", &self.key)
+            .field("pending", &self.pending)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T, E> StatusOp<T, E> {
-    pub fn key(&self) -> &str {
+    pub(crate) fn key(&self) -> &str {
         &self.key
     }
 
@@ -436,6 +510,7 @@ mod tests {
                 tone: StatusTone::Info,
                 text: "ok".into(),
                 segments: None,
+                ask: None,
                 sticky: false,
                 quiet_on: QuietSurfaces::LOUD,
             }
@@ -446,6 +521,7 @@ mod tests {
                 tone: StatusTone::Error,
                 text: "bad".into(),
                 segments: None,
+                ask: None,
                 sticky: false,
                 quiet_on: QuietSurfaces::LOUD,
             }
@@ -456,6 +532,7 @@ mod tests {
                 tone: StatusTone::Warning,
                 text: "hmm".into(),
                 segments: None,
+                ask: None,
                 sticky: false,
                 quiet_on: QuietSurfaces::LOUD,
             }
@@ -566,7 +643,8 @@ mod tests {
 
     #[test]
     fn handler_status_op_progress_reuses_the_id_without_consuming() {
-        let op = status_op("Creating worktree\u{2026}").resolve_in_handler(|_: &()| Final::clear());
+        let op =
+            status_op("Creating worktree\u{2026}").resolve_in_handler(|(): &()| Final::clear());
         let id = op.id().to_string();
         // Progress updates re-emit a busy on the SAME id and don't consume the op.
         let p1 = op.progress("Launching session\u{2026}");

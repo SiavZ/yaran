@@ -1,7 +1,8 @@
-import { Suspense, type ReactNode } from "react"
+import { Suspense, useState, type ReactNode } from "react"
 import { Plus, SquarePlus } from "lucide-react"
 
-import { AgentNotFound } from "@/components/AgentNotFound"
+import { RouteNotFoundScreen } from "@/components/RouteNotFoundScreen"
+import { AgentStack } from "@/components/AgentStack"
 import { AgentTabsStrip } from "@/components/AgentTabsStrip"
 import { ChunkBoundary } from "@/components/ChunkBoundary"
 import { DormantTabSurface } from "@/components/DormantTabSurface"
@@ -12,24 +13,69 @@ import { TheaterPill } from "@/components/TheaterPill"
 import { Welcome } from "@/components/Welcome"
 import { Button } from "@yaran/ui-kit/button"
 import { shouldShowTabStrip } from "@/lib/agentTabs"
-import { openAddProject, openNewAgentPicker, useYaran } from "@/lib/store"
+import { prKeyOf, samePrKey, sessionPrs } from "@/lib/pr"
+import {
+  openAddProject,
+  openNewAgentPicker,
+  openPullRequests,
+  useYaran,
+} from "@/lib/store"
 import { launcherVerb } from "@/lib/launcherVerb"
 import type { Bootstrap } from "@/lib/bootstrapApi"
-import type { AgentTabView, PrView, SessionView } from "@/lib/types"
+import { readStackMemory } from "@/lib/stackMemory"
+import { ownerSessionId } from "@/lib/terminalOwner"
+import type { AgentTabView, PrKeyView, PrView, SessionView } from "@/lib/types"
 
+import { agentStackModel } from "./agentStackModel"
 import { terminalAreaModel, type SelectedTarget } from "./terminalAreaModel"
 
 function PrLane({
-  pr,
+  sessionId,
+  prs,
+  cursors,
+  onCursor,
   atBottom,
   position,
 }: {
-  pr: PrView | null
+  sessionId: string | null
+  prs: PrView[]
+  cursors: PrCursors
+  onCursor: (sessionId: string, key: PrKeyView) => void
   atBottom: boolean
   position: "top" | "bottom"
 }) {
-  if (!pr || atBottom !== (position === "bottom")) return null
-  return <PrBanner pr={pr} position={position} />
+  if (!sessionId || prs.length === 0 || atBottom !== (position === "bottom")) return null
+  return (
+    <PrBanner
+      prs={prs}
+      cursor={cursors[sessionId] ?? null}
+      onCursor={(key) => onCursor(sessionId, key)}
+      onManage={() => openPullRequests(sessionId)}
+      position={position}
+    />
+  )
+}
+
+// Which pull request the banner was stepped to, per agent. Display-only and
+// this tab's own: it writes nothing, is not shared with any other surface, and
+// a reload starts every agent on its first pull request again.
+type PrCursors = Readonly<Record<string, PrKeyView>>
+
+// The cursors whose pull request the agent still shows, the same object when
+// every one of them does. A cursor kept past its pull request leaving would
+// jump the banner back to it if it were ever shown again.
+function keepListedCursors(cursors: PrCursors, sessions: readonly SessionView[]): PrCursors {
+  const kept = Object.entries(cursors).filter(([sessionId, key]) => {
+    const session = sessions.find((s) => s.id === sessionId)
+    return (
+      session !== undefined &&
+      sessionPrs(session).some((pr) => {
+        const own = prKeyOf(pr)
+        return own !== null && samePrKey(own, key)
+      })
+    )
+  })
+  return kept.length === Object.keys(cursors).length ? cursors : Object.fromEntries(kept)
 }
 
 function AgentTabLane({
@@ -155,17 +201,29 @@ export function TerminalArea() {
     terminalEpoch,
     startedDormantTabs,
     pendingSlotTab,
+    endedInViewTab,
     routeNotFound,
+    stackLayouts,
+    stackTerminals,
+    stackTabs,
+    pendingTerminalOrder,
   } = useYaran()
+  const [prCursors, setPrCursors] = useState<PrCursors>({})
+  const stepPr = (sessionId: string, key: PrKeyView) =>
+    setPrCursors((current) => ({ ...current, [sessionId]: key }))
+  // Adjusted during render rather than in an effect, so no frame draws a
+  // cursor whose pull request has already gone.
+  const listedCursors = spine ? keepListedCursors(prCursors, spine.sessions) : prCursors
+  if (listedCursors !== prCursors) setPrCursors(listedCursors)
 
-  // The URL names an agent this workspace does not have (a stale bookmark, or
+  // The URL names an agent or terminal this workspace does not have (a stale bookmark, or
   // Back landing on a deleted agent). Say so rather than showing the idle
   // welcome screen, which would read as "nothing was selected".
   if (routeNotFound) {
-    return <AgentNotFound sessionId={routeNotFound.sessionId} />
+    return <RouteNotFoundScreen missing={routeNotFound} />
   }
 
-  // Idle center pane: the duck + logo + a tip, exactly like the TUI's welcome
+  // Idle center pane: the Yaran mark + logo + a tip, exactly like the TUI's welcome
   // screen. It vanishes the moment a target is selected (the loading state is
   // the terminal pane's readiness spinner, not this).
   if (!selectedTarget) {
@@ -187,7 +245,7 @@ export function TerminalArea() {
   }
 
   const {
-    pr,
+    prs,
     bannerAtBottom,
     targetId,
     paneKey,
@@ -204,6 +262,7 @@ export function TerminalArea() {
     terminalEpoch,
     startedDormantTabs,
     pendingSlotTab,
+    endedInViewTab,
   })
 
   // The Suspense fallback is null because TerminalPane shows its own readiness
@@ -215,37 +274,91 @@ export function TerminalArea() {
   // ResizablePanel's inner wrapper is `overflow: auto`, so unclipped that frame
   // sprouts scrollbars, which shrink the content box, which refits, which
   // toggles them again: a visible jitter loop.
+  // An agent, or one of its own terminals, is shown as the agent's stack: the
+  // agent on top and its terminal dock below.
+  const stackSessionId =
+    selectedTarget.kind === "agent"
+      ? selectedTarget.sessionId
+      : ownerSessionId(selectedTarget.owner)
+  const stackSession =
+    stackSessionId === null ? undefined : spine?.sessions.find((s) => s.id === stackSessionId)
+  const stack =
+    stackSession === undefined
+      ? null
+      : agentStackModel({
+          target: selectedTarget,
+          session: stackSession,
+          terminals: spine?.terminals ?? [],
+          stackLayouts,
+          stackTerminals,
+          stackTabs,
+          memory: readStackMemory(stackSession.id),
+          startedDormantTabs,
+          pendingSlotTab,
+          endedInViewTab,
+          pendingTerminalOrder,
+          alwaysShowTabStrip: bootstrap?.always_show_tab_strip ?? false,
+          theater,
+        })
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* The pane's own chrome stack, and the one real loss theater costs: the
         * pull-request band is a status glance and a click target at once. It is
         * one tap away again through the pill's exit. */}
       <TheaterChrome hidden={theater}>
-        <PrLane pr={pr} atBottom={bannerAtBottom} position="top" />
-        <AgentTabLane
-          target={selectedTarget}
-          session={session}
-          tabs={tabs}
-          bootstrap={bootstrap}
+        <PrLane
+          sessionId={selectedSessionId}
+          prs={prs}
+          cursors={prCursors}
+          onCursor={stepPr}
+          atBottom={bannerAtBottom}
+          position="top"
         />
+        {stack === null ? (
+          <AgentTabLane
+            target={selectedTarget}
+            session={session}
+            tabs={tabs}
+            bootstrap={bootstrap}
+          />
+        ) : null}
       </TheaterChrome>
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        <TerminalSurface
-          target={selectedTarget}
-          paneKey={paneKey}
-          targetId={targetId}
-          slotTabId={slotTabId}
-          dormant={dormant}
-          focusedTab={focusedTab}
-          overlay={
-            theater ? (
-              <TheaterPill target={selectedTarget} session={session} />
-            ) : null
-          }
-        />
+        {stack !== null && stackSession !== undefined ? (
+          <AgentStack
+            model={stack}
+            session={stackSession}
+            target={selectedTarget}
+            theater={theater}
+            maxTabs={bootstrap?.agent_tabs_max}
+            terminalEpoch={terminalEpoch}
+          />
+        ) : (
+          <TerminalSurface
+            target={selectedTarget}
+            paneKey={paneKey}
+            targetId={targetId}
+            slotTabId={slotTabId}
+            dormant={dormant}
+            focusedTab={focusedTab}
+            overlay={
+              theater ? (
+                <TheaterPill target={selectedTarget} session={session} />
+              ) : null
+            }
+          />
+        )}
       </div>
       <TheaterChrome hidden={theater}>
-        <PrLane pr={pr} atBottom={bannerAtBottom} position="bottom" />
+        <PrLane
+          sessionId={selectedSessionId}
+          prs={prs}
+          cursors={prCursors}
+          onCursor={stepPr}
+          atBottom={bannerAtBottom}
+          position="bottom"
+        />
       </TheaterChrome>
     </div>
   )

@@ -51,7 +51,7 @@ impl ParsedBody {
 /// title. The single definition behind both `has_renderable_body` methods and the
 /// thing `hasRenderableBody` in `crates/yaran-web/web/src/lib/releaseNotes.ts`
 /// mirrors.
-pub fn body_is_renderable(paragraphs: &[String], sections: &[String]) -> bool {
+pub(crate) fn body_is_renderable(paragraphs: &[String], sections: &[String]) -> bool {
     has_content(paragraphs) || has_content(sections)
 }
 
@@ -82,7 +82,7 @@ fn has_content(entries: &[String]) -> bool {
 /// `<br` U+FEFF `/>` land on opposite answers. `tests/fixtures/
 /// release_notes_cross_language.json` pins the ANSWERS from both languages rather
 /// than only the set.
-pub fn is_invisible_char(c: char) -> bool {
+pub(crate) fn is_invisible_char(c: char) -> bool {
     c.is_whitespace() || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
 }
 
@@ -333,8 +333,11 @@ fn strip_inline_markup(s: &str) -> String {
 pub struct ReleaseNotes {
     /// The release tag, e.g. `v0.6.0`.
     pub version: String,
+    /// The release headline, from the leading `## ...` line.
     pub headline: String,
+    /// Intro prose, one entry per paragraph.
     pub paragraphs: Vec<String>,
+    /// The `### ...` feature titles.
     pub sections: Vec<String>,
     /// The release's own web page. Taken from the API's `html_url` when present,
     /// falling back to the releases index.
@@ -406,7 +409,7 @@ fn user_agent() -> String {
 ///
 /// `api_base` is injectable so tests can point at a local server; production
 /// callers pass [`crate::urls::GITHUB_API_BASE`].
-pub fn latest_release_endpoint(api_base: &str) -> String {
+pub(crate) fn latest_release_endpoint(api_base: &str) -> String {
     format!(
         "{}/repos/{}/releases/latest",
         api_base.trim_end_matches('/'),
@@ -417,7 +420,7 @@ pub fn latest_release_endpoint(api_base: &str) -> String {
 /// The endpoint for ONE release, looked up by its tag. This is the endpoint the
 /// automatic startup path uses, because the screen must describe the version the
 /// user is actually running.
-pub fn tag_release_endpoint(api_base: &str, tag: &str) -> String {
+pub(crate) fn tag_release_endpoint(api_base: &str, tag: &str) -> String {
     format!(
         "{}/repos/{}/releases/tags/{}",
         api_base.trim_end_matches('/'),
@@ -448,7 +451,10 @@ fn is_path_safe_tag(tag: &str) -> bool {
 pub enum FetchError {
     /// GitHub answered definitively: no release exists for this tag (HTTP 404).
     /// Retrying cannot change the answer.
-    NoSuchRelease { tag: String },
+    NoSuchRelease {
+        /// The tag asked about.
+        tag: String,
+    },
     /// Anything that might succeed later: offline, DNS, timeout, 5xx, a rate
     /// limit, or a response yaran could not parse.
     Transient(anyhow::Error),
@@ -528,8 +534,7 @@ fn agent(api_base: &str) -> ureq::Agent {
 fn is_loopback_base(base: &str) -> bool {
     let authority = base
         .split_once("//")
-        .map(|(_, rest)| rest)
-        .unwrap_or(base)
+        .map_or(base, |(_, rest)| rest)
         .split('/')
         .next()
         .unwrap_or_default();
@@ -537,18 +542,14 @@ fn is_loopback_base(base: &str) -> bool {
     // colons inside the host, so the bracket form must be handled explicitly
     // rather than by splitting on the last colon.
     let host = if let Some(rest) = authority.strip_prefix('[') {
-        rest.split_once(']').map(|(h, _)| h).unwrap_or(rest)
+        rest.split_once(']').map_or(rest, |(h, _)| h)
     } else {
-        authority
-            .rsplit_once(':')
-            .map(|(h, _)| h)
-            .unwrap_or(authority)
+        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
     };
     host == "localhost"
         || host
             .parse::<std::net::IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false)
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Fetches ONE release by its tag. BLOCKING: worker only.
@@ -561,6 +562,11 @@ fn is_loopback_base(base: &str) -> bool {
 ///
 /// A tag with no published release is a definitive
 /// [`FetchError::NoSuchRelease`], not a transient failure.
+///
+/// # Errors
+///
+/// Fails with [`FetchError::NoSuchRelease`] when the tag has no published release, or another
+/// [`FetchError`] when the request or its answer fails.
 pub fn fetch_release_by_tag(api_base: &str, tag: &str) -> Result<ReleaseNotes, FetchError> {
     if !is_path_safe_tag(tag) {
         // Definitive: such a string cannot name a yaran release, and re-asking is
@@ -583,6 +589,10 @@ pub fn fetch_release_by_tag(api_base: &str, tag: &str) -> Result<ReleaseNotes, F
 ///
 /// Unauthenticated: GitHub serves this endpoint with no token at a 60
 /// requests/hour per-IP limit, which is why [`load_or_fetch_tag`] caches.
+///
+/// # Errors
+///
+/// Fails with a [`FetchError`] when the request or its answer fails.
 pub fn fetch_latest(api_base: &str) -> Result<ReleaseNotes, FetchError> {
     let url = latest_release_endpoint(api_base);
     fetch_release(api_base, &url, None)
@@ -626,7 +636,7 @@ fn fetch_release(api_base: &str, url: &str, tag: Option<&str>) -> Result<Release
     let body = response
         .body_mut()
         .with_config()
-        .limit(MAX_BODY_BYTES as u64)
+        .limit(crate::numeric::usize_to_u64(MAX_BODY_BYTES))
         .read_to_string()
         .with_context(|| format!("failed to read the release response from {url}"))?;
 
@@ -669,7 +679,7 @@ fn from_api(release: ApiRelease) -> ReleaseNotes {
 /// unauthenticated 60/hour per-IP limit, however many times yaran is launched, and
 /// it comfortably covers a single working session (the realistic case: launch,
 /// glance at the notes, dismiss, relaunch a dozen times).
-pub const CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+pub const CACHE_TTL: Duration = Duration::from_hours(6);
 
 /// The cache file inside the yaran state directory (`YaranPaths::root`).
 ///
@@ -714,10 +724,7 @@ pub fn cached_notes(path: &Path, version: &str, ttl: Duration, now: DateTime<Utc
     }
     // `to_std` errors on a negative span, which is a clock that moved backwards;
     // treat that as "age unknown" and refetch rather than trusting the entry.
-    let fresh = (now - file.fetched_at)
-        .to_std()
-        .map(|age| age < ttl)
-        .unwrap_or(false);
+    let fresh = (now - file.fetched_at).to_std().is_ok_and(|age| age < ttl);
     if fresh {
         CacheLookup::Fresh(file.notes)
     } else {
@@ -726,6 +733,10 @@ pub fn cached_notes(path: &Path, version: &str, ttl: Duration, now: DateTime<Utc
 }
 
 /// Writes `notes` to the cache, stamped `now`, replacing any previous entry.
+///
+/// # Errors
+///
+/// Fails when the notes cannot be encoded, or the cache's folder or file cannot be written.
 pub fn write_cache(path: &Path, notes: &ReleaseNotes, now: DateTime<Utc>) -> Result<()> {
     let file = CacheFile {
         fetched_at: now,
@@ -749,6 +760,11 @@ pub fn write_cache(path: &Path, notes: &ReleaseNotes, now: DateTime<Utc>) -> Res
 /// A definitive [`FetchError::NoSuchRelease`] is returned as-is and does NOT fall
 /// back to a stale entry: there is no release, so there is nothing to be stale
 /// about.
+///
+/// # Errors
+///
+/// Fails as [`fetch_release_by_tag`] does when there is no fresh cache entry and no stale one to
+/// fall back to; a missing release never falls back.
 pub fn load_or_fetch_tag(
     api_base: &str,
     cache: &Path,
@@ -790,6 +806,10 @@ pub fn load_or_fetch_tag(
 ///   published release. This can only be reached by an explicit user action (a dev
 ///   build never auto-shows the what's-new screen), and it is deliberately
 ///   uncached: there is no stable key to file it under.
+///
+/// # Errors
+///
+/// Fails as [`load_release_notes_from`] does.
 pub fn load_release_notes(root: &Path, running_version: &str) -> Result<ReleaseNotes, FetchError> {
     load_current_release_notes_from(crate::urls::GITHUB_API_BASE, root, running_version)
 }
@@ -824,6 +844,11 @@ pub fn current_release_tag(running_version: &str) -> String {
 /// thing; `load_release_notes` is the convenience wrapper that does.
 ///
 /// BLOCKING: worker only.
+///
+/// # Errors
+///
+/// Fails as [`load_or_fetch_tag`] does for a release build and [`fetch_latest`] for a development
+/// build.
 pub fn load_release_notes_from(
     api_base: &str,
     root: &Path,
@@ -852,6 +877,8 @@ pub fn notes_url(notes: Option<&ReleaseNotes>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     const SAMPLE: &str = include_str!("../tests/fixtures/sample_release_notes.md");
@@ -1027,7 +1054,7 @@ mod tests {
         // lead with a real one); what matters is that nothing after the second
         // heading leaks in.
         assert_eq!(n.headline, "What's Changed");
-        assert!(n.sections.is_empty());
+        assert_eq!(n.sections, Vec::<String>::new());
         assert!(
             !n.paragraphs.iter().any(|p| p.contains("brew install")),
             "{n:#?}"
@@ -1055,7 +1082,7 @@ mod tests {
             n.paragraphs,
             vec!["Fixes the thing that broke.", "Also faster now."]
         );
-        assert!(n.sections.is_empty());
+        assert_eq!(n.sections, Vec::<String>::new());
         assert!(n.has_renderable_body(), "prose is worth rendering");
     }
 
@@ -1087,7 +1114,7 @@ mod tests {
             n.paragraphs,
             vec!["# Big title", "Some prose.", "#### Deep thing"]
         );
-        assert!(n.sections.is_empty());
+        assert_eq!(n.sections, Vec::<String>::new());
     }
 
     #[test]
@@ -1097,7 +1124,7 @@ mod tests {
         let n = parse_release_body("##Title\n\n###Feature\n");
         assert_eq!(n.headline, "");
         assert_eq!(n.paragraphs, vec!["##Title", "###Feature"]);
-        assert!(n.sections.is_empty());
+        assert_eq!(n.sections, Vec::<String>::new());
     }
 
     #[test]
@@ -1252,8 +1279,8 @@ Its description.
         // The cap that matters is on the HTTP read (`MAX_BODY_BYTES`).
         let mut body = String::from("## Title\n\n");
         for i in 0..500 {
-            body.push_str(&format!("Paragraph {i} with some prose in it.\n\n"));
-            body.push_str(&format!("### Feature number {i}\n\n"));
+            let _ = write!(body, "Paragraph {i} with some prose in it.\n\n");
+            let _ = write!(body, "### Feature number {i}\n\n");
         }
         let n = parse_release_body(&body);
         assert_eq!(n.headline, "Title");
@@ -1405,7 +1432,7 @@ Its description.
         assert!(is_invisible_char('\u{0085}'), "next line");
         // Zero-width characters render as literally nothing on both surfaces.
         for c in ['\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}'] {
-            assert!(is_invisible_char(c), "{:04X}", c as u32);
+            assert!(is_invisible_char(c), "{:04X}", u32::from(c));
         }
         // ...and ordinary text is not invisible.
         for c in ['a', '-', '#', '日', '🦆'] {
@@ -1459,7 +1486,7 @@ Its description.
         }
         from_ts.sort_unstable();
 
-        let mut from_rust: Vec<u32> = (0u32..=0x10FFFF)
+        let mut from_rust: Vec<u32> = (0u32..=0x0010_FFFF)
             .filter(|point| char::from_u32(*point).is_some_and(is_invisible_char))
             .collect();
         from_rust.sort_unstable();
@@ -1739,7 +1766,7 @@ Its description.
             html_url: None,
         });
         assert_eq!(bare.version, "v0.6.1");
-        assert!(bare.headline.is_empty());
+        assert_eq!(bare.headline, "");
         assert_eq!(bare.html_url, crate::urls::RELEASES);
     }
 
@@ -1747,12 +1774,9 @@ Its description.
     fn the_cache_ttl_is_short_enough_to_pick_up_an_edited_release_body() {
         // Live fetching is the point of the feature; a day-long TTL would pin a
         // typo on screen long after it was fixed.
-        assert!(
-            CACHE_TTL <= Duration::from_secs(12 * 60 * 60),
-            "{CACHE_TTL:?}"
-        );
+        assert!(CACHE_TTL <= Duration::from_hours(12), "{CACHE_TTL:?}");
         // ...and long enough that repeated launches in one session don't refetch.
-        assert!(CACHE_TTL >= Duration::from_secs(60 * 60), "{CACHE_TTL:?}");
+        assert!(CACHE_TTL >= Duration::from_hours(1), "{CACHE_TTL:?}");
     }
 
     #[test]

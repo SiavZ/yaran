@@ -3,20 +3,22 @@
 //!
 //! Layout rules, all of them about not moving things under the reader:
 //!
-//! - Every element (the card's text, the reply label, the reply field, the
-//!   buttons and the key line) starts and ends at the same two columns, the
-//!   dialog's padded content edges.
+//! - Every element (the card's text, the reply label, the reply field and
+//!   the key line) starts and ends at the same two columns, the dialog's
+//!   padded content edges; the buttons are centred between them.
 //! - The reply field grows downward as the reply wraps, up to
 //!   [`REPLY_MAX_ROWS`] rows, and scrolls after that. The dialog is placed as if
 //!   the field were already at its tallest, so its top edge never moves while
 //!   someone types; it only grows at the bottom.
-//! - The buttons share the row in equal widths that depend only on which
-//!   buttons the card has, never on their labels, so "Mark done" turning into
+//! - The buttons take the shared width every dialog's row uses, measured over
+//!   every label the card can show, so "Mark done" turning into
 //!   "Send & mark done" moves nothing.
 //!
 //! A drag over the card's text selects it, and the selection is copied to the
 //! clipboard when the button is released, as the startup-log viewer does.
 
+use super::components::PickerList;
+use super::components::button::resting_button_state;
 use super::components::wrap_lines::display_width;
 use super::components::{
     Button, ButtonKind, ButtonPressedTarget, Hint, button_state_for, modal_hint_line,
@@ -25,6 +27,13 @@ use super::components::{
 use super::human_board::{HumanBoardCardFocus as Focus, Recipient};
 use super::render::{age_words, centered_rect_exact};
 use super::*;
+use crate::theme::FocusState;
+#[allow(unused_imports)]
+use ratatui::prelude::*;
+#[allow(unused_imports)]
+use ratatui::symbols::border;
+#[allow(unused_imports)]
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 /// The most rows the reply field grows to before it scrolls.
 pub(crate) const REPLY_MAX_ROWS: u16 = 5;
@@ -447,7 +456,7 @@ impl App {
                 spans.push(Span::styled(
                     " \u{21c4}",
                     if chip_focused {
-                        self.theme.title_style(true)
+                        self.theme.title_style(FocusState::Focused)
                     } else {
                         label
                     },
@@ -464,7 +473,7 @@ impl App {
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
-                .border_style(self.theme.overlay_field_border_style(field_focused))
+                .border_style(self.theme.overlay_field_border_style(field_focused.into()))
                 .render(field_area, frame.buffer_mut());
             let field_text_width = reply_text_width(field_box_width);
             let (rows, first, caret_row, caret_col) =
@@ -519,31 +528,55 @@ impl App {
             y += 2;
         }
 
-        // ── Buttons: equal widths across the content, whatever the labels ──
+        // ── Buttons: the shared sizing every dialog's row uses (one width, the
+        // one gap, centred), the width taken from every label this card can
+        // show so "Mark done" turning into "Send & mark done" moves nothing;
+        // equal widths across the content only when that row does not fit ──
         let count = buttons.len() as u16;
-        let each =
-            content_width.saturating_sub(BUTTON_GAP * count.saturating_sub(1)) / count.max(1);
+        let mut labels: Vec<&str> = buttons.iter().map(|(_, label, _)| *label).collect();
+        labels.extend(["Mark done", "Reopen"]);
+        if reply.is_some() {
+            labels.extend(["Send", "Forward", "Send & mark done"]);
+        }
+        let shared = super::components::button::shared_button_width(&labels);
+        let shared_row = shared
+            .saturating_mul(count)
+            .saturating_add(BUTTON_GAP.saturating_mul(count.saturating_sub(1)));
+        let (each, row_x, row_width) = if shared_row <= content_width {
+            (
+                shared,
+                content_x + (content_width - shared_row) / 2,
+                shared_row,
+            )
+        } else {
+            (
+                content_width.saturating_sub(BUTTON_GAP * count.saturating_sub(1)) / count.max(1),
+                content_x,
+                content_width,
+            )
+        };
         let mut close_area = Rect::default();
         let mut action_area = Rect::default();
         let mut send_area = None;
         let mut assign_area = None;
         for (index, (target, text_label, stop)) in buttons.iter().enumerate() {
-            let x = content_x + index as u16 * (each + BUTTON_GAP);
+            let x = row_x + index as u16 * (each + BUTTON_GAP);
             // The last button takes what rounding left, so the row ends exactly
-            // at the content's right edge.
+            // at its right edge.
             let w = if index as u16 + 1 == count {
-                content_x + content_width - x
+                (row_x + row_width).saturating_sub(x)
             } else {
                 each
             };
-            let rect = Rect::new(x, y, w, 3);
+            // Clipped to the frame, so a screen too short for the card never
+            // paints or publishes a button over its border or past it.
+            let rect = Rect::new(x, y, w, 3).intersection(inner);
             Button::new(text_label)
                 .kind(ButtonKind::Confirm)
                 .state(button_state_for(
                     *target,
                     self.pressed_button,
-                    focus == *stop,
-                    true,
+                    resting_button_state(focus == *stop, true),
                 ))
                 .render(frame, rect, &self.theme);
             match target {
@@ -579,6 +612,7 @@ impl App {
                 Hint::maybe_key(focus_key, "focus"),
                 Hint::key(close_key, "close"),
             ],
+            text_width,
         );
         // The key line starts where the text above it does.
         let mut hint_spans = hints.spans;
@@ -615,7 +649,9 @@ impl App {
             .and_then(|settings| settings.me.clone());
         self.render_dim_overlay(frame);
         let width = 64.min(frame.area().width.max(1));
-        let height = (people.len() as u16 + 5).min(frame.area().height.max(1));
+        let height = u16::try_from(people.len().max(1) + 5)
+            .unwrap_or(u16::MAX)
+            .min(frame.area().height.max(1));
         let area = centered_rect_exact(width, height, frame.area());
         self.clear_overlay_area(frame, area);
         let title = format!("Assign card {label}");
@@ -626,10 +662,12 @@ impl App {
         let hints = modal_hint_line(
             &self.theme,
             &[
-                Hint::key(format!("{move_up}/{move_down}"), "move"),
+                Hint::key(move_down, "down"),
+                Hint::key(move_up, "up"),
                 Hint::key(confirm, "assign"),
-                Hint::key(close, "back to the card"),
+                Hint::key(close, "back").pinned(),
             ],
+            width.saturating_sub(2 + 2 * PAD),
         );
         let block = self.themed_overlay_block(&title);
         let inner = block.inner(area);
@@ -662,24 +700,18 @@ impl App {
                 ]))
             })
             .collect();
+        // The rows above a blank line and the key line, reaching the right
+        // border so the scroll indicator sits right beside them.
         let list_area = Rect::new(
             content.x,
             content.y,
-            content.width,
-            (people.len() as u16).min(content.height.saturating_sub(2)),
+            inner.right().saturating_sub(content.x),
+            content.height.saturating_sub(2),
         );
-        let mut state =
-            ListState::default().with_selected(Some(selected.min(people.len().saturating_sub(1))));
-        StatefulWidget::render(
-            List::new(items).highlight_style(
-                Style::default()
-                    .fg(self.theme.text_fg)
-                    .bg(self.theme.selection_bar_tint()),
-            ),
-            list_area,
-            frame.buffer_mut(),
-            &mut state,
-        );
+        let list = PickerList::new(items, Some(selected), "Nobody has a queue on this board.")
+            // The dialog's own right border carries the scroll indicator.
+            .indicator_frame(area)
+            .render(frame, list_area, &self.theme);
         let mut hint_spans = hints.spans;
         if let Some(first) = hint_spans.first_mut() {
             first.content = first.content.trim_start().to_string().into();
@@ -689,9 +721,9 @@ impl App {
             frame.buffer_mut(),
         );
         self.overlay_layout.active = OverlayMouseLayout::AssignBoardCard {
-            list: list_area,
-            items: people.len(),
-            offset: state.offset(),
+            list: list.list,
+            items: list.items,
+            offset: list.offset,
         };
     }
 
@@ -777,6 +809,7 @@ impl App {
                     end: pos,
                     dragging: true,
                     origin: SelectionOrigin::default(),
+                    part: CenterPart::Main,
                 });
                 self.mark_frame_dirty();
                 Some(false)

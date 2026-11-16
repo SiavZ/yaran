@@ -25,9 +25,10 @@ env  = { NODE_ENV = "development", API_KEY = "${MY_API_KEY}" }
 ```
 
 > [!TIP]
-> Values expand `$VAR` and `${VAR}` from your shell environment when yaran starts. Keep
-> secrets as references rather than literals and `config.toml` stays safe to commit to
-> your dotfiles.
+> Values expand `$VAR` and `${VAR}` from the environment yaran was started with, each time
+> it spawns something. A variable that is not set stays as written, so `$MISSING` arrives
+> as the text `$MISSING`. Keep secrets as references rather than literals and
+> `config.toml` stays safe to commit to your dotfiles.
 
 You do not have to edit the file to change them. In the terminal UI, *configure project
 env* opens the project's variables one per line:
@@ -77,19 +78,21 @@ ln -sfn "$YARAN_PROJECT_PATH/.env.local" .env
 
 - It runs with its working directory set to the **agent's worktree**, not the source
   checkout.
-- yaran waits for it to finish before launching the provider.
+- yaran waits for it to finish before launching the provider. Finishing means the command
+  itself exits: a job it starts in the background (`npm run dev &`) does not hold the agent
+  back, even when that job keeps printing.
 - Every run writes a timestamped log under the yaran config directory, at
-  `startup-command-logs/<project-id>/<session-id>/`. Browse them from the command
-  palette in the terminal UI or a row's actions menu on the web, for one agent or for
-  every agent in a project at once.
+  `startup-command-logs/<project-id>/<session-id>/`.
+- Browse the logs from the command palette in the terminal UI or a row's actions menu on
+  the web, for one agent or for every agent in a project at once.
 
 > [!IMPORTANT]
 > A startup command that exits non-zero does not block you. yaran records the failure in
-> the startup log and launches the agent anyway, so check the log when an agent starts
-> without its dependencies.
+> the startup log, launches the agent anyway, and leaves an error on screen pointing you
+> at the log. Check it when an agent starts without its dependencies.
 
 Each log names the run, the command, the shell it ran through, how long it took, its exit
-code, and everything it printed. This is the terminal UI's viewer:
+code, and everything it printed before it exited. This is the terminal UI's viewer:
 
 ![The terminal UI startup command log viewer, listing one run beside its output: the command, exit code, and the lines it printed while preparing the worktree.](/screens/tui-startup-command-log.png)
 
@@ -100,14 +103,31 @@ You can edit both by hand, but you do not have to leave the app:
 - **Terminal UI:** the command palette carries *configure startup command*, *configure
   project env*, *configure global env*, *rerun startup command on agent*, and *read
   startup command logs*.
-- **Web UI:** each agent's `⋯` menu carries *Configure startup command*, *Configure
-  environment variables*, *Rerun startup command*, and *Startup command logs*. A
-  project's `⋯` menu carries *Startup command logs for all agents*. Global env lives in
+- **Web UI:** each agent's `⋯` menu carries *Configure startup command…*, *Configure
+  environment variables…*, *Rerun startup command*, and *Startup command logs…*. A
+  project's `⋯` menu carries *Startup command logs for all agents…*. Global env lives in
   the cog menu's Configuration submenu.
 
 *Rerun startup command* re-runs the command in one agent's worktree without recreating
 the agent. Reach for it after editing the command, or when a dependency install needs a
-redo.
+redo. One run per agent at a time: while a run is still going, another is refused and yaran
+says so.
+
+> [!NOTE]
+> A job the command leaves running in the background keeps running in the agent's
+> worktree after the command exits, after the agent starts, and after yaran quits. What it
+> prints once the command has finished is discarded: it is not in the startup log and is
+> not kept anywhere else. Send its output to a file of its own if you want to read it
+> later.
+
+Deleting an agent also cleans up after its startup command:
+
+- **A run still going** is stopped, along with what it has started so far, whether or not
+  the worktree goes too.
+- **Deleting with the worktree** also stops whatever an earlier run left running in the
+  background, before the worktree is removed.
+- **A run cut short** that way keeps no log, because the agent's logs go with it. If the
+  command will not stop, yaran says so.
 
 > [!NOTE]
 > Env and startup commands are project-scoped, so editing them from an agent changes the
@@ -117,7 +137,8 @@ redo.
 ### Yaran-injected variables
 
 yaran sets these for every startup command, on top of any `[env]` and `[[projects]] env`
-keys you configure:
+keys you configure. They always win: if your config sets a variable with one of these
+names, yaran's value is the one the command sees.
 
 | Variable | Value |
 |---|---|

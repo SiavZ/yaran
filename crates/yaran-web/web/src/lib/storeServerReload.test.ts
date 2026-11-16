@@ -14,13 +14,21 @@ const reloadPage = vi.fn()
 vi.mock("./reloadPage", () => ({ reloadPage }))
 
 // What `GET /api/v1/build` answers next. Mutated per test.
-let identity: { version: string; process: string } | null = {
+let identity: { version: string; process: string; instance?: string } | null = {
   version: "development",
   process: "run-1",
 }
 let buildReads = 0
 
 const fetchMock = vi.fn(async (url: string) => {
+  // The public status route answers as every yaran does: no password here, and
+  // the yaran this page boots on is "yaran-a".
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false, instance: "yaran-a" }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (u.includes("/api/v1/build")) {
     buildReads++
@@ -121,5 +129,28 @@ describe("reconnect against a possibly-restarted server", () => {
     store.eventsSocket.onOpen()
     await settle()
     expect(reloadPage).not.toHaveBeenCalled()
+  })
+})
+
+// Last in the file: the different-yaran cover is the one state nothing leaves.
+describe("reconnect against a yaran at the same address", () => {
+  it("still hard reloads by itself when the same yaran restarted", async () => {
+    identity = { version: "development", process: "run-1", instance: "yaran-a" }
+    store.eventsSocket.onOpen()
+    await settle()
+    expect(reloadPage).not.toHaveBeenCalled()
+    identity = { version: "development", process: "run-2", instance: "yaran-a" }
+    store.eventsSocket.onOpen()
+    await settle()
+    expect(reloadPage).toHaveBeenCalledTimes(1)
+  })
+
+  it("covers the page and does not reload when a different yaran answers", async () => {
+    const gate = await import("./authGate")
+    identity = { version: "development", process: "run-3", instance: "yaran-b" }
+    store.eventsSocket.onOpen()
+    await settle()
+    expect(reloadPage).not.toHaveBeenCalled()
+    expect(gate.getAuthPhase()).toEqual({ kind: "other_yaran" })
   })
 })

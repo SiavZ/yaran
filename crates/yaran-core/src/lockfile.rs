@@ -15,6 +15,7 @@
 //! The lockfile also contains the holder's PID, written after the lock is
 //! acquired, so a colliding launch can tell the user which process to close.
 
+use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -24,26 +25,100 @@ use std::time::Duration;
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
 
+use crate::control_socket::{ControlSocket, Unavailable};
 use crate::io_retry::retry_on_interrupt_errno;
 
-/// Exclusive single-instance lock on the yaran config directory.
+/// Exclusive single-instance lock on the yaran config directory, held while this
+/// value lives; the kernel releases it on any exit, so a stale file never blocks.
 ///
-/// The file handle is kept open for the lifetime of this value. The kernel
-/// releases the advisory lock when the file descriptor is closed, including
-/// on process exit via `SIGKILL` or crash, so stale lockfiles never block a
-/// future launch. Only a live peer actively holding the lock will.
+/// It owns the control socket once [`Self::open_control_socket`] binds it.
 #[derive(Debug)]
 pub struct SingleInstanceLock {
-    _file: File,
+    file: File,
+    control_socket: ControlSocketState,
+    /// Held by a command-line edit of `config.toml` rather than by a yaran.
+    config_edit: bool,
+}
+
+/// What the lock holder knows about its control socket, and so what its lock
+/// file says about it.
+#[derive(Debug)]
+enum ControlSocketState {
+    NotOpened,
+    Open(ControlSocket),
+    Unavailable(String),
 }
 
 impl Drop for SingleInstanceLock {
     fn drop(&mut self) {
+        // A clean exit takes the socket file and its line with it, before the
+        // lock is let go, so the next holder never finds a socket of ours.
+        if !matches!(self.control_socket, ControlSocketState::NotOpened) {
+            self.control_socket = ControlSocketState::NotOpened;
+            self.rewrite();
+        }
         // The kernel also releases the advisory lock when the file
         // descriptor closes, but explicitly unlocking here makes the
         // handoff point deterministic for tests and avoids depending on
         // close-side timing alone.
-        let _ = retry_on_interrupt_errno(|| flock(&self._file, FlockOperation::Unlock));
+        let _ = retry_on_interrupt_errno(|| flock(&self.file, FlockOperation::Unlock));
+    }
+}
+
+impl SingleInstanceLock {
+    /// Bind the control socket at `path` and record in the lock file where it is,
+    /// or why it could not be bound. Only a dead socket at the path is replaced.
+    pub(crate) fn open_control_socket(&mut self, path: &Path) -> Result<(), Unavailable> {
+        let result = match ControlSocket::bind(path) {
+            Ok(socket) => {
+                self.control_socket = ControlSocketState::Open(socket);
+                Ok(())
+            }
+            Err(reason) => {
+                self.control_socket = ControlSocketState::Unavailable(reason.to_string());
+                Err(reason)
+            }
+        };
+        self.rewrite();
+        result
+    }
+
+    /// The bound control socket, when there is one.
+    pub fn control_socket(&self) -> Option<&ControlSocket> {
+        match &self.control_socket {
+            ControlSocketState::Open(socket) => Some(socket),
+            ControlSocketState::NotOpened | ControlSocketState::Unavailable(_) => None,
+        }
+    }
+
+    /// Say in the lock file that a command-line edit of `config.toml` holds
+    /// it, not a yaran, so other commands can say so instead of waiting for a
+    /// control socket that will never open.
+    pub fn mark_config_edit(&mut self) {
+        self.config_edit = true;
+        self.rewrite();
+    }
+
+    /// Replace the lock file's text with what this holder knows now.
+    /// Best-effort like the first write: the lock itself is the `flock`.
+    fn rewrite(&mut self) {
+        let mut text = lock_file_text(std::process::id());
+        if self.config_edit {
+            let _ = writeln!(text, "{CONFIG_EDIT_MARKER}");
+        }
+        match &self.control_socket {
+            ControlSocketState::NotOpened => {}
+            ControlSocketState::Open(socket) => {
+                let _ = writeln!(text, "{CONTROL_SOCKET_PREFIX}{}", socket.path().display());
+            }
+            ControlSocketState::Unavailable(reason) => {
+                let _ = writeln!(text, "{CONTROL_SOCKET_UNAVAILABLE_PREFIX}{reason}");
+            }
+        }
+        let _ = self.file.set_len(0);
+        let _ = self.file.seek(SeekFrom::Start(0));
+        let _ = self.file.write_all(text.as_bytes());
+        let _ = self.file.flush();
     }
 }
 
@@ -53,9 +128,19 @@ pub enum AcquireError {
     /// Another live yaran process already holds the lock. `pid` is the holder's
     /// PID as read from the lockfile. `None` if the file was empty or its
     /// contents could not be parsed.
-    AlreadyRunning { pid: Option<u32>, path: PathBuf },
+    AlreadyRunning {
+        /// The holder's pid, or `None` when the file was empty or unreadable.
+        pid: Option<u32>,
+        /// The lock file.
+        path: PathBuf,
+    },
     /// An unexpected filesystem error occurred (not contention).
-    Io { path: PathBuf, err: std::io::Error },
+    Io {
+        /// The lock file.
+        path: PathBuf,
+        /// The filesystem error.
+        err: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for AcquireError {
@@ -69,7 +154,7 @@ impl std::fmt::Display for AcquireError {
                 // stray leading space sneaking in on a reformat.
                 match pid {
                     Some(pid) => {
-                        writeln!(f, "Another yaran instance is already running (PID {pid}).")?
+                        writeln!(f, "Another yaran instance is already running (PID {pid}).")?;
                     }
                     None => writeln!(
                         f,
@@ -114,6 +199,11 @@ impl SingleInstanceLock {
     /// holder. The lock is held until the returned value is dropped.
     ///
     /// The parent directory of `path` must already exist.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`AcquireError::AlreadyRunning`] when another process holds the lock, or
+    /// [`AcquireError::Io`] when the file cannot be opened, locked or written.
     pub fn acquire(path: &Path) -> Result<Self, AcquireError> {
         // Opens for read+write so we can both rewrite the PID after acquiring
         // and read the PID of the holder if we lose the race.
@@ -142,9 +232,13 @@ impl SingleInstanceLock {
                 // from flock(), and the PID is diagnostic for colliders.
                 let _ = file.set_len(0);
                 let _ = file.seek(SeekFrom::Start(0));
-                let _ = writeln!(file, "{}", std::process::id());
+                let _ = file.write_all(lock_file_text(std::process::id()).as_bytes());
                 let _ = file.flush();
-                Ok(Self { _file: file })
+                Ok(Self {
+                    file,
+                    control_socket: ControlSocketState::NotOpened,
+                    config_edit: false,
+                })
             }
             Err(err) if err == Errno::WOULDBLOCK || err == Errno::AGAIN => {
                 // Someone else owns the lock. Read their PID so the caller
@@ -206,7 +300,75 @@ fn read_holder_pid_once(file: &mut File) -> Option<u32> {
     let mut buf = String::new();
     file.seek(SeekFrom::Start(0)).ok()?;
     file.read_to_string(&mut buf).ok()?;
-    buf.trim().parse::<u32>().ok()
+    LockFileContents::parse(&buf).pid
+}
+
+/// The line a yaran adds to its lock file, after its PID, once its SIGUSR1 handler
+/// is in place, so `kill -USR1` reloads it instead of ending it.
+pub(crate) const RELOAD_SIGNAL_MARKER: &str = "reload-signal=usr1";
+
+/// What this process writes into the lock file it holds: its PID on the
+/// first line, as every reader expects, then the reload-signal marker when
+/// the reload handler is already installed (never before: a marker the
+/// process cannot yet honour would invite the signal that kills it).
+fn lock_file_text(pid: u32) -> String {
+    if crate::reload_signal::is_installed() {
+        format!("{pid}\n{RELOAD_SIGNAL_MARKER}\n")
+    } else {
+        format!("{pid}\n")
+    }
+}
+
+/// The line a command-line edit of `config.toml` adds to the lock file it
+/// holds, after its PID: no yaran is running, and none can start until it ends.
+pub(crate) const CONFIG_EDIT_MARKER: &str = "holder=config-edit";
+
+/// The line a yaran adds to its lock file once its control socket is bound,
+/// followed by the socket's path.
+pub(crate) const CONTROL_SOCKET_PREFIX: &str = "control-socket=";
+
+/// The line a yaran adds instead when it could not bind its control socket,
+/// followed by the reason.
+pub(crate) const CONTROL_SOCKET_UNAVAILABLE_PREFIX: &str = "control-socket-unavailable=";
+
+/// A lock file's contents as written by any yaran, whose PID line may be the whole
+/// file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LockFileContents {
+    /// The holder's pid, when the first line is one.
+    pub pid: Option<u32>,
+    pub(crate) handles_reload_signal: bool,
+    /// Where the holder's control socket is bound, when it wrote one.
+    pub control_socket: Option<PathBuf>,
+    pub(crate) control_socket_unavailable: Option<String>,
+    /// The holder is a command-line edit of `config.toml`, not a yaran.
+    pub(crate) config_edit: bool,
+}
+
+impl LockFileContents {
+    /// Reads a lock file's text; anything it does not recognize is left out.
+    pub fn parse(text: &str) -> Self {
+        let mut lines = text.lines();
+        let pid = lines
+            .next()
+            .and_then(|line| line.trim().parse::<u32>().ok());
+        let mut contents = Self {
+            pid,
+            ..Self::default()
+        };
+        for line in lines {
+            if line.trim() == RELOAD_SIGNAL_MARKER {
+                contents.handles_reload_signal = true;
+            } else if line.trim() == CONFIG_EDIT_MARKER {
+                contents.config_edit = true;
+            } else if let Some(reason) = line.strip_prefix(CONTROL_SOCKET_UNAVAILABLE_PREFIX) {
+                contents.control_socket_unavailable = Some(reason.to_string());
+            } else if let Some(path) = line.strip_prefix(CONTROL_SOCKET_PREFIX) {
+                contents.control_socket = Some(PathBuf::from(path));
+            }
+        }
+        contents
+    }
 }
 
 #[cfg(test)]
@@ -232,19 +394,338 @@ mod tests {
         unreachable!("loop returns on success or final error")
     }
 
-    #[test]
-    fn acquire_writes_own_pid_to_lockfile() {
+    /// A temp folder only this user can write to, as the config folder is:
+    /// the control socket refuses any other.
+    fn private_tmp() -> TempDir {
+        use std::os::unix::fs::PermissionsExt;
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("yaran.lock");
+        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        tmp
+    }
 
-        let _lock = SingleInstanceLock::acquire(&path).expect("first acquire should succeed");
+    const DEAD_SOCKET_ENV: &str = "YARAN_TEST_BIND_DEAD_SOCKET";
+
+    /// Leave a socket file that nothing listens on, the way a crashed yaran does.
+    /// A listener dropped in this process is not dead for long enough to trust:
+    /// a child forked by a test running beside this one holds a copy of the
+    /// descriptor until it execs, and a connection to that copy is accepted. A
+    /// short-lived process of its own binds the socket and exits, so no copy of
+    /// the listener exists anywhere else.
+    fn dead_socket_at(path: &std::path::Path) {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "lockfile::tests::bind_a_socket_and_exit_without_removing_it",
+                "--ignored",
+            ])
+            .env(DEAD_SOCKET_ENV, path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "the helper process failed to bind");
+        assert!(path.exists(), "the helper left no socket file");
+    }
+
+    /// Run only by `dead_socket_at`, in a process of its own.
+    #[test]
+    #[ignore = "helper process for dead_socket_at"]
+    fn bind_a_socket_and_exit_without_removing_it() {
+        let Some(path) = std::env::var_os(DEAD_SOCKET_ENV) else {
+            return;
+        };
+        let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+        // Leaking skips the destructor, which would not unlink either, but this
+        // makes the "left behind" explicit.
+        std::mem::forget(listener);
+    }
+
+    /// Call `listen()` on `listener` again from a forked child, then reap it, so
+    /// the process the kernel names as the listener is one that has exited.
+    fn listen_from_a_child_that_exits(listener: &std::os::unix::net::UnixListener) {
+        use std::os::fd::AsRawFd;
+        let fd = listener.as_raw_fd();
+        // SAFETY: the child calls only async-signal-safe functions (listen and
+        // _exit) before it exits, so forking from a threaded test is sound.
+        let child = unsafe { libc::fork() };
+        assert!(
+            child >= 0,
+            "fork failed: {}",
+            std::io::Error::last_os_error()
+        );
+        if child == 0 {
+            // SAFETY: see above; `fd` is the bound socket this test opened.
+            let code = i32::from(unsafe { libc::listen(fd, 128) } != 0);
+            // SAFETY: see above; the child leaves without running any Rust
+            // teardown in a process that may hold another thread's locks.
+            unsafe { libc::_exit(code) };
+        }
+        let mut status = 0;
+        // SAFETY: `child` is this process's own child and `status` is writable.
+        let reaped = unsafe { libc::waitpid(child, &raw mut status, 0) };
+        assert_eq!(reaped, child);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "the child's listen() failed"
+        );
+    }
+
+    #[test]
+    fn acquire_writes_own_pid_and_the_control_socket_to_the_lockfile() {
+        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+        let tmp = private_tmp();
+        let path = tmp.path().join("dux.lock");
+
+        let mut lock = SingleInstanceLock::acquire(&path).expect("first acquire should succeed");
         let contents = fs::read_to_string(&path).unwrap();
-        let written: u32 = contents.trim().parse().expect("pid should parse");
+        let written = LockFileContents::parse(&contents).pid;
         assert_eq!(
             written,
-            std::process::id(),
+            Some(std::process::id()),
             "lockfile should contain the holder's PID"
         );
+        assert!(
+            contents.starts_with(&format!("{}\n", std::process::id())),
+            "the PID is the whole first line: {contents:?}"
+        );
+
+        let socket = tmp.path().join("yaran.sock");
+        lock.open_control_socket(&socket)
+            .expect("a short path in an owner-only folder binds");
+        let meta = fs::symlink_metadata(&socket).unwrap();
+        assert!(meta.file_type().is_socket());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.starts_with(&format!("{}\n", std::process::id())),
+            "the PID stays the first line: {contents:?}"
+        );
+        assert!(
+            contents.contains(&format!("control-socket={}\n", socket.display())),
+            "{contents:?}"
+        );
+        std::os::unix::net::UnixStream::connect(&socket).expect("the socket accepts");
+        drop(lock);
+
+        let mut lock = SingleInstanceLock::acquire(&path).expect("acquire again");
+        let long = tmp.path().join("x".repeat(120)).join("yaran.sock");
+        let warning = crate::control_socket::open(&mut lock, &long)
+            .expect("a path past the platform limit starts yaran without the socket");
+        let contents = fs::read_to_string(&path).unwrap();
+        let parsed = LockFileContents::parse(&contents);
+        assert_eq!(parsed.control_socket, None, "{contents:?}");
+        let reason = parsed
+            .control_socket_unavailable
+            .expect("the lock file says why");
+        assert!(reason.contains("too long"), "{reason}");
+        assert!(warning.contains(&reason), "{warning}");
+        assert!(warning.contains("[server] control_socket"), "{warning}");
+        assert!(!contents.contains("\ncontrol-socket="), "{contents:?}");
+    }
+
+    /// A clean exit takes the socket file and its line in the lock file with it.
+    #[test]
+    fn releasing_the_lock_removes_the_socket_and_its_line() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = private_tmp();
+        let path = tmp.path().join("dux.lock");
+        let socket = tmp.path().join("yaran.sock");
+        let mut lock = SingleInstanceLock::acquire(&path).unwrap();
+        lock.open_control_socket(&socket).unwrap();
+
+        drop(lock);
+
+        assert!(!socket.exists(), "the socket file is removed");
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(LockFileContents::parse(&contents).control_socket, None);
+        assert!(!contents.contains("control-socket"), "{contents:?}");
+
+        // A folder that other users came to be able to write to meanwhile is
+        // not one yaran removes anything from.
+        let folder = tmp.path().join("loosened");
+        fs::create_dir(&folder).unwrap();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = folder.join("yaran.sock");
+        let mut lock = SingleInstanceLock::acquire(&path).unwrap();
+        lock.open_control_socket(&socket).unwrap();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o777)).unwrap();
+
+        drop(lock);
+
+        assert!(socket.exists(), "left in a folder others can write to");
+    }
+
+    /// The next lock holder replaces a socket a crashed yaran left behind, and
+    /// leaves alone anything at the path that is not a dead socket.
+    #[test]
+    fn a_leftover_socket_is_replaced_and_anything_else_is_left_alone() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let tmp = private_tmp();
+        let path = tmp.path().join("dux.lock");
+        let socket = tmp.path().join("yaran.sock");
+        dead_socket_at(&socket);
+
+        let mut lock = SingleInstanceLock::acquire(&path).unwrap();
+        lock.open_control_socket(&socket)
+            .expect("a dead socket is replaced");
+        // The leftover refused every connection, so one that is accepted proves
+        // it was replaced (a filesystem may hand the new file the old inode).
+        std::os::unix::net::UnixStream::connect(&socket).expect("the new socket accepts");
+        drop(lock);
+
+        let file = tmp.path().join("notes.txt");
+        fs::write(&file, "keep me").unwrap();
+        let mut lock = SingleInstanceLock::acquire(&path).unwrap();
+        assert!(lock.open_control_socket(&file).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep me");
+
+        // A process that accepts and hangs up is alive: only silence can come
+        // from nobody.
+        let hangs_up = tmp.path().join("hangs-up.sock");
+        let hanging = std::os::unix::net::UnixListener::bind(&hangs_up).unwrap();
+        let hangs_up_ino = fs::symlink_metadata(&hangs_up).unwrap().ino();
+        let closing = std::thread::spawn(move || drop(hanging.accept().unwrap()));
+        assert!(matches!(
+            lock.open_control_socket(&hangs_up),
+            Err(crate::control_socket::Unavailable::InUse { .. })
+        ));
+        assert_eq!(fs::symlink_metadata(&hangs_up).unwrap().ino(), hangs_up_ino);
+        closing.join().unwrap();
+
+        // A socket that accepts but never answers, whose listening process is
+        // gone, is a dead yaran's listener held open by a process that inherited
+        // it, so it is replaced. The kernel names whoever last called listen()
+        // as the listener's peer, so a child that listens and exits stands in
+        // for the dead yaran while this process keeps the socket open.
+        let orphaned = tmp.path().join("orphaned.sock");
+        let held = std::os::unix::net::UnixListener::bind(&orphaned).unwrap();
+        listen_from_a_child_that_exits(&held);
+        lock.open_control_socket(&orphaned)
+            .expect("a silent socket whose listener died is replaced");
+        drop(held);
+
+        // A live yaran between binding its socket and serving it is silent too,
+        // and its socket is left alone because the process that listens on it
+        // is still there.
+        let starting = tmp.path().join("starting.sock");
+        let _starting = std::os::unix::net::UnixListener::bind(&starting).unwrap();
+        let starting_ino = fs::symlink_metadata(&starting).unwrap().ino();
+        assert!(matches!(
+            lock.open_control_socket(&starting),
+            Err(crate::control_socket::Unavailable::InUse { .. })
+        ));
+        assert_eq!(fs::symlink_metadata(&starting).unwrap().ino(), starting_ino);
+
+        let live = tmp.path().join("live.sock");
+        let serving = std::os::unix::net::UnixListener::bind(&live).unwrap();
+        let serving_ino = fs::symlink_metadata(&live).unwrap().ino();
+        let answering = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = serving.accept().unwrap();
+            let _ = stream.read(&mut [0; 1024]);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
+        });
+        assert!(matches!(
+            lock.open_control_socket(&live),
+            Err(crate::control_socket::Unavailable::InUse { .. })
+        ));
+        assert_eq!(fs::symlink_metadata(&live).unwrap().ino(), serving_ino);
+        answering.join().unwrap();
+
+        // Only a refused connection proves a socket dead: one yaran cannot even
+        // try (its mode lets nobody connect) is left where it is.
+        let shut = tmp.path().join("shut.sock");
+        dead_socket_at(&shut);
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o000)).unwrap();
+        let shut_ino = fs::symlink_metadata(&shut).unwrap().ino();
+        assert!(lock.open_control_socket(&shut).is_err());
+        assert_eq!(fs::symlink_metadata(&shut).unwrap().ino(), shut_ino);
+
+        // A folder other users can write to is refused before anything is
+        // bound or removed there, and the reason names the setting.
+        let shared = tmp.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        let in_shared = shared.join("yaran.sock");
+        dead_socket_at(&in_shared);
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+        let shared_ino = fs::symlink_metadata(&in_shared).unwrap().ino();
+        let err = lock
+            .open_control_socket(&in_shared)
+            .expect_err("a folder others can write to is refused");
+        assert!(err.to_string().contains("[server] control_socket"), "{err}");
+        assert_eq!(fs::symlink_metadata(&in_shared).unwrap().ino(), shared_ino);
+    }
+
+    /// A yaran that loses the lock race cannot reach the socket the winner holds.
+    #[test]
+    fn the_loser_of_the_lock_never_touches_the_winners_socket() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = private_tmp();
+        let path = tmp.path().join("dux.lock");
+        let socket = tmp.path().join("yaran.sock");
+        let mut winner = SingleInstanceLock::acquire(&path).unwrap();
+        winner.open_control_socket(&socket).unwrap();
+        let ino = fs::symlink_metadata(&socket).unwrap().ino();
+
+        let lost = SingleInstanceLock::acquire(&path);
+        assert!(matches!(lost, Err(AcquireError::AlreadyRunning { .. })));
+        drop(lost);
+
+        assert_eq!(fs::symlink_metadata(&socket).unwrap().ino(), ino);
+        std::os::unix::net::UnixStream::connect(&socket).expect("still serving");
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            LockFileContents::parse(&contents).control_socket,
+            Some(socket.clone())
+        );
+        drop(winner);
+    }
+
+    /// A lock file from before the marker is the PID alone; one from now
+    /// may add the marker on a later line. Both read the same PID.
+    #[test]
+    fn a_lock_file_reads_with_and_without_the_reload_marker() {
+        assert_eq!(
+            LockFileContents::parse("1234"),
+            LockFileContents {
+                pid: Some(1234),
+                handles_reload_signal: false,
+                ..LockFileContents::default()
+            }
+        );
+        assert_eq!(
+            LockFileContents::parse(&format!("1234\n{RELOAD_SIGNAL_MARKER}\n")),
+            LockFileContents {
+                pid: Some(1234),
+                handles_reload_signal: true,
+                ..LockFileContents::default()
+            }
+        );
+        assert_eq!(LockFileContents::parse("").pid, None);
+        let with_socket = LockFileContents::parse(&format!(
+            "1234\n{RELOAD_SIGNAL_MARKER}\ncontrol-socket=/home/me/.config/yaran/yaran.sock\n"
+        ));
+        assert_eq!(with_socket.pid, Some(1234));
+        assert!(with_socket.handles_reload_signal);
+        assert_eq!(
+            with_socket.control_socket,
+            Some(PathBuf::from("/home/me/.config/yaran/yaran.sock"))
+        );
+        assert_eq!(with_socket.control_socket_unavailable, None);
+        let without = LockFileContents::parse(
+            "1234\ncontrol-socket-unavailable=binding /x/yaran.sock failed: Permission denied\n",
+        );
+        assert_eq!(without.control_socket, None);
+        assert_eq!(
+            without.control_socket_unavailable.as_deref(),
+            Some("binding /x/yaran.sock failed: Permission denied")
+        );
+    }
+
+    /// The marker is written only by a process whose reload handler is in
+    /// place.
+    #[test]
+    fn the_marker_follows_the_installed_handler() {
+        crate::reload_signal::install().expect("install");
+        assert_eq!(lock_file_text(7), format!("7\n{RELOAD_SIGNAL_MARKER}\n"));
     }
 
     #[test]

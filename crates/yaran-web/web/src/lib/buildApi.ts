@@ -7,29 +7,47 @@
 // run, moves after a rebuild and restart.
 //
 // Deliberately narrow: this identifies the run, never a schema or data shape.
+// The read also names which yaran the run belongs to (`instance`), which the page
+// weighs separately (`yaranInstance.ts`): a different yaran is not a restart.
+
+import { apiFetch, rethrowAuthInterruption } from "./apiFetch"
+import { reconnectAttemptTimeoutMs } from "./connectionTiming"
+import { withDeadline } from "./deadline"
 
 export interface ServerIdentity {
   /** The binary's display version ("vX.Y.Z", or "development"). */
   version: string
   /** The server RUN, minted once per process. */
   process: string
+  /** Which yaran this is, kept across its restarts; null when it did not say. */
+  instance: string | null
 }
 
 // Reads the server's identity, answering `null` for anything that is not the
 // document. Null means unknown, which `serverChanged` treats as no evidence.
+// Throws the auth interruption when the sign-in gate stopped the read.
 export async function fetchServerIdentity(): Promise<ServerIdentity | null> {
   try {
-    const resp = await fetch("/api/v1/build", {
-      credentials: "same-origin",
-      cache: "no-store",
+    // One deadline over the whole read, body included: a reopened app socket
+    // waits on this answer, so a stalled one must end as unknown.
+    return await withDeadline(reconnectAttemptTimeoutMs(), async (signal) => {
+      const resp = await apiFetch("/api/v1/build", {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal,
+      })
+      if (!resp.ok) return null
+      const body: unknown = await resp.json()
+      if (typeof body !== "object" || body === null) return null
+      const { version, process, instance } = body as Partial<ServerIdentity>
+      if (typeof version !== "string" || typeof process !== "string") return null
+      return { version, process, instance: typeof instance === "string" ? instance : null }
     })
-    if (!resp.ok) return null
-    const body: unknown = await resp.json()
-    if (typeof body !== "object" || body === null) return null
-    const { version, process } = body as Partial<ServerIdentity>
-    if (typeof version !== "string" || typeof process !== "string") return null
-    return { version, process }
-  } catch {
+  } catch (e) {
+    // A read the sign-in gate stopped was never answered by anyone, so it is
+    // neither "unknown" nor a completed check: the caller must not treat it as
+    // having talked to the server.
+    rethrowAuthInterruption(e)
     return null
   }
 }

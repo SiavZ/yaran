@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import type { YaranState } from "@/lib/store"
 import {
@@ -18,8 +18,9 @@ vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 })
 
 // The standalone editor surface: a whole browser tab that is nothing but the
 // editor (plan (b)). What is pinned here: the shell composes EditorBody (the
-// code editor mounts), names the agent, deliberately offers NO in-app exit
-// (the browser's own Back/close-tab controls are the way out), renders
+// code editor mounts), names the agent in the body's header, offers an in-app
+// exit only on a phone (the generic Back, which pushes a named screen; on a
+// computer the browser's own Back/close-tab controls are the way out), renders
 // not-found for a vanished agent, and the overlay Dialog stands down while
 // the tab is the standalone surface so EditorBody can never mount twice.
 // Also pinned: the phone header folds its secondary controls into one ⋯
@@ -39,8 +40,10 @@ vi.mock("@/lib/store", async (importOriginal) => {
   return {
     ...actual,
     useYaran: () => mockState,
+    leaveStandaloneEditor: (...a: unknown[]) => leaveStandaloneEditor(...a),
   }
 })
+const leaveStandaloneEditor = vi.fn()
 
 vi.mock("@/lib/fileApi", () => ({
   fileApi: {
@@ -73,6 +76,12 @@ function codeEditorStub() {
 }
 vi.mock("@/components/CodeEditor", codeEditorStub)
 vi.mock("./CodeEditor", codeEditorStub)
+// The language picker's registry read would otherwise load real Monaco, which
+// cannot run under jsdom.
+let registeredLanguages: Array<{ id: string; aliases?: string[]; extensions?: string[] }> = []
+vi.mock("@/lib/monacoLanguages", () => ({
+  loadRegisteredLanguages: async () => registeredLanguages,
+}))
 
 // Panel props recorded at render time. This shell is the UNCAPPED half of the
 // width question: the overlay's DialogContent caps at min(80rem, 100%-2rem)
@@ -175,6 +184,11 @@ async function seedState(overrides: Partial<YaranState>) {
   })
 }
 
+// Loaded at collection, where no test timeout applies: the first load of the
+// editor and the store behind it is the slowest step in the file, and inside a
+// test it is charged to whichever case happens to run first.
+await import("@/components/StandaloneEditor")
+
 describe("the standalone editor shell", () => {
   beforeEach(async () => {
     vi.clearAllMocks()
@@ -188,7 +202,7 @@ describe("the standalone editor shell", () => {
     vi.unstubAllGlobals()
   })
 
-  it("composes EditorBody full-viewport with the agent name and no in-app exit", async () => {
+  it("composes EditorBody full-viewport, naming the agent in the body's own header", async () => {
     await seedState({})
     const { StandaloneEditorShell } = await import(
       "@/components/StandaloneEditor"
@@ -199,9 +213,15 @@ describe("the standalone editor shell", () => {
     await act(async () => { await vi.dynamicImportSettled() })
     // The body mounted: the (stubbed) code editor is on screen.
     await screen.findByTestId("code-editor")
-    // The agent is named.
-    expect(screen.getByText("My agent")).toBeTruthy()
-    // No "Open in yaran" link: the exit is deliberately the browser's own
+    // The agent is named once, as a chip after "Editor for", in the one
+    // header the body draws: there is no second identity bar above it.
+    const chips = screen.getAllByText("My agent")
+    expect(chips).toHaveLength(1)
+    expect(chips[0].getAttribute("data-slot")).toBe("inline-code")
+    expect(
+      chips[0].parentElement!.parentElement!.textContent!.replace(/\s+/g, ""),
+    ).toBe("EditorforMyagent")
+    // No "Open in yaran" link: on a computer the exit is the browser's own
     // controls (Back, or closing the tab), so the shell ships no anchor.
     expect(screen.queryByRole("link", { name: /open in yaran/i })).toBeNull()
     // And the body knows it IS the tab: no Close button, no open-in-new-tab.
@@ -257,12 +277,68 @@ describe("the standalone editor shell", () => {
     )
     render(<StandaloneEditorShell />)
     await screen.findByTestId("code-editor")
-    expect(screen.getByText("vim")).toBeTruthy()
-    expect(screen.getByText("~/code")).toBeTruthy()
+    const chip = screen.getByText("vim")
+    expect(chip.getAttribute("data-slot")).toBe("inline-code")
+    // The owner text sits after the chip, quieter.
+    // Where it lives is a name too, so it is a chip, joined by plain words:
+    // "Editor for vim in ~/code".
+    const detail = screen.getByText("~/code")
+    expect(detail.getAttribute("data-slot")).toBe("inline-code")
+    expect(chip.nextElementSibling!.textContent).toBe("in")
+    expect(chip.nextElementSibling!.nextElementSibling).toBe(detail)
+    // The terminal's glyph, not the agent's.
+    const header = chip.closest("div.border-b") as HTMLElement
+    expect(header.querySelector("svg.lucide-square-terminal")).toBeTruthy()
   })
 
-  it("keeps the desktop header inline: mode toggle, preview-capable controls, Open local editor", async () => {
+  it("leads the phone header with the generic Back, which pushes the agent's Changes screen", async () => {
     await seedState({})
+    const { StandaloneEditorShell } = await import(
+      "@/components/StandaloneEditor"
+    )
+    render(<StandaloneEditorShell />)
+    await screen.findByTestId("code-editor")
+    const back = screen.getByRole("button", { name: "Back" })
+    // The same control every phone screen leads with, and a phone's alone.
+    expect(back.className).toContain("size-10")
+    expect(back.className).toContain("md:hidden")
+    expect(back.querySelector("svg.lucide-chevron-left")).toBeTruthy()
+    const header = back.closest("div.border-b") as HTMLElement
+    expect(header.firstElementChild).toBe(back)
+    const historyBack = vi.spyOn(history, "back")
+    fireEvent.click(back)
+    expect(leaveStandaloneEditor).toHaveBeenCalledWith(agentRoot(SESSION))
+    expect(historyBack).not.toHaveBeenCalled()
+    historyBack.mockRestore()
+  })
+
+  it("moves the path to the status bar and keeps the language picker out of the header", async () => {
+    await seedState({})
+    const { StandaloneEditorShell } = await import(
+      "@/components/StandaloneEditor"
+    )
+    render(<StandaloneEditorShell />)
+    await screen.findByTestId("code-editor")
+    const path = screen.getByText(PATH)
+    expect(path.closest("div.border-t")).toBeTruthy()
+    expect(path.closest("div.border-b")).toBeNull()
+    const header = screen
+      .getByRole("button", { name: "Back" })
+      .closest("div.border-b") as HTMLElement
+    expect(header.querySelector("[aria-label^='Syntax language']")).toBeNull()
+  })
+
+  it("keeps the desktop header inline: mode toggle and preview-capable controls", async () => {
+    await seedState({
+      changes: {
+        sessionId: SESSION,
+        phase: "loaded",
+        rev: 1,
+        staged: [],
+        unstaged: [{ path: PATH, status: "M", additions: 1, deletions: 0, staged: false }],
+        error: null,
+      } as unknown as YaranState["changes"],
+    })
     const { StandaloneEditorShell } = await import(
       "@/components/StandaloneEditor"
     )
@@ -270,17 +346,22 @@ describe("the standalone editor shell", () => {
     await screen.findByTestId("code-editor")
     // The File/Diff segmented control renders inline.
     expect(screen.getByRole("group", { name: "View mode" })).toBeTruthy()
-    // The GUI-editor dropdown is named "Open local editor" (it spawns an
-    // editor on the machine yaran runs on, not in the browser).
-    expect(screen.getByText("Open local editor")).toBeTruthy()
-    expect(screen.queryByText(/^Open editor$/)).toBeNull()
     // The mobile fold's ⋯ trigger exists but is desktop-hidden by class.
     const fold = screen.getByRole("button", { name: /more editor actions/i })
     expect(fold.className).toContain("md:hidden")
   })
 
   it("folds the phone header's secondary controls into one ⋯ menu", async () => {
-    await seedState({})
+    await seedState({
+      changes: {
+        sessionId: SESSION,
+        phase: "loaded",
+        rev: 1,
+        staged: [],
+        unstaged: [{ path: PATH, status: "M", additions: 1, deletions: 0, staged: false }],
+        error: null,
+      } as unknown as YaranState["changes"],
+    })
     const { StandaloneEditorShell } = await import(
       "@/components/StandaloneEditor"
     )
@@ -299,7 +380,8 @@ describe("the standalone editor shell", () => {
       screen.getByRole("button", { name: /^save$/i }).className,
     ).not.toContain("max-md:hidden")
     // The ⋯ menu carries the folded controls: the mode switch (with the
-    // active mode readable), the preview toggle, and Open local editor.
+    // active mode readable), the preview toggle, and, because jsdom's host is
+    // localhost, Open local editor.
     fireEvent.click(
       screen.getByRole("button", { name: /more editor actions/i }),
     )
@@ -381,6 +463,85 @@ describe("the standalone editor shell", () => {
     )
     render(<StandaloneEditorShell />)
     expect(screen.getByText(/agent not found/i)).toBeTruthy()
+  })
+})
+
+// The phone's language picker: the fold's entry opens the shared searchable
+// list as a bottom sheet.
+describe("the phone's language sheet", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    installBootStubs()
+    vi.stubGlobal("innerWidth", 390)
+    registeredLanguages = [
+      { id: "typescript", aliases: ["TypeScript"], extensions: [".ts"] },
+      { id: "yaml", aliases: ["YAML", "yaml"], extensions: [".yaml", ".yml"] },
+    ]
+    const { clearRootDrafts } = await import("@/lib/editorDrafts")
+    clearRootDrafts(rootKey(agentRoot(SESSION)))
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    registeredLanguages = []
+  })
+
+  async function openSheet() {
+    const fold = screen.getByRole("button", { name: /more editor actions/i })
+    fireEvent.click(fold)
+    fireEvent.click(await screen.findByRole("menuitem", { name: /typescript…/i }))
+    const field = await screen.findByRole("combobox", { name: "Search languages" })
+    return { fold, field }
+  }
+
+  it("searches in a sheet, and hands focus back to the fold after a pick", async () => {
+    await seedState({})
+    const { StandaloneEditorShell } = await import("@/components/StandaloneEditor")
+    render(<StandaloneEditorShell />)
+    await screen.findByTestId("code-editor")
+    const { fold, field } = await openSheet()
+    const sheet = field.closest("[data-slot=popover-content]") as HTMLElement
+    expect(sheet.className).toContain("rounded-t-2xl")
+    // Positioned, so shown: an unanchored positioner stays transparent.
+    await waitFor(() => expect(sheet.parentElement?.style.opacity).not.toBe("0"))
+    // The search takes focus at once, so the soft keyboard comes up with it.
+    await waitFor(() => expect(document.activeElement).toBe(field))
+    fireEvent.change(field, { target: { value: "yml" } })
+    fireEvent.click(screen.getByRole("option", { name: /^YAML$/ }))
+    await waitFor(() => expect(document.activeElement).toBe(fold))
+    fireEvent.click(fold)
+    expect(await screen.findByRole("menuitem", { name: /^YAML…$/ })).toBeTruthy()
+  })
+
+  it("does not reopen by itself once its file has gone", async () => {
+    await seedState({})
+    const { StandaloneEditorShell } = await import("@/components/StandaloneEditor")
+    const { openModals } = await import("@yaran/ui-kit/modalHistory")
+    const view = render(<StandaloneEditorShell />)
+    await screen.findByTestId("code-editor")
+    await openSheet()
+    const showTab = (path: string) => {
+      baseState({
+        editorTabs: {
+          [rootKey(agentRoot(SESSION))]: {
+            tabs: [{ id: "t1", path, dirty: false, preview: false, mode: "file" }],
+            activeId: "t1",
+          },
+        },
+      })
+      view.rerender(<StandaloneEditorShell />)
+    }
+    showTab("assets/logo.png")
+    await screen.findByRole("img")
+    await waitFor(() => expect(openModals()).toEqual([]))
+    // Focus goes back to the fold the sheet came from, not the page body.
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: /more editor actions/i }),
+    )
+    showTab(PATH)
+    await screen.findByTestId("code-editor")
+    expect(screen.queryByRole("combobox", { name: "Search languages" })).toBeNull()
   })
 })
 

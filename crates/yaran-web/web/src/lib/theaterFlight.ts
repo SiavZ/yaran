@@ -53,9 +53,53 @@ export const FLIGHT_CHROME_SLACK_MS = 20
 /// first stretch so the rest of the travel is already a finished capsule.
 export const FLIGHT_SHAPE_MS = 200
 
-/// The one easing the whole gesture is on, the same curve the chrome collapse
-/// uses, so nothing in the choreography moves on a different clock.
-export const FLIGHT_EASE = "cubic-bezier(0.2, 0, 0, 1)"
+/// A re-clamp's carry when the travel is too far along to take it (see
+/// `carryCanJoin`): a whole ease of its own on the flight's curve, which may run
+/// on past the travel and the stage, so a keyboard-sized move late in the
+/// flight still reads as motion rather than as a jump.
+export const FLIGHT_CARRY_MS = 200
+
+/**
+ * Can a re-clamp's carry join a curve already running (the travel, or an
+ * earlier carry's own ease) with `remainingMs` of it left, running down with it
+ * so the two land together? Only while that much is left: the curve's tail
+ * gets steeper toward the end, and past this point it would run the carry down
+ * faster in one frame than a fresh carry's ease does in its steepest frame,
+ * until in the last frames it is a jump.
+ */
+export function carryCanJoin(remainingMs: number): boolean {
+  return remainingMs >= FLIGHT_CARRY_MS / 2
+}
+
+/// The control points of the one easing the whole gesture is on, the same
+/// curve the chrome collapse uses, so nothing in the choreography moves on a
+/// different clock.
+const FLIGHT_EASE_POINTS = [0.2, 0, 0, 1] as const
+
+export const FLIGHT_EASE = `cubic-bezier(${FLIGHT_EASE_POINTS.join(", ")})`
+
+/**
+ * How far along `FLIGHT_EASE` a transition is at `t`, its share of its own
+ * duration (0 to 1), as the browser computes it. Something that has to move in
+ * lockstep with a travel already under way joins it at this point of its
+ * curve.
+ */
+export function flightEaseProgress(t: number): number {
+  if (t <= 0) return 0
+  if (t >= 1) return 1
+  const [x1, y1, x2, y2] = FLIGHT_EASE_POINTS
+  const bezier = (s: number, a: number, b: number) =>
+    3 * (1 - s) * (1 - s) * s * a + 3 * (1 - s) * s * s * b + s * s * s
+  // x(s) is monotonic for a timing function, so bisection always converges.
+  let lo = 0
+  let hi = 1
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2
+    if (bezier(mid, x1, x2) < t) lo = mid
+    else hi = mid
+  }
+  return bezier((lo + hi) / 2, y1, y2)
+}
 
 /// The flap's bottom corner radius, which is the radius the capsule squares
 /// INTO on arrival and out of at pull-off.
@@ -77,7 +121,16 @@ export function flightForMode(theater: boolean, chromeMs: number): FlightPhase {
  * The same question from a machine already mid-flight. A mode flipped back
  * during its own chrome stage undoes that stage and rests, with no flight: the
  * cluster has not moved yet, so the opposite gesture would hide a flap that is
- * still on the band. Any later interruption is a real gesture the other way.
+ * still on the band.
+ *
+ * A mode flipped back while the cluster is IN THE AIR turns it around where it
+ * is, straight into the opposite travel. Going through a chrome stage instead
+ * would either put the flap back on the band for its length, so the pill
+ * vanishes mid-air and flies out again from the dock, or keep the pill flying
+ * away from the dock it was just asked back to. Snapping against the band
+ * counts as in the air: the pill is still what is painted there.
+ *
+ * Only a resting state starts a whole gesture, chrome stage first.
  */
 export function flightForModeFrom(
   previous: FlightPhase,
@@ -86,7 +139,29 @@ export function flightForModeFrom(
 ): FlightPhase {
   const abandoned = theater ? "expanding" : "collapsing"
   if (previous === abandoned) return theater ? "floating" : "docked"
+  if (chromeMs > 0) {
+    if (theater && (previous === "returning" || previous === "attaching")) {
+      return "detaching"
+    }
+    if (!theater && previous === "detaching") return "returning"
+  }
   return flightForMode(theater, chromeMs)
+}
+
+/**
+ * Did this stage begin by turning a flight around in mid-air, rather than by
+ * leaving a resting end? Such a travel starts from the frame on screen and
+ * from the shape the cluster has at that moment, and the pull-off's fillets,
+ * which only mean something against the band, stay off.
+ */
+export function flightTurnedInAir(
+  previous: FlightPhase | null,
+  phase: FlightPhase,
+): boolean {
+  return (
+    (previous === "returning" && phase === "detaching") ||
+    (previous === "detaching" && phase === "returning")
+  )
 }
 
 /**
@@ -210,7 +285,7 @@ export function transparentShadow(shadow: string | null | undefined): string | n
 }
 
 // The docked flap's element, registered at module level as `layoutGesture.ts`
-// and `terminalFocus.ts` do: the flap is a sibling of the pane and the pill is
+// does: the flap is a sibling of the pane and the pill is
 // inside it, so a prop chain would cross the whole terminal component. What
 // travels is a measurement, not control.
 let flapElement: HTMLElement | null = null

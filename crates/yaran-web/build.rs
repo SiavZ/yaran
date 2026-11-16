@@ -356,7 +356,10 @@ fn skip_frontend_build(dist: &Path, dist_index: &Path) {
     std::fs::create_dir_all(dist)
         .and_then(|()| std::fs::write(dist_index, NOT_BUILT_PAGE))
         .unwrap_or_else(|err| {
-            panic!("yaran-web: could not write the notice page to {dist_index:?}: {err}")
+            panic!(
+                "yaran-web: could not write the notice page to \"{}\": {err}",
+                dist_index.display()
+            )
         });
     mark_state("not_built");
     println!(
@@ -385,8 +388,7 @@ fn deps_stale(web: &Path) -> bool {
         .any(|manifest| {
             std::fs::metadata(web.join(manifest))
                 .and_then(|m| m.modified())
-                .map(|mtime| mtime > snapshot_mtime)
-                .unwrap_or(false)
+                .is_ok_and(|mtime| mtime > snapshot_mtime)
         })
 }
 
@@ -439,7 +441,10 @@ fn stage_dist(dist: &Path, staged: &Path) {
     if let Err(err) = std::fs::remove_dir_all(staged)
         && err.kind() != std::io::ErrorKind::NotFound
     {
-        panic!("yaran-web: could not clear the staging directory {staged:?}: {err}");
+        panic!(
+            "yaran-web: could not clear the staging directory \"{}\": {err}",
+            staged.display()
+        );
     }
     copy_tree(dist, staged);
 }
@@ -469,11 +474,13 @@ fn stage_dist(dist: &Path, staged: &Path) {
 /// loud failure is the point.
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to)
-        .unwrap_or_else(|err| panic!("yaran-web: could not create {to:?}: {err}"));
+        .unwrap_or_else(|err| panic!("yaran-web: could not create \"{}\": {err}", to.display()));
     let entries = std::fs::read_dir(from)
-        .unwrap_or_else(|err| panic!("yaran-web: could not read {from:?}: {err}"));
+        .unwrap_or_else(|err| panic!("yaran-web: could not read \"{}\": {err}", from.display()));
     for entry in entries {
-        let entry = entry.unwrap_or_else(|err| panic!("yaran-web: could not read {from:?}: {err}"));
+        let entry = entry.unwrap_or_else(|err| {
+            panic!("yaran-web: could not read \"{}\": {err}", from.display())
+        });
         let path = entry.path();
         let dest = to.join(entry.file_name());
         if path.is_dir() {
@@ -486,18 +493,19 @@ fn copy_tree(from: &Path, to: &Path) {
         // function allows (see the doc comment).
         if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_symlink()) && !path.exists() {
             println!(
-                "cargo:warning=yaran-web: skipping the dangling symlink {path:?} while staging \
-                 web/dist; it points at nothing, so there are no bytes to embed."
+                "cargo:warning=yaran-web: skipping the dangling symlink \"{}\" while staging \
+                 web/dist; it points at nothing, so there are no bytes to embed.",
+                path.display()
             );
             continue;
         }
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|err| panic!("yaran-web: could not read {path:?}: {err}"));
+        let bytes = std::fs::read(&path).unwrap_or_else(|err| {
+            panic!("yaran-web: could not read \"{}\": {err}", path.display())
+        });
         let compressible = path
             .extension()
             .and_then(|e| e.to_str())
-            .map(|e| COMPRESSIBLE.contains(&e))
-            .unwrap_or(false);
+            .is_some_and(|e| COMPRESSIBLE.contains(&e));
         let out = if compressible {
             // The gzip magic-byte check is still needed: a checkout whose dist
             // was gzipped IN PLACE by the ancient in-place version of this
@@ -515,7 +523,10 @@ fn copy_tree(from: &Path, to: &Path) {
                 GzDecoder::new(&bytes[..])
                     .read_to_end(&mut out)
                     .unwrap_or_else(|err| {
-                        panic!("yaran-web: could not inflate the in-place-gzipped {path:?}: {err}")
+                        panic!(
+                            "yaran-web: could not inflate the in-place-gzipped \"{}\": {err}",
+                            path.display()
+                        )
                     });
                 out
             } else {
@@ -526,14 +537,16 @@ fn copy_tree(from: &Path, to: &Path) {
                 ..Default::default()
             };
             let mut compressed = Vec::new();
-            brotli::BrotliCompress(&mut raw.as_slice(), &mut compressed, &params)
-                .unwrap_or_else(|err| panic!("yaran-web: could not brotli {path:?}: {err}"));
+            brotli::BrotliCompress(&mut raw.as_slice(), &mut compressed, &params).unwrap_or_else(
+                |err| panic!("yaran-web: could not brotli \"{}\": {err}", path.display()),
+            );
             compressed
         } else {
             bytes
         };
-        std::fs::write(&dest, out)
-            .unwrap_or_else(|err| panic!("yaran-web: could not write {dest:?}: {err}"));
+        std::fs::write(&dest, out).unwrap_or_else(|err| {
+            panic!("yaran-web: could not write \"{}\": {err}", dest.display())
+        });
     }
 }
 
@@ -543,6 +556,6 @@ fn run(dir: &Path, cmd: &str, args: &[&str]) -> Option<()> {
         .current_dir(dir)
         .status()
         .ok()
-        .filter(|s| s.success())
+        .filter(std::process::ExitStatus::success)
         .map(|_| ())
 }

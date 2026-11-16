@@ -15,16 +15,23 @@ import type { AgentTabView, SessionView } from "@/lib/types"
 
 let mockState: YaranState
 const toggleTheaterMock = vi.fn()
-const openChangesScreenMock = vi.fn()
+const openChangedFilesMock = vi.fn()
+const setAccessoryBarVisibilityMock = vi.fn()
+const switchPhonePartMock = vi.fn()
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
   return {
     ...actual,
     useYaran: () => mockState,
     toggleTheater: (...a: unknown[]) => toggleTheaterMock(...a),
-    openChangesScreen: (...a: unknown[]) => openChangesScreenMock(...a),
+    openChangedFiles: (...a: unknown[]) => openChangedFilesMock(...a),
+    setAccessoryBarVisibility: (...a: unknown[]) =>
+      setAccessoryBarVisibilityMock(...a),
+    switchPhonePart: (...a: unknown[]) => switchPhonePartMock(...a),
   }
 })
+
+let reducedMotion = false
 
 function installBootStubs() {
   const mem = new Map<string, string>()
@@ -41,7 +48,7 @@ function installBootStubs() {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((query: string) => ({
-      matches: false,
+      matches: query.includes("prefers-reduced-motion") ? reducedMotion : false,
       media: query,
       onchange: null,
       addEventListener: () => {},
@@ -54,6 +61,9 @@ function installBootStubs() {
 }
 installBootStubs()
 const { MobileActionFlap } = await import("./MobileActionFlap")
+const { registerPaneInputGroup, resetPaneInputGroups } = await import(
+  "@/lib/paneInputGroup"
+)
 
 function session(): SessionView {
   return {
@@ -107,31 +117,43 @@ function zLevel(className: string): number {
 
 /// jsdom lays nothing out, so the flap's own box reads zero and no silhouette
 /// is drawn. Give it a real one, the way a browser would.
-function stubBox(width: number, height: number) {
-  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
-    configurable: true,
-    get: () => width,
-  })
-  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
-    configurable: true,
-    get: () => height,
-  })
+const realRect = Element.prototype.getBoundingClientRect
+
+/// The flap's painted box. Every other element keeps jsdom's empty one.
+function stubBox(width: number, height: number, left = 0, top = 0) {
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    if ((this as HTMLElement).dataset?.testid !== "mobile-action-flap") {
+      return realRect.call(this)
+    }
+    return {
+      x: left,
+      y: top,
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      toJSON: () => ({}),
+    } as DOMRect
+  }
 }
 
 beforeEach(() => {
+  reducedMotion = false
   installBootStubs()
   toggleTheaterMock.mockReset()
-  openChangesScreenMock.mockReset()
+  openChangedFilesMock.mockReset()
+  setAccessoryBarVisibilityMock.mockReset()
+  switchPhonePartMock.mockReset()
+  resetPaneInputGroups()
   mockState = makeState()
 })
 
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
-  // @ts-expect-error restoring jsdom's own zero-size getters
-  delete HTMLElement.prototype.offsetWidth
-  // @ts-expect-error restoring jsdom's own zero-size getters
-  delete HTMLElement.prototype.offsetHeight
+  Element.prototype.getBoundingClientRect = realRect
 })
 
 describe("the docked action flap", () => {
@@ -163,7 +185,7 @@ describe("the docked action flap", () => {
   it("opens the changes screen from the count", () => {
     render(<MobileActionFlap target={target} subject={{ kind: "agent", session: session() }} band="strip" />)
     fireEvent.click(screen.getByTestId("pane-changes-count"))
-    expect(openChangesScreenMock).toHaveBeenCalled()
+    expect(openChangedFilesMock).toHaveBeenCalled()
   })
 
   it("asks the store for theater rather than toggling anything itself", () => {
@@ -202,6 +224,21 @@ describe("the docked action flap", () => {
     expect(stroke?.getAttribute("d")).not.toContain("Z")
   })
 
+  it("draws the width the browser paints, not a rounded one, at a fractional size", () => {
+    // The landing pill is parked on this box's fractional coordinates and its
+    // CSS box is painted between edges snapped to device pixels. A silhouette
+    // built from a whole-pixel width put its right side up to half a pixel off
+    // that at the swap. At 2x: left 185.3 snaps to 185.5 and the right edge,
+    // 378.1125, to 378, so 192.5 is painted.
+    vi.stubGlobal("devicePixelRatio", 2)
+    stubBox(192.8125, 50, 185.3, 43)
+    const { container } = render(
+      <MobileActionFlap target={target} subject={{ kind: "agent", session: session() }} band="strip" />,
+    )
+    const svg = container.querySelector("svg[viewBox]") as SVGSVGElement | null
+    expect(svg?.getAttribute("viewBox")).toBe("0 0 222.5 53")
+  })
+
   it("takes the band's own color, and the plain background with no band", () => {
     const strip = render(
       <MobileActionFlap target={target} subject={{ kind: "agent", session: session() }} band="strip" />,
@@ -237,10 +274,25 @@ describe("the docked action flap", () => {
     // are compared directly and the later element in the document wins a tie.
     render(<MobileActionFlap target={target} subject={{ kind: "agent", session: session() }} band="strip" />)
     const flapZ = zLevel(screen.getByTestId("mobile-action-flap").className)
-    const pane = readFileSync("src/components/TerminalPane.tsx", "utf8")
-    const covers = [...pane.matchAll(/absolute inset-0 z-(\d+)/g)].map((m) =>
-      Number(m[1]),
-    )
+    // The stack paints the overlay layer and the part paints its covers.
+    const pane = [
+      "src/components/TerminalStack.tsx",
+      "src/components/terminal/partPieces.tsx",
+    ]
+      .map((path) => readFileSync(path, "utf8"))
+      .join("\n")
+    // The pane's floating-overlay layer is the one exemption: it is not a
+    // cover, and the pane withholds it whenever a cover owns the pane. Exempted
+    // by its own marker, so any other layer above the flap is still caught.
+    const overlayLayer = pane.match(
+      /data-testid="pane-overlay-layer"\s+className="([^"]*)"/,
+    )?.[1]
+    expect(overlayLayer, "the overlay layer's class list was not found").toBeDefined()
+    const covers = [...pane.matchAll(/className="([^"]*)"/g)]
+      .map((m) => m[1])
+      .filter((c) => c !== overlayLayer)
+      .flatMap((c) => [...c.matchAll(/absolute inset-0 z-(\d+)/g)])
+      .map((m) => Number(m[1]))
     expect(covers.length).toBeGreaterThan(0)
     for (const cover of covers) expect(flapZ).toBeGreaterThan(cover)
   })
@@ -303,5 +355,399 @@ describe("the docked action flap over a terminal", () => {
     // gets: the shape follows the cluster, which is the whole reason it is
     // generated rather than drawn once.
     expect(svg?.getAttribute("viewBox")).toBe("0 0 180 53")
+  })
+})
+
+// THE TERMINAL-KEYS TOGGLE, a phone's home for it (a computer has a row in the
+// top menu's Input group instead). It is there exactly while the pane under the
+// flap publishes a key row on offer, which only the input's owner does, and it
+// stays while the keys are hidden because that is the way to show them again.
+describe("the keys toggle in the docked flap", () => {
+  const desktopWidth = window.innerWidth
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", {
+      value: desktopWidth,
+      configurable: true,
+    })
+  })
+
+  const phone = () =>
+    Object.defineProperty(window, "innerWidth", {
+      value: 500,
+      configurable: true,
+    })
+  const publish = (keysToggle: boolean, id = "s1") =>
+    registerPaneInputGroup(id, {
+      surfaceSwitch: false,
+      composeSurface: false,
+      keysToggle,
+    })
+  const flap = () =>
+    render(
+      <MobileActionFlap
+        target={target}
+        subject={{ kind: "agent", session: session() }}
+        band="strip"
+      />,
+    )
+
+  const cases = [
+    { published: true, barVisible: true, label: "Hide terminal keys" },
+    { published: true, barVisible: false, label: "Show terminal keys" },
+    { published: false, barVisible: true, label: null },
+    { published: false, barVisible: false, label: null },
+  ]
+  for (const { published, barVisible, label } of cases) {
+    it(`${label ?? "is absent"} when ${published ? "offered" : "not offered"} and the bar is ${barVisible ? "up" : "hidden"}`, () => {
+      phone()
+      mockState = makeState({
+        bootstrap: {
+          title: "yaran",
+          mobile_accessory_bar: barVisible,
+        } as YaranState["bootstrap"],
+      })
+      publish(published)
+      flap()
+      const button = screen.queryByTestId("pane-keys-toggle")
+      if (label === null) {
+        expect(button).toBeNull()
+        return
+      }
+      expect(button?.getAttribute("aria-label")).toBe(label)
+      // The 40px floor is a utility class: jsdom lays nothing out, so the class
+      // is the only handle on it, and the neighbours are held to the same one.
+      expect(button?.className).toContain("size-10")
+    })
+  }
+
+  it("is on a computer's top menu instead, never here", () => {
+    publish(true)
+    flap()
+    expect(screen.queryByTestId("pane-keys-toggle")).toBeNull()
+  })
+
+  it("sits after the changes count and before the menu", () => {
+    phone()
+    publish(true)
+    flap()
+    const order = [
+      screen.getByTestId("pane-changes-count"),
+      screen.getByTestId("pane-keys-toggle"),
+      screen.getByLabelText("Session actions"),
+    ]
+    expect(
+      order[0].compareDocumentPosition(order[1]) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      order[1].compareDocumentPosition(order[2]) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it("writes the preference through the one setter, flipping it", () => {
+    phone()
+    publish(true)
+    flap()
+    fireEvent.click(screen.getByTestId("pane-keys-toggle"))
+    expect(setAccessoryBarVisibilityMock).toHaveBeenCalledExactlyOnceWith(false)
+  })
+
+  it("reads the pane's answer under the terminal's own id over a terminal", () => {
+    phone()
+    publish(true, "t1")
+    render(
+      <MobileActionFlap
+        target={{
+          kind: "terminal",
+          terminalId: "t1",
+          owner: { kind: "standalone" },
+        }}
+        subject={{
+          kind: "terminal",
+          terminalId: "t1",
+          owner: { kind: "standalone" },
+        }}
+        band="plain"
+      />,
+    )
+    expect(screen.getByTestId("pane-keys-toggle")).toBeTruthy()
+  })
+})
+
+// THE SWITCH BETWEEN AN AGENT AND ITS TERMINALS, a phone's only way between
+// the two parts, since it shows one at a time. It points at the part that is
+// not on screen and its icon carries that part's state, with no dot and no
+// bounce.
+describe("the agent/terminals switch in the docked flap", () => {
+  const desktopWidth = window.innerWidth
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", {
+      value: desktopWidth,
+      configurable: true,
+    })
+  })
+  const phone = () =>
+    Object.defineProperty(window, "innerWidth", {
+      value: 500,
+      configurable: true,
+    })
+  const term = (id: string, working = false) => ({
+    id,
+    owner: { kind: "session", session_id: "s1" },
+    label: id,
+    working,
+    typing: false,
+    sort_order: 0,
+  })
+  const withTerminals = (
+    terminals: ReturnType<typeof term>[],
+    agent: Partial<SessionView> = {},
+  ) =>
+    makeState({
+      spine: {
+        projects: [{ id: "p1", name: "yaran" }],
+        sessions: [{ ...session(), status: "active", ...agent }],
+        terminals,
+        sidebar: { groups: [], agentless_start: null },
+      } as unknown as YaranState["spine"],
+    })
+  const dockTarget: SelectedTarget = {
+    kind: "terminal",
+    terminalId: "t1",
+    owner: { kind: "session", sessionId: "s1" },
+  }
+  const flap = (on: SelectedTarget = target) =>
+    render(
+      <MobileActionFlap
+        target={on}
+        subject={{ kind: "agent", session: session() }}
+        band="plain"
+      />,
+    )
+  // The look rides the glyph's frame and the pulse its icon, as on every
+  // working glyph.
+  const look = () =>
+    screen.getByTestId("pane-part-switch").querySelector("[data-slot='working-glyph']")!.className
+  const icon = () => screen.getByTestId("pane-part-switch").querySelector("svg")!
+
+  it("sits after the keys toggle and before the menu", () => {
+    phone()
+    registerPaneInputGroup("s1", { surfaceSwitch: false, composeSurface: false, keysToggle: true })
+    mockState = withTerminals([term("t1")])
+    flap()
+    const keys = screen.getByTestId("pane-keys-toggle")
+    const toggle = screen.getByTestId("pane-part-switch")
+    const menu = screen.getByLabelText("Session actions")
+    expect(keys.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(toggle.compareDocumentPosition(menu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(toggle.className).toContain("h-10")
+  })
+
+  it("is absent on an agent with no terminal, and on a computer", () => {
+    phone()
+    flap()
+    expect(screen.queryByTestId("pane-part-switch")).toBeNull()
+    cleanup()
+    Object.defineProperty(window, "innerWidth", { value: desktopWidth, configurable: true })
+    mockState = withTerminals([term("t1")])
+    flap()
+    expect(screen.queryByTestId("pane-part-switch")).toBeNull()
+  })
+
+  it("shows the terminals' icon and count over the agent, pulsing busy while one runs", () => {
+    phone()
+    mockState = withTerminals([term("t1"), term("t2", true)])
+    flap()
+    const toggle = screen.getByTestId("pane-part-switch")
+    expect(toggle.textContent).toBe("2")
+    expect(toggle.getAttribute("aria-label")).toBe("Show terminals (2), working")
+    expect(icon().getAttribute("class")).toContain("lucide-square-terminal")
+    expect(look()).toContain("text-yaran-working")
+    expect(icon().getAttribute("class")).toContain("motion-safe:animate-working-pulse")
+  })
+
+  it("is plain over the agent while no terminal runs", () => {
+    phone()
+    mockState = withTerminals([term("t1")])
+    flap()
+    expect(screen.getByTestId("pane-part-switch").getAttribute("aria-label")).toBe(
+      "Show terminals (1)",
+    )
+    expect(icon().getAttribute("class")).not.toContain("animate-")
+    expect(look()).not.toMatch(/animate-|text-yaran-working|text-cyan/)
+  })
+
+  it("shows the agent's icon over its terminals, needs-you over working", () => {
+    phone()
+    mockState = withTerminals([term("t1")], { needs_attention: true, working: true })
+    flap(dockTarget)
+    const toggle = screen.getByTestId("pane-part-switch")
+    expect(toggle.getAttribute("aria-label")).toBe("Show the agent, needs you")
+    expect(icon().getAttribute("class")).toContain("lucide-bot")
+    expect(look()).toContain("text-cyan-100")
+    expect(look()).toContain("motion-safe:animate-attention-pulse")
+    // Needs-you wins: no pulse inside the blink.
+    expect(icon().getAttribute("class")).not.toContain("working-pulse")
+  })
+
+  it("carries no dot, never bounces, and holds still for less motion", () => {
+    phone()
+    mockState = withTerminals([term("t1")], { working: true })
+    flap(dockTarget)
+    const toggle = screen.getByTestId("pane-part-switch")
+    // One graphic: the icon itself, with no dot or other mark beside it.
+    expect(toggle.querySelectorAll("svg")).toHaveLength(1)
+    expect(toggle.querySelector("[aria-label='Needs attention']")).toBeNull()
+    expect(toggle.innerHTML).not.toContain("bounce")
+    // Every animation it has runs only where motion is welcome.
+    for (const cls of [icon().getAttribute("class") ?? "", look()]) {
+      for (const anim of cls.match(/\S*animate-\S+/g) ?? []) {
+        expect(anim).toMatch(/^motion-(safe|reduce):/)
+      }
+    }
+  })
+
+  it("asks the store to flip the view", () => {
+    phone()
+    mockState = withTerminals([term("t1")])
+    flap()
+    fireEvent.click(screen.getByTestId("pane-part-switch"))
+    expect(switchPhonePartMock).toHaveBeenCalledExactlyOnceWith("s1")
+  })
+})
+
+describe("the theater toggle's glyph swap", () => {
+  /// jsdom has no Web Animations: each one is modelled as a direction, a time
+  /// and whether it is still playing, which is all a turn reads or writes.
+  interface Glyph {
+    el: Element
+    keyframes: Keyframe[]
+    delay: number
+    rate: number
+    time: number | null
+    state: AnimationPlayState
+  }
+  let made: Glyph[] = []
+  beforeEach(() => {
+    made = []
+    Object.defineProperty(Element.prototype, "animate", {
+      configurable: true,
+      writable: true,
+      value: function (this: Element, keyframes: Keyframe[], timing: KeyframeAnimationOptions) {
+        const a: Glyph = {
+          el: this,
+          keyframes,
+          delay: timing.delay ?? 0,
+          rate: 1,
+          time: null,
+          state: "running",
+        }
+        made.push(a)
+        const end = a.delay + Number(timing.duration ?? 0)
+        return {
+          get playState() {
+            return a.state
+          },
+          get playbackRate() {
+            return a.rate
+          },
+          set playbackRate(v: number) {
+            a.rate = v
+          },
+          get currentTime() {
+            return a.time
+          },
+          set currentTime(v: number | null) {
+            a.time = v
+          },
+          effect: { getComputedTiming: () => ({ endTime: end }) },
+          pause: () => {
+            a.state = "paused"
+            if (a.time === null) a.time = 0
+          },
+          play: () => void (a.state = "running"),
+          cancel: () => void (a.state = "idle"),
+        } as unknown as Animation
+      },
+    })
+  })
+  afterEach(() => {
+    // @ts-expect-error jsdom has no Web Animations of its own to restore
+    delete Element.prototype.animate
+  })
+
+  const glyph = (a: Glyph) =>
+    a.el.getAttribute("class")?.includes("yaran-ic-max") ? "max" : "min"
+  const opacityTo = (a: Glyph) => Number(a.keyframes.at(-1)?.opacity)
+
+  function flap() {
+    return (
+      <MobileActionFlap
+        target={target}
+        subject={{ kind: "agent", session: session() }}
+        band="strip"
+      />
+    )
+  }
+
+  it("starts the swap under the finger, in the same commit the mode flips", () => {
+    // The flap stays on screen while the chrome collapses, so the swap the
+    // press asked for plays here, at once: not a flat swap now and a second
+    // one when the flight takes off.
+    const view = render(flap())
+    expect(made).toEqual([])
+    mockState = makeState({ theater: true })
+    view.rerender(flap())
+    expect(made.map((a) => [glyph(a), opacityTo(a), a.delay]).sort()).toEqual([
+      ["max", 0, 0],
+      ["min", 1, 0],
+    ])
+  })
+
+  it("turns a swap still in flight around from the frame it shows", () => {
+    const view = render(flap())
+    mockState = makeState({ theater: true })
+    view.rerender(flap())
+    const first = [...made]
+    expect(first.length).toBe(2)
+    first.forEach((a) => (a.time = 90))
+    mockState = makeState({ theater: false })
+    view.rerender(flap())
+    expect(made.length).toBe(first.length)
+    expect(first.map((a) => [a.rate, a.time, a.state])).toEqual(
+      first.map(() => [-1, 90, "running"]),
+    )
+  })
+
+  it("starts a fresh swap once the last one has finished", () => {
+    const view = render(flap())
+    mockState = makeState({ theater: true })
+    view.rerender(flap())
+    made.forEach((a) => (a.state = "finished"))
+    mockState = makeState({ theater: false })
+    view.rerender(flap())
+    expect(made.slice(2).map((a) => [glyph(a), opacityTo(a)]).sort()).toEqual([
+      ["max", 1],
+      ["min", 0],
+    ])
+  })
+
+  it("stops a swap already playing when the viewer asks for less motion", () => {
+    const view = render(flap())
+    mockState = makeState({ theater: true })
+    view.rerender(flap())
+    expect(made.length).toBe(2)
+    reducedMotion = true
+    view.rerender(flap())
+    expect(made.map((a) => a.state)).toEqual(["idle", "idle"])
+  })
+
+  it("swaps flat for a viewer who asked for less motion", () => {
+    reducedMotion = true
+    const view = render(flap())
+    mockState = makeState({ theater: true })
+    view.rerender(flap())
+    expect(made).toEqual([])
   })
 })

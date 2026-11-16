@@ -1,3 +1,6 @@
+//! Sets `YARAN_DISPLAY_VERSION` for the crate: the package version on a release
+//! build (`YARAN_RELEASE_BUILD=1`), `development` otherwise.
+
 use std::env;
 
 fn main() {

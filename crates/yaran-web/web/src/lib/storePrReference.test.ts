@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 import type { Spine } from "./workspaceApi"
 import { toastText } from "@/test/toastText"
 
@@ -31,10 +38,19 @@ let resolveReply: unknown = {
 // and reopen while the request is genuinely still out.
 let deferResolve: ((value: unknown) => void) | null = null
 let resolveStatus = 200
+// What `POST .../clone-destination` answers for the folder the form offers.
+let destinationReply: unknown = { state: "free", path: "/home/u/widget" }
 let resolveMessage = ""
 const posted: { url: string; body: unknown }[] = []
 
 const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (init?.method === "POST") {
     posted.push({ url: u, body: JSON.parse(String(init.body ?? "null")) })
@@ -61,6 +77,34 @@ const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       json: async () => resolveReply,
       text: async () =>
         resolveStatus === 200 ? JSON.stringify(resolveReply) : resolveMessage,
+      headers: { get: () => "application/json" },
+    } as unknown as Response
+  }
+  if (u.includes("/api/v1/pull-requests/clone-destination")) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => destinationReply,
+      text: async () => JSON.stringify(destinationReply),
+      headers: { get: () => "application/json" },
+    } as unknown as Response
+  }
+  if (u.endsWith("/api/v1/browse")) {
+    const body = { path: "/home/u", entries: [] }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+      headers: { get: () => "application/json" },
+    } as unknown as Response
+  }
+  if (u.endsWith("/api/v1/projects") && init?.method === "POST") {
+    return {
+      ok: true,
+      status: 202,
+      json: async () => ({ op_id: "op-clone" }),
+      text: async () => JSON.stringify({ op_id: "op-clone" }),
       headers: { get: () => "application/json" },
     } as unknown as Response
   }
@@ -108,6 +152,7 @@ vi.mock("sonner", () => {
       loading: record("loading"),
       dismiss: () => {},
       custom: () => {},
+      getToasts: () => [],
     }),
   }
 })
@@ -127,6 +172,7 @@ beforeEach(() => {
   deferResolve = null
   resolveStatus = 200
   resolveMessage = ""
+  destinationReply = { state: "free", path: "/home/u/widget" }
   posted.length = 0
   toasts.length = 0
   vi.stubGlobal("location", { host: "localhost:0" })
@@ -142,7 +188,12 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -190,6 +241,7 @@ describe("the reference-first from-PR flow", () => {
           project_id: "p1",
           pr: "https://github.com/acme/widget/pull/17",
           name: "",
+          ask_id: expect.any(String),
         },
       ])
     })
@@ -281,7 +333,13 @@ describe("the reference-first from-PR flow", () => {
     mod.submitNameDialog("")
     await vi.waitFor(() => {
       expect(createBodies()).toEqual([
-        { kind: "from_pr", project_id: "p2", pr: "acme/widget#8", name: "" },
+        {
+          kind: "from_pr",
+          project_id: "p2",
+          pr: "acme/widget#8",
+          name: "",
+          ask_id: expect.any(String),
+        },
       ])
     })
   })
@@ -560,12 +618,170 @@ describe("the reference-first from-PR flow", () => {
 
     await vi.waitFor(() => {
       expect(createBodies()).toEqual([
-        { kind: "from_pr", project_id: "p1", pr: "#123", name: "" },
+        {
+          kind: "from_pr",
+          project_id: "p1",
+          pr: "#123",
+          name: "",
+          ask_id: expect.any(String),
+        },
       ])
     })
     expect(
       posted.some((p) => p.url.includes("/pull-requests/resolve")),
       "a chosen project needs no resolution",
     ).toBe(false)
+  })
+})
+
+describe("the offer to clone a repository yaran has no project for", () => {
+  const offer = {
+    address: "https://github.com/acme/widget.git",
+    host: "github.com",
+    owner_repo: "acme/widget",
+    number: 3,
+    title: "Fix the thing",
+    state: "OPEN",
+    head_branch: "fix-thing",
+    head_oid: "abc123",
+    review_copy: { state: "not_needed" },
+  }
+  const noMatch = {
+    repository: "github.com/acme/widget",
+    number: 3,
+    projects: [],
+    uninspected_count: 0,
+    uninspected_summary: null,
+  }
+  const reference = "https://github.com/acme/widget/pull/3"
+
+  async function resolveTo(reply: unknown, typedName: string) {
+    const mod = await loadStore()
+    resolveReply = reply
+    mod.openCreateAgentFromPr(null)
+    mod.setCreateAgentPrInput(reference)
+    mod.submitNameDialog(typedName)
+    return mod
+  }
+
+  it.each([
+    ["the name typed in the reference dialog", "mine", "mine"],
+    ["the pull request's branch when none was typed", "", "fix-thing"],
+  ])("opens the clone form with %s and raises no toast", async (_what, typed, expected) => {
+    const mod = await resolveTo({ ...noMatch, clone: offer }, typed)
+    await vi.waitFor(() => expect(mod.getSnapshot().cloneProject).not.toBeNull())
+    const form = mod.getSnapshot().cloneProject!
+    expect(form.name).toBe(expected)
+    expect(form.pr?.reference).toBe(reference)
+    expect(form.pr?.repository).toBe("github.com/acme/widget")
+    expect(toasts).toEqual([])
+    expect(mod.getSnapshot().newAgentPickerOpen).toBe(false)
+    expect(mod.getSnapshot().createAgentTarget).toBeNull()
+  })
+
+  it("leaves the name empty when the branch is not a usable agent name", async () => {
+    const mod = await resolveTo({ ...noMatch, clone: { ...offer, head_branch: "a b" } }, "")
+    await vi.waitFor(() => expect(mod.getSnapshot().cloneProject).not.toBeNull())
+    expect(mod.getSnapshot().cloneProject!.name).toBe("")
+  })
+
+  it("carries the incomplete answer's summary into the form", async () => {
+    const mod = await resolveTo(
+      {
+        ...noMatch,
+        uninspected_count: 1,
+        uninspected_summary: "1 has an address yaran could not read",
+        clone: offer,
+      },
+      "",
+    )
+    await vi.waitFor(() => expect(mod.getSnapshot().cloneProject).not.toBeNull())
+    expect(mod.getSnapshot().cloneProject!.pr?.incompleteSummary).toBe(
+      "1 has an address yaran could not read",
+    )
+    expect(toasts).toEqual([])
+  })
+
+  it("says why there is no offer, then opens the picker with the reference kept", async () => {
+    const mod = await resolveTo(
+      { ...noMatch, clone_unavailable: "Failed to resolve PR #3 from acme/widget: not found" },
+      "",
+    )
+    await vi.waitFor(() => expect(mod.getSnapshot().newAgentPickerOpen).toBe(true))
+    expect(toasts.map((t) => t.message).join(" ")).toContain(
+      "No project in yaran is a checkout of github.com/acme/widget. Choose a project that already has it, or add one from a directory on disk. yaran could not look the pull request up to offer a clone: Failed to resolve PR #3 from acme/widget: not found",
+    )
+    expect(mod.getSnapshot().cloneProject).toBeNull()
+    expect(mod.getSnapshot().pendingPrReference).toBe(reference)
+  })
+
+  // A clone this tab started, up to the point its dialog has closed.
+  async function startedClone(name = "fix-thing") {
+    const mod = await resolveTo({ ...noMatch, clone: offer }, name)
+    await vi.waitFor(() => expect(mod.getSnapshot().cloneProject).not.toBeNull())
+    await vi.waitFor(() => expect(mod.getSnapshot().cloneProject!.startFolder).toBe("/home/u"))
+    mod.submitCloneProject()
+    await vi.waitFor(() => expect(mod.getSnapshot().cloneProject).toBeNull())
+    return mod
+  }
+  const pullRequest = { host: "github.com", owner_repo: "acme/widget", number: 3 }
+  const finalWith = (key: string, ask: Record<string, unknown>) => ({
+    event: "status",
+    key,
+    tone: "error",
+    message: "Pushes would land on \"fix-thing-review\".",
+    ask: {
+      kind: "review_copy",
+      warned: "busy:fix-thing-review",
+      warning: ["Pushes would land on ", { name: "fix-thing-review", quoted: true }, "."],
+      ...ask,
+    },
+    scope: "all",
+  })
+
+  it("reopens New agent from PR in the project when the review copy is only found after the clone", async () => {
+    const mod = await startedClone()
+    // The create the clone hands off to has a status of its own, not the clone's.
+    mod.eventsSocket.onEvent(
+      finalWith("op-create-9", { warned: "busy:#3:fix-thing-review:x", project_id: "p9", pull_request: pullRequest }),
+    )
+    const snap = mod.getSnapshot()
+    expect(snap.createAgentTarget).toEqual({ kind: "pr", projectId: "p9" })
+    expect(snap.createAgentPrInput).toBe(reference)
+    expect(snap.createAgentDraft).toBe("fix-thing")
+    expect(snap.createAgentReviewCopy).toMatchObject({
+      warned: "busy:#3:fix-thing-review:x",
+      agreed: false,
+    })
+    // The final still reaches the toast.
+    expect(toasts.map((t) => t.tone)).toContain("error")
+  })
+
+  it("leaves a create dialog the user has open alone", async () => {
+    const mod = await startedClone()
+    mod.openCreateAgentFromPr("p1")
+    mod.setCreateAgentPrInput("#7")
+    mod.eventsSocket.onEvent(
+      finalWith("op-create-9", { project_id: "p9", pull_request: pullRequest }),
+    )
+    expect(mod.getSnapshot().createAgentTarget).toEqual({ kind: "pr", projectId: "p1" })
+    expect(mod.getSnapshot().createAgentPrInput).toBe("#7")
+    expect(mod.getSnapshot().createAgentReviewCopy).toBeNull()
+  })
+
+  it("reopens the clone form with its values and the question when the clone is refused for want of an answer", async () => {
+    const mod = await startedClone()
+    mod.eventsSocket.onEvent(finalWith("op-clone", { warned: "busy:fix-thing-review", pull_request: pullRequest }))
+    const form = mod.getSnapshot().cloneProject!
+    expect(form.path).toBe("/home/u/widget")
+    expect(form.name).toBe("fix-thing")
+    expect(form.submitting).toBe(false)
+    expect(form.pr?.reviewCopy).toMatchObject({
+      state: "needed",
+      reason: "busy",
+      copy_branch: "fix-thing-review",
+    })
+    expect(form.pr?.reviewCopyAgreed).toBe(false)
+    expect(toasts.map((t) => t.tone)).toContain("error")
   })
 })

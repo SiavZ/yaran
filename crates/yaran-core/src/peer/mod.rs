@@ -35,7 +35,7 @@ pub use handle::{
     AGENT_HANDLE_MAX_LEN, amq_handle, derive_agent_handle, is_valid_agent_handle,
     next_unique_agent_handle, normalize_agent_handle,
 };
-pub use router::run_peer;
+pub use router::{PeerSnapshot, routable_sessions, run_peer, sync_and_list};
 pub use session_store::{
     append_session_env, init_for_process, launch_env_for_session, load_or_create_store_id,
 };

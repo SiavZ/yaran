@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// Loaded once at collection, where no test timeout applies and, with no window
+// stubbed yet, the store boots nothing. Its first load is by far the slowest
+// step in the file; left to the first test, a busy machine pushes that test
+// past its timeout. Every test still imports its own fresh instance after
+// `vi.resetModules`.
+import "./store"
+
 // Mock sonner before importing the store so the raiser the store calls
 // (`lib/notify.ts`) picks up our spies (mirrors storeStatusToasts.test.ts). A
 // REST 4xx/5xx rides no `/ws` CommandResult, so the store's own `.catch` must
@@ -7,15 +14,35 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("sonner", () => {
   const toast = Object.assign(vi.fn(), {
     success: vi.fn(),
+    info: vi.fn(),
     error: vi.fn(),
     warning: vi.fn(),
     loading: vi.fn(),
     dismiss: vi.fn(),
+    getToasts: vi.fn(() => []),
   })
   return { toast }
 })
 
 import { toast } from "sonner"
+
+// The confirmations the browser raises itself, read as their plain spelling.
+// The real raisers still run, so the sonner spies above see every toast.
+const raised: { tone: string; text: string }[] = []
+vi.mock("./notify", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./notify")>()
+  const spy =
+    (tone: string, raise: typeof actual.notifyInfo) =>
+    (...args: Parameters<typeof actual.notifyInfo>) => {
+      raised.push({ tone, text: actual.noticeText(args[0]) })
+      raise(...args)
+    }
+  return {
+    ...actual,
+    notifyInfo: spy("info", actual.notifyInfo),
+    notifySuccess: spy("success", actual.notifySuccess),
+  }
+})
 
 // The window `lib/notify.ts` gives an error: four times the 6s default the
 // bootstrap document carries here. Asserting it (rather than the message alone)
@@ -43,6 +70,13 @@ function isBootRead(u: string): boolean {
 }
 
 const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+  // The public status route answers as every yaran does: no password here.
+  if (String(url).includes("/api/v1/auth/status")) {
+    return new Response(
+      JSON.stringify({ password_set: false, required_here: false, signed_in: false }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )
+  }
   const u = String(url)
   if (isBootRead(u)) {
     if (u.includes("/api/v1/workspace")) {
@@ -50,7 +84,7 @@ const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
         ok: true,
         status: 200,
         json: async () => ({
-          projects: [],
+          projects: [{ id: "p1", name: "web" }],
           sessions: [],
           sidebar: { groups: [], agentless_start: null },
         }),
@@ -121,6 +155,7 @@ beforeEach(() => {
   actionStatus = 400
   actionCalls.length = 0
   bootstrapExtra = {}
+  raised.length = 0
   vi.stubGlobal("location", { host: "localhost:0" })
   vi.stubGlobal("localStorage", {
     getItem: () => null,
@@ -134,9 +169,16 @@ beforeEach(() => {
   vi.resetModules()
 })
 
-afterEach(() => {
+// `vi.resetModules` gives the next test a fresh store but does not stop this
+// one: its app socket would keep reconnecting on real timers, and every socket
+// and request it makes would land on the next test's fakes.
+afterEach(async () => {
+  const store = await import("./store")
+  store.eventsSocket.dispose()
   vi.unstubAllGlobals()
 })
+
+type Store = typeof import("./store")
 
 async function loadStore() {
   const mod = await import("./store")
@@ -162,7 +204,7 @@ describe("store write actions route to REST", () => {
     })
     actionFails = true
     expect(await mod.saveGlobalEnv({ API_KEY: "new" })).toBe(false)
-    expect(toast.error).toHaveBeenCalledWith("the server said no", { duration: ERROR_DURATION })
+    expect(toast.error).toHaveBeenCalledWith("the server said no", expect.objectContaining({ duration: ERROR_DURATION }))
   })
 
   it("createAgent POSTs the new-session endpoint", async () => {
@@ -214,19 +256,83 @@ describe("store write actions route to REST", () => {
     expect(actionCalls[0].body).toEqual({ provider: "codex" })
   })
 
-  it("submitAttachPullRequest PUTs the typed reference and closes the dialog", async () => {
+  it("updateProjectSettings says what it saved, and that an empty patch saved nothing", async () => {
     const mod = await loadStore()
+    expect(await mod.updateProjectSettings("p1", {}, "environment")).toBe(true)
+    expect(raised).toEqual([
+      { tone: "info", text: "Nothing to save: the environment for project web is unchanged." },
+    ])
+    raised.length = 0
+
+    expect(await mod.updateProjectSettings("p1", {})).toBe(true)
+    expect(raised).toEqual([
+      { tone: "info", text: "Nothing to save: the settings for project web are unchanged." },
+    ])
+    raised.length = 0
+
+    expect(
+      await mod.updateProjectSettings("p1", { provider: null, startup_command: "make", env: {} }),
+    ).toBe(true)
+    expect(raised).toEqual([
+      {
+        tone: "success",
+        text: "Saved the default provider, startup command and environment for project web.",
+      },
+    ])
+  })
+
+  it("updateProjectSettings reports a refusal and never claims it saved", async () => {
+    const mod = await loadStore()
+    actionFails = true
+    expect(await mod.updateProjectSettings("p1", { startup_command: "make" })).toBe(false)
+    expect(toast.error).toHaveBeenCalledWith("the server said no", expect.anything())
+    expect(raised).toEqual([])
+  })
+
+  it("updateProjectSettings keeps a half-saved field on screen until dismissed", async () => {
+    const mod = await loadStore()
+    actionFails = true
+    actionStatus = 500
+    expect(await mod.updateProjectSettings("p1", { startup_command: "make" })).toBe(false)
+    expect(toast.error).toHaveBeenCalledWith(
+      "the server said no",
+      expect.objectContaining({ duration: Infinity }),
+    )
+    vi.mocked(toast.error).mockClear()
+
+    actionStatus = 400
+    expect(await mod.updateProjectSettings("p1", { startup_command: "make" })).toBe(false)
+    expect(toast.error).toHaveBeenCalledWith(
+      "the server said no",
+      expect.objectContaining({ duration: ERROR_DURATION }),
+    )
+  })
+
+  it("submitAttachPullRequest POSTs the typed reference and goes back to the Pull requests dialog", async () => {
+    const mod = await loadStore()
+    mod.openPullRequests("s1")
     mod.openAttachPullRequest("s1")
+    expect(mod.getSnapshot().pullRequestsTarget).toBeNull()
     mod.setAttachPullRequestDraft("  #123  ")
     mod.submitAttachPullRequest()
     await vi.waitFor(() => expect(actionCalls.length).toBe(1))
-    expect(actionCalls[0].url).toBe("/api/v1/sessions/s1/pull-request")
-    expect(actionCalls[0].method).toBe("PUT")
+    expect(actionCalls[0].url).toBe("/api/v1/sessions/s1/pull-requests")
+    expect(actionCalls[0].method).toBe("POST")
     // The draft is trimmed; the raw reference text rides as `pr`.
     expect(actionCalls[0].body).toEqual({ pr: "#123" })
     // Deferred action: the dialog closes on submit, the outcome rides the
     // status toast stream.
     expect(mod.getSnapshot().attachPullRequestTarget).toBeNull()
+    expect(mod.getSnapshot().pullRequestsTarget).toBe("s1")
+  })
+
+  it("closeAttachPullRequest goes back to the Pull requests dialog it was opened from", async () => {
+    const mod = await loadStore()
+    mod.openPullRequests("s1")
+    mod.openAttachPullRequest("s1")
+    mod.closeAttachPullRequest()
+    expect(mod.getSnapshot().attachPullRequestTarget).toBeNull()
+    expect(mod.getSnapshot().pullRequestsTarget).toBe("s1")
   })
 
   it("submitAttachPullRequest refuses an empty draft without a request", async () => {
@@ -239,22 +345,39 @@ describe("store write actions route to REST", () => {
     expect(mod.getSnapshot().attachPullRequestTarget).toBe("s1")
   })
 
-  it("detachPullRequest DELETEs the pull-request endpoint", async () => {
+  const key = { host: "github.com", owner_repo: "o/r", number: 12 }
+  it.each([
+    ["detachPullRequest", (m: Store) => m.detachPullRequest("s1", key), "POST", "/detach", key],
+    ["hidePullRequest", (m: Store) => m.hidePullRequest("s1", key), "POST", "/hide", key],
+    ["showPullRequest", (m: Store) => m.showPullRequest("s1", key), "POST", "/show", key],
+    [
+      "setPullRequestSort",
+      (m: Store) => m.setPullRequestSort("s1", "manual"),
+      "PUT",
+      "/sort",
+      { mode: "manual" },
+    ],
+    [
+      "movePullRequest",
+      (m: Store) => m.movePullRequest("s1", key, "top"),
+      "POST",
+      "/move",
+      { pr: key, to: "top" },
+    ],
+    [
+      "reorderPullRequests",
+      (m: Store) => m.reorderPullRequests("s1", [key]),
+      "PUT",
+      "/order",
+      { order: [key] },
+    ],
+  ] as const)("%s sends the change the server's pull-request route reads", async (_, act, method, path, body) => {
     const mod = await loadStore()
-    mod.detachPullRequest("s1")
+    act(mod)
     await vi.waitFor(() => expect(actionCalls.length).toBe(1))
-    expect(actionCalls[0].url).toBe("/api/v1/sessions/s1/pull-request")
-    expect(actionCalls[0].method).toBe("DELETE")
-  })
-
-  it("resumePullRequestAutodetection POSTs the autodetect endpoint", async () => {
-    const mod = await loadStore()
-    mod.resumePullRequestAutodetection("s1")
-    await vi.waitFor(() => expect(actionCalls.length).toBe(1))
-    expect(actionCalls[0].url).toBe(
-      "/api/v1/sessions/s1/pull-request/autodetect",
-    )
-    expect(actionCalls[0].method).toBe("POST")
+    expect(actionCalls[0].url).toBe(`/api/v1/sessions/s1/pull-requests${path}`)
+    expect(actionCalls[0].method).toBe(method)
+    expect(actionCalls[0].body).toEqual(body)
   })
 
   it("pullProject POSTs the new project pull endpoint", async () => {
@@ -320,6 +443,7 @@ describe("store write actions surface REST errors as a toast", () => {
     await vi.waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("the server said no", {
         duration: ERROR_DURATION,
+        description: expect.anything(),
       }),
     )
   })
@@ -339,17 +463,7 @@ describe("store write actions surface REST errors as a toast", () => {
   it("detachPullRequest shows an error toast on a non-2xx", async () => {
     const mod = await loadStore()
     actionFails = true
-    mod.detachPullRequest("s1")
-    await vi.waitFor(() => expect(toast.error).toHaveBeenCalled())
-    expect(vi.mocked(toast.error).mock.calls[0][0]).toContain(
-      "the server said no",
-    )
-  })
-
-  it("resumePullRequestAutodetection shows an error toast on a non-2xx", async () => {
-    const mod = await loadStore()
-    actionFails = true
-    mod.resumePullRequestAutodetection("s1")
+    mod.detachPullRequest("s1", { host: "github.com", owner_repo: "o/r", number: 12 })
     await vi.waitFor(() => expect(toast.error).toHaveBeenCalled())
     expect(vi.mocked(toast.error).mock.calls[0][0]).toContain(
       "the server said no",
@@ -363,6 +477,7 @@ describe("store write actions surface REST errors as a toast", () => {
     await vi.waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("the server said no", {
         duration: ERROR_DURATION,
+        description: expect.anything(),
       }),
     )
   })
@@ -414,6 +529,7 @@ describe("store write actions surface REST errors as a toast", () => {
     await vi.waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("the server said no", {
         duration: ERROR_DURATION,
+        description: expect.anything(),
       }),
     )
   })

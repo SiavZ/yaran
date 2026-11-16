@@ -1,6 +1,8 @@
 import { Button } from "@yaran/ui-kit/button"
-import { Checkbox } from "@yaran/ui-kit/checkbox"
-import { GlyphSpinner } from "@/components/GlyphSpinner"
+import {
+  AgentNameInput,
+  RandomizeNameCheckbox,
+} from "@/components/AgentNameFields"
 import {
   Dialog,
   DialogContent,
@@ -9,10 +11,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@yaran/ui-kit/dialog"
+import { CheckboxRow } from "@/components/CheckboxRow"
+import { ReviewCopyQuestion } from "@/components/ReviewCopyQuestion"
 import { Input } from "@yaran/ui-kit/input"
-import { sanitizeAgentName } from "@/lib/agentName"
 import { renderProse } from "@/lib/prose"
-import type { ChangeEvent, KeyboardEvent } from "react"
+import type { KeyboardEvent } from "react"
 import {
   createAgentDialogView,
   createAgentFormView,
@@ -23,6 +26,7 @@ import {
   openNewAgentPicker,
   setCreateAgentDraft,
   setCreateAgentPrInput,
+  setCreateAgentReviewCopyAgreed,
   setPendingPrReference,
   submitNameDialog,
   toggleCreateAgentCopyChanges,
@@ -40,6 +44,7 @@ export function CreateAgentDialog() {
     createAgentPrInput,
     createAgentPrResolving,
     createAgentPrError,
+    createAgentReviewCopy,
     spine,
   } = useYaran()
   const dialog = createAgentDialogView(createAgentTarget, spine)
@@ -48,6 +53,7 @@ export function CreateAgentDialog() {
     createAgentDraft,
     createAgentPrInput,
     createAgentPrResolving,
+    createAgentReviewCopy !== null && !createAgentReviewCopy.agreed,
   )
 
   function handleSubmit() {
@@ -56,7 +62,13 @@ export function CreateAgentDialog() {
   }
 
   return (
-    <Dialog open={dialog.open} onOpenChange={handleOpenChange}>
+    // Reopened by the server's answer rather than by a click, in which case it
+    // takes no history entry for the browser's Back.
+    <Dialog
+      open={dialog.open}
+      onOpenChange={handleOpenChange}
+      historyEntry={createAgentReviewCopy === null}
+    >
       <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle>{renderProse(dialog.title)}</DialogTitle>
@@ -68,15 +80,19 @@ export function CreateAgentDialog() {
           error={createAgentPrError}
           onSubmit={handleSubmit}
         />
-        <AgentNameField
-          dialog={dialog}
+        <AgentNameInput
           value={createAgentDraft}
+          onChange={setCreateAgentDraft}
+          onSubmit={handleSubmit}
+          placeholder={dialog.namePlaceholder}
           invalid={form.invalidName}
           generating={createAgentNamePending}
-          onSubmit={handleSubmit}
+          autoFocus={dialog.nameAutoFocus}
+          ariaLabel={dialog.kind === "new" ? "Agent name" : "Branch name"}
+          ariaDescribedBy="create-agent-name-help"
         />
         <p id="create-agent-name-help" className="text-xs text-muted-foreground">
-          Letters, digits, dashes, underscores and slashes.{" "}
+          Any name git accepts for a branch.{" "}
           {dialog.kind === "new"
             ? "In worktree mode, this also becomes the branch name."
             : "This becomes the branch name."}
@@ -86,6 +102,13 @@ export function CreateAgentDialog() {
           randomize={createAgentRandomize}
           copyChanges={createAgentCopyChanges}
         />
+        {createAgentReviewCopy && (
+          <ReviewCopyQuestion
+            warning={createAgentReviewCopy.warning}
+            agreed={createAgentReviewCopy.agreed}
+            onAgreedChange={setCreateAgentReviewCopyAgreed}
+          />
+        )}
         <div className="h-2" />
         <AgentDialogFooter
           submitLabel={
@@ -114,19 +137,6 @@ function handleEnter(
   ) return
   event.preventDefault()
   onSubmit()
-}
-
-function handleNameChange(event: ChangeEvent<HTMLInputElement>): void {
-  const input = event.target
-  const raw = input.value
-  const caret = input.selectionStart ?? raw.length
-  setCreateAgentDraft(raw)
-  const sanitized = sanitizeAgentName(raw)
-  if (sanitized === raw) return
-  const next = Math.max(0, caret - (raw.length - sanitized.length))
-  // Controlled sanitization moves the caret to the end; restore its adjusted
-  // position after removed characters shorten a mid-string edit.
-  requestAnimationFrame(() => input.setSelectionRange(next, next))
 }
 
 function chooseExistingProject(reference: string): void {
@@ -185,41 +195,6 @@ function PrReferenceFields({
   )
 }
 
-interface AgentNameFieldProps {
-  dialog: CreateAgentDialogView
-  value: string
-  invalid: boolean
-  generating: boolean
-  onSubmit: () => void
-}
-
-function AgentNameField({
-  dialog,
-  value,
-  invalid,
-  generating,
-  onSubmit,
-}: AgentNameFieldProps) {
-  return (
-    <div className="relative">
-      <Input
-        aria-label={dialog.kind === "new" ? "Agent name" : "Branch name"}
-        aria-describedby="create-agent-name-help"
-        value={value}
-        onChange={handleNameChange}
-        onKeyDown={(event) => handleEnter(event, onSubmit)}
-        placeholder={dialog.namePlaceholder}
-        aria-invalid={invalid}
-        disabled={generating}
-        autoFocus={dialog.nameAutoFocus}
-      />
-      {generating && (
-        <GlyphSpinner className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-      )}
-    </div>
-  )
-}
-
 interface AgentOptionsProps {
   showCopyChanges: boolean
   randomize: boolean
@@ -233,27 +208,18 @@ function AgentOptions({
 }: AgentOptionsProps) {
   return (
     <>
-      <div className="flex items-center gap-2">
-        <Checkbox
-          id="randomize-agent-name"
-          checked={randomize}
-          onCheckedChange={toggleCreateAgentRandomize}
-        />
-        <label htmlFor="randomize-agent-name" className="text-sm">
-          Use randomized pet name
-        </label>
-      </div>
+      <RandomizeNameCheckbox
+        checked={randomize}
+        onToggle={toggleCreateAgentRandomize}
+      />
       {showCopyChanges && (
-        <div className="flex items-center gap-2">
-          <Checkbox
-            id="copy-uncommitted-changes"
-            checked={copyChanges}
-            onCheckedChange={toggleCreateAgentCopyChanges}
-          />
-          <label htmlFor="copy-uncommitted-changes" className="text-sm">
-            Copy uncommitted changes from the project checkout
-          </label>
-        </div>
+        <CheckboxRow
+          id="copy-uncommitted-changes"
+          checked={copyChanges}
+          onCheckedChange={toggleCreateAgentCopyChanges}
+        >
+          Copy uncommitted changes from the project checkout
+        </CheckboxRow>
       )}
     </>
   )

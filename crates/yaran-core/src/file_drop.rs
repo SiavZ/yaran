@@ -5,7 +5,7 @@
 //! No agent CLI reads a file from its input stream: they take a PATH, or they read
 //! the clipboard of the machine they run on, which for a browser user is the wrong
 //! computer. Every terminal emulator whose source was read (Alacritty, kitty,
-//! WezTerm, Ghostty, GNOME Terminal, Konsole, iTerm2) answers a drop by inserting
+//! `WezTerm`, Ghostty, GNOME Terminal, Konsole, iTerm2) answers a drop by inserting
 //! the path as text, so yaran saves the file and lets the browser paste its path.
 //!
 //! This module owns the saving half. The pasting half is the browser's, over its
@@ -15,9 +15,15 @@
 //!
 //! # What this module guarantees
 //!
-//! - **A dropped name is validated, never rewritten.** Rewriting names to "safe"
-//!   characters destroys them, can collapse two distinct names into one, and can
-//!   even produce `.` or `..`.
+//! - **A dropped name is validated, never rewritten, except in an agent's upload
+//!   folder.** Rewriting names to "safe" characters destroys them, can collapse
+//!   two distinct names into one, and can even produce `.` or `..`, so a drop on
+//!   a terminal or on the editor's file tree keeps its exact name. A file saved
+//!   into an agent's upload folder is the one exception: it is slugified (see
+//!   [`slugify_drop_name`]), because agent CLIs misread quotes and backslashes in
+//!   the path pasted to them, and nobody browses that folder by name. The name
+//!   as dropped is validated first either way, so a refusal means the same thing
+//!   on every destination.
 //! - **Creation is atomic and never overwrites.** The file is created relative to
 //!   a pinned directory handle, exclusively, refusing to follow a symlink. On a
 //!   name clash the next candidate is tried.
@@ -58,17 +64,18 @@ use rustix::fs::{AtFlags, Mode, OFlags};
 /// How many suffixed candidates are tried after the dropped name itself before
 /// the request is refused. Each candidate carries a counter, so this is only
 /// reached when 64 distinct names are all taken within the same second.
-pub const MAX_COLLISION_ATTEMPTS: u32 = 64;
+pub(crate) const MAX_COLLISION_ATTEMPTS: u32 = 64;
 
 /// Byte limit assumed for a single path component when the filesystem will not
 /// answer `pathconf(_PC_NAME_MAX)`. 255 is the value on ext4, APFS, XFS, btrfs
 /// and every other filesystem yaran is realistically dropped onto.
-pub const FALLBACK_NAME_MAX_BYTES: usize = 255;
+pub(crate) const FALLBACK_NAME_MAX_BYTES: usize = 255;
 
 /// Why a dropped filename is unusable.
 ///
 /// These are all REFUSALS, not repairs: the name the user dropped is the name
-/// they get, or they are told why they cannot have it.
+/// they get (slugified only in an agent's upload folder), or they are told why
+/// they cannot have it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DropNameError {
     /// No name at all.
@@ -87,7 +94,10 @@ pub enum DropNameError {
     Control,
     /// Longer than this filesystem allows. The limit is in BYTES, which is what
     /// the kernel counts.
-    TooLong { limit: usize },
+    TooLong {
+        /// The filesystem's limit, in bytes.
+        limit: usize,
+    },
 }
 
 impl std::fmt::Display for DropNameError {
@@ -188,7 +198,7 @@ impl std::fmt::Display for TreeDirError {
 ///
 /// The empty string is the worktree ROOT and is allowed: it is what the browser
 /// sends for a drop on empty tree space.
-pub fn validate_tree_drop_dir(relative: &str) -> Result<(), TreeDirError> {
+pub(crate) fn validate_tree_drop_dir(relative: &str) -> Result<(), TreeDirError> {
     if relative.is_empty() {
         return Ok(());
     }
@@ -215,7 +225,12 @@ pub fn validate_tree_drop_dir(relative: &str) -> Result<(), TreeDirError> {
 pub enum DropDirError {
     /// The folder could not be opened, or a live process could not be asked
     /// where it is.
-    Io(std::io::Error),
+    Io {
+        /// The folder, when the failure was about one yaran could name.
+        folder: Option<PathBuf>,
+        /// What the system answered.
+        err: std::io::Error,
+    },
     /// The folder was pinned, but its path cannot be sent to a terminal without
     /// changing what it names. See [`UnreportablePath`].
     Unreportable(UnreportablePath),
@@ -224,7 +239,10 @@ pub enum DropDirError {
     /// one way a relative, traversal-free `ui.upload_directory` could still
     /// land outside the worktree, and a file in the way means the path names
     /// something yaran did not create and must not disturb.
-    UploadPathBlocked { component: String },
+    UploadPathBlocked {
+        /// The path component that is in the way.
+        component: String,
+    },
     /// The directory the editor's file tree named is not a place a file may be
     /// put. See [`TreeDirError`].
     TreeDirRefused(TreeDirError),
@@ -232,7 +250,10 @@ pub enum DropDirError {
     /// rather than a directory. Refused rather than followed, for the same
     /// reason as [`Self::UploadPathBlocked`]: a symlink is the one way a
     /// relative, traversal-free directory still lands outside the worktree.
-    TreePathBlocked { component: String },
+    TreePathBlocked {
+        /// The path component that is a symlink.
+        component: String,
+    },
     /// A component of the editor tree directory is not there. The browser's
     /// tree is a lazy client-side cache, so the ordinary way to reach this is
     /// a folder deleted elsewhere since the tree last listed it.
@@ -240,7 +261,10 @@ pub enum DropDirError {
     /// It is its OWN variant rather than an [`Self::Io`] carrying `ENOENT`
     /// because the message is shown to a person: an errno is not a sentence,
     /// and every other refusal on this path is written in the user's words.
-    TreeDirMissing { component: String },
+    TreeDirMissing {
+        /// The path component that is missing.
+        component: String,
+    },
     /// The editor tree directory was opened, and the path it answers to no
     /// longer names it (it was removed while the handle was held).
     ///
@@ -266,7 +290,17 @@ pub enum DropDirError {
 impl std::fmt::Display for DropDirError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(e) => write!(f, "could not open the destination folder: {e}"),
+            Self::Io {
+                folder: Some(folder),
+                err,
+            } => write!(
+                f,
+                "could not open the destination folder \"{}\": {err}",
+                folder.display()
+            ),
+            Self::Io { folder: None, err } => {
+                write!(f, "could not open the destination folder: {err}")
+            }
             Self::Unreportable(why) => write!(
                 f,
                 "the file was not saved, because {why}, so the path could not be \
@@ -310,9 +344,29 @@ impl std::fmt::Display for DropDirError {
 
 impl std::error::Error for DropDirError {}
 
-impl From<std::io::Error> for DropDirError {
-    fn from(e: std::io::Error) -> Self {
-        Self::Io(e)
+impl DropDirError {
+    /// An [`Self::Io`] failure about `folder`.
+    fn io(folder: &Path, err: impl Into<std::io::Error>) -> Self {
+        Self::Io {
+            folder: Some(folder.to_path_buf()),
+            err: err.into(),
+        }
+    }
+
+    /// An [`Self::Io`] failure about no folder yaran could name.
+    fn io_unnamed(err: impl Into<std::io::Error>) -> Self {
+        Self::Io {
+            folder: None,
+            err: err.into(),
+        }
+    }
+
+    /// The system's answer, when this is an [`Self::Io`] failure.
+    fn io_error(&self) -> Option<&std::io::Error> {
+        match self {
+            Self::Io { err, .. } => Some(err),
+            _ => None,
+        }
     }
 }
 
@@ -322,7 +376,7 @@ impl From<std::io::Error> for DropDirError {
 /// Pure, so the cases that cannot be constructed on a filesystem (a relative
 /// answer from a lookup that should only ever produce absolute ones) are still
 /// pinned by a test.
-pub fn check_reportable_dir_path(path: &Path) -> Result<&str, UnreportablePath> {
+pub(crate) fn check_reportable_dir_path(path: &Path) -> Result<&str, UnreportablePath> {
     if !path.is_absolute() {
         return Err(UnreportablePath::NotAbsolute);
     }
@@ -340,7 +394,10 @@ pub enum DropSaveError {
     Name(DropNameError),
     /// Something already at this name is a SYMLINK. The request fails rather
     /// than being renamed around, for ANY candidate name and not only the first.
-    Symlink { name: String },
+    Symlink {
+        /// The name the symlink is at.
+        name: String,
+    },
     /// Every candidate name was taken, or the name is so long that no suffixed
     /// candidate fits within the filesystem's limit. Fails deterministically
     /// rather than looping.
@@ -380,7 +437,8 @@ pub struct SavedDrop {
     pub path: PathBuf,
     /// The name it was actually saved under.
     pub saved_name: String,
-    /// True when a collision forced a different name from the dropped one. The
+    /// True when the saved name differs from the dropped one, because the
+    /// destination slugifies names or because a collision forced a suffix. The
     /// browser reports the pair (original, saved) rather than a count, because a
     /// count says something changed without saying what the file is now called.
     pub renamed: bool,
@@ -390,7 +448,7 @@ pub struct SavedDrop {
 /// per-component limit is `name_max` bytes.
 ///
 /// Validation, never repair. See [`DropNameError`] for each refusal.
-pub fn validate_drop_name(name: &str, name_max: usize) -> Result<(), DropNameError> {
+pub(crate) fn validate_drop_name(name: &str, name_max: usize) -> Result<(), DropNameError> {
     if name.is_empty() {
         return Err(DropNameError::Empty);
     }
@@ -454,7 +512,7 @@ fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
 /// the extension is shortened too, and if there is still no room for a single
 /// character of stem this returns `None` and the request fails deterministically
 /// rather than looping or producing something unusable.
-pub fn collision_candidate(
+pub(crate) fn collision_candidate(
     name: &str,
     stamp: &str,
     counter: u32,
@@ -481,6 +539,63 @@ pub fn collision_candidate(
     }
 }
 
+/// How a destination names the file it saves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropNaming {
+    /// The name exactly as dropped.
+    Exact,
+    /// The name through [`slugify_drop_name`].
+    Slugified,
+}
+
+/// The slugified form of a dropped name, fitted within `name_max` bytes.
+///
+/// The stem and the last extension are slugified separately so the file keeps
+/// a type a viewer recognizes: `Report Q3 (draft).PDF` becomes
+/// `report-q3-draft.pdf`. A leading dot survives, so `.env` stays a hidden
+/// file. A stem with nothing left after slugifying becomes `file`, and an
+/// extension with nothing left is dropped. Slugifying can lengthen a name
+/// (transliteration spells a glyph out in letters), so the stem is shortened to
+/// fit, keeping the extension.
+pub fn slugify_drop_name(name: &str, name_max: usize) -> String {
+    let (dot, rest) = match name.strip_prefix('.') {
+        Some(rest) => (".", rest),
+        None => ("", name),
+    };
+    let (stem, ext) = match rest.rfind('.') {
+        Some(idx) if idx > 0 => (&rest[..idx], &rest[idx + 1..]),
+        _ => (rest, ""),
+    };
+    let mut stem = slug::slugify(stem);
+    if stem.is_empty() {
+        stem = "file".to_string();
+    }
+    let ext = slug::slugify(ext);
+    let ext = if ext.is_empty() {
+        String::new()
+    } else {
+        format!(".{ext}")
+    };
+    // One byte of stem is the least a name can have, so the extension gives way
+    // first only when even that would not fit.
+    let ext = truncate_at_char_boundary(&ext, name_max.saturating_sub(dot.len() + 1));
+    let ext = if ext == "." { "" } else { ext };
+    let room = name_max.saturating_sub(dot.len() + ext.len());
+    // A cut can land just after a dash, and a slug never ends in one.
+    let stem = truncate_at_char_boundary(&stem, room).trim_end_matches('-');
+    format!("{dot}{stem}{ext}")
+}
+
+/// Whether the upload directory is seeded with its self-ignoring `.gitignore`,
+/// whether yaran just created the directory or it was already there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UploadGitignore {
+    /// Write the `.gitignore` when the directory has none.
+    Write,
+    /// Write none.
+    Skip,
+}
+
 /// A PINNED handle to the directory a dropped file will be written into.
 ///
 /// The handle, not the path, is the thing that matters. Resolving a directory to
@@ -496,7 +611,9 @@ pub struct DropDir {
 
 impl std::fmt::Debug for DropDir {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DropDir").field("path", &self.path).finish()
+        f.debug_struct("DropDir")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
     }
 }
 
@@ -508,25 +625,31 @@ impl DropDir {
     /// is the deliverable: a file saved into a folder yaran cannot name is a file
     /// the user cannot reference, and it is better to refuse than to leave one
     /// behind and report a path that names something else.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the directory cannot be opened, or its path cannot be sent to a terminal
+    /// unchanged.
     pub fn open(dir: &Path) -> Result<Self, DropDirError> {
         let fd = rustix::fs::open(
             dir,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
         )
-        .map_err(|e| DropDirError::Io(e.into()))?;
+        .map_err(|e| DropDirError::io(dir, e))?;
         let path = reportable_path_of(&fd, dir)?;
         Ok(Self { fd, path })
     }
 
     /// Pin the AGENT UPLOAD DIRECTORY inside `worktree`, creating it (and every
     /// missing parent) if it is not there yet, and seeding its self-ignoring
-    /// `.gitignore` in the same step when `write_gitignore` is on.
+    /// `.gitignore` when `gitignore` says to and the directory, new or not,
+    /// has none (see [`seed_uploads_gitignore`]).
     ///
     /// This is the ONE place the upload directory comes into existence.
     ///
     /// `relative` must already have been through
-    /// [`crate::config::normalized_upload_directory`], which guarantees it is
+    /// [`crate::config::effective_upload_directory`], which guarantees it is
     /// relative and made of named components only. That check is about the SHAPE
     /// of the path; the enforcement is here: the walk opens one component at a time
     /// from the pinned worktree handle with `O_NOFOLLOW`, so a symlink at ANY
@@ -538,10 +661,10 @@ impl DropDir {
     /// `EEXIST` and the walk simply opens what is there, and the `.gitignore` is
     /// created with `O_CREAT | O_EXCL`, so exactly one writer creates it and an
     /// existing one is left untouched whatever it holds, symlink included.
-    pub fn open_uploads(
+    pub(crate) fn open_uploads(
         worktree: &Path,
         relative: &str,
-        write_gitignore: bool,
+        gitignore: UploadGitignore,
     ) -> Result<Self, DropDirError> {
         // Reuse an existing legacy default without moving uploads or replacing
         // explicit custom paths. The normal fd walk still refuses symlinks.
@@ -561,7 +684,7 @@ impl DropDir {
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
         )
-        .map_err(|e| DropDirError::Io(e.into()))?;
+        .map_err(|e| DropDirError::io(worktree, e))?;
 
         let mut opened_as = worktree.to_path_buf();
         for component in Path::new(relative).components() {
@@ -573,7 +696,7 @@ impl DropDir {
             // apply: this lives in the user's own worktree.
             match rustix::fs::mkdirat(&fd, name, Mode::from_bits_truncate(0o777)) {
                 Ok(()) | Err(rustix::io::Errno::EXIST) => {}
-                Err(e) => return Err(DropDirError::Io(e.into())),
+                Err(e) => return Err(DropDirError::io(&opened_as.join(name), e)),
             }
             fd = match rustix::fs::openat(
                 &fd,
@@ -593,19 +716,19 @@ impl DropDir {
                 // arm. They are one refusal anyway: something that is not the
                 // directory yaran expected is sitting on the path, and following
                 // it or writing next to it would be worse than saying so.
-                Err(rustix::io::Errno::LOOP)
-                | Err(rustix::io::Errno::MLINK)
-                | Err(rustix::io::Errno::NOTDIR) => {
+                Err(
+                    rustix::io::Errno::LOOP | rustix::io::Errno::MLINK | rustix::io::Errno::NOTDIR,
+                ) => {
                     return Err(DropDirError::UploadPathBlocked {
                         component: name.to_string_lossy().into_owned(),
                     });
                 }
-                Err(e) => return Err(DropDirError::Io(e.into())),
+                Err(e) => return Err(DropDirError::io(&opened_as.join(name), e)),
             };
             opened_as.push(name);
         }
 
-        if write_gitignore {
+        if gitignore == UploadGitignore::Write {
             seed_uploads_gitignore(&fd);
         }
 
@@ -632,7 +755,7 @@ impl DropDir {
     /// from the pinned worktree handle with `O_NOFOLLOW`, so a symlink at any
     /// component fails the request instead of being followed out of the tree, and
     /// nothing is resolved back to text and reopened.
-    pub fn open_tree_dir(worktree: &Path, relative: &str) -> Result<Self, DropDirError> {
+    pub(crate) fn open_tree_dir(worktree: &Path, relative: &str) -> Result<Self, DropDirError> {
         validate_tree_drop_dir(relative).map_err(DropDirError::TreeDirRefused)?;
 
         let mut fd = rustix::fs::open(
@@ -640,7 +763,7 @@ impl DropDir {
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
         )
-        .map_err(|e| DropDirError::Io(e.into()))?;
+        .map_err(|e| DropDirError::io(worktree, e))?;
 
         let mut opened_as = worktree.to_path_buf();
         for segment in relative.split('/').filter(|s| !s.is_empty()) {
@@ -656,9 +779,9 @@ impl DropDir {
                 // symlink reports ENOTDIR on Linux, exactly like a plain file
                 // in the way, while macOS documents ELOOP and some BSDs answer
                 // EMLINK.
-                Err(rustix::io::Errno::LOOP)
-                | Err(rustix::io::Errno::MLINK)
-                | Err(rustix::io::Errno::NOTDIR) => {
+                Err(
+                    rustix::io::Errno::LOOP | rustix::io::Errno::MLINK | rustix::io::Errno::NOTDIR,
+                ) => {
                     return Err(DropDirError::TreePathBlocked {
                         component: segment.to_string(),
                     });
@@ -673,7 +796,7 @@ impl DropDir {
                         component: segment.to_string(),
                     });
                 }
-                Err(e) => return Err(DropDirError::Io(e.into())),
+                Err(e) => return Err(DropDirError::io(&opened_as.join(segment), e)),
             };
             opened_as.push(segment);
         }
@@ -709,12 +832,12 @@ impl DropDir {
     /// The filesystem's byte limit for a single name in this directory, asked of
     /// the filesystem rather than assumed. Falls back to
     /// [`FALLBACK_NAME_MAX_BYTES`] when it will not answer.
-    pub fn name_max(&self) -> usize {
+    pub(crate) fn name_max(&self) -> usize {
         // SAFETY: `fpathconf` only reads properties of the fd, which we own for
         // the duration of the call.
         let raw = unsafe { libc::fpathconf(self.fd.as_raw_fd(), libc::_PC_NAME_MAX) };
         if raw > 0 {
-            raw as usize
+            usize::try_from(raw).expect("a positive c_long fits in a usize")
         } else {
             FALLBACK_NAME_MAX_BYTES
         }
@@ -749,7 +872,7 @@ impl DropDir {
     fn entry_is_symlink(&self, name: &str) -> rustix::io::Result<bool> {
         let stat = rustix::fs::statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW)?;
         Ok(
-            rustix::fs::FileType::from_raw_mode(stat.st_mode as rustix::fs::RawMode)
+            rustix::fs::FileType::from_raw_mode(rustix::fs::RawMode::from(stat.st_mode))
                 == rustix::fs::FileType::Symlink,
         )
     }
@@ -775,7 +898,7 @@ impl DropDir {
 /// agent worktree would edit the user's main repository and affect every other
 /// worktree, which is precisely the pollution the upload directory exists to
 /// remove.
-pub const UPLOADS_GITIGNORE: &str = "*\n";
+pub(crate) const UPLOADS_GITIGNORE: &str = "*\n";
 
 /// Create the self-ignoring `.gitignore` in the pinned upload directory, unless
 /// something is already there.
@@ -824,7 +947,7 @@ fn seed_uploads_gitignore(dir: &OwnedFd) {
 /// value IS the opaque `/proc/<pid>/cwd` handle path for a terminal, and handing
 /// it out would name a directory that stops existing the moment the process
 /// does. Elsewhere there is no way to ask a handle, and `opened_as` is always a
-/// real path (a worktree, a spawn directory, or `lsof`'s answer), so it is used.
+/// real path (a worktree, a spawn directory, or the kernel's answer), so it is used.
 ///
 /// Whichever path comes out is then held to [`check_reportable_dir_path`] AND
 /// checked to still name the pinned directory, so a folder that was removed
@@ -858,11 +981,8 @@ fn reportable_path_of(fd: &OwnedFd, opened_as: &Path) -> Result<PathBuf, DropDir
 /// `open_tree_dir` relies on that when it rewords the second one.
 fn verified_path_of(fd: &OwnedFd, opened_as: &Path) -> Result<PathBuf, DropDirError> {
     #[cfg(target_os = "linux")]
-    let path = {
-        let _ = opened_as;
-        std::fs::read_link(format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd()))
-            .map_err(DropDirError::Io)?
-    };
+    let path = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd()))
+        .map_err(|e| DropDirError::io(opened_as, e))?;
     #[cfg(not(target_os = "linux"))]
     let path = opened_as.to_path_buf();
 
@@ -916,17 +1036,23 @@ fn collision_step(probe: rustix::io::Result<bool>) -> CollisionStep {
     }
 }
 
-/// Save `bytes` into `dir` under `requested_name`, or the next free candidate.
+/// Save `bytes` into `dir` under `requested_name` (as `naming` shapes it), or
+/// the next free candidate.
 ///
 /// `stamp` is the timestamp half of the collision suffix, passed in rather than
 /// read from the clock so the naming is testable.
+///
+/// # Errors
+///
+/// Fails when the name is not usable, a symlink is in the way, or the file cannot be written.
 pub fn save_drop(
     dir: &DropDir,
     requested_name: &str,
+    naming: DropNaming,
     bytes: &[u8],
     stamp: &str,
 ) -> Result<SavedDrop, DropSaveError> {
-    save_drop_from(dir, requested_name, &mut &bytes[..], stamp)
+    save_drop_from(dir, requested_name, naming, &mut &bytes[..], stamp)
 }
 
 /// Save whatever `source` yields into `dir`. See [`save_drop`].
@@ -934,22 +1060,31 @@ pub fn save_drop(
 /// A read or write failure part-way through REMOVES the partial file: an
 /// abandoned upload must leave nothing behind, or the folder fills with
 /// zero-length rubble that the user did not put there and was never told about.
-pub fn save_drop_from<R: Read>(
+pub(crate) fn save_drop_from<R: Read>(
     dir: &DropDir,
     requested_name: &str,
+    naming: DropNaming,
     source: &mut R,
     stamp: &str,
 ) -> Result<SavedDrop, DropSaveError> {
     let name_max = dir.name_max();
     validate_drop_name(requested_name, name_max).map_err(DropSaveError::Name)?;
+    let base = match naming {
+        DropNaming::Exact => requested_name.to_string(),
+        DropNaming::Slugified => {
+            let slug = slugify_drop_name(requested_name, name_max);
+            validate_drop_name(&slug, name_max).map_err(DropSaveError::Name)?;
+            slug
+        }
+    };
 
     let mut counter = 0u32;
     let mut retries = 0u32;
     loop {
         let (candidate, renamed) = if counter == 0 {
-            (requested_name.to_string(), false)
+            (base.clone(), base != requested_name)
         } else {
-            match collision_candidate(requested_name, stamp, counter, name_max) {
+            match collision_candidate(&base, stamp, counter, name_max) {
                 Some(c) => (c, true),
                 None => return Err(DropSaveError::NoUsableName),
             }
@@ -998,7 +1133,7 @@ pub fn save_drop_from<R: Read>(
             }
             // O_NOFOLLOW on an existing symlink reports ELOOP on Linux and
             // EMLINK on some BSDs. Either way it is the same refusal.
-            Err(rustix::io::Errno::LOOP) | Err(rustix::io::Errno::MLINK) => {
+            Err(rustix::io::Errno::LOOP | rustix::io::Errno::MLINK) => {
                 return Err(DropSaveError::Symlink { name: candidate });
             }
             Err(e) => return Err(DropSaveError::Io(e.into())),
@@ -1033,7 +1168,7 @@ pub enum FileDropDestination {
         /// The agent's worktree, the root the walk starts from.
         worktree: PathBuf,
         /// The upload directory relative to it, already normalized through
-        /// [`crate::config::normalized_upload_directory`].
+        /// [`crate::config::effective_upload_directory`].
         relative: String,
         /// Whether to seed the self-ignoring `.gitignore`
         /// (`ui.upload_write_gitignore`).
@@ -1067,17 +1202,42 @@ pub enum FileDropDestination {
 }
 
 impl FileDropDestination {
+    /// How a file saved here is named. Only the agent's upload folder rewrites:
+    /// its path is pasted to an agent CLI, which misreads quotes and
+    /// backslashes, and nobody browses that folder by name. A terminal's folder
+    /// and the editor's tree are where the user keeps the file, under the name
+    /// they gave it.
+    pub fn naming(&self) -> DropNaming {
+        match self {
+            Self::AgentUploads { .. } => DropNaming::Slugified,
+            Self::WorktreeDirectory { .. } | Self::Terminal(_) => DropNaming::Exact,
+        }
+    }
+
     /// Pin the destination directory, creating the agent's upload directory if
     /// this is the first file to land in it. Blocking: this creates
-    /// directories, and for a terminal reads `/proc` (Linux) or runs `lsof`
+    /// directories, and for a terminal reads `/proc` (Linux) or asks the kernel
     /// (macOS), so it belongs on a blocking pool.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a component of the upload directory is a symlink or a file, or the directory
+    /// cannot be created or opened.
     pub fn open(&self) -> Result<DropDir, DropDirError> {
         match self {
             Self::AgentUploads {
                 worktree,
                 relative,
                 write_gitignore,
-            } => DropDir::open_uploads(worktree, relative, *write_gitignore),
+            } => DropDir::open_uploads(
+                worktree,
+                relative,
+                if *write_gitignore {
+                    UploadGitignore::Write
+                } else {
+                    UploadGitignore::Skip
+                },
+            ),
             Self::WorktreeDirectory { worktree, relative } => {
                 DropDir::open_tree_dir(worktree, relative)
             }
@@ -1093,7 +1253,7 @@ impl FileDropDestination {
 /// `/w/agent2` starts with `/w/agent` and is a different directory entirely,
 /// and answering yes there refreshes an agent whose worktree never changed.
 /// `Path::starts_with` compares whole components, so it says no.
-pub fn resolved_path_is_within(root: &Path, path: &Path) -> bool {
+pub(crate) fn resolved_path_is_within(root: &Path, path: &Path) -> bool {
     path.starts_with(root)
 }
 
@@ -1125,7 +1285,7 @@ pub fn saved_file_is_within(root: &Path, saved: &Path) -> bool {
 ///
 /// Built by [`crate::pty::PtyClient::working_directory`], which owns the policy;
 /// this carries it off the engine thread so the probing (a `/proc` read on
-/// Linux, an `lsof` process on macOS) happens on a blocking pool like every
+/// Linux, a `proc_pidinfo` call on macOS) happens on a blocking pool like every
 /// other filesystem call in the server.
 ///
 /// The order is deliberate: the FOREGROUND process group first, then the shell,
@@ -1140,9 +1300,9 @@ pub fn saved_file_is_within(root: &Path, saved: &Path) -> bool {
 pub struct WorkingDirectory {
     /// The foreground process group leader, when one is running that is not the
     /// shell itself.
-    pub foreground_pid: Option<u32>,
+    pub(crate) foreground_pid: Option<u32>,
     /// The shell's own pid.
-    pub shell_pid: Option<u32>,
+    pub(crate) shell_pid: Option<u32>,
     /// Where the terminal was opened. A shell's directory changes the moment
     /// someone types `cd`, so this is the last fallback and never the answer
     /// while a live process can be asked.
@@ -1173,12 +1333,16 @@ enum CwdProbe {
 /// (signal 0, which reports `ESRCH` for a process that is gone and `EPERM` for
 /// one that is alive but not ours). That is what tells a vanished process apart
 /// from a namespace or I/O problem on both platforms, including macOS, where
-/// `lsof` exits non-zero for both reasons and says nothing useful about which.
+/// the kernel's answer fails the same way for both reasons.
 fn probe_process_cwd(pid: u32) -> CwdProbe {
     match open_process_cwd(pid) {
         Ok(dir) => CwdProbe::Pinned(dir),
-        Err(DropDirError::Io(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            CwdProbe::Failed(DropDirError::Io(e))
+        Err(denied)
+            if denied
+                .io_error()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied) =>
+        {
+            CwdProbe::Failed(denied)
         }
         Err(e) => {
             if process_can_answer(pid) {
@@ -1203,7 +1367,7 @@ fn probe_process_cwd(pid: u32) -> CwdProbe {
 /// while `kill(pid, 0)` succeeds. Treating it as alive turns "this job finished"
 /// into a REFUSAL, where a surviving group member or the shell should be asked
 /// instead.
-fn process_can_answer(pid: u32) -> bool {
+pub(crate) fn process_can_answer(pid: u32) -> bool {
     signal_zero_finds(pid) && !process_is_zombie(pid)
 }
 
@@ -1239,12 +1403,9 @@ fn process_is_zombie(pid: u32) -> bool {
 
 /// The same question where there is no `/proc`.
 ///
-/// `state` is a POSIX `ps -o` keyword and macOS prints `Z` for a zombie. This
-/// adds no new kind of dependency: the non-Linux directory probe itself already
-/// runs `lsof`. Anything other than a leading `Z`, including `ps` failing to run
-/// at all, leaves the signal-0 answer standing.
-///
-/// Not exercised by yaran's test suite, which runs on Linux.
+/// `state` is a POSIX `ps -o` keyword and macOS prints `Z` for a zombie.
+/// Anything other than a leading `Z`, including `ps` failing to run at all,
+/// leaves the signal-0 answer standing.
 #[cfg(not(target_os = "linux"))]
 fn process_is_zombie(pid: u32) -> bool {
     let Ok(out) = std::process::Command::new("ps")
@@ -1270,7 +1431,7 @@ enum ProcessGroup {
     /// group has gone" is what sent a file to the shell's folder instead.
     #[cfg_attr(
         not(any(target_os = "linux", test)),
-        allow(
+        expect(
             dead_code,
             reason = "constructed only by the Linux scan; every platform matches on it"
         )
@@ -1343,6 +1504,13 @@ fn group_scan_step(stat: std::io::Result<Vec<u8>>, pgid: u32) -> ScanEntry {
 /// The two are read differently by the caller, because "the group has gone" and
 /// "yaran could not look properly" are different facts and only the first may
 /// fall through to the shell.
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::similar_names,
+        reason = "pid and pgid are the process table's own names for these ids"
+    )
+)]
 fn process_group_members(pgid: u32) -> ProcessGroup {
     // Group 0 is not a group. Every kernel thread reports a process group of 0,
     // so scanning for it would sweep them all in and then refuse the drop the
@@ -1424,7 +1592,7 @@ fn stat_fields_after_comm(stat: &[u8]) -> Option<impl Iterator<Item = &[u8]>> {
     let after_comm = &stat[stat.iter().rposition(|&b| b == b')')? + 1..];
     Some(
         after_comm
-            .split(|b| b.is_ascii_whitespace())
+            .split(u8::is_ascii_whitespace)
             .filter(|field| !field.is_empty()),
     )
 }
@@ -1462,6 +1630,10 @@ impl WorkingDirectory {
     /// finished is an ordinary thing rather than an error. Only when every
     /// member is gone too does the shell get its turn. A platform that cannot
     /// enumerate the group refuses instead of guessing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the terminal's working directory cannot be learned, or it cannot be opened.
     pub fn open(&self) -> Result<DropDir, DropDirError> {
         self.open_with(probe_process_cwd, process_group_members)
     }
@@ -1492,7 +1664,7 @@ impl WorkingDirectory {
                         match probe(pid) {
                             CwdProbe::Pinned(dir) => return Ok(dir),
                             CwdProbe::Failed(e) => return Err(e),
-                            CwdProbe::Gone => continue,
+                            CwdProbe::Gone => {}
                         }
                     }
                     if !complete {
@@ -1530,7 +1702,8 @@ fn shares_our_mount_namespace(pid: u32) -> Result<bool, DropDirError> {
     // Theirs is NOT forgiven: an error here is the process being gone or yaran not
     // being allowed to look, and both must reach the caller's classifier rather
     // than being read as agreement.
-    let theirs = std::fs::read_link(format!("/proc/{pid}/ns/mnt")).map_err(DropDirError::Io)?;
+    let theirs =
+        std::fs::read_link(format!("/proc/{pid}/ns/mnt")).map_err(DropDirError::io_unnamed)?;
     Ok(ours == theirs)
 }
 
@@ -1539,12 +1712,13 @@ fn shares_our_mount_namespace(pid: u32) -> Result<bool, DropDirError> {
 /// On Linux `/proc/<pid>/cwd` is the directory, so opening it with `O_DIRECTORY`
 /// yields the handle in one step, with nothing to swap in between.
 ///
-/// On macOS there is no such entry. `lsof` ships with the system and reports it,
-/// so it is asked, and the answer is then opened by path. **That reopen-by-path
-/// gap cannot be closed by this mechanism**, and is stated rather than glossed:
-/// on macOS the directory named by `lsof` could in principle be replaced before
-/// the open. Linux has no such gap.
-pub fn open_process_cwd(pid: u32) -> Result<DropDir, DropDirError> {
+/// On macOS there is no such entry. The kernel reports the path
+/// (`proc_pidinfo` with `PROC_PIDVNODEPATHINFO`, the exact bytes), and the
+/// answer is then opened by path. **That reopen-by-path gap cannot be closed
+/// by this mechanism**, and is stated rather than glossed: on macOS the
+/// directory named could in principle be replaced before the open. Linux has
+/// no such gap.
+pub(crate) fn open_process_cwd(pid: u32) -> Result<DropDir, DropDirError> {
     #[cfg(target_os = "linux")]
     {
         // Before anything is saved. The handle would be opened correctly through
@@ -1559,52 +1733,95 @@ pub fn open_process_cwd(pid: u32) -> Result<DropDir, DropDirError> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let output = std::process::Command::new("lsof")
-            .args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
-            .output()
-            .map_err(DropDirError::Io)?;
-        if !output.status.success() {
-            return Err(DropDirError::Io(std::io::Error::other(format!(
-                "lsof could not report the working directory of process {pid}"
-            ))));
-        }
-        let cwd = lsof_cwd_path(&output.stdout).ok_or_else(|| {
-            DropDirError::Io(std::io::Error::other(format!(
-                "lsof reported no working directory for process {pid}"
+        let cwd = process_cwds(&[pid]).found.remove(&pid).ok_or_else(|| {
+            DropDirError::io_unnamed(std::io::Error::other(format!(
+                "the working directory of process {pid} could not be read"
             )))
         })?;
         DropDir::open(&cwd)
     }
 }
 
-/// The working directory out of `lsof -Fn` output, as BYTES.
-///
-/// A Unix path is a byte string and is not required to be valid UTF-8, so this
-/// never decodes. A lossy decode substitutes a replacement character for every
-/// byte it cannot read, and the result is a DIFFERENT path: usually one that names
-/// nothing, occasionally one that names something else, which yaran would then open,
-/// save into, and report as the folder the file landed in. The rule everywhere
-/// else in this module is that a path yaran cannot name exactly is refused and never
-/// substituted, so the bytes are carried through unchanged and a path that
-/// genuinely cannot be reported as text is refused as [`UnreportablePath::NotUtf8`]
-/// at the moment it would be sent to a terminal.
-///
-/// `-Fn` prints one field per line, each prefixed by its field letter; `n` is the
-/// name field, which for the `cwd` descriptor is the path. A field is terminated
-/// by a newline, so a directory whose own name contains a newline is
-/// indistinguishable from two fields and comes back truncated. lsof offers a
-/// NUL-terminated mode for exactly this, deliberately not used here: this branch
-/// only ever runs on macOS and nobody has been able to measure that flag against
-/// the lsof macOS ships.
-#[cfg(any(not(target_os = "linux"), test))]
-fn lsof_cwd_path(stdout: &[u8]) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
+/// Where each of a set of processes is working, as far as yaran could find
+/// out. A process that is gone is in neither list; one that is still there but
+/// whose folder could not be read is in `unknown`, and a caller deciding
+/// whether a folder is free must treat it as possibly standing there.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct CwdReport {
+    pub found: std::collections::HashMap<u32, PathBuf>,
+    pub unknown: Vec<u32>,
+    /// Why the unknown ones are unknown, in words, when there is one reason
+    /// for all of them.
+    pub failure: Option<String>,
+}
 
-    stdout
-        .split(|&b| b == b'\n')
-        .find_map(|line| line.strip_prefix(b"n"))
-        .filter(|path| !path.is_empty())
-        .map(|path| PathBuf::from(std::ffi::OsStr::from_bytes(path)))
+/// The current working directory of each of `pids`, as the exact path bytes
+/// the kernel reports: `/proc/<pid>/cwd` on Linux, `proc_pidinfo` with
+/// `PROC_PIDVNODEPATHINFO` on macOS (no external tool, so nothing escapes or
+/// re-encodes a name). Fails closed: a process that is still there and could
+/// not be asked is reported as unknown, never left out. Blocking.
+pub(crate) fn process_cwds(pids: &[u32]) -> CwdReport {
+    process_cwds_with(pids, read_process_cwd)
+}
+
+/// [`process_cwds`] with the per-process reader handed in, so a reader that
+/// fails can be tested.
+fn process_cwds_with(pids: &[u32], read: impl Fn(u32) -> Option<PathBuf>) -> CwdReport {
+    let mut report = CwdReport::default();
+    for pid in pids {
+        match read(*pid) {
+            Some(cwd) => {
+                report.found.insert(*pid, cwd);
+            }
+            // Still there and not readable (another user's process, an
+            // error): unknown. A process that is gone, or a zombie, is nowhere.
+            None if process_can_answer(*pid) => report.unknown.push(*pid),
+            None => {}
+        }
+    }
+    report
+}
+
+#[cfg(target_os = "linux")]
+fn read_process_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn read_process_cwd(pid: u32) -> Option<PathBuf> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>();
+    // SAFETY: zeroed is a valid value for this plain-data struct.
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: the buffer is exactly the struct the flavor fills, and its size
+    // is passed with it.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&raw mut info).cast::<libc::c_void>(),
+            libc::c_int::try_from(size).ok()?,
+        )
+    };
+    if usize::try_from(written).ok()? != size {
+        return None;
+    }
+    let path = &info.pvi_cdir.vip_path;
+    // SAFETY: the path field is a fixed array of `c_char`, viewed as bytes.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(path.as_ptr().cast::<u8>(), std::mem::size_of_val(path))
+    };
+    path_from_nul_terminated(bytes)
+}
+
+/// The path in a NUL-terminated buffer the kernel filled, as its exact bytes;
+/// `None` for an empty or unterminated buffer.
+#[cfg(any(target_os = "macos", test))]
+fn path_from_nul_terminated(bytes: &[u8]) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let end = bytes.iter().position(|byte| *byte == 0)?;
+    (end > 0).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&bytes[..end])))
 }
 
 #[cfg(test)]
@@ -1613,6 +1830,52 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_opened_is_named_in_the_error() {
+        let dir = tmp();
+        let missing = dir.path().join("not-here");
+        let err = DropDir::open(&missing).expect_err("a missing folder cannot be pinned");
+        assert!(
+            err.to_string().contains(&*missing.to_string_lossy()),
+            "got {err}"
+        );
+    }
+
+    /// A reader that cannot answer fails closed: a live process is unknown,
+    /// and a gone one is simply not there.
+    #[test]
+    fn an_unreadable_working_directory_leaves_a_live_process_unknown() {
+        let me = std::process::id();
+        let gone = u32::MAX - 7;
+        let report = process_cwds_with(&[me, gone], |_| None);
+        assert_eq!(report.unknown, vec![me]);
+        assert!(report.found.is_empty());
+    }
+
+    /// yaran runs no external tool to learn where a process works: `lsof`
+    /// escapes names outside ASCII when the locale is not UTF-8, which made a
+    /// process in `/Users/José/...` read as standing somewhere that does not
+    /// exist. The guard keeps it from coming back.
+    #[test]
+    fn no_external_tool_reads_a_working_directory() {
+        for (name, source) in [
+            ("file_drop.rs", include_str!("file_drop.rs")),
+            ("process_sessions.rs", include_str!("process_sessions.rs")),
+        ] {
+            let needle = concat!("Command::new(", "\"lsof\")");
+            assert!(!source.contains(needle), "{name} runs lsof");
+        }
+    }
+
+    #[test]
+    fn this_processs_own_folder_is_read() {
+        let found = process_cwds(&[std::process::id()]).found;
+        assert_eq!(
+            found.get(&std::process::id()),
+            Some(&std::env::current_dir().unwrap())
+        );
     }
 
     // ── Containment: did the file land in the tree git is watching? ──────────
@@ -1683,9 +1946,10 @@ mod tests {
     #[test]
     fn keeps_ordinary_awkward_names_exactly_as_dropped() {
         // Spaces, parentheses and quotes are all legal in a filename and are
-        // what a screenshot is actually called. They are the paste layer's
-        // business, not a naming problem here, and the paste sends the path
-        // bare, so they travel unchanged.
+        // what a screenshot is actually called. A terminal or editor-tree drop
+        // saves them unchanged; only the agent's upload folder slugifies.
+        let dir = tmp();
+        let pinned = DropDir::open(dir.path()).expect("pin");
         for name in [
             "Screen Shot 2026-08-01 at 12.00.00.png",
             "report (final).pdf",
@@ -1694,13 +1958,150 @@ mod tests {
             "スクリーンショット.png",
             "Снимок экрана.png",
             ".env",
+            "back\\slash.txt",
         ] {
             assert_eq!(
                 validate_drop_name(name, 255),
                 Ok(()),
                 "{name} should be accepted unchanged"
             );
+            let saved = save_drop(&pinned, name, DropNaming::Exact, b"x", "S").expect("save");
+            assert_eq!(saved.saved_name, name);
+            assert!(!saved.renamed, "{name} must not be reported as renamed");
         }
+    }
+
+    #[test]
+    fn only_the_agent_upload_folder_slugifies() {
+        let wt = tmp();
+        let agent = FileDropDestination::AgentUploads {
+            worktree: wt.path().to_path_buf(),
+            relative: ".dux/uploads".to_string(),
+            write_gitignore: true,
+        };
+        let tree = FileDropDestination::WorktreeDirectory {
+            worktree: wt.path().to_path_buf(),
+            relative: String::new(),
+        };
+        let terminal = FileDropDestination::Terminal(WorkingDirectory {
+            foreground_pid: None,
+            shell_pid: None,
+            spawn_dir: wt.path().to_path_buf(),
+        });
+        assert_eq!(agent.naming(), DropNaming::Slugified);
+        assert_eq!(tree.naming(), DropNaming::Exact);
+        assert_eq!(terminal.naming(), DropNaming::Exact);
+    }
+
+    // ── Slugified names, for an agent's upload folder ───────────────────────
+
+    #[test]
+    fn a_slug_cleans_the_stem_and_the_extension_separately() {
+        for (dropped, slug) in [
+            ("Report Q3 (draft).PDF", "report-q3-draft.pdf"),
+            ("archive.tar.gz", "archive-tar.gz"),
+            ("it's \"final\".txt", "it-s-final.txt"),
+            ("back\\slash.txt", "back-slash.txt"),
+            ("Снимок экрана.png", "snimok-ekrana.png"),
+            ("README", "readme"),
+            ("trailing.", "trailing"),
+        ] {
+            assert_eq!(slugify_drop_name(dropped, 255), slug, "{dropped}");
+        }
+    }
+
+    #[test]
+    fn a_dotfile_keeps_its_leading_dot() {
+        assert_eq!(slugify_drop_name(".env", 255), ".env");
+        assert_eq!(slugify_drop_name(".Env Local", 255), ".env-local");
+        assert_eq!(slugify_drop_name(".env.local", 255), ".env.local");
+    }
+
+    #[test]
+    fn a_stem_with_nothing_left_becomes_file() {
+        assert_eq!(slugify_drop_name("'''.txt", 255), "file.txt");
+        assert_eq!(slugify_drop_name("\"\"", 255), "file");
+        // An extension with nothing left is dropped rather than left as a dot.
+        assert_eq!(slugify_drop_name("notes.'''", 255), "notes");
+    }
+
+    #[test]
+    fn generated_paste_names_come_out_unchanged() {
+        // The browser invents these for a pasted image or a long text paste.
+        for name in [
+            "pasted-2026-08-01-120000.png",
+            "pasted-2026-08-01-120000.txt",
+        ] {
+            assert_eq!(slugify_drop_name(name, 255), name);
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::case_sensitive_file_extension_comparisons,
+        reason = "the extension must survive byte for byte, case included"
+    )]
+    fn a_slug_that_grows_past_the_limit_is_cut_keeping_the_extension() {
+        // Transliteration spells each glyph out, so 80 three-byte glyphs (240
+        // bytes, under the limit) become far more than 255 bytes of letters.
+        let dropped = format!("{}.png", "日".repeat(80));
+        assert!(validate_drop_name(&dropped, 255).is_ok());
+        let slug = slugify_drop_name(&dropped, 255);
+        assert!(slug.len() <= 255, "{} bytes: {slug}", slug.len());
+        assert!(slug.ends_with(".png"), "{slug}");
+        assert!(
+            !slug.contains("-.png"),
+            "a cut must not leave a dash: {slug}"
+        );
+        assert_eq!(validate_drop_name(&slug, 255), Ok(()));
+    }
+
+    #[test]
+    fn an_upload_is_saved_under_its_slug_and_reported_renamed() {
+        let dir = tmp();
+        let pinned = DropDir::open(dir.path()).expect("pin");
+        let saved = save_drop(
+            &pinned,
+            "Report Q3 (draft).PDF",
+            DropNaming::Slugified,
+            b"x",
+            "S",
+        )
+        .expect("save");
+        assert_eq!(saved.saved_name, "report-q3-draft.pdf");
+        assert!(saved.renamed);
+        assert!(dir.path().join("report-q3-draft.pdf").exists());
+
+        // A name that is already a slug is not a rename.
+        let plain = save_drop(&pinned, "shot.png", DropNaming::Slugified, b"x", "S").expect("save");
+        assert_eq!(plain.saved_name, "shot.png");
+        assert!(!plain.renamed);
+    }
+
+    #[test]
+    fn two_names_with_the_same_slug_collide_and_the_second_is_suffixed() {
+        let dir = tmp();
+        let pinned = DropDir::open(dir.path()).expect("pin");
+        let first =
+            save_drop(&pinned, "My Shot.png", DropNaming::Slugified, b"one", "S").expect("first");
+        let second =
+            save_drop(&pinned, "my_shot.PNG", DropNaming::Slugified, b"two", "S").expect("second");
+        assert_eq!(first.saved_name, "my-shot.png");
+        assert_eq!(second.saved_name, "my-shot-S-1.png");
+        assert!(second.renamed);
+        assert_eq!(std::fs::read(&first.path).unwrap(), b"one");
+        assert_eq!(std::fs::read(&second.path).unwrap(), b"two");
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_name_is_refused_before_it_is_slugified() {
+        // The slug would turn the separator into a dash; the refusal must not
+        // depend on the destination.
+        let dir = tmp();
+        let pinned = DropDir::open(dir.path()).expect("pin");
+        let err = save_drop(&pinned, "../escaped.png", DropNaming::Slugified, b"x", "S")
+            .expect_err("must refuse");
+        assert!(matches!(err, DropSaveError::Name(DropNameError::Separator)));
     }
 
     #[test]
@@ -1792,6 +2193,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::case_sensitive_file_extension_comparisons,
+        reason = "the extension must survive byte for byte, case included"
+    )]
     fn a_name_at_the_limit_still_gets_a_usable_collision_name() {
         // The case the design calls out by name: a name that PASSES validation
         // and would exceed the limit once a suffix is appended. Room is
@@ -1849,12 +2254,25 @@ mod tests {
         let dir = tmp();
         let pinned = DropDir::open(dir.path()).expect("pin");
 
-        let first = save_drop(&pinned, "shot.png", b"one", "20260801-120000").expect("first save");
+        let first = save_drop(
+            &pinned,
+            "shot.png",
+            DropNaming::Exact,
+            b"one",
+            "20260801-120000",
+        )
+        .expect("first save");
         assert_eq!(first.saved_name, "shot.png");
         assert!(!first.renamed);
 
-        let second =
-            save_drop(&pinned, "shot.png", b"two", "20260801-120000").expect("second save");
+        let second = save_drop(
+            &pinned,
+            "shot.png",
+            DropNaming::Exact,
+            b"two",
+            "20260801-120000",
+        )
+        .expect("second save");
         assert!(
             second.renamed,
             "the second drop must be reported as renamed"
@@ -1870,7 +2288,14 @@ mod tests {
     fn a_non_latin_name_is_saved_exactly_as_dropped() {
         let dir = tmp();
         let pinned = DropDir::open(dir.path()).expect("pin");
-        let saved = save_drop(&pinned, "スクリーンショット.png", b"x", "S").expect("save");
+        let saved = save_drop(
+            &pinned,
+            "スクリーンショット.png",
+            DropNaming::Exact,
+            b"x",
+            "S",
+        )
+        .expect("save");
         assert_eq!(saved.saved_name, "スクリーンショット.png");
         assert!(saved.path.ends_with("スクリーンショット.png"));
         assert!(saved.path.exists());
@@ -1887,7 +2312,8 @@ mod tests {
         std::os::unix::fs::symlink(&victim, dir.path().join("shot.png")).unwrap();
 
         let pinned = DropDir::open(dir.path()).expect("pin");
-        let err = save_drop(&pinned, "shot.png", b"attacker", "S").expect_err("must refuse");
+        let err = save_drop(&pinned, "shot.png", DropNaming::Exact, b"attacker", "S")
+            .expect_err("must refuse");
         assert!(
             matches!(&err, DropSaveError::Symlink { name } if name == "shot.png"),
             "expected a symlink refusal, got {err:?}"
@@ -1911,7 +2337,8 @@ mod tests {
         std::os::unix::fs::symlink(&victim, dir.path().join("shot-S-1.png")).unwrap();
 
         let pinned = DropDir::open(dir.path()).expect("pin");
-        let err = save_drop(&pinned, "shot.png", b"attacker", "S").expect_err("must refuse");
+        let err = save_drop(&pinned, "shot.png", DropNaming::Exact, b"attacker", "S")
+            .expect_err("must refuse");
         assert!(
             matches!(&err, DropSaveError::Symlink { name } if name == "shot-S-1.png"),
             "expected a symlink refusal at the second candidate, got {err:?}"
@@ -1970,7 +2397,8 @@ mod tests {
         let dir = tmp();
         let pinned = DropDir::open(dir.path()).expect("pin");
         let mut source = FailsHalfway { sent: false };
-        let err = save_drop_from(&pinned, "shot.png", &mut source, "S").expect_err("must fail");
+        let err = save_drop_from(&pinned, "shot.png", DropNaming::Exact, &mut source, "S")
+            .expect_err("must fail");
         assert!(matches!(err, DropSaveError::Io(_)), "got {err:?}");
 
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
@@ -1989,7 +2417,8 @@ mod tests {
         let dir = parent.path().join("inner");
         std::fs::create_dir(&dir).unwrap();
         let pinned = DropDir::open(&dir).expect("pin");
-        let err = save_drop(&pinned, "../escaped.png", b"x", "S").expect_err("must refuse");
+        let err = save_drop(&pinned, "../escaped.png", DropNaming::Exact, b"x", "S")
+            .expect_err("must refuse");
         assert!(
             matches!(err, DropSaveError::Name(DropNameError::Separator)),
             "got {err:?}"
@@ -2087,6 +2516,12 @@ mod tests {
                 UnreportablePath::NotUtf8,
             ),
         ] {
+            // APFS, the macOS file system, refuses a name that is not UTF-8
+            // (EILSEQ), so that row cannot be built on a Mac; the check it
+            // reaches runs there in `a_path_that_is_not_utf8_is_refused_as_such`.
+            if want == UnreportablePath::NotUtf8 && cfg!(target_os = "macos") {
+                continue;
+            }
             let Some((_parent, child)) = dir_named(raw) else {
                 continue;
             };
@@ -2126,7 +2561,7 @@ mod tests {
             std::fs::create_dir(&child).unwrap();
             let pinned = DropDir::open(&child)
                 .unwrap_or_else(|e| panic!("{name} must still be usable, got {e}"));
-            let saved = save_drop(&pinned, "shot.png", b"x", "S")
+            let saved = save_drop(&pinned, "shot.png", DropNaming::Exact, b"x", "S")
                 .unwrap_or_else(|e| panic!("{name} must still save, got {e}"));
             assert!(saved.path.exists(), "{name}: the file must be there");
             assert!(saved.path.to_str().unwrap().contains(name));
@@ -2150,6 +2585,17 @@ mod tests {
         assert_eq!(
             check_reportable_dir_path(Path::new("/tmp/fine")),
             Ok("/tmp/fine")
+        );
+    }
+
+    /// Built in memory, so it runs where the file system refuses such names
+    /// (macOS): a path that is not UTF-8 cannot be pasted losslessly.
+    #[test]
+    fn a_path_that_is_not_utf8_is_refused_as_such() {
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(
+            check_reportable_dir_path(Path::new(std::ffi::OsStr::from_bytes(b"/tmp/dir\xffname"))),
+            Err(UnreportablePath::NotUtf8)
         );
     }
 
@@ -2288,7 +2734,7 @@ mod tests {
         let err = plan
             .open_with(
                 |_| {
-                    CwdProbe::Failed(DropDirError::Io(std::io::Error::from(
+                    CwdProbe::Failed(DropDirError::io_unnamed(std::io::Error::from(
                         std::io::ErrorKind::PermissionDenied,
                     )))
                 },
@@ -2296,7 +2742,8 @@ mod tests {
             )
             .expect_err("a process yaran is not allowed to read must refuse the drop");
         assert!(
-            matches!(&err, DropDirError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
+            err.io_error()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied),
             "got {err:?}"
         );
         assert!(
@@ -2332,7 +2779,9 @@ mod tests {
         } else {
             let denied = open_process_cwd(1).expect_err("root's pid 1 must not be readable");
             assert!(
-                matches!(&denied, DropDirError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
+                denied
+                    .io_error()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied),
                 "expected a permission failure for pid 1, got {denied:?}"
             );
             assert!(
@@ -2349,6 +2798,11 @@ mod tests {
         );
     }
 
+    // Linux only: only Linux can list a process group's members, and macOS
+    // refuses this drop rather than guessing, which
+    // `a_platform_that_cannot_enumerate_the_group_refuses_rather_than_guessing`
+    // covers there.
+    #[cfg(target_os = "linux")]
     #[test]
     // `process_group_members` enumerates a process group from `/proc`, and is
     // `ProcessGroup::Unknown` on every other platform by construction, which
@@ -2762,7 +3216,7 @@ mod tests {
             .current_dir(dir.path())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .process_group(child.id() as i32)
+            .process_group(child.id().cast_signed())
             .spawn()
             .expect("spawn a second member of the same group");
         let mut inner_out = inner.stdout.take().expect("stdout");
@@ -2877,7 +3331,8 @@ mod tests {
 
         let err = shares_our_mount_namespace(0).expect_err("pid 0 has no namespace link");
         assert!(
-            matches!(&err, DropDirError::Io(e) if e.kind() == std::io::ErrorKind::NotFound),
+            err.io_error()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound),
             "a missing process must surface as NotFound so the chain can continue, got {err:?}"
         );
     }
@@ -3029,6 +3484,10 @@ mod tests {
     /// Classify one live process the way the production scan does, straight
     /// from its own `/proc` entry rather than through a walk of the machine.
     #[cfg(target_os = "linux")]
+    #[expect(
+        clippy::similar_names,
+        reason = "pid, ppid and pgid are the process table's own names for these ids"
+    )]
     fn scan_entry(pid: u32, pgid: u32) -> ScanEntry {
         group_scan_step(std::fs::read(format!("/proc/{pid}/stat")), pgid)
     }
@@ -3052,67 +3511,46 @@ mod tests {
         child
     }
 
-    // ── lsof's answer is bytes, and bytes are what a path is ─────────────────
-    //
-    // These run everywhere, including on Linux where the parser they cover is
-    // never called, because the branch that calls it is macOS-only and the only
-    // machines available here are Linux. A parser nobody can exercise is a
-    // parser nobody can check.
+    // ── A working directory is bytes, and bytes are what a path is ───────────
 
+    /// A directory whose name is not valid UTF-8 is read back with its exact
+    /// bytes: nothing decodes, escapes or replaces them on the way.
+    /// The decode macOS reads a working directory with keeps bytes that are
+    /// not UTF-8 exactly, and stops at the terminator. Built in memory.
     #[test]
-    fn reads_the_working_directory_out_of_lsof_field_output() {
-        assert_eq!(
-            lsof_cwd_path(b"p4242\nn/home/patrick/notes\n"),
-            Some(PathBuf::from("/home/patrick/notes")),
-            "the `n` field of the `cwd` descriptor is the directory"
-        );
-    }
-
-    #[test]
-    fn a_directory_that_is_not_valid_utf8_survives_lsof_exactly() {
+    fn a_working_directory_buffer_that_is_not_utf8_is_decoded_exactly() {
         use std::os::unix::ffi::OsStrExt;
-
-        // The bug this pins: decoding lsof's answer lossily replaced the 0xFF
-        // with U+FFFD, so yaran opened, wrote into and then NAMED a directory that
-        // is not the one the terminal is in. A path is a byte string; the bytes
-        // come through untouched, and a path that cannot be rendered as text is
-        // refused later (`UnreportablePath::NotUtf8`) rather than substituted
-        // here.
-        let raw: &[u8] = b"p9\nn/tmp/od\xffd\n";
-        let parsed = lsof_cwd_path(raw).expect("a non-UTF-8 directory still parses");
-        assert_eq!(
-            parsed.as_os_str().as_bytes(),
-            b"/tmp/od\xffd",
-            "the bytes must survive; got {parsed:?}"
-        );
-        assert!(
-            !parsed.to_string_lossy().contains('\u{fffd}') || parsed.to_str().is_none(),
-            "a replacement character must come from RENDERING it, never from parsing it"
-        );
-        assert!(
-            parsed.to_str().is_none(),
-            "and this path really is one that cannot be rendered, so the \
-             assertion above is not vacuous"
-        );
+        let path = path_from_nul_terminated(b"/tmp/od\xffd\0left over").expect("a path");
+        assert_eq!(path.as_os_str().as_bytes(), b"/tmp/od\xffd");
+        assert_eq!(path_from_nul_terminated(b"\0"), None, "an empty answer");
+        assert_eq!(path_from_nul_terminated(b"/no/end"), None, "no terminator");
     }
 
+    // Linux only: APFS, the macOS file system, refuses a name that is not
+    // UTF-8 (EILSEQ), so this fixture cannot be built on a Mac. The decode
+    // macOS uses runs there in
+    // `a_working_directory_buffer_that_is_not_utf8_is_decoded_exactly`.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn lsof_saying_nothing_useful_is_not_a_directory() {
-        for empty in [
-            &b""[..],
-            // The process was gone by the time lsof looked: a process record and
-            // no name field at all.
-            &b"p4242\n"[..],
-            // A name field that is empty names nothing, and `Path::new("")` is a
-            // relative path that would resolve against yaran's own directory.
-            &b"p4242\nn\n"[..],
-        ] {
-            assert_eq!(
-                lsof_cwd_path(empty),
-                None,
-                "must refuse rather than invent a directory from {empty:?}"
-            );
-        }
+    fn a_working_directory_that_is_not_valid_utf8_is_read_back_exactly() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join(std::ffi::OsString::from_vec(b"od\xffd".to_vec()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(&dir)
+            .spawn()
+            .unwrap();
+        let report = process_cwds(&[child.id()]);
+        let _ = child.kill();
+        let _ = child.wait();
+        let found = report.found.get(&child.id()).expect("read");
+        assert_eq!(found.as_os_str().as_bytes(), dir.as_os_str().as_bytes());
+        assert!(found.to_str().is_none(), "the name really is not UTF-8");
     }
 }
 
@@ -3132,6 +3570,13 @@ mod independent_path_safety_check {
             b"dir\x1bname".as_slice(),
             b"dir\xffname".as_slice(),
         ] {
+            // APFS, the macOS file system, refuses a name that is not UTF-8
+            // (EILSEQ), so that row cannot be built on a Mac; the check it
+            // reaches runs there in
+            // `tests::a_path_that_is_not_utf8_is_refused_as_such`.
+            if std::str::from_utf8(raw).is_err() && cfg!(target_os = "macos") {
+                continue;
+            }
             let name = std::ffi::OsStr::from_bytes(raw);
             let dir = root.path().join(name);
             // A filesystem that enforces UTF-8 names (APFS, HFS+) refuses the
@@ -3149,8 +3594,7 @@ mod independent_path_safety_check {
             let opened = DropDir::open(&dir);
             assert!(
                 opened.is_err(),
-                "must refuse a directory it cannot name: {:?}",
-                dir
+                "must refuse a directory it cannot name: {dir:?}"
             );
             assert!(
                 std::fs::read_dir(&dir).expect("read").next().is_none(),
@@ -3193,9 +3637,12 @@ mod uploads_dir {
             let old = wt.path().join(legacy);
             std::fs::create_dir_all(&old).unwrap();
             std::fs::write(old.join("keep.txt"), "user data").unwrap();
-            let dir =
-                DropDir::open_uploads(wt.path(), crate::config::DEFAULT_UPLOAD_DIRECTORY, false)
-                    .unwrap();
+            let dir = DropDir::open_uploads(
+                wt.path(),
+                crate::config::DEFAULT_UPLOAD_DIRECTORY,
+                UploadGitignore::Skip,
+            )
+            .unwrap();
             assert_eq!(
                 dir.path().canonicalize().unwrap(),
                 old.canonicalize().unwrap()
@@ -3209,7 +3656,8 @@ mod uploads_dir {
                     .join(crate::config::DEFAULT_UPLOAD_DIRECTORY)
                     .exists()
             );
-            let explicit = DropDir::open_uploads(wt.path(), "custom-uploads", false).unwrap();
+            let explicit =
+                DropDir::open_uploads(wt.path(), "custom-uploads", UploadGitignore::Skip).unwrap();
             assert_eq!(
                 explicit.path().canonicalize().unwrap(),
                 wt.path().join("custom-uploads").canonicalize().unwrap()
@@ -3222,8 +3670,11 @@ mod uploads_dir {
         let wt = worktree();
         let outside = worktree();
         std::os::unix::fs::symlink(outside.path(), wt.path().join(".dux-uploads")).unwrap();
-        let result =
-            DropDir::open_uploads(wt.path(), crate::config::DEFAULT_UPLOAD_DIRECTORY, false);
+        let result = DropDir::open_uploads(
+            wt.path(),
+            crate::config::DEFAULT_UPLOAD_DIRECTORY,
+            UploadGitignore::Skip,
+        );
         assert!(matches!(
             result,
             Err(DropDirError::UploadPathBlocked { .. })
@@ -3238,7 +3689,8 @@ mod uploads_dir {
     #[test]
     fn the_upload_directory_is_created_with_its_parents_and_a_self_ignoring_gitignore() {
         let wt = worktree();
-        let dir = DropDir::open_uploads(wt.path(), ".yaran/uploads", true).expect("open uploads");
+        let dir = DropDir::open_uploads(wt.path(), ".yaran/uploads", UploadGitignore::Write)
+            .expect("open uploads");
 
         let expected = wt.path().join(".yaran").join("uploads");
         assert_eq!(
@@ -3260,7 +3712,8 @@ mod uploads_dir {
         // The opt-out is for a user who INTENDS to commit what they drop, so
         // the directory still has to exist and the file must stay visible.
         let wt = worktree();
-        let dir = DropDir::open_uploads(wt.path(), ".yaran/uploads", false).expect("open uploads");
+        let dir = DropDir::open_uploads(wt.path(), ".yaran/uploads", UploadGitignore::Skip)
+            .expect("open uploads");
         assert!(dir.path().is_dir());
         assert!(
             !wt.path().join(".yaran/uploads/.gitignore").exists(),
@@ -3277,7 +3730,7 @@ mod uploads_dir {
         std::fs::create_dir_all(&uploads).unwrap();
         std::fs::write(uploads.join(".gitignore"), "!keep-me\n").unwrap();
 
-        DropDir::open_uploads(wt.path(), "uploads", true).expect("open uploads");
+        DropDir::open_uploads(wt.path(), "uploads", UploadGitignore::Write).expect("open uploads");
 
         assert_eq!(
             std::fs::read_to_string(uploads.join(".gitignore")).unwrap(),
@@ -3291,10 +3744,12 @@ mod uploads_dir {
         // must not fail, must not move the directory, and must not disturb a
         // file already sitting in it.
         let wt = worktree();
-        let first = DropDir::open_uploads(wt.path(), ".yaran/uploads", true).expect("first");
+        let first = DropDir::open_uploads(wt.path(), ".yaran/uploads", UploadGitignore::Write)
+            .expect("first");
         std::fs::write(first.path().join("already-here.png"), b"x").unwrap();
 
-        let second = DropDir::open_uploads(wt.path(), ".yaran/uploads", true).expect("second");
+        let second = DropDir::open_uploads(wt.path(), ".yaran/uploads", UploadGitignore::Write)
+            .expect("second");
 
         assert_eq!(first.path(), second.path());
         assert_eq!(
@@ -3316,11 +3771,12 @@ mod uploads_dir {
         // was off) and every upload from then on would be visible to git while
         // the config still said otherwise.
         let wt = worktree();
-        let first = DropDir::open_uploads(wt.path(), ".yaran/uploads", true).expect("first");
+        let first = DropDir::open_uploads(wt.path(), ".yaran/uploads", UploadGitignore::Write)
+            .expect("first");
         let ignore = first.path().join(".gitignore");
         std::fs::remove_file(&ignore).expect("remove the ignore file");
 
-        DropDir::open_uploads(wt.path(), ".yaran/uploads", true).expect("second");
+        DropDir::open_uploads(wt.path(), ".yaran/uploads", UploadGitignore::Write).expect("second");
 
         assert_eq!(std::fs::read_to_string(&ignore).unwrap(), UPLOADS_GITIGNORE);
     }
@@ -3331,10 +3787,12 @@ mod uploads_dir {
         // hits: they dropped a file with `upload_write_gitignore = false`, saw
         // the untracked screenshot, and turned the setting on.
         let wt = worktree();
-        let first = DropDir::open_uploads(wt.path(), "uploads", false).expect("first");
+        let first =
+            DropDir::open_uploads(wt.path(), "uploads", UploadGitignore::Skip).expect("first");
         assert!(!first.path().join(".gitignore").exists());
 
-        let second = DropDir::open_uploads(wt.path(), "uploads", true).expect("second");
+        let second =
+            DropDir::open_uploads(wt.path(), "uploads", UploadGitignore::Write).expect("second");
 
         assert_eq!(
             std::fs::read_to_string(second.path().join(".gitignore")).unwrap(),
@@ -3356,10 +3814,10 @@ mod uploads_dir {
         let handles: Vec<_> = (0..2)
             .map(|_| {
                 let root = root.clone();
-                let barrier = barrier.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    DropDir::open_uploads(&root, ".yaran/uploads", true)
+                    DropDir::open_uploads(&root, ".yaran/uploads", UploadGitignore::Write)
                         .map(|dir| dir.path().to_path_buf())
                 })
             })
@@ -3387,7 +3845,7 @@ mod uploads_dir {
         let outside = tempfile::tempdir().expect("outside");
         std::os::unix::fs::symlink(outside.path(), wt.path().join(".yaran")).unwrap();
 
-        let err = DropDir::open_uploads(wt.path(), ".yaran/uploads", true)
+        let err = DropDir::open_uploads(wt.path(), ".yaran/uploads", UploadGitignore::Write)
             .expect_err("a symlinked component must be refused");
         assert!(
             matches!(&err, DropDirError::UploadPathBlocked { component } if component == ".yaran"),
@@ -3406,7 +3864,7 @@ mod uploads_dir {
         let wt = worktree();
         std::fs::write(wt.path().join(".yaran"), b"not a directory").unwrap();
 
-        let err = DropDir::open_uploads(wt.path(), ".yaran/uploads", true)
+        let err = DropDir::open_uploads(wt.path(), ".yaran/uploads", UploadGitignore::Write)
             .expect_err("a file in the way must be refused");
         assert!(
             matches!(&err, DropDirError::UploadPathBlocked { component } if component == ".yaran"),
@@ -3421,8 +3879,16 @@ mod uploads_dir {
         // and the file is still inside the worktree so the Changes pane refresh
         // check keeps answering yes.
         let wt = worktree();
-        let dir = DropDir::open_uploads(wt.path(), ".yaran/uploads", true).expect("open uploads");
-        let saved = save_drop(&dir, "shot.png", b"png", "20260809-120000").expect("save");
+        let dir = DropDir::open_uploads(wt.path(), ".yaran/uploads", UploadGitignore::Write)
+            .expect("open uploads");
+        let saved = save_drop(
+            &dir,
+            "shot.png",
+            DropNaming::Slugified,
+            b"png",
+            "20260809-120000",
+        )
+        .expect("save");
 
         assert_eq!(
             saved.path.parent().unwrap(),
@@ -3518,7 +3984,14 @@ mod tree_drop_dir {
         let wt = worktree();
         std::fs::create_dir(wt.path().join("we\nird")).unwrap();
         let dir = DropDir::open_tree_dir(wt.path(), "we\nird").expect("open the odd folder");
-        let saved = save_drop(&dir, "logo.png", b"png", "20260809-120000").expect("save");
+        let saved = save_drop(
+            &dir,
+            "logo.png",
+            DropNaming::Exact,
+            b"png",
+            "20260809-120000",
+        )
+        .expect("save");
         assert_eq!(saved.path, wt.path().join("we\nird/logo.png"));
         assert_eq!(std::fs::read(&saved.path).unwrap(), b"png");
     }
@@ -3578,7 +4051,14 @@ mod tree_drop_dir {
         let wt = worktree();
         std::fs::create_dir(wt.path().join("assets")).unwrap();
         let dir = DropDir::open_tree_dir(wt.path(), "assets").expect("open assets");
-        let saved = save_drop(&dir, "logo.png", b"png", "20260809-120000").expect("save");
+        let saved = save_drop(
+            &dir,
+            "logo.png",
+            DropNaming::Exact,
+            b"png",
+            "20260809-120000",
+        )
+        .expect("save");
 
         assert_eq!(saved.saved_name, "logo.png");
         assert!(!saved.renamed);
@@ -3594,7 +4074,14 @@ mod tree_drop_dir {
     fn a_non_latin_name_survives_exactly_as_dropped() {
         let wt = worktree();
         let dir = DropDir::open_tree_dir(wt.path(), "").expect("open root");
-        let saved = save_drop(&dir, "設計メモ.md", b"x", "20260809-120000").expect("save");
+        let saved = save_drop(
+            &dir,
+            "設計メモ.md",
+            DropNaming::Exact,
+            b"x",
+            "20260809-120000",
+        )
+        .expect("save");
         assert_eq!(saved.saved_name, "設計メモ.md");
         assert!(wt.path().join("設計メモ.md").exists());
     }
@@ -3604,7 +4091,14 @@ mod tree_drop_dir {
         let wt = worktree();
         std::fs::write(wt.path().join("notes.md"), "mine\n").unwrap();
         let dir = DropDir::open_tree_dir(wt.path(), "").expect("open root");
-        let saved = save_drop(&dir, "notes.md", b"theirs", "20260809-120000").expect("save");
+        let saved = save_drop(
+            &dir,
+            "notes.md",
+            DropNaming::Exact,
+            b"theirs",
+            "20260809-120000",
+        )
+        .expect("save");
 
         assert!(saved.renamed);
         assert_ne!(saved.saved_name, "notes.md");
@@ -3612,6 +4106,39 @@ mod tree_drop_dir {
             std::fs::read_to_string(wt.path().join("notes.md")).unwrap(),
             "mine\n",
             "not one byte of the existing file may change"
+        );
+    }
+}
+
+#[cfg(test)]
+mod review15_lsof {
+    use super::*;
+
+    /// The macOS reader, fed what `lsof` prints when yaran runs without a
+    /// UTF-8 locale (a launchd service, an ssh session with no LANG): every
+    /// byte outside ASCII comes back as a `\xNN` escape, so a process
+    /// standing in `/Users/José/...` is reported at a path that does not
+    /// exist and is judged to stand nowhere near the folder.
+    #[test]
+    fn review15_a_working_directory_with_a_non_ascii_name_is_read_back_exactly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("José");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(&dir)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        // The reader yaran uses, native on every platform now (no `lsof`).
+        let report = process_cwds(&[pid]);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            report.found.get(&pid),
+            Some(&dir),
+            "the working directory was read back as something else: {report:?}"
         );
     }
 }

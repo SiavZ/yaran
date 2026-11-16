@@ -10,10 +10,16 @@ import type { TerminalOwnerRef } from "@/lib/store"
 
 const openEditorMock = vi.fn()
 const openDeleteTerminalMock = vi.fn()
+// The workspace lists the terminal unless a test says it has just been created.
+let listedTerminals = ["t7"]
 vi.mock("@/lib/store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/store")>()
   return {
     ...actual,
+    useYaran: () => ({
+      ...actual.getSnapshot(),
+      spine: { terminals: listedTerminals.map((id) => ({ id })) },
+    }),
     openEditor: openEditorMock,
     openDeleteTerminal: openDeleteTerminalMock,
   }
@@ -45,17 +51,18 @@ const {
 
 afterEach(() => {
   cleanup()
+  listedTerminals = ["t7"]
   openEditorMock.mockClear()
   openDeleteTerminalMock.mockClear()
   vi.unstubAllGlobals()
 })
 
-async function open(owner: TerminalOwnerRef, label?: string) {
+async function open(owner: TerminalOwnerRef) {
   render(
     <DropdownMenu>
       <DropdownMenuTrigger>open</DropdownMenuTrigger>
       <DropdownMenuContent>
-        <TerminalActionsMenu terminalId="t7" owner={owner} label={label} />
+        <TerminalActionsMenu terminalId="t7" owner={owner} />
       </DropdownMenuContent>
     </DropdownMenu>,
   )
@@ -111,6 +118,14 @@ describe("the terminal's own actions", () => {
     expect(openDeleteTerminalMock).toHaveBeenCalledWith("t7")
   })
 
+  // A terminal just created is on screen before the workspace lists it, and
+  // its confirm has nothing to confirm until then: no Close… that does nothing.
+  it("offers no Close… for a terminal the workspace does not list yet", async () => {
+    listedTerminals = []
+    await open({ kind: "session", sessionId: "s1" })
+    expect(screen.getAllByRole("menuitem").some((el) => el.textContent?.includes("Close"))).toBe(false)
+  })
+
   // The in-app overlay is desktop-only, so on a phone its row would be a dead
   // no-op; it is hidden rather than offered.
   it("hides the in-app editor row on a phone", async () => {
@@ -118,14 +133,12 @@ describe("the terminal's own actions", () => {
     expect(item("Open editor here").className).toContain("max-md:hidden")
   })
 
-  // The heading is for the ONE menu that carries these rows beside somebody
-  // else's. Everywhere else the whole menu is the terminal's, and a heading
-  // over every row in a menu says nothing.
-  it("prints a heading only when it is given one", async () => {
+  // The heading is part of the group, so a terminal's own menu and the group in
+  // its agent's menu cannot say different things, and Close… sits straight under
+  // the editor rows with no rule between them.
+  it("heads the group and keeps Close… in it without a separator", async () => {
     await open({ kind: "standalone" })
-    expect(screen.queryByText("Terminal")).toBeNull()
-    cleanup()
-    await open({ kind: "session", sessionId: "s1" }, "Terminal")
     expect(screen.getByText("Terminal")).toBeTruthy()
+    expect(screen.queryByRole("separator")).toBeNull()
   })
 })

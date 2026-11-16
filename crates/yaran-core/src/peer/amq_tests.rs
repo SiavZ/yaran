@@ -115,6 +115,7 @@ fn test_paths(home: &Path) -> YaranPaths {
         worktrees_root: home.join("worktrees"),
         lock_path: home.join("yaran.lock"),
         root: home.to_path_buf(),
+        socket_path: home.join("yaran.sock"),
     }
 }
 

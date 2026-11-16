@@ -277,7 +277,7 @@ mod tests {
     /// a plain delete removes only yaran's record, leaving the checkout alone.
     #[test]
     fn begin_delete_session_never_removes_shared_workspace() {
-        use crate::engine::BeginDeleteSessionOutcome;
+        use crate::engine::{BeginDeleteSessionOutcome, WorktreeOnDelete};
         let (mut engine, tmp) = test_engine();
         let checkout = tmp.path().join("checkout");
         std::fs::create_dir_all(&checkout).unwrap();
@@ -289,18 +289,14 @@ mod tests {
         engine.session_store.upsert_session(&session).unwrap();
         engine.sessions.push(session);
 
-        let outcome = engine.begin_delete_session("shared", true, None);
+        let outcome = engine.begin_delete_session("shared", WorktreeOnDelete::Remove, None);
         let BeginDeleteSessionOutcome::Refused { message } = outcome else {
             panic!("a worktree-removing delete of a shared agent must be refused, got {outcome:?}");
         };
         assert!(message.contains("shared project checkout"), "{message}");
         assert!(engine.pending_deletions.is_empty());
-        assert!(
-            engine.do_delete_session("shared", true, None).is_err(),
-            "the synchronous path refuses the same way"
-        );
 
-        let outcome = engine.begin_delete_session("shared", false, None);
+        let outcome = engine.begin_delete_session("shared", WorktreeOnDelete::Keep, None);
         assert!(
             matches!(outcome, BeginDeleteSessionOutcome::Inline { .. }),
             "a record-only delete takes the inline path, got {outcome:?}"
@@ -324,18 +320,18 @@ mod tests {
     /// `shared_session_rename_changes_only_display_title`.
     #[test]
     fn shared_session_rejects_real_branch_rename_but_renames_the_title() {
-        use crate::engine::{BranchRenamePlan, BranchRenameRejection};
+        use crate::engine::{BranchRename, BranchRenamePlan, BranchRenameRejection};
         let (mut engine, _tmp) = test_engine();
         engine.sessions.push(shared_session("shared", "/repo"));
         let handle = engine.sessions[0].agent_handle().to_string();
 
         assert_eq!(
-            engine.prepare_branch_rename("shared", "display-title", true),
+            engine.prepare_branch_rename("shared", "display-title", BranchRename::AlsoTheBranch),
             BranchRenamePlan::Rejected(BranchRenameRejection::SharedWorkspaceBranch)
         );
         assert_eq!(engine.sessions[0].title.as_deref(), Some("shared-title"));
 
-        let plan = engine.prepare_branch_rename("shared", "display-title", false);
+        let plan = engine.prepare_branch_rename("shared", "display-title", BranchRename::NameOnly);
         assert!(
             matches!(plan, BranchRenamePlan::TitleWritten { .. }),
             "{plan:?}"
@@ -427,6 +423,7 @@ mod tests {
             name: "writer".to_string(),
             copy_uncommitted_changes: None,
             use_existing_branch: false,
+            name_checked: None,
         };
 
         let command = engine.wire_to_command(create()).expect("shared create");

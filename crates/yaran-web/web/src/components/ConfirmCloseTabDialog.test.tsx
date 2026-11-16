@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import type { YaranState } from "@/lib/store"
 import type { AgentTabView } from "@/lib/types"
@@ -47,12 +47,19 @@ function tab(overrides: Partial<AgentTabView>): AgentTabView {
 // Seed the dialog to close `tabId` of a session whose tabs are `tabs`.
 // `slotTabId` names the tab holding the session slot; left out, no tab does,
 // which is the shape the extra-tab cases care about.
-function seed(tabId: string, tabs: AgentTabView[], slotTabId?: string) {
+function seed(
+  tabId: string,
+  tabs: AgentTabView[],
+  slotTabId?: string,
+  pendingOrder?: string[],
+) {
   mockState = {
     closeTabTarget: { sessionId: "s1", tabId },
     spine: {
       sessions: [{ id: "s1", slot_tab_id: slotTabId, tabs }],
     },
+    pendingTabOrder: pendingOrder ? { s1: { ids: pendingOrder, answered: null } } : {},
+    pendingSlotTab: {},
   } as unknown as YaranState
 }
 
@@ -128,7 +135,7 @@ describe("ConfirmCloseTabDialog", () => {
   })
 
   // Closing the tab in the session slot is not refused any more: the slot moves
-  // to the next tab in strip order, and the copy has to say so and name it, or
+  // to the leftmost other tab, and the copy has to say so and name it, or
   // the user cannot tell this close apart from an extra tab's.
   it("says which tab takes the slot when closing the agent's first tab", () => {
     seed(
@@ -144,7 +151,7 @@ describe("ConfirmCloseTabDialog", () => {
     expect(body.textContent).toContain("This ends the claude session")
     expect(screen.getByText("claude", { selector: "code" })).toBeTruthy()
     expect(body.textContent).toMatch(
-      /The next tab, Codex, takes its place as the agent’s first tab/,
+      /Codex takes its place as the agent’s first tab/,
     )
     // The tab's name is the shared chip.
     expect(screen.getByText("Codex", { selector: "code" })).toBeTruthy()
@@ -165,9 +172,24 @@ describe("ConfirmCloseTabDialog", () => {
     const body = screen.getByText(/This ends the/)
     expect(body.textContent).toContain("This ends the codex session")
     expect(body.textContent).toMatch(
-      /The next tab, Codex 2, takes its place as the agent’s first tab/,
+      /Codex 2 takes its place as the agent’s first tab/,
     )
     expect(screen.getByText("Codex 2", { selector: "code" })).toBeTruthy()
+  })
+
+  it("names the leftmost tab of the strip on screen while a drag is unconfirmed", () => {
+    seed(
+      "t1",
+      [
+        tab({ id: "t1", provider: "claude" }),
+        tab({ id: "t2", provider: "codex" }),
+        tab({ id: "t3", provider: "opencode" }),
+      ],
+      "t1",
+      ["t3", "t1", "t2"],
+    )
+    render(<ConfirmCloseTabDialog />)
+    expect(screen.getByText("Opencode", { selector: "code" })).toBeTruthy()
   })
 
   it("says nothing about a successor when closing an extra tab", () => {
@@ -200,7 +222,7 @@ describe("ConfirmCloseTabDialog", () => {
     expect(body.textContent).toContain("This ends the claude session")
     expect(screen.getByText("claude", { selector: "code" })).toBeTruthy()
     expect(body.textContent).toMatch(
-      /The next tab, Codex, takes its place as the agent’s first tab/,
+      /Codex takes its place as the agent’s first tab/,
     )
     // The tab's name is the shared chip.
     expect(screen.getByText("Codex", { selector: "code" })).toBeTruthy()
@@ -221,6 +243,76 @@ describe("ConfirmCloseTabDialog", () => {
     render(<ConfirmCloseTabDialog />)
     expect(screen.getByText("Close tab?")).toBeTruthy()
     expect(closeCloseTab).not.toHaveBeenCalled()
+  })
+
+  // Through the real store and client: the server's refusal because somebody
+  // else is attached keeps the dialog open naming them, focus goes back to
+  // Cancel, and only Close tab anyway sends `force_connected` with the keys shown.
+  it("names who is attached when the close is refused, and closes over them only through the override", async () => {
+    seed("s1", [tab({ id: "s1", provider: "claude" })])
+    Object.assign(mockState.spine!.sessions[0], { title: "fix-auth" })
+    const answers = [
+      {
+        status: 409,
+        body: {
+          error: "attached",
+          blockers: [
+            {
+              surface: "browser",
+              device: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15",
+              address: "100.64.0.2",
+              verified: true,
+              driving: true,
+              target: { kind: "tab", id: "s1", agent: "s1" },
+              key: "k1",
+            },
+          ],
+        },
+      },
+      { status: 200, body: { detached: true } },
+    ]
+    // The real store behind the dialog keeps its own boot running on real
+    // timers (its app socket reconnecting, then asking the sign-in status), and
+    // those requests land on whichever fetch is stubbed at the time. Only the
+    // close route takes a scripted answer; everything else stays offline.
+    const closeRoute = "/api/v1/sessions/s1/tabs/s1"
+    const fetchMock = vi.fn(async (input: unknown) => {
+      if (!String(input).startsWith(closeRoute)) throw new Error("offline test")
+      const answer = answers.shift()!
+      return {
+        ok: answer.status < 300,
+        status: answer.status,
+        text: async () => JSON.stringify(answer.body),
+        headers: { get: () => null },
+      }
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    render(<ConfirmCloseTabDialog />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Close tab" }))
+    // The refusal travels the real store and client, which takes longer than
+    // the default wait when the machine is busy.
+    const override = await screen.findByRole(
+      "button",
+      { name: "Close tab anyway" },
+      { timeout: 5000 },
+    )
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Cancel" }),
+    )
+    expect(screen.getByText("Safari on macOS").tagName).toBe("CODE")
+    expect(screen.getByText(/at 100\.64\.0\.2, typing in tab/)).toBeTruthy()
+    expect(closeCloseTab).not.toHaveBeenCalled()
+
+    fireEvent.click(override)
+    await vi.waitFor(() => expect(closeCloseTab).toHaveBeenCalled(), { timeout: 5000 })
+    const urls = fetchMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.startsWith(closeRoute))
+    expect(urls).toEqual([
+      "/api/v1/sessions/s1/tabs/s1",
+      "/api/v1/sessions/s1/tabs/s1?force_connected=k1",
+    ])
   })
 
   it("links to the docs, safely, in a new tab", () => {

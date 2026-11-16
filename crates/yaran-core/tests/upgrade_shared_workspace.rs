@@ -185,7 +185,9 @@ fn a_fork_main_schema_6_database_opens_and_keeps_every_identity_byte_for_byte() 
     assert_eq!(gone.agent_handle(), "gone");
 
     // Upstream-only state the fork never had is created and usable.
-    let prs = store.load_prs("legacy-a").expect("PR history survives");
+    let prs = store
+        .load_agent_prs_of("legacy-a")
+        .expect("PR history survives");
     assert_eq!(prs.len(), 1);
     assert_eq!(prs[0].title, "Add otter");
     assert_eq!(prs[0].host, "github.com");

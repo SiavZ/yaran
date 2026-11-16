@@ -1,22 +1,25 @@
 //! `GET /api/v1/sessions/:id/changes`: a session's changed files, backed by
-//! [`crate::changes::ChangesService`].
+//! [`crate::changes::ChangesService`]; and
+//! `GET /api/v1/sessions/:id/changes/children?dir=…&side=staged|unstaged`: one
+//! level of a folded folder's contents (see [`get_children`]).
 //!
 //! Status codes:
 //! - 200 with [`ChangesResponseBody`]. Deliberately not
 //!   `yaran_core::viewmodel::ChangedFilesView`, which carries a global watched
 //!   session id and has no `rev`.
 //! - 404 when the session is unknown (no worktree).
-//! - 409 with `Retry-After` on a git lock or rebase error; 409 rather than 503
-//!   because proxies may reroute a 503.
+//! - 409 with `Retry-After` when the changed files cannot be read (a git lock,
+//!   a rebase, or any other git failure, logged to yaran.log); 409 rather than
+//!   503 because proxies may reroute a 503.
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use yaran_core::viewmodel::ChangedFileView;
 
@@ -32,6 +35,13 @@ const MAX_ID_LEN: usize = 128;
 /// refetching during a transient git lock/rebase.
 const RETRY_AFTER_SECS: u64 = 2;
 
+/// The 409 body when the changed files cannot be read. The cause is whatever
+/// git said, which is not always a busy repository, so the sentence names what
+/// yaran cannot do and leaves git's text to yaran.log, where the service writes
+/// every failed read.
+const CHANGES_UNREADABLE: &str = "yaran cannot list the changed files for this agent right now. \
+                                  Try again in a moment; the details are in yaran.log.";
+
 /// The dedicated 200 body. Distinct from `ChangedFilesView` (no global
 /// `watched_session_id`; carries `rev`). The per-file [`ChangedFileView`] is reused.
 #[derive(Serialize)]
@@ -41,9 +51,206 @@ struct ChangesResponseBody {
     unstaged: Vec<ChangedFileView>,
 }
 
-/// The changed-files read route.
+/// The changed-files read routes.
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/v1/sessions/{id}/changes", get(get_changes))
+    Router::new()
+        .route("/api/v1/sessions/{id}/changes", get(get_changes))
+        .route("/api/v1/sessions/{id}/changes/children", get(get_children))
+}
+
+/// Which folder to list, and on which side of the listing.
+#[derive(Deserialize)]
+struct ChildrenQuery {
+    dir: String,
+    side: String,
+}
+
+/// One level of a folded folder, in the listing's own row shape.
+#[derive(Serialize)]
+struct ChildrenResponseBody {
+    dir: String,
+    side: &'static str,
+    children: Vec<ChangedFileView>,
+}
+
+/// Why a folder may not be listed, in words for the browser.
+enum ChildrenError {
+    Refused(String),
+    Git(String),
+}
+
+/// The children of `dir` on `side`, refusing anything that is not a folder
+/// the changes listing shows.
+///
+/// The folder must be a folded folder row of that side, or a folder inside
+/// one that git itself lists something under (which is how a sub-folder of an
+/// expanded folder is reached). The listing checked against is `listing`, the
+/// changes service's cached snapshot for the agent, which is the list the pane
+/// is showing and at most one poll old; only a cold cache (`None`) reads a
+/// fresh one. A folder inside a folded one is still confirmed with git, scoped
+/// to that path.
+///
+/// A snapshot can be a poll behind the disk, and containment does not rest on
+/// it. The path must be in its plain spelling, so nothing like
+/// `node_modules/..` can name the worktree or climb out. On the unstaged side
+/// it must be a real directory rather than a symlink, checked on disk now, so
+/// nothing outside the worktree is ever read; on the staged side, which reads
+/// the index, it may be gone from disk but may not be a symlink. And the
+/// listing itself is read from git now, so a snapshot that is behind can only
+/// answer with what git holds today, or with nothing.
+fn list_children(
+    worktree: &std::path::Path,
+    dir: &str,
+    side: yaran_core::git::ChangesSide,
+    listing: Option<(
+        Vec<yaran_core::model::ChangedFile>,
+        Vec<yaran_core::model::ChangedFile>,
+    )>,
+) -> Result<Vec<yaran_core::model::ChangedFile>, ChildrenError> {
+    use yaran_core::git::{ChangesSide, changed_dir_children, rows_answering};
+    if dir.is_empty() || !yaran_core::model::is_lexically_normal_path(dir) {
+        return Err(ChildrenError::Refused(format!(
+            "\"{dir}\" is not a plain path inside the worktree"
+        )));
+    }
+    // What is at the path, not followed through a link. A refusal names a
+    // directory with its trailing slash and anything else as it is.
+    let on_disk = std::fs::symlink_metadata(worktree.join(dir)).ok();
+    let is_dir = on_disk
+        .as_ref()
+        .is_some_and(|meta| meta.file_type().is_dir());
+    let is_symlink = on_disk
+        .as_ref()
+        .is_some_and(|meta| meta.file_type().is_symlink());
+    let shown = if is_dir {
+        format!("{dir}/")
+    } else {
+        dir.to_string()
+    };
+    let refused = |why: &str| ChildrenError::Refused(format!("\"{shown}\" {why}"));
+    // The listing the pane shows (the service's cache), or a fresh one, read in
+    // the worktree's lane, when nothing current is cached. A folder row answers
+    // for itself from it; only a folder inside a folded one is asked of git,
+    // scoped to that folder.
+    let (staged, unstaged) = match listing {
+        Some(listing) => listing,
+        None => yaran_core::changes_lane::request_changed_files(worktree)
+            .map_err(|e| ChildrenError::Git(format!("{e:#}")))?,
+    };
+    let files = match side {
+        ChangesSide::Staged => &staged,
+        ChangesSide::Unstaged => &unstaged,
+    };
+    let listed = match yaran_core::model::listing_row_for(files, dir) {
+        Some(row) if row.path == dir => row.is_expandable(),
+        Some(_) => rows_answering(worktree, files, side, &[dir.to_string()])
+            .map_err(|e| ChildrenError::Git(format!("{e:#}")))?
+            .contains(dir),
+        None => false,
+    };
+    if !listed {
+        return Err(refused(
+            "is not a folder the changes list shows; refresh the changes and expand it from its row",
+        ));
+    }
+    // The unstaged side lists the working tree, so it must be a real directory
+    // there. The staged side lists the index, which still holds a folder staged
+    // whole and then deleted from disk; it is refused only when something at
+    // the path is a symlink, which nothing may be read through.
+    let listable = match side {
+        ChangesSide::Unstaged => is_dir,
+        ChangesSide::Staged => !is_symlink,
+    };
+    if !listable {
+        return Err(refused("is not a folder in the worktree"));
+    }
+    changed_dir_children(worktree, dir, side).map_err(|e| ChildrenError::Git(format!("{e:#}")))
+}
+
+/// `GET /api/v1/sessions/:id/changes/children`: one level of a folded folder.
+///
+/// There is no server-side deadline, as for `/changes`: the read is a blocking
+/// git call that cannot be cancelled once running. The browser holds the
+/// request to `[server] changes_request_timeout_seconds` and gives up on it
+/// with a sentence, and a superseded request is aborted by the browser too.
+async fn get_children(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ChildrenQuery>,
+) -> Response {
+    if id.chars().count() > MAX_ID_LEN {
+        return (StatusCode::NOT_FOUND, "unknown session").into_response();
+    }
+    let side = match query.side.as_str() {
+        "staged" => yaran_core::git::ChangesSide::Staged,
+        "unstaged" => yaran_core::git::ChangesSide::Unstaged,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "side must be \"staged\" or \"unstaged\"",
+            )
+                .into_response();
+        }
+    };
+    // Resolved from the agent's folder like every other changes read: a plain
+    // folder, one inside somebody else's repository and one that is gone each
+    // get the folder's own sentence before any git runs.
+    let worktree = match crate::git_routes::resolve_changes_worktree(&state, id.clone()).await {
+        Ok(worktree) => worktree,
+        Err(resp) => return resp.into_response(),
+    };
+    let dir = query.dir.clone();
+    let wt = worktree.clone();
+    let listing = state.changes.cached_listing(&id);
+    if listing.is_none() {
+        state.changes.note_fresh_validation_read();
+    }
+    // A folder expansion: a git child stopped at its deadline says only that,
+    // since nothing fetches the folder again by itself. A failure carries the
+    // worktree's resolved path, found here off the reactor, so its text is
+    // stripped of the path in both forms.
+    let answer = tokio::task::spawn_blocking(move || {
+        yaran_core::git::as_folder_read(|| list_children(&wt, &dir, side, listing))
+            .map_err(|e| (e, std::fs::canonicalize(&wt).ok()))
+    })
+    .await;
+    match answer {
+        Ok(Ok(children)) => Json(ChildrenResponseBody {
+            dir: query.dir,
+            side: match side {
+                yaran_core::git::ChangesSide::Staged => "staged",
+                yaran_core::git::ChangesSide::Unstaged => "unstaged",
+            },
+            children: crate::changes::sorted_views(&children),
+        })
+        .into_response(),
+        Ok(Err((ChildrenError::Refused(why), canonical))) => (
+            StatusCode::BAD_REQUEST,
+            yaran_core::git::redact_resolved_worktree_path(&why, &worktree, canonical.as_deref()),
+        )
+            .into_response(),
+        Ok(Err((ChildrenError::Git(detail), canonical))) => {
+            yaran_core::logger::warn(&format!("[web] could not list a folder: {detail}"));
+            (
+                StatusCode::CONFLICT,
+                [(header::RETRY_AFTER, RETRY_AFTER_SECS.to_string())],
+                format!(
+                    "Could not list the folder. {}",
+                    yaran_core::git::redact_resolved_worktree_path(
+                        &detail,
+                        &worktree,
+                        canonical.as_deref(),
+                    )
+                ),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("git task failed: {e}"),
+        )
+            .into_response(),
+    }
 }
 
 async fn get_changes(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -68,11 +275,78 @@ async fn get_changes(State(state): State<AppState>, Path(id): Path<String>) -> R
             (StatusCode::NOT_FOUND, "unknown session").into_response()
         }
         // A git lock/rebase (or other git failure): the service already logged it.
-        Err(GitError::Git(_)) => (
+        Err(GitError::Git) => (
             StatusCode::CONFLICT,
             [(header::RETRY_AFTER, RETRY_AFTER_SECS.to_string())],
-            "changed files are temporarily unavailable (the repository is busy); retry shortly",
+            CHANGES_UNREADABLE,
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yaran_core::git::ChangesSide;
+
+    /// How long one folder-children request takes and how many git processes
+    /// one refresh tick of three expanded folders runs, validated against a
+    /// fresh listing (a cold cache) and against the cached one. Ignored: it
+    /// needs a prepared repository and prints numbers rather than asserting.
+    ///
+    /// `YARAN_FOLD_BENCH_REPO`=<repo with a 30,000-file `node_modules`> \
+    ///   cargo test --release -p yaran-web --lib `measure_folder_children` -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs a prepared repository and prints numbers rather than asserting"]
+    fn measure_folder_children_against_a_prepared_repository() {
+        let Ok(repo) = std::env::var("YARAN_FOLD_BENCH_REPO") else {
+            eprintln!("YARAN_FOLD_BENCH_REPO is not set; nothing measured");
+            return;
+        };
+        let worktree = std::path::PathBuf::from(repo);
+        let cached = yaran_core::git::changed_files_for_display(&worktree).expect("listing");
+        let dirs = ["node_modules", "node_modules/pkg0", "node_modules/pkg1"];
+
+        for (label, use_cache) in [("fresh listing", false), ("cached listing", true)] {
+            let mut times = Vec::new();
+            for _ in 0..5 {
+                let began = std::time::Instant::now();
+                let listing = use_cache.then(|| cached.clone());
+                let rows = list_children(&worktree, "node_modules", ChangesSide::Unstaged, listing)
+                    .unwrap_or_else(|_| panic!("listable"));
+                times.push(began.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(rows.len(), 600);
+            }
+            times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            eprintln!(
+                "{label}: node_modules children median {:.1} ms, worst {:.1} ms (n=5)",
+                times[2], times[4]
+            );
+
+            // One refresh tick: every expanded folder asked again.
+            let trace = std::env::temp_dir().join(format!(
+                "yaran-fold-trace-{}-{use_cache}.jsonl",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&trace);
+            // SAFETY: this line is reached only with YARAN_FOLD_BENCH_REPO set (the test
+            // returns at its start otherwise), which only the benchmark command above
+            // does, running this test alone; an `--ignored` run of the suite without it
+            // returns before touching the environment.
+            unsafe { std::env::set_var("GIT_TRACE2_EVENT", &trace) };
+            for dir in dirs {
+                let listing = use_cache.then(|| cached.clone());
+                list_children(&worktree, dir, ChangesSide::Unstaged, listing)
+                    .unwrap_or_else(|_| panic!("{dir} listable"));
+            }
+            // SAFETY: as for the set above.
+            unsafe { std::env::remove_var("GIT_TRACE2_EVENT") };
+            let events = std::fs::read_to_string(&trace).unwrap_or_default();
+            let processes = events
+                .lines()
+                .filter(|line| line.contains("\"event\":\"start\""))
+                .count();
+            eprintln!("{label}: one tick of 3 expanded folders runs {processes} git processes");
+        }
     }
 }

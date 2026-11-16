@@ -229,7 +229,7 @@ export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
   }
 
   // Splice text into the compose draft at the caret. Shared by everything that
-  // puts text there without typing it (the `composeInsert` sink, a pasted
+  // puts text there without typing it (a picked macro, a pasted
   // image's path), so the caret handling and the refocus cannot drift.
   function insertComposeText(text: string) {
     // Read up front, once: the splice below may run more than once and must
@@ -295,14 +295,19 @@ export function useInputSurface(deps: InputSurfaceDeps): InputSurface {
     }
     writeInputWithLandingEffects(termRef.current, ptyRef.current, writes[0])
     // The send is committed once the body is written, so the delayed CR is a
-    // bare PTY write with no further effects. It is skipped when the pane has
-    // unmounted (its cleanup nulls `ptyRef`) or the socket has dropped, rather
-    // than delivered to a socket this pane no longer drives.
+    // bare PTY write with no further effects. It goes down the connection the
+    // body went down or nowhere: it is skipped when the pane has unmounted (its
+    // cleanup nulls `ptyRef`), when the socket has dropped, and when it has
+    // reconnected in between, since the socket object reconnects in place: the
+    // body may have been lost with the old connection, and a lone Enter on the
+    // new one would submit whatever else was on the line.
     if (writes.length > 1) {
       const pty = ptyRef.current
+      const connection = pty?.openSerial
       const rest = writes.slice(1)
       setTimeout(() => {
         if (pty === null || ptyRef.current !== pty || !pty.isOpen) return
+        if (pty.openSerial !== connection) return
         for (const w of rest) pty.sendInput(w)
       }, COMPOSE_SUBMIT_DELAY_MS)
     }

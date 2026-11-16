@@ -15,6 +15,8 @@ use crate::worker::{
     BranchWarningKind, BrowserEntry, NonDefaultBranchAction, ProjectWorktreeEntry, WorkerEvent,
 };
 
+/// The add-project browser's rows for `dir`: its visible subdirectories, repositories first then by
+/// name, under a `../` row for its parent.
 pub fn browser_entries(dir: &Path) -> Vec<BrowserEntry> {
     let mut entries = fs::read_dir(dir)
         .ok()
@@ -78,12 +80,14 @@ pub fn resolve_start_dir(config: &Config) -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
         .unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            std::env::var("HOME").map_or_else(
+                |_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                PathBuf::from,
+            )
         })
 }
 
+/// `path` canonicalized, or `path` itself when it cannot be.
 pub fn canonical_or_original(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
@@ -111,9 +115,7 @@ pub fn leading_branch_for_project(path: &Path, current_branch: Option<&str>) -> 
         Some(default) => default,
         // No remote default: use the current branch when available, else
         // fall back to "main" (the same heuristic used in load_projects).
-        None => current_branch
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "main".to_string()),
+        None => current_branch.map_or_else(|| "main".to_string(), std::string::ToString::to_string),
     }
 }
 
@@ -125,7 +127,7 @@ pub fn leading_branch_for_project(path: &Path, current_branch: Option<&str>) -> 
 pub fn project_base_for_add(
     path: &Path,
     current_branch: Option<&str>,
-    check_out_default: bool,
+    check_out_default: crate::add_project_plan::DefaultCheckout,
 ) -> crate::add_project_plan::ProjectBase {
     crate::add_project_plan::project_base_at_add(
         current_branch,
@@ -134,13 +136,262 @@ pub fn project_base_for_add(
     )
 }
 
+/// What each project or agent directory, as stored, resolves to on disk,
+/// remembered where the resolving already happens off the engine thread
+/// (loading the project list, checking a folder to add, listing a project's
+/// worktrees), so the engine can tell one by its real location, symlinked
+/// spellings included, without touching the filesystem.
+fn project_keys() -> &'static std::sync::Mutex<HashMap<String, PathBuf>> {
+    static KEYS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, PathBuf>>> =
+        std::sync::OnceLock::new();
+    KEYS.get_or_init(Default::default)
+}
+
+/// Resolve `stored` (a directory as stored) to its real location and
+/// remember it. Blocking: call it off the engine thread.
+pub fn resolve_path_key(stored: &str) -> PathBuf {
+    let key = canonical_or_original(Path::new(stored));
+    project_keys()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(stored.to_string(), key.clone());
+    key
+}
+
+/// The real location remembered for `stored`, or `stored` itself when it was
+/// never resolved (a path added through a check is already canonical). In
+/// memory only: safe on the engine thread.
+pub(crate) fn known_path_key(stored: &str) -> PathBuf {
+    project_keys()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(stored)
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(stored))
+}
+
+/// The check [`crate::engine::Engine::validate_project_add_path`] makes,
+/// against `registered`, the project paths as stored. Blocking: it
+/// canonicalizes and asks git, so a worker runs it.
+///
+/// # Errors
+///
+/// Returns the user-facing sentence when the path is not a git repository,
+/// sits inside one or inside its git directory, or is already a project.
+pub fn validate_add_path(raw_path: &str, registered: &[String]) -> Result<PathBuf, String> {
+    let trimmed = raw_path.trim();
+    let path = PathBuf::from(trimmed)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(trimmed));
+    if !path.exists() || !git::is_git_repo(&path) {
+        crate::logger::error(&format!("add project rejected for {}", path.display()));
+        return Err(format!("\"{}\" is not a git repository.", path.display()));
+    }
+    // Fail-open on Indeterminate (a gate, per the CommitState doctrine);
+    // WorkTreeRoot and BareRoot pass (bare adds are shipped behavior).
+    // NotARepo is unreachable after the is_git_repo check above.
+    match git::repo_path_kind(&path) {
+        git::RepoPathKind::InsideWorkTree { root } => {
+            return Err(format!(
+                "\"{}\" is inside the git repository at \"{}\". Add \"{}\" instead.",
+                path.display(),
+                root.display(),
+                root.display()
+            ));
+        }
+        git::RepoPathKind::InsideGitDir { .. } => {
+            return Err(format!(
+                "\"{}\" is inside git's internal directory. Add the repository itself instead.",
+                path.display()
+            ));
+        }
+        _ => {}
+    }
+    if registered
+        .iter()
+        .any(|registered| resolve_path_key(registered) == path)
+    {
+        return Err(format!(
+            "\"{}\" is already registered as a project.",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+/// The check [`crate::engine::Engine::validate_project_init_path`] makes,
+/// against `registered`, the project paths as stored. Blocking, like
+/// [`validate_add_path`].
+///
+/// # Errors
+///
+/// Returns the user-facing sentence when the path is not an existing folder,
+/// is or sits inside a git repository (or its git directory), cannot be
+/// classified, or is already a project.
+pub fn validate_init_path(raw_path: &str, registered: &[String]) -> Result<PathBuf, String> {
+    let trimmed = raw_path.trim();
+    let path = match PathBuf::from(trimmed).canonicalize() {
+        Ok(path) if path.is_dir() => path,
+        _ => {
+            return Err(format!("\"{trimmed}\" is not an existing folder."));
+        }
+    };
+    match git::repo_path_kind(&path) {
+        git::RepoPathKind::NotARepo => {}
+        git::RepoPathKind::WorkTreeRoot | git::RepoPathKind::BareRoot => {
+            return Err(format!(
+                "\"{}\" is already a git repository. Use Add project instead.",
+                path.display()
+            ));
+        }
+        git::RepoPathKind::InsideWorkTree { root } => {
+            return Err(format!(
+                "\"{}\" is inside the git repository at \"{}\". Add \"{}\" instead.",
+                path.display(),
+                root.display(),
+                root.display()
+            ));
+        }
+        git::RepoPathKind::InsideGitDir { .. } => {
+            return Err(format!(
+                "\"{}\" is inside git's internal directory. Add the repository itself instead.",
+                path.display()
+            ));
+        }
+        git::RepoPathKind::Indeterminate => {
+            return Err(format!(
+                "couldn't determine whether \"{}\" is already a git repository, so refusing to initialize one there.",
+                path.display()
+            ));
+        }
+    }
+    if registered
+        .iter()
+        .any(|registered| resolve_path_key(registered) == path)
+    {
+        return Err(format!(
+            "\"{}\" is already registered as a project.",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+/// What the add-project flows learn about a folder before deciding what to
+/// do with it, read in one blocking call so a worker can make it.
+#[derive(Clone, Debug)]
+pub enum AddPathProbe {
+    /// A repository root that may be added, with what git says about it.
+    Repository(RepositoryProbe),
+    /// Not addable as it is, but a plain folder `git init` could adopt.
+    Initable {
+        /// The folder, canonicalized.
+        path: PathBuf,
+        /// The starter-ignore folders found in it.
+        gitignore_candidates: Vec<String>,
+        /// Why it cannot be added as it is.
+        add_refusal: String,
+    },
+    /// Not addable, with the sentence that says why.
+    Refused(String),
+}
+
+/// A repository root [`probe_add_path`] found addable.
+#[derive(Clone, Debug)]
+pub struct RepositoryProbe {
+    /// The repository root, canonicalized.
+    pub path: PathBuf,
+    /// The checked-out branch, empty on a detached HEAD.
+    pub branch: String,
+    /// The observations [`crate::add_project_plan::add_project_plan`] decides
+    /// from.
+    pub inspection: crate::add_project_plan::AddProjectInspection,
+    /// The base new worktrees branch from when the folder stays on its branch.
+    pub stay_base: String,
+}
+
+/// Probe `raw_path` for the add-project flows: validated against
+/// `registered` (the project paths as stored), and, for a repository root,
+/// its branch, its branch warning, its kind and whether it has commits. A
+/// folder that is not addable is offered for `git init` when it could be.
+/// Blocking: canonicalize and several git calls.
+pub fn probe_add_path(raw_path: &str, registered: &[String]) -> AddPathProbe {
+    let path = match validate_add_path(raw_path, registered) {
+        Ok(path) => path,
+        Err(message) => {
+            return match validate_init_path(raw_path, registered) {
+                Ok(path) => AddPathProbe::Initable {
+                    gitignore_candidates: crate::gitignore_seed::matched_candidates(&path)
+                        .iter()
+                        .map(|candidate| candidate.dir.to_string())
+                        .collect(),
+                    path,
+                    add_refusal: message,
+                },
+                Err(_) => AddPathProbe::Refused(message),
+            };
+        }
+    };
+    let branch = match git::current_branch_opt(&path) {
+        Ok(branch) => branch.unwrap_or_default(),
+        Err(error) => return AddPathProbe::Refused(format!("{error:#}")),
+    };
+    let current = (!branch.is_empty()).then_some(branch.as_str());
+    let inspection = crate::add_project_plan::AddProjectInspection {
+        path_kind: git::repo_path_kind(&path),
+        current_branch: current.map(str::to_string),
+        branch_warning: current.and_then(|branch| git::branch_warning_kind(&path, branch)),
+        // Only a confirmed unborn HEAD takes the initial-commit path; an
+        // indeterminate git result fails open, so a transient failure never
+        // hijacks a normal add with the commit dialog.
+        has_commits: git::repo_commit_state(&path) != git::CommitState::Unborn,
+    };
+    let stay_base = project_base_for_add(
+        &path,
+        current,
+        crate::add_project_plan::DefaultCheckout::StayOnCurrent,
+    )
+    .into_branch();
+    AddPathProbe::Repository(RepositoryProbe {
+        path,
+        branch,
+        inspection,
+        stay_base,
+    })
+}
+
+/// The runtime project list a config reload's worker builds from `store` and
+/// the reloaded `config`, for the apply to adopt. `None` when the database
+/// cannot be read: the reload itself still stands (its sync may already have
+/// written), and the apply builds the list, or keeps the reloaded config
+/// without one, as it does for a worker that builds none. Blocking: call it
+/// off the engine thread.
+pub fn reload_project_list(
+    store: &crate::storage::SessionStore,
+    config: &Config,
+) -> Option<Vec<Project>> {
+    let read = store
+        .load_projects()
+        .and_then(|projects| Ok((projects, store.load_project_created_ats()?)));
+    match read {
+        Ok((projects, created_ats)) => Some(load_projects(&projects, &created_ats, config)),
+        Err(error) => {
+            crate::logger::warn(&format!(
+                "the config reload could not read the projects from the session database, so \
+                 the list is built when the reload applies: {error:#}"
+            ));
+            None
+        }
+    }
+}
+
 /// Convert a slice of `ProjectConfig` entries (from SQLite) into runtime `Project` values.
 /// Each project gets its path expanded, its provider resolved (falling back to the global
 /// default), and its current branch read from git. Missing or non-git paths are flagged
 /// with `path_missing = true` and receive an empty `current_branch`.
-pub fn load_projects(
+pub fn load_projects<S: std::hash::BuildHasher>(
     project_configs: &[ProjectConfig],
-    created_ats: &HashMap<String, chrono::DateTime<chrono::Utc>>,
+    created_ats: &HashMap<String, chrono::DateTime<chrono::Utc>, S>,
     config: &Config,
 ) -> Vec<Project> {
     let mut projects = Vec::new();
@@ -159,8 +410,7 @@ pub fn load_projects(
         let provider = project
             .default_provider
             .as_deref()
-            .map(ProviderKind::from_str)
-            .unwrap_or_else(|| config.default_provider());
+            .map_or_else(|| config.default_provider(), ProviderKind::from_str);
         let current_branch = if missing {
             String::new()
         } else {
@@ -177,6 +427,7 @@ pub fn load_projects(
                 )
             })
         });
+        resolve_path_key(&path.to_string_lossy());
         projects.push(Project {
             id: project.id.clone(),
             name: project.name.clone().unwrap_or_else(|| {
@@ -204,6 +455,8 @@ pub fn load_projects(
     projects
 }
 
+/// Tags each of a project's git worktrees with whether yaran manages it, which agent holds it and
+/// whether it is the project's own checkout, the ones an agent can be started on first.
 pub fn classify_project_worktrees(
     project: &Project,
     paths: &YaranPaths,
@@ -220,8 +473,9 @@ pub fn classify_project_worktrees(
                 // is the user's folder: one pointed inside yaran's managed area
                 // must read as occupied here, or the worktree manager would offer
                 // to force-remove the ground out from under it. Canonical, so a
-                // symlink cannot hide it.
-                canonical_or_original(Path::new(session.directory())),
+                // symlink cannot hide it. Remembered, so the engine can ask the
+                // same question later without the filesystem.
+                resolve_path_key(session.directory()),
                 session.id.clone(),
             )
         })
@@ -234,24 +488,20 @@ pub fn classify_project_worktrees(
             let existing_session_id = session_by_path.get(&canonical_path).cloned();
             let is_project_checkout = canonical_path == project_checkout_path;
             let is_managed_by_yaran = git::is_under(&managed_project_root, &worktree.path);
-            let is_external = !is_managed_by_yaran;
-            let is_selectable = existing_session_id.is_none() && !is_project_checkout;
             ProjectWorktreeEntry {
                 path: canonical_path,
                 branch_name: worktree.label(),
                 branch: worktree.branch_name.clone(),
                 is_managed_by_yaran,
                 existing_session_id,
-                is_external,
                 is_project_checkout,
-                is_selectable,
             }
         })
         .collect::<Vec<_>>();
 
     entries.sort_by(|a, b| {
-        a.is_selectable
-            .cmp(&b.is_selectable)
+        a.is_selectable()
+            .cmp(&b.is_selectable())
             .reverse()
             .then_with(|| a.is_project_checkout.cmp(&b.is_project_checkout))
             .then_with(|| {
@@ -264,7 +514,7 @@ pub fn classify_project_worktrees(
     entries
 }
 
-pub fn run_project_branch_status_job(project: Project, worker_tx: Sender<WorkerEvent>) {
+pub(crate) fn run_project_branch_status_job(project: Project, worker_tx: &Sender<WorkerEvent>) {
     let repo_path = PathBuf::from(&project.path);
     // Use current_branch_opt so a detached HEAD is treated as "no current
     // branch" (empty string) rather than a hard error.
@@ -290,9 +540,11 @@ pub fn run_project_branch_status_job(project: Project, worker_tx: Sender<WorkerE
     });
 }
 
+/// Works out on the calling worker thread which branch the project's checkout is on and whether it
+/// is the default, and reports it to `worker_tx`.
 pub fn run_checkout_project_default_branch_inspection_job(
     project: Project,
-    worker_tx: Sender<WorkerEvent>,
+    worker_tx: &Sender<WorkerEvent>,
     status_op_id: Option<String>,
 ) {
     let repo_path = PathBuf::from(&project.path);
@@ -342,11 +594,13 @@ pub fn run_checkout_project_default_branch_inspection_job(
 pub fn run_add_project_checkout_job(
     action: NonDefaultBranchAction,
     target_branch: String,
-    worker_tx: Sender<WorkerEvent>,
+    worker_tx: &Sender<WorkerEvent>,
     status_op_id: Option<String>,
+    guard: &crate::checkout_move::CheckoutMoveGuard,
 ) {
     let path = action.repo_path().to_string();
-    let result = git::switch_branch(Path::new(&path), &target_branch).map_err(|e| format!("{e:#}"));
+    let result =
+        git::switch_branch(Path::new(&path), &target_branch, guard).map_err(|e| format!("{e:#}"));
     let _ = worker_tx.send(WorkerEvent::NonDefaultBranchCheckoutCompleted {
         action,
         target_branch,
@@ -375,7 +629,7 @@ pub fn run_checkout_job_reporting_panics(
     if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| {
         job(action, target_branch, worker_tx, status_op_id);
     })) {
-        let reason = crate::engine::format_panic_payload(payload);
+        let reason = crate::engine::format_panic_payload(&*payload);
         crate::logger::error(&format!(
             "non-default-branch-checkout worker panicked: {reason}"
         ));
@@ -394,7 +648,7 @@ pub fn run_checkout_job_reporting_panics(
 /// commit runs off the UI/reactor thread.
 pub fn run_create_initial_commit_job(
     mut add: crate::worker::InitialCommitAdd,
-    worker_tx: Sender<WorkerEvent>,
+    worker_tx: &Sender<WorkerEvent>,
     status_op_id: Option<String>,
 ) {
     let result = match git::create_initial_commit(Path::new(&add.path)) {
@@ -430,7 +684,7 @@ pub fn run_create_initial_commit_job(
 /// the web so the git work runs off the UI/reactor thread.
 pub fn run_init_repo_job(
     add: crate::worker::InitialCommitAdd,
-    worker_tx: Sender<WorkerEvent>,
+    worker_tx: &Sender<WorkerEvent>,
     status_op_id: Option<String>,
 ) {
     let (add, result) = init_repo_and_commit(add, git::create_initial_commit);
@@ -540,6 +794,24 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::model::{ProviderKind, SessionStatus};
+
+    /// A database the reload cannot read its projects from leaves the list
+    /// to the apply instead of failing the reload its sync already wrote.
+    #[test]
+    fn a_reload_list_that_cannot_be_read_is_left_to_the_apply() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("sessions.sqlite3");
+        let store = crate::storage::SessionStore::open(&db).unwrap();
+        assert_eq!(
+            reload_project_list(&store, &Config::default()),
+            Some(Vec::new())
+        );
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch("drop table projects")
+            .unwrap();
+        assert_eq!(reload_project_list(&store, &Config::default()), None);
+    }
 
     fn checkout_action() -> NonDefaultBranchAction {
         NonDefaultBranchAction::AddProject {
@@ -687,7 +959,7 @@ mod tests {
             leading_branch: Some("trunk".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             current_branch: "feature".to_string(),
             branch_status: ProjectBranchStatus::NotLeading,
             path_missing: false,
@@ -695,7 +967,7 @@ mod tests {
         };
         let (worker_tx, worker_rx) = mpsc::channel();
 
-        run_checkout_project_default_branch_inspection_job(project, worker_tx, None);
+        run_checkout_project_default_branch_inspection_job(project, &worker_tx, None);
 
         match worker_rx.recv().expect("worker event") {
             WorkerEvent::CheckoutProjectDefaultBranchInspected { result, .. } => {
@@ -745,7 +1017,7 @@ mod tests {
             leading_branch: Some("feature".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             current_branch: "feature".to_string(),
             branch_status: ProjectBranchStatus::Leading,
             path_missing: false,
@@ -753,7 +1025,7 @@ mod tests {
         };
         let (worker_tx, worker_rx) = mpsc::channel();
 
-        run_checkout_project_default_branch_inspection_job(project, worker_tx, None);
+        run_checkout_project_default_branch_inspection_job(project, &worker_tx, None);
 
         match worker_rx.recv().expect("worker event") {
             WorkerEvent::CheckoutProjectDefaultBranchInspected { result, .. } => {
@@ -768,6 +1040,16 @@ mod tests {
                 );
             }
             _ => panic!("expected checkout inspection event"),
+        }
+    }
+
+    /// A worktree as git lists it: at `path`, with `head` out on `branch`.
+    fn listed_worktree(path: &Path, head: &str, branch: &str) -> git::GitWorktree {
+        git::GitWorktree {
+            path: path.to_path_buf(),
+            head: Some(head.to_string()),
+            branch_name: Some(branch.to_string()),
+            detached: false,
         }
     }
 
@@ -794,7 +1076,7 @@ mod tests {
             leading_branch: Some("main".to_string()),
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: ProjectBranchStatus::Leading,
             path_missing: false,
@@ -806,6 +1088,7 @@ mod tests {
             sessions_db_path: root.join("sessions.sqlite"),
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("lock"),
+            socket_path: root.join("yaran.sock"),
         };
         let sessions = vec![AgentSession {
             id: "session-1".to_string(),
@@ -833,30 +1116,10 @@ mod tests {
             }),
         }];
         let worktrees = vec![
-            git::GitWorktree {
-                path: repo.clone(),
-                head: Some("0000000".to_string()),
-                branch_name: Some("main".to_string()),
-                detached: false,
-            },
-            git::GitWorktree {
-                path: managed.clone(),
-                head: Some("1111111".to_string()),
-                branch_name: Some("managed-orphan".to_string()),
-                detached: false,
-            },
-            git::GitWorktree {
-                path: external.clone(),
-                head: Some("2222222".to_string()),
-                branch_name: Some("feature".to_string()),
-                detached: false,
-            },
-            git::GitWorktree {
-                path: existing.clone(),
-                head: Some("3333333".to_string()),
-                branch_name: Some("existing".to_string()),
-                detached: false,
-            },
+            listed_worktree(&repo, "0000000", "main"),
+            listed_worktree(&managed, "1111111", "managed-orphan"),
+            listed_worktree(&external, "2222222", "feature"),
+            listed_worktree(&existing, "3333333", "existing"),
         ];
 
         let entries = classify_project_worktrees(&project, &paths, &sessions, worktrees);
@@ -865,16 +1128,16 @@ mod tests {
             .find(|entry| entry.path == managed.canonicalize().unwrap())
             .unwrap();
         assert!(managed_entry.is_managed_by_yaran);
-        assert!(!managed_entry.is_external);
-        assert!(managed_entry.is_selectable);
+        assert!(!managed_entry.is_external());
+        assert!(managed_entry.is_selectable());
 
         let external_entry = entries
             .iter()
             .find(|entry| entry.path == external.canonicalize().unwrap())
             .unwrap();
         assert!(!external_entry.is_managed_by_yaran);
-        assert!(external_entry.is_external);
-        assert!(external_entry.is_selectable);
+        assert!(external_entry.is_external());
+        assert!(external_entry.is_selectable());
 
         let existing_entry = entries
             .iter()
@@ -884,14 +1147,14 @@ mod tests {
             existing_entry.existing_session_id.as_deref(),
             Some("session-1")
         );
-        assert!(!existing_entry.is_selectable);
+        assert!(!existing_entry.is_selectable());
 
         let project_checkout_entry = entries
             .iter()
             .find(|entry| entry.path == repo.canonicalize().unwrap())
             .unwrap();
         assert!(project_checkout_entry.is_project_checkout);
-        assert!(!project_checkout_entry.is_selectable);
+        assert!(!project_checkout_entry.is_selectable());
 
         let _ = fs::remove_dir_all(root);
     }
@@ -920,7 +1183,7 @@ mod tests {
             leading_branch: None,
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             current_branch: "main".to_string(),
             branch_status: crate::model::ProjectBranchStatus::Unknown,
             path_missing: false,
@@ -932,6 +1195,7 @@ mod tests {
             sessions_db_path: root.join("sessions.sqlite"),
             worktrees_root: root.join("worktrees"),
             lock_path: root.join("lock"),
+            socket_path: root.join("yaran.sock"),
         };
         // Reached through a symlink, to prove the comparison is canonical.
         let link = root.join("link-to-occupied");
@@ -973,7 +1237,7 @@ mod tests {
             "a standalone agent occupies this directory and must be seen doing so"
         );
         assert!(
-            !entry.is_selectable,
+            !entry.is_selectable(),
             "the manager must not offer to remove a directory an agent is living in"
         );
     }
@@ -990,7 +1254,7 @@ mod tests {
             leading_branch: None,
             auto_reopen_agents: None,
             startup_command: None,
-            env: Default::default(),
+            env: std::collections::BTreeMap::default(),
             workspace_mode: None,
         };
         let config = Config::default();
@@ -1061,7 +1325,7 @@ mod tests {
                 seeded_gitignore: false,
                 seed_warning: None,
             },
-            tx,
+            &tx,
             None,
         );
         match rx.recv().unwrap() {
@@ -1114,7 +1378,7 @@ mod tests {
         assert!(add.seeded_gitignore, "seeded_gitignore must be set");
         assert!(add.seed_warning.is_none());
         assert!(!add.branch.is_empty(), "the committed branch is persisted");
-        assert!(!add.leading_branch.is_empty());
+        assert_ne!(add.leading_branch, "");
         assert!(dir.path().join(".gitignore").exists());
         let out = crate::git::test_support::git_command()
             .args(["rev-list", "--count", "HEAD"])

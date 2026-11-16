@@ -14,7 +14,7 @@ use std::path::Path;
 use axum::Router;
 use yaran_core::config::{ProjectConfig, YaranPaths};
 use yaran_core::gh::GithubHostPolicy;
-use yaran_core::gh::probe_test_support::stand_in_gh_serving;
+use yaran_core::gh::probe_test_support::stand_in_gh_with_pull_request_and_repository;
 use yaran_core::model::GhStatus;
 use yaran_core::storage::SessionStore;
 use yaran_web::bootstrap::bootstrap_engine;
@@ -48,6 +48,24 @@ async fn boot(
     projects: &[(&str, &str, &str)],
     hosts: &[&str],
 ) -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
+    boot_with_lookup(
+        projects,
+        hosts,
+        Err("no pull request answers here\u{202E}"),
+        Err("no repository answers here"),
+    )
+    .await
+}
+
+/// [`boot`] with `gh pr view` answering `pull_request` and `gh repo view`
+/// answering `repository`: each its JSON, or a message on stderr with a
+/// failing exit.
+async fn boot_with_lookup(
+    projects: &[(&str, &str, &str)],
+    hosts: &[&str],
+    pull_request: Result<&str, &str>,
+    repository: Result<&str, &str>,
+) -> (SocketAddr, yaran_core::test_scratch::ScratchDir) {
     let tmp = yaran_core::test_scratch::ScratchDir::new();
     let root = tmp.path().to_path_buf();
     let paths = YaranPaths {
@@ -55,15 +73,16 @@ async fn boot(
         config_path: root.join("config.toml"),
         sessions_db_path: root.join("sessions.sqlite3"),
         worktrees_root: root.join("worktrees"),
-        lock_path: root.join("yaran.lock"),
+        lock_path: root.join("dux.lock"),
+        socket_path: root.join("yaran.sock"),
     };
-    std::fs::create_dir_all(&paths.worktrees_root).unwrap();
+    std::fs::create_dir_all(&paths.worktrees_root).expect("create the test directory");
 
     {
-        let store = SessionStore::open(&paths.sessions_db_path).unwrap();
+        let store = SessionStore::open(&paths.sessions_db_path).expect("open the session store");
         for (id, name, origin) in projects {
             let dir = root.join(id);
-            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(&dir).expect("create the test directory");
             git_isolated(&dir, &["init", "-b", "main"]);
             git_isolated(&dir, &["remote", "add", "origin", origin]);
             // The production read applies the developer's `url.*.insteadOf`
@@ -88,14 +107,14 @@ async fn boot(
                     leading_branch: None,
                     auto_reopen_agents: None,
                     startup_command: None,
-                    env: Default::default(),
+                    env: std::collections::BTreeMap::new(),
                     workspace_mode: None,
                 })
-                .unwrap();
+                .expect("save the test project");
         }
     }
 
-    let mut engine = bootstrap_engine(&paths).unwrap();
+    let mut engine = bootstrap_engine(&paths).expect("bootstrap the test engine");
     // A worktree-mode install: these fixtures register yaran's own root as the
     // project, which shared mode rightly refuses to run agents in.
     engine.config.workspace = None;
@@ -107,10 +126,19 @@ async fn boot(
     // probe overwrites the placed answer mid-test and every resolve is refused.
     // With the stand-in, the production probe code path runs unchanged and the
     // answer it gets is the one this test wrote.
-    engine.gh_probe.program = stand_in_gh_serving(&root, hosts).into();
+    let signed_in: Vec<(&str, &str)> = hosts.iter().map(|h| (*h, "ssh")).collect();
+    engine.gh_probe.program =
+        stand_in_gh_with_pull_request_and_repository(&root, &signed_in, pull_request, repository)
+            .into();
     // The placed pair covers the window BEFORE the probe reports, so the answer
     // is the same at every instant of the test rather than only after it lands.
     engine.gh_status = GhStatus::Available;
+    engine.set_github_git_protocols(
+        hosts
+            .iter()
+            .map(|h| ((*h).to_string(), yaran_core::gh::GitProtocol::Ssh))
+            .collect(),
+    );
     engine.set_github_host_policy(GithubHostPolicy::Hosts(
         hosts.iter().map(|h| (*h).to_string()).collect(),
     ));
@@ -121,15 +149,17 @@ async fn boot(
         Router::<AppState>::new(),
         RouterParams::plain_http(),
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind a loopback port");
+    let addr = listener.local_addr().expect("read the bound address");
     tokio::spawn(async move {
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
-        .unwrap();
+        .expect("serve the test router");
     });
     (addr, tmp)
 }
@@ -141,6 +171,27 @@ async fn resolve(addr: SocketAddr, reference: &str) -> (reqwest::StatusCode, Str
         .send()
         .await
         .expect("resolve");
+    let status = res.status();
+    (status, res.text().await.expect("body"))
+}
+
+async fn check_destination(
+    addr: SocketAddr,
+    path: &Path,
+    owner_repo: &str,
+) -> (reqwest::StatusCode, String) {
+    let res = reqwest::Client::new()
+        .post(format!(
+            "http://{addr}/api/v1/pull-requests/clone-destination"
+        ))
+        .json(&serde_json::json!({
+            "path": path,
+            "host": "github.com",
+            "owner_repo": owner_repo,
+        }))
+        .send()
+        .await
+        .expect("check the folder");
     let status = res.status();
     (status, res.text().await.expect("body"))
 }
@@ -172,6 +223,10 @@ async fn a_pasted_pull_request_link_resolves_to_the_project_that_repository_is_o
     let value: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(value["number"], 17);
     assert_eq!(value["repository"], "github.com/acme/widget");
+    // The lookup only runs when no project matches; this boot's lookup fails,
+    // so running it here would put a sentence on the reply.
+    assert!(value.get("clone").is_none(), "{body}");
+    assert!(value.get("clone_unavailable").is_none(), "{body}");
 }
 
 #[tokio::test]
@@ -194,7 +249,7 @@ async fn a_browser_url_with_issues_on_the_end_still_resolves() {
 
 #[tokio::test]
 async fn a_repository_yaran_does_not_have_answers_with_its_name_and_no_projects() {
-    let (addr, _tmp) = boot(
+    let (addr, tmp) = boot(
         &[("p1", "widget", "git@github.com:acme/widget.git")],
         &["github.com"],
     )
@@ -202,11 +257,367 @@ async fn a_repository_yaran_does_not_have_answers_with_its_name_and_no_projects(
 
     let (status, body) = resolve(addr, "https://github.com/acme/unknown/pull/3").await;
     assert_eq!(status, 200, "{body}");
-    assert!(matched_names(&body).is_empty());
+    assert_eq!(matched_names(&body), Vec::<String>::new());
     let value: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
         value["repository"], "github.com/acme/unknown",
         "the client has to be able to say WHICH repository yaran has no project for"
+    );
+    // The pull request cannot be found: still a 200 with the projects, no
+    // offer, and the lookup's own sentence as data.
+    assert!(value.get("clone").is_none(), "{body}");
+    assert_eq!(
+        value["clone_unavailable"],
+        "Failed to resolve PR #3 from acme/unknown: no pull request answers here"
+    );
+
+    // A reference with no number has nothing to look up, so neither key exists.
+    let (status, body) = resolve(addr, "https://github.com/acme/unknown").await;
+    assert_eq!(status, 200, "{body}");
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(value.get("clone").is_none(), "{body}");
+    assert!(value.get("clone_unavailable").is_none(), "{body}");
+
+    let (hand_made, canonical) = the_folder_check_tells_checkouts_apart(addr, tmp.path()).await;
+    // For a checkout it also says whether the agent will need a review copy,
+    // from what the folder holds: a branch checked out in the folder or
+    // diverged from the pull request needs one, a branch the pull request has
+    // moved past or one that contains it does not, and a head commit the folder
+    // does not have leaves the question open. Nothing is fetched or written.
+    let head = branches_around_the_pull_request(&hand_made);
+    a_checkout_says_when_it_needs_a_review_copy(addr, tmp.path(), &hand_made, &canonical, &head)
+        .await;
+    a_typed_name_is_answered_for_itself(addr, tmp.path(), &hand_made).await;
+    a_pull_request_gh_finds_carries_the_clone_offer().await;
+}
+
+/// The folder a clone would go into: a hand-made checkout of the repository is
+/// a checkout, another repository's working copy is refused, and a folder that
+/// does not exist yet is free. Answers the checkout and its canonical spelling.
+async fn the_folder_check_tells_checkouts_apart(
+    addr: SocketAddr,
+    root: &Path,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    // The folder the clone would go into: a checkout somebody made by hand is
+    // a checkout, another repository's working copy is refused, and a folder
+    // that does not exist yet is free. Nothing is created.
+    let hand_made = root.join("hand-made");
+    std::fs::create_dir(&hand_made).expect("create the test directory");
+    git_isolated(&hand_made, &["init", "-b", "feature"]);
+    git_isolated(
+        &hand_made,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/unknown.git",
+        ],
+    );
+    git_isolated(
+        &hand_made,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+    let (status, body) = check_destination(addr, &hand_made, "acme/unknown").await;
+    assert_eq!(status, 200, "{body}");
+    let value: serde_json::Value = serde_json::from_str(&body).expect("the body is JSON");
+    assert_eq!(value["state"], "checkout");
+    // The answer names the folder by its canonical spelling, which on macOS
+    // turns the temporary directory's /var into /private/var.
+    let canonical = std::fs::canonicalize(&hand_made).expect("the checkout has a canonical path");
+    assert_eq!(value["path"], canonical.to_string_lossy().as_ref());
+    let (status, body) = check_destination(addr, &hand_made, "acme/other").await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        body,
+        format!(
+            "{} already holds something that isn't a checkout of github.com/acme/other. \
+             Pick another folder.",
+            canonical.display()
+        )
+    );
+    let not_yet = root.join("not-yet");
+    let (status, body) = check_destination(addr, &not_yet, "acme/unknown").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("the body is JSON")["state"],
+        "free"
+    );
+    assert!(!not_yet.exists(), "the check created the folder");
+    (hand_made, canonical)
+}
+
+/// Branches around a pull request's head in `hand_made`: `behind` it, `ahead` of
+/// it, `side` diverged from it, and `feature` checked out on it. Answers the head.
+fn branches_around_the_pull_request(hand_made: &Path) -> String {
+    let commit = |message: &str| {
+        git_isolated(
+            hand_made,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ],
+        );
+    };
+    git_isolated(hand_made, &["branch", "behind"]);
+    commit("pull request work");
+    let head = String::from_utf8(
+        yaran_core::test_git::fixture_git()
+            .args(["-C"])
+            .arg(hand_made)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("run git")
+            .stdout,
+    )
+    .expect("the head prints as UTF-8")
+    .trim()
+    .to_string();
+    git_isolated(hand_made, &["checkout", "-q", "-b", "ahead"]);
+    commit("more work");
+    git_isolated(hand_made, &["checkout", "-q", "behind"]);
+    git_isolated(hand_made, &["checkout", "-q", "-b", "side"]);
+    commit("my own work");
+    git_isolated(hand_made, &["checkout", "-q", "feature"]);
+    head
+}
+
+/// For a checkout the folder check also says whether the agent will need a
+/// review copy, from what the folder holds.
+async fn a_checkout_says_when_it_needs_a_review_copy(
+    addr: SocketAddr,
+    root: &Path,
+    hand_made: &Path,
+    canonical: &Path,
+    head: &str,
+) {
+    let review_copy = |branch: &'static str, oid: String| {
+        let (hand_made, canonical) = (hand_made.to_path_buf(), canonical.to_path_buf());
+        async move {
+            let res = reqwest::Client::new()
+                .post(format!(
+                    "http://{addr}/api/v1/pull-requests/clone-destination"
+                ))
+                .json(&serde_json::json!({
+                    "path": hand_made,
+                    "host": "github.com",
+                    "owner_repo": "acme/unknown",
+                    "number": 3,
+                    "head_branch": branch,
+                    "head_oid": oid,
+                }))
+                .send()
+                .await
+                .expect("check the folder");
+            assert_eq!(res.status(), 200);
+            let value: serde_json::Value = res.json().await.expect("the response body is JSON");
+            assert_eq!(value["path"], canonical.to_string_lossy().as_ref());
+            value["review_copy"].clone()
+        }
+    };
+    let checked_out = review_copy("feature", head.to_string()).await;
+    assert_eq!(
+        checked_out,
+        serde_json::json!({
+            "state": "needed",
+            "reason": "busy",
+            "branch": "feature",
+            "copy_branch": "feature-review",
+            "warning": [
+                "Branch ",
+                { "name": "feature", "quoted": true },
+                " is checked out in the project folder ",
+                { "name": canonical.to_string_lossy(), "quoted": true },
+                ". Creating this agent from PR ",
+                { "name": "#3", "quoted": false },
+                " needs a separate review copy on ",
+                { "name": "feature-review", "quoted": true },
+                ", and pushes from this agent would land on ",
+                { "name": "feature-review", "quoted": true },
+                ", not on the pull request.",
+            ],
+        })
+    );
+    // The copy takes the name the create would pick, so a folder already
+    // sitting where its worktree would go counts as taken.
+    std::fs::create_dir_all(root.join("worktrees/hand-made/feature-review"))
+        .expect("create the test directory");
+    assert_eq!(
+        review_copy("feature", head.to_string()).await["copy_branch"],
+        "feature-review-2"
+    );
+    let diverged = review_copy("side", head.to_string()).await;
+    assert_eq!(diverged["state"], "needed");
+    assert_eq!(diverged["reason"], "diverged");
+    assert_eq!(diverged["copy_branch"], "side-review");
+    for (branch, why) in [
+        ("nothing-like-this", "no branch of that name"),
+        ("behind", "a branch the pull request has moved past"),
+        ("ahead", "a branch that contains the pull request"),
+    ] {
+        assert_eq!(
+            review_copy(branch, head.to_string()).await,
+            serde_json::json!({ "state": "not_needed" }),
+            "{why}"
+        );
+    }
+    assert_eq!(
+        review_copy("behind", "f".repeat(40)).await,
+        serde_json::json!({ "state": "unknown" }),
+        "a head commit the folder does not have cannot be compared"
+    );
+}
+
+/// A typed agent name is answered for itself, and a caller that sends no pull
+/// request facts gets the answer it always did.
+async fn a_typed_name_is_answered_for_itself(addr: SocketAddr, root: &Path, hand_made: &Path) {
+    // A typed name is answered for itself, whatever the folder holds: one
+    // spelled like a review copy of the branch needs one, another needs none,
+    // and the branch's own name is the branch's answer.
+    let named = |path: std::path::PathBuf, name: &'static str| async move {
+        let res = reqwest::Client::new()
+            .post(format!(
+                "http://{addr}/api/v1/pull-requests/clone-destination"
+            ))
+            .json(&serde_json::json!({
+                "path": path,
+                "host": "github.com",
+                "owner_repo": "acme/unknown",
+                "number": 3,
+                "head_branch": "feature",
+                "head_oid": "f".repeat(40),
+                "agent_name": name,
+            }))
+            .send()
+            .await
+            .expect("check the folder");
+        assert_eq!(res.status(), 200);
+        res.json::<serde_json::Value>()
+            .await
+            .expect("the response body is JSON")
+    };
+    let in_checkout =
+        named(hand_made.to_path_buf(), " feature-review-2 ").await["review_copy"].clone();
+    assert_eq!(in_checkout["state"], "needed");
+    assert_eq!(in_checkout["reason"], "typed");
+    assert_eq!(in_checkout["copy_branch"], "feature-review-2");
+    let free = named(root.join("not-made-yet"), "feature-review").await;
+    assert_eq!(free["state"], "free");
+    assert_eq!(free["review_copy"]["copy_branch"], "feature-review");
+    assert_eq!(
+        named(hand_made.to_path_buf(), "something-else").await["review_copy"],
+        serde_json::json!({ "state": "not_needed" })
+    );
+    assert_eq!(
+        named(hand_made.to_path_buf(), "side").await["review_copy"],
+        serde_json::json!({ "state": "not_needed" }),
+        "a branch of that name already in the folder is reused as it is"
+    );
+    assert_eq!(
+        named(hand_made.to_path_buf(), "feature").await["review_copy"]["reason"],
+        "busy",
+        "the branch's own name is the branch's answer"
+    );
+    // A caller that sends no pull request facts gets the answer it always did.
+    let (_, body) = check_destination(addr, hand_made, "acme/unknown").await;
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&body)
+            .expect("the body is JSON")
+            .get("review_copy")
+            .is_none(),
+        "{body}"
+    );
+}
+
+/// With a pull request gh can find, the resolve reply carries the clone offer.
+async fn a_pull_request_gh_finds_carries_the_clone_offer() {
+    // With a pull request gh can find, the reply carries the offer: the
+    // address follows the host's ssh setting, and it says up front whether the
+    // agent will need a review copy. A clone checks out the repository's
+    // default branch, so a pull request from that branch will.
+    const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+    let found = format!(
+        r#"{{"number":3,"title":"Add a thing","state":"OPEN","headRefName":"add-thing","headRefOid":"{HEAD}"}}"#
+    );
+    let offer = |repository: Result<&'static str, &'static str>| {
+        let found = found.clone();
+        async move {
+            let (addr, tmp) = boot_with_lookup(
+                &[("p1", "widget", "git@github.com:acme/widget.git")],
+                &["github.com"],
+                Ok(&found),
+                repository,
+            )
+            .await;
+            let (status, body) = resolve(addr, "https://github.com/acme/unknown/pull/3").await;
+            assert_eq!(status, 200, "{body}");
+            let value: serde_json::Value = serde_json::from_str(&body).expect("the body is JSON");
+            assert!(value.get("clone_unavailable").is_none(), "{body}");
+            (value["clone"].clone(), tmp)
+        }
+    };
+
+    let (clone, _tmp) = offer(Ok(r#"{"defaultBranchRef":{"name":"main"}}"#)).await;
+    assert_eq!(
+        clone,
+        serde_json::json!({
+            "address": "git@github.com:acme/unknown.git",
+            "host": "github.com",
+            "owner_repo": "acme/unknown",
+            "number": 3,
+            "title": "Add a thing",
+            "state": "OPEN",
+            "head_branch": "add-thing",
+            "head_oid": HEAD,
+            "review_copy": { "state": "not_needed" },
+        })
+    );
+
+    let (clone, _tmp) = offer(Ok(r#"{"defaultBranchRef":{"name":"add-thing"}}"#)).await;
+    assert_eq!(
+        clone["review_copy"],
+        serde_json::json!({
+            "state": "needed",
+            "reason": "busy",
+            "branch": "add-thing",
+            "copy_branch": "add-thing-review",
+            "warning": [
+                "Branch ",
+                { "name": "add-thing", "quoted": true },
+                " will be checked out in the project folder yaran clones into. Creating this agent from PR ",
+                { "name": "#3", "quoted": false },
+                " needs a separate review copy on ",
+                { "name": "add-thing-review", "quoted": true },
+                ", and pushes from this agent would land on ",
+                { "name": "add-thing-review", "quoted": true },
+                ", not on the pull request.",
+            ],
+        })
+    );
+
+    // A default branch gh cannot name leaves the offer standing with the
+    // question open, rather than turning the offer into a failure.
+    let (clone, _tmp) = offer(Err("boom")).await;
+    assert_eq!(clone["head_branch"], "add-thing");
+    assert_eq!(
+        clone["review_copy"],
+        serde_json::json!({ "state": "unknown" })
     );
 }
 
@@ -309,7 +720,7 @@ async fn a_project_it_could_not_inspect_is_reported_rather_than_counted_as_a_non
 
     let (status, body) = resolve(addr, "acme/widget#5").await;
     assert_eq!(status, 200, "{body}");
-    assert!(matched_names(&body).is_empty());
+    assert_eq!(matched_names(&body), Vec::<String>::new());
     let value: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(value["uninspected_count"], 1, "{body}");
     assert_eq!(

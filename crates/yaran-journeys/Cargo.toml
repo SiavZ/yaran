@@ -1,0 +1,80 @@
+[package]
+name = "yaran-journeys"
+version.workspace = true
+rust-version.workspace = true
+edition = "2024"
+publish = false
+description = "Container-based user journeys for yaran's web server: the yaran binary in Docker, driven over HTTP, WebSockets and a real browser."
+
+# Test-only. Nothing here ships, and nothing here builds unless asked for:
+#
+# - `journeys` turns the harness and the journey test target on. Without it the
+#   library is empty and the test target is skipped, so `cargo test --workspace`
+#   on a machine with no Docker never tries to start a container, and pays
+#   nothing for these dependencies.
+# - `auth` (implies `journeys`) also RUNS the journeys about the web password
+#   login. Without it they are compiled and listed as ignored with the reason.
+#   They were written before the login was built, as its definition of done;
+#   the journey workflow runs them on every push.
+#
+#   cargo test -p yaran-journeys --features journeys -- --test-threads=2
+#   cargo test -p yaran-journeys --features auth -- --test-threads=2
+#
+# The repository's `cargo clippy --all-targets --all-features` gate turns both
+# features on, and that is deliberate. Keeping the journeys out of it would mean
+# either an `--exclude` in every existing clippy command (CI, CLAUDE.md,
+# CONTRIBUTING) or a separate workspace with its own lockfile, and either way the
+# main gate would stop compiling the journeys, so a change to a shared API could
+# break them unseen until the journey workflow ran. What it costs, measured: a
+# from-scratch clippy of this crate with every dependency it pulls takes 24 s at
+# three jobs, much of it crates the workspace builds anyway. On macOS the
+# dependencies are Linux-only and nothing extra is built. The journey workflow
+# also lints this crate on its own.
+[features]
+journeys = [
+    "dep:testcontainers",
+    "dep:tokio",
+    "dep:reqwest",
+    "dep:tokio-tungstenite",
+    "dep:futures-util",
+    "dep:serde_json",
+    "dep:base64",
+    "dep:sha2",
+    "dep:fantoccini",
+    "dep:hyper-util",
+    "dep:uuid",
+    "dep:signal-hook",
+]
+auth = ["journeys"]
+
+# Docker, the image and the host-built binary are all Linux-only (the binary is
+# bind-mounted into a Linux container), so the dependencies are too. On macOS
+# the crate compiles to nothing whatever the features say.
+[target.'cfg(target_os = "linux")'.dependencies]
+testcontainers = { version = "0.28", default-features = false, optional = true }
+# Ctrl-C cleanup (see src/run.rs): the run removes its own labelled containers
+# and networks, tolerating any already gone, then dies of the signal.
+signal-hook = { version = "0.3", optional = true }
+tokio = { workspace = true, features = ["process", "io-util", "fs"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["cookies", "json", "rustls-tls"], optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+base64 = { version = "0.22", optional = true }
+sha2 = { version = "0.10", optional = true }
+fantoccini = { version = "0.22", default-features = false, optional = true }
+# The plain-HTTP connector fantoccini is handed: chromedriver is reached over
+# loopback HTTP, so no TLS stack is pulled in for it.
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"], optional = true }
+uuid = { workspace = true, optional = true }
+
+[lib]
+doctest = false
+
+[[test]]
+name = "journeys"
+path = "tests/journeys/main.rs"
+required-features = ["journeys"]
+
+[lints]
+workspace = true

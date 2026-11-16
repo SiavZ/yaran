@@ -1,65 +1,150 @@
-//! The yaran binary: dispatches `server`, `peer`, `board`, `cloud` and `--version`, else runs the TUI.
-//!
-//! <module-headers:begin>
-//! Uses:
-//! main.rs
-//! ├── companion
-//! ├── yaran-core
-//! ├── yaran-core::activity
-//! ├── yaran-core::cloud::cli
-//! ├── yaran-core::config
-//! ├── yaran-core::engine
-//! ├── yaran-core::human_board::cli
-//! ├── yaran-core::logger
-//! ├── yaran-core::peer
-//! ├── yaran-core::reload_handoff
-//! ├── yaran-core::reload_policy
-//! ├── yaran-core::tailscale
-//! ├── yaran-tui
-//! └── yaran-web
-//! External: anyhow, std
-//!
-//! Used by: entry point (the yaran binary's main)
-//! <module-headers:end>
+//! The `yaran` binary: the terminal UI, `yaran server`, and the command line that talks to a running
+//! yaran.
 
+#[cfg(test)]
+mod cli_reference;
+mod client_commands;
+mod commands;
 mod companion;
 
 use anyhow::Result;
-
-const SERVER_USAGE: &str = "\
-Usage: yaran server [OPTIONS]
-
-Run the yaran web UI over the headless engine. yaran is a trusted-local tool with no
-login gate; only run a non-loopback bind on a network you trust.
-
-Options:
-      --bind <ADDR:PORT>  Bind this exact address, overriding [server] host+port.
-                          An IP:port socket address (hostnames are NOT resolved),
-                          e.g. 0.0.0.0:3890. May be given only once.
-      --port <PORT>       Override [server] port only (ignored when --bind is set).
-                          yaran binds host:port (and the machine's Tailscale address
-                          unless disabled). Default port 3890.
-      --no-tailscale      Skip Tailscale detection this run (serve the configured
-                          host only).
-  -h, --help              Print this help and exit.";
+use clap::Parser;
 
 fn main() -> Result<()> {
+    // First of all: until the handler is installed, a hand reload's SIGUSR1 would end this
+    // yaran. A failure is reported where each serving mode starts, which installs it again.
+    let _ = yaran_core::reload_signal::install();
     // Before anything else: once a newer build is installed over this one,
     // the OS no longer says where this process was started from.
     yaran_core::reload_policy::remember_startup_exe();
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("server") => run_server(args),
-        // Before anything touches config or the lock: a version query must work
-        // on a machine with no yaran home and while another yaran is running.
-        Some("--version" | "-V") => {
-            println!("yaran {}", yaran_core::version::long());
-            Ok(())
+    // `yaran config` owns every word after it, `--` and flag-looking words
+    // included, so it is recognised before clap sees the line.
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((command, args)) = commands::split_local_command(&raw) {
+        return run_local_command(command, args);
+    }
+    if let Some(config) = commands::split_config(&raw) {
+        let selection = client_commands::Selection {
+            remote: config.remote,
+            local: config.local,
+        };
+        let remote = yaran_core::config::YaranPaths::discover()
+            .map_err(|error| {
+                yaran_core::client::CliError::new(
+                    yaran_core::client::Exit::Failed,
+                    format!("{error:#}"),
+                )
+            })
+            .and_then(|paths| selection.config_remote_name(&paths, &config.args));
+        let remote = match remote {
+            Ok(remote) => remote,
+            Err(error) => client_commands::finish(Err(error)),
+        };
+        if let Err(message) = selection.check_config_target(remote.as_deref()) {
+            usage_error(&message);
         }
-        Some("peer") => run_peer(args),
-        Some("board") => run_board(args),
-        Some("cloud") => run_cloud(args),
-        _ => run_tui_with_flip(),
+        // A config command that ends with one of the command line's own codes
+        // (a reload whose outcome is unknown) exits with it.
+        if let Err(error) = yaran_tui::run_config(&config.args) {
+            return match error.downcast::<yaran_core::client::CliError>() {
+                Ok(cli) => client_commands::finish(Err(cli)),
+                Err(error) => Err(error),
+            };
+        }
+        return Ok(());
+    }
+    let cli = commands::Cli::parse();
+    let selection = client_commands::Selection {
+        remote: cli.remote.clone(),
+        local: cli.local,
+    };
+    let local = selection.local_flag();
+    match cli.command {
+        None => {
+            if let Err(message) =
+                commands::check_terminal_ui_start_target(cli.remote.as_deref(), local)
+            {
+                usage_error(&message);
+            }
+            killing_live_child_groups(run_tui_with_flip())
+        }
+        Some(commands::Command::Server(server)) => {
+            if let Err(message) = commands::listener_flags_with_subcommand(&server) {
+                usage_error(&message);
+            }
+            if server.command.is_none()
+                && let Err(message) =
+                    commands::check_server_start_target(cli.remote.as_deref(), local)
+            {
+                usage_error(&message);
+            }
+            match server.command {
+                None => killing_live_child_groups(run_server(&server.into_overrides())),
+                Some(command) => client_commands::finish_with(|out, err| {
+                    client_commands::server(command, &selection, out, err)
+                }),
+            }
+        }
+        // Every well-formed `config` line was split off above; clap only
+        // reaches here for one that names both global flags, which it refuses.
+        Some(commands::Command::Config(_)) => {
+            usage_error("yaran config takes --local or --remote before the word config, not both")
+        }
+        Some(commands::Command::Remote(remote)) => client_commands::finish_with(|_, err| {
+            client_commands::remote(remote.command, &selection, err)
+        }),
+        Some(commands::Command::Operations(operations)) => client_commands::finish_with_code(
+            client_commands::operations(operations.command, &selection),
+        ),
+        Some(commands::Command::Macros(macros)) => {
+            client_commands::finish(client_commands::macros(macros.command, &selection))
+        }
+        Some(commands::Command::Providers(providers)) => {
+            client_commands::finish(client_commands::providers(providers.command, &selection))
+        }
+        Some(commands::Command::Keys(keys)) => {
+            client_commands::finish(client_commands::keys(keys.command, &selection))
+        }
+        Some(commands::Command::Themes(themes)) => {
+            client_commands::finish(client_commands::themes(themes.command, &selection))
+        }
+        Some(commands::Command::Env(env)) => {
+            client_commands::finish(client_commands::env(env.command, &selection))
+        }
+        Some(commands::Command::Projects(projects)) => client_commands::finish_with(|_, err| {
+            client_commands::projects(projects.command, &selection, err)
+        }),
+        Some(commands::Command::Agents(agents)) => client_commands::finish_with(|_, err| {
+            client_commands::agents(agents.command, &selection, err)
+        }),
+        Some(commands::Command::Terminals(terminals)) => client_commands::finish_with(|_, err| {
+            client_commands::terminals(terminals.command, &selection, err)
+        }),
+        // Split off above when they come first; a global flag before one is a
+        // mistake, since they only ever run on this machine.
+        Some(
+            commands::Command::Doctor(_)
+            | commands::Command::Session(_)
+            | commands::Command::Peer(_)
+            | commands::Command::Board(_)
+            | commands::Command::Cloud(_),
+        ) => usage_error(
+            "doctor, session, peer, board and cloud run on this machine and take no --remote or --local",
+        ),
+    }
+}
+
+/// Run a command that lives on this machine and reads its own arguments.
+fn run_local_command(command: commands::LocalCommand, args: &[String]) -> Result<()> {
+    match command {
+        commands::LocalCommand::Doctor => yaran_tui::run_doctor(args),
+        commands::LocalCommand::Session => match yaran_tui::run_session(args)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
+        commands::LocalCommand::Peer => run_peer(args),
+        commands::LocalCommand::Board => run_board(args),
+        commands::LocalCommand::Cloud => run_cloud(args),
     }
 }
 
@@ -68,28 +153,71 @@ fn main() -> Result<()> {
 /// a request for the top-level help; a peer message may legitimately contain
 /// that word. Takes no single-instance lock: it runs from inside agents while
 /// the TUI or server holds it, and the AMQ registry has its own lock.
-fn run_peer(args: impl Iterator<Item = String>) -> Result<()> {
-    let args = args.collect::<Vec<_>>();
+/// `yaran peer`: a client like the rest of the command line. Its sessions and
+/// its AMQ registry pass come from the yaran running on this machine, over the
+/// control socket; it never opens the session database itself.
+fn run_peer(args: &[String]) -> Result<()> {
     let paths = yaran_core::config::YaranPaths::discover()?;
-    yaran_core::peer::run_peer(&args, &paths)
+    let fetch = || {
+        ask_local_yaran(
+            &paths,
+            yaran_core::client::transport::Method::Post,
+            "/api/v1/peer/sync",
+        )
+    };
+    yaran_core::peer::run_peer(args, &paths, &fetch)
 }
 
-/// `yaran board ...`: put cards on the human board, or take them off.
-/// Dispatched early and lock-free for the same reasons as `yaran peer`: agents
-/// run it while a yaran holds the lock, and a card title may contain `--help`.
-fn run_board(args: impl Iterator<Item = String>) -> Result<()> {
-    let args = args.collect::<Vec<_>>();
+/// `yaran board`: asks the running yaran for its agents only to recognise the
+/// agent it runs in, and goes on without when there is no yaran to ask.
+fn run_board(args: &[String]) -> Result<()> {
     let paths = yaran_core::config::YaranPaths::discover()?;
-    yaran_core::human_board::cli::run_board(&args, &paths)
+    let sessions = || {
+        ask_local_yaran(
+            &paths,
+            yaran_core::client::transport::Method::Get,
+            "/api/v1/peer/sessions",
+        )
+        .ok()
+    };
+    yaran_core::human_board::cli::run_board(args, &paths, &sessions)
 }
 
-/// `yaran cloud ...`: pair this machine with Yaran Cloud, or manage the pairing.
-/// Dispatched early for the same reasons as `yaran board`: no lock, no engine, and
-/// its own `--help`. Never writes `config.toml` (a running yaran owns that file).
-fn run_cloud(args: impl Iterator<Item = String>) -> Result<()> {
-    let args = args.collect::<Vec<_>>();
+/// One request to the yaran running on this machine, over its control socket,
+/// answered as `T`; an error when none is running or it refuses.
+fn ask_local_yaran<T: serde::de::DeserializeOwned>(
+    paths: &yaran_core::config::YaranPaths,
+    method: yaran_core::client::transport::Method,
+    path: &str,
+) -> Result<T> {
+    let client = yaran_core::client::connect::connect_local_if_running(&paths.lock_path)
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "yaran isn't running, and this command asks it for its agents; start it with \
+                 \"yaran\" or \"yaran server\""
+            )
+        })?;
+    let reply = client
+        .send(yaran_core::client::transport::Request {
+            method,
+            path: path.to_string(),
+            body: None,
+            bearer: None,
+            timeout: None,
+        })
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    if reply.status != 200 {
+        return Err(anyhow::anyhow!("{}", client.refusal(&reply)));
+    }
+    client
+        .parse(&reply)
+        .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+fn run_cloud(args: &[String]) -> Result<()> {
     let paths = yaran_core::config::YaranPaths::discover()?;
-    match yaran_core::cloud::cli::run_cloud(&args, &paths) {
+    match yaran_core::cloud::cli::run_cloud(args, &paths) {
         0 => Ok(()),
         code => std::process::exit(code),
     }
@@ -162,6 +290,21 @@ fn exec_reload(
     )
 }
 
+/// Hand back what a serving mode returned once the bounded git, gh and
+/// tailscale calls still running are killed: each runs in a process group of
+/// its own, which the terminal's Ctrl-C and hangup never reach, so a wedged
+/// one would otherwise outlive yaran.
+fn killing_live_child_groups(ran: Result<()>) -> Result<()> {
+    yaran_core::kill_live_child_groups();
+    ran
+}
+
+/// A refusal found while checking the command line, before anything starts.
+fn usage_error(message: &str) -> ! {
+    client_commands::note(&mut std::io::stderr().lock(), message);
+    std::process::exit(2);
+}
+
 /// Default arm: run the TUI, and when it flips to the web server, serve the same
 /// engine in this process until the server stops, then resume the TUI, repeating
 /// until the user quits from either surface. While serving, the terminal shows
@@ -187,39 +330,24 @@ fn run_tui_with_flip() -> Result<()> {
                 engine,
                 listeners,
                 urls,
+                startup,
             } => {
                 // Read before the engine and listeners move into
-                // `serve_with_engine`. The flip is LOCAL MODE, so the primary
-                // address is always loopback and a non-loopback URL means only that
-                // the Tailscale leg bound, which is what the safety note reads.
+                // `serve_with_engine`. The reachability note is the startup
+                // banner's, which the log viewer pins on top.
                 let theme_name = engine.config.ui.theme.clone();
                 let paths = engine.paths.clone();
-                let tailscale = engine.config.server.tailscale_mode();
-                let tailnet_bound = urls.iter().any(|u| {
-                    u.strip_prefix("http://")
-                        .and_then(|rest| rest.rsplit_once(':'))
-                        .map(|(host, _)| {
-                            let ip = host.trim_start_matches('[').trim_end_matches(']');
-                            ip != "127.0.0.1" && ip != "::1"
-                        })
-                        .unwrap_or(false)
-                });
-                // On the `auto` mode the Tailscale leg comes and goes while the
-                // status screen stays up, so the note has to cover the whole
-                // session rather than this instant. On `yes` and `no` what bound
-                // at the flip is what there will be.
-                let safety_note = if tailscale.watches_interface() {
-                    Some(yaran_web::SAFETY_NOTE_TAILNET_WATCHED.to_string())
-                } else if tailnet_bound {
-                    Some(yaran_web::SAFETY_NOTE_TAILNET.to_string())
-                } else {
-                    None
-                };
+                let keys = engine.config.keys.clone();
 
-                // The activity buffer is shared between the web console (the
-                // producer, wired in serve_with_engine) and the status screen
-                // (the consumer). Created here so both get the same handle.
-                let activity = yaran_core::activity::ActivityRing::new();
+                // The log buffer is shared between the web console (the
+                // producer, wired in serve_with_engine) and the status screen's
+                // log viewer (the consumer). Created here so both get the same
+                // handle, sized by `[server] log_viewer_lines`.
+                let activity = yaran_core::activity::ActivityRing::new(
+                    yaran_core::config::effective_log_viewer_lines(
+                        engine.config.server.log_viewer_lines,
+                    ),
+                );
 
                 // A failure here (no TTY, a raw-mode error) falls back to a plain
                 // line, because the server must still run. `screen` lives outside
@@ -228,55 +356,58 @@ fn run_tui_with_flip() -> Result<()> {
                 // `serve_with_engine`'s two FnMut callbacks borrow it in turn: they
                 // run one at a time on this thread, but a plain `&mut` capture would
                 // be two simultaneous exclusive borrows.
-                let screen = std::cell::RefCell::new(
-                    match yaran_tui::ServerStatusScreen::new(
+                let screen = std::cell::RefCell::new(status_screen_or_line(
+                    yaran_tui::ServerStatusScreen::new(
                         &urls,
-                        safety_note,
                         &theme_name,
                         &paths,
+                        &keys,
                         activity.clone(),
-                    ) {
-                        Ok(screen) => Some(screen),
-                        Err(err) => {
-                            eprintln!(
-                                "yaran server running at {} (status screen unavailable: {err}). \
-                                 Press Ctrl-C to stop",
-                                urls.join(", ")
-                            );
-                            None
-                        }
-                    },
-                );
+                    ),
+                    &urls,
+                    &mut std::io::stderr().lock(),
+                ));
+
+                // Only a screen that actually took the terminal has anything to
+                // give back, or keys to read: without one (no TTY) there is no
+                // escape code to send and Ctrl-c is an ordinary signal.
+                let hooks = if screen.borrow().is_some() {
+                    yaran_web::FlipHooks {
+                        // A second stop signal mid-shutdown ends the process with
+                        // no destructor run, so the terminal is given back first.
+                        restore_terminal: Some(std::sync::Arc::new(yaran_tui::restore_terminal)),
+                    }
+                } else {
+                    yaran_web::FlipHooks::default()
+                };
 
                 let (engine, exit) = yaran_web::serve_with_engine(
                     *engine,
                     listeners,
                     activity,
-                    || {
-                        // With the screen up, its keys drive the exit; without it,
-                        // only SIGINT/SIGTERM (handled inside serve) can stop us.
-                        match screen.borrow_mut().as_mut() {
-                            Some(screen) => match screen.tick() {
-                                yaran_tui::ServerScreenTick::Continue => {
-                                    yaran_web::ServerTick::Continue
+                    &startup,
+                    hooks,
+                    yaran_web::FlipTurns {
+                        on_tick: || server_tick(screen.borrow_mut().as_mut()),
+                        on_shutdown_status: |message: &str| {
+                            // Through the status screen so it renders on its own themed
+                            // line rather than as raw text wherever the cursor sits.
+                            match screen.borrow_mut().as_mut() {
+                                Some(screen) => screen.show_shutdown_message(message),
+                                None => {
+                                    client_commands::note(&mut std::io::stderr().lock(), message);
                                 }
-                                yaran_tui::ServerScreenTick::ReturnToTui => {
-                                    yaran_web::ServerTick::ReturnToTui
-                                }
-                                yaran_tui::ServerScreenTick::QuitProcess => {
-                                    yaran_web::ServerTick::QuitProcess
-                                }
-                            },
-                            None => yaran_web::ServerTick::Continue,
-                        }
-                    },
-                    |message| {
-                        // Through the status screen so it renders on its own themed
-                        // line rather than as raw text wherever the cursor sits.
-                        match screen.borrow_mut().as_mut() {
-                            Some(screen) => screen.show_shutdown_message(message),
-                            None => eprintln!("{message}"),
-                        }
+                            }
+                        },
+                        on_shutdown_wait: || {
+                            // The screen holds the terminal in raw mode, so a second
+                            // Ctrl-c during the shutdown wait is a key; it reads its
+                            // keys and redraws on each turn of the wait.
+                            match screen.borrow_mut().as_mut() {
+                                Some(screen) => screen.shutdown_tick(),
+                                None => false,
+                            }
+                        },
                     },
                 )?;
 
@@ -288,6 +419,20 @@ fn run_tui_with_flip() -> Result<()> {
 
                 match exit {
                     yaran_web::ServerExit::QuitProcess => break,
+                    yaran_web::ServerExit::ForceQuit(handle) => {
+                        // The terminal is the shell's again (the screen was just
+                        // dropped), so the reason lands on its own screen; the
+                        // engine goes first so queued config writes land.
+                        yaran_web::finish_forced_quit(engine, &handle, |code| {
+                            yaran_core::kill_live_child_groups();
+                            std::process::exit(code)
+                        });
+                        // Still here: the signal hatch took the exit and is
+                        // ending the process; a second exit must not race it.
+                        loop {
+                            std::thread::park();
+                        }
+                    }
                     yaran_web::ServerExit::ReturnToTui => {
                         next = yaran_tui::resume_after_server(
                             Box::new(engine),
@@ -304,57 +449,108 @@ fn run_tui_with_flip() -> Result<()> {
     Ok(())
 }
 
-fn run_server(args: impl Iterator<Item = String>) -> Result<()> {
-    let parsed = match parse_server_args(args) {
-        ParsedServerArgs::HelpRequested => {
-            println!("{SERVER_USAGE}");
-            return Ok(());
+/// The status screen the flip shows while serving, or, when it could not take the terminal (no
+/// TTY, a raw-mode error), `None` after one plain line on `err` saying where yaran serves: the
+/// server must still run.
+fn status_screen_or_line(
+    made: Result<yaran_tui::ServerStatusScreen>,
+    urls: &[String],
+    err: &mut impl std::io::Write,
+) -> Option<yaran_tui::ServerStatusScreen> {
+    match made {
+        Ok(screen) => Some(screen),
+        Err(error) => {
+            client_commands::note(
+                err,
+                &format!(
+                    "yaran server running at {} (status screen unavailable: {error}). Press Ctrl-C \
+                     to stop",
+                    urls.join(", ")
+                ),
+            );
+            None
         }
-        ParsedServerArgs::Error(msg) => {
-            eprintln!("error: {msg}");
-            eprintln!("{SERVER_USAGE}");
-            std::process::exit(2);
-        }
-        ParsedServerArgs::Ok(parsed) => parsed,
-    };
+    }
+}
 
-    let overrides = parsed.into_overrides();
+/// What one turn of the flip's serve loop does: with the screen up, its keys drive the exit;
+/// without it, only SIGINT/SIGTERM (handled inside serve) can stop it.
+fn server_tick(screen: Option<&mut yaran_tui::ServerStatusScreen>) -> yaran_web::ServerTick {
+    match screen.map(yaran_tui::ServerStatusScreen::tick) {
+        Some(yaran_tui::ServerScreenTick::Continue) | None => yaran_web::ServerTick::Continue,
+        Some(yaran_tui::ServerScreenTick::ReturnToTui) => yaran_web::ServerTick::ReturnToTui,
+        Some(yaran_tui::ServerScreenTick::QuitProcess) => yaran_web::ServerTick::QuitProcess,
+    }
+}
 
+/// A `yaran server` that cannot start: say why on stderr and end with code 1.
+fn refuse_server_start(reason: &dyn std::fmt::Display) -> ! {
+    client_commands::note(
+        &mut std::io::stderr().lock(),
+        &format!("error: yaran server cannot start: {reason}"),
+    );
+    std::process::exit(1);
+}
+
+/// Creates the config folder owner-only: `yaran server` never runs `YaranPaths::ensure_dirs`,
+/// so a first run would otherwise leave it at the umask default.
+fn create_config_root(paths: &yaran_core::config::YaranPaths) -> Result<()> {
+    yaran_core::file_modes::create_private_dir_all(&paths.root)?;
+    Ok(())
+}
+
+fn init_server_logger(
+    logging: &yaran_core::config::LoggingConfig,
+    paths: &yaran_core::config::YaranPaths,
+) {
+    yaran_core::logger::init(logging, paths);
+    // The folder was tightened before the log existed, dropping its warnings; tightening is
+    // idempotent, so running it again puts them in the log.
+    yaran_core::file_modes::restrict_to_owner_best_effort(&paths.root, "directory");
+}
+
+fn run_server(overrides: &yaran_core::config::ServerCliOverrides) -> Result<()> {
     let paths = yaran_core::config::YaranPaths::discover()?;
-    std::fs::create_dir_all(&paths.root)?;
+    create_config_root(&paths)?;
     // `yaran server` never calls `ensure_config`, so without this the bootstrap's
     // project-sync would create a comment-free config.toml on a first run that
     // starts in server mode. Registering the TUI's canonical renderer keeps
     // "the config file is the documentation" true on both entry points.
     yaran_tui::install_canonical_renderer();
-    let config = yaran_core::config::load_config(&paths);
+    // Fails closed: when [server.auth] cannot be read, yaran does not serve
+    // at all rather than serve with no password.
+    let config = match yaran_core::config::load_config(&paths) {
+        Ok(config) => config,
+        Err(error) => refuse_server_start(&error),
+    };
+
+    // Before either log opens: a log path naming one of yaran's own files would
+    // write into it.
+    if let Some(refusal) = yaran_core::config::log_path_refusal(&config, &paths) {
+        refuse_server_start(&refusal);
+    }
 
     // Initialize the logger early so every subsequent logger::* call in the server
     // path (bootstrap, bind) actually reaches yaran.log.
     // OnceLock::set is idempotent, so it is safe if the TUI already initialized it (flip).
-    yaran_core::logger::init(&config.logging, &paths);
+    init_server_logger(&config.logging, &paths);
     yaran_core::logger::info("bootstrapping yaran server");
 
     // Detected up front to feed the Tailscale leg of the bind plan; blocking is fine
     // at CLI startup and the call is bounded. A failed detection warns and proceeds
     // on the configured host only, never blocks, and under `auto` the serve path
     // keeps watching, so the warning says so rather than sounding final.
-    let tailscale_mode = yaran_core::config::effective_tailscale_mode(
-        config.server.tailscale_mode(),
-        overrides.no_tailscale,
-    );
+    let tailscale_mode =
+        yaran_core::config::effective_tailscale_mode(config.server.tailscale_mode(), overrides);
+    // Warnings raised here print as the first lines of the server's log (the
+    // same timestamped warning lines the flip's viewer shows), ahead of any bind.
+    let mut startup_warnings = Vec::new();
+    let mut undetected = None;
     let tailscale_ip = if tailscale_mode.wants_tailscale() {
         match yaran_core::tailscale::detect_ip() {
             Ok(ip) => Some(ip),
             Err(reason) => {
-                eprintln!(
-                    "WARNING: {}",
-                    yaran_core::tailscale::undetected_warning(
-                        tailscale_mode,
-                        reason,
-                        "the configured host"
-                    )
-                );
+                undetected = Some(reason);
                 None
             }
         }
@@ -363,239 +559,332 @@ fn run_server(args: impl Iterator<Item = String>) -> Result<()> {
     };
 
     let plan =
-        match yaran_core::config::resolve_server_plan(&config.server, &overrides, tailscale_ip) {
+        match yaran_core::config::resolve_server_plan(&config.server, overrides, tailscale_ip) {
             Ok(plan) => plan,
             Err(e) => {
-                eprintln!("error: {e}");
+                // No log will ever open, so the detection warning goes to stderr
+                // ahead of the error rather than vanishing with the start.
+                let warning = undetected.map(|reason| {
+                    yaran_core::tailscale::undetected_warning(
+                        tailscale_mode,
+                        &reason,
+                        "the configured host",
+                    )
+                });
+                report_plan_failure(&mut std::io::stderr(), warning.as_deref(), &e.to_string());
                 std::process::exit(1);
             }
         };
 
-    // Loud warning when binding a non-loopback address: yaran has no login gate, so
-    // anyone who can reach the address can control your agents and worktrees.
-    // Fires pre-bind (stderr) so it is visible even if a bind then fails.
-    let is_local = |a: &std::net::SocketAddr| a.ip().is_loopback() || Some(a.ip()) == tailscale_ip;
-    for plan_addr in plan.addrs.iter().filter(|p| !is_local(&p.addr())) {
-        eprintln!(
-            "WARNING: yaran is binding {}, a non-loopback address, with NO login gate. Anyone \
-             who can reach this address can control your agents and worktrees. Only do this on \
-             a network you trust, or front yaran with an upstream auth proxy.",
-            plan_addr.addr()
-        );
+    // Worded once the plan says what is being served instead: on a loopback-only
+    // plan these are the flip's exact words for the same situation. It opens the
+    // log, and reaches stderr too whenever stdout is not a terminal.
+    if let Some(reason) = undetected {
+        startup_warnings.push(yaran_web::StartupWarning {
+            text: yaran_core::tailscale::undetected_warning(
+                tailscale_mode,
+                &reason,
+                serving_without_tailscale(&plan),
+            ),
+            already_on_stderr: false,
+        });
     }
 
+    // Loud warning when binding a non-loopback address with no password set:
+    // anyone who can reach the address can control your agents and worktrees.
+    // Printed before the bind so it is visible even if a bind then fails.
+    let is_local = |a: &std::net::SocketAddr| a.ip().is_loopback() || Some(a.ip()) == tailscale_ip;
+    let alarms: Vec<String> = plan
+        .addrs
+        .iter()
+        .filter(|p| !is_local(&p.addr()))
+        .filter_map(|p| non_loopback_warning(p.addr(), &config.server.auth))
+        .collect();
+    raise_security_alarms(
+        &alarms,
+        yaran_core::serve_log::StdStreams::current(),
+        &mut std::io::stderr(),
+        &mut startup_warnings,
+    );
+
     yaran_web::run_server(
-        paths,
+        &paths,
         plan,
         // Same display version as the TUI footer and the web sidebar
         // ("vX.Y.Z" for release builds, "development" otherwise) so all three
         // surfaces always show the same thing.
         yaran_core::display_version().to_string(),
+        &startup_warnings,
     )
 }
 
-/// Outcome of parsing `yaran server` arguments. Separated from `run_server` so the
-/// argument parser is unit-testable without touching config/discovery.
-enum ParsedServerArgs {
-    Ok(ServerArgs),
-    HelpRequested,
-    Error(String),
-}
-
-/// Raw parsed `yaran server` flags before config is loaded.
-#[derive(Default)]
-struct ServerArgs {
-    /// `--bind <ADDR:PORT>`: an exact bind address, overriding config host+port.
-    /// May be given only once.
-    bind: Option<String>,
-    port: Option<u16>,
-    no_tailscale: bool,
-}
-
-impl ServerArgs {
-    fn into_overrides(self) -> yaran_core::config::ServerCliOverrides {
-        yaran_core::config::ServerCliOverrides {
-            bind: self.bind,
-            port: self.port,
-            no_tailscale: self.no_tailscale,
-        }
+/// What a serve without its Tailscale leg is serving on, as the "Tailscale not
+/// detected" warning names it. A loopback-only plan says "loopback", the word
+/// the in-app flip uses for the same situation, so the two logs match.
+fn serving_without_tailscale(plan: &yaran_core::config::ServerPlan) -> &'static str {
+    if plan.addrs.iter().all(|a| a.addr().ip().is_loopback()) {
+        "loopback"
+    } else {
+        "the configured host"
     }
 }
 
-fn parse_server_args(mut args: impl Iterator<Item = String>) -> ParsedServerArgs {
-    let mut out = ServerArgs::default();
-
-    // Pull the value for a `--flag VALUE` or `--flag=VALUE` form. `inline` is
-    // Some when the `=` form was used.
-    fn take_value(
-        name: &str,
-        inline: Option<String>,
-        args: &mut impl Iterator<Item = String>,
-    ) -> Result<String, String> {
-        match inline {
-            Some(v) => Ok(v),
-            None => args
-                .next()
-                .ok_or_else(|| format!("{name} requires a value")),
+/// The "NO password" alarms go to stderr at once, before the engine loads, so a
+/// redirected stdout (`yaran server > access.log`) or a start that fails while
+/// loading can never hide them; they also open the log itself, the same lines
+/// the flip's viewer would show.
+///
+/// Each prints to stderr exactly once: the log line is marked as already there,
+/// so neither the log's stderr echo nor a failed load prints it again.
+fn raise_security_alarms(
+    alarms: &[String],
+    streams: yaran_core::serve_log::StdStreams,
+    stderr: &mut dyn std::io::Write,
+    startup_warnings: &mut Vec<yaran_web::StartupWarning>,
+) {
+    let early = streams.early_alarm_on_stderr();
+    for alarm in alarms {
+        if early {
+            let _ = writeln!(stderr, "WARNING: {alarm}");
         }
+        startup_warnings.push(yaran_web::StartupWarning {
+            text: alarm.clone(),
+            already_on_stderr: early,
+        });
     }
+}
 
-    fn parse_port(name: &str, raw: &str) -> Result<u16, String> {
-        raw.parse::<u16>()
-            .map_err(|_| format!("{name} expects a port number 0-65535, got \"{raw}\""))
+/// A start that failed while resolving what to bind: print the Tailscale
+/// warning it had (no log is going to carry it) and then the error.
+fn report_plan_failure(stderr: &mut dyn std::io::Write, warning: Option<&str>, error: &str) {
+    if let Some(warning) = warning {
+        let _ = writeln!(stderr, "WARNING: {warning}");
     }
+    let _ = writeln!(stderr, "error: {error}");
+}
 
-    // Pull a port-valued flag's value and parse it in one step, so the three
-    // port arms (`--port`/`--http-port`/`--https-port`) collapse to a single line
-    // each that only differs in the field they assign.
-    fn take_port(
-        name: &str,
-        inline: Option<String>,
-        args: &mut impl Iterator<Item = String>,
-    ) -> Result<u16, String> {
-        let raw = take_value(name, inline, args)?;
-        parse_port(name, &raw)
+/// The alarm for a listener beyond loopback (and beyond the machine's own
+/// Tailscale address) with no password set, or `None` when a password is set:
+/// every client from the network is then asked for it, whatever `require` says.
+fn non_loopback_warning(
+    addr: std::net::SocketAddr,
+    auth: &yaran_core::config::ServerAuthConfig,
+) -> Option<String> {
+    if auth.has_password() {
+        return None;
     }
-
-    while let Some(arg) = args.next() {
-        // Split `--flag=value` once; bare flags have no `=`.
-        let (flag, inline) = match arg.split_once('=') {
-            Some((f, v)) => (f.to_string(), Some(v.to_string())),
-            None => (arg.clone(), None),
-        };
-
-        match flag.as_str() {
-            "--help" | "-h" => return ParsedServerArgs::HelpRequested,
-            "--no-tailscale" => out.no_tailscale = true,
-            "--port" => match take_port("--port", inline, &mut args) {
-                Ok(p) => out.port = Some(p),
-                Err(e) => return ParsedServerArgs::Error(e),
-            },
-            "--bind" => match take_value("--bind", inline, &mut args) {
-                Ok(v) => {
-                    if out.bind.is_some() {
-                        return ParsedServerArgs::Error(
-                            "--bind may be given only once".to_string(),
-                        );
-                    }
-                    out.bind = Some(v);
-                }
-                Err(e) => return ParsedServerArgs::Error(e),
-            },
-            other => {
-                return ParsedServerArgs::Error(format!("unknown argument \"{other}\""));
-            }
-        }
-    }
-
-    ParsedServerArgs::Ok(out)
+    Some(format!(
+        "yaran is binding {addr}, a non-loopback address, with NO password set. Anyone who can \
+         reach this address can control your agents and worktrees. Set one with `yaran config \
+         set server.auth.password`, or only do this on a network you trust."
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse(args: &[&str]) -> ParsedServerArgs {
-        parse_server_args(args.iter().map(|s| s.to_string()))
-    }
-
-    fn ok(args: &[&str]) -> ServerArgs {
-        match parse(args) {
-            ParsedServerArgs::Ok(a) => a,
-            ParsedServerArgs::HelpRequested => panic!("unexpected help"),
-            ParsedServerArgs::Error(e) => panic!("unexpected error: {e}"),
-        }
-    }
-
-    fn err(args: &[&str]) -> String {
-        match parse(args) {
-            ParsedServerArgs::Error(e) => e,
-            other => panic!("expected error, got {}", matches_label(&other)),
-        }
-    }
-
-    fn matches_label(p: &ParsedServerArgs) -> &'static str {
-        match p {
-            ParsedServerArgs::Ok(_) => "Ok",
-            ParsedServerArgs::HelpRequested => "HelpRequested",
-            ParsedServerArgs::Error(_) => "Error",
+    fn paths_in(root: &std::path::Path) -> yaran_core::config::YaranPaths {
+        yaran_core::config::YaranPaths {
+            root: root.to_path_buf(),
+            config_path: root.join("config.toml"),
+            sessions_db_path: root.join("sessions.sqlite3"),
+            worktrees_root: root.join("worktrees"),
+            lock_path: root.join("dux.lock"),
+            socket_path: root.join("yaran.sock"),
         }
     }
 
     #[test]
-    fn empty_args_parse_to_defaults() {
-        let a = ok(&[]);
-        assert!(a.bind.is_none());
-        assert!(a.port.is_none());
-        assert!(!a.no_tailscale);
-    }
+    fn a_symlinked_config_folder_warning_reaches_the_log_of_a_server_start() {
+        let parent = std::env::temp_dir().join(format!("yaran-server-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let target = parent.join("real");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = parent.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let paths = paths_in(&link);
 
-    #[test]
-    fn port_parses_as_number() {
-        let a = ok(&["--port", "9090"]);
-        assert_eq!(a.port, Some(9090));
-        let a = ok(&["--port=7000"]);
-        assert_eq!(a.port, Some(7000));
-    }
+        create_config_root(&paths).unwrap();
+        init_server_logger(&yaran_core::config::LoggingConfig::default(), &paths);
 
-    #[test]
-    fn bind_parses_once() {
-        assert_eq!(
-            ok(&["--bind", "0.0.0.0:8888"]).bind.as_deref(),
-            Some("0.0.0.0:8888")
-        );
-    }
-
-    #[test]
-    fn second_bind_is_rejected() {
-        assert!(err(&["--bind", "a:1", "--bind", "b:2"]).contains("once"));
-    }
-
-    #[test]
-    fn removed_flags_unknown() {
-        for f in [
-            "--listen",
-            "--disable-auth",
-            "--insecure-allow-remote",
-            "--acme-domain",
-            "--no-acme",
-            "--dangerously-listen-http",
-        ] {
-            assert!(
-                err(&[f]).contains("unknown argument")
-                    || err(&[f, "x"]).contains("unknown argument")
-            );
-        }
-    }
-
-    #[test]
-    fn no_tailscale_sets_its_field() {
-        let a = ok(&["--no-tailscale"]);
-        assert!(a.no_tailscale);
-    }
-
-    #[test]
-    fn help_flags_request_help() {
-        assert!(matches!(
-            parse(&["--help"]),
-            ParsedServerArgs::HelpRequested
-        ));
-        assert!(matches!(parse(&["-h"]), ParsedServerArgs::HelpRequested));
-    }
-
-    #[test]
-    fn unknown_flag_errors() {
-        let msg = err(&["--what-is-this"]);
+        let log = std::fs::read_to_string(target.join("yaran.log")).unwrap();
+        let _ = std::fs::remove_dir_all(&parent);
         assert!(
-            msg.contains("--what-is-this"),
-            "should name the unknown flag: {msg}"
+            log.contains("is a symlink, so its permissions were left alone"),
+            "the symlink warning was lost before the logger opened:\n{log}"
         );
     }
 
     #[test]
-    fn value_flag_without_value_errors() {
-        let msg = err(&["--bind"]);
-        assert!(msg.contains("--bind"), "should name the flag: {msg}");
-        assert!(msg.contains("requires a value"), "should explain: {msg}");
+    fn server_start_creates_a_missing_config_folder_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = std::env::temp_dir().join(format!("yaran-server-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let root = parent.join("fresh-home");
+
+        create_config_root(&paths_in(&root)).unwrap();
+
+        let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_dir_all(&parent);
+        assert_eq!(mode, 0o700);
+    }
+
+    /// The "NO password" alarm reaches stderr at once, before anything is loaded,
+    /// so `yaran server > access.log` still shows it and a failed start does not
+    /// swallow it. It also opens the log, where the flip's viewer shows it too.
+    #[test]
+    fn the_security_alarm_goes_to_stderr_at_once_and_into_the_log() {
+        let mut stderr = Vec::new();
+        let mut startup_warnings = vec![yaran_web::StartupWarning {
+            text: "Tailscale not detected.".to_string(),
+            already_on_stderr: false,
+        }];
+        // `yaran server > access.log`: stdout a file, stderr the terminal.
+        let streams = yaran_core::serve_log::StdStreams {
+            stdout_is_terminal: false,
+            stderr_is_terminal: true,
+            same_file: false,
+        };
+        raise_security_alarms(
+            &[non_loopback_warning(
+                "0.0.0.0:3890".parse().unwrap(),
+                &yaran_core::config::ServerAuthConfig::default(),
+            )
+            .unwrap()],
+            streams,
+            &mut stderr,
+            &mut startup_warnings,
+        );
+        let printed = String::from_utf8(stderr).unwrap();
+        assert!(
+            printed.starts_with("WARNING: yaran is binding 0.0.0.0:3890"),
+            "{printed}"
+        );
+        assert_eq!(
+            printed.lines().count(),
+            1,
+            "only the alarm, not the other warnings"
+        );
+        assert_eq!(startup_warnings.len(), 2);
+        assert!(
+            startup_warnings[1]
+                .text
+                .starts_with("yaran is binding 0.0.0.0:3890")
+        );
+        assert!(
+            startup_warnings[1].already_on_stderr,
+            "so the log's stderr echo and a failed load leave it alone"
+        );
+        assert!(!startup_warnings[0].already_on_stderr);
+    }
+
+    /// On an interactive terminal the alarm is not printed early: the log line
+    /// on that same terminal says it, and saying it twice is noise.
+    #[test]
+    fn on_a_terminal_the_alarm_is_left_to_the_log_line() {
+        let streams = yaran_core::serve_log::StdStreams {
+            stdout_is_terminal: true,
+            stderr_is_terminal: true,
+            same_file: false,
+        };
+        let mut stderr = Vec::new();
+        let mut startup_warnings = Vec::new();
+        raise_security_alarms(
+            &[non_loopback_warning(
+                "0.0.0.0:3890".parse().unwrap(),
+                &yaran_core::config::ServerAuthConfig::default(),
+            )
+            .unwrap()],
+            streams,
+            &mut stderr,
+            &mut startup_warnings,
+        );
+        assert_eq!(stderr, Vec::<u8>::new());
+        assert_eq!(startup_warnings.len(), 1);
+        assert!(
+            !startup_warnings[0].already_on_stderr,
+            "so a start that fails before the log prints it then"
+        );
+    }
+
+    /// A bad `--bind` ends the start before the log exists, so the Tailscale
+    /// warning would be swallowed: it goes to stderr ahead of the error.
+    #[test]
+    fn a_failed_plan_still_prints_the_tailscale_warning() {
+        let mut stderr = Vec::new();
+        report_plan_failure(
+            &mut stderr,
+            Some("Tailscale not detected (test)."),
+            "--bind expects an IP:port",
+        );
+        assert_eq!(
+            String::from_utf8(stderr).unwrap(),
+            "WARNING: Tailscale not detected (test).\nerror: --bind expects an IP:port\n"
+        );
+    }
+
+    #[test]
+    fn a_flip_without_its_status_screen_says_where_it_serves_in_one_line() {
+        let mut stderr = Vec::new();
+        let screen = status_screen_or_line(
+            Err(anyhow::anyhow!("no terminal")),
+            &[
+                "http://127.0.0.1:3890".to_string(),
+                "http://[::1]:3890".to_string(),
+            ],
+            &mut stderr,
+        );
+        assert!(screen.is_none());
+        assert_eq!(
+            String::from_utf8(stderr).unwrap(),
+            "yaran server running at http://127.0.0.1:3890, http://[::1]:3890 (status screen \
+             unavailable: no terminal). Press Ctrl-C to stop\n"
+        );
+    }
+
+    #[test]
+    fn a_loopback_plan_is_called_loopback_as_the_flip_calls_it() {
+        let plan = |addrs: Vec<yaran_core::config::PlanAddr>| yaran_core::config::ServerPlan {
+            primary: addrs[0].addr(),
+            addrs,
+            tailscale: yaran_core::config::TailscaleMode::Auto,
+            forced_no: false,
+        };
+        let loopback = plan(vec![yaran_core::config::PlanAddr::required(
+            "127.0.0.1:3890".parse().unwrap(),
+        )]);
+        assert_eq!(serving_without_tailscale(&loopback), "loopback");
+        let wide = plan(vec![yaran_core::config::PlanAddr::required(
+            "0.0.0.0:3890".parse().unwrap(),
+        )]);
+        assert_eq!(serving_without_tailscale(&wide), "the configured host");
+    }
+
+    #[test]
+    fn the_non_loopback_alarm_names_the_address_and_the_risk() {
+        let open = yaran_core::config::ServerAuthConfig::default();
+        let w = non_loopback_warning("0.0.0.0:3890".parse().unwrap(), &open)
+            .expect("no password: an alarm");
+        assert!(w.starts_with("yaran is binding 0.0.0.0:3890, a non-loopback address"));
+        assert!(w.contains("NO password"), "{w}");
+        assert!(w.contains("yaran config set server.auth.password"), "{w}");
+        assert!(
+            !w.starts_with("WARNING:"),
+            "the log line carries its own warning glyph"
+        );
+        let guarded = yaran_core::config::ServerAuthConfig {
+            password_hash: yaran_core::auth::hash_password(&yaran_core::auth::Password::new(
+                "orbit velvet quarry lantern cobalt".to_string(),
+            ))
+            .unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(
+            non_loopback_warning("0.0.0.0:3890".parse().unwrap(), &guarded),
+            None,
+            "with a password every client from the network signs in"
+        );
     }
 }

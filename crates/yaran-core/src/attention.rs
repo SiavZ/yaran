@@ -55,7 +55,7 @@ const MAX_CARRY: usize = 4096;
 
 /// A signal extracted from an agent's raw output stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AttentionEvent {
+pub(crate) enum AttentionEvent {
     /// A bare terminal bell (`0x07`) outside any escape sequence: the classic
     /// ding, config-gated by `attention_on_bell`. This is the ONLY bell path
     /// (the emulator's own `Event::Bell` is deliberately not handled, see
@@ -76,7 +76,7 @@ pub enum AttentionEvent {
 /// independently (clipboard writes are forwarded more conservatively than
 /// notifications).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CapturedKind {
+pub(crate) enum CapturedKind {
     /// An `OSC 9` / `OSC 777` desktop notification.
     Notify,
     /// An `OSC 99` kitty-notification-protocol sequence (any part, including `d=0`
@@ -93,7 +93,7 @@ pub enum CapturedKind {
 /// events drive yaran's own in-app attention chrome, captures are the raw bytes
 /// replayed to the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapturedSeq {
+pub(crate) struct CapturedSeq {
     pub kind: CapturedKind,
     pub bytes: Vec<u8>,
 }
@@ -134,7 +134,7 @@ enum TermScan {
 /// chunk of raw output in order. It carries an unterminated trailing sequence
 /// across calls so a code split between two reads is still recognized.
 #[derive(Default)]
-pub struct AttentionScanner {
+pub(crate) struct AttentionScanner {
     /// The tail of the previous chunk that ended in the middle of an escape
     /// sequence, prepended to the next chunk. Bounded by [`MAX_CARRY`].
     carry: Vec<u8>,
@@ -149,20 +149,21 @@ pub struct AttentionScanner {
 }
 
 impl AttentionScanner {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Scan the next chunk of raw output and return every complete signal found.
     /// Any trailing partial sequence is carried to the next call.
-    pub fn scan(&mut self, data: &[u8]) -> Vec<AttentionEvent> {
+    #[cfg(test)]
+    pub(crate) fn scan(&mut self, data: &[u8]) -> Vec<AttentionEvent> {
         self.scan_full(data, None)
     }
 
     /// Like [`AttentionScanner::scan`], but additionally appends every whitelisted
     /// passthrough sequence (in canonical form) to `capture` when it is `Some`.
     /// The `capture = None` path is byte-for-byte identical to `scan`.
-    pub fn scan_full(
+    pub(crate) fn scan_full(
         &mut self,
         data: &[u8],
         capture: Option<&mut Vec<CapturedSeq>>,
@@ -196,7 +197,7 @@ impl AttentionScanner {
     /// Total number of runaway partial sequences dropped so far. The reader loop
     /// compares this across calls to log a debug line when a drop happens; the
     /// scanner itself stays pure and never logs.
-    pub fn overflow_drops(&self) -> u64 {
+    pub(crate) fn overflow_drops(&self) -> u64 {
         self.overflow_drops
     }
 }
@@ -343,8 +344,13 @@ fn find_osc_terminator(s: &[u8], start: usize) -> TermScan {
 }
 
 /// Locate a String Terminator (`ESC \`) within `s`, used for the DCS/tmux
-/// envelope. Resumes from `start` like [`find_osc_terminator`].
+/// envelope. Resumes from `start` like [`find_osc_terminator`]. Inside a tmux
+/// passthrough every payload ESC is doubled, so there a doubled ESC is one
+/// escaped byte; in any other DCS it is not. A buffer that so far holds only
+/// part of the `tmux;` prefix holds no ESC, so deciding on what has arrived is
+/// safe.
 fn find_st(s: &[u8], start: usize) -> TermScan {
+    let tmux = s.starts_with(b"tmux;");
     let mut j = start.min(s.len());
     while j < s.len() {
         if s[j] == ESC {
@@ -355,6 +361,10 @@ fn find_st(s: &[u8], start: usize) -> TermScan {
                         term_len: 2,
                     };
                 }
+                // A doubled ESC is one escaped byte of a tmux payload, so
+                // the pair is stepped over whole: its second ESC cannot open
+                // the envelope's terminator.
+                Some(&ESC) if tmux => j += 2,
                 Some(_) => j += 1,
                 None => return TermScan::Incomplete { safe_offset: j },
             }
@@ -442,7 +452,7 @@ fn kitty_notify_is_attention(metadata: &[u8]) -> bool {
         let (key, value) = split_once(token, b'=');
         match key {
             b"d" => d_final = value != Some(b"0"),
-            b"p" => p_ok = matches!(value, None | Some(b"title") | Some(b"body")),
+            b"p" => p_ok = matches!(value, None | Some(b"title" | b"body")),
             _ => {}
         }
     }
@@ -541,7 +551,7 @@ fn canonical_osc(payload: &[u8]) -> Vec<u8> {
 /// [`tmux_unwrap`]. `ESC P tmux ;` + the payload with every `ESC` doubled + `ESC \`.
 /// yaran uses this to re-wrap the sequences it captured (and unwrapped) so they pass
 /// through the tmux yaran itself runs under.
-pub fn tmux_wrap(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn tmux_wrap(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len() + 9);
     out.extend_from_slice(b"\x1bPtmux;");
     for &b in bytes {
@@ -561,7 +571,7 @@ pub fn tmux_wrap(bytes: &[u8]) -> Vec<u8> {
 /// token. This is the structural check that keeps a notification whose free text
 /// begins `4;` from being swallowed as progress.
 fn is_progress_state(s: &[u8]) -> bool {
-    (1..=2).contains(&s.len()) && s.iter().all(|b| b.is_ascii_digit())
+    (1..=2).contains(&s.len()) && s.iter().all(u8::is_ascii_digit)
 }
 
 /// Split `s` at the first occurrence of `sep`. Returns the head and, if `sep`
@@ -772,6 +782,22 @@ mod tests {
     }
 
     #[test]
+    fn tmux_wrapped_notify_ending_in_st() {
+        // The inner OSC ends in `ESC \`, doubled to `ESC ESC \` by tmux,
+        // before the envelope's own `ESC \`.
+        let bytes = b"\x1bPtmux;\x1b\x1b]9;wrapped\x1b\x1b\\\x1b\\";
+        assert_eq!(scan_once(bytes), vec![AttentionEvent::Notify]);
+    }
+
+    #[test]
+    fn a_plain_dcs_ends_at_its_first_st() {
+        // Outside a tmux envelope a doubled ESC is not an escaped byte, so the
+        // second ESC with the backslash ends the DCS and what follows is read.
+        let bytes = b"\x1bPq\x1b\x1b\\\x1b]9;after\x07";
+        assert_eq!(scan_once(bytes), vec![AttentionEvent::Notify]);
+    }
+
+    #[test]
     fn tmux_wrapped_progress() {
         let bytes = b"\x1bPtmux;\x1b\x1b]9;4;1;20\x07\x1b\\";
         assert_eq!(
@@ -909,8 +935,14 @@ mod tests {
     fn capture_rejects_c0_control_bytes_in_payload() {
         // An OSC 9 whose body carries an embedded CR/LF must not be captured for
         // host forwarding (a control byte could break out of the sequence).
-        assert!(capture_once(b"\x1b]9;line1\rline2\x07").is_empty());
-        assert!(capture_once(b"\x1b]9;line1\nline2\x07").is_empty());
+        assert_eq!(
+            capture_once(b"\x1b]9;line1\rline2\x07"),
+            Vec::<CapturedSeq>::new()
+        );
+        assert_eq!(
+            capture_once(b"\x1b]9;line1\nline2\x07"),
+            Vec::<CapturedSeq>::new()
+        );
         // Attention classification is independent of capture: the same bytes still
         // register as a Notify for yaran's own in-app chrome.
         assert_eq!(
@@ -922,12 +954,12 @@ mod tests {
     #[test]
     fn capture_never_records_clipboard_read() {
         // OSC 52 read (`?`) must never be captured (a reply would misroute).
-        assert!(capture_once(b"\x1b]52;c;?\x07").is_empty());
+        assert_eq!(capture_once(b"\x1b]52;c;?\x07"), Vec::<CapturedSeq>::new());
     }
 
     #[test]
     fn capture_never_records_kitty_query() {
-        assert!(capture_once(b"\x1b]99;p=?;\x07").is_empty());
+        assert_eq!(capture_once(b"\x1b]99;p=?;\x07"), Vec::<CapturedSeq>::new());
     }
 
     #[test]
@@ -942,8 +974,11 @@ mod tests {
     #[test]
     fn capture_ignores_unrelated_osc() {
         // Title, color query, and hyperlinks are not passthrough-captured.
-        assert!(capture_once(b"\x1b]0;title\x07").is_empty());
-        assert!(capture_once(b"\x1b]8;;https://x\x07").is_empty());
+        assert_eq!(capture_once(b"\x1b]0;title\x07"), Vec::<CapturedSeq>::new());
+        assert_eq!(
+            capture_once(b"\x1b]8;;https://x\x07"),
+            Vec::<CapturedSeq>::new()
+        );
     }
 
     #[test]

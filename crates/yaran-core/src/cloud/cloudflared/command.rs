@@ -246,6 +246,7 @@ mod tests {
         let cmd = spec.command();
         let outcome = crate::bounded_command::run_command_with_timeout(
             cmd,
+            crate::bounded_command::ChildGroup::New,
             std::time::Duration::from_secs(20),
             crate::bounded_command::DEFAULT_READER_DRAIN,
             "cloudflared",
