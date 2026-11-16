@@ -146,6 +146,13 @@ What each column means:
 
 `require` has no effect while no password is set.
 
+> [!IMPORTANT]
+> On a [Cloud Connect](/docs/cloud-connect) address, Cloudflare Access is the login. yaran
+> checks the Access sign-in itself, and when it belongs to the machine's paired owner the
+> password is not asked for a second time there, whatever `require` says. That sign-in
+> counts only on the Cloud Connect address: the same browser on any other address is asked
+> as usual. `blocked_addresses` still applies to it.
+
 ### When yaran cannot tell, it asks
 
 yaran decides "this machine" from the connection itself, and something else on the machine
