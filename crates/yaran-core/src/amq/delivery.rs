@@ -32,9 +32,13 @@ pub fn sanitise_handle(name: &str) -> String {
 /// One session as the receiver matcher sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct ReceiverCandidate<'a> {
+    /// The session's id.
     pub id: &'a str,
+    /// Its AMQ handle.
     pub handle: &'a str,
+    /// Its branch.
     pub branch: &'a str,
+    /// The directory it runs in.
     pub directory: &'a str,
 }
 
@@ -110,7 +114,10 @@ pub enum DeliveryPhase {
     TypeBody,
     /// The body is already in the prompt. Only Enter may follow; preflight
     /// holds must not run again and the body must never be retyped.
-    SubmitPending { typed_at: Option<Instant> },
+    SubmitPending {
+        /// When the body was typed, when known.
+        typed_at: Option<Instant>,
+    },
 }
 
 /// Post-delivery cooldown is backpressure between separate wakes. It must
@@ -128,9 +135,9 @@ pub fn should_hold_for_post_delivery_cooldown(
 /// Soft timeout warning: the first pending instant is established on the
 /// first deferral (busy, no PTY, no session alike, audit03 P1-18), and the
 /// warning fires once per receiver.
-pub fn timeout_warning_due(
-    first_pending_at: &mut HashMap<String, Instant>,
-    warned: &mut HashSet<String>,
+pub fn timeout_warning_due<S: std::hash::BuildHasher>(
+    first_pending_at: &mut HashMap<String, Instant, S>,
+    warned: &mut HashSet<String, S>,
     receiver: &str,
     now: Instant,
     timeout: Duration,
@@ -142,15 +149,22 @@ pub fn timeout_warning_due(
 /// Why the drainer held a message, for the rate-limited debug log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HoldReason<'a> {
+    /// No session matches the receiver.
     NoSession,
+    /// Someone is typing into the target session.
     UserTyping,
+    /// The target's terminal is gone.
     PtyGone,
+    /// The target shows this busy marker.
     BusyMarker(&'a str),
+    /// The last delivery was too recent.
     PostDeliveryCooldown,
+    /// yaran started too recently for agents to be ready.
     StartupGrace,
 }
 
 impl HoldReason<'_> {
+    /// The reason's token, for the debug log.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NoSession => "no_matching_session",
@@ -476,7 +490,7 @@ mod tests {
         let now = Instant::now();
         for q in [
             Duration::from_secs(u64::MAX / 2),
-            Duration::from_hours(876000),
+            Duration::from_hours(876_000),
         ] {
             assert!(!should_hold_for_quiet_window(Some(now), now, q));
         }

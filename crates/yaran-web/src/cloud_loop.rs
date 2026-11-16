@@ -49,7 +49,7 @@ use yaran_core::cloud::leg::{
 use yaran_core::cloud::leg_identity::{CloudIdentity, CloudLegSettings, PairedMachine};
 use yaran_core::cloud::leg_outcome::{CloudModeOutcome, leg_status, tls_disclosure};
 use yaran_core::cloud::planner::{
-    CloudStep, Desired, Pairing, StopReason, desired_leg, plan_cloud_change,
+    CloudStep, Desired, LegNow, Pairing, Refresh, StopReason, desired_leg, plan_cloud_change,
 };
 use yaran_core::cloud::view::{CloudLegState, CloudLegView};
 
@@ -222,7 +222,19 @@ impl CloudLoop {
             Some(_) => Pairing::Paired,
         };
         let desired = desired_leg(self.settings.mode, pairing);
-        let steps = plan_cloud_change(self.leg.is_some(), desired, restart);
+        let steps = plan_cloud_change(
+            if self.leg.is_some() {
+                LegNow::Running
+            } else {
+                LegNow::Stopped
+            },
+            desired,
+            if restart {
+                Refresh::Restart
+            } else {
+                Refresh::Keep
+            },
+        );
         for step in &steps {
             match step {
                 CloudStep::StopLeg => self.stop_leg(),

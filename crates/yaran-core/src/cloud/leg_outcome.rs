@@ -40,8 +40,11 @@ use crate::engine::StatusUpdate;
 use crate::status_text::StatusText;
 use crate::statusline::StatusTone;
 
+/// The status key a `[cloud] mode` change answers on.
 pub const CLOUD_MODE_KEY: &str = "cloud-mode";
+/// The status key the tunnel's readiness is reported on.
 pub const CLOUD_LEG_KEY: &str = "cloud-leg";
+/// The status key cloudflared's download and version are reported on.
 pub const CLOUD_CLOUDFLARED_KEY: &str = "cloud-cloudflared";
 
 /// What a live `[cloud] mode` change did. Exhaustive.
@@ -49,14 +52,21 @@ pub const CLOUD_CLOUDFLARED_KEY: &str = "cloud-cloudflared";
 pub enum CloudModeOutcome {
     /// The leg is starting; readiness is reported later on `cloud-leg`.
     Starting {
+        /// The machine's hostname.
         hostname: String,
     },
+    /// The leg was already running.
     AlreadyRunning {
+        /// The machine's hostname.
         hostname: String,
     },
+    /// The leg was stopped.
     Stopped,
+    /// The machine is not paired, so nothing started.
     NotPaired,
+    /// The pairing is revoked, so nothing started.
     Revoked {
+        /// The hostname it had.
         hostname: String,
     },
     /// Nothing is serving: the choice is saved and applies when a listener starts.
@@ -68,12 +78,16 @@ pub enum CloudModeOutcome {
 /// One outcome rendered for a status line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudModeReport {
+    /// Whether it is a warning rather than information.
     pub warning: bool,
+    /// Whether it stays on screen until replaced.
     pub sticky: bool,
+    /// The sentence.
     pub message: StatusText,
 }
 
 impl CloudModeOutcome {
+    /// The outcome as a status line, for the saved `mode`.
     pub fn report(&self, mode: CloudMode) -> CloudModeReport {
         let saved = format!("[cloud] mode is saved as \"{}\". ", mode.as_str());
         let info = |message: StatusText| CloudModeReport {
