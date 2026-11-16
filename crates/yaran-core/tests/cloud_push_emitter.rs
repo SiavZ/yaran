@@ -62,7 +62,7 @@ fn pair(paths: &CloudPaths) {
 
 fn rig_with(ttl: Duration) -> Rig {
     let worker = MockWorker::start();
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("the test fixture");
     let paths = CloudPaths::from_root(root.path());
     pair(&paths);
     let transport = Arc::new(Mutex::new(worker.base.clone()));
@@ -70,7 +70,7 @@ fn rig_with(ttl: Duration) -> Rig {
         let transport = std::sync::Arc::<std::sync::Mutex<std::string::String>>::clone(&transport);
         Arc::new(move |org, paths| {
             Ok(MachineApi::new(org, paths, Duration::from_secs(5))?
-                .with_test_transport(&transport.lock().unwrap()))
+                .with_test_transport(&transport.lock().expect("the test fixture")))
         })
     };
     let factory: LinkFactory = {
@@ -129,9 +129,9 @@ const CLEAR: AttentionKind = AttentionKind::AttentionCleared;
 fn ids(seen: &mock_worker::Seen) -> Vec<String> {
     seen.body["events"]
         .as_array()
-        .unwrap()
+        .expect("the test fixture")
         .iter()
-        .map(|e| e["id"].as_str().unwrap().to_string())
+        .map(|e| e["id"].as_str().expect("the test fixture").to_string())
         .collect()
 }
 

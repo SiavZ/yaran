@@ -192,7 +192,7 @@ where
         if let Some(prev) = last_dispatch {
             let elapsed = prev.elapsed();
             if elapsed < stagger {
-                thread::sleep(stagger.checked_sub(elapsed).unwrap());
+                thread::sleep(stagger.saturating_sub(elapsed));
             }
         }
         let permit = acquire(&permits);

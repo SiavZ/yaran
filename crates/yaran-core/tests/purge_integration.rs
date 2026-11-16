@@ -140,18 +140,18 @@ impl PurgeHarness {
             log,
             r#"{{"target":"yaran::probe","fields":{{"session_id":"sid-target","msg":"x"}}}}"#
         )
-        .unwrap();
+        .expect("the test fixture");
         writeln!(
             log,
             r#"{{"target":"yaran::probe","fields":{{"session_id":"sid-other","msg":"y"}}}}"#
         )
-        .unwrap();
+        .expect("the test fixture");
         writeln!(
             log,
             r#"{{"target":"yaran::probe","fields":{{"msg":"no sid"}}}}"#
         )
-        .unwrap();
-        log.sync_all().unwrap();
+        .expect("the test fixture");
+        log.sync_all().expect("the test fixture");
         drop(log);
 
         // Open the sqlite store and insert the target session.
@@ -219,16 +219,16 @@ fn write_owned_amq_marker(h: &PurgeHarness, session: &AgentSession, handles: &[&
         .amq_root
         .join("agents")
         .join(session.agent_handle());
-    fs::create_dir_all(inbox.join("inbox")).unwrap();
+    fs::create_dir_all(inbox.join("inbox")).expect("the test fixture");
     fs::write(
         inbox.join(".dux-amq-source"),
         format!(
             r#"{{"store_id":"{}","session_id":"{}"}}"#,
-            load_store_id(&h.paths.root).unwrap(),
+            load_store_id(&h.paths.root).expect("the test fixture"),
             session.id
         ),
     )
-    .unwrap();
+    .expect("the test fixture");
     let agents = handles
         .iter()
         .map(|handle| format!(r#""{handle}""#))
@@ -238,7 +238,7 @@ fn write_owned_amq_marker(h: &PurgeHarness, session: &AgentSession, handles: &[&
         h.config.amq_root.join("meta/config.json"),
         format!(r#"{{"agents":[{agents}]}}"#),
     )
-    .unwrap();
+    .expect("the test fixture");
 }
 
 fn count_target_records(log_text: &str, target_sid: &str) -> usize {
@@ -283,7 +283,11 @@ fn assert_failure_retains_row_and_retry_succeeds(
 ) {
     let failed_plan = yaran_core::purge::PurgePlan {
         session_id: h.session.id.clone(),
-        branch: h.session.branch_name().unwrap().to_string(),
+        branch: h
+            .session
+            .branch_name()
+            .expect("the test fixture")
+            .to_string(),
         items: vec![item, PurgeItem::SqliteRow],
     };
     let failed = execute(

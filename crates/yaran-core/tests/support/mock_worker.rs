@@ -86,7 +86,7 @@ pub(crate) fn machine_key_pkcs8() -> Vec<u8> {
     unhex(
         fixture("sig/machine-request.json")["pkcs8_v2_hex"]
             .as_str()
-            .unwrap(),
+            .expect("the test fixture"),
     )
 }
 
@@ -94,7 +94,8 @@ pub(crate) fn machine_key_pkcs8() -> Vec<u8> {
 pub(crate) fn machine_key() -> (Ed25519KeyPair, Vec<u8>) {
     let f = fixture("sig/machine-request.json");
     let key = Ed25519KeyPair::from_pkcs8(&machine_key_pkcs8()).expect("pkcs8");
-    let public = b64url_decode(f["public_key"].as_str().unwrap()).expect("public key");
+    let public =
+        b64url_decode(f["public_key"].as_str().expect("the test fixture")).expect("public key");
     (key, public)
 }
 
@@ -136,13 +137,16 @@ impl MockWorker {
     }
 
     pub(crate) fn script(&self, answers: impl IntoIterator<Item = Answer>) {
-        self.answers.lock().unwrap().extend(answers);
+        self.answers
+            .lock()
+            .expect("the test fixture")
+            .extend(answers);
     }
 
     pub(crate) fn posts(&self) -> Vec<Seen> {
         self.seen
             .lock()
-            .unwrap()
+            .expect("the test fixture")
             .iter()
             .filter(|s| s.method == "POST")
             .cloned()
@@ -152,7 +156,7 @@ impl MockWorker {
     pub(crate) fn config_gets(&self) -> usize {
         self.seen
             .lock()
-            .unwrap()
+            .expect("the test fixture")
             .iter()
             .filter(|s| s.method == "GET")
             .count()
@@ -235,7 +239,7 @@ fn serve(
     let parsed = if method == "POST" {
         let batch: EventBatch = serde_json::from_slice(&body).expect("body is an EventBatch");
         batch.validate().expect("EventBatch validates");
-        serde_json::from_slice(&body).unwrap()
+        serde_json::from_slice(&body).expect("the test fixture")
     } else {
         Value::Null
     };
@@ -246,7 +250,7 @@ fn serve(
         .iter()
         .map(|e| e["id"].clone())
         .collect();
-    seen.lock().unwrap().push(Seen {
+    seen.lock().expect("the test fixture").push(Seen {
         method: method.clone(),
         path: path.clone(),
         verified,
@@ -258,12 +262,16 @@ fn serve(
     } else {
         answers
             .lock()
-            .unwrap()
+            .expect("the test fixture")
             .pop_front()
             .unwrap_or(Answer::Accept)
     };
     let (status, extra, out) = match (method.as_str(), answer) {
-        ("GET", _) => (200, String::new(), config.lock().unwrap().clone()),
+        ("GET", _) => (
+            200,
+            String::new(),
+            config.lock().expect("the test fixture").clone(),
+        ),
         (_, Answer::Accept) => (
             202,
             String::new(),

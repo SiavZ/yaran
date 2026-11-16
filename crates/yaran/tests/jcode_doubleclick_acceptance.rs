@@ -294,7 +294,8 @@ fn double_click_opens_jcode_like_any_other_harness() {
 fn pane_double_click(pty: &PtyClient) -> bool {
     // Middle of the agent pane: column 80, row 20 (1-based SGR).
     for _ in 0..2 {
-        pty.write_bytes(b"\x1b[<0;80;20M\x1b[<0;80;20m").unwrap();
+        pty.write_bytes(b"\x1b[<0;80;20M\x1b[<0;80;20m")
+            .expect("the test fixture");
         thread::sleep(Duration::from_millis(60));
     }
     thread::sleep(Duration::from_secs(2));

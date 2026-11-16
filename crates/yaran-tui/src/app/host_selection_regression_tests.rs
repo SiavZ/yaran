@@ -29,21 +29,28 @@ impl OutputFixture {
 }
 
 fn shell_printf(bytes: &str) -> String {
-    let encoded: String = bytes.bytes().map(|byte| format!("\\0{byte:03o}")).collect();
+    use std::fmt::Write as _;
+    let encoded = bytes.bytes().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "\\0{byte:03o}");
+        out
+    });
     format!("printf '%b' '{encoded}'\n")
 }
 
 fn numbered_lines(count: usize) -> String {
-    (0..count).map(|n| format!("L{n:02}\r\n")).collect()
+    use std::fmt::Write as _;
+    (0..count).fold(String::new(), |mut out, n| {
+        let _ = write!(out, "L{n:02}\r\n");
+        out
+    })
 }
 
 fn fixture(scrollback: usize, initial: &str, phases: &[&str]) -> (App, OutputFixture) {
     let directory = tempfile::tempdir().expect("private terminal output directory");
     let mut script = shell_printf(initial);
     for (index, output) in phases.iter().enumerate() {
-        script.push_str(&format!(
-            "n=0\nwhile [ ! -f \"$1/phase-{index}\" ]; do\n  n=$((n + 1))\n  [ \"$n\" -lt 1000 ] || exit 71\n  sleep 0.01\ndone\n"
-        ));
+        script.push_str(&format!("n=0\nwhile [ ! -f \"$1/phase-{index}\" ]; do\n"));
+        script.push_str("  n=$((n + 1))\n  [ \"$n\" -lt 1000 ] || exit 71\n  sleep 0.01\ndone\n");
         script.push_str(&shell_printf(output));
     }
     // Keep the child alive until the test drops it, without reading any input.
@@ -134,7 +141,7 @@ fn select_host_row(app: &mut App, needle: &str) {
     ));
     app.handle_mouse(mouse_event(
         MouseEventKind::Drag(MouseButton::Left),
-        area.x + needle.len() as u16 - 1,
+        area.x + u16::try_from(needle.len()).unwrap() - 1,
         area.y + row,
     ));
     assert!(app.center_mouse_forward.is_none(), "host owns the drag");
@@ -351,6 +358,19 @@ fn host_selection_saturated_main_cursor_only_render_keeps_static_text_copyable()
 
 static CAPTURED_MEMORY_COPIES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+/// Whether the snapshot's scrollback history is full when the gesture starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum History {
+    /// Lines are still being added to it.
+    Room,
+    /// It is at capacity, so each new line pushes the oldest out.
+    Saturated,
+}
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the clipboard's copier, whose signature is fallible"
+)]
 fn capture_memory_copy(text: &str) -> anyhow::Result<()> {
     CAPTURED_MEMORY_COPIES
         .lock()
@@ -432,7 +452,7 @@ fn host_selection_cursor_only_before_first_drag_copies_static_target_to_memory()
         .map(|cell| (cell.row, cell.col, cell.symbol.to_string()))
         .collect();
     assert_eq!(after, before, "cursor-only output changed no text cells");
-    let end_col = area.x + "STATIC TARGET".len() as u16 - 1;
+    let end_col = area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1;
     app.handle_mouse(mouse_event(
         MouseEventKind::Drag(MouseButton::Left),
         end_col,
@@ -488,10 +508,10 @@ enum StatusRedraw {
 /// one-line trace for the failure message.
 fn status_redraw_gesture(
     scrollback: usize,
-    expect_saturated: bool,
+    history: History,
     when: StatusRedraw,
     copies: &'static std::sync::Mutex<Vec<String>>,
-    copier: fn(&str) -> anyhow::Result<()>,
+    clipboard: fn(&str) -> anyhow::Result<()>,
 ) -> (Vec<String>, String) {
     let initial = format!(
         "\x1b[?1002h{}\x1b[1;1H\x1b[2KSTATUS 0\x1b[19;1H\x1b[2KSTATIC TARGET",
@@ -506,7 +526,7 @@ fn status_redraw_gesture(
         ],
     );
     copies.lock().unwrap().clear();
-    app.clipboard = crate::clipboard::Clipboard::from_fn(copier);
+    app.clipboard = crate::clipboard::Clipboard::from_fn(clipboard);
     wait_for_text(&mut app, "STATUS 0");
     wait_for_text(&mut app, "STATIC TARGET");
     let backend = ratatui::backend::TestBackend::new(160, 28);
@@ -517,7 +537,7 @@ fn status_redraw_gesture(
     let row = wait_for_text(&mut app, "STATIC TARGET");
     assert_eq!(
         app.snapshot_selection_origin().history_saturated,
-        expect_saturated
+        history == History::Saturated
     );
     assert!(
         !app.selected_terminal_surface_client()
@@ -528,7 +548,7 @@ fn status_redraw_gesture(
         .mouse_layout
         .focused_term
         .expect("rendered private pane");
-    let end_col = area.x + "STATIC TARGET".len() as u16 - 1;
+    let end_col = area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1;
 
     app.handle_mouse(mouse_event(
         MouseEventKind::Down(MouseButton::Left),
@@ -591,7 +611,7 @@ fn status_redraw_gesture(
 fn host_selection_saturated_status_redraw_between_press_and_first_drag_still_copies() {
     let (copied, trace) = status_redraw_gesture(
         5,
-        true,
+        History::Saturated,
         StatusRedraw::BetweenPressAndFirstDrag,
         &STATUS_PRESS_COPIES,
         capture_status_press_copy,
@@ -607,7 +627,7 @@ fn host_selection_saturated_status_redraw_between_press_and_first_drag_still_cop
 fn host_selection_saturated_status_redraw_mid_drag_still_copies() {
     let (copied, trace) = status_redraw_gesture(
         5,
-        true,
+        History::Saturated,
         StatusRedraw::BetweenDragAndRelease,
         &STATUS_DRAG_COPIES,
         capture_status_drag_copy,
@@ -623,7 +643,7 @@ fn host_selection_saturated_status_redraw_mid_drag_still_copies() {
 fn host_selection_unsaturated_status_redraw_mid_drag_still_copies() {
     let (copied, trace) = status_redraw_gesture(
         64,
-        false,
+        History::Room,
         StatusRedraw::BetweenDragAndRelease,
         &STATUS_UNSATURATED_COPIES,
         capture_status_unsaturated_copy,
@@ -648,7 +668,7 @@ fn saturated_established_drag_failsafe(
     phase: &str,
     sentinel: &str,
     copies: &'static std::sync::Mutex<Vec<String>>,
-    copier: fn(&str) -> anyhow::Result<()>,
+    clipboard: fn(&str) -> anyhow::Result<()>,
 ) {
     let initial = format!(
         "\x1b[?1002h{}\x1b[19;1H\x1b[2KSTATIC TARGET",
@@ -656,7 +676,7 @@ fn saturated_established_drag_failsafe(
     );
     let (mut app, mut output) = fixture(5, &initial, &[phase]);
     copies.lock().unwrap().clear();
-    app.clipboard = crate::clipboard::Clipboard::from_fn(copier);
+    app.clipboard = crate::clipboard::Clipboard::from_fn(clipboard);
     wait_for_text(&mut app, "STATIC TARGET");
     let backend = ratatui::backend::TestBackend::new(160, 28);
     let mut terminal = ratatui::Terminal::new(backend).expect("private host renderer");
@@ -701,7 +721,7 @@ fn saturated_established_drag_failsafe(
     // content through the old established selection.
     app.handle_mouse(mouse_event(
         MouseEventKind::Up(MouseButton::Left),
-        area.x + "STATIC TARGET".len() as u16 - 1,
+        area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1,
         area.y + row,
     ));
     let deadline = Instant::now() + Duration::from_millis(300);
@@ -819,7 +839,7 @@ fn host_selection_saturated_repeated_row_scroll_then_distinct_row_never_copies_w
     );
     app.handle_mouse(mouse_event(
         MouseEventKind::Up(MouseButton::Left),
-        area.x + "STATIC TARGET".len() as u16 - 1,
+        area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1,
         area.y + row,
     ));
     let deadline = Instant::now() + Duration::from_millis(300);
@@ -833,6 +853,10 @@ fn host_selection_saturated_repeated_row_scroll_then_distinct_row_never_copies_w
     );
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the clipboard's copier, whose signature is fallible"
+)]
 fn capture_hidden_scroll_copy(text: &str) -> anyhow::Result<()> {
     CAPTURED_HIDDEN_SCROLL_COPIES
         .lock()
@@ -917,7 +941,7 @@ fn host_selection_saturated_scroll_that_keeps_same_visible_text_still_retires_se
     app.clipboard = crate::clipboard::Clipboard::from_fn(capture_hidden_scroll_copy);
     app.handle_mouse(mouse_event(
         MouseEventKind::Up(MouseButton::Left),
-        area.x + "STATIC TARGET".len() as u16 - 1,
+        area.x + u16::try_from("STATIC TARGET".len()).unwrap() - 1,
         area.y + row,
     ));
     assert!(CAPTURED_HIDDEN_SCROLL_COPIES.lock().unwrap().is_empty());

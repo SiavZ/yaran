@@ -88,7 +88,7 @@ impl FakeIo {
 
 fn query_of(url: &str) -> HashMap<String, String> {
     url::Url::parse(url)
-        .unwrap()
+        .expect("the login fixture")
         .query_pairs()
         .into_owned()
         .collect()
@@ -100,12 +100,12 @@ fn hit_callback(callback: String, query: String) {
             .trim_start_matches("http://")
             .trim_end_matches("/callback")
             .to_string();
-        let mut s = std::net::TcpStream::connect(addr).unwrap();
+        let mut s = std::net::TcpStream::connect(addr).expect("the login fixture");
         write!(
             s,
             "GET /callback?{query} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
         )
-        .unwrap();
+        .expect("the login fixture");
         let mut out = String::new();
         let _ = s.read_to_string(&mut out);
     });
@@ -126,8 +126,10 @@ impl LoginIo for FakeIo {
             Browser::Paste => {
                 self.tx
                     .send("http://127.0.0.1:1/callback?code=x&state=y".into())
-                    .unwrap();
-                self.tx.send(format!("{}?{ok}", q["callback"])).unwrap();
+                    .expect("the login fixture");
+                self.tx
+                    .send(format!("{}?{ok}", q["callback"]))
+                    .expect("the login fixture");
             }
             Browser::OpenFailsThenLoopback => {
                 hit_callback(q["callback"].clone(), ok);
@@ -142,7 +144,7 @@ impl LoginIo for FakeIo {
         self.fingerprint = fingerprint.to_string();
     }
     fn pasted_callback(&mut self) -> Receiver<String> {
-        self.rx.take().unwrap()
+        self.rx.take().expect("the login fixture")
     }
     fn cancelled(&mut self) -> bool {
         if self.cancel.load(Ordering::SeqCst) {
@@ -179,7 +181,7 @@ fn worker(min: i64, claim_ok: bool) -> MockWorker {
         "/v1/meta" => MockResponse::json(200, &meta(min)),
         "/v1/machine/claim" if claim_ok => MockResponse::json(
             200,
-            &serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap(),
+            &serde_json::to_value(sample_claim(SAMPLE_ORG)).expect("the login fixture"),
         ),
         "/v1/machine/claim" => {
             MockResponse::error(400, "pkce_mismatch", "The verifier does not match.")
@@ -208,7 +210,7 @@ fn login(
 }
 
 fn setup() -> (tempfile::TempDir, CloudPaths) {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("the login fixture");
     let paths = CloudPaths::from_root(root.path());
     (root, paths)
 }
@@ -395,7 +397,7 @@ fn claim_side_effect(during_claim: impl Fn() + Send + Sync + 'static) -> MockWor
             during_claim();
             MockResponse::json(
                 200,
-                &serde_json::to_value(sample_claim(SAMPLE_ORG)).unwrap(),
+                &serde_json::to_value(sample_claim(SAMPLE_ORG)).expect("the login fixture"),
             )
         }
         "/v1/machine/unpair" => MockResponse::json(
@@ -422,15 +424,17 @@ fn assert_claim_unpair_requested(w: &MockWorker, io: &FakeIo) {
         unpair[0].header("Yaran-Machine-Id"),
         Some(SAMPLE_MACHINE_ID)
     );
-    let pubkey = b64url_decode(&query_of(io.authorize.as_ref().unwrap())["machine_pubkey"]);
-    assert!(unpair[0].signature_verifies(&pubkey.unwrap()));
+    let pubkey = b64url_decode(
+        &query_of(io.authorize.as_ref().expect("the login fixture"))["machine_pubkey"],
+    );
+    assert!(unpair[0].signature_verifies(&pubkey.expect("the login fixture")));
 }
 
 /// This machine's current pairing, distinct from the one `sample_claim` answers with.
 fn pair_previous(paths: &CloudPaths) -> credentials::Credentials {
     let mut previous = sample_credentials(SAMPLE_ORG);
     previous.machine_id = "3c1f6a52-7e0b-4d8e-a1f2-9b8c7d6e5f40".into();
-    credentials::update(paths, |_| Ok(Some(previous.clone()))).unwrap();
+    credentials::update(paths, |_| Ok(Some(previous.clone()))).expect("the login fixture");
     previous
 }
 

@@ -434,8 +434,7 @@ impl Engine {
                         return LoopControl::Break;
                     }
                     let slice = interval
-                        .checked_sub(slept)
-                        .unwrap()
+                        .saturating_sub(slept)
                         .min(Duration::from_millis(50));
                     std::thread::sleep(slice);
                     slept += slice;

@@ -42,7 +42,8 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = tmp.path().join("sessions.sqlite3");
     let mut conn = Connection::open(&path).expect("open");
-    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("the fixture database");
     for (index, sql) in FORK_MIGRATIONS.iter().enumerate() {
         let version = index + 1;
         if version == 5 {
@@ -73,10 +74,12 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
             )
             .unwrap();
         }
-        let tx = conn.transaction().unwrap();
+        let tx = conn.transaction().expect("the fixture database");
         if version == 5 {
-            let (before, after) = sql.split_once(FORK_HANDLE_BACKFILL_MARKER).unwrap();
-            tx.execute_batch(before).unwrap();
+            let (before, after) = sql
+                .split_once(FORK_HANDLE_BACKFILL_MARKER)
+                .expect("the fixture database");
+            tx.execute_batch(before).expect("the fixture database");
             // The fork runner's backfill: basename-first handle, `-N` on a
             // collision, rows visited in id order.
             tx.execute_batch(
@@ -95,13 +98,13 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
                 ",
             )
             .unwrap();
-            tx.execute_batch(after).unwrap();
+            tx.execute_batch(after).expect("the fixture database");
         } else {
-            tx.execute_batch(sql).unwrap();
+            tx.execute_batch(sql).expect("the fixture database");
         }
         tx.pragma_update(None, "user_version", version as i64)
-            .unwrap();
-        tx.commit().unwrap();
+            .expect("the fixture database");
+        tx.commit().expect("the fixture database");
     }
     // Rows a fork build wrote after reaching schema 6.
     conn.execute_batch(
@@ -124,23 +127,23 @@ fn fork_main_database() -> (tempfile::TempDir, std::path::PathBuf) {
     .unwrap();
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
+        .expect("the fixture database");
     assert_eq!(version, 6, "the fixture must be at fork schema 6");
     drop(conn);
     (tmp, path)
 }
 
 fn handles(path: &std::path::Path) -> Vec<(String, String, i64, Option<String>)> {
-    let conn = Connection::open(path).unwrap();
+    let conn = Connection::open(path).expect("the fixture database");
     let mut stmt = conn
         .prepare(
             "select id, agent_handle, shared_workspace, deleted_at from agent_sessions order by id",
         )
-        .unwrap();
+        .expect("the fixture database");
     stmt.query_map([], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
     })
-    .unwrap()
+    .expect("the fixture database")
     .collect::<rusqlite::Result<Vec<_>>>()
     .unwrap()
 }

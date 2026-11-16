@@ -35,11 +35,11 @@ use yaran_core::cloud::test_support::{
 fn api_for(
     handler: impl Fn(&RecordedRequest) -> MockResponse + Send + Sync + 'static,
 ) -> (tempfile::TempDir, CloudPaths, MockWorker, MachineApi) {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("the test fixture");
     let paths = CloudPaths::from_root(root.path());
     let worker = MockWorker::start(handler);
     let api = MachineApi::new(SAMPLE_ORG, &paths, Duration::from_secs(5))
-        .unwrap()
+        .expect("the test fixture")
         .with_test_transport(&worker.base_url());
     (root, paths, worker, api)
 }

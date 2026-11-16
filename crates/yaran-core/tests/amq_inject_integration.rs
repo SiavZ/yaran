@@ -29,10 +29,10 @@ fn wait_until<F: FnMut() -> bool>(mut cond: F, timeout: Duration, step: Duration
 
 fn write_msg(queue_root: &std::path::Path, receiver: &str, name: &str, body: &str) -> PathBuf {
     let dir = queue_root.join(receiver);
-    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&dir).expect("the test fixture");
     let path = dir.join(name);
     // Match the bridge's `printf '%s\n'` semantics — single trailing LF.
-    fs::write(&path, format!("{body}\n")).unwrap();
+    fs::write(&path, format!("{body}\n")).expect("the test fixture");
     path
 }
 
