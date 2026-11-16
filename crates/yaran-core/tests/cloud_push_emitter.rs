@@ -137,16 +137,13 @@ fn ids(seen: &mock_worker::Seen) -> Vec<String> {
 
 fn next_status(rig: &Rig) -> (StatusTone, String) {
     loop {
-        match rig
+        if let WorkerEvent::PollerStatus(s) = rig
             .statuses
             .recv_timeout(Duration::from_secs(10))
             .expect("a status")
         {
-            WorkerEvent::PollerStatus(s) => {
-                assert_eq!(s.key.as_deref(), Some(CLOUD_PUSH));
-                return (s.tone, s.message);
-            }
-            _ => {}
+            assert_eq!(s.key.as_deref(), Some(CLOUD_PUSH));
+            return (s.tone, s.message);
         }
     }
 }

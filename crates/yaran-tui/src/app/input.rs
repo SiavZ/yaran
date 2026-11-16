@@ -7110,7 +7110,7 @@ impl App {
         }
 
         if matches!(self.prompt, PromptState::SessionSettings(_)) {
-            return self.handle_session_settings_key(key);
+            return Ok(self.handle_session_settings_key(key));
         }
 
         if let Some(should_exit) = self.handle_notice_prompt_key(key) {
@@ -11798,9 +11798,7 @@ impl App {
                 self.click_startup_command_input(mouse);
             }
             PromptMouseTarget::SessionSettingsRow(focus) => {
-                if let Err(err) = self.click_session_settings_row(focus, mouse) {
-                    self.set_error(format!("{err:#}"));
-                }
+                self.click_session_settings_row(focus, mouse);
             }
             PromptMouseTarget::SessionSettingsCancel
             | PromptMouseTarget::SessionSettingsSave

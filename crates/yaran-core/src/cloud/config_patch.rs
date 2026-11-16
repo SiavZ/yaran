@@ -128,6 +128,10 @@ mod tests {
 
     #[test]
     fn every_key_round_trips_and_user_comments_survive() {
+        #[derive(serde::Deserialize)]
+        struct Wrap {
+            cloud: CloudConfig,
+        }
         let mut doc: DocumentMut = "# my notes\n[cloud]\n# keep me\nmode = \"auto\"\n"
             .parse()
             .unwrap();
@@ -157,10 +161,6 @@ mod tests {
                 push_offline_ttl_seconds: 36,
             },
         };
-        #[derive(serde::Deserialize)]
-        struct Wrap {
-            cloud: CloudConfig,
-        }
         patch_cloud(&mut doc, &cloud);
         let text = doc.to_string();
         assert!(text.contains("# my notes") && text.contains("# keep me"));

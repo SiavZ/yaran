@@ -13,7 +13,6 @@
 //! the engage key) and while engaged owns every key but the exit binding, so
 //! Enter is a newline there, never Save.
 
-use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
@@ -361,7 +360,7 @@ impl App {
     }
 
     /// Key handling for the modal.
-    pub(super) fn handle_session_settings_key(&mut self, key: KeyEvent) -> Result<bool> {
+    pub(super) fn handle_session_settings_key(&mut self, key: KeyEvent) -> bool {
         // The engaged editor owns every key but the exit binding.
         if self.session_settings_prompt_engaged() {
             let lookup = self.bindings.lookup(&key, BindingScope::CommitInput);
@@ -374,13 +373,13 @@ impl App {
                     p.draft_system_prompt.handle_key(key);
                 }
             }
-            return Ok(false);
+            return false;
         }
         let Some((focus, rules_len)) = self
             .session_settings_prompt_mut()
             .map(|p| (p.focus, p.rules.len()))
         else {
-            return Ok(false);
+            return false;
         };
         // The title and the compact path are the modal's single-line fields.
         let line_field_focused = matches!(
@@ -436,7 +435,7 @@ impl App {
             }
             _ => {}
         }
-        Ok(false)
+        false
     }
 
     /// Paste lands in the focused text field only.
@@ -475,11 +474,7 @@ impl App {
     /// places the caret. Save and Cancel are buttons and go through the
     /// shared press/release path instead, so a press dragged off them does
     /// nothing.
-    pub(super) fn click_session_settings_row(
-        &mut self,
-        focus: SettingsFocus,
-        mouse: MouseEvent,
-    ) -> Result<()> {
+    pub(super) fn click_session_settings_row(&mut self, focus: SettingsFocus, mouse: MouseEvent) {
         self.set_session_settings_focus(focus);
         if focus == SettingsFocus::Title {
             if let OverlayMouseLayout::SessionSettings { title_input, .. } =
@@ -489,7 +484,7 @@ impl App {
                 let col = usize::from(mouse.column.saturating_sub(title_input.x));
                 p.draft_title.set_cursor_from_display_pos(0, col);
             }
-            return Ok(());
+            return;
         }
         if focus == SettingsFocus::CompactInstructionsPath {
             // The row's published rect is the field itself, so the click
@@ -500,10 +495,9 @@ impl App {
                 let col = usize::from(mouse.column.saturating_sub(rect.x));
                 p.draft_compact_path.set_cursor_from_display_pos(0, col);
             }
-            return Ok(());
+            return;
         }
         self.activate_session_settings_row(focus);
-        Ok(())
     }
 
     /// A released Save or Cancel button.
@@ -1032,18 +1026,15 @@ mod tests {
         app.open_session_settings();
         prompt_mut(&mut app).draft.mode = ContextMode::Worker;
         prompt_mut(&mut app).focus = SettingsFocus::AutoCompactOnCompact;
-        app.handle_session_settings_key(key(KeyCode::Char(' ')))
-            .unwrap();
+        app.handle_session_settings_key(key(KeyCode::Char(' ')));
         assert!(prompt(&app).draft.auto_compact_on_compact);
 
-        app.handle_session_settings_key(key(KeyCode::Down)).unwrap();
+        app.handle_session_settings_key(key(KeyCode::Down));
         assert_eq!(prompt(&app).focus, SettingsFocus::CompactInstructionsPath);
         for c in "/srv/c.txt".chars() {
-            app.handle_session_settings_key(key(KeyCode::Char(c)))
-                .unwrap();
+            app.handle_session_settings_key(key(KeyCode::Char(c)));
         }
-        app.handle_session_settings_key(key(KeyCode::Enter))
-            .unwrap();
+        app.handle_session_settings_key(key(KeyCode::Enter));
 
         assert!(matches!(app.prompt, PromptState::None), "Enter saved");
         let saved = app.engine.session_settings("session-1").unwrap();

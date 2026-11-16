@@ -151,9 +151,10 @@ async fn the_bound_host_matches_regardless_of_case_port_or_trailing_dot() {
 
 #[tokio::test]
 async fn bind_refuses_bad_inputs_with_a_sentence_each() {
+    type Mutate = Box<dyn Fn(&mut CloudBindingInput)>;
     let ingress = CloudIngress::default();
     let mut sentences = std::collections::HashSet::new();
-    let cases: Vec<(Box<dyn Fn(&mut CloudBindingInput)>, BindRefusal)> = vec![
+    let cases: Vec<(Mutate, BindRefusal)> = vec![
         (
             Box::new(|i: &mut CloudBindingInput| i.hostname = "127.0.0.1".into()),
             BindRefusal::InvalidHostname,
