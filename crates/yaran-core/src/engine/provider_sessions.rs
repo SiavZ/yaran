@@ -1031,7 +1031,7 @@ mod tests {
             ..Default::default()
         };
         engine
-            .set_session_settings("s1", settings, None)
+            .set_session_settings("s1", settings, crate::engine::amq::TitleEdit::Keep)
             .expect("settings persist");
 
         let request = engine.build_agent_launch_request(

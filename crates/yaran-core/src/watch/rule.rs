@@ -47,10 +47,13 @@ impl Default for WatchRule {
     }
 }
 
+/// Where a watch rule comes from, which decides how it is held and rebaselined.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WatchRuleKind {
+    /// A rule the user configured.
     #[default]
     User,
+    /// The built-in clear-on-`[task-done]` rule.
     BuiltInAutoClear,
     /// The built-in compact-on-`[compact]` rule. A separate kind from
     /// auto-clear so each built-in is held and rebaselined on its own and
@@ -81,7 +84,9 @@ pub enum WatchAction {
     /// Write `text` (optionally followed by `\r` to simulate Enter) to the
     /// agent's PTY.
     SendText {
+        /// The text to write.
         text: String,
+        /// Whether Enter follows it.
         #[serde(default = "default_append_enter")]
         append_enter: bool,
     },
@@ -98,6 +103,7 @@ pub enum WatchAction {
         format: WaitFormat,
         /// Text to send once the wait elapses.
         text: String,
+        /// Whether Enter follows it.
         #[serde(default = "default_append_enter")]
         append_enter: bool,
     },
@@ -117,16 +123,16 @@ impl WatchAction {
     /// text payload, the only difference is *when* the engine fires.
     pub(crate) fn text(&self) -> &str {
         match self {
-            Self::SendText { text, .. } => text,
-            Self::WaitUntilCapture { text, .. } => text,
+            Self::SendText { text, .. } | Self::WaitUntilCapture { text, .. } => text,
         }
     }
 
     /// Whether to append CR to the payload.
     pub(crate) fn append_enter(&self) -> bool {
         match self {
-            Self::SendText { append_enter, .. } => *append_enter,
-            Self::WaitUntilCapture { append_enter, .. } => *append_enter,
+            Self::SendText { append_enter, .. } | Self::WaitUntilCapture { append_enter, .. } => {
+                *append_enter
+            }
         }
     }
 }
@@ -168,9 +174,13 @@ pub enum WaitFormat {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WatchBackoff {
+    /// The first delay, in milliseconds.
     pub initial_ms: u64,
+    /// The longest delay, in milliseconds.
     pub max_ms: u64,
+    /// How much each attempt's delay grows.
     pub multiplier: f64,
+    /// The random spread added to each delay, in milliseconds.
     pub jitter_ms: u64,
 }
 
@@ -190,11 +200,12 @@ impl WatchBackoff {
     /// the given attempt number. Capped at `max_ms`.
     pub(crate) fn deterministic_delay_ms(&self, attempt: u32) -> u64 {
         let mult = self.multiplier.max(1.0);
-        let raw = (self.initial_ms as f64) * mult.powi(attempt as i32);
-        if !raw.is_finite() || raw > self.max_ms as f64 {
+        let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
+        let raw = crate::numeric::u64_to_f64(self.initial_ms) * mult.powi(exponent);
+        if !raw.is_finite() || raw > crate::numeric::u64_to_f64(self.max_ms) {
             self.max_ms
         } else {
-            raw as u64
+            crate::numeric::f64_to_u64_saturating(raw)
         }
     }
 }
@@ -204,6 +215,7 @@ impl WatchBackoff {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WatchBudget {
+    /// The most fires before the rule disarms; 0 means unlimited.
     pub max_attempts: u32,
 }
 

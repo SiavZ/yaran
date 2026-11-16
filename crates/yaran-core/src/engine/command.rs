@@ -815,7 +815,11 @@ impl Engine {
                 session_id,
                 settings,
                 title,
-            } => self.set_session_settings(&session_id, *settings, title),
+            } => self.set_session_settings(
+                &session_id,
+                *settings,
+                title.map_or(super::amq::TitleEdit::Keep, super::amq::TitleEdit::Set),
+            ),
 
             Command::DeleteTerminal { terminal_id } => Ok(self.apply_delete_terminal(terminal_id)),
 

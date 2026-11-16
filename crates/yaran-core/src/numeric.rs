@@ -70,6 +70,29 @@ pub(crate) fn u64_to_f32(n: u64) -> f32 {
     n as f32
 }
 
+/// A `u64` as the nearest `f64`: exact below 2^53, rounded above, which a
+/// delay in milliseconds never reaches.
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    reason = "no From exists from u64 to f64; rounding above 2^53 is the intended answer"
+)]
+pub(crate) fn u64_to_f64(n: u64) -> f64 {
+    n as f64
+}
+
+/// A non-negative float rounded down to a `u64`, saturating like
+/// [`f64_to_u32_saturating`]: below zero or NaN is 0, above `u64::MAX` is `u64::MAX`.
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a float-to-int as-cast saturates and maps NaN to 0, which is the intended clamp"
+)]
+pub(crate) fn f64_to_u64_saturating(x: f64) -> u64 {
+    x as u64
+}
+
 /// A grid row, column or line count as the terminal engine's `i32` line index,
 /// wrapping exactly as the engine's own `as i32` casts do. A grid is far smaller
 /// than `i32::MAX` lines, so nothing wraps in practice.
