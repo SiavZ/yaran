@@ -102,12 +102,14 @@ impl BoardStore {
         matches!(self.backend, Backend::Folder(_))
     }
 
+    /// The card-id prefix this board hands out.
     pub fn prefix(&self) -> &str {
         &self.prefix
     }
 
     /// The private board document of the same yaran home: where a board
     /// lived before it moved to a folder, for `yaran board import`.
+    #[must_use]
     pub fn private_document(&self) -> BoardStore {
         BoardStore::new(self.home())
     }
@@ -123,6 +125,10 @@ impl BoardStore {
     /// unreadable document is an error naming the file. An unreadable note in
     /// a folder is not: it is listed in [`Board::problems`] and the rest of
     /// the board loads.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the board cannot be read or parsed.
     pub fn load(&self) -> Result<Board> {
         let mut board = match &self.backend {
             Backend::Document(path) => load_document(path)?,
@@ -135,6 +141,10 @@ impl BoardStore {
     /// Change the board under the writers' lock: read it, let `change` edit it,
     /// prune the history, and write it back atomically. Nothing is written when
     /// `change` fails.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the lock, the read or the write fails, or `change` does.
     pub fn update<T>(&self, change: impl FnOnce(&mut Board) -> Result<T>) -> Result<T> {
         let _lock = self.lock()?;
         let before = self.load()?;
@@ -160,6 +170,10 @@ impl BoardStore {
     /// Run `work` while holding the writers' lock, so no writer on this machine
     /// changes the board meanwhile. What a sync holds while it commits or
     /// merges the folder.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the lock cannot be taken, or `work` does.
     pub fn with_lock<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
         let _lock = self.lock()?;
         work()
@@ -343,6 +357,7 @@ fn write_atomic(path: &Path, body: &[u8], mode: Option<u32>) -> Result<()> {
 /// hands a surface.
 #[derive(Clone, Debug)]
 pub struct BoardSnapshot {
+    /// The board, or why it could not be read.
     pub board: Result<Board, String>,
 }
 
@@ -401,12 +416,18 @@ fn fingerprint(store: &BoardStore) -> Fingerprint {
 /// one directory listing plus a `stat` per note for a folder. It stops once
 /// this handle is dropped (at its next look), so a surface that switches the
 /// board off simply drops its watcher.
+#[derive(Debug)]
 pub struct BoardWatcher {
     rx: mpsc::Receiver<BoardSnapshot>,
     stop: Arc<AtomicBool>,
 }
 
 impl BoardWatcher {
+    /// Start watching `store`, looking every `every`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the watcher's thread cannot be started.
     pub fn spawn(store: BoardStore, every: Duration) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -583,11 +604,11 @@ mod tests {
     #[test]
     fn a_pruned_card_takes_its_note_with_it() {
         let (_home, store) = folder();
-        for n in 0..(super::super::RESOLVED_HISTORY + 1) {
+        for n in 0..=super::super::RESOLVED_HISTORY {
             store
                 .update(|b| {
                     let id = b.post(&task(&format!("r{n}")), at(0))?.id();
-                    b.resolve(id, None, None, at((n % 60) as u32))
+                    b.resolve(id, None, None, at(u32::try_from(n % 60).unwrap()))
                 })
                 .unwrap();
         }
