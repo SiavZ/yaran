@@ -43,6 +43,7 @@ pub struct Pin {
     pub target: &'static str,
     /// Release asset file name.
     pub asset: &'static str,
+    /// How the asset is packaged.
     pub kind: AssetKind,
     /// Lowercase hex SHA-256 of the downloaded asset.
     pub asset_sha256: &'static str,
@@ -54,6 +55,7 @@ pub struct Pin {
 /// version, so no hash can be trusted.
 pub const UNPINNED: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
+/// Every target's pinned asset for [`PINNED_VERSION`].
 pub const PINS: &[Pin] = &[
     Pin {
         target: "x86_64-unknown-linux-musl",

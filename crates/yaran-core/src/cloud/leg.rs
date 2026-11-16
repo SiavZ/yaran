@@ -199,10 +199,12 @@ impl CloudLeg {
                     previous.join();
                 }
                 let end = super::leg_start::prepare(&params, identity.as_ref(), &flag, &sink)
-                    .and_then(|prepared| {
-                        super::leg_run::run(&params, identity.as_ref(), prepared, &flag, &sink)
-                    })
-                    .unwrap_or_else(|stop| stop);
+                    .map_or_else(
+                        |stop| stop,
+                        |prepared| {
+                            super::leg_run::run(&params, identity.as_ref(), prepared, &flag, &sink)
+                        },
+                    );
                 identity.clear_leg_state();
                 sink(CloudLegEvent::Stopped(end));
             })

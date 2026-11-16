@@ -83,7 +83,10 @@ pub(crate) struct CloudLoop {
 }
 
 impl CloudLoop {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every input of the loop, handed over once by the serve that starts it"
+    )]
     pub(crate) fn new(
         rx: tokio::sync::mpsc::Receiver<CloudInput>,
         control: CloudModeControl,
@@ -154,7 +157,7 @@ impl CloudLoop {
         match input {
             CloudInput::Mode { mode, reply } => {
                 self.settings.mode = mode;
-                let outcome = self.reconcile(false);
+                let outcome = self.reconcile(Refresh::Keep);
                 let _ = reply.send(outcome);
             }
             CloudInput::Settings(next) => {
@@ -164,12 +167,12 @@ impl CloudLoop {
                     ..next
                 };
                 if restart {
-                    self.reconcile(true);
+                    self.reconcile(Refresh::Restart);
                 }
             }
             CloudInput::Credentials(snapshot) => self.credentials_changed(snapshot),
             CloudInput::Leg { generation, event } if generation == self.generation => {
-                self.leg_event(event);
+                self.leg_event(&event);
             }
             CloudInput::Leg { .. } => {}
         }
@@ -206,7 +209,11 @@ impl CloudLoop {
         if !first && !repaired && !new_token {
             return;
         }
-        let outcome = self.reconcile(!first && self.leg.is_some());
+        let outcome = self.reconcile(if !first && self.leg.is_some() {
+            Refresh::Restart
+        } else {
+            Refresh::Keep
+        });
         if first
             && outcome == CloudModeOutcome::NotPaired
             && self.settings.mode.warns_when_unpaired()
@@ -215,7 +222,7 @@ impl CloudLoop {
         }
     }
 
-    fn reconcile(&mut self, restart: bool) -> CloudModeOutcome {
+    fn reconcile(&mut self, refresh: Refresh) -> CloudModeOutcome {
         let pairing = match self.machine() {
             None => Pairing::Unpaired,
             Some(m) if m.revoked => Pairing::Revoked,
@@ -229,11 +236,7 @@ impl CloudLoop {
                 LegNow::Stopped
             },
             desired,
-            if restart {
-                Refresh::Restart
-            } else {
-                Refresh::Keep
-            },
+            refresh,
         );
         for step in &steps {
             match step {
@@ -301,12 +304,12 @@ impl CloudLoop {
         ));
     }
 
-    fn leg_event(&mut self, event: CloudLegEvent) {
+    fn leg_event(&mut self, event: &CloudLegEvent) {
         let (hostname, owner) = self
             .machine()
             .map(|m| (m.hostname.clone(), m.owner_email.clone()))
             .unwrap_or_default();
-        match &event {
+        match event {
             CloudLegEvent::Acquiring { pct, .. } => {
                 self.set_state(CloudLegState::Acquiring { pct: *pct }, None);
             }

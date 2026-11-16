@@ -48,7 +48,7 @@ pub fn is_stale(worktree: &Path, days: u32) -> bool {
 /// A startup relaunch waiting for a throttle slot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueuedStartupLaunch {
-    /// /// The agent to relaunch.
+    /// The agent to relaunch.
     pub session_id: String,
 }
 
@@ -69,7 +69,7 @@ pub struct StartupLaunchQueue {
 }
 
 impl StartupLaunchQueue {
-    /// /// Queue a launch, once per agent.
+    /// Queue a launch, once per agent.
     pub fn enqueue(&mut self, launch: QueuedStartupLaunch) {
         if !self
             .pending
@@ -80,12 +80,12 @@ impl StartupLaunchQueue {
         }
     }
 
-    /// /// Whether nothing is queued or in flight.
+    /// Whether nothing is queued or in flight.
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty() && self.in_flight.is_empty()
     }
 
-    /// /// How many launches still wait for a slot.
+    /// How many launches still wait for a slot.
     pub fn pending_len(&self) -> usize {
         self.pending.len()
     }
@@ -95,12 +95,12 @@ impl StartupLaunchQueue {
         self.held = true;
     }
 
-    /// /// Let the queued launches go again after [`Self::hold`].
+    /// Let the queued launches go again after [`Self::hold`].
     pub fn release(&mut self) {
         self.held = false;
     }
 
-    /// /// Whether [`Self::hold`] is in force.
+    /// Whether [`Self::hold`] is in force.
     pub fn is_held(&self) -> bool {
         self.held
     }

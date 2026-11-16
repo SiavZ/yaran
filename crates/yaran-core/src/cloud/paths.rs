@@ -63,10 +63,12 @@ pub struct CloudPaths {
 }
 
 impl CloudPaths {
+    /// The layout under a yaran home.
     pub fn new(paths: &YaranPaths) -> Self {
         Self::from_root(&paths.root)
     }
 
+    /// The layout under the yaran home at `root`.
     pub fn from_root(root: &Path) -> Self {
         Self::from_dir(&root.join("cloud"))
     }
@@ -84,6 +86,10 @@ impl CloudPaths {
     }
 
     /// Create `cloud/` (and the root if missing) and make it owner-only.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the directory cannot be created or made owner-only.
     pub fn ensure_dir(&self) -> io::Result<()> {
         crate::file_modes::create_private_dir_all(&self.dir)
     }

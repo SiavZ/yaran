@@ -26,7 +26,7 @@ use toml_edit::DocumentMut;
 
 use crate::cloud::config::CloudConfig;
 use crate::config_write::{
-    patch_table_bool, patch_table_str, patch_table_string_array, patch_table_u16, patch_table_u64,
+    patch_table_str, patch_table_string_array, patch_table_u16, patch_table_u64, patch_table_value,
 };
 
 const S: &str = "cloud";
@@ -35,7 +35,7 @@ const S: &str = "cloud";
 pub fn patch_cloud(doc: &mut DocumentMut, cloud: &CloudConfig) {
     patch_table_str(doc, S, "mode", &cloud.mode);
     patch_table_str(doc, S, "org_url", &cloud.org_url);
-    patch_table_bool(doc, S, "push_notifications", cloud.push_notifications);
+    patch_table_value(doc, S, "push_notifications", cloud.push_notifications);
     patch_table_str(doc, S, "cloudflared_path", &cloud.cloudflared_path);
     patch_table_u16(doc, S, "metrics_port", cloud.metrics_port);
     patch_table_u64(doc, S, "grace_period_seconds", cloud.grace_period_seconds);
@@ -58,7 +58,7 @@ pub fn patch_cloud(doc: &mut DocumentMut, cloud: &CloudConfig) {
         cloud.restart_backoff_jitter_ms,
     );
     patch_table_str(doc, S, "cloudflared_loglevel", &cloud.cloudflared_loglevel);
-    patch_table_bool(
+    patch_table_value(
         doc,
         S,
         "management_diagnostics",
@@ -102,7 +102,7 @@ pub fn patch_cloud(doc: &mut DocumentMut, cloud: &CloudConfig) {
         "handoff_requests_per_minute",
         u64::from(cloud.handoff_requests_per_minute),
     );
-    patch_table_bool(
+    patch_table_value(
         doc,
         S,
         "close_sockets_at_access_expiry",

@@ -84,13 +84,13 @@ struct Run<'a> {
 }
 
 /// Run until the leg ends; answers why it ended.
-pub fn run(
+pub(super) fn run(
     params: &LegParams,
     identity: &dyn CloudIdentity,
     prepared: Prepared,
     stop: &AtomicBool,
     sink: &LegSink,
-) -> Result<LegStop, LegStop> {
+) -> LegStop {
     let mut run = Run {
         params,
         identity,
@@ -105,7 +105,7 @@ pub fn run(
     };
     let end = run.supervise();
     command::remove_token_file(&run.token_file);
-    Ok(end)
+    end
 }
 
 impl Run<'_> {
@@ -343,7 +343,7 @@ impl Run<'_> {
 }
 
 /// "this machine's clock is off by N s; fix the system clock" (02 §7 `signature_expired`).
-pub fn clock_warning(server_time: Option<&str>) -> String {
+pub(super) fn clock_warning(server_time: Option<&str>) -> String {
     let offset = server_time
         .ok_or(())
         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).map_err(|_| ()))

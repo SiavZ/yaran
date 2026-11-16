@@ -8207,7 +8207,10 @@ impl App {
                 };
                 Ok(())
             }
-            "prune-orphan-worktrees" => self.open_orphan_worktree_cleaner(),
+            "prune-orphan-worktrees" => {
+                self.open_orphan_worktree_cleaner();
+                Ok(())
+            }
             "resource-monitor" => {
                 self.open_resource_monitor();
                 Ok(())

@@ -57,7 +57,7 @@ pub struct PushEdges {
 impl PushEdges {
     /// One tick: apply the decision, drop tabs that are no longer live, return the diff
     /// (sorted by tab id so the order is deterministic).
-    pub fn observe(
+    pub(crate) fn observe(
         &mut self,
         fired: &[TabId],
         indicator: AttentionIndicator,

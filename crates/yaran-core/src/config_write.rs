@@ -2114,7 +2114,7 @@ fn patch_defaults_env_and_logging(doc: &mut DocumentMut, config: &Config) {
         "copy_uncommitted_changes_by_default",
         config.defaults.copy_uncommitted_changes_by_default,
     );
-    patch_table_bool(
+    patch_table_value(
         doc,
         "defaults",
         "auto_resume_on_start",
@@ -2315,13 +2315,13 @@ fn patch_ui_web_and_attention(doc: &mut DocumentMut, config: &Config) {
     patch_table_str(doc, "ui", "agent_sort", &config.ui.agent_sort);
     patch_table_str(doc, "ui", "sidebar_style", &config.ui.sidebar_style);
     patch_table_str(doc, "ui", "sidebar_density", &config.ui.sidebar_density);
-    patch_table_bool(
+    patch_table_value(
         doc,
         "ui",
         "sidebar_header_rule",
         config.ui.sidebar_header_rule,
     );
-    patch_table_bool(doc, "ui", "human_board", config.ui.human_board);
+    patch_table_value(doc, "ui", "human_board", config.ui.human_board);
     patch_table_str(
         doc,
         "ui",
@@ -2681,7 +2681,7 @@ fn patch_fork_sections(doc: &mut DocumentMut, config: &Config) {
             "default_mode",
             workspace.default_mode.as_str(),
         );
-        patch_table_bool(
+        patch_table_value(
             doc,
             "workspace",
             "auto_resume_shared",
@@ -2715,7 +2715,7 @@ fn patch_fork_sections(doc: &mut DocumentMut, config: &Config) {
         "sync_interval_seconds",
         config.board.sync_interval_seconds,
     );
-    patch_table_bool(doc, "board", "relay", config.board.relay);
+    patch_table_value(doc, "board", "relay", config.board.relay);
     patch_table_str(doc, "board", "relay_to", &config.board.relay_to);
     patch_table_str(
         doc,
@@ -2764,7 +2764,7 @@ fn patch_limits(doc: &mut DocumentMut, limits: &crate::config::LimitsConfig) {
         "disk_warn_pct",
         u16::from(limits.disk_warn_pct),
     );
-    patch_table_bool(
+    patch_table_value(
         doc,
         "limits",
         "enable_scrollback_overflow_autodetach",
@@ -2802,7 +2802,7 @@ fn patch_amq(doc: &mut DocumentMut, amq: &crate::config::AmqConfig) {
         markers.push(m.as_str());
     }
     inject["busy_markers"] = toml_edit::value(markers);
-    inject["busy_scan_lines"] = int(i.busy_scan_lines as u64);
+    inject["busy_scan_lines"] = int(u64::try_from(i.busy_scan_lines).unwrap_or(u64::MAX));
     inject["delivery_timeout_secs"] = int(i.delivery_timeout_secs);
     inject["max_message_age_secs"] = int(i.max_message_age_secs);
     inject["poll_interval_ms"] = int(i.poll_interval_ms);
@@ -2894,17 +2894,12 @@ fn patch_table_usize(doc: &mut DocumentMut, section: &str, key: &str, value: usi
     table[key] = toml_edit::value(crate::numeric::usize_to_i64_wrapping(value));
 }
 
-fn patch_table_value(
+pub(crate) fn patch_table_value(
     doc: &mut DocumentMut,
     section: &str,
     key: &str,
     value: impl Into<toml_edit::Value>,
 ) {
-    let table = ensure_table(doc, section);
-    table[key] = toml_edit::value(value);
-}
-
-pub(crate) fn patch_table_bool(doc: &mut DocumentMut, section: &str, key: &str, value: bool) {
     let table = ensure_table(doc, section);
     table[key] = toml_edit::value(value);
 }
@@ -6756,7 +6751,10 @@ second_note = \"nowhere to go\"
         );
         let parsed: Config = toml::from_str(&plain).expect("plain render parses");
         // u64::MAX saturates to i64::MAX, still past the always-deliver bound.
-        assert_eq!(parsed.amq.inject.active_session_quiet_secs, i64::MAX as u64);
+        assert_eq!(
+            parsed.amq.inject.active_session_quiet_secs,
+            u64::try_from(i64::MAX).unwrap()
+        );
         assert_eq!(parsed.amq.orchestrator.checkpoint_prompt, "nudge");
 
         let tmp = tempfile::tempdir().expect("tempdir");
