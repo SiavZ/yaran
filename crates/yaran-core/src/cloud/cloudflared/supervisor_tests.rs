@@ -148,8 +148,7 @@ fn a_group_kill_reaches_a_grandchild() {
 #[test]
 fn a_missing_binary_is_a_spawn_error() {
     let dir = tempfile::tempdir().unwrap();
-    let err = spawn(&spec(dir.path().join("nope"), dir.path()), "")
-        .err()
-        .expect("no binary, no child");
+    let err =
+        spawn(&spec(dir.path().join("nope"), dir.path()), "").expect_err("no binary, no child");
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 }

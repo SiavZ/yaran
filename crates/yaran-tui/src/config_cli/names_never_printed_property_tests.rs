@@ -320,6 +320,10 @@ fn a_name_that_is_not_a_setting_name_never_reaches_a_printer() {
 /// running yaran makes the change. The stand-in answers as the engine does,
 /// naming the macro as it was given in every outcome and refusal, so the
 /// command line must never pass those sentences on as they are.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey that serves yaran and runs every printing command against it"
+)]
 fn through_a_running_yaran(name: &str) -> Vec<(String, String)> {
     use std::io::{BufRead, BufReader, Read, Write};
     use yaran_core::client::config_resources::{Writer, remove_macro, set_macro};

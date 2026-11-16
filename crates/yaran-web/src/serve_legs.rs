@@ -1244,6 +1244,10 @@ pub(crate) fn funnel_state_after_look(
 /// What a Funnel means depends on whether a password is set: with one, its
 /// visitors and this machine's own requests must sign in; with none, yaran serves
 /// them and says so loudly.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one answer per Funnel state change, each with its own sentence"
+)]
 pub(crate) fn funnel_state_news(
     before: crate::exposure::FunnelState,
     after: crate::exposure::FunnelState,

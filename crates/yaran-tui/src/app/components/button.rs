@@ -195,18 +195,6 @@ pub(crate) struct PressedButton {
 ///
 /// A disabled button always stays disabled, so one that becomes unactivatable
 /// mid-drag does not pretend it is still armed.
-/// The resting state of a button that has focus or not and can be pressed or
-/// not, for [`button_state_for`].
-pub(crate) fn resting_button_state(focused: bool, enabled: bool) -> ButtonState {
-    if !enabled {
-        ButtonState::Disabled
-    } else if focused {
-        ButtonState::Focused
-    } else {
-        ButtonState::Normal
-    }
-}
-
 pub(crate) fn button_state_for(
     target: ButtonPressedTarget,
     pressed: Option<PressedButton>,

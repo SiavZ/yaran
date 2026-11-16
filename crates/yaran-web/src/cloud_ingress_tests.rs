@@ -153,10 +153,9 @@ async fn the_bound_host_matches_regardless_of_case_port_or_trailing_dot() {
 async fn bind_refuses_bad_inputs_with_a_sentence_each() {
     let ingress = CloudIngress::default();
     let mut sentences = std::collections::HashSet::new();
-    for (mutate, want) in [
+    let cases: Vec<(Box<dyn Fn(&mut CloudBindingInput)>, BindRefusal)> = vec![
         (
-            Box::new(|i: &mut CloudBindingInput| i.hostname = "127.0.0.1".into())
-                as Box<dyn Fn(&mut _)>,
+            Box::new(|i: &mut CloudBindingInput| i.hostname = "127.0.0.1".into()),
             BindRefusal::InvalidHostname,
         ),
         (
@@ -175,7 +174,8 @@ async fn bind_refuses_bad_inputs_with_a_sentence_each() {
             Box::new(|i: &mut CloudBindingInput| i.owner_email = String::new()),
             BindRefusal::EmptyOwnerEmail,
         ),
-    ] {
+    ];
+    for (mutate, want) in cases {
         let mut input = binding_input(HOST);
         mutate(&mut input);
         assert_eq!(ingress.bind(input, Box::new(|_| {})).unwrap_err(), want);

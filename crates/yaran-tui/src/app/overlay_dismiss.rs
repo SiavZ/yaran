@@ -117,12 +117,12 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         PromptState::None => Ignore,
 
         // A card dialog with a reply typed into it holds free text the user
-        // has not sent, and a cloud login holds a typed address or a running
-        // browser login: an outside click must not throw either away.
+        // has not sent: an outside click must not throw it away. A cloud
+        // login, which holds a typed address or a running browser login, is
+        // with the other text surfaces at the end.
         PromptState::HumanBoardCard {
             reply: Some(reply), ..
         } if !reply.input.text.trim().is_empty() => Blink,
-        PromptState::Cloud(CloudPrompt::Login(_)) => Blink,
 
         // Informational and pick-one surfaces: an outside click is unambiguous.
         PromptState::AgentInfo(_)
@@ -223,7 +223,8 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::NameNewAgent { .. }
         | PromptState::CloneProject { .. }
         | PromptState::KillRunning(_)
-        | PromptState::SessionSettings(_) => Blink,
+        | PromptState::SessionSettings(_)
+        | PromptState::Cloud(CloudPrompt::Login(_)) => Blink,
     }
 }
 
@@ -436,7 +437,7 @@ impl App {
                 self.resolve_confirm_use_existing_branch(ConfirmAnswer::Cancel);
             }
             PromptState::ConfirmSharedWriter { .. } => {
-                self.resolve_confirm_shared_writer(false);
+                self.resolve_confirm_shared_writer(ConfirmAnswer::Cancel);
             }
 
             // Same path as Esc: a running login is cancelled, never left behind.

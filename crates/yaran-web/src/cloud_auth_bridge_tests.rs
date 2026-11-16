@@ -71,12 +71,18 @@ fn with_password(require: AuthRequire) -> ServerAuthConfig {
     }
 }
 
+/// Whether the team's signing keys can be fetched.
+#[derive(Clone, Copy)]
+enum Jwks {
+    Served,
+    Offline,
+}
+
 /// The cloud harness with `auth` as the live `[server.auth]`.
-fn harness_with_auth(jwks_ok: bool, auth: &ServerAuthConfig) -> Harness {
-    let jwks = if jwks_ok {
-        Ok(fixture_jwks("jwks.json"))
-    } else {
-        Err("offline".to_string())
+fn harness_with_auth(jwks: Jwks, auth: &ServerAuthConfig) -> Harness {
+    let jwks = match jwks {
+        Jwks::Served => Ok(fixture_jwks("jwks.json")),
+        Jwks::Offline => Err("offline".to_string()),
     };
     let h = harness_with(Some(HOST), jwks);
     h.engine.live_limits().auth().store(auth, None);
@@ -111,7 +117,7 @@ async fn assert_auth_required(response: Response<Body>, what: &str) {
 /// Row 1: a verified owner on the tunnel gets through with a password set.
 #[tokio::test]
 async fn a_verified_owner_on_the_tunnel_meets_no_second_password_wall() {
-    let h = harness_with_auth(true, &with_password(AuthRequire::Network));
+    let h = harness_with_auth(Jwks::Served, &with_password(AuthRequire::Network));
     let jwt = token("valid");
     let r = send(
         &h.app,
@@ -137,7 +143,7 @@ async fn a_verified_owner_on_the_tunnel_meets_no_second_password_wall() {
 /// envelope still opens.
 #[tokio::test]
 async fn the_handoff_works_through_a_password() {
-    let mut h = harness_with_auth(true, &with_password(AuthRequire::Network));
+    let mut h = harness_with_auth(Jwks::Served, &with_password(AuthRequire::Network));
     // The handoff helpers send no connection; every request here is the tunnel's.
     h.app = h.app.layer(axum::middleware::map_request(
         |mut r: Request<Body>| async move {
@@ -161,7 +167,7 @@ async fn the_handoff_works_through_a_password() {
 /// Row 3: the status a verified owner reads, under `require = "everywhere"`.
 #[tokio::test]
 async fn the_status_says_access_signed_the_owner_in() {
-    let h = harness_with_auth(true, &with_password(AuthRequire::Everywhere));
+    let h = harness_with_auth(Jwks::Served, &with_password(AuthRequire::Everywhere));
     let r = send(
         &h.app,
         tunnel_request(
@@ -192,7 +198,7 @@ async fn the_status_says_access_signed_the_owner_in() {
 /// never this machine, whatever cloudflared forwarded (no XFF here).
 #[tokio::test]
 async fn without_a_password_the_owner_is_not_warned_and_is_never_this_machine() {
-    let h = harness_with_auth(true, &ServerAuthConfig::default());
+    let h = harness_with_auth(Jwks::Served, &ServerAuthConfig::default());
     let mut b = request("GET", "/api/v1/auth/status", HOST, Some(&token("valid")));
     b.extensions_mut()
         .unwrap()
@@ -214,7 +220,7 @@ async fn access_refusals_come_before_the_auth_layer() {
         with_password(AuthRequire::Network),
         ServerAuthConfig::default(),
     ] {
-        let h = harness_with_auth(true, &auth);
+        let h = harness_with_auth(Jwks::Served, &auth);
         for (jwt, code) in [
             (None, "access-missing"),
             (Some("two segments"), "access-malformed"),
@@ -247,7 +253,7 @@ async fn access_refusals_come_before_the_auth_layer() {
 /// a password set.
 #[tokio::test]
 async fn unavailable_access_keys_refuse_before_the_password() {
-    let h = harness_with_auth(false, &with_password(AuthRequire::Network));
+    let h = harness_with_auth(Jwks::Offline, &with_password(AuthRequire::Network));
     let r = send(
         &h.app,
         tunnel_request(
@@ -269,7 +275,7 @@ async fn unavailable_access_keys_refuse_before_the_password() {
 /// with Tailscale's Funnel marker, is not credited.
 #[tokio::test]
 async fn a_replayed_assertion_off_loopback_or_through_a_funnel_still_needs_the_password() {
-    let h = harness_with_auth(true, &with_password(AuthRequire::Network));
+    let h = harness_with_auth(Jwks::Served, &with_password(AuthRequire::Network));
     let jwt = token("valid");
     let r = send(
         &h.app,
@@ -294,7 +300,7 @@ async fn a_replayed_assertion_off_loopback_or_through_a_funnel_still_needs_the_p
 /// ignored, so it credits nothing.
 #[tokio::test]
 async fn a_spoofed_assertion_on_another_host_credits_nothing() {
-    let h = harness_with_auth(true, &with_password(AuthRequire::Network));
+    let h = harness_with_auth(Jwks::Served, &with_password(AuthRequire::Network));
     let r = send(
         &h.app,
         tunnel_request(
@@ -315,7 +321,7 @@ async fn a_spoofed_assertion_on_another_host_credits_nothing() {
 /// exactly as without Cloud Connect.
 #[tokio::test]
 async fn plain_loopback_is_unchanged() {
-    let h = harness_with_auth(true, &with_password(AuthRequire::Network));
+    let h = harness_with_auth(Jwks::Served, &with_password(AuthRequire::Network));
     let mut b = request("GET", "/api/v1/projects", "localhost", None);
     b.extensions_mut()
         .unwrap()
@@ -328,7 +334,7 @@ async fn plain_loopback_is_unchanged() {
 /// password, a ban of somebody else) and closes 4401 only at Access expiry.
 #[tokio::test]
 async fn an_owners_socket_outlives_auth_changes_and_closes_at_access_expiry() {
-    let h = harness_with_auth(true, &with_password(AuthRequire::Network));
+    let h = harness_with_auth(Jwks::Served, &with_password(AuthRequire::Network));
     before_expiry(&h, 3);
     let mut socket = ws(&h.app, "/ws/events", HOST, &token("valid")).await;
     let auth = h.engine.live_limits().auth();
@@ -367,7 +373,7 @@ async fn an_owners_socket_outlives_auth_changes_and_closes_at_access_expiry() {
 #[tokio::test]
 async fn the_blocklist_still_applies_to_a_verified_owner() {
     let h = harness_with_auth(
-        true,
+        Jwks::Served,
         &ServerAuthConfig {
             blocked_addresses: vec![EDGE_CLIENT.to_string()],
             ..with_password(AuthRequire::Network)
@@ -391,7 +397,7 @@ async fn the_blocklist_still_applies_to_a_verified_owner() {
 
     // The socket path: an owner's socket whose forwarded client is banned
     // after it opened closes 4403.
-    let h = harness_with_auth(true, &with_password(AuthRequire::Network));
+    let h = harness_with_auth(Jwks::Served, &with_password(AuthRequire::Network));
     let mut socket = ws_with(
         &h.app,
         "/ws/events",
@@ -423,7 +429,7 @@ async fn the_blocklist_still_applies_to_a_verified_owner() {
 #[tokio::test]
 async fn a_broken_auth_section_refuses_the_owner_without_detail() {
     let h = harness_with_auth(
-        true,
+        Jwks::Served,
         &ServerAuthConfig {
             session_idle_seconds: 0,
             ..with_password(AuthRequire::Network)

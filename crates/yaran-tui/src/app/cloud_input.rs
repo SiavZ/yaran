@@ -55,7 +55,11 @@ impl App {
             self.bindings.lookup(&key, BindingScope::Dialog)
         };
         let todo = match (prompt, modal_key_step(action, key, field)) {
-            (_, ModalKeyStep::Close) => CloudKey::Close,
+            (_, ModalKeyStep::Close)
+            | (
+                CloudPrompt::Status(_) | CloudPrompt::PairPhone(_),
+                ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus,
+            ) => CloudKey::Close,
             (CloudPrompt::Login(_), ModalKeyStep::Confirm) => CloudKey::Submit,
             (CloudPrompt::Login(_), ModalKeyStep::FallThroughToField) => CloudKey::Type,
             (CloudPrompt::Logout(_) | CloudPrompt::Rotate(_), ModalKeyStep::MoveFocus(_)) => {
@@ -65,10 +69,6 @@ impl App {
                 CloudPrompt::Logout(_) | CloudPrompt::Rotate(_),
                 ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus,
             ) => CloudKey::Resolve,
-            (
-                CloudPrompt::Status(_) | CloudPrompt::PairPhone(_),
-                ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus,
-            ) => CloudKey::Close,
             _ => CloudKey::Nothing,
         };
         self.cloud.pressed = None;
@@ -86,8 +86,8 @@ impl App {
                 CloudKey::Resolve,
                 PromptState::Cloud(CloudPrompt::Logout(focus) | CloudPrompt::Rotate(focus)),
             ) => {
-                let confirm = focus.is_confirm();
-                self.resolve_cloud_confirm(confirm);
+                let answer = focus.answer();
+                self.resolve_cloud_confirm(answer);
             }
             _ => {}
         }
@@ -137,7 +137,7 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => {
                 let pressed = self.cloud.pressed.take()?;
                 if hit == Some(pressed) {
-                    self.resolve_cloud_confirm(pressed.is_confirm());
+                    self.resolve_cloud_confirm(pressed.answer());
                 }
                 Some(false)
             }

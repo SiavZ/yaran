@@ -61,7 +61,9 @@ use yaran_core::prose::Prose;
 use yaran_core::status_text;
 use yaran_core::status_text::StatusText;
 
-use super::{App, ConfirmFocus, PromptState, Result, StatusTone, TextInput, mpsc, thread};
+use super::{
+    App, ConfirmAnswer, ConfirmFocus, PromptState, Result, StatusTone, TextInput, mpsc, thread,
+};
 
 /// The pair-phone busy's key: a local read with no outcome sentence of its own.
 pub(crate) const KEY_PAIR_PHONE: &str = "cloud-pair-phone";
@@ -433,11 +435,11 @@ impl App {
     }
 
     /// Answer Disconnect / Rotate token. Cancel runs nothing.
-    pub(super) fn resolve_cloud_confirm(&mut self, confirm: bool) {
+    pub(super) fn resolve_cloud_confirm(&mut self, answer: ConfirmAnswer) {
         let rotate = matches!(self.prompt, PromptState::Cloud(CloudPrompt::Rotate(_)));
         self.cloud.pressed = None;
         self.prompt = PromptState::None;
-        if !confirm {
+        if answer == ConfirmAnswer::Cancel {
             return;
         }
         let (paths, api) = (self.cloud_paths(), self.cloud_api());

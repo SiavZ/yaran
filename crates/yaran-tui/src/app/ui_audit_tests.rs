@@ -1,6 +1,10 @@
 use super::test_support::{default_bindings, test_app};
 use super::*;
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the audits loop over both dialogs with a bool they also assert on"
+)]
 fn configure_prompt(app: &App, startup: bool) -> PromptState {
     let project = &app.engine.projects[0];
     let input = TextInput::with_text("AUDIT_DRAFT=keep".to_string()).with_multiline(8);

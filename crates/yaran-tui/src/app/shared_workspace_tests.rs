@@ -6,11 +6,11 @@ use super::test_support::{default_bindings, test_app};
 use super::*;
 use yaran_core::config::{ProjectConfig, WorkspaceConfig, WorkspaceMode};
 
-fn shared_config(default_mode: WorkspaceMode) -> Option<WorkspaceConfig> {
-    Some(WorkspaceConfig {
+fn shared_config(default_mode: WorkspaceMode) -> WorkspaceConfig {
+    WorkspaceConfig {
         default_mode,
         auto_resume_shared: false,
-    })
+    }
 }
 
 fn open_create_prompt(app: &mut App) {
@@ -113,7 +113,7 @@ fn legacy_config_create_flow_remains_isolated_and_empty_by_default() {
 #[test]
 fn shared_default_opens_shared_request_with_prefilled_handle() {
     let mut app = test_app(default_bindings());
-    app.engine.config.workspace = shared_config(WorkspaceMode::Shared);
+    app.engine.config.workspace = Some(shared_config(WorkspaceMode::Shared));
     app.engine
         .config
         .defaults
@@ -149,7 +149,7 @@ fn project_workspace_override_controls_create_mode() {
         (WorkspaceMode::Shared, WorkspaceMode::Worktree, false),
     ] {
         let mut app = test_app(default_bindings());
-        app.engine.config.workspace = shared_config(global);
+        app.engine.config.workspace = Some(shared_config(global));
         let project = app.engine.projects[0].clone();
         app.engine.config.projects.push(ProjectConfig {
             id: project.id.clone(),
@@ -182,7 +182,7 @@ fn project_workspace_override_controls_create_mode() {
 #[test]
 fn fork_stays_isolated_under_shared_project_default() {
     let mut app = test_app(default_bindings());
-    app.engine.config.workspace = shared_config(WorkspaceMode::Shared);
+    app.engine.config.workspace = Some(shared_config(WorkspaceMode::Shared));
 
     app.fork_selected_session();
 
@@ -307,7 +307,7 @@ fn second_shared_writer_requires_confirmation_for_create_and_reconnect() {
             .is_in_flight(&yaran_core::engine::InFlightKey::CreateAgent),
         "nothing starts before the user confirms"
     );
-    app.resolve_confirm_shared_writer(false);
+    app.resolve_confirm_shared_writer(ConfirmAnswer::Cancel);
     assert!(matches!(app.prompt, PromptState::None));
 
     select(&mut app, "waiting");

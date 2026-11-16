@@ -161,7 +161,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_unpaired_machine_is_refused_with_a_sentence() {
-        for source in [None, Some(&Fake(None) as &dyn PhoneQrSource)] {
+        let unpaired: &dyn PhoneQrSource = &Fake(None);
+        for source in [None, Some(unpaired)] {
             let (status, text) = body(phone_qr_response(source)).await;
             assert_eq!(status, StatusCode::CONFLICT);
             assert!(text.contains("yaran cloud login"), "{text}");

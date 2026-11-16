@@ -428,13 +428,6 @@ pub(crate) struct Theme {
     pub title_normal: Color,
     pub selection_fg: Color,
     pub selection_bg: Color,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a theme token a theme file may set, which no renderer reads"
-        )
-    )]
     pub project_icon: Color,
     pub project_missing_fg: Color,
     /// Foreground for the standalone star and the directory label on line two.

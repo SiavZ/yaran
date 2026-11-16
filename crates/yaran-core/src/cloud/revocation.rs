@@ -26,7 +26,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 
 /// A raise counter plus subscribers.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct RevocationSignal {
     generation: AtomicU64,
     subscribers: Mutex<Vec<Sender<u64>>>,

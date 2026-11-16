@@ -128,7 +128,8 @@ fn no_secret_reaches_a_log_line() {
     struct Visitor<'a>(&'a mut String);
     impl tracing::field::Visit for Visitor<'_> {
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            self.0.push_str(&format!(" {}={:?}", field.name(), value));
+            let _ =
+                std::fmt::Write::write_fmt(self.0, format_args!(" {}={:?}", field.name(), value));
         }
     }
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {

@@ -133,7 +133,8 @@ fn stagger_introduces_minimum_delay() {
     // Allow a generous 50% slack so a single-core CI host with jitter
     // doesn't flake; the point is to prove the gating is on, not to
     // measure the exact stagger.
-    let expected_min = Duration::from_millis(stagger_ms * (job_count as u64 - 1) / 2);
+    let expected_min =
+        Duration::from_millis(stagger_ms * (u64::try_from(job_count).unwrap() - 1) / 2);
     assert!(
         staggered >= expected_min,
         "staggered run was unexpectedly fast: {staggered:?} (expected >= {expected_min:?})",

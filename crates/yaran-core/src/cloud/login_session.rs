@@ -216,9 +216,8 @@ mod tests {
             },
         );
         let authorize = loop {
-            match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
-                LoginEvent::Authorize(a) => break a,
-                _ => {}
+            if let LoginEvent::Authorize(a) = rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                break a;
             }
         };
         assert!(authorize.url.contains("/v1/pair/authorize?"));

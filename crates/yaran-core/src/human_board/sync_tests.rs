@@ -421,6 +421,10 @@ fn the_report_says_what_moved() {
 
 static SYNCS: AtomicUsize = AtomicUsize::new(0);
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the real sync, so it keeps the sync's signature"
+)]
 fn counting_sync(_store: &BoardStore) -> Result<SyncReport> {
     SYNCS.fetch_add(1, Ordering::SeqCst);
     Ok(SyncReport::default())

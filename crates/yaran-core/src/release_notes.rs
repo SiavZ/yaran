@@ -816,6 +816,10 @@ pub fn load_release_notes(root: &Path, running_version: &str) -> Result<ReleaseN
 
 /// Production lookup with an injectable API base. Display versions select the
 /// current fork's canonical tag, never an upstream release of the same number.
+///
+/// # Errors
+///
+/// Fails as [`load_release_notes_from`] does.
 pub fn load_current_release_notes_from(
     api_base: &str,
     root: &Path,

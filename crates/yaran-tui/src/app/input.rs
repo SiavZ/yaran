@@ -3646,7 +3646,7 @@ impl App {
         // A hang-up the poll reports (HUP, ERR, NVAL) ends the run here, before
         // a read that may never come back.
         if input == super::hangup::TerminalInput::Gone {
-            return Ok(self.quit_because_terminal_is_gone());
+            return Ok(Self::quit_because_terminal_is_gone());
         }
         if input == super::hangup::TerminalInput::Idle {
             self.resolve_pending_bare_esc(&stdin_borrow, &mut buf)?;
@@ -3657,7 +3657,7 @@ impl App {
         if n == 0 {
             // A terminal in raw mode has no way to type an end of file: a
             // read of nothing is the hang-up, seen a moment after the poll.
-            return Ok(self.quit_because_terminal_is_gone());
+            return Ok(Self::quit_because_terminal_is_gone());
         }
         // Raw bytes are input like any other: local state (scroll, selection,
         // the macro bar) can move before the child echoes anything.
@@ -6338,15 +6338,15 @@ impl App {
         let PromptState::ConfirmSharedWriter { focus, .. } = &mut self.prompt else {
             return None;
         };
-        let confirm = focus.is_confirm();
+        let answer = focus.answer();
         let action = self.bindings.lookup(&key, BindingScope::Dialog);
         match modal_key_step(action, key, super::modal::TextFieldFocus::Elsewhere) {
             ModalKeyStep::Close => {
-                self.resolve_confirm_shared_writer(false);
+                self.resolve_confirm_shared_writer(ConfirmAnswer::Cancel);
             }
             ModalKeyStep::MoveFocus(_) => *focus = focus.toggled(),
             ModalKeyStep::Confirm | ModalKeyStep::ActivateFocus => {
-                return Some(self.resolve_confirm_shared_writer(confirm));
+                return Some(self.resolve_confirm_shared_writer(answer));
             }
             ModalKeyStep::FallThroughToField => {}
         }
@@ -12111,10 +12111,10 @@ impl App {
                 self.resolve_confirm_use_existing_branch(ConfirmAnswer::Confirm)
             }
             ButtonPressedTarget::ConfirmSharedWriterCancel => {
-                self.resolve_confirm_shared_writer(false)
+                self.resolve_confirm_shared_writer(ConfirmAnswer::Cancel)
             }
             ButtonPressedTarget::ConfirmSharedWriterStart => {
-                self.resolve_confirm_shared_writer(true)
+                self.resolve_confirm_shared_writer(ConfirmAnswer::Confirm)
             }
             ButtonPressedTarget::ConfigReloadFailedClose => {
                 self.resolve_config_reload_failed(ConfirmAnswer::Cancel)

@@ -28,6 +28,10 @@ struct Run {
     out: String,
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "`is_tty` is handed straight to the `CloudDeps` field of the same name"
+)]
 fn run(
     root: &std::path::Path,
     worker: &MockWorker,

@@ -28,6 +28,10 @@ pub fn backup_path(sessions_db_path: &Path) -> PathBuf {
 /// switch) and copy it. Returns where it went. The copy goes to a temp file
 /// renamed over the old backup, so `.bak` is never a half-written database
 /// (a crash mid-backup keeps the previous good one).
+///
+/// # Errors
+///
+/// Fails when the database cannot be opened or the copy cannot be written.
 pub fn backup_once(sessions_db_path: &Path) -> anyhow::Result<PathBuf> {
     let dst = backup_path(sessions_db_path);
     let mut tmp_name = dst.as_os_str().to_os_string();

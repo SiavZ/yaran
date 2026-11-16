@@ -412,7 +412,13 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::WatchRules(_)
         | PromptState::PullRequests(_)
         | PromptState::ProjectActions(_)
-        | PromptState::ProjectInfo(_) => Vec::new(),
+        | PromptState::ProjectInfo(_)
+        | PromptState::Cloud(
+            CloudPrompt::Logout(_)
+            | CloudPrompt::Rotate(_)
+            | CloudPrompt::Status(_)
+            | CloudPrompt::PairPhone(_),
+        ) => Vec::new(),
 
         PromptState::ChangeBaseBranch(prompt) => vec![&prompt.list.filter],
         PromptState::ConfirmChangeBaseBranch(prompt) => vec![&prompt.previous.list.filter],
@@ -430,12 +436,6 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
             reply: Some(reply), ..
         } => vec![&reply.input],
         PromptState::Cloud(CloudPrompt::Login(login)) => vec![login.field()],
-        PromptState::Cloud(
-            CloudPrompt::Logout(_)
-            | CloudPrompt::Rotate(_)
-            | CloudPrompt::Status(_)
-            | CloudPrompt::PairPhone(_),
-        ) => Vec::new(),
 
         // The pull-request form's address is read-only: it takes no caret, so
         // it is not a field the registry asks to publish a rect for.

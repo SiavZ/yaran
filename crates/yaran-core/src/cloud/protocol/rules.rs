@@ -238,7 +238,7 @@ pub fn is_b64url_43(s: &str) -> bool {
 pub fn is_unix_seconds(s: &str) -> bool {
     UNIX_SECONDS.is_match(s)
 }
-/// A snake_case error code.
+/// A `snake_case` error code.
 pub fn is_error_code(s: &str) -> bool {
     ERROR_CODE.is_match(s)
 }

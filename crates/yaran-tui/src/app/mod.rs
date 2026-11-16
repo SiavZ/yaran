@@ -6965,7 +6965,7 @@ impl App {
         // went away is seen for what it is. Crossterm must never be handed one:
         // its reader spins on a hung-up tty and does not come back.
         match hangup::wait_for_terminal_input(std::io::stdin(), Duration::from_millis(poll_ms)) {
-            Ok(hangup::TerminalInput::Gone) => return self.quit_because_terminal_is_gone(),
+            Ok(hangup::TerminalInput::Gone) => return Self::quit_because_terminal_is_gone(),
             Ok(hangup::TerminalInput::Idle | hangup::TerminalInput::Ready) => {}
             Err(err) => {
                 self.report_runtime_error("terminal wait failed; input handling was skipped", &err);
@@ -6991,7 +6991,7 @@ impl App {
     /// The terminal yaran was drawing on is gone: the window was closed, or the
     /// connection it came over dropped. Nobody can see or reach this interface
     /// again, so it ends the way a quit does, agents wound down and all.
-    pub(crate) fn quit_because_terminal_is_gone(&mut self) -> bool {
+    pub(crate) fn quit_because_terminal_is_gone() -> bool {
         logger::info(
             "the terminal is gone (hung up); quitting as if asked to, since nothing can \
              reach this interface any more",

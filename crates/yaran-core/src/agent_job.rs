@@ -3877,7 +3877,7 @@ pub fn run_create_agent_job(
         run_create_shared_agent_job(
             &project,
             custom_name,
-            &paths,
+            paths,
             config,
             worker_tx,
             term_size,
@@ -3905,7 +3905,7 @@ pub fn run_create_agent_job(
     };
     launch_managed_create(
         plan,
-        &paths,
+        paths,
         config,
         worker_tx,
         term_size,

@@ -1877,6 +1877,10 @@ impl Engine {
     /// Project the build-/config-static snapshot served once via
     /// `GET /api/v1/bootstrap`. Delivered as a one-shot REST read invalidated by
     /// `config.changed`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the whole bootstrap view assembled in one place, field by field"
+    )]
     pub fn bootstrap(&self) -> BootstrapView {
         BootstrapView {
             available_providers: self.available_providers(),

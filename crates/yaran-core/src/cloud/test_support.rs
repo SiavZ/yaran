@@ -40,6 +40,7 @@
 //! ```
 //! <module-headers:end>
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -336,7 +337,6 @@ fn serve(stream: TcpStream, handler: &Arc<Handler>, log: &Mutex<Vec<RecordedRequ
     };
     let resp = handler(&req);
     log.lock().expect("the request log lock").push(req);
-    use std::fmt::Write as _;
     let mut out = format!(
         "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
         resp.status,

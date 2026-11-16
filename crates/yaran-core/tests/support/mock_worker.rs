@@ -179,6 +179,10 @@ impl MockWorker {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the mock control plane's every route in one dispatch"
+)]
 fn serve(
     stream: TcpStream,
     seen: &Mutex<Vec<Seen>>,

@@ -32,6 +32,7 @@ use super::rules;
 
 /// The only callback a `build=dev` handoff may name.
 pub const DEV_HANDOFF_REDIRECT: &str = "yaranapp://auth/callback";
+/// The longest add-org URI a QR code carries, in characters.
 pub const ADD_ORG_MAX_CHARS: usize = 512;
 
 /// What JavaScript's `encodeURIComponent` leaves unescaped.

@@ -5652,13 +5652,13 @@ headRefOid repository { nameWithOwner } headRepository { nameWithOwner } } }"
         );
     }
 
-    fn shared_pr_entry(id: &str, path: &Path, branch: &str, shared: bool) -> PrSyncEntry {
+    fn shared_pr_entry(id: &str, path: &Path, branch: &str) -> PrSyncEntry {
         PrSyncEntry {
             session_id: id.to_string(),
             worktree_path: path.to_string_lossy().to_string(),
             current: sync_branch(branch),
             history: vec![sync_branch("an-earlier-branch")],
-            shared_workspace: shared,
+            shared_workspace: true,
             ..sync_entry()
         }
     }
@@ -5679,9 +5679,12 @@ headRefOid repository { nameWithOwner } headRepository { nameWithOwner } } }"
         let alias = dir.path().join("shared-alias");
         std::os::unix::fs::symlink(&shared, &alias).unwrap();
         let snapshot = vec![
-            shared_pr_entry("shared-a", &shared, "stored-a", true),
-            shared_pr_entry("shared-b", &alias, "stored-b", true),
-            shared_pr_entry("worktree", &worktree, "stored-worktree", false),
+            shared_pr_entry("shared-a", &shared, "stored-a"),
+            shared_pr_entry("shared-b", &alias, "stored-b"),
+            PrSyncEntry {
+                shared_workspace: false,
+                ..shared_pr_entry("worktree", &worktree, "stored-worktree")
+            },
         ];
         let head_calls = std::cell::Cell::new(0);
         let plan = shared_checkout_plan(&snapshot, &|_| {
@@ -5762,8 +5765,8 @@ headRefOid repository { nameWithOwner } headRepository { nameWithOwner } } }"
     fn detached_shared_head_skips_pr_discovery() {
         let dir = tempfile::tempdir().unwrap();
         let snapshot = vec![
-            shared_pr_entry("shared-a", dir.path(), "main", true),
-            shared_pr_entry("shared-b", dir.path(), "main", true),
+            shared_pr_entry("shared-a", dir.path(), "main"),
+            shared_pr_entry("shared-b", dir.path(), "main"),
         ];
         let plan = shared_checkout_plan(&snapshot, &|_| Ok(None));
         assert_eq!(plan.entries.len(), 2);

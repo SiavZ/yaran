@@ -23,7 +23,7 @@ use ratatui::widgets::{Paragraph, Widget};
 use yaran_core::engine::Command;
 use yaran_core::session_settings::{ContextMode, SessionSettings};
 
-use super::components::button::resting_button_state;
+use super::components::ButtonState;
 use super::components::button::{Button, ButtonKind, ButtonPressedTarget, button_state_for};
 use super::components::hint_bar::{Hint, modal_hint_line};
 use super::input::contains_point;
@@ -350,7 +350,7 @@ impl App {
 
     /// Enter / Space / click on a control: buttons fire, the system-prompt
     /// field engages, everything else toggles.
-    fn activate_session_settings_row(&mut self, focus: SettingsFocus) -> Result<()> {
+    fn activate_session_settings_row(&mut self, focus: SettingsFocus) {
         match focus {
             SettingsFocus::SaveButton => self.save_session_settings(),
             SettingsFocus::CancelButton => self.cancel_session_settings(),
@@ -358,7 +358,6 @@ impl App {
             SettingsFocus::Title | SettingsFocus::CompactInstructionsPath => {}
             other => self.toggle_session_settings_row(other),
         }
-        Ok(())
     }
 
     /// Key handling for the modal.
@@ -417,7 +416,7 @@ impl App {
             // Enter submits from a single-line field (nothing competes for
             // it there) and acts on the focused control elsewhere.
             Some(Action::Confirm) if line_field_focused => self.save_session_settings(),
-            Some(Action::Confirm) => self.activate_session_settings_row(focus)?,
+            Some(Action::Confirm) => self.activate_session_settings_row(focus),
             _ if line_field_focused => {
                 if let Some(p) = self.session_settings_prompt_mut() {
                     if focus == SettingsFocus::Title {
@@ -427,7 +426,7 @@ impl App {
                     }
                 }
             }
-            _ if key.code == KeyCode::Char(' ') => self.activate_session_settings_row(focus)?,
+            _ if key.code == KeyCode::Char(' ') => self.activate_session_settings_row(focus),
             // The vim-style engage key, resolved through the bindings.
             _ if focus == SettingsFocus::SystemPrompt
                 && self.bindings.lookup(&key, BindingScope::Files)
@@ -503,7 +502,8 @@ impl App {
             }
             return Ok(());
         }
-        self.activate_session_settings_row(focus)
+        self.activate_session_settings_row(focus);
+        Ok(())
     }
 
     /// A released Save or Cancel button.
@@ -864,7 +864,11 @@ impl App {
                 .state(button_state_for(
                     ButtonPressedTarget::SessionSettingsCancel,
                     self.pressed_button,
-                    resting_button_state(f == SettingsFocus::CancelButton, true),
+                    if f == SettingsFocus::CancelButton {
+                        ButtonState::Focused
+                    } else {
+                        ButtonState::Normal
+                    },
                 ))
                 .render(frame, cancel, &self.theme);
             Button::new("Save")
@@ -872,7 +876,11 @@ impl App {
                 .state(button_state_for(
                     ButtonPressedTarget::SessionSettingsSave,
                     self.pressed_button,
-                    resting_button_state(f == SettingsFocus::SaveButton, true),
+                    if f == SettingsFocus::SaveButton {
+                        ButtonState::Focused
+                    } else {
+                        ButtonState::Normal
+                    },
                 ))
                 .render(frame, save, &self.theme);
         }

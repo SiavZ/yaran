@@ -157,13 +157,13 @@ mod tests {
                 push_offline_ttl_seconds: 36,
             },
         };
-        patch_cloud(&mut doc, &cloud);
-        let text = doc.to_string();
-        assert!(text.contains("# my notes") && text.contains("# keep me"));
         #[derive(serde::Deserialize)]
         struct Wrap {
             cloud: CloudConfig,
         }
+        patch_cloud(&mut doc, &cloud);
+        let text = doc.to_string();
+        assert!(text.contains("# my notes") && text.contains("# keep me"));
         let parsed: Wrap = toml::from_str(&text).unwrap();
         assert_eq!(parsed.cloud, cloud);
     }

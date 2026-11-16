@@ -221,7 +221,15 @@ pub fn launch_editor(editor: &DetectedEditor, path: &Path) -> Result<()> {
     crate::test_provider::refuse_unlisted_launch("editor", &editor.command)?;
 
     crate::browser::spawn_reaped(
-        Command::new(&editor.command).args(editor_launch_args(editor, path, path.is_dir())),
+        Command::new(&editor.command).args(editor_launch_args(
+            editor,
+            path,
+            if path.is_dir() {
+                OpenTarget::Folder
+            } else {
+                OpenTarget::File
+            },
+        )),
         editor.label,
     )
     .with_context(|| format!("failed to launch {} via {}", editor.label, editor.command))?;
@@ -236,9 +244,18 @@ pub fn launch_editor(editor: &DetectedEditor, path: &Path) -> Result<()> {
 /// replaces whatever project the user had open there (fork 9d9ffcef). A single
 /// file keeps the editor's default, since a new window per opened file would be
 /// worse. Zed and Sublime Text already open a folder in its own window.
-fn editor_launch_args(editor: &DetectedEditor, path: &Path, is_dir: bool) -> Vec<OsString> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenTarget {
+    /// A folder, which opens in a window of its own.
+    Folder,
+    /// A single file.
+    File,
+}
+
+/// The arguments that open `path` in `editor`; see [`OpenTarget`].
+fn editor_launch_args(editor: &DetectedEditor, path: &Path, target: OpenTarget) -> Vec<OsString> {
     let mut args = Vec::new();
-    if is_dir
+    if target == OpenTarget::Folder
         && matches!(
             editor.kind,
             EditorKind::Cursor | EditorKind::VsCode | EditorKind::VsCodium
@@ -475,14 +492,22 @@ mod tests {
     fn vscode_launch_args_force_new_window() {
         let path = std::path::PathBuf::from("/tmp/agent-worktree");
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::VsCode, "code"), &path, true),
+            editor_launch_args(
+                &detected(EditorKind::VsCode, "code"),
+                &path,
+                OpenTarget::Folder
+            ),
             vec![
                 OsString::from("--new-window"),
                 OsString::from("/tmp/agent-worktree")
             ]
         );
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::VsCodium, "codium"), &path, true)[0],
+            editor_launch_args(
+                &detected(EditorKind::VsCodium, "codium"),
+                &path,
+                OpenTarget::Folder
+            )[0],
             OsString::from("--new-window")
         );
     }
@@ -491,7 +516,11 @@ mod tests {
     fn cursor_launch_args_force_new_window() {
         let path = std::path::PathBuf::from("/tmp/agent-worktree");
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::Cursor, "cursor"), &path, true),
+            editor_launch_args(
+                &detected(EditorKind::Cursor, "cursor"),
+                &path,
+                OpenTarget::Folder
+            ),
             vec![
                 OsString::from("--new-window"),
                 OsString::from("/tmp/agent-worktree")
@@ -503,7 +532,7 @@ mod tests {
     fn zed_launch_args_keep_single_path_arg() {
         let path = std::path::PathBuf::from("/tmp/agent-worktree");
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::Zed, "zed"), &path, true),
+            editor_launch_args(&detected(EditorKind::Zed, "zed"), &path, OpenTarget::Folder),
             vec![OsString::from("/tmp/agent-worktree")]
         );
     }
@@ -513,7 +542,11 @@ mod tests {
     fn a_single_file_opens_without_a_new_window() {
         let path = std::path::PathBuf::from("/tmp/agent-worktree/src/main.rs");
         assert_eq!(
-            editor_launch_args(&detected(EditorKind::VsCode, "code"), &path, false),
+            editor_launch_args(
+                &detected(EditorKind::VsCode, "code"),
+                &path,
+                OpenTarget::File
+            ),
             vec![OsString::from("/tmp/agent-worktree/src/main.rs")]
         );
     }

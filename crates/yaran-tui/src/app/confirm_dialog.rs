@@ -510,6 +510,10 @@ mod tests {
 
     /// The Cancel-side and act-side button rects a Confirm dialog published, in
     /// that order.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per confirm dialog's published buttons, matched exhaustively"
+    )]
     fn confirm_buttons(layout: &OverlayMouseLayout) -> Option<[Rect; 2]> {
         use OverlayMouseLayout as L;
         Some(match *layout {

@@ -146,7 +146,7 @@ fn next_status(rig: &Rig) -> (StatusTone, String) {
                 assert_eq!(s.key.as_deref(), Some(CLOUD_PUSH));
                 return (s.tone, s.message);
             }
-            _ => continue,
+            _ => {}
         }
     }
 }

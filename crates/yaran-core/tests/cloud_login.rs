@@ -176,10 +176,17 @@ fn meta(min: i64) -> serde_json::Value {
     })
 }
 
-fn worker(min: i64, claim_ok: bool) -> MockWorker {
+/// Whether the fake control plane accepts the claim.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Claim {
+    Accepted,
+    Refused,
+}
+
+fn worker(min: i64, claim: Claim) -> MockWorker {
     MockWorker::start(move |req| match req.path.as_str() {
         "/v1/meta" => MockResponse::json(200, &meta(min)),
-        "/v1/machine/claim" if claim_ok => MockResponse::json(
+        "/v1/machine/claim" if claim == Claim::Accepted => MockResponse::json(
             200,
             &serde_json::to_value(sample_claim(SAMPLE_ORG)).expect("the login fixture"),
         ),
@@ -218,7 +225,7 @@ fn setup() -> (tempfile::TempDir, CloudPaths) {
 #[test]
 fn a_full_login_pairs_and_stores_the_claim() {
     let (_root, paths) = setup();
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let mut io = FakeIo::new(Browser::Loopback);
     let out = login(&w, &paths, &mut io, Duration::from_secs(10));
     assert_eq!(
@@ -277,7 +284,7 @@ fn a_full_login_pairs_and_stores_the_claim() {
 #[test]
 fn the_paste_path_works_when_the_browser_cannot_reach_the_listener() {
     let (_root, paths) = setup();
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let mut io = FakeIo::new(Browser::Paste);
     assert!(matches!(
         login(&w, &paths, &mut io, Duration::from_secs(10)),
@@ -293,7 +300,7 @@ fn the_paste_path_works_when_the_browser_cannot_reach_the_listener() {
 #[test]
 fn a_failed_browser_open_still_shows_the_url_and_completes() {
     let (_root, paths) = setup();
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let mut io = FakeIo::new(Browser::OpenFailsThenLoopback);
     assert!(matches!(
         login(&w, &paths, &mut io, Duration::from_secs(10)),
@@ -307,7 +314,7 @@ fn a_failed_browser_open_still_shows_the_url_and_completes() {
 fn a_different_paired_org_is_refused_before_any_request() {
     let (_root, paths) = setup();
     pair_sample(&paths, "https://other.example.org");
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let out = login(
         &w,
         &paths,
@@ -326,7 +333,7 @@ fn a_different_paired_org_is_refused_before_any_request() {
 fn a_protocol_mismatch_stops_the_login() {
     let (_root, paths) = setup();
     let out = login(
-        &worker(5, true),
+        &worker(5, Claim::Accepted),
         &paths,
         &mut FakeIo::new(Browser::Loopback),
         Duration::from_secs(5),
@@ -341,13 +348,13 @@ fn a_protocol_mismatch_stops_the_login() {
 fn a_refused_claim_leaves_the_old_credentials_and_consent_key() {
     let (_root, paths) = setup();
     assert!(matches!(
-        login(&worker(1, false), &paths, &mut FakeIo::new(Browser::Loopback), Duration::from_secs(10)),
+        login(&worker(1, Claim::Refused), &paths, &mut FakeIo::new(Browser::Loopback), Duration::from_secs(10)),
         CloudActionOutcome::ClaimRefused { ref code, .. } if code == "pkce_mismatch"
     ));
     assert_eq!(credentials::read(&paths).unwrap(), None);
     let before = pair_sample(&paths, SAMPLE_ORG);
     let out = login(
-        &worker(1, false),
+        &worker(1, Claim::Refused),
         &paths,
         &mut FakeIo::new(Browser::Loopback),
         Duration::from_secs(10),
@@ -355,7 +362,7 @@ fn a_refused_claim_leaves_the_old_credentials_and_consent_key() {
     assert!(matches!(out, CloudActionOutcome::ClaimRefused { .. }));
     assert_eq!(credentials::read(&paths).unwrap(), Some(before));
     let denied = login(
-        &worker(1, true),
+        &worker(1, Claim::Accepted),
         &paths,
         &mut FakeIo::new(Browser::Deny),
         Duration::from_secs(10),
@@ -372,7 +379,7 @@ fn a_refused_claim_leaves_the_old_credentials_and_consent_key() {
 #[test]
 fn timeout_and_cancel_end_the_wait() {
     let (_root, paths) = setup();
-    let w = worker(1, true);
+    let w = worker(1, Claim::Accepted);
     let out = login(
         &w,
         &paths,

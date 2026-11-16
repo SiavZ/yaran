@@ -1482,7 +1482,7 @@ impl App {
             ));
             return;
         }
-        let writes = yaran_core::macros::compose_send_writes(&prompt);
+        let writes = yaran_core::macros::compose_send_writes(prompt);
         let (body, has_submit) = match writes.as_slice() {
             [body, _submit] => (body.clone(), true),
             [submit] => (submit.clone(), false),

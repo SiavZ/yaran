@@ -6421,6 +6421,10 @@ mod tests {
     /// the Host guard's allowed hosts take it, and browsers are told to
     /// refetch, rather than everything staying on the config it replaced.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one journey through a failed apply and the adoption after it, each step asserted where it happens"
+    )]
     fn a_config_adopted_after_a_failed_apply_reaches_the_running_server() {
         let (_tmp, paths) = temp_paths();
         let mut engine = crate::test_support::bootstrap_test_engine(&paths).expect("engine");

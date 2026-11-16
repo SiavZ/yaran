@@ -31,7 +31,7 @@ impl Clipboard {
         std::thread::Builder::new()
             .name("clipboard".into())
             .spawn(move || {
-                clipboard_worker(rx);
+                clipboard_worker(&rx);
             })
             .expect("failed to spawn clipboard worker thread");
 
@@ -165,7 +165,7 @@ fn osc52_copy(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn clipboard_worker(rx: mpsc::Receiver<CopyRequest>) {
+fn clipboard_worker(rx: &mpsc::Receiver<CopyRequest>) {
     // Without a display server arboard's X11 path hangs until it times out,
     // so skip it and go straight to OSC 52 (headless SSH, VS Code Remote).
     let primary: Result<arboard::Clipboard, String> = if no_display() {
@@ -174,7 +174,7 @@ fn clipboard_worker(rx: mpsc::Receiver<CopyRequest>) {
         arboard::Clipboard::new().map_err(|e| e.to_string())
     };
     run_worker(
-        &rx,
+        rx,
         primary.map(|mut board| move |text: &str| board.set_text(text).map_err(|e| e.to_string())),
         osc52_copy,
     );

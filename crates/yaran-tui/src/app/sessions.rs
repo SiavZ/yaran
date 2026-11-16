@@ -82,16 +82,17 @@ use super::{
     ChangeAgentProviderOption, ChangeAgentProviderPrompt, ChangeDefaultProviderOption,
     ChangeDefaultProviderPrompt, ChangeProjectDefaultProviderOption,
     ChangeProjectDefaultProviderPrompt, ChangeThemePrompt, CloneDraft, CloneProjectFocus,
-    ConfigureFieldFocus, ConfirmFocus, ConfirmKillRunningPrompt, ConfirmNonDefaultBranchFocus,
-    DIFF_STATUS_KEY, DeleteAgentFocus, DeleteReport, DockLayout, FocusPane, FullscreenOverlay,
-    InputTarget, KillRunningAction, KillRunningFocus, KillRunningPrompt, KillableRuntime,
-    KillableRuntimeKind, LaunchView, LeftItem, NameNewAgentFocus, PendingDiff, PersistFinalOutcome,
-    PickProjectWorktreePrompt, PrLookupFinalOutcome, ProjectAction, ProjectActionsPrompt,
-    ProjectActionsTarget, ProjectChooserEntry, ProjectChooserIntent, PromptState,
-    PullRequestInputFocus, RecreateWorkingCopyFocus, ReviewCopyQuestion, RuntimeTargetId,
-    SLOW_DIFF_READ, SearchableList, StartupCommandLogPrompt, StartupLogViewer,
-    TuiCheckoutInspectOutcome, TuiDeleteOutcome, TuiServerFlipOutcome, WorktreesFinalOutcome,
-    diff_read_busy, kill_running_matches, pick_project_matches, preflight_server_listeners,
+    ConfigureFieldFocus, ConfirmAnswer, ConfirmFocus, ConfirmKillRunningPrompt,
+    ConfirmNonDefaultBranchFocus, DIFF_STATUS_KEY, DeleteAgentFocus, DeleteReport, DockLayout,
+    FocusPane, FullscreenOverlay, InputTarget, KillRunningAction, KillRunningFocus,
+    KillRunningPrompt, KillableRuntime, KillableRuntimeKind, LaunchView, LeftItem,
+    NameNewAgentFocus, PendingDiff, PersistFinalOutcome, PickProjectWorktreePrompt,
+    PrLookupFinalOutcome, ProjectAction, ProjectActionsPrompt, ProjectActionsTarget,
+    ProjectChooserEntry, ProjectChooserIntent, PromptState, PullRequestInputFocus,
+    RecreateWorkingCopyFocus, ReviewCopyQuestion, RuntimeTargetId, SLOW_DIFF_READ, SearchableList,
+    StartupCommandLogPrompt, StartupLogViewer, TuiCheckoutInspectOutcome, TuiDeleteOutcome,
+    TuiServerFlipOutcome, WorktreesFinalOutcome, diff_read_busy, kill_running_matches,
+    pick_project_matches, preflight_server_listeners,
 };
 use crate::app::ui_jobs::RequestKind;
 use crate::config::provider_config;
@@ -1817,15 +1818,15 @@ impl App {
         self.start_create_agent_request(request, busy_message)
     }
 
-    /// Resolve the second-writer consent. Always closes the prompt; `true`
+    /// Resolve the second-writer consent. Always closes the prompt; a confirm
     /// continues the create or reconnect it was raised for.
-    pub(crate) fn resolve_confirm_shared_writer(&mut self, confirm: bool) -> bool {
+    pub(crate) fn resolve_confirm_shared_writer(&mut self, answer: ConfirmAnswer) -> bool {
         let prompt = std::mem::replace(&mut self.prompt, PromptState::None);
         let PromptState::ConfirmSharedWriter { action, .. } = prompt else {
             self.prompt = prompt;
             return false;
         };
-        if !confirm {
+        if answer == ConfirmAnswer::Cancel {
             return false;
         }
         let result = match action {

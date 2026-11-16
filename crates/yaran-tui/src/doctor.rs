@@ -241,9 +241,9 @@ fn append_orphaned_sessions_text(out: &mut String, snap: &SessionsSnapshot, priv
     let _ = writeln!(out, "{:<16} {summary}", "orphaned_list:");
     for (index, session) in snap.orphaned_sessions.iter().enumerate() {
         let [id, provider, branch, worktree_path] = orphan_fields(session, index, privacy);
-        let _ = write!(
+        let _ = writeln!(
             out,
-            "  - id={id} provider={provider} branch={branch} state={} worktree_path={worktree_path}\n",
+            "  - id={id} provider={provider} branch={branch} state={} worktree_path={worktree_path}",
             session.state
         );
     }

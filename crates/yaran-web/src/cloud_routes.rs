@@ -390,7 +390,7 @@ async fn login_complete(
             match rx.recv().await {
                 Ok(LoginEvent::Step(LoginStep::PasteRejected { reason })) => return Err(reason),
                 Ok(LoginEvent::Finished(outcome)) => return Ok(Some(outcome)),
-                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => return Ok(None),
             }
         }

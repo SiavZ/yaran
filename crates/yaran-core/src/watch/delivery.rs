@@ -83,7 +83,7 @@ fn sanitize_bracketed_paste_text(body: &str) -> String {
             }
             '\n' | '\t' => out.push(ch),
             ch if ch.is_control() || ch == '\u{7f}' || ch == '\u{9b}' => {
-                let _ = write!(out, "\\x{:02x}", ch as u32);
+                let _ = write!(out, "\\x{:02x}", u32::from(ch));
             }
             ch => out.push(ch),
         }

@@ -17,8 +17,8 @@
 //! A drag over the card's text selects it, and the selection is copied to the
 //! clipboard when the button is released, as the startup-log viewer does.
 
+use super::components::ButtonState;
 use super::components::PickerList;
-use super::components::button::resting_button_state;
 use super::components::wrap_lines::display_width;
 use super::components::{
     Button, ButtonKind, ButtonPressedTarget, Hint, button_state_for, modal_hint_line,
@@ -580,7 +580,11 @@ impl App {
                 .state(button_state_for(
                     *target,
                     self.pressed_button,
-                    resting_button_state(focus == *stop, true),
+                    if focus == *stop {
+                        ButtonState::Focused
+                    } else {
+                        ButtonState::Normal
+                    },
                 ))
                 .render(frame, rect, &self.theme);
             match target {
