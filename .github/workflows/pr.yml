@@ -252,14 +252,15 @@ jobs:
   clippy-test-macos:
     # BRANCH-PROTECTION CONTRACT: `Test (macos-14)` is a required status check
     # on main (see .github/BRANCH_PROTECTION.md), so this job carries that name
-    # even though it runs on macos-latest as upstream does: it has not been
-    # proven on a macos-14 runner, and pinning an unverified image would risk
-    # the one required macOS gate. Upstream calls it `Clippy and test (macOS)`;
+    # even though it runs on macos-26-intel: the arm64 `macos-latest` pool
+    # repeatedly cancelled it before assigning a runner, and the Intel macOS 26
+    # image is a standard GitHub-hosted public-repo runner. Upstream runs it on
+    # macos-latest and calls it `Clippy and test (macOS)`;
     # do not take that name back in an upstream merge. It runs clippy and then
     # the full test suite on macOS (the platform-specific arms run nowhere
     # else).
     name: Test (macos-14)
-    runs-on: macos-latest
+    runs-on: macos-26-intel
     needs: no-ui-build-hatch
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
