@@ -308,7 +308,8 @@ fn run_session_with_input(
 }
 
 fn print_session_help() {
-    println!(
+    let _ = writeln!(
+        std::io::stdout(),
         "\
 yaran session: manage individual agents
 
@@ -410,13 +411,14 @@ fn run_session_purge(
         shared_mode,
     )?;
     for plan in &plans {
-        println!("{}", format_purge_plan(plan, run));
+        let _ = writeln!(std::io::stdout(), "{}", format_purge_plan(plan, run));
     }
 
     if !yes && !run.is_dry() {
         let confirmed = if shared_mode == SharedPurgeMode::WorkspaceWide {
             let phrase = format!("PURGE WORKSPACE {}", plans[0].branch);
-            eprint!(
+            let _ = write!(
+                std::io::stderr(),
                 "Type '{}' to confirm provider-history deletion for every agent in this directory: ",
                 yaran_core::sanitize::for_terminal(&phrase)
             );
@@ -430,7 +432,10 @@ fn run_session_purge(
             prompt_purge_confirmation(&plans[0], input)?
         };
         if !confirmed {
-            eprintln!("aborted: confirmation phrase did not match");
+            let _ = writeln!(
+                std::io::stderr(),
+                "aborted: confirmation phrase did not match"
+            );
             return Ok(EXIT_PURGE_ABORTED);
         }
     }
@@ -438,7 +443,7 @@ fn run_session_purge(
     let mut any_errors = false;
     for plan in &plans {
         let report = yaran_core::purge::execute(plan, &storage, paths, &purge_config, run)?;
-        eprint!("{}", report.summary());
+        let _ = write!(std::io::stderr(), "{}", report.summary());
         any_errors |= report.had_errors();
     }
     Ok(if any_errors { EXIT_PURGE_ERRORS } else { 0 })
@@ -462,24 +467,36 @@ fn run_session_purge_all(
     let (plans, planning_failures) =
         yaran_core::purge::build_plans_for_all(&storage, paths, &purge_config)?;
     for failure in &planning_failures {
-        eprintln!("WARNING: {failure}");
+        let _ = writeln!(std::io::stderr(), "WARNING: {failure}");
     }
-    println!("about to purge {} session(s)", plans.len());
+    let _ = writeln!(
+        std::io::stdout(),
+        "about to purge {} session(s)",
+        plans.len()
+    );
     for (i, plan) in plans.iter().enumerate() {
-        println!("--- session {} of {} ---", i + 1, plans.len());
-        println!("{}", format_purge_plan(plan, run));
+        let _ = writeln!(
+            std::io::stdout(),
+            "--- session {} of {} ---",
+            i + 1,
+            plans.len()
+        );
+        let _ = writeln!(std::io::stdout(), "{}", format_purge_plan(plan, run));
     }
 
     if !yes && !run.is_dry() {
         // One phrase for the whole list: typing every branch is impractical.
-        eprint!("Type 'PURGE ALL' to confirm: ");
+        let _ = write!(std::io::stderr(), "Type 'PURGE ALL' to confirm: ");
         let _ = std::io::Write::flush(&mut std::io::stderr());
         let mut line = String::new();
         input
             .read_line(&mut line)
             .map_err(|e| anyhow!("failed to read confirmation: {e}"))?;
         if line.trim() != "PURGE ALL" {
-            eprintln!("aborted: confirmation phrase did not match");
+            let _ = writeln!(
+                std::io::stderr(),
+                "aborted: confirmation phrase did not match"
+            );
             return Ok(EXIT_PURGE_ABORTED);
         }
     }
@@ -487,7 +504,7 @@ fn run_session_purge_all(
     let mut any_errors = !planning_failures.is_empty();
     for plan in &plans {
         let report = yaran_core::purge::execute(plan, &storage, paths, &purge_config, run)?;
-        eprint!("{}", report.summary());
+        let _ = write!(std::io::stderr(), "{}", report.summary());
         any_errors |= report.had_errors();
     }
     Ok(if any_errors { EXIT_PURGE_ERRORS } else { 0 })
@@ -515,7 +532,8 @@ fn prompt_purge_confirmation(
     plan: &yaran_core::purge::PurgePlan,
     input: &mut dyn std::io::BufRead,
 ) -> Result<bool> {
-    eprint!(
+    let _ = write!(
+        std::io::stderr(),
         "Type 'PURGE {}' to confirm: ",
         yaran_core::sanitize::for_terminal(&plan.branch)
     );
@@ -1471,6 +1489,10 @@ fn reset_amq_root(paths: &YaranPaths) -> Option<PathBuf> {
 /// Never removed: a shared-workspace agent's checkout (it is the user's
 /// project), a standalone agent's folder, and anything a registered project
 /// overlaps.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the reset reads every inventory and refuses before it removes anything, in one ordered pass"
+)]
 fn reset_agent_data_at_amq_root(
     paths: &YaranPaths,
     amq_root: Option<&Path>,
@@ -4137,6 +4159,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table of every unreadable inventory, each checked to change nothing"
+    )]
     fn reset_all_aborts_before_mutation_on_incomplete_config_or_database_inventory() {
         let corrupt_config = ResetHarness::new();
         let worktree = corrupt_config.create_session("agent-1");
@@ -5078,6 +5104,10 @@ mod tests {
     /// A reset nobody was asked about deletes only the branch yaran can prove it
     /// made: an agent that moved onto the user's own `develop` leaves it.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one journey from creating the drift to checking every branch the reset left"
+    )]
     fn factory_reset_of_a_drifted_agent_deletes_its_birth_branch_and_keeps_the_users() {
         let tempdir = TempDir::new().expect("tempdir");
         let repo = tempdir.path().join("repo");

@@ -75,45 +75,74 @@ pub struct LoginParams {
     pub machine_name: Option<String>,
     /// The effective `[server] port`, sent at authorize and in the claim.
     pub origin_port: u16,
+    /// How long one control-plane request may take.
     pub timeout: Duration,
+    /// Where the credentials are written.
     pub paths: CloudPaths,
+    /// How the control-plane client is made, so tests can stand in for it.
     pub api: ApiFactory,
+}
+
+impl std::fmt::Debug for LoginParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginParams")
+            .field("org_url", &self.org_url)
+            .field("machine_name", &self.machine_name)
+            .field("origin_port", &self.origin_port)
+            .field("timeout", &self.timeout)
+            .field("paths", &self.paths)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Progress a front end may show.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoginStep {
+    /// Asking the organization what it is and speaks.
     CheckingOrg {
+        /// Its address.
         org_url: String,
     },
     /// The browser could not be opened; the URL was shown, keep waiting.
     BrowserUnavailable {
+        /// The approval address the browser opens.
         url: String,
     },
+    /// Waiting for the person to approve the machine.
     Waiting,
     /// A pasted address was not this login's callback; keep waiting.
     PasteRejected {
+        /// Why the browser could not be opened.
         reason: String,
     },
+    /// Claiming the approved pairing.
     Claiming,
 }
 
 /// The front end's side of a login.
 pub trait LoginIo {
+    /// Open `url` in the person's browser.
+    ///
+    /// # Errors
+    ///
+    /// Fails, saying why, when no browser could be opened.
     fn open_browser(&mut self, url: &str) -> Result<(), String>;
     /// Show the authorize URL and the fingerprint the confirm page must match.
     fn show_authorize(&mut self, url: &str, fingerprint: &str, org_name: &str, machine_name: &str);
     /// A channel of pasted callback addresses; may never yield.
     fn pasted_callback(&mut self) -> Receiver<String>;
+    /// Whether the person cancelled the login.
     fn cancelled(&mut self) -> bool;
     /// Called once, just before the claim is sent: `false` (cancelled) stops the login
     /// with nothing sent. After `true` a cancel can no longer stop this login.
     fn commit(&mut self) -> bool {
         !self.cancelled()
     }
+    /// Report a step, for the surface to show.
     fn progress(&mut self, step: LoginStep);
 }
 
+/// How a login ended.
 pub type LoginOutcome = CloudActionOutcome;
 
 fn claim_refusal(err: MachineApiError) -> CloudActionOutcome {
@@ -143,6 +172,10 @@ pub fn authorize_url(org_url: &str, query: &PairAuthorizeQuery) -> String {
 }
 
 /// Run one login to completion.
+#[expect(
+    clippy::too_many_lines,
+    reason = "every step of the pairing, from the org check to the stored claim, in the order it happens"
+)]
 pub fn run_login(params: LoginParams, io: &mut dyn LoginIo) -> LoginOutcome {
     let org_url = match normalize_org_url(&params.org_url) {
         Ok(u) => u,
