@@ -709,8 +709,16 @@ fn relaying_is_recorded_once_and_does_not_count_as_news() {
         at(1),
         "relaying is bookkeeping, not an edit"
     );
-    assert!(board.set_blocking(&id, true, at(7)).unwrap());
-    assert!(!board.set_blocking(&id, true, at(8)).unwrap());
+    assert!(
+        board
+            .set_blocking(&id, Blocking::HoldsPoster, at(7))
+            .unwrap()
+    );
+    assert!(
+        !board
+            .set_blocking(&id, Blocking::HoldsPoster, at(8))
+            .unwrap()
+    );
 }
 
 #[test]

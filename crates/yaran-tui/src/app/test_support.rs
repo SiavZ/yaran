@@ -102,7 +102,6 @@ use crate::statusline::StatusScope;
 use crate::storage::SessionStore;
 use crate::theme::Theme;
 use chrono::Utc;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;

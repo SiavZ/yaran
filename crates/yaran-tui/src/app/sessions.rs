@@ -5830,7 +5830,6 @@ mod tests {
     use crate::theme::Theme;
     use chrono::Utc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::collections::BTreeMap;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex, mpsc};

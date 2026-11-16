@@ -31,8 +31,8 @@ use yaran_core::model::{
     AgentSession, AgentWorkspace, BranchProvenance, ManagedWorkspace, ProviderKind, SessionStatus,
 };
 use yaran_core::purge::{
-    self, PurgeConfig, PurgeItem, PurgeOutcome, SharedPurgeMode, build_plan, build_plans_for_all,
-    build_plans_for_target, confirm_with_reader, execute, plan_for_session,
+    self, PurgeConfig, PurgeItem, PurgeOutcome, PurgeRun, SharedPurgeMode, build_plan,
+    build_plans_for_all, build_plans_for_target, confirm_with_reader, execute, plan_for_session,
 };
 use yaran_core::purge_encoding;
 use yaran_core::storage::{SessionStore, load_or_create_store_id, load_store_id};
@@ -286,8 +286,14 @@ fn assert_failure_retains_row_and_retry_succeeds(
         branch: h.session.branch_name().unwrap().to_string(),
         items: vec![item, PurgeItem::SqliteRow],
     };
-    let failed =
-        execute(&failed_plan, &h.storage, execution_paths, &h.config, false).expect("execute");
+    let failed = execute(
+        &failed_plan,
+        &h.storage,
+        execution_paths,
+        &h.config,
+        PurgeRun::Apply,
+    )
+    .expect("execute");
     assert!(failed.had_errors(), "{category} fault did not fail");
     assert!(matches!(
         failed.entries.last(),
@@ -302,7 +308,8 @@ fn assert_failure_retains_row_and_retry_succeeds(
 
     let retry = build_plan(&h.storage, &h.paths, &h.config, &h.session.id)
         .expect("retained row must remain resolvable");
-    let retried = execute(&retry, &h.storage, &h.paths, &h.config, false).expect("retry execute");
+    let retried =
+        execute(&retry, &h.storage, &h.paths, &h.config, PurgeRun::Apply).expect("retry execute");
     assert!(
         !retried.had_errors(),
         "{category} retry: {}",
@@ -326,7 +333,7 @@ fn purge_removes_all_known_categories() {
     let h = PurgeHarness::new();
     let plan = build_plan(&h.storage, &h.paths, &h.config, &h.session.id).expect("plan");
 
-    let report = execute(&plan, &h.storage, &h.paths, &h.config, false).expect("execute");
+    let report = execute(&plan, &h.storage, &h.paths, &h.config, PurgeRun::Apply).expect("execute");
     assert!(!report.had_errors(), "summary:\n{}", report.summary());
 
     // Worktree gone.
@@ -379,7 +386,8 @@ fn purge_dry_run_changes_nothing() {
     let plan = build_plan(&h.storage, &h.paths, &h.config, &h.session.id).expect("plan");
     let log_before = read_log(&h.log_path);
 
-    let report = execute(&plan, &h.storage, &h.paths, &h.config, true).expect("execute");
+    let report =
+        execute(&plan, &h.storage, &h.paths, &h.config, PurgeRun::DryRun).expect("execute");
     assert!(!report.had_errors());
     assert!(report.dry_run);
     assert!(
@@ -448,7 +456,7 @@ fn purge_with_unknown_target_returns_error_not_panic() {
 fn purge_redacts_log_records_for_session() {
     let h = PurgeHarness::new();
     let plan = build_plan(&h.storage, &h.paths, &h.config, &h.session.id).expect("plan");
-    let report = execute(&plan, &h.storage, &h.paths, &h.config, false).expect("execute");
+    let report = execute(&plan, &h.storage, &h.paths, &h.config, PurgeRun::Apply).expect("execute");
     assert!(!report.had_errors(), "{}", report.summary());
 
     let text = read_log(&h.log_path);
@@ -472,7 +480,7 @@ fn purge_skips_missing_provider_dirs() {
     // Pre-delete the codex dir so the cascade has to skip it cleanly.
     fs::remove_dir_all(&h.codex_dir).expect("pre-delete");
     let plan = build_plan(&h.storage, &h.paths, &h.config, &h.session.id).expect("plan");
-    let report = execute(&plan, &h.storage, &h.paths, &h.config, false).expect("execute");
+    let report = execute(&plan, &h.storage, &h.paths, &h.config, PurgeRun::Apply).expect("execute");
     assert!(!report.had_errors(), "{}", report.summary());
 
     // The codex outcome should be Skipped, not Error.
@@ -606,7 +614,7 @@ fn shared_purge_is_honest_and_retains_identity_without_explicit_consent() {
         }
     )));
 
-    let report = execute(&plan, &h.storage, &h.paths, &h.config, false).unwrap();
+    let report = execute(&plan, &h.storage, &h.paths, &h.config, PurgeRun::Apply).unwrap();
     assert!(report.had_errors());
     assert!(
         h.worktree().exists(),
@@ -653,7 +661,7 @@ fn purge_all_retains_shared_provider_history_without_workspace_consent() {
             .any(|item| matches!(item, PurgeItem::ProviderDir { .. }))
     );
 
-    let report = execute(&plans[0], &h.storage, &h.paths, &h.config, false).unwrap();
+    let report = execute(&plans[0], &h.storage, &h.paths, &h.config, PurgeRun::Apply).unwrap();
     assert!(report.had_errors());
     assert!(report.summary().contains("INCOMPLETE"));
     assert_eq!(fs::read_to_string(transcript).unwrap(), "must survive");
@@ -681,7 +689,7 @@ fn shared_purge_accept_residual_frees_exact_amq_and_deletes_row_only() {
     )
     .unwrap()
     .remove(0);
-    let report = execute(&plan, &h.storage, &h.paths, &h.config, false).unwrap();
+    let report = execute(&plan, &h.storage, &h.paths, &h.config, PurgeRun::Apply).unwrap();
 
     assert!(!report.had_errors(), "{}", report.summary());
     assert!(h.worktree().exists());
@@ -730,7 +738,7 @@ fn workspace_wide_shared_purge_includes_every_sibling_and_provider_history() {
     }));
 
     for plan in &plans {
-        let report = execute(plan, &h.storage, &h.paths, &h.config, false).unwrap();
+        let report = execute(plan, &h.storage, &h.paths, &h.config, PurgeRun::Apply).unwrap();
         assert!(!report.had_errors(), "{}", report.summary());
     }
     assert!(h.worktree().exists());
@@ -752,7 +760,7 @@ fn purge_never_frees_a_foreign_amq_inbox() {
     )
     .unwrap();
     let plan = build_plan(&h.storage, &h.paths, &h.config, &h.session.id).unwrap();
-    let report = execute(&plan, &h.storage, &h.paths, &h.config, false).unwrap();
+    let report = execute(&plan, &h.storage, &h.paths, &h.config, PurgeRun::Apply).unwrap();
 
     assert!(report.had_errors());
     assert!(h.amq_inbox.exists());
@@ -775,7 +783,14 @@ fn purge_worktree_step_rejects_registered_project_overlap_in_both_directions() {
     let plan = build_plan(&h.storage, &h.paths, &h.config, &h.session.id).unwrap();
     let mut changed_inventory = h.config.clone();
     changed_inventory.registered_project_paths = vec![h.worktree().join("late-project")];
-    let report = execute(&plan, &h.storage, &h.paths, &changed_inventory, false).unwrap();
+    let report = execute(
+        &plan,
+        &h.storage,
+        &h.paths,
+        &changed_inventory,
+        PurgeRun::Apply,
+    )
+    .unwrap();
     assert!(report.had_errors());
     assert!(h.worktree().exists());
     assert_eq!(
@@ -954,8 +969,8 @@ fn purge_all_retains_rows_whose_full_inventory_cannot_be_planned() {
     );
 
     for plan in &plans {
-        let report =
-            execute(plan, &h.storage, &h.paths, &h.config, false).expect("execute bulk plan");
+        let report = execute(plan, &h.storage, &h.paths, &h.config, PurgeRun::Apply)
+            .expect("execute bulk plan");
         assert!(!report.had_errors(), "{}", report.summary());
     }
     let remaining = h

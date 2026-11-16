@@ -44,7 +44,7 @@
 //!
 //! ## Dry run
 //!
-//! Every step honors `dry_run`; the integration tests assert it per category.
+//! Every step honors [`PurgeRun::DryRun`]; the integration tests assert it per category.
 
 use std::ffi::OsString;
 use std::fs;
@@ -95,6 +95,10 @@ impl PurgeConfig {
     ///
     /// Every override must be absolute: a relative root would resolve against
     /// the purge's working directory and delete the wrong tree.
+    ///
+    /// # Errors
+    ///
+    /// Fails when an override is not an absolute path.
     pub fn default_layout(
         paths: &YaranPaths,
         config: &Config,
@@ -159,6 +163,10 @@ fn absolute_env(name: &str) -> Result<Option<PathBuf>> {
 /// purge or reset run against a defaulted config would see no registered
 /// projects and so protect none of them. A missing file is fine (nothing
 /// registered in it); an unreadable or invalid one is an error.
+///
+/// # Errors
+///
+/// Fails when config.toml exists but cannot be read or parsed.
 pub fn load_config_strict(paths: &YaranPaths) -> Result<Config> {
     let raw = match fs::read_to_string(&paths.config_path) {
         Ok(raw) => raw,
@@ -185,6 +193,11 @@ pub fn load_config_strict(paths: &YaranPaths) -> Result<Config> {
 /// the database, and every agent's own recorded project path (so a row whose
 /// project was dropped from the list is still covered). Fails closed on one
 /// that does not expand to a safe absolute path.
+///
+/// # Errors
+///
+/// Fails when a project path does not expand to a safe absolute path, or the
+/// database cannot be read.
 pub fn protected_project_paths(
     config: &Config,
     store: &SessionStore,
@@ -226,13 +239,18 @@ pub enum PurgeItem {
     Worktree(PathBuf),
     /// Recursive delete of `<provider_root>/projects/<encoded>`.
     ProviderDir {
+        /// Which provider's history it is.
         provider: &'static str,
+        /// The directory to delete.
         path: PathBuf,
     },
     /// Provider history that cannot be attributed to this agent alone.
     SharedProviderHistory {
+        /// Which provider's history it is.
         provider: &'static str,
+        /// The directory the history stays in.
         path: PathBuf,
+        /// Whether the operator accepted leaving it behind.
         residual_accepted: bool,
     },
     /// Exact-owner delete of `<amq_root>/agents/<agent_handle>`. The parent
@@ -245,6 +263,7 @@ pub enum PurgeItem {
         /// Informational: the agent's creation time, recorded so the audit
         /// trail shows the cut-over point. Every record is visited regardless.
         since: DateTime<Utc>,
+        /// The log file to rewrite.
         path: PathBuf,
     },
 }
@@ -288,41 +307,54 @@ impl PurgeItem {
 /// A complete plan for purging exactly one agent.
 #[derive(Clone, Debug)]
 pub struct PurgePlan {
+    /// The agent being purged.
     pub session_id: String,
     /// The agent's branch, or its handle for a standalone agent, which has no
     /// branch. This is also what the operator types to confirm.
     pub branch: String,
+    /// What will be deleted, in the order it runs.
     pub items: Vec<PurgeItem>,
 }
 
 /// Per-item outcome reported by [`execute`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PurgeOutcome {
+    /// The step ran.
     Done,
     /// A no-op, such as a directory that was already absent.
     Skipped(String),
+    /// The step would have run; this was a dry run.
     DryRun,
+    /// The step failed, saying why.
     Error(String),
 }
 
 /// The audit record returned by [`execute`], one entry per item in order.
 #[derive(Clone, Debug)]
 pub struct PurgeReport {
+    /// The agent purged.
     pub session_id: String,
+    /// Its branch, or its handle for a standalone agent.
     pub branch: String,
+    /// Each item and how it ended.
     pub entries: Vec<(PurgeItem, PurgeOutcome)>,
+    /// Whether this was a dry run.
     pub dry_run: bool,
 }
 
 impl PurgeReport {
+    /// The report as the command line prints it: a heading, then one line per
+    /// item with its outcome, and the reason under a skip or an error.
     pub fn summary(&self) -> String {
+        use std::fmt::Write as _;
         let mut s = String::new();
         let prefix = if self.dry_run { "DRY-RUN " } else { "" };
-        s.push_str(&format!(
-            "{prefix}purge report for session {} (branch {}):\n",
+        let _ = writeln!(
+            s,
+            "{prefix}purge report for session {} (branch {}):",
             sanitize::for_terminal(&self.session_id),
             sanitize::for_terminal(&self.branch)
-        ));
+        );
         for (item, outcome) in &self.entries {
             let tag = match outcome {
                 PurgeOutcome::Done => "ok",
@@ -330,9 +362,9 @@ impl PurgeReport {
                 PurgeOutcome::DryRun => "dry-run",
                 PurgeOutcome::Error(_) => "ERROR",
             };
-            s.push_str(&format!("  [{tag}] {}\n", item.describe()));
+            let _ = writeln!(s, "  [{tag}] {}", item.describe());
             if let PurgeOutcome::Skipped(why) | PurgeOutcome::Error(why) = outcome {
-                s.push_str(&format!("        ({})\n", sanitize::for_terminal(why)));
+                let _ = writeln!(s, "        ({})", sanitize::for_terminal(why));
             }
         }
         s
@@ -351,6 +383,10 @@ impl PurgeReport {
 // ---------------------------------------------------------------------------
 
 /// Resolve `target` and build the safe default plan.
+///
+/// # Errors
+///
+/// Fails when `target` names no agent, or names several, or no safe plan can be built.
 pub fn build_plan(
     storage: &SessionStore,
     paths: &YaranPaths,
@@ -371,6 +407,10 @@ pub fn build_plan(
 
 /// Build one target plan, or one plan per agent sharing the target's
 /// directory when the operator explicitly chose a workspace-wide purge.
+///
+/// # Errors
+///
+/// Fails when `target` names no agent, or a safe plan cannot be built for it.
 pub fn build_plans_for_target(
     storage: &SessionStore,
     paths: &YaranPaths,
@@ -462,6 +502,10 @@ fn plan_label(session: &AgentSession) -> String {
 }
 
 /// Build the default plan for an already resolved agent.
+///
+/// # Errors
+///
+/// Fails when the agent's paths cannot be resolved to a safe plan.
 pub fn plan_for_session(
     session: &AgentSession,
     paths: &YaranPaths,
@@ -639,15 +683,36 @@ fn static_provider_name(name: &str) -> &'static str {
 // Execution
 // ---------------------------------------------------------------------------
 
-/// Execute the cascade. `dry_run` turns every destructive step into a
+/// Whether a purge changes anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PurgeRun {
+    /// Delete what the plan names.
+    Apply,
+    /// Report what would be deleted and change nothing.
+    DryRun,
+}
+
+impl PurgeRun {
+    /// Whether this is a dry run.
+    pub fn is_dry(self) -> bool {
+        self == Self::DryRun
+    }
+}
+
+/// Execute the cascade. [`PurgeRun::DryRun`] turns every destructive step into a
 /// `DryRun` outcome. The row step is skipped (retained for retry) when any
 /// earlier step errored.
+///
+/// # Errors
+///
+/// Fails when the agent's row or the store's identity cannot be read before the
+/// cascade starts; a step that fails is reported in the report instead.
 pub fn execute(
     plan: &PurgePlan,
     storage: &SessionStore,
     paths: &YaranPaths,
     config: &PurgeConfig,
-    dry_run: bool,
+    run: PurgeRun,
 ) -> Result<PurgeReport> {
     let sessions = storage
         .load_sessions_including_deleted()
@@ -665,8 +730,9 @@ pub fn execute(
         .context("failed to load durable store identity before purge")?;
     let safe_session_id = sanitize::for_terminal(&plan.session_id);
     crate::logger::info(&format!(
-        "purge: cascade starting for session {safe_session_id} ({} items, dry_run={dry_run})",
-        plan.items.len()
+        "purge: cascade starting for session {safe_session_id} ({} items, dry_run={})",
+        plan.items.len(),
+        run.is_dry()
     ));
 
     let mut entries: Vec<(PurgeItem, PurgeOutcome)> = Vec::with_capacity(plan.items.len());
@@ -679,7 +745,7 @@ pub fn execute(
                 "prior purge step failed; session row retained for retry".to_string(),
             )
         } else {
-            execute_item(item, storage, session, config, store_id.as_deref(), dry_run)
+            execute_item(item, storage, session, config, store_id.as_deref(), run)
         };
         // Never log the item's path content for a redacted session beyond the
         // sanitized description; the session id itself is what the redaction
@@ -706,7 +772,7 @@ pub fn execute(
         session_id: plan.session_id.clone(),
         branch: plan.branch.clone(),
         entries,
-        dry_run,
+        dry_run: run.is_dry(),
     })
 }
 
@@ -716,17 +782,17 @@ fn execute_item(
     session: &AgentSession,
     config: &PurgeConfig,
     store_id: Option<&str>,
-    dry_run: bool,
+    run: PurgeRun,
 ) -> PurgeOutcome {
     match item {
         PurgeItem::Worktree(p) => {
-            if dry_run {
+            if run.is_dry() {
                 return PurgeOutcome::DryRun;
             }
             remove_whole_worktree(p, session.project_path(), &config.registered_project_paths)
         }
         PurgeItem::ProviderDir { path, .. } | PurgeItem::StartupLogs(path) => {
-            execute_remove_dir(path, dry_run)
+            execute_remove_dir(path, run)
         }
         PurgeItem::SharedProviderHistory {
             residual_accepted, ..
@@ -743,10 +809,10 @@ fn execute_item(
             }
         }
         PurgeItem::AmqInbox(path) => {
-            execute_amq_inbox(path, &config.amq_root, store_id, session, dry_run)
+            execute_amq_inbox(path, &config.amq_root, store_id, session, run)
         }
-        PurgeItem::LogScopedRedact { path, .. } => execute_redact_logs(path, &session.id, dry_run),
-        PurgeItem::SqliteRow => execute_delete_row(storage, &session.id, dry_run),
+        PurgeItem::LogScopedRedact { path, .. } => execute_redact_logs(path, &session.id, run),
+        PurgeItem::SqliteRow => execute_delete_row(storage, &session.id, run),
     }
 }
 
@@ -762,7 +828,7 @@ fn remove_whole_worktree(
     if let Err(err) = git::guard_whole_workspace_removal(path, protected) {
         return PurgeOutcome::Error(format!("{err:#}"));
     }
-    let outcome = execute_remove_dir(path, false);
+    let outcome = execute_remove_dir(path, PurgeRun::Apply);
     if matches!(outcome, PurgeOutcome::Done)
         && let Some(repo) = project_path
     {
@@ -780,9 +846,9 @@ fn execute_amq_inbox(
     root: &Path,
     store_id: Option<&str>,
     session: &AgentSession,
-    dry_run: bool,
+    run: PurgeRun,
 ) -> PurgeOutcome {
-    if dry_run {
+    if run.is_dry() {
         return PurgeOutcome::DryRun;
     }
     match fs::symlink_metadata(path) {
@@ -816,8 +882,8 @@ fn execute_amq_inbox(
     }
 }
 
-fn execute_remove_dir(path: &Path, dry_run: bool) -> PurgeOutcome {
-    if dry_run {
+fn execute_remove_dir(path: &Path, run: PurgeRun) -> PurgeOutcome {
+    if run.is_dry() {
         return PurgeOutcome::DryRun;
     }
     match fs::symlink_metadata(path) {
@@ -835,8 +901,8 @@ fn execute_remove_dir(path: &Path, dry_run: bool) -> PurgeOutcome {
     }
 }
 
-fn execute_delete_row(storage: &SessionStore, session_id: &str, dry_run: bool) -> PurgeOutcome {
-    if dry_run {
+fn execute_delete_row(storage: &SessionStore, session_id: &str, run: PurgeRun) -> PurgeOutcome {
+    if run.is_dry() {
         return PurgeOutcome::DryRun;
     }
     match storage.delete_session(session_id) {
@@ -856,7 +922,7 @@ fn execute_delete_row(storage: &SessionStore, session_id: &str, dry_run: bool) -
 /// `session_id`. Each file is staged in a sibling temp file and renamed into
 /// place, so a crash mid-rewrite leaves the original intact. `Done` even when
 /// nothing matched: the audit fact is that the rewrite ran.
-fn execute_redact_logs(log_path: &Path, session_id: &str, dry_run: bool) -> PurgeOutcome {
+fn execute_redact_logs(log_path: &Path, session_id: &str, run: PurgeRun) -> PurgeOutcome {
     let Some(log_root) = log_path.parent() else {
         return PurgeOutcome::Error(format!("log path has no parent: {}", safe_path(log_path)));
     };
@@ -893,7 +959,7 @@ fn execute_redact_logs(log_path: &Path, session_id: &str, dry_run: bool) -> Purg
             safe_path(log_root)
         ));
     }
-    if dry_run {
+    if run.is_dry() {
         return PurgeOutcome::DryRun;
     }
     for file in &log_files {
@@ -1085,32 +1151,16 @@ fn maybe_redact_json_line(line: &str, target: &str) -> Option<String> {
 
 /// Read one line and check it is exactly `PURGE <branch>`. Typing the branch
 /// name is the point: it prevents accidental yes-mashing.
+///
+/// # Errors
+///
+/// Fails when the line cannot be read.
 pub fn confirm_with_reader<R: BufRead + ?Sized>(plan: &PurgePlan, reader: &mut R) -> Result<bool> {
     let mut input = String::new();
     reader
         .read_line(&mut input)
         .context("failed to read confirmation from stdin")?;
     Ok(input.trim() == format!("PURGE {}", plan.branch))
-}
-
-/// Print the plan to stderr, ask for the phrase, and read stdin.
-pub fn confirm_interactive(plan: &PurgePlan) -> Result<bool> {
-    eprintln!(
-        "Will permanently delete the following for session {} (branch {}):",
-        sanitize::for_terminal(&plan.session_id),
-        sanitize::for_terminal(&plan.branch)
-    );
-    for item in &plan.items {
-        eprintln!("  - {}", item.describe());
-    }
-    eprint!(
-        "Type 'PURGE {}' to confirm: ",
-        sanitize::for_terminal(&plan.branch)
-    );
-    let _ = std::io::stderr().flush();
-    let stdin = std::io::stdin();
-    let mut handle = stdin.lock();
-    confirm_with_reader(plan, &mut handle)
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,6 +1170,10 @@ pub fn confirm_interactive(plan: &PurgePlan) -> Result<bool> {
 /// Plans for every agent, tombstones included, plus one sanitized warning per
 /// row retained because a complete safe plan was impossible. A malformed row
 /// never aborts the others and is never guessed at.
+///
+/// # Errors
+///
+/// Fails when the session database cannot be read.
 pub fn build_plans_for_all(
     storage: &SessionStore,
     paths: &YaranPaths,

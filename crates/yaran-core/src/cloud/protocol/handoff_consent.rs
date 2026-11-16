@@ -39,13 +39,19 @@ use super::fingerprint::{display_fingerprint, fingerprint24};
 use super::handoff::HandoffDecision;
 use super::rules::{self, b64url_decode, b64url_encode};
 
+/// The first line of the string a device key signs for a handoff.
 pub const HANDOFF_DEVICE_TAG: &str = "yaran-handoff-device-v1";
+/// The domain tag a device key's fingerprint is taken under.
 pub const DEVICE_KEY_TAG: &str = "yaran-device-key-v1\n";
+/// How far a device signature's timestamp may be from the server's clock, in seconds.
 pub const HANDOFF_DTS_SKEW_S: i64 = 300;
+/// The cookie that remembers a person's consent for one device.
 pub const CONSENT_COOKIE_NAME: &str = "__Secure-yaran-handoff-consent";
 /// 400 days, the browser cap.
 pub const CONSENT_MAX_AGE_S: i64 = 34_560_000;
+/// How far in the future a consent cookie's issue time may be, in seconds.
 pub const CONSENT_IAT_FUTURE_S: i64 = 300;
+/// The first line of the string a consent cookie's MAC covers.
 pub const CONSENT_MAC_TAG: &str = "yaran-handoff-consent-v1";
 /// The cookie path on the machine hostname (the Worker's is `/v1/handoff`).
 pub const MACHINE_HANDOFF_PATH: &str = "/__yaran/handoff";
@@ -64,15 +70,19 @@ pub fn handoff_device_canonical(host: &str, pk: &str, state: &str, dts: &str) ->
 /// A malformed device field (§8.1); each maps to one registry code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceFieldError {
+    /// `dk` is not a valid P-256 point.
     DeviceKeyInvalid,
+    /// `dts` or `dsig` is missing or malformed.
     SignatureMalformed,
     /// `dts` outside ±300 s; the redirect adds `&server_time=<unix s>`.
     TimestampSkewed {
+        /// The server's clock, so the app can correct its own.
         server_time: i64,
     },
 }
 
 impl DeviceFieldError {
+    /// The registry code the refusal is sent with.
     pub fn code(self) -> ErrorCode {
         match self {
             Self::DeviceKeyInvalid => ErrorCode::HandoffDeviceKeyInvalid,
@@ -93,6 +103,10 @@ pub fn parse_raw_signature(dsig: &str) -> Option<[u8; 64]> {
 }
 
 /// Form and freshness checks in §8.1 order (missing fields fail as malformed ones).
+///
+/// # Errors
+///
+/// Fails with the first [`DeviceFieldError`] the fields break.
 pub fn check_device_fields(
     dk: Option<&str>,
     dts: Option<&str>,
@@ -171,19 +185,30 @@ pub fn consent_set_cookie(value: &str, path: &str) -> String {
     )
 }
 
+/// A parsed consent cookie: `v1.<kv>.<fp24>.<iat>.<mac>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsentCookie {
+    /// The consent key version it was issued under.
     pub kv: u32,
+    /// The fingerprint of the device it remembers.
     pub fp24: String,
+    /// When it was issued, in Unix seconds.
     pub iat: i64,
+    /// The MAC over the host, fingerprint, issue time and key version.
     pub mac: String,
 }
 
-fn is_decimal(s: &str, max_len: usize, allow_zero: bool) -> bool {
+/// A decimal of at most `max_len` digits with no leading zero, `0` included.
+fn is_decimal(s: &str, max_len: usize) -> bool {
     !s.is_empty()
         && s.len() <= max_len
         && s.bytes().all(|b| b.is_ascii_digit())
-        && (s == "0" && allow_zero || !s.starts_with('0'))
+        && (s == "0" || !s.starts_with('0'))
+}
+
+/// [`is_decimal`], without `0`.
+fn is_positive_decimal(s: &str, max_len: usize) -> bool {
+    s != "0" && is_decimal(s, max_len)
 }
 
 /// Parses the five parts; `None` for anything malformed.
@@ -197,7 +222,7 @@ pub fn parse_consent_cookie(value: &str) -> Option<ConsentCookie> {
             .bytes()
             .all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b));
     let mac_ok = mac.len() == 43 && b64url_decode(mac).is_some();
-    if *v != "v1" || !is_decimal(kv, 9, false) || !fp_ok || !is_decimal(iat, 12, true) || !mac_ok {
+    if *v != "v1" || !is_positive_decimal(kv, 9) || !fp_ok || !is_decimal(iat, 12) || !mac_ok {
         return None;
     }
     Some(ConsentCookie {
@@ -211,14 +236,20 @@ pub fn parse_consent_cookie(value: &str) -> Option<ConsentCookie> {
 /// Why a cookie did not verify (never surfaced to the user; the page is simply shown).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CookieRejection {
+    /// It does not parse.
     Malformed,
+    /// It was issued under an older consent key.
     StaleKv,
+    /// Its MAC does not verify.
     BadMac,
+    /// It claims to be issued in the future.
     IatFuture,
+    /// It is older than the cookie's lifetime.
     IatExpired,
 }
 
 impl CookieRejection {
+    /// The reason's token, for logs.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Malformed => "malformed",
@@ -231,6 +262,10 @@ impl CookieRejection {
 }
 
 /// Checks a cookie against the current key; only that version verifies. Returns fp24.
+///
+/// # Errors
+///
+/// Fails with the [`CookieRejection`] that says why the cookie does not hold.
 pub fn verify_consent_cookie(
     value: &str,
     host: &str,
@@ -258,32 +293,46 @@ pub fn verify_consent_cookie(
     Ok(c.fp24)
 }
 
+/// Which side runs the consent page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsentSide {
+    /// The organization's control-plane Worker.
     Worker,
+    /// A paired machine's yaran.
     Yaran,
 }
 
+/// What a handoff request gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsentDecision {
+    /// The remembered consent holds: hand over without asking.
     Skip,
+    /// Ask the person on the consent page.
     ConsentPage,
 }
 
 /// The skip rule's inputs, gathered after every §8 and Access check has passed.
 #[derive(Debug, Clone, Copy)]
 pub struct RememberedInput<'a> {
+    /// Which side is deciding.
     pub side: ConsentSide,
+    /// The consent cookie the request carried.
     pub cookie: Option<&'a str>,
+    /// The host the handoff is for.
     pub host: &'a str,
     /// fp24 of the request's `dk`.
     pub dk_fp24: &'a str,
+    /// Whether the device key's signature over the request verified.
     pub verified: bool,
+    /// Whether the signature's timestamp is within the allowed skew.
     pub dts_fresh: bool,
     /// Worker only (rule 5); yaran never learns of a Worker revocation.
     pub device_revoked: bool,
+    /// The current consent MAC key.
     pub key: &'a [u8],
+    /// The current consent key's version.
     pub current_kv: u32,
+    /// The server's clock, in Unix seconds.
     pub now: i64,
 }
 
@@ -306,16 +355,21 @@ pub fn decide_remembered(i: &RememberedInput<'_>) -> ConsentDecision {
     }
 }
 
-/// Whether the consent POST's 303 carries `Set-Cookie`.
-pub fn consent_sets_cookie(decision: HandoffDecision, verified: bool) -> bool {
+/// Whether the consent POST's 303 carries `Set-Cookie`: only a Continue whose
+/// request the device key verified.
+pub fn consent_sets_cookie(decision: HandoffDecision, input: &RememberedInput<'_>) -> bool {
     match decision {
-        HandoffDecision::Continue => verified,
+        HandoffDecision::Continue => input.verified,
         HandoffDecision::Cancel => false,
     }
 }
 
 /// The Worker's consent MAC key: HKDF-SHA256(DATA_KEY, "yaran-cloud", "`v1/handoff_consent`").
 /// yaran keeps its own random key (Phase 09); this exists to pin the shared fixture.
+///
+/// # Panics
+///
+/// Never in practice: a 32-byte HKDF-SHA256 output is always valid.
 pub fn worker_consent_key(data_key: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     hkdf::Salt::new(hkdf::HKDF_SHA256, b"yaran-cloud")

@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use ratatui::layout::Rect;
 
 use super::pty_ownership::PtyDriver;
-use super::render::{BannerRow, TabStrip, minimized_agent_term_size};
+#[cfg(test)]
+use super::render::TabStrip;
+use super::render::{BannerRow, minimized_agent_term_size};
 use super::{App, FullscreenOverlay, InputTarget, SessionIdRef, SessionSurface, TabId, TabIdRef};
 
 /// How long the windowed center pane must keep one geometry before background

@@ -72,7 +72,7 @@ pub const HEADLINE_CHARS: usize = 120;
 /// when one ends early enough, else whole words and an ellipsis), and the
 /// whole title moves to the top of the detail. `None` when no title is left.
 pub fn fit_title(title: &str, detail: Option<String>) -> Option<(String, Option<String>)> {
-    let full = clean(title, MAX_DETAIL_CHARS, false)?;
+    let full = clean_line(title, MAX_DETAIL_CHARS)?;
     if full.chars().count() <= MAX_TITLE_CHARS {
         return Some((full, detail));
     }
@@ -84,11 +84,7 @@ pub fn fit_title(title: &str, detail: Option<String>) -> Option<(String, Option<
         .filter(|(at, _)| window[..*at].chars().count() >= 20)
         .min_by_key(|(at, _)| *at);
     let headline = if let Some((at, mark)) = clause {
-        let keep = if mark.starts_with('?') || mark.starts_with('!') {
-            1
-        } else {
-            0
-        };
+        let keep = usize::from(mark.starts_with('?') || mark.starts_with('!'));
         window[..at + keep].trim_end().to_string()
     } else {
         let cut = window
@@ -101,7 +97,7 @@ pub fn fit_title(title: &str, detail: Option<String>) -> Option<(String, Option<
         Some(detail) => format!("{full}\n\n{detail}"),
         None => full,
     };
-    Some((headline, clean(&detail, MAX_DETAIL_CHARS, true)))
+    Some((headline, clean_text(&detail, MAX_DETAIL_CHARS)))
 }
 /// Longest detail kept, in characters. The detail is read in the card view.
 pub const MAX_DETAIL_CHARS: usize = 8_000;
@@ -284,6 +280,15 @@ impl std::fmt::Display for CardKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// Whether a card holds up the agent that posted it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocking {
+    /// The poster cannot carry on until a person answers.
+    HoldsPoster,
+    /// The poster carries on; the card is for when somebody has a moment.
+    DoesNotHold,
 }
 
 /// One card on the board.
@@ -547,15 +552,28 @@ impl PostOutcome {
     }
 }
 
-/// Clean one piece of agent-supplied text: strip control bytes, trim, bound
-/// the length on a character boundary. `None` when nothing is left.
-fn clean(value: &str, max_chars: usize, keep_newlines: bool) -> Option<String> {
+/// Clean one line of agent-supplied text (a title, a name): whitespace runs,
+/// newlines included, become one space. See [`clean`].
+fn clean_line(value: &str, max_chars: usize) -> Option<String> {
     let sanitized = crate::sanitize::for_terminal(value);
-    let flattened = if keep_newlines {
-        sanitized.replace('\t', "    ")
-    } else {
-        sanitized.split_whitespace().collect::<Vec<_>>().join(" ")
-    };
+    clean(
+        &sanitized.split_whitespace().collect::<Vec<_>>().join(" "),
+        max_chars,
+    )
+}
+
+/// Clean agent-supplied prose that keeps its lines (a detail, a message):
+/// tabs become four spaces. See [`clean`].
+fn clean_text(value: &str, max_chars: usize) -> Option<String> {
+    clean(
+        &crate::sanitize::for_terminal(value).replace('\t', "    "),
+        max_chars,
+    )
+}
+
+/// Trim already-sanitized text and bound its length on a character boundary.
+/// `None` when nothing is left.
+fn clean(flattened: &str, max_chars: usize) -> Option<String> {
     let trimmed = flattened.trim();
     if trimmed.is_empty() {
         return None;
@@ -571,7 +589,7 @@ fn clean(value: &str, max_chars: usize, keep_newlines: bool) -> Option<String> {
 /// A ticket reference as stored: cleaned, and without a leading `#` so `#4812`
 /// and `4812` name the same ticket.
 pub fn normalize_ticket(value: &str) -> Option<String> {
-    let cleaned = clean(value, MAX_TICKET_CHARS, false)?;
+    let cleaned = clean_line(value, MAX_TICKET_CHARS)?;
     let bare = cleaned.trim_start_matches('#').trim();
     (!bare.is_empty()).then(|| bare.to_string())
 }
@@ -586,7 +604,7 @@ impl Board {
         let detail = card
             .detail
             .as_deref()
-            .and_then(|detail| clean(detail, MAX_DETAIL_CHARS, true));
+            .and_then(|detail| clean_text(detail, MAX_DETAIL_CHARS));
         let Some((title, detail)) = fit_title(&card.title, detail) else {
             bail!("a card needs a title");
         };
@@ -594,11 +612,11 @@ impl Board {
         let from = card
             .from
             .as_deref()
-            .and_then(|from| clean(from, MAX_FROM_CHARS, false));
+            .and_then(|from| clean_line(from, MAX_FROM_CHARS));
         let assignee = card
             .assignee
             .as_deref()
-            .and_then(|assignee| clean(assignee, MAX_FROM_CHARS, false));
+            .and_then(|assignee| clean_line(assignee, MAX_FROM_CHARS));
 
         if let Some(ticket) = ticket.as_deref()
             && let Some(existing) = self.cards.iter_mut().find(|c| {
@@ -651,7 +669,7 @@ impl Board {
             origin: card
                 .origin
                 .as_deref()
-                .and_then(|origin| clean(origin, MAX_FROM_CHARS, false)),
+                .and_then(|origin| clean_line(origin, MAX_FROM_CHARS)),
             assigned_by: None,
             blocking: card.blocking.unwrap_or(false),
             relayed_at: None,
@@ -745,8 +763,8 @@ impl Board {
             return Ok(false);
         }
         card.resolved_at = Some(now);
-        card.resolved_by = by.and_then(|by| clean(by, MAX_FROM_CHARS, false));
-        card.resolution = note.and_then(|note| clean(note, MAX_NOTE_CHARS, true));
+        card.resolved_by = by.and_then(|by| clean_line(by, MAX_FROM_CHARS));
+        card.resolution = note.and_then(|note| clean_text(note, MAX_NOTE_CHARS));
         card.updated_at = now;
         Ok(true)
     }
@@ -808,8 +826,8 @@ impl Board {
         by: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<bool> {
-        let assignee = assignee.and_then(|assignee| clean(assignee, MAX_FROM_CHARS, false));
-        let by = by.and_then(|by| clean(by, MAX_FROM_CHARS, false));
+        let assignee = assignee.and_then(|assignee| clean_line(assignee, MAX_FROM_CHARS));
+        let by = by.and_then(|by| clean_line(by, MAX_FROM_CHARS));
         let card = self.card_mut(id)?;
         if same_assignee(card.assignee.as_deref(), assignee.as_deref()) {
             return Ok(false);
@@ -844,16 +862,16 @@ impl Board {
         message: NewMessage,
         now: DateTime<Utc>,
     ) -> Result<Message> {
-        let Some(text) = clean(&message.text, MAX_MESSAGE_CHARS, true) else {
+        let Some(text) = clean_text(&message.text, MAX_MESSAGE_CHARS) else {
             bail!("a reply needs some text");
         };
-        let Some(from) = clean(&message.from, MAX_FROM_CHARS, false) else {
+        let Some(from) = clean_line(&message.from, MAX_FROM_CHARS) else {
             bail!("a reply needs to say who wrote it");
         };
         let side = message
             .side
             .as_deref()
-            .and_then(|side| clean(side, MAX_FROM_CHARS, false));
+            .and_then(|side| clean_line(side, MAX_FROM_CHARS));
         let card = self.card_mut(id)?;
         if card.thread.len() >= MAX_THREAD_MESSAGES {
             bail!(
@@ -882,7 +900,7 @@ impl Board {
         if message.done && card.is_open() {
             card.resolved_at = Some(now);
             card.resolved_by = Some(stored.from.clone());
-            card.resolution = clean(&stored.text, MAX_NOTE_CHARS, true);
+            card.resolution = clean_text(&stored.text, MAX_NOTE_CHARS);
         }
         card.updated_at = now;
         Ok(stored)
@@ -890,13 +908,18 @@ impl Board {
 
     /// Say whether a card holds up its poster. `Ok(false)` when it already
     /// said so; an unknown id is an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no card has the id.
     pub fn set_blocking(
         &mut self,
         id: impl Into<CardId>,
-        blocking: bool,
+        blocking: Blocking,
         now: DateTime<Utc>,
     ) -> Result<bool> {
         let card = self.card_mut(id)?;
+        let blocking = blocking == Blocking::HoldsPoster;
         if card.blocking == blocking {
             return Ok(false);
         }
@@ -1109,7 +1132,7 @@ pub fn render_reply(template: &str, card: &Card, reply: &str) -> String {
     if template.is_empty() {
         return reply.to_string();
     }
-    let title = clean(&card.title, REPLY_TITLE_CHARS, false).unwrap_or_default();
+    let title = clean_line(&card.title, REPLY_TITLE_CHARS).unwrap_or_default();
     let rendered = template
         .replace("{card}", &card.label())
         .replace("{ticket}", card.ticket.as_deref().unwrap_or(""))

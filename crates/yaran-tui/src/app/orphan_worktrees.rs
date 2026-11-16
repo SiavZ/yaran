@@ -18,12 +18,8 @@ use super::{
     Action, App, BindingScope, KeyCode, KeyEvent, Line, Modifier, OverlayMouseLayout, PathBuf,
     PromptState, Result, Span, Style, render, thread,
 };
-#[expect(unused_imports)]
 use ratatui::prelude::*;
-#[expect(unused_imports)]
-use ratatui::symbols::border;
-#[expect(unused_imports)]
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{ListItem, Paragraph};
 
 /// Where the cleaner modal is.
 #[derive(Clone, Debug, PartialEq, Eq)]

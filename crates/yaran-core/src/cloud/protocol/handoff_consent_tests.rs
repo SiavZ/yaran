@@ -163,12 +163,12 @@ fn the_skip_rule_agrees_with_every_row() {
             "{name}: a skip needs a verified signature"
         );
         assert_eq!(
-            consent_sets_cookie(HandoffDecision::Continue, input.verified),
+            consent_sets_cookie(HandoffDecision::Continue, &input),
             row["continue_sets_cookie"],
             "{name}"
         );
         assert!(
-            !consent_sets_cookie(HandoffDecision::Cancel, input.verified),
+            !consent_sets_cookie(HandoffDecision::Cancel, &input),
             "{name}"
         );
     }

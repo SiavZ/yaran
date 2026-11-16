@@ -49,12 +49,9 @@ use super::{
     Theme,
 };
 use crate::theme::FocusState;
-#[expect(unused_imports)]
 use ratatui::prelude::*;
-#[expect(unused_imports)]
 use ratatui::symbols::border;
-#[expect(unused_imports)]
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 /// Blank columns between the border and the content, each side.
 const PAD: u16 = 2;

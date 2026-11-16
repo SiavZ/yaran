@@ -39,12 +39,8 @@ use super::{
 use crate::app::components::PickerList;
 use crate::app::components::hint_bar::{Hint, modal_hint_line};
 use crate::app::render::{CurrentMark, active_provider_marker_span, centered_rect};
-#[expect(unused_imports)]
 use ratatui::prelude::*;
-#[expect(unused_imports)]
-use ratatui::symbols::border;
-#[expect(unused_imports)]
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 use yaran_core::cloud::config::CloudConfig;
 use yaran_core::cloud::leg_identity::CloudMode;
 use yaran_core::cloud::leg_outcome::CloudModeOutcome;

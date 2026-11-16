@@ -14468,7 +14468,6 @@ mod tests {
     use crate::numeric::usize_to_u16_wrapping;
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
-    use std::process::Command;
     use yaran_core::worker::ReviewCopyConsent;
 
     /// The commit success message advertises the push key only where pushing can

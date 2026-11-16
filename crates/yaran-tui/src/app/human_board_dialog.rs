@@ -32,12 +32,9 @@ use super::{
     TerminalSelection,
 };
 use crate::theme::FocusState;
-#[expect(unused_imports)]
 use ratatui::prelude::*;
-#[expect(unused_imports)]
 use ratatui::symbols::border;
-#[expect(unused_imports)]
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 
 /// The most rows the reply field grows to before it scrolls.
 pub(crate) const REPLY_MAX_ROWS: u16 = 5;
@@ -78,7 +75,7 @@ pub(crate) fn reply_window(
     scroll: Option<usize>,
 ) -> (Vec<String>, usize, usize, usize) {
     let (rows, caret_row, caret_col) = input.wrapped_rows(text_width);
-    let visible = rows.len().clamp(1, REPLY_MAX_ROWS as usize);
+    let visible = rows.len().clamp(1, usize::from(REPLY_MAX_ROWS));
     let last_first = rows.len().saturating_sub(visible);
     let first = scroll
         .unwrap_or_else(|| (caret_row + 1).saturating_sub(visible))
@@ -99,8 +96,8 @@ impl App {
         &self,
         card: &yaran_core::human_board::Card,
         reply: Option<&super::human_board::CardReply>,
-        forwardable: bool,
     ) -> Vec<(ButtonPressedTarget, &'static str, Focus)> {
+        let forwardable = !self.forwardable_messages(card).is_empty();
         let has_text = reply.is_some_and(|reply| !reply.input.text.trim().is_empty());
         let mut row = vec![(
             ButtonPressedTarget::HumanBoardCardClose,
@@ -138,7 +135,12 @@ impl App {
 
     /// One card of the human board, whole: what it asks, who posted it and
     /// when, its detail and conversation, a reply field, and its actions.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the card's text, reply field, buttons and key line share one layout"
+    )]
     pub(super) fn render_human_board_card_prompt(&mut self, frame: &mut Frame<'_>) {
+        use std::fmt::Write as _;
         let PromptState::HumanBoardCard {
             card,
             focus,
@@ -152,8 +154,7 @@ impl App {
         let focus = *focus;
         let scroll = *scroll;
         let reply = reply.as_ref().map(|reply| (**reply).clone());
-        let forwardable = !self.forwardable_messages(&card).is_empty();
-        let buttons = self.card_dialog_buttons(&card, reply.as_ref(), forwardable);
+        let buttons = self.card_dialog_buttons(&card, reply.as_ref());
         self.render_dim_overlay(frame);
 
         let screen = frame.area();
@@ -218,7 +219,7 @@ impl App {
         let mut when = format!("posted {}", age_words(&posted));
         if card.updated_at > card.created_at {
             let updated = yaran_core::human_board::compact_age(card.updated_at, now);
-            when.push_str(&format!(", updated {}", age_words(&updated)));
+            let _ = write!(when, ", updated {}", age_words(&updated));
         }
         lines.push(field("When:", Span::styled(when, text)));
         lines.push(field("Card:", Span::styled(format!("#{}", card.id), text)));
@@ -319,7 +320,8 @@ impl App {
                 reply_text_width(field_box_width),
                 reply.scroll,
             );
-            rows.len().clamp(1, REPLY_MAX_ROWS as usize) as u16
+            u16::try_from(rows.len().clamp(1, usize::from(REPLY_MAX_ROWS)))
+                .unwrap_or(REPLY_MAX_ROWS)
         });
         let bottom = |field_rows: u16| -> u16 {
             let reply_part = if reply.is_some() {
@@ -391,9 +393,9 @@ impl App {
             frame,
             area,
             body,
-            scroll as usize,
-            body.height as usize,
-            total_rows as usize,
+            usize::from(scroll),
+            usize::from(body.height),
+            usize::from(total_rows),
             self.theme.hint_key_fg,
         );
         self.last_error_dialog_height = body.height;
@@ -431,11 +433,11 @@ impl App {
                 ),
                 Recipient::Person {
                     name,
-                    poster: Some(poster),
+                    poster: Some(role),
                 } => (
                     "Reply to ",
                     name.clone(),
-                    format!(" (their {poster} posted this card):"),
+                    format!(" (their {role} posted this card):"),
                 ),
                 Recipient::Person { name, poster: None } => {
                     ("Ask ", name.clone(), " on this card:".to_string())
@@ -448,8 +450,8 @@ impl App {
                     .style
                     .add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
             }
-            let chip_x = text_x + display_width(lead) as u16;
-            let chip_width = display_width(&chip.content) as u16;
+            let chip_x = text_x + u16::try_from(display_width(lead)).unwrap_or(u16::MAX);
+            let chip_width = u16::try_from(display_width(&chip.content)).unwrap_or(u16::MAX);
             let mut spans = vec![Span::styled(lead, label), chip];
             if reply.recipients.len() > 1 {
                 spans.push(Span::styled(
@@ -481,12 +483,12 @@ impl App {
             for (offset, row) in rows
                 .iter()
                 .skip(first)
-                .take(reply_rows as usize)
+                .take(usize::from(reply_rows))
                 .enumerate()
             {
                 frame.buffer_mut().set_string(
                     field_text_x,
-                    field_area.y + 1 + offset as u16,
+                    field_area.y + 1 + u16::try_from(offset).unwrap_or(u16::MAX),
                     row,
                     text,
                 );
@@ -499,17 +501,19 @@ impl App {
                 Rect::new(
                     field_text_x,
                     field_area.y + 1,
-                    field_text_width as u16,
+                    u16::try_from(field_text_width).unwrap_or(u16::MAX),
                     reply_rows,
                 ),
                 first,
-                reply_rows as usize,
+                usize::from(reply_rows),
                 rows.len(),
                 self.theme.hint_key_fg,
             );
-            if field_focused && caret_row >= first && caret_row < first + reply_rows as usize {
-                let cx = field_text_x + caret_col.min(field_text_width.saturating_sub(1)) as u16;
-                let cy = field_area.y + 1 + (caret_row - first) as u16;
+            if field_focused && caret_row >= first && caret_row < first + usize::from(reply_rows) {
+                let cx = field_text_x
+                    + u16::try_from(caret_col.min(field_text_width.saturating_sub(1)))
+                        .unwrap_or(u16::MAX);
+                let cy = field_area.y + 1 + u16::try_from(caret_row - first).unwrap_or(u16::MAX);
                 frame.buffer_mut()[(cx, cy)].set_style(
                     Style::default()
                         .fg(self.theme.input_cursor_fg)
@@ -531,7 +535,7 @@ impl App {
         // one gap, centred), the width taken from every label this card can
         // show so "Mark done" turning into "Send & mark done" moves nothing;
         // equal widths across the content only when that row does not fit ──
-        let count = buttons.len() as u16;
+        let count = u16::try_from(buttons.len()).unwrap_or(u16::MAX);
         let mut labels: Vec<&str> = buttons.iter().map(|(_, label, _)| *label).collect();
         labels.extend(["Mark done", "Reopen"]);
         if reply.is_some() {
@@ -559,10 +563,11 @@ impl App {
         let mut send_area = None;
         let mut assign_area = None;
         for (index, (target, text_label, stop)) in buttons.iter().enumerate() {
-            let x = row_x + index as u16 * (each + BUTTON_GAP);
+            let index = u16::try_from(index).unwrap_or(u16::MAX);
+            let x = row_x + index * (each + BUTTON_GAP);
             // The last button takes what rounding left, so the row ends exactly
             // at its right edge.
-            let w = if index as u16 + 1 == count {
+            let w = if index + 1 == count {
                 (row_x + row_width).saturating_sub(x)
             } else {
                 each
@@ -776,7 +781,7 @@ impl App {
             return;
         };
         let (rows, first, ..) = reply_window(&reply.input, width, reply.scroll);
-        let visible = rows.len().clamp(1, REPLY_MAX_ROWS as usize);
+        let visible = rows.len().clamp(1, usize::from(REPLY_MAX_ROWS));
         let last_first = rows.len().saturating_sub(visible);
         let next = first.saturating_add_signed(delta).min(last_first);
         reply.scroll = Some(next);

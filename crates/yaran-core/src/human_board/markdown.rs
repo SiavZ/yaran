@@ -39,7 +39,7 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone,
 use super::id::CardId;
 use super::{
     Card, CardKind, MAX_DETAIL_CHARS, MAX_FROM_CHARS, MAX_MESSAGE_CHARS, MAX_NOTE_CHARS,
-    MAX_THREAD_MESSAGES, Message, Priority, clean, normalize_ticket,
+    MAX_THREAD_MESSAGES, Message, Priority, clean_line, clean_text, normalize_ticket,
 };
 
 /// Why a note that looks like a card could not be read as one.
@@ -251,16 +251,14 @@ pub fn parse(
     } else {
         Some(time("resolved")?.unwrap_or(updated_at))
     };
-    let text_prop = |key: &str, max: usize, keep_newlines: bool| {
-        props
-            .get(key)
-            .and_then(|value| clean(value, max, keep_newlines))
+    let text_prop = |key: &str, max: usize, clean: fn(&str, usize) -> Option<String>| {
+        props.get(key).and_then(|value| clean(value, max))
     };
     let (detail_lines, thread) = split_conversation(&body, updated_at);
     let body = detail_lines.join("\n");
     // A title typed too long for one row keeps a headline, and the whole of it
     // opens the detail, as a posted card's does.
-    let (title, detail) = super::fit_title(raw_title, clean(body.trim(), MAX_DETAIL_CHARS, true))
+    let (title, detail) = super::fit_title(raw_title, clean_text(body.trim(), MAX_DETAIL_CHARS))
         .ok_or("it has no title")?;
     let blocking = match props.get("blocking") {
         Some(value) => parse_flag(value)
@@ -271,30 +269,30 @@ pub fn parse(
         id,
         kind,
         priority,
-        assignee: text_prop("assignee", MAX_FROM_CHARS, false),
+        assignee: text_prop("assignee", MAX_FROM_CHARS, clean_line),
         ticket: props
             .get("ticket")
             .and_then(|ticket| normalize_ticket(ticket)),
         title,
-        origin: text_prop("origin", MAX_FROM_CHARS, false),
-        assigned_by: text_prop("assigned_by", MAX_FROM_CHARS, false),
+        origin: text_prop("origin", MAX_FROM_CHARS, clean_line),
+        assigned_by: text_prop("assigned_by", MAX_FROM_CHARS, clean_line),
         blocking,
         relayed_at: time("relayed")?,
         thread,
         detail,
-        from: text_prop("from", MAX_FROM_CHARS, false),
+        from: text_prop("from", MAX_FROM_CHARS, clean_line),
         created_at,
         updated_at,
         resolved_at,
         resolved_by: if open {
             None
         } else {
-            text_prop("resolved_by", MAX_FROM_CHARS, false)
+            text_prop("resolved_by", MAX_FROM_CHARS, clean_line)
         },
         resolution: if open {
             None
         } else {
-            text_prop("resolution", MAX_NOTE_CHARS, true)
+            text_prop("resolution", MAX_NOTE_CHARS, clean_text)
         },
     }))
 }
@@ -391,8 +389,8 @@ fn message_from(header: &str, text: &str, fallback: DateTime<Utc>) -> Option<Mes
     let from = field("from")
         .flatten()
         .or_else(|| title.split('\u{b7}').next().map(str::to_string))
-        .and_then(|from| clean(&from, MAX_FROM_CHARS, false))?;
-    let text = clean(text.trim(), MAX_MESSAGE_CHARS, true)?;
+        .and_then(|from| clean_line(&from, MAX_FROM_CHARS))?;
+    let text = clean_text(text.trim(), MAX_MESSAGE_CHARS)?;
     let at = field("at")
         .flatten()
         .and_then(|at| parse_time(&at))
@@ -402,7 +400,7 @@ fn message_from(header: &str, text: &str, fallback: DateTime<Utc>) -> Option<Mes
         from,
         side: field("side")
             .flatten()
-            .and_then(|side| clean(&side, MAX_FROM_CHARS, false)),
+            .and_then(|side| clean_line(&side, MAX_FROM_CHARS)),
         text,
         done: field("done").is_some(),
         relayed_at: field("relayed").flatten().and_then(|at| parse_time(&at)),

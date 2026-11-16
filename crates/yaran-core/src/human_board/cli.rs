@@ -13,8 +13,8 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 
 use super::{
-    Audience, Board, BoardSettings, BoardStore, Card, CardId, CardKind, NewCard, PostOutcome,
-    Priority, compact_age,
+    Audience, Blocking, Board, BoardSettings, BoardStore, Card, CardId, CardKind, NewCard,
+    PostOutcome, Priority, compact_age,
 };
 use crate::config::YaranPaths;
 
@@ -152,8 +152,8 @@ pub fn run_with(
                 bail!("`yaran board blocking` needs a card id and yes or no");
             };
             let blocking = match value.trim().to_ascii_lowercase().as_str() {
-                "yes" | "true" | "on" | "1" => true,
-                "no" | "false" | "off" | "0" => false,
+                "yes" | "true" | "on" | "1" => Blocking::HoldsPoster,
+                "no" | "false" | "off" | "0" => Blocking::DoesNotHold,
                 other => bail!("`yaran board blocking` takes yes or no, not {other:?}"),
             };
             let (id, changed) = store.update(|board| {
@@ -161,7 +161,7 @@ pub fn run_with(
                 let changed = board.set_blocking(&id, blocking, Utc::now())?;
                 Ok((id, changed))
             })?;
-            let state = if blocking {
+            let state = if blocking == Blocking::HoldsPoster {
                 "holds its poster up until a person answers"
             } else {
                 "does not hold anybody up"

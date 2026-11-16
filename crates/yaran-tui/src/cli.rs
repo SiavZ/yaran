@@ -57,6 +57,7 @@ use crate::keybindings::RuntimeBindings;
 use crate::logger;
 use crate::storage::SessionStore;
 use yaran_core::project_browser::canonical_or_original;
+use yaran_core::purge::PurgeRun;
 use yaran_core::text::count_of;
 
 // ---------------------------------------------------------------------------
@@ -286,9 +287,15 @@ fn run_session_with_input(
             if let Some(extra) = rest.iter().find(|arg| !arg.starts_with('-')) {
                 bail!("unexpected positional argument: {extra}");
             }
-            let yes = rest.iter().any(|a| a == "--yes");
-            let dry_run = rest.iter().any(|a| a == "--dry-run");
-            run_session_purge_all(paths, yes, dry_run, input)
+            let flags = PurgeFlags {
+                yes: rest.iter().any(|a| a == "--yes"),
+                run: if rest.iter().any(|a| a == "--dry-run") {
+                    PurgeRun::DryRun
+                } else {
+                    PurgeRun::Apply
+                },
+            };
+            run_session_purge_all(paths, flags, input)
         }
         "" | "--help" | "-h" => {
             print_session_help();
@@ -352,14 +359,14 @@ fn run_session_purge(
     use yaran_core::purge::SharedPurgeMode;
 
     let mut yes = false;
-    let mut dry_run = false;
+    let mut run = PurgeRun::Apply;
     let mut hard = false;
     let mut shared_mode = SharedPurgeMode::RetainIdentity;
     let mut target: Option<String> = None;
     for arg in args {
         match arg.as_str() {
             "--yes" => yes = true,
-            "--dry-run" => dry_run = true,
+            "--dry-run" => run = PurgeRun::DryRun,
             "--hard" => hard = true,
             "--accept-residual-data" => {
                 if shared_mode == SharedPurgeMode::WorkspaceWide {
@@ -403,10 +410,10 @@ fn run_session_purge(
         shared_mode,
     )?;
     for plan in &plans {
-        println!("{}", format_purge_plan(plan, dry_run));
+        println!("{}", format_purge_plan(plan, run));
     }
 
-    if !yes && !dry_run {
+    if !yes && !run.is_dry() {
         let confirmed = if shared_mode == SharedPurgeMode::WorkspaceWide {
             let phrase = format!("PURGE WORKSPACE {}", plans[0].branch);
             eprint!(
@@ -430,17 +437,25 @@ fn run_session_purge(
 
     let mut any_errors = false;
     for plan in &plans {
-        let report = yaran_core::purge::execute(plan, &storage, paths, &purge_config, dry_run)?;
+        let report = yaran_core::purge::execute(plan, &storage, paths, &purge_config, run)?;
         eprint!("{}", report.summary());
         any_errors |= report.had_errors();
     }
     Ok(if any_errors { EXIT_PURGE_ERRORS } else { 0 })
 }
 
+/// What `--yes` and `--dry-run` asked of a purge.
+#[derive(Clone, Copy, Debug)]
+struct PurgeFlags {
+    /// Skip the typed confirmation.
+    yes: bool,
+    /// Whether anything is deleted.
+    run: PurgeRun,
+}
+
 fn run_session_purge_all(
     paths: &YaranPaths,
-    yes: bool,
-    dry_run: bool,
+    PurgeFlags { yes, run }: PurgeFlags,
     input: &mut dyn std::io::BufRead,
 ) -> Result<i32> {
     let (storage, purge_config) = open_purge_inputs(paths)?;
@@ -452,10 +467,10 @@ fn run_session_purge_all(
     println!("about to purge {} session(s)", plans.len());
     for (i, plan) in plans.iter().enumerate() {
         println!("--- session {} of {} ---", i + 1, plans.len());
-        println!("{}", format_purge_plan(plan, dry_run));
+        println!("{}", format_purge_plan(plan, run));
     }
 
-    if !yes && !dry_run {
+    if !yes && !run.is_dry() {
         // One phrase for the whole list: typing every branch is impractical.
         eprint!("Type 'PURGE ALL' to confirm: ");
         let _ = std::io::Write::flush(&mut std::io::stderr());
@@ -471,7 +486,7 @@ fn run_session_purge_all(
 
     let mut any_errors = !planning_failures.is_empty();
     for plan in &plans {
-        let report = yaran_core::purge::execute(plan, &storage, paths, &purge_config, dry_run)?;
+        let report = yaran_core::purge::execute(plan, &storage, paths, &purge_config, run)?;
         eprint!("{}", report.summary());
         any_errors |= report.had_errors();
     }
@@ -508,10 +523,10 @@ fn prompt_purge_confirmation(
     yaran_core::purge::confirm_with_reader(plan, input)
 }
 
-fn format_purge_plan(plan: &yaran_core::purge::PurgePlan, dry_run: bool) -> String {
+fn format_purge_plan(plan: &yaran_core::purge::PurgePlan, run: PurgeRun) -> String {
     let session_id = yaran_core::sanitize::for_terminal(&plan.session_id);
     let branch = yaran_core::sanitize::for_terminal(&plan.branch);
-    let mut s = if dry_run {
+    let mut s = if run.is_dry() {
         format!("DRY-RUN purge plan for session {session_id} (branch {branch}):\n")
     } else {
         format!("purge plan for session {session_id} (branch {branch}):\n")

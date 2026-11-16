@@ -2743,7 +2743,6 @@ mod tests {
     use crate::app::{BrowsePurpose, TermGridPos, TerminalSelection};
     use crate::config::YaranPaths;
     use crate::model::{AgentSession, ProjectBranchStatus, SessionStatus};
-    use std::collections::BTreeMap;
     use yaran_core::agent_job::CreateJobRegistries;
     use yaran_core::process_sessions::SpawnGate;
     use yaran_core::term_identity::TerminalIdentity;

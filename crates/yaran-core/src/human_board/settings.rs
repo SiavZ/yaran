@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 
 use super::id::normalize_prefix;
 use super::sync::SyncMode;
-use super::{BoardStore, Card, MAX_FROM_CHARS, clean, same_person};
+use super::{BoardStore, Card, MAX_FROM_CHARS, clean_line, same_person};
 use crate::config::BoardConfig;
 
 /// Shortest sync interval honoured, so a typo cannot hammer a remote.
@@ -58,13 +58,13 @@ impl BoardSettings {
     fn resolve(config: &BoardConfig, root: &Path, home: Option<&Path>) -> Self {
         let mut people: Vec<String> = Vec::new();
         for person in &config.people {
-            if let Some(name) = clean(person, MAX_FROM_CHARS, false)
+            if let Some(name) = clean_line(person, MAX_FROM_CHARS)
                 && !people.iter().any(|known| same_person(known, &name))
             {
                 people.push(name);
             }
         }
-        let me = clean(&config.me, MAX_FROM_CHARS, false).map(|me| {
+        let me = clean_line(&config.me, MAX_FROM_CHARS).map(|me| {
             people
                 .iter()
                 .find(|person| same_person(person, &me))
@@ -111,7 +111,7 @@ impl BoardSettings {
             ));
             "auto".to_string()
         };
-        let relay_to = clean(&config.relay_to, MAX_FROM_CHARS, false);
+        let relay_to = clean_line(&config.relay_to, MAX_FROM_CHARS);
         Self {
             store,
             people,
@@ -178,7 +178,7 @@ impl BoardSettings {
         if NOBODY.iter().any(|word| trimmed.eq_ignore_ascii_case(word)) {
             return Ok(None);
         }
-        let Some(name) = clean(trimmed, MAX_FROM_CHARS, false) else {
+        let Some(name) = clean_line(trimmed, MAX_FROM_CHARS) else {
             bail!("--for needs a person");
         };
         if self.people.is_empty() {

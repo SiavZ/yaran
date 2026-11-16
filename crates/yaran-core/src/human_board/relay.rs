@@ -28,7 +28,8 @@ use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 
 use super::{
-    Board, BoardSettings, BoardStore, Card, CardId, MAX_DETAIL_CHARS, Message, clean, same_person,
+    Board, BoardSettings, BoardStore, Card, CardId, MAX_DETAIL_CHARS, Message, clean_line,
+    clean_text, same_person,
 };
 use crate::bounded_command::{CommandOutcome, DEFAULT_READER_DRAIN, run_command_with_timeout};
 
@@ -197,7 +198,7 @@ pub fn plan(
 
 /// How a card is named to an agent: `card #G-12 [4812] "Approve it"`.
 fn card_name(card: &Card) -> String {
-    let title = clean(&card.title, 120, false).unwrap_or_default();
+    let title = clean_line(&card.title, 120).unwrap_or_default();
     format!("card {} \"{title}\"", card.label())
 }
 
@@ -241,7 +242,7 @@ fn card_text(card: &Card, person: &str, me: &str, messages: &[&Message]) -> Stri
     if let Some(detail) = card
         .detail
         .as_deref()
-        .and_then(|detail| clean(detail, RELAY_DETAIL_CHARS.min(MAX_DETAIL_CHARS), true))
+        .and_then(|detail| clean_text(detail, RELAY_DETAIL_CHARS.min(MAX_DETAIL_CHARS)))
     {
         text.push('\n');
         text.push_str(&detail);
