@@ -202,7 +202,7 @@ impl SessionSettings {
     /// and before the user's `[env]`.
     #[expect(
         clippy::fn_params_excessive_bools,
-        reason = "the bool is the `[amq.inject].verify_envelope` setting exactly as the config holds it"
+        reason = "the bool is the [amq.inject] verify_envelope setting exactly as the config holds it"
     )]
     pub fn to_pty_env(
         &self,

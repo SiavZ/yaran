@@ -80,7 +80,7 @@ fn on() -> PushSettings {
 
 #[expect(
     clippy::fn_params_excessive_bools,
-    reason = "`paired` is handed straight to the fake link's field of the same name"
+    reason = "paired is handed straight to the fake link's field of the same name"
 )]
 fn emitter(paired: bool) -> (PushEmitter, Arc<Mutex<Calls>>, Arc<AtomicUsize>) {
     let calls = Arc::new(Mutex::new(Calls::default()));

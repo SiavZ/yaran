@@ -25,7 +25,7 @@ use super::{CommentSource, ConfigEntry, FieldValue};
 
 #[expect(
     clippy::too_many_lines,
-    reason = "one entry per `[cloud]` key, each with its own help text"
+    reason = "one entry per [cloud] key, each with its own help text"
 )]
 pub(super) fn entries() -> Vec<ConfigEntry> {
     vec![

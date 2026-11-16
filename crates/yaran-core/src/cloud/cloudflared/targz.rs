@@ -53,7 +53,7 @@ impl std::fmt::Display for TarError {
 
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "it is the `map_err` adapter, which hands the error over by value"
+    reason = "it is the map_err adapter, which hands the error over by value"
 )]
 fn io(err: std::io::Error) -> TarError {
     TarError::Io(err.to_string())
