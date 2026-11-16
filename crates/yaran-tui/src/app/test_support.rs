@@ -13,6 +13,7 @@
 //! ├── app::background_server
 //! ├── app::cloud_commands
 //! ├── app::debug_input
+//! ├── app::diff_comments
 //! ├── app::human_board
 //! ├── app::presize
 //! ├── app::ui_jobs
@@ -55,6 +56,7 @@
 //! ├── app::cloud_tests
 //! ├── app::confirm_dialog
 //! ├── app::debug_input
+//! ├── app::diff_comments::tests
 //! ├── app::dock
 //! ├── app::ellipsis_rows
 //! ├── app::first_load
@@ -483,6 +485,7 @@ pub(crate) fn test_app(bindings: RuntimeBindings) -> App {
         last_diff_height: 0,
         last_diff_visual_lines: 0,
         diff_rows: None,
+        diff_comments: crate::app::diff_comments::DiffCommentsUi::default(),
         theme: Theme::default_dark(),
         tick_count: 0,
         start_time: std::time::Instant::now(),

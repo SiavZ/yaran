@@ -41,6 +41,7 @@
 //! ├── engine::events
 //! ├── yaran-core[test upgrade_config]
 //! ├── yaran-tui::app
+//! ├── yaran-tui::app::diff_comments::tests
 //! ├── yaran-tui::cli
 //! ├── yaran-tui::config
 //! ├── yaran-web
@@ -2120,6 +2121,18 @@ fn patch_defaults_env_and_logging(doc: &mut DocumentMut, config: &Config) {
         "auto_resume_on_start",
         config.defaults.auto_resume_on_start,
     );
+    patch_table_str(
+        doc,
+        "defaults",
+        "diff_comment_prompt_template",
+        &config.defaults.diff_comment_prompt_template,
+    );
+    patch_table_str(
+        doc,
+        "defaults",
+        "diff_comment_prompt_separator",
+        &config.defaults.diff_comment_prompt_separator,
+    );
     remove_table_key(doc, "defaults", "prompt_for_name");
 
     // --- [env] ---
@@ -2187,6 +2200,18 @@ fn patch_ui_timing_and_github(doc: &mut DocumentMut, config: &Config) {
         config.ui.show_diff_line_numbers,
     );
     patch_table_u16(doc, "ui", "diff_tab_width", config.ui.diff_tab_width);
+    patch_table_u16(
+        doc,
+        "ui",
+        "diff_comment_editor_max_lines",
+        config.ui.diff_comment_editor_max_lines,
+    );
+    patch_table_value(
+        doc,
+        "ui",
+        "disable_startup_warnings",
+        config.ui.disable_startup_warnings,
+    );
     patch_table_value(
         doc,
         "ui",

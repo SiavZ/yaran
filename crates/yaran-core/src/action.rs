@@ -190,6 +190,11 @@ pub enum Action {
     // Files pane (git staging)
     /// Open the selected file's diff, or expand or collapse the selected folder.
     OpenDiff,
+    // Diff view
+    /// Write or edit the comment on the diff line under the cursor.
+    CommentDiffLine,
+    /// Type every diff comment queued for the selected agent into its prompt.
+    SendDiffComments,
     /// Stage or unstage the selected file, or a whole folder.
     StageUnstage,
     /// Commit staged changes.
@@ -528,6 +533,8 @@ impl Action {
             Action::ScrollToBottom => "scroll_to_bottom",
             Action::ScrollToTop => "scroll_to_top",
             Action::OpenDiff => "open_diff",
+            Action::CommentDiffLine => "comment_diff_line",
+            Action::SendDiffComments => "send_diff_comments",
             Action::StageUnstage => "stage_unstage",
             Action::CommitChanges => "commit_changes",
             Action::DiscardChanges => "discard_changes",
@@ -805,6 +812,12 @@ impl Action {
             Action::ScrollToTop => "Jump to the top of the scrollback buffer.",
             Action::OpenDiff => {
                 "Open the selected file's diff, or expand or collapse the selected folder."
+            }
+            Action::CommentDiffLine => {
+                "In the diff view, write or edit the comment on the line under the cursor."
+            }
+            Action::SendDiffComments => {
+                "Type every diff comment queued for the selected agent into its prompt, for you to review and send."
             }
             Action::StageUnstage => "Stage or unstage the selected file, or a whole folder.",
             Action::CommitChanges => "Commit staged changes.",
@@ -1137,6 +1150,7 @@ impl Action {
             | Action::SearchNext
             | Action::NextRightTab
             | Action::PrevRightTab => Some("Files pane"),
+            Action::CommentDiffLine | Action::SendDiffComments => Some("Diff view"),
             Action::ExitCommitInput => Some("Commit input"),
             Action::FocusNext
             | Action::FocusPrev

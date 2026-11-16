@@ -79,6 +79,7 @@
 //! ├── app
 //! ├── app::cloud_input
 //! ├── app::debug_input
+//! ├── app::diff_comments
 //! ├── app::dock
 //! ├── app::input::host_click_regression_tests
 //! ├── app::input::host_selection_regression_tests
@@ -226,17 +227,19 @@ pub(super) fn configure_project_text_input(prompt: &PromptState) -> Option<&Text
     match prompt {
         PromptState::ConfigureStartupCommand { input, .. }
         | PromptState::ConfigureProjectEnv { input, .. }
-        | PromptState::ConfigureGlobalEnv { input, .. } => Some(input),
+        | PromptState::ConfigureGlobalEnv { input, .. }
+        | PromptState::CommentDiffLine { input, .. } => Some(input),
         _ => None,
     }
 }
 
 /// Which control has focus in whichever `Configure*` modal is open.
-fn configure_focus(prompt: &PromptState) -> Option<ConfigureFieldFocus> {
+pub(super) fn configure_focus(prompt: &PromptState) -> Option<ConfigureFieldFocus> {
     match prompt {
         PromptState::ConfigureStartupCommand { focus, .. }
         | PromptState::ConfigureProjectEnv { focus, .. }
-        | PromptState::ConfigureGlobalEnv { focus, .. } => Some(*focus),
+        | PromptState::ConfigureGlobalEnv { focus, .. }
+        | PromptState::CommentDiffLine { focus, .. } => Some(*focus),
         _ => None,
     }
 }
@@ -248,7 +251,8 @@ fn set_configure_focus(prompt: &mut PromptState, next: ConfigureFieldFocus) {
     match prompt {
         PromptState::ConfigureStartupCommand { focus, .. }
         | PromptState::ConfigureProjectEnv { focus, .. }
-        | PromptState::ConfigureGlobalEnv { focus, .. } => *focus = next,
+        | PromptState::ConfigureGlobalEnv { focus, .. }
+        | PromptState::CommentDiffLine { focus, .. } => *focus = next,
         _ => {}
     }
 }
@@ -257,7 +261,8 @@ pub(super) fn configure_project_text_input_mut(prompt: &mut PromptState) -> Opti
     match prompt {
         PromptState::ConfigureStartupCommand { input, .. }
         | PromptState::ConfigureProjectEnv { input, .. }
-        | PromptState::ConfigureGlobalEnv { input, .. } => Some(input),
+        | PromptState::ConfigureGlobalEnv { input, .. }
+        | PromptState::CommentDiffLine { input, .. } => Some(input),
         _ => None,
     }
 }
@@ -2146,6 +2151,9 @@ impl App {
 
     fn handle_center_key(&mut self, key: KeyEvent) -> Result<()> {
         let in_diff = matches!(self.center_mode, CenterMode::Diff { .. });
+        if in_diff && self.handle_diff_comment_key(&key) {
+            return Ok(());
+        }
         let Some(action) = self.bindings.lookup(&key, BindingScope::Center) else {
             if !in_diff {
                 self.forward_unbound_center_key(&key);
@@ -2413,7 +2421,8 @@ impl App {
             // unengaged field owns no keys at all, and that includes a paste.
             PromptState::ConfigureStartupCommand { input, .. }
             | PromptState::ConfigureProjectEnv { input, .. }
-            | PromptState::ConfigureGlobalEnv { input, .. } => {
+            | PromptState::ConfigureGlobalEnv { input, .. }
+            | PromptState::CommentDiffLine { input, .. } => {
                 if self.input_target == InputTarget::StartupCommand {
                     input.insert_str(text);
                 }
@@ -3177,7 +3186,8 @@ impl App {
         if let Some(input) = match &mut self.prompt {
             PromptState::ConfigureStartupCommand { input, .. }
             | PromptState::ConfigureProjectEnv { input, .. }
-            | PromptState::ConfigureGlobalEnv { input, .. } => Some(input),
+            | PromptState::ConfigureGlobalEnv { input, .. }
+            | PromptState::CommentDiffLine { input, .. } => Some(input),
             _ => None,
         } {
             if matches!(
@@ -7567,6 +7577,10 @@ impl App {
     pub(super) fn apply_configure_modal(&mut self) -> Result<()> {
         match self.prompt {
             PromptState::ConfigureGlobalEnv { .. } => self.apply_configure_global_env(),
+            PromptState::CommentDiffLine { .. } => {
+                self.apply_diff_comment_prompt();
+                Ok(())
+            }
             PromptState::ConfigureProjectEnv { .. } => self.apply_configure_project_env(),
             PromptState::ConfigureStartupCommand { .. } => self.apply_configure_startup_command(),
             _ => Ok(()),
@@ -8902,7 +8916,7 @@ impl App {
         }
     }
 
-    fn register_mouse_click(
+    pub(super) fn register_mouse_click(
         &mut self,
         target: MouseClickTarget,
         item_index: Option<usize>,
@@ -13455,6 +13469,10 @@ impl App {
 
     fn handle_pointer_target(&mut self, target: MouseTarget, mouse: MouseEvent) {
         if self.handle_left_pointer_target(target) {
+            return;
+        }
+        if target == MouseTarget::Center && self.click_diff_line(mouse.column, mouse.row) {
+            self.focus = FocusPane::Center;
             return;
         }
         if target == MouseTarget::Center {

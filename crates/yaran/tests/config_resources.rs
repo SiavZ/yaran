@@ -43,6 +43,7 @@ impl Follower {
             .args(args)
             .env("YARAN_HOME", home)
             .env_remove("YARAN_REMOTE")
+            .env_remove("DUX_REMOTE")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

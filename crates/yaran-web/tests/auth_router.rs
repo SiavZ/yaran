@@ -1397,7 +1397,7 @@ async fn a_weak_password_signs_in_and_the_status_says_so_to_the_signed_in_only()
 /// nothing else, so neither a "reloaded" nor a "refreshing" sentence is said.
 #[tokio::test]
 async fn dismissing_the_warning_writes_the_setting_and_keeps_the_comments() {
-    let yaran = Yaran::start_tuned("", |mut params| {
+    let yaran = Yaran::start_tuned("\n[limits]\ndisk_warn_pct = 0", |mut params| {
         params.auth_reload = None;
         params
     });

@@ -21,6 +21,7 @@
 //! ├── config_sync
 //! ├── config_write
 //! ├── crate
+//! ├── diff_comments
 //! ├── file_drop
 //! ├── file_modes
 //! ├── human_board
@@ -135,6 +136,7 @@
 //! ├── yaran-tui::app
 //! ├── yaran-tui::app::background_server
 //! ├── yaran-tui::app::cloud_tests
+//! ├── yaran-tui::app::diff_comments::tests
 //! ├── yaran-tui::app::human_board
 //! ├── yaran-tui::app::input
 //! ├── yaran-tui::app::picker_lists
@@ -413,6 +415,12 @@ pub struct Defaults {
     /// `ui.auto_reopen_agents` would (478c9e3c). Throttled by `[auto_resume]`.
     /// Off by default: N agents at once means N provider processes.
     pub auto_resume_on_start: bool,
+    /// What each queued diff comment becomes when the comments are typed into
+    /// an agent. Placeholders: `{filename}`, `{line_number}`, `{line_content}`,
+    /// `{message}`. Blank uses [`crate::diff_comments::DEFAULT_PROMPT_TEMPLATE`].
+    pub diff_comment_prompt_template: String,
+    /// The line placed between two queued diff comments in that prompt.
+    pub diff_comment_prompt_separator: String,
 }
 
 /// The `[providers.*]` tables: every configured provider, by name.
@@ -2150,6 +2158,13 @@ pub struct UiConfig {
     pub show_diff_line_numbers: bool,
     /// How many spaces a tab character renders as in a diff; 0 leaves tabs as they are.
     pub diff_tab_width: u16,
+    /// The most rows the diff comment editor's text field shows before it
+    /// scrolls (at least 1).
+    pub diff_comment_editor_max_lines: u16,
+    /// Hide the non-critical warnings the terminal UI raises at startup (a
+    /// theme that would not load, a pane key the host terminal swallows).
+    /// Runtime warnings and errors still appear.
+    pub disable_startup_warnings: bool,
     /// Whether pull requests are tracked for agent branches through the `gh` CLI.
     pub github_integration: bool,
     /// Seconds between blind GitHub PR-status safety polls. Some checks run on
@@ -2668,6 +2683,9 @@ impl Default for Defaults {
             pull_before_creating_agent_by_default: true,
             copy_uncommitted_changes_by_default: true,
             auto_resume_on_start: false,
+            diff_comment_prompt_template: crate::diff_comments::DEFAULT_PROMPT_TEMPLATE.to_string(),
+            diff_comment_prompt_separator: crate::diff_comments::DEFAULT_PROMPT_SEPARATOR
+                .to_string(),
         }
     }
 }
@@ -2883,6 +2901,8 @@ impl Default for UiConfig {
             branch_sync_interval: 0,
             show_diff_line_numbers: false,
             diff_tab_width: 4,
+            diff_comment_editor_max_lines: 10,
+            disable_startup_warnings: false,
             github_integration: true,
             pr_poll_interval_seconds: DEFAULT_PR_POLL_INTERVAL_SECONDS,
             pr_poll_inactive_interval_seconds: DEFAULT_PR_POLL_INACTIVE_INTERVAL_SECONDS,
@@ -4005,6 +4025,8 @@ impl Default for Config {
                 branch_sync_interval: 0,
                 show_diff_line_numbers: false,
                 diff_tab_width: 4,
+                diff_comment_editor_max_lines: 10,
+                disable_startup_warnings: false,
                 github_integration: true,
                 pr_poll_interval_seconds: DEFAULT_PR_POLL_INTERVAL_SECONDS,
                 pr_poll_inactive_interval_seconds: DEFAULT_PR_POLL_INACTIVE_INTERVAL_SECONDS,

@@ -1551,8 +1551,8 @@ impl App {
             if !self.write_into_agent_tab(&pending.target.tab_id, b"\r") {
                 self.status.clear(BOARD_JOB_STATUS_KEY, None);
                 self.set_warning(format!(
-                    "Your reply on card {} is typed into {} but was not submitted: another device \
-                     took over its terminal. Press Enter there to send it; the card stays open.",
+                    "Your reply on card {} is typed into {} but was not submitted: its terminal \
+                     could not accept Enter. Press Enter there to send it; the card stays open.",
                     pending.card_label, pending.target.label
                 ));
                 continue;

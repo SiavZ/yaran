@@ -186,6 +186,30 @@ since there is no text diff to cut.
 The browser's diffs are the editor's, and they have a limit of their own; see
 [Git without leaving the browser](/docs/web-git).
 
+### Reviewing an agent's diff with comments
+
+In the terminal UI you can review an agent's changes the way you would a pull request:
+leave a comment on any line of a file's diff, then hand all of them to the agent at once.
+
+- In a diff, the line keys move a cursor over the added, removed and unchanged lines. The
+  comment key opens an editor for the line under it; saving an empty comment removes it.
+  The diff view's own footer and the help overlay name the keys.
+- A commented line carries a flag, its comment is drawn under it, and the file's row in the
+  changes list counts the comments queued on it.
+- The send key (or `send-diff-comments` in the command palette) types every comment queued
+  for the selected agent into its prompt, built from `defaults.diff_comment_prompt_template`
+  and `defaults.diff_comment_prompt_separator`. Nothing is submitted: read it over in the
+  agent's prompt and press Enter there. The queue is then empty.
+
+Comments are kept per agent across restarts. Each is tied to its line's number and text.
+Rewriting the line, or adding or removing lines above it, makes the comment stale; opening
+the file's diff again drops it with a message saying so. Comments live only in the terminal
+UI; the browser does not show them.
+
+> [!NOTE]
+> Sending is refused, and the comments stay queued, while the agent is not running, while it
+> is still working, or while another device is driving its terminal.
+
 ## Where yaran keeps its files
 
 yaran stores everything in one directory:

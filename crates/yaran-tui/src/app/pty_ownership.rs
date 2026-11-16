@@ -299,16 +299,16 @@ impl App {
 
     /// [`Self::write_into_focused_pty`] for an agent tab named explicitly,
     /// whichever pane has focus: the board's reply is typed into the agent it
-    /// is for, not into whatever happens to be on screen. The same single
-    /// critical section decides and enqueues.
+    /// is for, not into whatever happens to be on screen. One critical section
+    /// decides and enqueues; true means queue acceptance, not acknowledgment
+    /// from the asynchronous writer or the agent.
     pub(crate) fn write_into_agent_tab(&mut self, tab_id: &str, bytes: &[u8]) -> bool {
         let seat = self.pty_ownership();
         let Some(provider) = self.engine.providers.get(TabIdRef::new(tab_id)) else {
             return false;
         };
         let Some(seat) = seat else {
-            let _ = provider.write_bytes(bytes);
-            return true;
+            return provider.enqueue_bytes(bytes);
         };
         let mut queue_full = false;
         let wrote = seat.owners.write_if_owner(tab_id, seat.conn_id, || {
@@ -320,7 +320,7 @@ impl App {
         if !wrote {
             Self::log_refused_pty_write(tab_id, &seat);
         }
-        wrote
+        wrote && !queue_full
     }
 
     /// Why keystrokes from here would not reach `tab_id` right now, as the end

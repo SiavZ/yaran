@@ -36,7 +36,7 @@ impl Selection {
     }
 
     fn variable() -> Option<String> {
-        std::env::var(REMOTE_VARIABLE).ok()
+        yaran_core::brand_env::var(REMOTE_VARIABLE).ok()
     }
 
     /// [`crate::commands::check_config_target`] for `remote`, the name this

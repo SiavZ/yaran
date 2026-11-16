@@ -47,6 +47,8 @@
 //! app/background_server.rs
 //! ├── app
 //! ├── app::attachment_presence
+//! ├── app::diff_comments::delivery_tests
+//! ├── app::diff_comments::tests
 //! ├── app::presize
 //! ├── app::pty_ownership
 //! ├── app::redraw

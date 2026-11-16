@@ -10,6 +10,7 @@ use syntect::parsing::SyntaxSet;
 
 use crate::app::components::wrap_lines::{char_display_width, display_width};
 use crate::theme::Theme as AppTheme;
+use yaran_core::diff_comments::{DiffAnchor, DiffSide};
 use yaran_core::text::count_of;
 
 /// Cached syntax highlighting resources to avoid reloading on every diff.
@@ -33,6 +34,11 @@ pub(crate) struct DiffOutput {
     /// Display-column width of the gutter (line numbers + separator + prefix).
     /// Zero when line numbers are disabled.
     pub gutter_width: usize,
+    /// The line each row of `lines` shows, for diff comments: `None` on a
+    /// header or a message row. The whole field is `None` for a diff yaran did
+    /// not compute itself line by line (binary, too large, git's own patch), so
+    /// no comment can be placed on it and none is judged stale against it.
+    pub anchors: Option<Vec<Option<DiffAnchor>>>,
 }
 
 /// Whether a rendered diff shows line numbers (`[ui] show_diff_line_numbers`).
@@ -393,6 +399,7 @@ fn diff_file(
         return Ok(DiffOutput {
             lines: vec![Line::from("No changes.")],
             gutter_width: 0,
+            anchors: Some(vec![None]),
         });
     }
 
@@ -442,6 +449,9 @@ fn diff_file(
     };
 
     lines.extend(file_header_lines(rel_path, theme));
+    // One entry per row of `lines`; headers and messages stay `None`, and the
+    // tail is padded to the full length once the rows are all in.
+    let mut anchors: Vec<Option<DiffAnchor>> = vec![None; lines.len()];
 
     for hunk in text_diff.unified_diff().context_radius(3).iter_hunks() {
         // Hunk header (@@ ... @@).
@@ -457,6 +467,7 @@ fn diff_file(
             Style::default().fg(theme.diff_hunk),
         ));
         lines.push(Line::from(hunk_spans));
+        anchors.push(None);
 
         // We maintain two separate highlighters so that removed lines are
         // highlighted in the context of the old file and added/context lines
@@ -466,6 +477,7 @@ fn diff_file(
         let mut hl_new = HighlightLines::new(syntax, syn_theme);
 
         for change in hunk.iter_changes() {
+            anchors.push(change_anchor(&change, rel_path));
             lines.push(render_change_line(
                 &change,
                 &change_context,
@@ -488,9 +500,30 @@ fn diff_file(
         0
     };
 
+    anchors.resize(lines.len(), None);
     Ok(DiffOutput {
         lines,
         gutter_width,
+        anchors: Some(anchors),
+    })
+}
+
+/// The line one change row is about: a removed line counts in the old
+/// version, every other line in the new one.
+fn change_anchor(change: &Change<&str>, rel_path: &str) -> Option<DiffAnchor> {
+    let (side, index) = match change.tag() {
+        ChangeTag::Delete => (DiffSide::Old, change.old_index()?),
+        ChangeTag::Insert | ChangeTag::Equal => (DiffSide::New, change.new_index()?),
+    };
+    Some(DiffAnchor {
+        rel_path: rel_path.to_string(),
+        side,
+        line_number: index + 1,
+        line_content: change
+            .value()
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string(),
     })
 }
 
@@ -542,6 +575,7 @@ fn head_diff_output(
     DiffOutput {
         lines,
         gutter_width: 0,
+        anchors: None,
     }
 }
 
@@ -614,6 +648,7 @@ fn too_large_diff_output(
             ),
         ],
         gutter_width: 0,
+        anchors: None,
     }
 }
 
@@ -643,6 +678,7 @@ fn binary_diff_output(
             Line::from("No text diff available for binary or non-UTF-8 content."),
         ],
         gutter_width: 0,
+        anchors: None,
     }
 }
 
@@ -823,22 +859,35 @@ fn find_soft_break(spans: &[Span<'static>], max_col: usize) -> Option<usize> {
 /// width with no indent. The diff pane draws only the rows in the viewport, so
 /// it needs the wrapped extent for every setting, and having one wrapper answer
 /// for both is what keeps the scroll extent and the drawn rows agreeing.
+#[cfg(test)]
 pub(crate) fn wrap_diff_lines(
     lines: &[Line<'static>],
     total_width: usize,
     gutter_width: usize,
 ) -> Vec<Line<'static>> {
+    wrap_diff_lines_with_sources(lines, total_width, gutter_width).0
+}
+
+/// [`wrap_diff_lines`], also answering which line of `lines` each wrapped row
+/// came from, so the pane can find a line's rows (the diff-comment cursor).
+pub(crate) fn wrap_diff_lines_with_sources(
+    lines: &[Line<'static>],
+    total_width: usize,
+    gutter_width: usize,
+) -> (Vec<Line<'static>>, Vec<usize>) {
     if total_width == 0 || total_width <= gutter_width {
-        return lines.to_vec();
+        return (lines.to_vec(), (0..lines.len()).collect());
     }
 
     let content_width = total_width - gutter_width;
     let mut out: Vec<Line<'static>> = Vec::with_capacity(lines.len());
+    let mut sources: Vec<usize> = Vec::with_capacity(lines.len());
 
-    for line in lines {
+    for (source, line) in lines.iter().enumerate() {
         let line_width = line.width();
         if line_width <= total_width {
             out.push(line.clone());
+            sources.push(source);
             continue;
         }
 
@@ -881,13 +930,14 @@ pub(crate) fn wrap_diff_lines(
             };
             row_spans.extend(chunk);
             out.push(Line::from(row_spans));
+            sources.push(source);
 
             remaining = rest;
             first = false;
         }
     }
 
-    out
+    (out, sources)
 }
 
 #[cfg(test)]
@@ -1046,6 +1096,40 @@ mod tests {
 
         assert_eq!(output.lines, vec![Line::from("No changes.")]);
         assert_eq!(output.gutter_width, 0);
+    }
+
+    #[test]
+    fn every_change_row_carries_the_line_it_is_about() {
+        let dir = setup_text_repo("notes.txt", "one\ntwo\nthree\n", "one\nTWO\nthree\nfour\n");
+        let output = working_side(dir.path(), "notes.txt").unwrap();
+        let anchors = output.anchors.expect("an in-process diff takes comments");
+        assert_eq!(anchors.len(), output.lines.len());
+        let at = |side, line_number, text: &str| DiffAnchor {
+            rel_path: "notes.txt".to_string(),
+            side,
+            line_number,
+            line_content: text.to_string(),
+        };
+        let found: Vec<DiffAnchor> = anchors.into_iter().flatten().collect();
+        assert!(
+            found.contains(&at(DiffSide::New, 1, "one")),
+            "context: {found:?}"
+        );
+        assert!(
+            found.contains(&at(DiffSide::Old, 2, "two")),
+            "removed: {found:?}"
+        );
+        assert!(
+            found.contains(&at(DiffSide::New, 2, "TWO")),
+            "added: {found:?}"
+        );
+        assert!(
+            found.contains(&at(DiffSide::New, 4, "four")),
+            "added: {found:?}"
+        );
+        let (rows, sources) = wrap_diff_lines_with_sources(&output.lines, 6, 0);
+        assert_eq!(rows.len(), sources.len());
+        assert!(sources.windows(2).all(|w| w[0] <= w[1]), "{sources:?}");
     }
 
     fn working_side(dir: &Path, rel_path: &str) -> Result<DiffOutput> {

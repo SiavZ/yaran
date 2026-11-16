@@ -142,6 +142,8 @@ async function readAuthStatus(signal: AbortSignal): Promise<StatusAnswer> {
     if (isBlocked(resp.status, body)) return { kind: "blocked" }
     const detail = brokenDetail(resp.status, body)
     if (detail !== undefined) return { kind: "broken", detail }
+    // Cloud Connect refusals identify yaran and belong to native Access renewal.
+    if (resp.headers.get("Yaran-Refusal") !== null) return { kind: "unknown" }
     // A JSON refusal with a code is yaran's own, whatever its status.
     if (!foreignRefusal(resp.status) || str(body.json.error) !== null) return { kind: "unknown" }
     // Only an answer read whole is evidence; one cut mid-read stays unknown.

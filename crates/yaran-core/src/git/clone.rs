@@ -334,19 +334,15 @@ impl StderrTail {
 }
 
 #[cfg(test)]
+mod stand_in;
+
+#[cfg(test)]
 mod tests {
+    use super::stand_in::fake_ssh;
     use super::*;
     use crate::git::test_support::{bare_remote_with_commit, git_command};
     use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
-
-    /// A stand-in for `ssh` at `dir/ssh`, running `body`.
-    fn fake_ssh(dir: &Path, body: &str) -> String {
-        let path = dir.join("ssh");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path.to_string_lossy().into_owned()
-    }
 
     fn read_git(dir: &Path, args: &[&str]) -> String {
         let out = git_command()

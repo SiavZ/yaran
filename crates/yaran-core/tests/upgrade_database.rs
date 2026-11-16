@@ -601,6 +601,38 @@ fn tables_added_since_are_created_empty_and_immediately_usable() {
     );
 }
 
+#[test]
+fn the_diff_comments_table_arrives_empty_usable_and_survives_a_reopen() {
+    use yaran_core::diff_comments::{DiffAnchor, DiffComment, DiffSide};
+    let (_tmp, path) = old_database();
+    let queued = DiffComment {
+        session_id: "sess-1".to_string(),
+        anchor: DiffAnchor {
+            rel_path: "src/lib.rs".to_string(),
+            side: DiffSide::Old,
+            line_number: 7,
+            line_content: "fn old() {}".to_string(),
+        },
+        text: "Keep this one".to_string(),
+    };
+    {
+        let store = SessionStore::open(&path).expect("open");
+        assert_eq!(store.load_diff_comments().expect("load"), Vec::new());
+        store.upsert_diff_comment(&queued).expect("queue");
+    }
+    let before = SessionStore::open(&path)
+        .expect("reopen")
+        .load_sessions()
+        .expect("sessions");
+    let store = SessionStore::open(&path).expect("open a third time");
+    assert_eq!(store.load_diff_comments().expect("load"), vec![queued]);
+    let after = store.load_sessions().expect("sessions");
+    assert_eq!(after.len(), before.len());
+    for (b, a) in before.iter().zip(&after) {
+        assert_reopened_unchanged(b, a);
+    }
+}
+
 /// `after` is `before` as a reopen read it back, field by field.
 fn assert_reopened_unchanged(before: &AgentSession, after: &AgentSession) {
     // Field-by-field: `AgentSession` has no `PartialEq`, and naming the

@@ -774,8 +774,8 @@ mod tests {
 
         let _lock = SingleInstanceLock::acquire(&path).expect("should take over stale lockfile");
         let contents = fs::read_to_string(&path).unwrap();
-        let written: u32 = contents.trim().parse().expect("pid should parse");
-        assert_eq!(written, std::process::id());
+        let written = LockFileContents::parse(&contents).pid;
+        assert_eq!(written, Some(std::process::id()));
     }
 
     #[test]

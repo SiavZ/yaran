@@ -49,6 +49,8 @@
 //! ├── app::background_server
 //! ├── app::changes_tree
 //! ├── app::debug_input
+//! ├── app::diff_comments::delivery_tests
+//! ├── app::diff_comments::tests
 //! ├── app::dock
 //! ├── app::ellipsis_rows
 //! ├── app::first_load

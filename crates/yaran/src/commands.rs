@@ -125,6 +125,10 @@ pub(crate) struct Cli {
     #[arg(long, global = true, conflicts_with = "remote")]
     pub local: bool,
 
+    /// Internal reload handoff, consumed by the TUI from the original arguments.
+    #[arg(long, hide = true, exclusive = true, value_name = "FILE")]
+    pub reload_handoff: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

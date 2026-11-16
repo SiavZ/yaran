@@ -864,6 +864,8 @@ enum ConfigureKind {
     ProjectEnv,
     /// The environment every project gets.
     GlobalEnv,
+    /// A comment on one diff line.
+    DiffComment,
 }
 
 /// Resolve a tab pill's glyph slot from that tab's snapshot.
@@ -4478,8 +4480,8 @@ impl App {
         let wrap = Arc::clone(lines);
         let mine = Arc::clone(lines);
         self.spawn_quiet_ui_job(
-            move || crate::diff::wrap_diff_lines(&wrap, width, gutter_width),
-            move |app: &mut App, rows: Option<Vec<Line<'static>>>| {
+            move || crate::diff::wrap_diff_lines_with_sources(&wrap, width, gutter_width),
+            move |app: &mut App, rows: Option<(Vec<Line<'static>>, Vec<usize>)>| {
                 // An answer for a wrap since replaced (another width, another
                 // diff) is dropped; the newer one answers for itself.
                 let still_asked = app.diff_wrap_ask.as_ref().is_some_and(|ask| {
@@ -4491,12 +4493,13 @@ impl App {
                     return;
                 }
                 app.diff_wrap_ask = None;
-                if let Some(rows) = rows {
+                if let Some((rows, sources)) = rows {
                     app.diff_rows = Some(DiffRowCache {
                         lines: mine,
                         width,
                         gutter_width,
                         rows,
+                        sources,
                     });
                 }
             },
@@ -4531,7 +4534,9 @@ impl App {
 
         self.last_diff_height = content_area.height;
 
-        let w = usize::from(content_area.width.max(1));
+        // A diff that takes comments gives up two columns to their markers.
+        let (marker_area, text_area) = self.split_diff_marker_column(content_area);
+        let w = usize::from(text_area.width.max(1));
 
         // Wrap once per diff, width and gutter setting rather than once per
         // frame: the wrap walks every line of the file, and a frame draws forty
@@ -4547,12 +4552,14 @@ impl App {
         };
         if stale {
             if lines.len() <= DIFF_WRAP_INLINE_LINES {
-                let rows = crate::diff::wrap_diff_lines(&lines, w, gutter_width);
+                let (rows, sources) =
+                    crate::diff::wrap_diff_lines_with_sources(&lines, w, gutter_width);
                 self.diff_rows = Some(DiffRowCache {
                     lines: Arc::clone(&lines),
                     width: w,
                     gutter_width,
                     rows,
+                    sources,
                 });
             } else {
                 // A large diff is wrapped on a worker, so a resize does not
@@ -4569,8 +4576,13 @@ impl App {
                 self.ask_for_diff_wrap(&lines, w, gutter_width);
             }
         }
-        let total_rows = self.diff_rows.as_ref().map_or(0, |cache| cache.rows.len());
+        // Queued comments draw as boxes under their lines, so they count
+        // toward the extent the scroll keys move through.
+        let boxes = self.diff_comment_boxes_for_frame(w);
+        let total_rows = self.diff_rows.as_ref().map_or(0, |cache| cache.rows.len())
+            + boxes.iter().map(|b| b.rows.len()).sum::<usize>();
         self.last_diff_visual_lines = total_rows;
+        let scroll = self.follow_diff_cursor(&boxes, scroll, content_area.height);
 
         // The offset actually DRAWN, which is the outer `scroll` clamped to the
         // wrapped extent. The scroll marker and the hint bar are rendered from
@@ -4578,15 +4590,7 @@ impl App {
         let max_scroll = total_rows.saturating_sub(usize::from(content_area.height));
         let drawn_scroll = scroll.min(max_scroll);
 
-        let start = drawn_scroll;
-        let end = start
-            .saturating_add(usize::from(content_area.height))
-            .min(total_rows);
-        let visible: Vec<Line<'static>> = self
-            .diff_rows
-            .as_ref()
-            .map_or_default(|cache| cache.rows[start.min(end)..end].to_vec());
-        Paragraph::new(visible).render(content_area, frame.buffer_mut());
+        self.draw_diff_window(frame, (marker_area, text_area), &boxes, drawn_scroll);
 
         // Scroll marker in the pane's right border column, on the content
         // pane's last row. Units are wrapped VISUAL lines (what the diff already
@@ -4645,6 +4649,10 @@ impl App {
                 ],
                 width,
             )
+        } else if let Some(hints) =
+            self.diff_comment_hints(close.clone(), [scroll_up.clone(), scroll_down.clone()])
+        {
+            pane_hint_line(&self.theme, &hints, width)
         } else {
             pane_hint_line(
                 &self.theme,
@@ -6221,6 +6229,15 @@ impl App {
         if !self.filtered_macros("").is_empty() {
             hints.push(Hint::key(macro_key, "macros"));
         }
+        let queued = self.selected_diff_comments().len();
+        if queued > 0 {
+            // A reminder only: sending is the diff view's key or the palette's
+            // command, never a chord here, where every key types into the agent.
+            hints.push(Hint::plain(format!(
+                "{} queued",
+                yaran_core::diff_comments::count_label(queued)
+            )));
+        }
         pane_hint_line(&self.theme, &hints, width)
     }
 
@@ -7328,6 +7345,8 @@ impl App {
             )],
             None => format_line_stats(file, &self.theme),
         };
+        // A file with comments queued on it says how many, ahead of its counts.
+        let stats = self.with_diff_comment_flag(file, stats);
         let stats_width = stats
             .iter()
             .map(ratatui::prelude::Span::width)
@@ -13372,68 +13391,57 @@ impl App {
     }
 
     fn render_configure_prompt(&mut self, frame: &mut Frame<'_>) {
-        let (PromptState::ConfigureStartupCommand {
-            project_name,
-            focus,
-            ..
-        }
-        | PromptState::ConfigureProjectEnv {
-            project_name,
-            focus,
-            ..
-        }
-        | PromptState::ConfigureGlobalEnv {
-            project_name,
-            focus,
-            ..
-        }) = &self.prompt
-        else {
+        let Some(focus) = super::input::configure_focus(&self.prompt) else {
             return;
         };
-        let focus = *focus;
-        let is_env = matches!(
-            &self.prompt,
-            PromptState::ConfigureProjectEnv { .. } | PromptState::ConfigureGlobalEnv { .. }
-        );
-        let is_global_env = matches!(&self.prompt, PromptState::ConfigureGlobalEnv { .. });
+        let project_name = match &self.prompt {
+            PromptState::ConfigureStartupCommand { project_name, .. }
+            | PromptState::ConfigureProjectEnv { project_name, .. }
+            | PromptState::ConfigureGlobalEnv { project_name, .. } => project_name.clone(),
+            _ => String::new(),
+        };
+        let comment_anchor = match &self.prompt {
+            PromptState::CommentDiffLine { anchor, .. } => Some(anchor.clone()),
+            _ => None,
+        };
+        let kind = match &self.prompt {
+            PromptState::CommentDiffLine { .. } => ConfigureKind::DiffComment,
+            PromptState::ConfigureGlobalEnv { .. } => ConfigureKind::GlobalEnv,
+            PromptState::ConfigureProjectEnv { .. } => ConfigureKind::ProjectEnv,
+            _ => ConfigureKind::StartupCommand,
+        };
         let saving = self.configure_save_op.is_some();
         self.render_dim_overlay(frame);
         // Reserve a blank row plus three button rows for misclick safety and the
-        // full-text field's controls. Width must fit the complete key footer.
-        let area = centered_rect_exact(
-            84,
-            if is_env { 22 } else { 20 },
-            self.dim_overlay_area(frame.area()),
-        );
+        // full-text field's controls. Width must fit the complete key footer. The
+        // comment editor's field is as tall as `[ui] diff_comment_editor_max_lines`.
+        let max_lines = self.engine.config.ui.diff_comment_editor_max_lines;
+        let (title, height) = match kind {
+            ConfigureKind::DiffComment => ("Comment on Diff Line", 11 + max_lines.clamp(1, 40)),
+            ConfigureKind::GlobalEnv => ("Configure Global Environment", 22),
+            ConfigureKind::ProjectEnv => ("Configure Project Environment", 22),
+            ConfigureKind::StartupCommand => ("Configure Startup Command", 20),
+        };
+        let area = centered_rect_exact(84, height, self.dim_overlay_area(frame.area()));
         self.clear_overlay_area(frame, area);
-        let outer = self.themed_overlay_block(if is_global_env {
-            "Configure Global Environment"
-        } else if is_env {
-            "Configure Project Environment"
-        } else {
-            "Configure Startup Command"
-        });
+        let outer = self.themed_overlay_block(title);
         let inner = outer.inner(area);
         outer.render(area, frame.buffer_mut());
         let [label_area, input_area, _, buttons_area, hint_area] = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(2),
+                Constraint::Length(if comment_anchor.is_some() { 3 } else { 2 }),
                 Constraint::Min(3),
                 Constraint::Length(1),
                 Constraint::Length(3),
                 Constraint::Length(1),
             ])
             .areas(inner);
-        let kind = if is_global_env {
-            ConfigureKind::GlobalEnv
-        } else if is_env {
-            ConfigureKind::ProjectEnv
-        } else {
-            ConfigureKind::StartupCommand
+        let labels = match &comment_anchor {
+            Some(anchor) => self.diff_comment_labels(anchor),
+            None => self.configure_labels(&project_name, kind),
         };
-        Paragraph::new(self.configure_labels(project_name, kind))
-            .render(label_area, frame.buffer_mut());
+        Paragraph::new(labels).render(label_area, frame.buffer_mut());
 
         // Focus routes the next modal action; engagement lets the field consume
         // keys. Focused but unengaged renders a border without a caret.
@@ -15283,7 +15291,8 @@ impl App {
         match &self.prompt {
             PromptState::ConfigureStartupCommand { .. }
             | PromptState::ConfigureProjectEnv { .. }
-            | PromptState::ConfigureGlobalEnv { .. } => self.render_configure_prompt(frame),
+            | PromptState::ConfigureGlobalEnv { .. }
+            | PromptState::CommentDiffLine { .. } => self.render_configure_prompt(frame),
             PromptState::SessionSettings(_) => self.render_session_settings(frame),
             PromptState::RenameSession { .. } => self.render_rename_session_prompt(frame),
             PromptState::EditMacros { .. } => self.render_edit_macros(frame),

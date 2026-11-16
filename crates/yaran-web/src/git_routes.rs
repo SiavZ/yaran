@@ -2816,7 +2816,10 @@ mod tests {
             ("stage", r#"{"path":"vendor"}"#),
             ("stage-files", r#"{"paths":["vendor"]}"#),
         ] {
+            // The last stage's refresh reads with the index lock on the lane; wait for it there.
+            let turn = yaran_core::changes_lane::ticket(&worktree).wait();
             run_git(&worktree, &["reset", "-q"]);
+            drop(turn);
             let resp = app
                 .clone()
                 .oneshot(json_req(
@@ -2831,12 +2834,8 @@ mod tests {
             assert_eq!(parsed["left_out_repositories"], 1, "{route}: {parsed}");
             assert_eq!(parsed["left_out_worktrees"], 1, "{route}: {parsed}");
             let index = std::process::Command::new("git")
-                .args([
-                    "-C",
-                    worktree.to_string_lossy().as_ref(),
-                    "ls-files",
-                    "--stage",
-                ])
+                .args(["ls-files", "--stage"])
+                .current_dir(&worktree)
                 .output()
                 .unwrap();
             let index = String::from_utf8_lossy(&index.stdout);

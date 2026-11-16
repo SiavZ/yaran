@@ -458,6 +458,7 @@ mod tests {
                 "open-worktree-with",
                 "show-terminal",
                 "pull-requests",
+                "send-diff-comments",
                 "kill-running",
                 "resource-monitor",
                 "refresh-changes",

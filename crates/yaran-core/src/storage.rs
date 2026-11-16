@@ -16,6 +16,8 @@ use crate::model::{
 use crate::peer::next_unique_agent_handle;
 use crate::text::count_of;
 
+mod diff_comments;
+
 /// A stored PR association loaded from the database.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredPr {
@@ -523,6 +525,9 @@ impl SessionStore {
         self.renumber_tab_positions()?;
         // The handle backfill runs last: every row it names exists by now.
         self.backfill_agent_handles()?;
+        // Diff-comments workstream: its own table, appended after every other
+        // block (docs/contributing/schema-policy.md).
+        self.migrate_diff_comments()?;
         Ok(())
     }
 
@@ -3291,6 +3296,7 @@ impl SessionStore {
             "session_pull_requests",
             "session_pr_prefs",
             "session_branch_former_names",
+            "session_diff_comments",
         ] {
             tx.execute(
                 &format!(
@@ -3750,6 +3756,12 @@ impl SessionStore {
     /// Fails when the transaction is refused.
     pub fn soft_delete_session(&self, id: &str) -> Result<()> {
         let tx = immediate_tx(&self.conn)?;
+        // Queued diff comments are drafts for a live agent; nobody can send
+        // them once it is gone from both surfaces.
+        tx.execute(
+            "delete from session_diff_comments where session_id = ?1",
+            params![id],
+        )?;
         tx.execute(
             "delete from session_pr_overrides where session_id = ?1",
             params![id],
@@ -4313,6 +4325,7 @@ impl SessionStore {
             "session_pull_requests",
             "session_pr_prefs",
             "session_branch_former_names",
+            "session_diff_comments",
         ] {
             tx.execute(
                 &format!("delete from {table} where session_id = ?1"),

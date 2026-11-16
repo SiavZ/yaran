@@ -25,6 +25,7 @@
 //! config.rs
 //! ├── app
 //! ├── app::confirm_dialog
+//! ├── app::diff_comments::tests
 //! ├── app::ellipsis_rows
 //! ├── app::grouped_sidebar_tests
 //! ├── app::hint_lines
@@ -691,6 +692,27 @@ fn config_schema() -> Vec<ConfigEntry> {
             )),
             value_fn: |c| FieldValue::Bool(c.defaults.auto_resume_on_start),
         },
+        ConfigEntry::Field {
+            key: "diff_comment_prompt_template",
+            comment: Some(CommentSource::Static(
+                "# What each queued diff comment becomes when you send the comments to an\n\
+                 # agent (the diff view's send key, or send-diff-comments in the palette).\n\
+                 # They are typed into the agent's prompt for you to review; nothing is\n\
+                 # submitted until you press Enter there.\n\
+                 # Placeholders: {filename}, {line_number}, {line_content}, {message}.\n\
+                 # Empty uses the built-in template; one without {message} still gets the\n\
+                 # comment appended, so what you wrote is never dropped.",
+            )),
+            value_fn: |c| FieldValue::Str(c.defaults.diff_comment_prompt_template.clone()),
+        },
+        ConfigEntry::Field {
+            key: "diff_comment_prompt_separator",
+            comment: Some(CommentSource::Static(
+                "# The line placed between two queued diff comments when they are sent.\n\
+                 # Empty puts them one after the other with only a line break between.",
+            )),
+            value_fn: |c| FieldValue::Str(c.defaults.diff_comment_prompt_separator.clone()),
+        },
         ConfigEntry::Blank,
         ConfigEntry::Env,
         ConfigEntry::Blank,
@@ -890,6 +912,13 @@ fn config_schema() -> Vec<ConfigEntry> {
                 "# Number of spaces used to render tab characters in diffs.\n# Set to 0 to leave tabs as-is (they may render as zero-width).",
             )),
             value_fn: |c| FieldValue::U16(c.ui.diff_tab_width),
+        },
+        ConfigEntry::Field {
+            key: "diff_comment_editor_max_lines",
+            comment: Some(CommentSource::Static(
+                "# Rows of text the diff comment editor shows before it scrolls.\n# Values below 1 count as 1.",
+            )),
+            value_fn: |c| FieldValue::U16(c.ui.diff_comment_editor_max_lines),
         },
         ConfigEntry::Field {
             key: "github_integration",
@@ -1124,6 +1153,13 @@ fn config_schema() -> Vec<ConfigEntry> {
                 "# Stop yaran from showing (and fetching) the what's-new screen by itself.\n# When the running version differs from the last one you saw, yaran fetches\n# the newest release notes from GitHub in the background and shows a short\n# summary once. Only the newest release is ever shown, however many you\n# skipped. If the fetch fails, nothing is shown and nothing is recorded, so\n# the notes get another chance on your next launch.\n# Set to true and yaran makes no network request at startup and shows no\n# what's-new screen on its own. Opening the release notes yourself still works\n# and still fetches them: this setting controls the automatic screen, not what\n# the screen is allowed to show you.",
             )),
             value_fn: |c| FieldValue::Bool(c.ui.disable_release_notes),
+        },
+        ConfigEntry::Field {
+            key: "disable_startup_warnings",
+            comment: Some(CommentSource::Static(
+                "# Hide the non-critical warnings the terminal UI shows at startup: a theme\n# that would not load, or a pane key your terminal swallows. Warnings and\n# errors raised while yaran runs still appear.",
+            )),
+            value_fn: |c| FieldValue::Bool(c.ui.disable_startup_warnings),
         },
         ConfigEntry::Field {
             key: "pr_banner_position",

@@ -20,6 +20,8 @@
 //! ├── app::components::focus_ring
 //! ├── app::confirm_dialog
 //! ├── app::debug_input
+//! ├── app::diff_comment_view
+//! ├── app::diff_comments
 //! ├── app::dock
 //! ├── app::ellipsis_rows
 //! ├── app::first_load
@@ -86,6 +88,7 @@
 //! ├── yaran-core::config_write
 //! ├── yaran-core::control_socket
 //! ├── yaran-core::delete_agent_prose
+//! ├── yaran-core::diff_comments
 //! ├── yaran-core::engine
 //! ├── yaran-core::engine::amq
 //! ├── yaran-core::engine::limits
@@ -144,6 +147,9 @@
 //! ├── app::cloud_tests
 //! ├── app::confirm_dialog
 //! ├── app::debug_input
+//! ├── app::diff_comment_view
+//! ├── app::diff_comments
+//! ├── app::diff_comments::tests
 //! ├── app::dock
 //! ├── app::ellipsis_rows
 //! ├── app::first_load
@@ -956,6 +962,8 @@ pub(crate) struct App {
     /// The diff's wrapped rows, kept so a frame draws its viewport instead of
     /// re-wrapping the whole file. See [`DiffRowCache`].
     pub(crate) diff_rows: Option<DiffRowCache>,
+    /// Queued diff comments and the diff view's line cursor.
+    pub(crate) diff_comments: diff_comments::DiffCommentsUi,
     pub(crate) theme: Theme,
     pub(crate) tick_count: u64,
     /// Wall-clock reference for time-based animations (spinners). Using
@@ -2065,6 +2073,8 @@ pub(crate) struct DiffRowCache {
     pub(crate) width: usize,
     pub(crate) gutter_width: usize,
     pub(crate) rows: Vec<Line<'static>>,
+    /// Which line of `lines` each of `rows` came from.
+    pub(crate) sources: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3810,6 +3820,14 @@ pub(crate) enum PromptState {
     },
     ConfigureGlobalEnv {
         project_name: String,
+        input: TextInput,
+        focus: ConfigureFieldFocus,
+    },
+    /// The diff comment editor: one full-text field plus Cancel/Save, run by
+    /// the same focus model as the `Configure*` modals.
+    CommentDiffLine {
+        session_id: String,
+        anchor: yaran_core::diff_comments::DiffAnchor,
         input: TextInput,
         focus: ConfigureFieldFocus,
     },
@@ -5899,6 +5917,8 @@ mod changes_tree;
 pub(crate) mod components;
 mod confirm_dialog;
 mod debug_input;
+mod diff_comment_view;
+mod diff_comments;
 mod dock;
 mod first_load;
 mod hangup;
@@ -6080,8 +6100,9 @@ impl App {
             Duration::from_secs(u64::from(config.ui.status_clear_seconds)),
             live_status_keys.clone(),
             initial_status,
-            key_bindings_warning(&bindings, &config),
-            theme_warning,
+            key_bindings_warning(&bindings, &config)
+                .filter(|_| !config.ui.disable_startup_warnings),
+            theme_warning.filter(|_| !config.ui.disable_startup_warnings),
             socket_warning,
         );
         let gh_integration_val = config.ui.github_integration;
@@ -6253,6 +6274,14 @@ impl App {
         let terminal_dock_pct = engine.config.ui.terminal_dock_pct;
         let staged_pane_height_pct = engine.config.ui.staged_pane_height_pct;
         let commit_pane_height_pct = engine.config.ui.commit_pane_height_pct;
+        let queued_diff_comments =
+            engine
+                .session_store
+                .load_diff_comments()
+                .unwrap_or_else(|err| {
+                    logger::error(&format!("failed to load the queued diff comments: {err:#}"));
+                    Vec::new()
+                });
         let mut app = Self {
             left_width_pct,
             right_width_pct,
@@ -6335,6 +6364,10 @@ impl App {
             last_diff_height: 0,
             last_diff_visual_lines: 0,
             diff_rows: None,
+            diff_comments: diff_comments::DiffCommentsUi {
+                queued: queued_diff_comments,
+                ..Default::default()
+            },
             theme: *theme,
             tick_count: 0,
             start_time: Instant::now(),
@@ -6498,8 +6531,9 @@ impl App {
             Duration::from_secs(u64::from(engine.config.ui.status_clear_seconds)),
             engine.live_status_keys.clone(),
             "Web server stopped. Your agents kept running, so you can reconnect to any session to pick up where it left off.",
-            key_bindings_warning(&bindings, &engine.config),
-            theme_warning,
+            key_bindings_warning(&bindings, &engine.config)
+                .filter(|_| !engine.config.ui.disable_startup_warnings),
+            theme_warning.filter(|_| !engine.config.ui.disable_startup_warnings),
             None,
         );
         Ok(Self::assemble(
@@ -8232,6 +8266,10 @@ impl App {
             }
             "toggle-diff-line-numbers" => {
                 self.toggle_diff_line_numbers();
+                Ok(())
+            }
+            "send-diff-comments" => {
+                self.send_diff_comments();
                 Ok(())
             }
             "recheck-github" => {

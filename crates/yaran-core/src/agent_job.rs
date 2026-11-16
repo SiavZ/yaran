@@ -4236,7 +4236,7 @@ mod tests {
         progress: Vec<String>,
         /// Keeps the temporary worktrees root alive so tests can inspect the
         /// created worktree's contents.
-        _paths_root: tempfile::TempDir,
+        paths_root: tempfile::TempDir,
     }
 
     /// Drive `run_create_agent_job` for an arbitrary request against `repo`
@@ -4298,7 +4298,7 @@ mod tests {
             failure_name: None,
             failure_ask: None,
             progress: Vec::new(),
-            _paths_root: paths_root,
+            paths_root,
         };
         while let Ok(event) = rx.try_recv() {
             match event {
@@ -6918,12 +6918,9 @@ mod tests {
 
     #[test]
     fn a_failed_attach_create_leaves_the_pre_existing_branch_alone() {
-        // Regression: the create rollback removed the worktree AND deleted the
-        // branch whenever yaran had made the directory. For an attach, yaran made
-        // the directory but NOT the branch, so a create that failed on a
-        // missing provider destroyed the user's branch on the way out.
         let repo = init_test_repo();
         create_branch(repo.path(), "develop");
+        let worktrees_before = worktree_paths(repo.path());
         let mut project = test_project(repo.path());
         project.default_provider = ProviderKind::new("definitely-not-a-real-command-yaran");
         let request = CreateAgentRequest::NewProject {
@@ -6946,6 +6943,9 @@ mod tests {
             branches.contains("develop"),
             "the rollback must not delete a branch that existed before the agent: {branches}"
         );
+        let root = run.paths_root.path().join("worktrees");
+        assert!(!crate::git::managed_worktree_path(&root, "repo", "develop").exists());
+        assert_eq!(worktree_paths(repo.path()), worktrees_before);
     }
 
     #[test]

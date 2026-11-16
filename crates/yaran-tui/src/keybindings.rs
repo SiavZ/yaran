@@ -23,6 +23,8 @@
 //! ├── app::changes_tree
 //! ├── app::confirm_dialog
 //! ├── app::debug_input
+//! ├── app::diff_comment_view
+//! ├── app::diff_comments
 //! ├── app::dock
 //! ├── app::first_load
 //! ├── app::hint_lines
@@ -81,6 +83,11 @@ pub(crate) enum BindingScope {
     /// bindings are consulted, so a scroll binding on one of them never fires
     /// there and is never advertised there.
     ServerScreen,
+    /// The center pane while it shows a diff. Its handler asks this scope
+    /// first and then `Center`, so a binding here deliberately takes its key
+    /// over the agent pane's for as long as a diff is on screen, and never
+    /// otherwise (a live agent there would be typed into instead).
+    Diff,
 }
 
 impl BindingScope {
@@ -103,6 +110,7 @@ impl BindingScope {
         Self::CommitInput,
         Self::Help,
         Self::ServerScreen,
+        Self::Diff,
     ];
 
     /// Human-readable scope name for error messages and diagnostics.
@@ -125,6 +133,7 @@ impl BindingScope {
             Self::CommitInput => "Commit input",
             Self::Help => "Help overlay",
             Self::ServerScreen => SERVER_SCREEN_HELP_SECTION,
+            Self::Diff => "Diff view",
         }
     }
 }
@@ -931,6 +940,27 @@ pub(crate) const BINDING_DEFS: &[BindingDef] = &[
             (HintContext::Files, "Diff"),
             (HintContext::Board, "Open card"),
         ],
+    },
+    // ── Diff view ─────────────────────────────────────────────────
+    BindingDef {
+        action: Action::CommentDiffLine,
+        default_keys: &[key!(enter), key!(c)],
+        scopes: &[BindingScope::Diff],
+        help: Some(HelpEntry {
+            section: "Diff view",
+            description: "Comment on the diff line under the cursor (the line keys move the cursor)",
+        }),
+        hint_contexts: &[],
+    },
+    BindingDef {
+        action: Action::SendDiffComments,
+        default_keys: &[key!(s)],
+        scopes: &[BindingScope::Diff],
+        help: Some(HelpEntry {
+            section: "Diff view",
+            description: "Type the selected agent's queued diff comments into its prompt",
+        }),
+        hint_contexts: &[],
     },
     BindingDef {
         action: Action::StageUnstage,
@@ -1915,6 +1945,7 @@ const HELP_SECTION_ORDER: &[&str] = &[
     // `section: "Scrolling"`, were silently dropped from the help overlay.
     "Scrolling",
     "Files pane",
+    "Diff view",
     "Commit input",
     "Resize mode",
     "Overlays",
@@ -2958,7 +2989,7 @@ fn conflict_scope(
 fn global_shadows(action: Action, scope: BindingScope) -> bool {
     match scope {
         BindingScope::Left | BindingScope::Resize => true,
-        BindingScope::Center | BindingScope::Files => action != Action::Quit,
+        BindingScope::Center | BindingScope::Files | BindingScope::Diff => action != Action::Quit,
         BindingScope::Global
         | BindingScope::Interactive
         | BindingScope::Palette
@@ -4131,6 +4162,7 @@ mod tests {
                 "open-worktree-with",
                 "show-terminal",
                 "pull-requests",
+                "send-diff-comments",
                 "recreate-working-copy",
                 "new-terminal-for-agent",
                 "agent-info",
@@ -4481,7 +4513,7 @@ mod tests {
     }
 
     /// The TUI palette's command set, sorted, kept by hand.
-    const EXPECTED_PALETTE_COMMANDS: [&str; 100] = [
+    const EXPECTED_PALETTE_COMMANDS: [&str; 101] = [
         "add-project",
         "agent-info",
         "change-agent-provider",
@@ -4554,6 +4586,7 @@ mod tests {
         "rename-agent",
         "rerun-startup-command-on-agent",
         "resource-monitor",
+        "send-diff-comments",
         "session-settings",
         "set-cloud-mode",
         "set-tailscale-mode",

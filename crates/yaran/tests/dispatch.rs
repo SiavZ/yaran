@@ -33,13 +33,14 @@ fn yaran(test: &str, args: &[&str]) -> Run {
     yaran_in(&home(test), args, &[])
 }
 
-/// Run yaran on `dir` as it stands, with `env` set and no `YARAN_REMOTE` from
+/// Run yaran on `dir` as it stands, with `env` set and no remote override from
 /// the shell running the tests.
 fn yaran_in(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> Run {
     let out = Command::new(env!("CARGO_BIN_EXE_yaran"))
         .args(args)
         .env("YARAN_HOME", dir)
         .env_remove("YARAN_REMOTE")
+        .env_remove("DUX_REMOTE")
         .envs(env.iter().copied())
         .stdin(Stdio::null())
         .output()

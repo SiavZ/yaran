@@ -35,6 +35,7 @@ pub(crate) fn yaran(home: &Path, args: &[&str], input: &str) -> Run {
         .args(args)
         .env("YARAN_HOME", home)
         .env_remove("YARAN_REMOTE")
+        .env_remove("DUX_REMOTE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

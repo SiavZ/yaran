@@ -2404,6 +2404,32 @@ access-logged like any other refusal.
 
 ---
 
+## T66 — Repository control bytes typed through diff comments
+
+**Attack scenario.** A repository line or filename contains an escape sequence
+that means Enter, Ctrl-C or Ctrl-Z to an agent. Including it in a diff comment's
+prompt could submit unfinished feedback, interrupt the agent or suspend it.
+Comment text and the configured prompt template can carry the same bytes.
+
+**Mitigation in code.** The sender escapes the complete rendered prompt with
+`sanitize::for_terminal` before `macro_payload_bytes` encodes newlines as
+Alt-Enter. Untrusted controls become visible text; the encoder alone introduces
+the escape bytes used for line breaks. The send uses the existing tab ownership
+gate and never presses Enter. A refused input-queue enqueue keeps the comments
+in memory and SQLite and reports the failure. Regression tests cover control
+bytes in the filename, line and comment, and a saturated queue with and without
+a serving ownership seat. Implemented.
+
+**Residual risk.** Printable repository text is still untrusted prompt content;
+the person reviews the typed feedback before submitting it. Queue acceptance
+does not acknowledge delivery by the asynchronous writer or reading by the
+agent, so a later writer failure can still lose input.
+
+**Detection.** Escaped controls remain visible in the prompt. Immediate enqueue
+failure leaves the comments queued and shows a warning instead of success.
+
+---
+
 ## Maintenance
 
 When you add or change attack surface in this codebase, you must

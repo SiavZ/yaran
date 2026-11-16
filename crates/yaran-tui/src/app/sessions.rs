@@ -10,6 +10,7 @@
 //! ├── app::background_server
 //! ├── app::cloud_commands
 //! ├── app::debug_input
+//! ├── app::diff_comments
 //! ├── app::human_board
 //! ├── app::presize
 //! ├── app::project_actions
@@ -4865,6 +4866,7 @@ impl App {
             rel_path: rel_path.clone(),
         };
         self.focus = FocusPane::Center;
+        self.diff_comments.cursor = None;
         self.begin_diff_computation(worktree_path, rel_path, 0);
     }
 
@@ -4997,14 +4999,17 @@ impl App {
         }
         match answer.result {
             Ok(output) => {
+                let lines = Arc::new(output.lines);
+                let rel_path = answer.key.rel_path;
                 self.center_mode = CenterMode::Diff {
-                    lines: Arc::new(output.lines),
+                    lines: Arc::clone(&lines),
                     scroll: pending.scroll,
                     gutter_width: output.gutter_width,
                     worktree_path: answer.key.worktree_path,
-                    rel_path: answer.key.rel_path,
+                    rel_path: rel_path.clone(),
                 };
                 self.status.clear(DIFF_STATUS_KEY, None);
+                self.adopt_diff_anchors(&lines, output.anchors, &rel_path);
             }
             Err(error) => {
                 self.center_mode = CenterMode::Agent;
@@ -6107,6 +6112,7 @@ mod tests {
             last_diff_height: 0,
             last_diff_visual_lines: 0,
             diff_rows: None,
+            diff_comments: crate::app::diff_comments::DiffCommentsUi::default(),
             theme: Theme::default_dark(),
             tick_count: 0,
             start_time: std::time::Instant::now(),

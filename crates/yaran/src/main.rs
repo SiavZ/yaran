@@ -9,6 +9,7 @@
 //! ├── client_commands
 //! ├── commands
 //! ├── companion
+//! ├── reload_dispatch_tests
 //! ├── yaran-core
 //! ├── yaran-core::activity
 //! ├── yaran-core::auth
@@ -40,6 +41,8 @@ mod cli_reference;
 mod client_commands;
 mod commands;
 mod companion;
+#[cfg(test)]
+mod reload_dispatch_tests;
 
 use anyhow::Result;
 use clap::Parser;
@@ -92,6 +95,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let cli = commands::Cli::parse();
+    if cli.reload_handoff.is_some() {
+        return killing_live_child_groups(run_tui_with_flip());
+    }
     let selection = client_commands::Selection {
         remote: cli.remote.clone(),
         local: cli.local,

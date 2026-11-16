@@ -60,6 +60,11 @@ enum Vetted {
 /// or a module above it.
 const VETTED: &[(&str, Vetted, &str)] = &[
     (
+        "yaran_core::brand_env::var",
+        Vetted::Function("crates/yaran-core/src/brand_env.rs", "var"),
+        "reads an environment variable with its legacy-name fallback; the helper only builds a name",
+    ),
+    (
         "yaran_core::branch_history::BranchAnswersWire",
         Vetted::Type(
             "crates/yaran-core/src/branch_history.rs",

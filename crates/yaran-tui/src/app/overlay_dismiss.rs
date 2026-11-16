@@ -217,6 +217,7 @@ pub(super) fn outside_click_policy(prompt: &PromptState) -> OutsideClickPolicy {
         | PromptState::ConfigureStartupCommand { .. }
         | PromptState::ConfigureProjectEnv { .. }
         | PromptState::ConfigureGlobalEnv { .. }
+        | PromptState::CommentDiffLine { .. }
         | PromptState::RenameSession { .. }
         | PromptState::PullRequestInput { .. }
         | PromptState::AttachPullRequestInput { .. }
@@ -467,6 +468,7 @@ impl App {
             | PromptState::ConfigureStartupCommand { .. }
             | PromptState::ConfigureProjectEnv { .. }
             | PromptState::ConfigureGlobalEnv { .. }
+            | PromptState::CommentDiffLine { .. }
             | PromptState::RenameSession { .. }
             | PromptState::PullRequestInput { .. }
             | PromptState::AttachPullRequestInput { .. }

@@ -16,6 +16,7 @@
 // work while signed out, and their 401 means a wrong password.
 
 import { apiUrl } from "./apiBase"
+import { accessSession } from "./native/accessSession"
 import { brokenDetail, isAuthRequired, isBlocked, readErrorBody, str } from "./authErrors"
 import {
   authEpoch,
@@ -77,9 +78,14 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     if (current) reportUnauthorized()
     throw new AuthInterruptedError("refused", "signed_out")
   }
+  // Cloud-ingress refusals renew Access without entering the password gate.
+  if (resp.headers.get("Yaran-Refusal") !== null) {
+    accessSession.noteRequestTrouble()
+    return resp
+  }
   if (resp.status === 401 && str(body.json.error) === null) {
-    // Every yaran 401 carries its code, so one without came from something else:
-    // not this browser's session ending. The status route says what it was.
+    // Password refusals carry a JSON code. The status route identifies other
+    // responses, without calling them this browser's session ending.
     if (current) reportUnrecognizedRefusal()
     return resp
   }

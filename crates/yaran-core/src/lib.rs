@@ -51,6 +51,7 @@
 //! ├── destructive
 //! ├── device_label
 //! ├── diff
+//! ├── diff_comments
 //! ├── duration_text
 //! ├── editor
 //! ├── engine
@@ -205,6 +206,7 @@ pub mod delete_agent_prose;
 pub mod destructive;
 pub mod device_label;
 pub mod diff;
+pub mod diff_comments;
 pub(crate) mod duration_text;
 pub mod editor;
 pub mod engine;

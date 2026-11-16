@@ -413,6 +413,14 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         // Per-session: the web's counterpart is "Pull requests…" in the agent's
         // own ⋯ menu, so no app-menu entry is warranted.
     },
+    PaletteCommand {
+        action: Action::SendDiffComments,
+        name: "send-diff-comments",
+        description: "Type the selected agent's queued diff comments into its prompt",
+        // TUI-only, and deliberately no web app-menu entry: diff comments are
+        // written in the TUI's diff view and queued per agent, and the web's
+        // Monaco diff has no comment surface to pair with it.
+    },
     // ── Global ────────────────────────────────────────────────────
     PaletteCommand {
         action: Action::ToggleSidebar,

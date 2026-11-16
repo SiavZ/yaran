@@ -72,6 +72,7 @@
 //! ├── app::cloud_render
 //! ├── app::cloud_tests
 //! ├── app::confirm_dialog
+//! ├── app::diff_comments::tests
 //! ├── app::hint_lines
 //! ├── app::input
 //! ├── app::picker_lists
@@ -317,7 +318,9 @@ pub(crate) fn modal_spec(prompt: &PromptState) -> Option<ModalSpec> {
         // so `KNOWN_DUAL_MODE_VIOLATIONS` is empty.
         PromptState::ConfigureStartupCommand { .. }
         | PromptState::ConfigureProjectEnv { .. }
-        | PromptState::ConfigureGlobalEnv { .. } => ModalSpec { family: Form, multiline_field: true, confirm_button: true },
+        | PromptState::ConfigureGlobalEnv { .. }
+        // The diff comment editor borrows the same shape and the same handler.
+        | PromptState::CommentDiffLine { .. } => ModalSpec { family: Form, multiline_field: true, confirm_button: true },
 
         // Session settings: a single-line title, the multiline system-prompt
         // editor, radios and checkboxes, and Cancel/Save. The Save button is
@@ -427,6 +430,7 @@ pub(crate) fn prompt_text_inputs(prompt: &PromptState) -> Vec<&TextInput> {
         | PromptState::ConfigureStartupCommand { input, .. }
         | PromptState::ConfigureProjectEnv { input, .. }
         | PromptState::ConfigureGlobalEnv { input, .. }
+        | PromptState::CommentDiffLine { input, .. }
         | PromptState::RenameSession { input, .. }
         | PromptState::PullRequestInput { input, .. }
         | PromptState::AttachPullRequestInput { input, .. }
@@ -1202,6 +1206,20 @@ pub(super) mod tests {
                 PromptState::ConfigureGlobalEnv {
                     project_name: "All projects".to_string(),
                     input: TextInput::with_text("K=V".to_string()).with_multiline(8),
+                    focus: ConfigureFieldFocus::default(),
+                },
+            ),
+            (
+                "CommentDiffLine",
+                PromptState::CommentDiffLine {
+                    session_id: app.engine.sessions[0].id.clone(),
+                    anchor: yaran_core::diff_comments::DiffAnchor {
+                        rel_path: "README.md".to_string(),
+                        side: yaran_core::diff_comments::DiffSide::New,
+                        line_number: 3,
+                        line_content: "## title".to_string(),
+                    },
+                    input: TextInput::with_text("Use an h4".to_string()).with_multiline(4),
                     focus: ConfigureFieldFocus::default(),
                 },
             ),
